@@ -43,6 +43,7 @@ const NAV_SECTIONS = [
     label: 'Migration Operations',
     items: [
       { label: 'Migration Timeline', href: '/dashboard/migration_timeline', icon: '⏱️' },
+      { label: 'Migration Phases', href: '/dashboard/migration_phases', icon: '🔄' },
       { label: 'Live Migration Ops', href: '/dashboard/live_migration', icon: '⚡' },
       { label: 'Migration Terminal', href: '/dashboard/migration_terminal', icon: '💻' },
     ],

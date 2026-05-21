@@ -56,6 +56,8 @@ interface DefensiveFinding {
   evidence: string
   detectionMethod: string
   source: string
+  timestamp?: string
+  detectedAt?: string
   raw?: unknown
 }
 
@@ -204,7 +206,24 @@ const SCANNER_MODULE_CATALOG: Array<{ id: string; name: string }> = [
   { id: 'audit-history-logger', name: 'Audit/history logger' },
 ]
 
-const activeJobs = new Map<string, { cancelled: boolean }>()
+type ActiveScannerJobState = {
+  cancelled: boolean
+  userId: string
+  jobId: string
+  targets: string[]
+  startedAt: string
+  updatedAt: string
+  telemetry: Record<string, unknown>[]
+  moduleStates: ScannerModuleState[]
+  status: string
+  progress: number
+  sessionId?: string
+  persistence?: PersistenceMode
+  summary?: any
+  errors?: string[]
+}
+
+const activeJobs = new Map<string, ActiveScannerJobState>()
 
 const memoryStore = (() => {
   const g = globalThis as typeof globalThis & {
@@ -229,7 +248,8 @@ const memoryStore = (() => {
 })()
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = getToken(req)
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : null
+  const token = getToken(req) || queryToken
   if (!token) {
     res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
     return
@@ -1019,6 +1039,71 @@ function exposureTypeFor(finding: DefensiveFinding) {
   return 'crypto_review'
 }
 
+function persistFindingToMemory(
+  userId: string,
+  sessionId: string,
+  assetId: string,
+  target: AuthorizedTarget,
+  result: DefensiveResult,
+  finding: DefensiveFinding,
+  commonMetadata: Record<string, unknown>,
+  now: string
+) {
+  const isQuantumSafe = finding.threatLevel === 'SAFE'
+  const isVulnerable = !isQuantumSafe && finding.status !== 'Unknown / requires manual review'
+  const inventoryId = randomId('cbom')
+  let exposureId: string | null = null
+
+  memoryStore.inventory.unshift({
+    id: inventoryId,
+    user_id: userId,
+    asset_id: assetId,
+    item_type: itemTypeFor(finding),
+    name: `${finding.category}: ${finding.algorithm}`,
+    algorithm: finding.algorithm,
+    key_size: finding.keySize,
+    protocol: result.tlsVersion || (target.type === 'ssh' ? 'SSH' : target.protocol.toUpperCase()),
+    exposure_level: severityFromThreat(finding.threatLevel),
+    is_vulnerable: isVulnerable,
+    is_quantum_safe: isQuantumSafe,
+    metadata: commonMetadata,
+    discovered_at: now,
+    created_at: now,
+  })
+
+  memoryStore.results.unshift({
+    id: randomId('result'),
+    user_id: userId,
+    scan_session_id: sessionId,
+    asset_id: assetId,
+    finding_type: finding.category,
+    algorithm: finding.algorithm,
+    threat_level: severityFromThreat(finding.threatLevel),
+    description: finding.description,
+    remediation: finding.recommendation,
+    metadata: commonMetadata,
+    created_at: now,
+  })
+
+  if (isVulnerable) {
+    exposureId = randomId('exposure')
+    memoryStore.exposures.unshift({
+      id: exposureId,
+      user_id: userId,
+      asset_id: assetId,
+      exposure_type: exposureTypeFor(finding),
+      severity: severityFromThreat(finding.threatLevel),
+      description: finding.description,
+      detected_value: finding.algorithm,
+      metadata: commonMetadata,
+      created_at: now,
+      updated_at: now,
+    })
+  }
+
+  return { inventoryId, exposureId }
+}
+
 async function persistResult(client: any, userId: string, sessionId: string, target: AuthorizedTarget, result: DefensiveResult, mode: PersistenceMode) {
   const assetId = await upsertAsset(client, userId, target, result, mode)
   const now = new Date().toISOString()
@@ -1032,7 +1117,14 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
       scanId: result.scanId,
       scanSessionId: sessionId,
       target: target.normalized,
+      algorithm: finding.algorithm,
+      category: finding.category,
+      location: finding.location,
+      threatLevel: finding.threatLevel,
+      severity: severityFromThreat(finding.threatLevel),
       status: finding.status,
+      keySize: finding.keySize,
+      description: finding.description,
       pqcReplacement: finding.pqcReplacement,
       evidence: finding.evidence,
       detectionMethod: finding.detectionMethod,
@@ -1042,7 +1134,7 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
     }
 
     if (mode === 'database' && client) {
-      const { data: inventoryData } = await client
+      const { data: inventoryData, error: inventoryError } = await client
         .from('crypto_inventory')
         .insert({
           user_id: userId,
@@ -1061,6 +1153,11 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
         .select('id')
         .single()
       if (inventoryData?.id) cbomIds.push(inventoryData.id)
+      if (inventoryError || !inventoryData?.id) {
+        const memoryIds = persistFindingToMemory(userId, sessionId, assetId, target, result, finding, commonMetadata, now)
+        cbomIds.push(memoryIds.inventoryId)
+        if (memoryIds.exposureId) exposureIds.push(memoryIds.exposureId)
+      }
 
       const { data: resultData } = await client
         .from('pqc_scan_results')
@@ -1109,55 +1206,9 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
         })
       }
     } else {
-      const inventoryId = randomId('cbom')
-      memoryStore.inventory.unshift({
-        id: inventoryId,
-        user_id: userId,
-        asset_id: assetId,
-        item_type: itemTypeFor(finding),
-        name: `${finding.category}: ${finding.algorithm}`,
-        algorithm: finding.algorithm,
-        key_size: finding.keySize,
-        protocol: result.tlsVersion || (target.type === 'ssh' ? 'SSH' : target.protocol.toUpperCase()),
-        exposure_level: severityFromThreat(finding.threatLevel),
-        is_vulnerable: isVulnerable,
-        is_quantum_safe: isQuantumSafe,
-        metadata: commonMetadata,
-        discovered_at: now,
-        created_at: now,
-      })
-      cbomIds.push(inventoryId)
-
-      memoryStore.results.unshift({
-        id: randomId('result'),
-        user_id: userId,
-        scan_session_id: sessionId,
-        asset_id: assetId,
-        finding_type: finding.category,
-        algorithm: finding.algorithm,
-        threat_level: severityFromThreat(finding.threatLevel),
-        description: finding.description,
-        remediation: finding.recommendation,
-        metadata: commonMetadata,
-        created_at: now,
-      })
-
-      if (isVulnerable) {
-        const exposureId = randomId('exposure')
-        memoryStore.exposures.unshift({
-          id: exposureId,
-          user_id: userId,
-          asset_id: assetId,
-          exposure_type: exposureTypeFor(finding),
-          severity: severityFromThreat(finding.threatLevel),
-          description: finding.description,
-          detected_value: finding.algorithm,
-          metadata: commonMetadata,
-          created_at: now,
-          updated_at: now,
-        })
-        exposureIds.push(exposureId)
-      }
+      const memoryIds = persistFindingToMemory(userId, sessionId, assetId, target, result, finding, commonMetadata, now)
+      cbomIds.push(memoryIds.inventoryId)
+      if (memoryIds.exposureId) exposureIds.push(memoryIds.exposureId)
     }
   }
 
@@ -1215,6 +1266,213 @@ function buildSummary(results: DefensiveResult[]) {
     : 0
   return {
     targetsScanned: results.length,
+    totalFindings: findings.length,
+    critical,
+    high,
+    medium,
+    low,
+    safe,
+    vulnerable: findings.filter((finding) => finding.status === 'Quantum-vulnerable' || finding.status === 'Legacy/deprecated' || finding.status === 'Misconfigured').length,
+    pqcReady: safe,
+    riskScore,
+    qScore: Math.max(0, 100 - riskScore),
+  }
+}
+
+function directThreatFromStoredSeverity(value: unknown): ThreatLevel | null {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized === 'critical') return 'CRITICAL'
+  if (normalized === 'high') return 'HIGH'
+  if (normalized === 'moderate' || normalized === 'medium') return 'MEDIUM'
+  if (normalized === 'low') return 'LOW'
+  if (normalized === 'safe') return 'SAFE'
+  return null
+}
+
+function inferThreatFromStoredFinding(input: {
+  algorithm: string
+  category?: string
+  status?: string
+  rowSeverity?: unknown
+  rawSeverity?: unknown
+  metadataSeverity?: unknown
+}): ThreatLevel {
+  const direct = directThreatFromStoredSeverity(input.rowSeverity || input.rawSeverity || input.metadataSeverity)
+  if (direct) return direct
+
+  const algorithm = input.algorithm.toLowerCase()
+  const category = String(input.category || '').toLowerCase()
+  const status = String(input.status || '').toLowerCase()
+
+  if (status.includes('pqc-ready') || algorithm.includes('aes-256') || algorithm.includes('ml-kem') || algorithm.includes('ml-dsa')) return 'SAFE'
+  if (algorithm.includes('tlsv1.3') || algorithm.includes('tls 1.3') || algorithm.includes('tls-1.3')) return 'LOW'
+  if (algorithm.includes('tlsv1.0') || algorithm === 'tlsv1' || algorithm.includes('tls 1.0') || algorithm.includes('tls-1.0')) return 'CRITICAL'
+  if (algorithm.includes('tlsv1.1') || algorithm.includes('tls 1.1') || algorithm.includes('tls-1.1')) return 'CRITICAL'
+  if (algorithm.includes('rsa-1024') || algorithm.includes('md5') || algorithm.includes('sha-1') || algorithm.includes('sha1')) return 'CRITICAL'
+  if (algorithm.includes('expired certificate') || category.includes('expired')) return 'CRITICAL'
+
+  if (algorithm.includes('wide crypto attack surface')) return 'HIGH'
+  if (algorithm.includes('hndl risk')) return 'HIGH'
+  if (algorithm.includes('ecdsa') || algorithm.includes('ecdhe') || algorithm.includes('ecdh') || algorithm.includes('x25519')) return 'HIGH'
+  if (algorithm.includes('rsa-2048') || algorithm.includes('rsa 2048') || algorithm.includes('dhe') || algorithm.includes('diffie')) return 'HIGH'
+  if (category.includes('certificate') && status.includes('quantum-vulnerable')) return 'HIGH'
+  if (category.includes('key exchange') && status.includes('quantum-vulnerable')) return 'HIGH'
+
+  if (algorithm.includes('tlsv1.2') || algorithm.includes('tls 1.2') || algorithm.includes('tls-1.2')) return 'MEDIUM'
+  if (algorithm.includes('nist pqc deadline')) return 'MEDIUM'
+  if (algorithm.includes('no hybrid crypto')) return 'MEDIUM'
+  if (algorithm.includes('no certificate pinning')) return 'MEDIUM'
+  if (algorithm.includes('regulatory compliance gap')) return 'LOW'
+  if (status.includes('quantum-vulnerable') || status.includes('legacy') || status.includes('misconfigured')) return 'MEDIUM'
+
+  return 'LOW'
+}
+
+function storedFindingStatus(value: unknown): DefensiveFinding['status'] | null {
+  const status = String(value || '')
+  if (status === 'PQC-ready') return 'PQC-ready'
+  if (status === 'Quantum-vulnerable') return 'Quantum-vulnerable'
+  if (status === 'Legacy/deprecated') return 'Legacy/deprecated'
+  if (status === 'Misconfigured') return 'Misconfigured'
+  if (status === 'Unknown / requires manual review') return 'Unknown / requires manual review'
+  return null
+}
+
+function normalizeStoredFinding(row: any, index: number): DefensiveFinding {
+  const metadata = row?.metadata || {}
+  const raw = metadata.raw && typeof metadata.raw === 'object' ? metadata.raw : {}
+  const algorithm = String(row?.algorithm || raw.algorithm || 'Unknown algorithm')
+  const category = String(row?.finding_type || raw.category || 'Stored Finding')
+  const statusText = String(metadata.status || raw.status || '')
+  const storedStatus = storedFindingStatus(metadata.status || raw.status)
+  const threatLevel = inferThreatFromStoredFinding({
+    algorithm,
+    category,
+    status: statusText,
+    rowSeverity: row?.threat_level,
+    rawSeverity: raw.threatLevel || raw.severity,
+    metadataSeverity: metadata.threatLevel || metadata.severity,
+  })
+  const recommendation = String(row?.remediation || metadata.recommendation || raw.recommendation || 'Review against NIST PQC migration policy')
+  const detectedAt = String(
+    row?.created_at ||
+    metadata.detectedAt ||
+    metadata.detected_at ||
+    metadata.timestamp ||
+    raw.detectedAt ||
+    raw.detected_at ||
+    raw.timestamp ||
+    ''
+  )
+
+  return {
+    id: String(row?.id || raw.id || `history-finding-${index + 1}`),
+    algorithm,
+    category,
+    location: String(raw.location || metadata.location || metadata.target || 'Stored scanner result'),
+    threatLevel,
+    status: storedStatus || statusFromThreat(threatLevel, algorithm),
+    description: String(row?.description || raw.description || 'Persisted scanner finding'),
+    recommendation,
+    pqcReplacement: typeof metadata.pqcReplacement === 'string'
+      ? metadata.pqcReplacement
+      : typeof raw.pqcRecommendation?.recommendedPQC === 'string'
+        ? raw.pqcRecommendation.recommendedPQC
+        : replacementFor(algorithm),
+    keySize: typeof metadata.keySize === 'number' ? metadata.keySize : keySizeFromAlgorithm(algorithm),
+    evidence: String(metadata.evidence || `${metadata.detectionMethod || 'scanner'}: ${raw.location || metadata.target || 'persisted evidence'}`),
+    detectionMethod: String(metadata.detectionMethod || raw.phase || 'persisted-scan-result'),
+    source: String(metadata.source || 'authorized-scanner-history'),
+    timestamp: detectedAt || undefined,
+    detectedAt: detectedAt || undefined,
+    raw: row,
+  }
+}
+
+function normalizeStoredHistoryFindings(sessionResults: any[], metadata: any): DefensiveFinding[] {
+  const embeddedResults = Array.isArray(metadata?.results) ? metadata.results : []
+  const fromEmbedded: DefensiveFinding[] = []
+
+  for (const result of embeddedResults) {
+    const resultFindings = Array.isArray(result?.findings) ? result.findings : []
+    for (const finding of resultFindings) {
+      const index = fromEmbedded.length
+      const raw = finding?.raw && typeof finding.raw === 'object' ? finding.raw : {}
+      const findingMetadata = finding?.metadata && typeof finding.metadata === 'object' ? finding.metadata : {}
+      const algorithm = String(finding?.algorithm || raw.algorithm || 'Unknown algorithm')
+      const category = String(finding?.category || raw.category || 'Stored Finding')
+      const statusText = String(finding?.status || raw.status || '')
+      const storedStatus = storedFindingStatus(finding?.status || raw.status)
+      const exactThreatLevel = directThreatFromStoredSeverity(
+        finding?.threatLevel ||
+        finding?.severity ||
+        raw.threatLevel ||
+        raw.severity ||
+        findingMetadata.threatLevel ||
+        findingMetadata.severity
+      )
+      const threatLevel = exactThreatLevel || inferThreatFromStoredFinding({
+        algorithm,
+        category,
+        status: statusText,
+        rowSeverity: null,
+        rawSeverity: raw.threatLevel || raw.severity,
+        metadataSeverity: findingMetadata.threatLevel || findingMetadata.severity,
+      })
+      const detectedAt = String(
+        finding?.timestamp ||
+        finding?.detectedAt ||
+        finding?.detected_at ||
+        raw.timestamp ||
+        raw.detectedAt ||
+        raw.detected_at ||
+        result?.startedAt ||
+        result?.started_at ||
+        metadata?.startedAt ||
+        metadata?.started_at ||
+        ''
+      )
+
+      fromEmbedded.push({
+        id: String(finding?.id || raw.id || `history-embedded-finding-${index + 1}`),
+        algorithm,
+        category,
+        location: String(finding?.location || raw.location || result?.target || metadata?.targets?.[0]?.normalized || 'Stored scanner result'),
+        threatLevel,
+        status: storedStatus || statusFromThreat(threatLevel, algorithm),
+        description: String(finding?.description || raw.description || 'Persisted scanner finding'),
+        recommendation: String(finding?.recommendation || raw.recommendation || 'Review against NIST PQC migration policy'),
+        pqcReplacement: typeof finding?.pqcReplacement === 'string'
+          ? finding.pqcReplacement
+          : typeof raw.pqcRecommendation?.recommendedPQC === 'string'
+            ? raw.pqcRecommendation.recommendedPQC
+            : replacementFor(algorithm),
+        keySize: typeof finding?.keySize === 'number' ? finding.keySize : keySizeFromAlgorithm(algorithm),
+        evidence: String(finding?.evidence || `${finding?.detectionMethod || raw.phase || 'scanner'}: ${finding?.location || raw.location || result?.target || 'persisted evidence'}`),
+        detectionMethod: String(finding?.detectionMethod || raw.phase || 'persisted-scan-result'),
+        source: String(finding?.source || 'authorized-scanner-history'),
+        timestamp: detectedAt || undefined,
+        detectedAt: detectedAt || undefined,
+        raw: finding,
+      })
+    }
+  }
+
+  if (fromEmbedded.length > 0) return fromEmbedded
+
+  return sessionResults.map((row, index) => normalizeStoredFinding(row, index))
+}
+
+function buildSummaryFromStoredFindings(findings: DefensiveFinding[]): ReturnType<typeof buildSummary> {
+  const critical = findings.filter((finding) => finding.threatLevel === 'CRITICAL').length
+  const high = findings.filter((finding) => finding.threatLevel === 'HIGH').length
+  const medium = findings.filter((finding) => finding.threatLevel === 'MEDIUM').length
+  const low = findings.filter((finding) => finding.threatLevel === 'LOW').length
+  const safe = findings.filter((finding) => finding.threatLevel === 'SAFE').length
+  const riskScore = Math.min(100, critical * 18 + high * 10 + medium * 5 + low * 2)
+
+  return {
+    targetsScanned: findings.length > 0 ? 1 : 0,
     totalFindings: findings.length,
     critical,
     high,
@@ -1356,9 +1614,21 @@ router.get('/stream', async (req, res) => {
   }
 
   const jobId = randomId('job')
-  activeJobs.set(jobId, { cancelled: false })
   const telemetry: Record<string, unknown>[] = []
   const moduleStates = createModuleStates()
+  activeJobs.set(jobId, {
+    cancelled: false,
+    userId: user.id,
+    jobId,
+    targets: normalized.map((target) => target.normalized),
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    telemetry,
+    moduleStates,
+    status: 'queued',
+    progress: 0,
+    errors: [],
+  })
   const client = getDbClient(token)
 
   res.setHeader('Content-Type', 'text/event-stream')
@@ -1368,7 +1638,17 @@ router.get('/stream', async (req, res) => {
   res.flushHeaders?.()
 
   const emit = (event: Record<string, unknown>) => {
-    telemetry.push({ timestamp: new Date().toISOString(), ...event })
+    const timestamp = new Date().toISOString()
+    const eventWithTimestamp = { timestamp, ...event }
+    telemetry.push(eventWithTimestamp)
+    const state = activeJobs.get(jobId)
+    if (state) {
+      state.updatedAt = timestamp
+      state.status = String(event.status || state.status || 'running')
+      if (typeof event.progress === 'number') state.progress = event.progress
+      if (event.summary) state.summary = event.summary
+      if (Array.isArray(event.errors)) state.errors = event.errors as string[]
+    }
     sendSse(res, { jobId, ...event })
   }
 
@@ -1434,6 +1714,11 @@ router.get('/stream', async (req, res) => {
     emit({ type: 'scan-start', status: 'queued', progress: 0, message: 'Scan job created', targets: normalized, moduleCatalog: moduleStates })
     emit({ type: 'module-catalog', status: 'queued', progress: 0, message: 'Scanner module catalog queued', modules: moduleStates })
     session = await createSession(client, user.id, normalized, telemetry)
+    const activeState = activeJobs.get(jobId)
+    if (activeState) {
+      activeState.sessionId = session.id
+      activeState.persistence = session.mode
+    }
     updateModule('target-validation', { status: 'Running', target: normalized.map((target) => target.normalized).join(', ') }, 'Authorization validation running')
     emit({ type: 'authorization-validated', status: 'running', scanSessionId: session.id, persistence: session.mode, progress: 3, message: 'Authorization acknowledged and user scope validated' })
     updateModule('target-validation', { status: 'Completed', findingsCount: 0 }, 'Authorization validated and targets accepted')
@@ -1642,13 +1927,17 @@ router.post('/jobs/:id/cancel', (req, res) => {
 })
 
 async function loadScannerTables(client: any, userId: string) {
+  const memoryRows = {
+    assets: memoryStore.assets.filter((item) => item.user_id === userId),
+    inventory: memoryStore.inventory.filter((item) => item.user_id === userId),
+    exposures: memoryStore.exposures.filter((item) => item.user_id === userId),
+    results: memoryStore.results.filter((item) => item.user_id === userId),
+    sessions: memoryStore.sessions.filter((item) => item.user_id === userId),
+  }
+
   if (!client) {
     return {
-      assets: memoryStore.assets.filter((item) => item.user_id === userId),
-      inventory: memoryStore.inventory.filter((item) => item.user_id === userId),
-      exposures: memoryStore.exposures.filter((item) => item.user_id === userId),
-      results: memoryStore.results.filter((item) => item.user_id === userId),
-      sessions: memoryStore.sessions.filter((item) => item.user_id === userId),
+      ...memoryRows,
       mode: 'memory' as PersistenceMode,
     }
   }
@@ -1661,77 +1950,32 @@ async function loadScannerTables(client: any, userId: string) {
       client.from('pqc_scan_results').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       client.from('pqc_scan_sessions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
     ])
+    const mergeRows = <T extends { id: string }>(databaseRows: T[], fallbackRows: T[]) => {
+      const seen = new Set(databaseRows.map((item) => item.id))
+      return databaseRows.concat(fallbackRows.filter((item) => !seen.has(item.id)))
+    }
+
     return {
-      assets: assets.error ? [] : assets.data || [],
-      inventory: inventory.error ? [] : inventory.data || [],
-      exposures: exposures.error ? [] : exposures.data || [],
-      results: results.error ? [] : results.data || [],
-      sessions: sessions.error ? [] : sessions.data || [],
-      mode: 'database' as PersistenceMode,
+      assets: mergeRows(assets.error ? [] : assets.data || [], memoryRows.assets),
+      inventory: mergeRows(inventory.error ? [] : inventory.data || [], memoryRows.inventory),
+      exposures: mergeRows(exposures.error ? [] : exposures.data || [], memoryRows.exposures),
+      results: mergeRows(results.error ? [] : results.data || [], memoryRows.results),
+      sessions: mergeRows(sessions.error ? [] : sessions.data || [], memoryRows.sessions),
+      mode: (assets.error || inventory.error || exposures.error || results.error || sessions.error ? 'memory' : 'database') as PersistenceMode,
     }
   } catch {
     return {
-      assets: memoryStore.assets.filter((item) => item.user_id === userId),
-      inventory: memoryStore.inventory.filter((item) => item.user_id === userId),
-      exposures: memoryStore.exposures.filter((item) => item.user_id === userId),
-      results: memoryStore.results.filter((item) => item.user_id === userId),
-      sessions: memoryStore.sessions.filter((item) => item.user_id === userId),
+      ...memoryRows,
       mode: 'memory' as PersistenceMode,
     }
   }
 }
 
-router.get('/history', async (req, res) => {
-  const user = (req as any).user
-  const token = (req as any).token as string
-  const client = getDbClient(token)
-  const { sessions, results, mode } = await loadScannerTables(client, user.id)
-
-  const history = sessions.map((session: any) => {
-    const sessionResults = results.filter((result: any) => result.scan_session_id === session.id)
-    const metadata = session.metadata || {}
-    const started = session.started_at || session.created_at
-    const completed = session.completed_at || metadata.completedAt || null
-    return {
-      scanId: session.id,
-      userId: session.user_id,
-      target: session.target_scope,
-      scanType: metadata.scannerMode || 'defensive-cryptographic-inventory',
-      startedAt: started,
-      completedAt: completed,
-      durationMs: started && completed ? Date.parse(completed) - Date.parse(started) : null,
-      status: session.status,
-      detectedComponents: sessionResults.length,
-      scannerModulesUsed: metadata.scannerModulesUsed || (metadata.moduleStates || []).filter((module: any) => module.status !== 'Queued' && module.status !== 'Skipped').map((module: any) => module.name),
-      vulnerableFindings: sessionResults.filter((result: any) => ['critical', 'high', 'moderate'].includes(result.threat_level)).length,
-      pqcReadyFindings: sessionResults.filter((result: any) => result.metadata?.status === 'PQC-ready').length,
-      riskScore: metadata.summary?.riskScore ?? null,
-      qScore: metadata.summary?.qScore ?? null,
-      telemetry: metadata.telemetry || [],
-      moduleStates: metadata.moduleStates || [],
-      enterpriseScanner2: metadata.enterpriseScanner2 || null,
-      errorLogs: metadata.errors || [],
-      summary: metadata.summary || null,
-      findings: sessionResults,
-      recommendations: sessionResults.map((result: any) => result.remediation).filter(Boolean),
-      linkedCbomRecords: metadata.linkedCbomIds || [],
-      linkedAssetRecords: metadata.linkedAssetIds || [],
-      linkedExposureNodes: metadata.linkedExposureIds || [],
-    }
-  })
-
-  res.json({ data: { mode, history } })
-})
-
-router.get('/cbom', async (req, res) => {
-  const user = (req as any).user
-  const token = (req as any).token as string
-  const client = getDbClient(token)
-  const { assets, inventory, mode } = await loadScannerTables(client, user.id)
-  const assetById = new Map<string, any>((assets as any[]).map((asset) => [asset.id, asset]))
+function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode) {
+  const assetById = new Map<string, any>(assets.map((asset) => [asset.id, asset]))
   const grouped = new Map<string, any>()
 
-  for (const item of inventory as any[]) {
+  for (const item of inventory) {
     const asset = assetById.get(item.asset_id)
     const key = `${item.asset_id}:${item.item_type}:${item.algorithm}:${item.name}`
     const existing = grouped.get(key)
@@ -1771,18 +2015,13 @@ router.get('/cbom', async (req, res) => {
     totalInstances: entries.reduce((sum, entry) => sum + entry.instances, 0),
   }
 
-  res.json({ data: { mode, entries, stats } })
-})
+  return { mode, entries, stats }
+}
 
-router.get('/assets', async (req, res) => {
-  const user = (req as any).user
-  const token = (req as any).token as string
-  const client = getDbClient(token)
-  const { assets, inventory, exposures, mode } = await loadScannerTables(client, user.id)
-
-  const normalized = (assets as any[]).map((asset) => {
-    const crypto = (inventory as any[]).filter((item) => item.asset_id === asset.id)
-    const assetExposures = (exposures as any[]).filter((item) => item.asset_id === asset.id)
+function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], mode: PersistenceMode) {
+  const normalized = assets.map((asset) => {
+    const crypto = inventory.filter((item) => item.asset_id === asset.id)
+    const assetExposures = exposures.filter((item) => item.asset_id === asset.id)
     const riskScore = asset.metadata?.riskScore ?? Math.min(100, assetExposures.length * 20)
     const algorithms = Array.from(new Set(crypto.map((item: any) => item.algorithm).filter(Boolean)))
     return {
@@ -1806,44 +2045,39 @@ router.get('/assets', async (req, res) => {
     }
   })
 
-  res.json({ data: { mode, assets: normalized } })
-})
+  return { mode, assets: normalized }
+}
 
-router.get('/exposure-map', async (req, res) => {
-  const user = (req as any).user
-  const token = (req as any).token as string
-  const client = getDbClient(token)
-  const { assets, inventory, exposures, mode } = await loadScannerTables(client, user.id)
-  const count = Math.max(1, (assets as any[]).length)
-
-  const nodes = (assets as any[]).map((asset, index) => {
+function buildExposurePayload(assets: any[], inventory: any[], exposures: any[], mode: PersistenceMode) {
+  const count = Math.max(1, assets.length)
+  const nodes = assets.map((asset, index) => {
     const angle = (Math.PI * 2 * index) / count - Math.PI / 2
     const radius = count <= 2 ? 20 : 32
-    const crypto = (inventory as any[]).filter((item) => item.asset_id === asset.id)
-    const assetExposures = (exposures as any[]).filter((item) => item.asset_id === asset.id)
+    const crypto = inventory.filter((item) => item.asset_id === asset.id)
+    const assetExposures = exposures.filter((item) => item.asset_id === asset.id)
     const highest = crypto.find((item) => item.is_vulnerable) || crypto[0]
-    const riskScore = asset.metadata?.riskScore ?? Math.min(100, assetExposures.length * 20)
+    const risk = Math.min(100, asset.metadata?.riskScore ?? assetExposures.length * 25 + crypto.filter((item) => item.is_vulnerable).length * 15)
     return {
       id: asset.id,
       label: asset.name,
-      type: asset.type?.includes('ssh') ? 'network' : asset.type?.includes('web') || asset.type?.includes('tls') ? 'server' : 'endpoint',
+      x: 50 + Math.cos(angle) * radius,
+      y: 50 + Math.sin(angle) * radius,
+      size: Math.max(8, Math.min(18, 8 + crypto.length)),
+      type: asset.type,
       assetType: asset.type,
-      x: Math.round(50 + Math.cos(angle) * radius),
-      y: Math.round(50 + Math.sin(angle) * radius),
-      size: Math.max(10, Math.min(22, 10 + crypto.length)),
-      algorithm: highest?.algorithm || 'No crypto metadata',
-      risk: riskScore,
+      algorithm: highest?.algorithm || 'Unknown',
       vulnerable: crypto.some((item) => item.is_vulnerable),
+      risk,
+      connections: assets.filter((other) => other.id !== asset.id).slice(0, Math.min(3, assets.length - 1)).map((other) => other.id),
       pqcReadiness: crypto.length === 0 ? 'Unknown / requires manual review' : crypto.every((item) => item.is_quantum_safe) ? 'PQC-ready' : 'Quantum-vulnerable',
       linkedFindings: crypto.map((item) => ({
         id: item.id,
-        algorithm: item.algorithm,
-        category: item.item_type,
+        algorithm: item.algorithm || 'Unknown',
+        category: item.item_type || item.name,
         status: item.is_quantum_safe ? 'PQC-ready' : item.is_vulnerable ? 'Quantum-vulnerable' : 'Unknown / requires manual review',
         evidence: item.metadata?.evidence,
       })),
       recommendedMigrationPath: highest?.metadata?.pqcReplacement || replacementFor(highest?.algorithm || ''),
-      connections: [],
     }
   })
 
@@ -1854,7 +2088,263 @@ router.get('/exposure-map', async (req, res) => {
     low: nodes.filter((node) => node.risk < 40).length,
   }
 
-  res.json({ data: { mode, nodes, edges: [], distribution } })
+  return { mode, nodes, distribution }
+}
+
+function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceMode) {
+  const history = sessions.map((session: any) => {
+    const sessionResults = results.filter((result: any) => result.scan_session_id === session.id)
+    const metadata = session.metadata || {}
+    const started = session.started_at || session.created_at
+    const completed = session.completed_at || metadata.completedAt || null
+    const storedFindings = normalizeStoredHistoryFindings(sessionResults, metadata)
+    const storedSummary = metadata.summary || buildSummaryFromStoredFindings(storedFindings)
+    const detectedComponents = Number.isFinite(Number(storedSummary?.totalFindings))
+      ? Number(storedSummary.totalFindings)
+      : storedFindings.length
+    const vulnerableFindings = Number.isFinite(Number(storedSummary?.vulnerable))
+      ? Number(storedSummary.vulnerable)
+      : storedFindings.filter((finding) => finding.status === 'Quantum-vulnerable' || finding.status === 'Legacy/deprecated' || finding.status === 'Misconfigured').length
+    const pqcReadyFindings = Number.isFinite(Number(storedSummary?.pqcReady))
+      ? Number(storedSummary.pqcReady)
+      : storedFindings.filter((finding) => finding.status === 'PQC-ready' || finding.threatLevel === 'SAFE').length
+
+    return {
+      scanId: session.id,
+      userId: session.user_id,
+      target: session.target_scope,
+      scanType: metadata.scannerMode || 'defensive-cryptographic-inventory',
+      startedAt: started,
+      completedAt: completed,
+      durationMs: started && completed ? Date.parse(completed) - Date.parse(started) : null,
+      status: session.status,
+      detectedComponents,
+      scannerModulesUsed: metadata.scannerModulesUsed || (metadata.moduleStates || []).filter((module: any) => module.status !== 'Queued' && module.status !== 'Skipped').map((module: any) => module.name),
+      vulnerableFindings,
+      pqcReadyFindings,
+      riskScore: storedSummary.riskScore ?? null,
+      qScore: storedSummary.qScore ?? null,
+      telemetry: metadata.telemetry || [],
+      moduleStates: metadata.moduleStates || [],
+      enterpriseScanner2: metadata.enterpriseScanner2 || null,
+      errorLogs: metadata.errors || [],
+      summary: storedSummary,
+      findings: storedFindings,
+      recommendations: storedFindings.map((finding) => finding.recommendation).filter(Boolean),
+      linkedCbomRecords: metadata.linkedCbomIds || [],
+      linkedAssetRecords: metadata.linkedAssetIds || [],
+      linkedExposureNodes: metadata.linkedExposureIds || [],
+    }
+  })
+
+  return { mode, history }
+}
+
+async function buildScannerIntelligence(token: string, userId: string) {
+  const client = getDbClient(token)
+  const { assets, inventory, exposures, results, sessions, mode } = await loadScannerTables(client, userId)
+  const cbom = buildCbomPayload(assets as any[], inventory as any[], mode)
+  const assetPayload = buildAssetsPayload(assets as any[], inventory as any[], exposures as any[], mode)
+  const exposure = buildExposurePayload(assets as any[], inventory as any[], exposures as any[], mode)
+  const historyPayload = mergeActiveScannerJobs(userId, buildHistoryPayload(sessions as any[], results as any[], mode))
+  const findings = historyPayload.history.flatMap((entry: any) => entry.findings || [])
+  const latest = historyPayload.history[0] || null
+  const severityCounts = {
+    critical: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'CRITICAL').length,
+    high: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'HIGH').length,
+    medium: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'MEDIUM').length,
+    low: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'LOW').length,
+    safe: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'SAFE').length,
+  }
+  const riskScore = latest?.summary?.riskScore ?? (
+    assetPayload.assets.length
+      ? Math.round(assetPayload.assets.reduce((sum: number, asset: any) => sum + Number(asset.riskScore || 0), 0) / assetPayload.assets.length)
+      : 0
+  )
+  const pqcReadiness = cbom.stats.totalComponents > 0
+    ? Math.round((cbom.stats.pqcReadyComponents / cbom.stats.totalComponents) * 100)
+    : 0
+  const operationsTelemetry = historyPayload.history
+    .flatMap((entry: any) => (entry.telemetry || []).map((event: any) => ({
+      ...event,
+      scanId: entry.scanId,
+      target: entry.target,
+      timestamp: event.timestamp || entry.startedAt,
+    })))
+    .sort((a: any, b: any) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || ''))
+    .slice(0, 500)
+
+  return {
+    generatedAt: new Date().toISOString(),
+    mode,
+    summary: {
+      totalAssets: assetPayload.assets.length,
+      totalComponents: cbom.stats.totalComponents,
+      vulnerableAssets: assetPayload.assets.filter((asset: any) => asset.vulnerableCount > 0).length,
+      vulnerableComponents: cbom.stats.quantumVulnerableComponents,
+      pqcReadyComponents: cbom.stats.pqcReadyComponents,
+      pqcReadiness,
+      riskScore,
+      qScore: Math.max(0, 100 - riskScore),
+      criticalFindings: severityCounts.critical,
+      totalFindings: findings.length,
+      activeScans: historyPayload.history.filter((entry: any) => ['queued', 'running', 'analyzing'].includes(String(entry.status))).length,
+      completedScans: historyPayload.history.filter((entry: any) => entry.status === 'completed').length,
+    },
+    severityCounts,
+    cbom,
+    assets: assetPayload,
+    exposure,
+    history: historyPayload,
+    findings,
+    telemetry: operationsTelemetry,
+    runtime: {
+      operations: operationsTelemetry.length,
+      activeSessions: historyPayload.history.filter((entry: any) => !entry.completedAt).length,
+      encryptedChannels: cbom.entries.filter((entry: any) => String(entry.type).toLowerCase().includes('protocol') || String(entry.algorithm).toLowerCase().includes('tls')).length,
+      keyRotations: cbom.entries.filter((entry: any) => String(entry.pqcReplacement || '').length > 0).length,
+      alerts: severityCounts.critical + severityCounts.high,
+      complianceScore: cbom.stats.totalComponents > 0 ? Math.round((cbom.stats.pqcReadyComponents / cbom.stats.totalComponents) * 1000) / 10 : 0,
+    },
+  }
+}
+
+function sendSsePayload(res: Response, event: string, data: unknown) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+}
+
+function mergeActiveScannerJobs(userId: string, historyPayload: { mode: PersistenceMode; history: any[] }) {
+  const activeUserJobs = Array.from(activeJobs.values()).filter((job) => job.userId === userId)
+  if (activeUserJobs.length === 0) return historyPayload
+
+  const activeEntries = activeUserJobs.map((job) => {
+    const summary = job.summary || {}
+    const activeFindings = job.telemetry.map((event: any) => event.finding).filter(Boolean)
+    const scanId = job.sessionId || job.jobId
+    return {
+      scanId,
+      userId: job.userId,
+      target: job.targets.join(', '),
+      scanType: 'defensive-cryptographic-inventory',
+      startedAt: job.startedAt,
+      completedAt: null,
+      durationMs: Date.now() - Date.parse(job.startedAt),
+      status: job.status || 'running',
+      detectedComponents: Number(summary.totalFindings ?? activeFindings.length ?? 0),
+      scannerModulesUsed: job.moduleStates.filter((module) => module.status !== 'Queued' && module.status !== 'Skipped').map((module) => module.name),
+      vulnerableFindings: Number(summary.vulnerable ?? summary.vulnerableFindings ?? activeFindings.filter((finding: DefensiveFinding) => finding.threatLevel !== 'SAFE').length),
+      pqcReadyFindings: Number(summary.pqcReady ?? summary.pqcReadyFindings ?? activeFindings.filter((finding: DefensiveFinding) => finding.threatLevel === 'SAFE').length),
+      riskScore: summary.riskScore ?? null,
+      qScore: summary.qScore ?? null,
+      telemetry: job.telemetry,
+      moduleStates: job.moduleStates,
+      enterpriseScanner2: null,
+      errorLogs: job.errors || [],
+      summary,
+      findings: activeFindings,
+      recommendations: activeFindings.map((finding: DefensiveFinding) => finding.recommendation).filter(Boolean),
+      linkedCbomRecords: [],
+      linkedAssetRecords: [],
+      linkedExposureNodes: [],
+      liveProgress: job.progress,
+      liveJobId: job.jobId,
+    }
+  })
+
+  const activeByScanId = new Map(activeEntries.map((entry) => [entry.scanId, entry]))
+  const mergedStoredHistory = historyPayload.history.map((entry) => {
+    const active = activeByScanId.get(entry.scanId)
+    if (!active) return entry
+    return {
+      ...entry,
+      ...active,
+      findings: active.findings.length > 0 ? active.findings : entry.findings,
+      summary: { ...(entry.summary || {}), ...(active.summary || {}) },
+    }
+  })
+  const storedIds = new Set(mergedStoredHistory.map((entry) => entry.scanId))
+  const liveOnlyEntries = activeEntries.filter((entry) => !storedIds.has(entry.scanId))
+  const history = liveOnlyEntries.concat(mergedStoredHistory)
+    .sort((a, b) => Date.parse(b.startedAt || b.completedAt || '') - Date.parse(a.startedAt || a.completedAt || ''))
+
+  return { ...historyPayload, history }
+}
+
+router.get('/intelligence', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  const data = await buildScannerIntelligence(token, user.id)
+  res.json({ data })
+})
+
+router.get('/intelligence/stream', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  let closed = false
+  const emitSnapshot = async () => {
+    if (closed) return
+    try {
+      const data = await buildScannerIntelligence(token, user.id)
+      sendSsePayload(res, 'scanner-intelligence', data)
+    } catch (err) {
+      sendSsePayload(res, 'scanner-error', { message: err instanceof Error ? err.message : 'Scanner intelligence stream failed' })
+    }
+  }
+
+  await emitSnapshot()
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n')
+  }, 25000)
+  const snapshotTimer = setInterval(() => {
+    void emitSnapshot()
+  }, 8000)
+
+  req.on('close', () => {
+    closed = true
+    clearInterval(heartbeat)
+    clearInterval(snapshotTimer)
+  })
+})
+
+router.get('/history', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  const client = getDbClient(token)
+  const { sessions, results, mode } = await loadScannerTables(client, user.id)
+
+  const { history } = buildHistoryPayload(sessions, results, mode)
+
+  res.json({ data: { mode, history } })
+})
+
+router.get('/cbom', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  const client = getDbClient(token)
+  const { assets, inventory, mode } = await loadScannerTables(client, user.id)
+  res.json({ data: buildCbomPayload(assets as any[], inventory as any[], mode) })
+})
+
+router.get('/assets', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  const client = getDbClient(token)
+  const { assets, inventory, exposures, mode } = await loadScannerTables(client, user.id)
+  res.json({ data: buildAssetsPayload(assets as any[], inventory as any[], exposures as any[], mode) })
+})
+
+router.get('/exposure-map', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  const client = getDbClient(token)
+  const { assets, inventory, exposures, mode } = await loadScannerTables(client, user.id)
+  res.json({ data: { ...buildExposurePayload(assets as any[], inventory as any[], exposures as any[], mode), edges: [] } })
 })
 
 export default router

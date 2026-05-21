@@ -669,11 +669,22 @@ router.get('/metrics/stream', requireAuth, async (req: AuthenticatedRequest, res
   writeSse(res, 'connected', { timestamp: new Date().toISOString() })
 
   const emitMetrics = async () => {
-    const [keys, activeKeys, revokedKeys] = await Promise.all([
+    const runtimeSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const [keys, activeKeys, revokedKeys, runtimeEvents, runtimeEvents24h, runtimeRisks] = await Promise.all([
       client.from('generated_keys').select('id', { count: 'exact', head: true }).eq('user_id', userId),
       client.from('generated_keys').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'active'),
       client.from('generated_keys').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'revoked'),
+      client.from('runtime_crypto_events').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+      client.from('runtime_crypto_events').select('id', { count: 'exact', head: true }).eq('user_id', userId).gte('observed_at', runtimeSince),
+      client.from('runtime_crypto_events').select('id', { count: 'exact', head: true }).eq('user_id', userId).or('is_legacy.eq.true,downgrade_detected.eq.true,shadow_crypto.eq.true,hndl_risk.eq.true'),
     ])
+
+    const runtimeCounts = {
+      runtimeEvents: runtimeEvents.error && isMissingTable(runtimeEvents.error) ? 0 : runtimeEvents.count || 0,
+      runtimeEvents24h: runtimeEvents24h.error && isMissingTable(runtimeEvents24h.error) ? 0 : runtimeEvents24h.count || 0,
+      runtimeRisks: runtimeRisks.error && isMissingTable(runtimeRisks.error) ? 0 : runtimeRisks.count || 0,
+      tableAvailable: !(runtimeEvents.error && isMissingTable(runtimeEvents.error)),
+    }
 
     writeSse(res, 'metrics-update', {
       type: 'heartbeat',
@@ -682,7 +693,13 @@ router.get('/metrics/stream', requireAuth, async (req: AuthenticatedRequest, res
         keys: keys.error && isMissingTable(keys.error) ? 0 : keys.count || 0,
         activeKeys: activeKeys.error && isMissingTable(activeKeys.error) ? 0 : activeKeys.count || 0,
         revokedKeys: revokedKeys.error && isMissingTable(revokedKeys.error) ? 0 : revokedKeys.count || 0,
+        ...runtimeCounts,
       },
+    })
+    writeSse(res, 'runtime-crypto-update', {
+      type: 'runtime-crypto',
+      timestamp: new Date().toISOString(),
+      counts: runtimeCounts,
     })
   }
 

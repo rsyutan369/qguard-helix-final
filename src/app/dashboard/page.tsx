@@ -4,11 +4,11 @@ import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Shield, AlertTriangle, Zap, Search, Activity, 
-  RefreshCw, Lock, Radio, Database, ShieldCheck, Globe
+  RefreshCw, Lock, Radio, Database, ShieldCheck, Globe, Bell, Eye
 } from 'lucide-react'
-import { dashboardService, DashboardSummary, ExposureMapData, SecurityEvent } from '@/lib/dashboard-service'
+import { useDashboard, type ExposureNode } from '@/hooks/use-dashboard'
 import MetricCard from './metric_card/MetricCard'
-import QuantumExposureMap from './crypto_exposure_map/QuantumExposureMap'
+import QuantumExposureMap, { NodeInspector } from './crypto_exposure_map/QuantumExposureMap'
 import SecurityEventsPanel from './security_events_panel/SecurityEventsPanel'
 import RecommendationsPanel from './recommendation_panel/RecommendationsPanel'
 import TelemetryFeatures from './TelemetryFeatures'
@@ -16,63 +16,44 @@ import TelemetryFeatures from './TelemetryFeatures'
 const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
 
 export default function Dashboard() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null)
-  const [mapData, setMapData] = useState<ExposureMapData>({ nodes: [], edges: [] })
-  const [events, setEvents] = useState<SecurityEvent[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [monitoringStatus, setMonitoringStatus] = useState<'active' | 'degraded' | 'offline' | 'scanning' | 'migrating'>('active')
+  const [selectedNode, setSelectedNode] = useState<ExposureNode | null>(null)
+  const {
+    summary,
+    events,
+    exposureMap,
+    activities,
+    recommendations,
+    health,
+    summaryState,
+    eventsState,
+    mapState,
+    recommendationsState,
+    lastSyncAt,
+    sseConnected,
+    refreshAll,
+  } = useDashboard()
 
-  const fetchDashboardData = useCallback(async () => {
-    try {
-      setLoading(true)
-      const [summaryRes, mapRes, eventsRes] = await Promise.all([
-        dashboardService.getSummary(),
-        dashboardService.getExposureMap(),
-        dashboardService.getRecentEvents(20)
-      ])
-      
-      setSummary(summaryRes)
-      setMapData(mapRes)
-      setEvents(eventsRes)
-      setMonitoringStatus(summaryRes.monitoringStatus as any || 'active')
-      setError(null)
-    } catch (err) {
-      console.error('Error fetching dashboard data:', err)
-      setError(err instanceof Error ? err.message : 'Connection failure')
-      setMonitoringStatus('offline')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const loading = summaryState === 'loading' && !summary
+  const mapLoading = mapState === 'loading' && exposureMap.nodes.length === 0
+  const eventsLoading = eventsState === 'loading' && events.length === 0
+  const telemetryLoading = loading || eventsLoading || mapLoading
+  const error = summaryState === 'error' && !summary ? 'Connection failure' : null
 
-  useEffect(() => {
-    fetchDashboardData()
+  const monitoringStatus = health?.services?.migration === 'migrating'
+    ? 'migrating'
+    : health?.services?.scanner === 'scanning'
+      ? 'scanning'
+      : summaryState === 'offline'
+        ? 'offline'
+        : health?.status === 'degraded'
+          ? 'degraded'
+          : sseConnected
+            ? 'active'
+            : summary?.monitoringStatus || 'active'
 
-    const handleStatus = (status: string) => {
-      if (status === 'SUBSCRIBED') setMonitoringStatus('active')
-      else if (status === 'CHANNEL_ERROR') setMonitoringStatus('degraded')
-      else if (status === 'CLOSED') setMonitoringStatus('offline')
-    }
-
-    // Real-time subscriptions
-    const eventsSub = dashboardService.subscribeToEvents((newEvent) => {
-      setEvents(prev => [newEvent, ...prev].slice(0, 50))
-      // Potentially refresh summary if event is critical
-      if (newEvent.severity === 'critical') {
-        fetchDashboardData()
-      }
-    }, handleStatus)
-
-    const updateSub = dashboardService.subscribeToDashboardUpdates(() => {
-      fetchDashboardData()
-    }, handleStatus)
-
-    return () => {
-      eventsSub.unsubscribe()
-      updateSub.unsubscribe()
-    }
-  }, [fetchDashboardData])
+  const riskTrendText = summary?.riskTrend
+    ? `${Math.abs(summary.riskTrend)} finding${Math.abs(summary.riskTrend) === 1 ? '' : 's'} ${summary.riskTrend > 0 ? 'reduced' : 'added'} since previous scan`
+    : summary?.riskBand || 'Awaiting scan baseline'
 
   if (error && !summary) {
     return (
@@ -83,7 +64,7 @@ export default function Dashboard() {
         <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Security Nexus Disconnected</h2>
         <p className="text-white/40 max-w-md mb-8">Unable to establish a secure handshake with the backend telemetry services. Please check your connection or session status.</p>
         <button 
-          onClick={fetchDashboardData}
+          onClick={refreshAll}
           className="px-8 py-3 bg-gold border border-gold text-black text-xs font-black uppercase tracking-widest rounded-lg hover:bg-gold/90 transition-all flex items-center gap-2"
         >
           <RefreshCw className="w-4 h-4" /> Reconnect Now
@@ -124,7 +105,7 @@ export default function Dashboard() {
           </div>
           
           <button 
-            onClick={fetchDashboardData}
+            onClick={refreshAll}
             className="p-2 bg-white/5 border border-white/10 rounded-lg text-white/40 hover:text-gold hover:border-gold/30 transition-all"
             title="Refresh Dashboard"
           >
@@ -140,8 +121,7 @@ export default function Dashboard() {
           value={summary?.quantumRiskScore || 0}
           icon={ShieldCheck}
           color={riskScoreColor}
-          trend={summary?.riskBand || 'Calculating...'}
-          trendValue={2} // Mock trend for visual flair, could be calculated
+          trend={riskTrendText}
           loading={loading && !summary}
           delay={0.1}
         />
@@ -159,7 +139,7 @@ export default function Dashboard() {
           value={summary?.totalCbomItems || 0}
           icon={Search}
           color="text-blue-400"
-          trend="Inventory complete"
+          trend={`${summary?.totalAssets || 0} assets in authenticated scope`}
           loading={loading && !summary}
           delay={0.3}
         />
@@ -168,85 +148,133 @@ export default function Dashboard() {
           value={summary?.activeMigrations || 0}
           icon={Zap}
           color="text-gold"
-          trend={`${summary?.failedMigrations || 0} jobs require attention`}
+          trend={`${summary?.completedMigrations || 0} completed, ${summary?.failedMigrations || 0} need attention`}
           loading={loading && !summary}
           delay={0.4}
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main Center Content */}
-        <div className="lg:col-span-2 space-y-8">
-          {/* Exposure Map Section */}
-          <section className="space-y-4">
-            <div className="flex justify-between items-center px-1">
-              <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
-                <Globe className="h-4 w-4 text-gold" />
-                Quantum Exposure Map
-              </h2>
-              {summary?.lastScanAt && (
-                <div className="text-[10px] font-mono text-white/30 uppercase">
-                    Last Global Scan: {new Date(summary.lastScanAt).toLocaleString()}
-                </div>
-              )}
-            </div>
-            <QuantumExposureMap 
-                data={mapData} 
-                loading={loading} 
-                onRefresh={fetchDashboardData}
-            />
-          </section>
-
-          {/* Real-time Events */}
-          <section className="space-y-4 h-[450px]">
-            <SecurityEventsPanel events={events} loading={loading} />
-          </section>
-
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+        {/* Row 1 Headers */}
+        <div className="lg:col-span-2">
+          <div className="flex justify-between items-center px-1">
+            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
+              <Globe className="h-4 w-4 text-gold" />
+              Quantum Exposure Map
+            </h2>
+            {summary?.lastScanAt && (
+              <div className="text-[10px] font-mono text-white/30 uppercase">
+                Last Global Scan: {new Date(summary.lastScanAt).toLocaleString()}
+              </div>
+            )}
+          </div>
         </div>
-
-
-        {/* Sidebar Insights */}
-        <aside className="space-y-8">
-          <RecommendationsPanel summary={summary} loading={loading} />
-          
-          {/* Quick Actions / Status */}
-          <div className={`p-6 ${GLASS_PANEL_CLASSES}`}>
-            <div className="absolute -right-4 -bottom-4 opacity-5">
-                <Shield className="w-32 h-32 text-gold" />
-            </div>
-            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 mb-4">System Integrity</h2>
-            <div className="space-y-4 relative z-10">
-                <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-white/40 uppercase">PQC Engine</span>
-                    <span className="text-[10px] font-black text-green-500 uppercase flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 bg-green-500 rounded-full" /> Optimal
-                    </span>
-                </div>
-                <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-white/40 uppercase">QRNG Entropy</span>
-                    <span className="text-[10px] font-black text-green-500 uppercase flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 bg-green-500 rounded-full" /> 256-bit
-                    </span>
-                </div>
-                <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-white/40 uppercase">Real-time Hook</span>
-                    <span className="text-[10px] font-black text-gold uppercase flex items-center gap-1.5">
-                        Connected
-                    </span>
-                </div>
-                <div className="pt-4 mt-4 border-t border-white/5">
-                    <button className="w-full py-2 bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest text-white/60 rounded hover:bg-white/10 transition-colors">
-                        Download Compliance Report
-                    </button>
-                </div>
+        <div className="lg:col-span-1">
+          <div className="flex justify-between items-center px-1">
+            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
+              <Eye className="h-4 w-4 text-gold" />
+              Node Inspector
+            </h2>
+            <div className="text-[10px] font-mono text-white/30 uppercase">
+              Telemetry Analysis
             </div>
           </div>
-        </aside>
+        </div>
+
+        {/* Row 1 Cards */}
+        <div className="lg:col-span-2">
+          <QuantumExposureMap
+            data={exposureMap}
+            loading={mapLoading}
+            onRefresh={refreshAll}
+            selectedNode={selectedNode}
+            onSelectNode={setSelectedNode}
+          />
+        </div>
+        <div className="lg:col-span-1">
+          <div className="h-[500px]">
+            <NodeInspector selectedNode={selectedNode} />
+          </div>
+        </div>
+
+        {/* Row 2 Headers (Empty header space for left columns to align with Security Events, keeping the grid balanced) */}
+        <div className="lg:col-span-2">
+          <div className="h-6" /> {/* Symmetrical vertical spacing */}
+        </div>
+        <div className="lg:col-span-1">
+          <div className="h-6" /> {/* Symmetrical vertical spacing */}
+        </div>
+
+        {/* Row 2 Cards */}
+        <div className="lg:col-span-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 h-full">
+            <RecommendationsPanel recommendations={recommendations} loading={recommendationsState === 'loading' && recommendations.length === 0} />
+
+            {/* Quick Actions / Status */}
+            <div className={`p-6 ${GLASS_PANEL_CLASSES} h-full`}>
+              <div className="absolute -right-4 -bottom-4 opacity-5">
+                <Shield className="w-32 h-32 text-gold" />
+              </div>
+              <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 mb-4">System Integrity</h2>
+              <div className="space-y-4 relative z-10">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-white/40 uppercase">Database</span>
+                  <span className="text-[10px] font-black text-green-500 uppercase flex items-center gap-1.5">
+                    <div className={`w-1.5 h-1.5 rounded-full ${health?.services?.supabase === 'healthy' ? 'bg-green-500' : 'bg-yellow-500'}`} /> {health?.services?.supabase || 'unknown'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-white/40 uppercase">Scanner</span>
+                  <span className="text-[10px] font-black text-green-500 uppercase flex items-center gap-1.5">
+                    <div className={`w-1.5 h-1.5 rounded-full ${health?.services?.scanner === 'scanning' ? 'bg-gold animate-pulse' : 'bg-green-500'}`} /> {health?.services?.scanner || 'unknown'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-white/40 uppercase">Migration</span>
+                  <span className="text-[10px] font-black text-gold uppercase flex items-center gap-1.5">
+                    {health?.services?.migration || 'unknown'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-white/40 uppercase">Realtime Stream</span>
+                  <span className="text-[10px] font-black text-gold uppercase flex items-center gap-1.5">
+                    {sseConnected ? 'SSE Connected' : health?.services?.realtime || 'syncing'}
+                  </span>
+                </div>
+                <div className="pt-4 mt-4 border-t border-white/5">
+                  <a href="/dashboard/compliance" className="block w-full py-2 bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest text-white/60 rounded hover:bg-white/10 transition-colors text-center">
+                    Open Compliance Dashboard
+                  </a>
+                  <div className="mt-2 text-center text-[9px] font-mono text-white/25">
+                    Last sync: {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString() : 'waiting for telemetry'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-1">
+          {/* Security Events is exactly aligned height-wise and top-wise */}
+          <div className="h-full min-h-[380px]">
+            <SecurityEventsPanel events={events} loading={eventsLoading} />
+          </div>
+        </div>
       </div>
       
       {/* New Telemetry Features */}
       <section className="mt-8 animate-in fade-in duration-700 delay-500">
-        <TelemetryFeatures />
+        <TelemetryFeatures
+          summary={summary}
+          events={events}
+          exposureMap={exposureMap}
+          activities={activities}
+          recommendations={recommendations}
+          health={health}
+          lastSyncAt={lastSyncAt}
+          sseConnected={sseConnected}
+          loading={telemetryLoading}
+        />
       </section>
 
       {/* Footer Branding */}

@@ -44,12 +44,65 @@ interface ScannerEvidence {
   observedAt?: string
 }
 
+interface RuntimeCryptoEvent {
+  eventType: string
+  operationType: string
+  assetName: string
+  assetType?: string | null
+  host?: string | null
+  port?: number | null
+  protocol?: string | null
+  tlsVersion?: string | null
+  cipherSuite?: string | null
+  keyExchangeAlgorithm?: string | null
+  algorithm?: string | null
+  keySize?: number | null
+  certificateFingerprint?: string | null
+  packageName?: string | null
+  packageVersion?: string | null
+  processName?: string | null
+  isPqc?: boolean
+  isLegacy?: boolean
+  downgradeDetected?: boolean
+  shadowCrypto?: boolean
+  hndlRisk?: boolean
+  severity?: 'critical' | 'high' | 'moderate' | 'medium' | 'low' | 'safe'
+  riskScore?: number
+  metadata?: Record<string, unknown>
+  observedAt?: string
+}
+
 interface ScanTarget {
   original: string
   type: 'tls' | 'ssh'
   host: string
   port: number
   protocol: string
+}
+
+interface RemediationJob {
+  id: string
+  assetId?: string | null
+  name: string
+  jobType?: string
+  status: string
+  targetAlgorithm?: string | null
+  strategy?: string | null
+  progress?: number
+  adapter?: string
+  target?: string | null
+  filePath?: string | null
+  metadata?: Record<string, unknown>
+}
+
+interface RemediationValidation {
+  passed: boolean
+  hndlRiskRemaining: boolean
+  hndlRiskCount: number
+  evidenceCount: number
+  scanned: boolean
+  validatedAt: string
+  notes?: string
 }
 
 const DEFAULT_API_URL = 'http://localhost:3000'
@@ -75,6 +128,9 @@ const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.nex
 const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, '')
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
+const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
+const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
+const MAX_REMEDIATION_JOBS = Math.max(1, Math.min(5, Number(process.env.QGUARD_MAX_REMEDIATION_JOBS || 2)))
 
 function isoNow() {
   return new Date().toISOString()
@@ -153,6 +209,37 @@ async function uploadEvidence(evidence: ScannerEvidence[]) {
   })
 }
 
+async function uploadRuntimeEvents(events: RuntimeCryptoEvent[]) {
+  if (events.length === 0) return
+  await requestJson('/api/v1/agent-scanner/agent/runtime-events', {
+    method: 'POST',
+    body: JSON.stringify({ events }),
+  })
+}
+
+async function pullRemediationJobs(): Promise<RemediationJob[]> {
+  const payload = await requestJson<{ data?: { jobs?: RemediationJob[] } }>('/api/v1/agent-scanner/agent/remediation/jobs')
+  return Array.isArray(payload.data?.jobs) ? payload.data.jobs : []
+}
+
+async function postRemediationEvent(
+  jobId: string,
+  payload: {
+    eventType: string
+    status: string
+    progress: number
+    message: string
+    metadata?: Record<string, unknown>
+    validation?: Partial<RemediationValidation>
+    evidence?: ScannerEvidence[]
+  },
+) {
+  return requestJson('/api/v1/agent-scanner/agent/remediation/jobs/' + encodeURIComponent(jobId) + '/event', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 function parseTarget(raw: string): ScanTarget | null {
   const value = raw.trim()
   if (!value) return null
@@ -186,6 +273,70 @@ function parseTarget(raw: string): ScanTarget | null {
 function tlsProtocolToAlgorithm(protocol: string | null) {
   if (!protocol) return null
   return protocol.replace(/^TLSv/i, 'TLS-')
+}
+
+function runtimeOperationType(evidence: ScannerEvidence) {
+  const text = `${evidence.evidenceType} ${evidence.observedAlgorithm || ''} ${evidence.protocol || ''}`.toLowerCase()
+  if (text.includes('cipher') || text.includes('encrypt') || text.includes('aes')) return 'encryption'
+  if (text.includes('jwt') || text.includes('sign')) return 'signing'
+  if (text.includes('package') || text.includes('config') || text.includes('library')) return 'discovery'
+  if (text.includes('tls') || text.includes('ssh') || text.includes('kex') || text.includes('rsa') || text.includes('dh')) return 'key_exchange'
+  return 'other'
+}
+
+function runtimeFlags(evidence: ScannerEvidence) {
+  const text = `${evidence.evidenceType} ${evidence.observedAlgorithm || ''} ${evidence.protocol || ''} ${JSON.stringify(evidence.rawEvidence || {})}`.toLowerCase()
+  const isPqc = /ml-kem|ml-dsa|kyber|dilithium|sphincs|sntrup|pqc|post-quantum|hybrid/.test(text)
+  const isLegacy = /rsa|ecdsa|ecc|ecdh|dsa|dh-|diffie|sha-?1|md5|3des|des|rc4|ssl|tls-?1\.[01]|aes-128-cbc/.test(text)
+  const downgradeDetected = /downgrade|fallback|ssl|tls-?1\.[01]/.test(text)
+  const shadowCrypto = ['package-manifest', 'config-reference', 'crypto-library', 'jwt-algorithm'].includes(evidence.evidenceType)
+  const hndlRisk = isLegacy && Boolean(evidence.host || evidence.target) && /rsa|ecdsa|ecc|dh|tls|certificate/.test(text)
+  const severity: RuntimeCryptoEvent['severity'] = downgradeDetected || hndlRisk || (evidence.keySize && evidence.keySize <= 1024)
+    ? 'critical'
+    : isLegacy
+      ? 'high'
+      : shadowCrypto
+        ? 'moderate'
+        : isPqc
+          ? 'safe'
+          : 'low'
+  const riskScore = severity === 'critical' ? 92 : severity === 'high' ? 74 : severity === 'moderate' ? 55 : severity === 'low' ? 28 : 5
+  return { isPqc, isLegacy, downgradeDetected, shadowCrypto, hndlRisk, severity, riskScore }
+}
+
+function runtimeEventFromEvidence(evidence: ScannerEvidence): RuntimeCryptoEvent {
+  const flags = runtimeFlags(evidence)
+  return {
+    eventType: evidence.evidenceType,
+    operationType: runtimeOperationType(evidence),
+    assetName: evidence.assetName,
+    assetType: evidence.assetType,
+    host: evidence.host,
+    port: evidence.port,
+    protocol: evidence.protocol,
+    tlsVersion: evidence.evidenceType === 'tls-protocol' ? evidence.observedAlgorithm : evidence.protocol,
+    cipherSuite: evidence.evidenceType === 'tls-cipher' ? evidence.observedAlgorithm : null,
+    keyExchangeAlgorithm: evidence.evidenceType === 'ssh-metadata' ? evidence.observedAlgorithm : null,
+    algorithm: evidence.observedAlgorithm,
+    keySize: evidence.keySize,
+    certificateFingerprint: evidence.certificateFingerprint,
+    packageName: evidence.packageName,
+    packageVersion: evidence.packageVersion,
+    processName: os.hostname(),
+    ...flags,
+    metadata: {
+      evidenceType: evidence.evidenceType,
+      target: evidence.target,
+      filePath: evidence.filePath,
+      confidence: evidence.confidence,
+      ...(evidence.rawEvidence || {}),
+    },
+    observedAt: evidence.observedAt || isoNow(),
+  }
+}
+
+function runtimeEventsEnabled(scanTypes: Set<string>) {
+  return scanTypes.has('runtime') || ['tls', 'ssh', 'packages', 'configs'].some((type) => scanTypes.has(type))
 }
 
 function normalizeKeyAlgorithm(keyType: string | undefined, details: Record<string, unknown> = {}) {
@@ -645,6 +796,364 @@ async function scanAllowedPath(root: string, scanTypes: Set<string>) {
   return evidence
 }
 
+function metadataRecord(job: RemediationJob) {
+  return job.metadata && typeof job.metadata === 'object' ? job.metadata : {}
+}
+
+function firstString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function scannableTarget(raw: string | null) {
+  if (!raw) return null
+  const value = raw.trim()
+  if (!value || /^hndl\s+remediation/i.test(value)) return null
+  if (/\s/.test(value) && !value.includes('://')) return null
+  return value
+}
+
+function remediationTargetFromJob(job: RemediationJob) {
+  const metadata = metadataRecord(job)
+  return scannableTarget(firstString(
+    job.target,
+    metadata.target,
+    metadata.endpoint,
+    metadata.url,
+    metadata.host,
+    metadata.location,
+  ))
+}
+
+function remediationFilePathFromJob(job: RemediationJob) {
+  const metadata = metadataRecord(job)
+  return firstString(job.filePath, metadata.filePath, metadata.file_path, metadata.path, metadata.configPath, metadata.config_path)
+}
+
+function remediationAssetName(job: RemediationJob) {
+  const metadata = metadataRecord(job)
+  return firstString(metadata.assetName, metadata.asset_name, job.target, job.name) || 'HNDL remediation target'
+}
+
+function adapterForJob(job: RemediationJob) {
+  const metadata = metadataRecord(job)
+  const text = [
+    job.adapter,
+    job.jobType,
+    job.name,
+    metadata.assetType,
+    metadata.asset_type,
+    metadata.provider,
+    metadata.filePath,
+    metadata.path,
+    remediationTargetFromJob(job),
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  if (/kubernetes|k8s|cluster|ingress|helm|namespace/.test(text)) return 'kubernetes'
+  if (/container|docker|image|registry|podman/.test(text)) return 'container'
+  if (/aws|azure|gcp|cloud|load balancer|alb|elb|cdn|cloudfront|gateway/.test(text)) return 'cloud'
+  if (/iam|identity|access|oauth|oidc|saml|jwt|credential|secret|key vault|kms/.test(text)) return 'identity_access'
+  if (/repo|source|code|package|dependency|manifest|config|library|application/.test(text)) return 'code_application'
+  if (/https?:\/\/|website|web app|tls|ssl|ssh|protocol|certificate|cipher/.test(text)) return 'network_protocol'
+  return 'universal'
+}
+
+function remediationPlan(job: RemediationJob) {
+  const adapter = adapterForJob(job)
+  const targetAlgorithm = job.targetAlgorithm || 'ML-KEM-768 hybrid'
+  const common = [
+    'Claim the tenant-scoped remediation workflow and capture an immutable audit event.',
+    'Run pre-change discovery against the authorized target or local asset evidence.',
+    `Prepare a ${targetAlgorithm} remediation plan for the detected HNDL exposure.`,
+    'Execute only policy-approved local actions or wait for the owning platform connector/operator.',
+    'Rescan the target and close the job only when validation proves no active HNDL risk remains.',
+  ]
+
+  if (adapter === 'network_protocol') {
+    return [
+      ...common,
+      'For TLS/SSH endpoints, move the endpoint behind a PQC/hybrid-capable termination layer or update the owning service cryptographic profile.',
+    ]
+  }
+  if (adapter === 'cloud') {
+    return [
+      ...common,
+      'For cloud assets, apply the approved PQC/hybrid profile through the cloud connector, load balancer, CDN, KMS, or certificate automation plane.',
+    ]
+  }
+  if (adapter === 'kubernetes') {
+    return [
+      ...common,
+      'For Kubernetes assets, update ingress, service mesh, certificate issuer, or workload crypto configuration through the cluster delivery pipeline.',
+    ]
+  }
+  if (adapter === 'container') {
+    return [
+      ...common,
+      'For containers, update the image or runtime configuration, rebuild, redeploy, and verify the running endpoint after rollout.',
+    ]
+  }
+  if (adapter === 'identity_access') {
+    return [
+      ...common,
+      'For identity assets, migrate signing, token, and key-management policies through the identity provider or key management connector.',
+    ]
+  }
+  return common
+}
+
+function normalizePathForCompare(value: string) {
+  return path.resolve(value).replace(/\\/g, '/').toLowerCase()
+}
+
+function fileAllowedByPolicy(filePath: string, policy: AgentPolicy) {
+  if (policy.allowedPaths.length === 0) return false
+  const normalized = normalizePathForCompare(filePath)
+  return policy.allowedPaths.some((allowedPath) => {
+    const root = normalizePathForCompare(allowedPath)
+    return normalized === root || normalized.startsWith(`${root}/`)
+  })
+}
+
+function positiveConfigValidationEvidence(job: RemediationJob, filePath: string): ScannerEvidence {
+  return {
+    evidenceType: 'config-reference',
+    assetName: remediationAssetName(job),
+    assetType: adapterForJob(job),
+    filePath,
+    observedAlgorithm: 'No active HNDL crypto reference detected',
+    confidence: 'medium',
+    rawEvidence: {
+      remediationValidation: true,
+      hndlRisk: false,
+      validationMethod: 'authorized local config rescan',
+      redacted: true,
+    },
+    observedAt: isoNow(),
+  }
+}
+
+async function collectRemediationValidationEvidence(job: RemediationJob, policy: AgentPolicy) {
+  const evidence: ScannerEvidence[] = []
+  let scanned = false
+  const target = remediationTargetFromJob(job)
+  const parsedTarget = target ? parseTarget(target) : null
+
+  if (parsedTarget) {
+    scanned = true
+    if (parsedTarget.type === 'tls') evidence.push(...await scanTlsTarget(parsedTarget))
+    if (parsedTarget.type === 'ssh') evidence.push(...await scanSshTarget(parsedTarget))
+  }
+
+  const filePath = remediationFilePathFromJob(job)
+  if (filePath && fileAllowedByPolicy(filePath, policy)) {
+    scanned = true
+    const fileEvidence = await scanConfigFile(filePath)
+    evidence.push(...fileEvidence)
+    if (fileEvidence.length === 0) evidence.push(positiveConfigValidationEvidence(job, filePath))
+  }
+
+  return { evidence, scanned }
+}
+
+function validationFromEvidence(evidence: ScannerEvidence[], scanned: boolean): RemediationValidation {
+  const riskCount = evidence.filter((item) => {
+    const flags = runtimeFlags(item)
+    return flags.hndlRisk || flags.downgradeDetected || (flags.isLegacy && (flags.severity === 'critical' || flags.severity === 'high'))
+  }).length
+
+  return {
+    passed: scanned && riskCount === 0,
+    hndlRiskRemaining: riskCount > 0 || !scanned,
+    hndlRiskCount: riskCount,
+    evidenceCount: evidence.length,
+    scanned,
+    validatedAt: isoNow(),
+    notes: scanned ? undefined : 'No policy-authorized validation probe was available for this asset.',
+  }
+}
+
+function patchKnownSafeCryptoToggles(content: string) {
+  let next = content
+  next = next.replace(/(\bPQC_ENABLED\s*[:=]\s*)false\b/gi, '$1true')
+  next = next.replace(/(\bPOST_QUANTUM_ENABLED\s*[:=]\s*)false\b/gi, '$1true')
+  next = next.replace(/(\bTLS_HYBRID_KEM\s*[:=]\s*)false\b/gi, '$1true')
+  next = next.replace(/(\bHYBRID_KEM\s*[:=]\s*)false\b/gi, '$1true')
+  next = next.replace(/(\bssl_protocols\s+)[^;\r\n]+/gi, '$1TLSv1.2 TLSv1.3')
+  return next
+}
+
+async function applyLocalConfigRemediation(job: RemediationJob, policy: AgentPolicy) {
+  const filePath = remediationFilePathFromJob(job)
+  if (!filePath) {
+    return { executed: false, manualRequired: true, reason: 'No local config file was attached to this remediation job.', changedFiles: [] as string[] }
+  }
+  if (!CONFIG_PATCHES_ENABLED) {
+    return { executed: false, manualRequired: true, reason: 'Safe local config patching is disabled. Set QGUARD_ENABLE_CONFIG_PATCHES=true after reviewing the policy scope.', changedFiles: [] as string[] }
+  }
+  if (!fileAllowedByPolicy(filePath, policy)) {
+    return { executed: false, manualRequired: true, reason: 'The target file is outside this agent policy allowedPaths scope.', changedFiles: [] as string[] }
+  }
+
+  const stat = await fs.stat(filePath).catch(() => null)
+  if (!stat || !stat.isFile() || stat.size > MAX_CONFIG_BYTES || path.basename(filePath).startsWith('.env')) {
+    return { executed: false, manualRequired: true, reason: 'The target file is not eligible for guarded local patching.', changedFiles: [] as string[] }
+  }
+
+  const before = await fs.readFile(filePath, 'utf8')
+  const after = patchKnownSafeCryptoToggles(before)
+  if (after === before) {
+    return { executed: false, manualRequired: true, reason: 'No known safe PQC/TLS toggle was found for automatic patching.', changedFiles: [] as string[] }
+  }
+
+  const backupPath = `${filePath}.qguard-backup-${Date.now()}`
+  await fs.copyFile(filePath, backupPath)
+  await fs.writeFile(filePath, after, 'utf8')
+  return { executed: true, manualRequired: false, reason: 'Applied guarded local crypto configuration patch and created a backup.', changedFiles: [filePath, backupPath] }
+}
+
+async function attemptRemediation(job: RemediationJob, policy: AgentPolicy) {
+  if (!REMEDIATION_ENABLED) {
+    return {
+      executed: false,
+      manualRequired: true,
+      reason: 'Guarded remediation execution is disabled. Set QGUARD_ENABLE_REMEDIATION=true on an enrolled agent after approving the change window.',
+      changedFiles: [] as string[],
+    }
+  }
+
+  const adapter = adapterForJob(job)
+  if (['code_application', 'container', 'kubernetes', 'universal'].includes(adapter)) {
+    return applyLocalConfigRemediation(job, policy)
+  }
+
+  return {
+    executed: false,
+    manualRequired: true,
+    reason: `${adapter} remediation requires the owning platform connector or operator credentials; the agent will validate after the change is applied.`,
+    changedFiles: [] as string[],
+  }
+}
+
+async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
+  const adapter = adapterForJob(job)
+  const plan = remediationPlan(job)
+  await postRemediationEvent(job.id, {
+    eventType: 'agent-remediation-started',
+    status: 'running',
+    progress: Math.max(10, job.progress || 0),
+    message: `QGuard agent started guarded HNDL remediation for ${job.name}.`,
+    metadata: {
+      adapter,
+      target: remediationTargetFromJob(job),
+      filePath: remediationFilePathFromJob(job),
+      plan,
+      remediationEnabled: REMEDIATION_ENABLED,
+      configPatchesEnabled: CONFIG_PATCHES_ENABLED,
+    },
+  })
+
+  const precheck = await collectRemediationValidationEvidence(job, policy)
+  const precheckValidation = validationFromEvidence(precheck.evidence, precheck.scanned)
+  await postRemediationEvent(job.id, {
+    eventType: 'agent-remediation-precheck',
+    status: 'running',
+    progress: 25,
+    message: precheckValidation.hndlRiskRemaining
+      ? `Precheck confirmed active HNDL exposure on ${job.name}.`
+      : `Precheck found no active HNDL exposure on ${job.name}.`,
+    metadata: { adapter, precheckValidation },
+    validation: precheckValidation,
+    evidence: precheck.evidence,
+  })
+
+  if (precheckValidation.passed) {
+    await postRemediationEvent(job.id, {
+      eventType: 'agent-remediation-validated',
+      status: 'completed',
+      progress: 100,
+      message: `HNDL remediation already validated for ${job.name}; no active exposure remains.`,
+      metadata: { adapter, plan, alreadyRemediated: true },
+      validation: precheckValidation,
+      evidence: precheck.evidence,
+    })
+    return
+  }
+
+  const execution = await attemptRemediation(job, policy)
+  await postRemediationEvent(job.id, {
+    eventType: execution.executed ? 'agent-remediation-executed' : 'agent-remediation-manual-required',
+    status: execution.manualRequired ? 'manual_required' : 'running',
+    progress: execution.manualRequired ? 55 : 70,
+    message: execution.executed
+      ? `Guarded remediation action executed for ${job.name}.`
+      : `Manual or connector-backed remediation is required for ${job.name}: ${execution.reason}`,
+    metadata: {
+      adapter,
+      plan,
+      reason: execution.reason,
+      changedFiles: execution.changedFiles,
+      remediationEnabled: REMEDIATION_ENABLED,
+      configPatchesEnabled: CONFIG_PATCHES_ENABLED,
+    },
+  })
+
+  const validationProbe = await collectRemediationValidationEvidence(job, policy)
+  const validation = validationFromEvidence(validationProbe.evidence, validationProbe.scanned)
+  await postRemediationEvent(job.id, {
+    eventType: 'agent-remediation-validation',
+    status: validation.passed ? 'completed' : execution.manualRequired ? 'manual_required' : 'failed',
+    progress: validation.passed ? 100 : 85,
+    message: validation.passed
+      ? `Rescan proved HNDL remediation for ${job.name}.`
+      : `Rescan still shows active HNDL risk for ${job.name}; remediation remains open.`,
+    metadata: {
+      adapter,
+      plan,
+      reason: validation.notes || execution.reason,
+      changedFiles: execution.changedFiles,
+    },
+    validation,
+    evidence: validationProbe.evidence,
+  })
+}
+
+async function executePendingRemediations(policy: AgentPolicy) {
+  try {
+    const jobs = (await pullRemediationJobs()).slice(0, MAX_REMEDIATION_JOBS)
+    if (jobs.length === 0) return 0
+    await sendTelemetry('agent_remediation_jobs_received', `Received ${jobs.length} HNDL remediation job(s)`, {
+      jobIds: jobs.map((job) => job.id),
+    })
+    for (const job of jobs) {
+      try {
+        await executeRemediationJob(job, policy)
+      } catch (error) {
+        await postRemediationEvent(job.id, {
+          eventType: 'agent-remediation-error',
+          status: 'failed',
+          progress: Math.max(0, Math.min(95, Number(job.progress || 0))),
+          message: `HNDL remediation worker failed for ${job.name}: ${(error as Error).message}`,
+          metadata: {
+            adapter: adapterForJob(job),
+            error: (error as Error).message,
+          },
+        }).catch(() => undefined)
+        console.warn(`Remediation worker failed for ${job.name}: ${(error as Error).message}`)
+      }
+    }
+    return jobs.length
+  } catch (error) {
+    await sendTelemetry('agent_remediation_poll_failed', 'Remediation job polling failed', {
+      error: (error as Error).message,
+    }).catch(() => undefined)
+    console.warn(`Remediation polling failed: ${(error as Error).message}`)
+    return 0
+  }
+}
+
 async function scanOnce() {
   requireEnrollment()
   const policy = await pullPolicy()
@@ -699,9 +1208,12 @@ async function scanOnce() {
   }
 
   await uploadEvidence(evidence)
-  await sendHeartbeat('active', { phase: 'completed', evidenceCount: evidence.length })
-  await sendTelemetry('agent_scan_completed', 'Local scanner evidence collection completed', { evidenceCount: evidence.length })
-  console.log(`QGuard agent scan complete. Uploaded ${evidence.length} evidence record(s).`)
+  const runtimeEvents = runtimeEventsEnabled(scanTypes) ? evidence.map(runtimeEventFromEvidence) : []
+  await uploadRuntimeEvents(runtimeEvents)
+  const remediationJobs = await executePendingRemediations(policy)
+  await sendHeartbeat('active', { phase: 'completed', evidenceCount: evidence.length, runtimeEventCount: runtimeEvents.length, remediationJobs })
+  await sendTelemetry('agent_scan_completed', 'Local scanner evidence collection completed', { evidenceCount: evidence.length, runtimeEventCount: runtimeEvents.length, remediationJobs })
+  console.log(`QGuard agent scan complete. Uploaded ${evidence.length} evidence record(s); processed ${remediationJobs} remediation job(s).`)
 }
 
 async function watch() {

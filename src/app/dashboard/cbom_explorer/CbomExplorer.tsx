@@ -1,11 +1,11 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, ChevronRight, AlertTriangle, Shield, Lock, Unlock,
   Key, FileCode, Server, Globe, Layers, Package, ExternalLink,
   Copy, Loader2, RefreshCw
 } from 'lucide-react';
-import { useAuth } from '@/contexts/auth-context';
+import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 
 type CbomEntry = {
   id: string;
@@ -27,6 +27,8 @@ type CbomEntry = {
   recommendation: string | null;
   metadata: Record<string, unknown>;
 };
+
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
 
 function getTypeIcon(type: string) {
   const lower = type.toLowerCase();
@@ -66,41 +68,13 @@ function formatDate(value: string) {
 }
 
 export default function CbomExplorer() {
-  const { session } = useAuth();
-  const [entries, setEntries] = useState<CbomEntry[]>([]);
-  const [stats, setStats] = useState({ totalComponents: 0, quantumVulnerableComponents: 0, pqcReadyComponents: 0, totalInstances: 0 });
+  const { data, loading, error, refresh } = useScannerIntelligence();
+  const entries = (data.cbom.entries || []) as CbomEntry[];
+  const stats = data.cbom.stats || { totalComponents: 0, quantumVulnerableComponents: 0, pqcReadyComponents: 0, totalInstances: 0 };
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showVulnerableOnly, setShowVulnerableOnly] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchCbom = useCallback(async () => {
-    if (!session?.access_token) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/v1/scanner/cbom', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error?.message || 'Unable to load CBOM');
-      setEntries(json?.data?.entries || []);
-      setStats(json?.data?.stats || { totalComponents: 0, quantumVulnerableComponents: 0, pqcReadyComponents: 0, totalInstances: 0 });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load CBOM');
-    } finally {
-      setLoading(false);
-    }
-  }, [session?.access_token]);
-
-  useEffect(() => {
-    fetchCbom();
-  }, [fetchCbom]);
 
   const availableTypes = useMemo(() => {
     const base = ['library', 'protocol', 'certificate', 'key-exchange', 'hash'];
@@ -125,7 +99,7 @@ export default function CbomExplorer() {
           </h1>
           <p className="text-white/50 mt-1 text-sm">Cryptography Bill of Materials - real authorized scan inventory with PQC readiness analysis.</p>
         </div>
-        <button onClick={fetchCbom} className="px-4 py-2 rounded-lg border border-gold/20 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+        <button onClick={refresh} className="px-4 py-2 rounded-lg border border-gold/20 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
         </button>
       </header>
@@ -134,6 +108,7 @@ export default function CbomExplorer() {
         <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>
       )}
 
+      {/* Stats KPI Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total Components', value: stats.totalComponents, icon: Layers, color: 'text-white' },
@@ -141,12 +116,12 @@ export default function CbomExplorer() {
           { label: 'PQC Ready', value: stats.pqcReadyComponents, icon: Shield, color: 'text-green-400' },
           { label: 'Total Instances', value: stats.totalInstances, icon: Server, color: 'text-gold' },
         ].map((stat, index) => (
-          <motion.div key={stat.label} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.06 }} className="p-4 rounded-xl border glass-panel">
-            <div className="flex items-center gap-2 mb-2">
+          <motion.div key={stat.label} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.06 }} className={GLASS_PANEL_CLASSES + " p-4"}>
+            <div className="flex items-center gap-2 mb-2 relative z-10">
               <stat.icon className="h-3.5 w-3.5 text-gold/50" />
               <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/40">{stat.label}</span>
             </div>
-            <div className={`text-2xl font-black ${stat.color}`}>{stat.value}</div>
+            <div className={`text-2xl font-black relative z-10 ${stat.color}`}>{stat.value}</div>
           </motion.div>
         ))}
       </div>
@@ -159,25 +134,26 @@ export default function CbomExplorer() {
             placeholder="Search components, algorithms, evidence..."
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full border rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none focus:transition-colors text-white placeholder-white/25 glass-panel"
+            className="w-full border border-gold/20 bg-[#0f1428]/35 rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none text-white placeholder-white/25 focus:border-gold/50"
           />
         </div>
 
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap text-gold">
           {availableTypes.map((type) => (
-            <button key={type} onClick={() => setSelectedType(selectedType === type ? null : type)} className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all ${selectedType === type ? 'bg-gold/10 text-gold' : 'text-white/40 hover:hover:text-white/60'} glass-panel`}>
+            <button key={type} onClick={() => setSelectedType(selectedType === type ? null : type)} className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all ${selectedType === type ? 'border-gold/60 bg-gold/15 text-gold shadow-[0_0_15px_rgba(212,175,55,0.15)]' : 'border-white/10 text-white/40 hover:text-white/60 bg-[#0f1428]/35'}`}>
               {type}
             </button>
           ))}
         </div>
 
-        <button onClick={() => setShowVulnerableOnly(!showVulnerableOnly)} className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all flex items-center gap-1.5 ${showVulnerableOnly ? 'border-red-500/50 bg-red-500/10 text-red-400' : 'text-white/40 hover:'} glass-panel`}>
+        <button onClick={() => setShowVulnerableOnly(!showVulnerableOnly)} className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all flex items-center gap-1.5 ${showVulnerableOnly ? 'border-red-500/50 bg-red-500/10 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.15)]' : 'border-white/10 text-white/40 hover:text-white/60 bg-[#0f1428]/35'}`}>
           <AlertTriangle className="h-3 w-3" /> Vulnerable Only
         </button>
       </div>
 
-      <div className="rounded-xl border overflow-hidden glass-panel">
-        <div className="overflow-x-auto">
+      {/* Main Table Grid Card */}
+      <div className={GLASS_PANEL_CLASSES}>
+        <div className="overflow-x-auto relative z-10">
           <table className="w-full text-left border-collapse min-w-[980px]">
             <thead>
               <tr className="border-b border-gold/15 bg-gold/[0.03]">
@@ -222,7 +198,7 @@ export default function CbomExplorer() {
                       </td>
                       <td className="p-4">
                         <div className="flex items-center gap-2">
-                          <TypeIcon className="h-4 w-4 text-gold/40" />
+                          <TypeIcon className="h-4 w-4 text-gold/40 text-[#FFD36B]" />
                           <span className="text-sm font-bold text-white/80 group-hover:text-white transition-colors">{entry.component}</span>
                         </div>
                       </td>
@@ -287,7 +263,7 @@ export default function CbomExplorer() {
             </tbody>
           </table>
         </div>
-        <div className="p-4 border-t border-gold/10 flex items-center justify-between">
+        <div className="p-4 border-t border-gold/10 flex items-center justify-between relative z-10">
           <span className="text-[10px] text-white/30 font-bold">Showing {filtered.length} of {entries.length} components</span>
           <button onClick={() => navigator.clipboard?.writeText(JSON.stringify(entries, null, 2))} className="text-[10px] font-black uppercase tracking-wider text-gold hover:text-gold/80 flex items-center gap-1">
             <ExternalLink className="h-3 w-3" /> Copy CBOM JSON

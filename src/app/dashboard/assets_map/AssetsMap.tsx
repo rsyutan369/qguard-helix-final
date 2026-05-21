@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search, Filter, Shield, AlertTriangle, ChevronRight, Globe, Server, Loader2, RefreshCw, ExternalLink } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { useAuth } from '@/contexts/auth-context';
+import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 
 type AssetRecord = {
   id: string;
@@ -22,6 +22,8 @@ type AssetRecord = {
   vulnerableCount: number;
   metadata: Record<string, unknown>;
 };
+
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
 
 function riskColor(score: number) {
   if (score >= 80) return 'text-red-400';
@@ -52,37 +54,10 @@ function typeIcon(type: string) {
 }
 
 export default function AssetsMap() {
-  const { session } = useAuth();
-  const [assets, setAssets] = useState<AssetRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, loading, error, refresh } = useScannerIntelligence();
+  const assets = (data.assets.assets || []) as AssetRecord[];
   const [searchQuery, setSearchQuery] = useState('');
   const [riskFilter, setRiskFilter] = useState<string | null>(null);
-
-  const fetchAssets = useCallback(async () => {
-    if (!session?.access_token) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/v1/scanner/assets', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error?.message || 'Unable to load asset inventory');
-      setAssets(json?.data?.assets || []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load asset inventory');
-    } finally {
-      setLoading(false);
-    }
-  }, [session?.access_token]);
-
-  useEffect(() => {
-    fetchAssets();
-  }, [fetchAssets]);
 
   const filteredAssets = useMemo(() => {
     const query = searchQuery.toLowerCase().trim();
@@ -111,7 +86,7 @@ export default function AssetsMap() {
           <h1 className="text-3xl font-black uppercase tracking-tight text-white">Asset <span className="text-gold">Inventory</span></h1>
           <p className="text-white/50 mt-1 text-sm">Authorized cryptographic assets discovered from real scanner results.</p>
         </div>
-        <button onClick={fetchAssets} className="px-4 py-2 rounded-lg border border-gold/20 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+        <button onClick={refresh} className="px-4 py-2 rounded-lg border border-gold/20 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
         </button>
       </header>
@@ -126,12 +101,12 @@ export default function AssetsMap() {
             placeholder="Search assets, algorithms, domains, IP addresses..."
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full border rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none focus:transition-colors text-white placeholder-white/25 glass-panel"
+            className="w-full border border-gold/20 bg-[#0f1428]/35 rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none text-white placeholder-white/25 focus:border-gold/50"
           />
         </div>
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap text-gold">
           {['critical', 'high', 'medium', 'low'].map((level) => (
-            <button key={level} onClick={() => setRiskFilter(riskFilter === level ? null : level)} className={`px-3 py-2 border rounded-lg text-[10px] font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${riskFilter === level ? 'text-gold bg-gold/10' : 'text-white/45 hover:text-white/70'} glass-panel`}>
+            <button key={level} onClick={() => setRiskFilter(riskFilter === level ? null : level)} className={`px-3 py-2 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 ${riskFilter === level ? 'border-gold/60 bg-gold/15 text-gold' : 'border-white/10 text-white/45 hover:text-white/70 bg-[#0f1428]/35'}`}>
               <Filter className="h-3.5 w-3.5" /> {level}
             </button>
           ))}
@@ -145,18 +120,18 @@ export default function AssetsMap() {
           { label: 'Crypto Components', value: assets.reduce((sum, asset) => sum + asset.findingsCount, 0), color: 'text-gold', icon: Shield },
           { label: 'PQC Ready', value: assets.filter((asset) => asset.findingsCount > 0 && asset.vulnerableCount === 0).length, color: 'text-green-400', icon: Shield },
         ].map((item) => (
-          <div key={item.label} className="p-4 rounded-xl border glass-panel">
-            <div className="flex items-center gap-2 mb-2">
+          <div key={item.label} className={GLASS_PANEL_CLASSES + " p-4"}>
+            <div className="flex items-center gap-2 mb-2 relative z-10">
               <item.icon className="h-3.5 w-3.5 text-gold/50" />
               <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/40">{item.label}</span>
             </div>
-            <div className={`text-2xl font-black ${item.color}`}>{item.value}</div>
+            <div className={`text-2xl font-black relative z-10 ${item.color}`}>{item.value}</div>
           </div>
         ))}
       </div>
 
-      <div className="border rounded-xl overflow-hidden glass-panel">
-        <div className="overflow-x-auto">
+      <div className={GLASS_PANEL_CLASSES}>
+        <div className="overflow-x-auto relative z-10">
           <table className="w-full text-left border-collapse min-w-[980px]">
             <thead>
               <tr className="bg-gold/5 border-b border-gold/20">

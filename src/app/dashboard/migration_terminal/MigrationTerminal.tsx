@@ -3,6 +3,8 @@ import { Terminal as TerminalIcon, Play, Square, RotateCcw, ShieldCheck, Cpu, Ke
 import { supabase } from '@/lib/supabase';
 import { motion, AnimatePresence } from 'framer-motion';
 
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+
 export default function MigrationTerminal() {
   const [logs, setLogs] = useState<any[]>([]);
   const [activeMigration, setActiveMigration] = useState<any>(null);
@@ -110,7 +112,7 @@ export default function MigrationTerminal() {
           <h1 className="text-3xl font-black uppercase tracking-tighter text-white">Migration <span className="text-gold">Terminal</span></h1>
           <p className="text-white/50 mt-1">Real-time PQC orchestration and execution telemetry.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 text-gold">
           <button 
             onClick={startMigration}
             disabled={isRunning}
@@ -133,8 +135,8 @@ export default function MigrationTerminal() {
 
       {/* Terminal UI */}
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-3 border rounded-xl overflow-hidden flex flex-col shadow-[0_30px_100px_rgba(0,0,0,0.8)] relative glass-panel">
-          <div className="bg-gold/5 border-b border-gold/20 px-4 py-2 flex items-center justify-between">
+        <div className={GLASS_PANEL_CLASSES + " lg:col-span-3 overflow-hidden flex flex-col relative"}>
+          <div className="bg-gold/5 border-b border-gold/20 px-4 py-2 flex items-center justify-between relative z-10">
             <div className="flex items-center gap-2">
               <TerminalIcon className="h-4 w-4 text-gold" />
               <span className="text-[10px] font-black uppercase tracking-widest text-gold/80">qguard-helix-pqc-engine v1.0.4 --autopilot</span>
@@ -146,7 +148,7 @@ export default function MigrationTerminal() {
             </div>
           </div>
           
-          <div className="flex-1 overflow-y-auto p-6 font-mono text-sm space-y-1 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-6 font-mono text-sm space-y-1 custom-scrollbar relative z-10">
             {logs.length === 0 && !isRunning && (
               <div className="h-full flex items-center justify-center text-white/20 uppercase tracking-[0.4em] font-black text-xs">
                 System Ready. Awaiting Command.
@@ -190,9 +192,9 @@ export default function MigrationTerminal() {
 
         {/* Status Panel */}
         <div className="space-y-6">
-          <div className="border rounded-xl p-5 space-y-4 glass-panel">
-             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Operation Status</h3>
-             <div className="space-y-4">
+          <div className={GLASS_PANEL_CLASSES + " p-5 space-y-4"}>
+             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 relative z-10">Operation Status</h3>
+             <div className="space-y-4 relative z-10">
                 <div className="flex justify-between items-center">
                   <span className="text-xs text-white/60">Status:</span>
                   <span className={`text-xs font-black uppercase tracking-widest ${isRunning ? 'text-gold animate-pulse' : 'text-white/30'}`}>
@@ -217,9 +219,9 @@ export default function MigrationTerminal() {
              </div>
           </div>
 
-          <div className="border rounded-xl p-5 space-y-4 glass-panel">
-             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Encryption Engine</h3>
-             <div className="grid grid-cols-2 gap-3">
+          <div className={GLASS_PANEL_CLASSES + " p-5 space-y-4"}>
+             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 relative z-10">Encryption Engine</h3>
+             <div className="grid grid-cols-2 gap-3 relative z-10">
                 <div className="p-3 bg-gold/5 border border-gold/10 rounded flex flex-col items-center text-center">
                    <Key className="h-5 w-5 text-gold mb-2" />
                    <div className="text-[8px] font-black text-white/40 uppercase">KEM</div>
@@ -233,10 +235,10 @@ export default function MigrationTerminal() {
              </div>
           </div>
 
-          <div className="flex-1 border rounded-xl p-5 glass-panel">
-             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 mb-4">Rollback Snapshots</h3>
-             <div className="space-y-3">
-                <div className="flex items-center gap-3 p-2 border border-white/5 bg-white/5 rounded">
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
+             <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 mb-4 relative z-10">Rollback Snapshots</h3>
+             <div className="space-y-3 relative z-10">
+                <div className="flex items-center gap-3 p-2 border border-gold/10 bg-[#0f1428]/35 rounded">
                    <RotateCcw className="h-3 w-3 text-white/40" />
                    <div className="text-[9px] font-bold uppercase text-white/60">SNAP_2026_05_08_1230</div>
                 </div>

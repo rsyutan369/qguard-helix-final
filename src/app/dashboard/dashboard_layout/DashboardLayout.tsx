@@ -4,10 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Map as MapIcon, Terminal, ShieldAlert, LogOut,
   Eye, Route, Layers, Globe, Clock, ClipboardCheck,
-  Rocket, Radio, GitCompare, BarChart3, ChevronLeft,
+  Rocket, Radio, GitCompare, ChevronLeft,
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
-  Activity, EyeOff, Brain, Settings, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Layout, Key, Webhook, FileWarning, Search, Ghost
+  Activity, EyeOff, Brain, Settings, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Search, Ghost
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
@@ -47,6 +47,7 @@ const NAV_SECTIONS = [
       { name: 'Runtime Discovery', path: '/dashboard/runtime-discovery', icon: Search },
       { name: 'Shadow Crypto', path: '/dashboard/shadow-crypto', icon: Ghost },
       { name: 'Asset Intelligence', path: '/dashboard/asset-intelligence', icon: Brain },
+      { name: 'Harvest Now, Decrypt Later', path: '/dashboard/harvest-now', icon: EyeOff },
     ],
   },
   {
@@ -54,6 +55,7 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'Migration Timeline', path: '/dashboard/migration-timeline', icon: Clock },
+      { name: 'Migration Phases', path: '/dashboard/migration-phases', icon: Layers },
       { name: 'Live Migration Ops', path: '/dashboard/live-migration', icon: Rocket },
       { name: 'Migration Terminal', path: '/dashboard/migration-terminal', icon: Terminal },
       { name: 'Hybrid Crypto Manager', path: '/dashboard/hybrid-crypto', icon: Settings },
@@ -79,7 +81,6 @@ const NAV_SECTIONS = [
     label: 'Observability',
     collapsible: true,
     items: [
-      { name: 'Runtime Visibility', path: '/dashboard/runtime-visibility', icon: Eye },
       { name: 'TLS Telemetry', path: '/dashboard/tls-telemetry', icon: Shield },
       { name: 'PKI Visibility', path: '/dashboard/pki-visibility', icon: Award },
       { name: 'Protocol Analytics', path: '/dashboard/protocol-analytics', icon: Activity },
@@ -102,11 +103,9 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'Compliance', path: '/dashboard/compliance', icon: ClipboardCheck },
-      { name: 'Hybrid Metrics', path: '/dashboard/hybrid-metrics', icon: BarChart3 },
       { name: 'Quantum Governance', path: '/dashboard/quantum-governance', icon: Scale },
       { name: 'Crypto Policies', path: '/dashboard/crypto-policies', icon: FileText },
       { name: 'Audit Vault', path: '/dashboard/audit-vault', icon: Database },
-      { name: 'Executive Risk Dashboard', path: '/dashboard/executive-risk', icon: Layout },
       { name: 'Regulatory Mapping', path: '/dashboard/regulatory-mapping', icon: MapIcon },
     ],
   },

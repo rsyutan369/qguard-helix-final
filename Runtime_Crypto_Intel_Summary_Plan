@@ -1,0 +1,47 @@
+# Runtime Cryptographic Intelligence Enterprise Rollout Plan
+
+## Summary
+Build `/dashboard/runtime-crypto-intel` into a true metadata-only runtime crypto intelligence engine. The current dashboard and API already exist, but they mostly aggregate existing scans, CBOM, migrations, keys, certificates, and security events. The next work should add a dedicated runtime crypto event pipeline so live agent telemetry becomes the primary source of truth.
+
+Progress checklist:
+- [x] Reviewed `Runtime_Cryptographic_Intelligence`: file is currently empty.
+- [x] Reviewed current `/dashboard/runtime-crypto-intel` UI and API endpoint.
+- [x] Reviewed existing local agent, evidence upload, heartbeat, CBOM, exposure, scan, and alert pipeline.
+- [ ] Phase 1: Add runtime event schema, ingestion API, and backend aggregation service.
+- [ ] Phase 2: Extend local agent to emit runtime crypto events from authorized metadata.
+- [ ] Phase 3: Upgrade dashboard panels to use runtime events as primary telemetry.
+- [ ] Phase 4: Add validation, enterprise empty states, and regression checks.
+
+## Key Changes
+- Add a Supabase table `runtime_crypto_events` with RLS, realtime publication, and indexes by `user_id`, `agent_id`, `asset_id`, `event_type`, `severity`, `observed_at`, and `event_hash`.
+- Store metadata-only runtime facts: operation type, protocol, TLS version, cipher suite, key exchange algorithm, certificate fingerprint, host, port, asset identity, package/process identity when available, PQC status, downgrade flag, shadow crypto flag, HNDL risk flag, severity, risk score, and redacted `metadata`.
+- Add `POST /api/v1/agent-scanner/agent/runtime-events` using existing agent authentication. Accept `{ events: RuntimeCryptoEventInput[] }`, max 1000 events per request, reject private-key/payload fields, enforce agent policy, and deduplicate by `event_hash`.
+- Update existing agent evidence processing so TLS, SSH, package, and redacted config evidence also creates runtime crypto events.
+- Refactor dashboard aggregation into a shared backend service used by `GET /api/v1/dashboard/runtime-crypto-intel`. Query `runtime_crypto_events` first, then fall back to current CBOM/exposures/scans/migrations/certificates/key telemetry when the table is empty or not yet migrated.
+- Extend SSE `/api/v1/metrics/stream` with a `runtime-crypto-update` event, and update the frontend to listen to that plus Supabase realtime changes on `runtime_crypto_events`.
+
+## Dashboard Behavior
+- Keep the current glassmorphism/gold enterprise UI, but make runtime event data the source for crypto ops/sec, encryption/decryption/key usage, PQC handshakes, weak TLS, downgrade attempts, shadow crypto, HNDL exposure, alerts, algorithms, protocols, and handshake analysis.
+- Add/adjust panels for enterprise value: Runtime Coverage, Shadow Crypto, Downgrade Attempts, HNDL Exposure, Weak Certificates, Vendor/Package Crypto, Agent Health, and Event Pipeline Status.
+- All panels must remain tenant/user isolated, show clear empty states when no authorized runtime agents exist, and avoid hardcoded/demo metrics.
+- Export snapshot should include generatedAt, filters, metrics, event counts, active agents, stale agents, top algorithms, top risks, and source coverage.
+
+## Agent Changes
+- Keep collection metadata-only: no packet payloads, secrets, passwords, private keys, full file contents, or decrypted data.
+- Extend `tools/qguard-agent/agent.ts` to emit runtime events during `agent:watch` from authorized TLS/SSH scans, package manifests, and redacted config references.
+- Add policy support for `runtime` collection under existing `scanTypes`; default enabled when agent policy includes TLS, SSH, packages, or configs.
+- Event classifiers must mark RSA/ECC/DH/SHA1/MD5/weak TLS as legacy risk, TLS fallback/downgrade as downgrade risk, unknown config/package crypto as shadow crypto, and externally exposed classical public-key crypto as HNDL risk.
+
+## Test Plan
+- Run `npm run build`.
+- Run a server import check for dashboard and agent scanner modules with `npx tsx`.
+- Add a local agent ingestion scenario: enroll agent, send runtime events, confirm `runtime_crypto_events`, `crypto_inventory`, `crypto_exposures`, `scanner_alerts`, and dashboard snapshot update for the authenticated user only.
+- Verify empty-state scenario for a user with no agents/events.
+- Verify deduplication with repeated event hashes.
+- Verify realtime behavior: Supabase change and SSE `runtime-crypto-update` refresh the dashboard without stale or duplicate counts.
+
+## Assumptions
+- First implementation phase uses **Enterprise Metadata** depth.
+- Collection boundary is **Metadata Only**.
+- The existing periodic `agent:watch` loop is the first runtime source; deeper OS/process hooks are deferred until after the metadata pipeline is stable.
+- Existing dashboard endpoint remains backward compatible and continues working even before the new Supabase schema is applied.

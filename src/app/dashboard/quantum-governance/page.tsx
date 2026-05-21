@@ -27,6 +27,8 @@ import {
 import { useQuantumGovernance } from '@/hooks/quantum-governance/useQuantumGovernance';
 import QuantumGovernanceLoading from './loading';
 
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+
 export default function QuantumGovernancePage() {
   const { 
     loading, kpis, inventory, ownership, pkiDebt, 
@@ -47,7 +49,7 @@ export default function QuantumGovernancePage() {
                 <ShieldCheck className="h-6 w-6 text-gold" />
               </div>
               <h1 className="text-3xl font-black uppercase tracking-tight text-white gold-glow">
-                Governance Center
+                Governance <span className="text-gold">Center</span>
               </h1>
             </div>
             <p className="text-white/50 font-medium max-w-2xl">
@@ -56,7 +58,7 @@ export default function QuantumGovernancePage() {
             </p>
           </div>
           
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 text-gold">
             <button className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-bold transition-all flex items-center gap-2">
               <Download className="h-4 w-4" /> Export Report
             </button>
@@ -80,13 +82,13 @@ export default function QuantumGovernancePage() {
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: i * 0.1 }}
-            className="p-5 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-gold/20 transition-all flex flex-col gap-3 group"
+            className={GLASS_PANEL_CLASSES + " p-5 flex flex-col gap-3"}
           >
-            <div className="h-8 w-8 rounded-lg bg-gold/5 flex items-center justify-center border border-gold/10 group-hover:border-gold/30 transition-all">
-              <card.icon className="h-4 w-4 text-gold/60 group-hover:text-gold" />
+            <div className="h-8 w-8 rounded-lg bg-gold/5 flex items-center justify-center border border-gold/10 relative z-10">
+              <card.icon className="h-4 w-4 text-gold/60 group-hover:text-gold transition-colors" />
             </div>
-            <h4 className="text-[11px] font-black uppercase tracking-widest text-gold/80">{card.title}</h4>
-            <p className="text-[10px] text-white/40 leading-relaxed font-medium">{card.content}</p>
+            <h4 className="text-[11px] font-black uppercase tracking-widest text-gold/80 relative z-10">{card.title}</h4>
+            <p className="text-[10px] text-white/40 leading-relaxed font-medium relative z-10">{card.content}</p>
           </motion.div>
         ))}
       </section>
@@ -97,38 +99,38 @@ export default function QuantumGovernancePage() {
         <div className="lg:col-span-9 space-y-8">
           {/* KPI Cards */}
           <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        {kpis.map((kpi, i) => (
-          <motion.div
-            key={kpi.label}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.1 }}
-            className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-gold/30 transition-all group relative overflow-hidden"
-          >
-            <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-20 transition-opacity">
-              <BarChart3 className="h-12 w-12 text-gold" />
-            </div>
-            <p className="text-[10px] font-black uppercase tracking-wider text-white/40 mb-1">{kpi.label}</p>
-            <div className="flex items-end justify-between">
-              <h3 className="text-2xl font-black text-white group-hover:text-gold transition-colors">{kpi.value}</h3>
-              <div className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                kpi.trend === 'up' ? 'text-green-400 bg-green-500/10' : 
-                kpi.trend === 'down' ? 'text-red-400 bg-red-500/10' : 'text-blue-400 bg-blue-500/10'
-              }`}>
-                {kpi.trend === 'up' ? '↑' : kpi.trend === 'down' ? '↓' : '→'}
-              </div>
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <div className={`h-1.5 w-1.5 rounded-full ${
-                kpi.severity === 'critical' ? 'bg-red-500 shadow-[0_0_8px_#ef4444]' :
-                kpi.severity === 'high' ? 'bg-orange-500' :
-                kpi.severity === 'medium' ? 'bg-yellow-500' : 'bg-green-500'
-              }`} />
-              <span className="text-[9px] text-white/30 uppercase font-bold">Severity: {kpi.severity}</span>
-            </div>
-          </motion.div>
-        ))}
-      </section>
+            {kpis.map((kpi, i) => (
+              <motion.div
+                key={kpi.label}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.1 }}
+                className={GLASS_PANEL_CLASSES + " p-4"}
+              >
+                <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-20 transition-opacity z-10">
+                  <BarChart3 className="h-12 w-12 text-gold" />
+                </div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-white/40 mb-1 relative z-10">{kpi.label}</p>
+                <div className="flex items-end justify-between relative z-10">
+                  <h3 className="text-2xl font-black text-white group-hover:text-gold transition-colors">{kpi.value}</h3>
+                  <div className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    kpi.trend === 'up' ? 'text-green-400 bg-green-500/10' : 
+                    kpi.trend === 'down' ? 'text-red-400 bg-red-500/10' : 'text-blue-400 bg-blue-500/10'
+                  }`}>
+                    {kpi.trend === 'up' ? '↑' : kpi.trend === 'down' ? '↓' : '→'}
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-2 relative z-10">
+                  <div className={`h-1.5 w-1.5 rounded-full ${
+                    kpi.severity === 'critical' ? 'bg-red-500 shadow-[0_0_8px_#ef4444]' :
+                    kpi.severity === 'high' ? 'bg-orange-500' :
+                    kpi.severity === 'medium' ? 'bg-yellow-500' : 'bg-green-500'
+                  }`} />
+                  <span className="text-[9px] text-white/30 uppercase font-bold">Severity: {kpi.severity}</span>
+                </div>
+              </motion.div>
+            ))}
+          </section>
 
           {/* Tabs */}
           <section className="space-y-6">
@@ -175,13 +177,13 @@ export default function QuantumGovernancePage() {
                     exit={{ opacity: 0, x: -20 }}
                     className="space-y-6"
                   >
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white/[0.02] p-4 rounded-xl border border-white/5">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0f1428]/45 p-4 rounded-xl border border-white/5 backdrop-blur-xl">
                       <div className="relative flex-1 max-w-md">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/30" />
                         <input 
                           type="text" 
                           placeholder="Search cryptographic assets..." 
-                          className="w-full border border-white/10 rounded-lg py-2 pl-10 pr-4 text-xs text-white placeholder:text-white/20 focus:outline-none focus: glass-panel"
+                          className="w-full border border-gold/20 bg-[#0f1428]/35 rounded-lg py-2 pl-10 pr-4 text-xs text-white placeholder:text-white/20 focus:outline-none focus:border-gold/50"
                         />
                       </div>
                       <div className="flex items-center gap-3">
@@ -191,10 +193,10 @@ export default function QuantumGovernancePage() {
                       </div>
                     </div>
 
-                    <div className="overflow-x-auto rounded-xl border border-white/10 bg-white/[0.01]">
+                    <div className="overflow-x-auto rounded-xl border border-gold/20 bg-[#0f1428]/45 backdrop-blur-xl">
                       <table className="w-full border-collapse">
                         <thead>
-                          <tr className="border-b border-white/10 text-left bg-white/[0.03]">
+                          <tr className="border-b border-gold/20 text-left bg-gold/[0.03]">
                             <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Asset</th>
                             <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Criticality</th>
                             <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Algorithm</th>
@@ -204,7 +206,7 @@ export default function QuantumGovernancePage() {
                             <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Actions</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-white/5">
+                        <tbody className="divide-y divide-gold/10">
                           {inventory.map(asset => (
                             <tr key={asset.id} className="hover:bg-white/[0.02] transition-colors group">
                               <td className="p-4">
@@ -272,8 +274,8 @@ export default function QuantumGovernancePage() {
                     className="grid grid-cols-1 md:grid-cols-2 gap-6"
                   >
                     {ownership.map((record, i) => (
-                      <div key={i} className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 space-y-4">
-                        <div className="flex items-center justify-between">
+                      <div key={i} className={GLASS_PANEL_CLASSES + " p-6 space-y-4"}>
+                        <div className="flex items-center justify-between relative z-10">
                           <h4 className="text-sm font-black uppercase tracking-wider text-white">{record.domain}</h4>
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
                             record.status === 'compliant' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
@@ -282,26 +284,26 @@ export default function QuantumGovernancePage() {
                           </span>
                         </div>
                         
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-2 gap-4 relative z-10">
                           <div className="space-y-1">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-white/20">Business Owner</p>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-white/25">Business Owner</p>
                             <p className="text-xs font-bold text-white/80">{record.businessOwner}</p>
                           </div>
                           <div className="space-y-1">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-white/20">Technical Owner</p>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-white/25">Technical Owner</p>
                             <p className="text-xs font-bold text-white/80">{record.technicalOwner}</p>
                           </div>
                           <div className="space-y-1">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-white/20">Security Owner</p>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-white/25">Security Owner</p>
                             <p className="text-xs font-bold text-white/80">{record.securityOwner}</p>
                           </div>
                           <div className="space-y-1">
-                            <p className="text-[9px] font-black uppercase tracking-widest text-white/20">Last Review</p>
+                            <p className="text-[9px] font-black uppercase tracking-widest text-white/25">Last Review</p>
                             <p className="text-xs font-bold text-white/80">{record.lastReview}</p>
                           </div>
                         </div>
 
-                        <div className="pt-4 border-t border-white/5 flex items-center justify-between">
+                        <div className="pt-4 border-t border-gold/10 flex items-center justify-between relative z-10">
                           <button className="text-[10px] font-bold text-gold hover:underline">Edit Assignment</button>
                           <button className="px-3 py-1 bg-white/5 hover:bg-white/10 rounded-md text-[10px] font-bold text-white/40 transition-all border border-white/10">
                             Request Attestation
@@ -321,9 +323,9 @@ export default function QuantumGovernancePage() {
                     className="space-y-8"
                   >
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 space-y-4">
-                        <h4 className="text-xs font-black uppercase tracking-widest text-gold/80">Active Lifecycle States</h4>
-                        <div className="space-y-3">
+                      <div className={GLASS_PANEL_CLASSES + " p-6 space-y-4"}>
+                        <h4 className="text-xs font-black uppercase tracking-widest text-gold/80 relative z-10">Active Lifecycle States</h4>
+                        <div className="space-y-3 relative z-10">
                           {[
                             { label: 'Discovered', count: 142, color: 'bg-blue-500' },
                             { label: 'Approved', count: 89, color: 'bg-green-500' },
@@ -341,21 +343,21 @@ export default function QuantumGovernancePage() {
                         </div>
                       </div>
 
-                      <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 space-y-4">
-                        <h4 className="text-xs font-black uppercase tracking-widest text-gold/80">Lifecycle Control</h4>
-                        <p className="text-[10px] text-white/40 leading-relaxed">
+                      <div className={GLASS_PANEL_CLASSES + " p-6 space-y-4"}>
+                        <h4 className="text-xs font-black uppercase tracking-widest text-gold/80 relative z-10">Lifecycle Control</h4>
+                        <p className="text-[10px] text-white/40 leading-relaxed relative z-10">
                           Automated tracking of key age, rotation SLAs, and operational dependencies.
                         </p>
-                        <div className="flex items-center gap-2 pt-2">
+                        <div className="flex items-center gap-2 pt-2 relative z-10">
                            <button className="px-3 py-1.5 bg-gold/10 text-gold border border-gold/30 rounded text-[9px] font-black uppercase tracking-widest">Trigger Rotation</button>
                            <button className="px-3 py-1.5 bg-white/5 text-white/40 border border-white/10 rounded text-[9px] font-black uppercase tracking-widest">Emergency Revoke</button>
                         </div>
                       </div>
                     </div>
 
-                    <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/5">
-                      <h5 className="text-[10px] font-black uppercase tracking-widest text-white/30 mb-6">Key Lifecycle Timeline Example</h5>
-                      <div className="flex items-center justify-between relative">
+                    <div className={GLASS_PANEL_CLASSES + " p-6"}>
+                      <h5 className="text-[10px] font-black uppercase tracking-widest text-white/30 mb-6 relative z-10">Key Lifecycle Timeline Example</h5>
+                      <div className="flex items-center justify-between relative z-10">
                         <div className="absolute top-1/2 left-0 right-0 h-px bg-white/10 -translate-y-1/2 z-0" />
                         {[
                           { label: 'Created', active: true },
@@ -393,9 +395,9 @@ export default function QuantumGovernancePage() {
                     
                     <div className="space-y-4">
                       {migrationTasks.map(task => (
-                        <div key={task.id} className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 relative overflow-hidden group">
-                          <div className="absolute top-0 left-0 bottom-0 w-1 bg-gold/40 shadow-[0_0_10px_rgba(212,175,55,0.4)]" />
-                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                        <div key={task.id} className={GLASS_PANEL_CLASSES + " p-5 relative overflow-hidden group"}>
+                          <div className="absolute top-0 left-0 bottom-0 w-1 bg-gold/40 shadow-[0_0_10px_rgba(212,175,55,0.4)] z-10" />
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
                             <div className="space-y-1">
                               <div className="flex items-center gap-3">
                                 <span className="text-xs font-black text-white">{task.asset}</span>
@@ -434,28 +436,28 @@ export default function QuantumGovernancePage() {
                     className="grid grid-cols-1 gap-4"
                   >
                     {compliance.map((control, i) => (
-                      <div key={i} className="p-4 rounded-xl bg-white/[0.03] border border-white/10 flex items-center justify-between hover:border-gold/30 transition-all group">
-                        <div className="flex items-center gap-4">
-                          <div className="h-10 w-10 rounded-lg bg-gold/5 flex items-center justify-center border border-gold/10">
+                      <div key={i} className={GLASS_PANEL_CLASSES + " p-4 flex items-center justify-between"}>
+                        <div className="flex items-center gap-4 relative z-10">
+                          <div className="h-10 w-10 rounded-lg bg-gold/5 flex items-center justify-center border border-gold/10 shrink-0">
                             <FileBadge className="h-5 w-5 text-gold/60" />
                           </div>
                           <div>
-                            <div className="flex items-center gap-2 mb-1">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <span className="text-[9px] font-black bg-white/5 px-1.5 py-0.5 rounded text-white/40 tracking-wider uppercase">{control.framework}</span>
                               <h6 className="text-xs font-bold text-white group-hover:text-gold transition-colors">{control.controlId}: {control.name}</h6>
                             </div>
-                            <div className="flex items-center gap-3 text-[10px] text-white/30">
+                            <div className="flex items-center gap-3 text-[10px] text-white/30 flex-wrap">
                               <span className="flex items-center gap-1"><ShieldCheck className="h-3 w-3" /> Status: <span className="text-white/60">{control.status}</span></span>
                               <span className="flex items-center gap-1"><ClipboardList className="h-3 w-3" /> Evidence: <span className={control.evidenceStatus === 'attached' ? 'text-green-400' : 'text-red-400'}>{control.evidenceStatus}</span></span>
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 relative z-10 shrink-0">
                           <button className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-[10px] font-bold text-white/50 transition-all flex items-center gap-2">
-                            <ExternalLink className="h-3 w-3" /> View Controls
+                            <ExternalLink className="h-3 w-3" /> View
                           </button>
                           <button className="px-3 py-1.5 bg-gold/10 hover:bg-gold/20 border border-gold/30 rounded text-[10px] font-bold text-gold transition-all">
-                            Attach Evidence
+                            Attach
                           </button>
                         </div>
                       </div>
@@ -472,8 +474,8 @@ export default function QuantumGovernancePage() {
                     className="grid grid-cols-1 md:grid-cols-2 gap-4"
                   >
                     {workflows.map(wf => (
-                      <div key={wf.id} className="p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-4">
-                        <div className="flex items-center justify-between">
+                      <div key={wf.id} className={GLASS_PANEL_CLASSES + " p-4 space-y-4"}>
+                        <div className="flex items-center justify-between relative z-10">
                           <div className="flex items-center gap-2">
                             <GitCompare className="h-3.5 w-3.5 text-gold/60" />
                             <h6 className="text-[11px] font-bold text-white">{wf.type}</h6>
@@ -482,12 +484,12 @@ export default function QuantumGovernancePage() {
                             wf.priority === 'critical' ? 'bg-red-500/20 text-red-400' : 'bg-white/5 text-white/40'
                           }`}>{wf.priority}</span>
                         </div>
-                        <div className="flex items-center justify-between text-[10px] text-white/40">
+                        <div className="flex items-center justify-between text-[10px] text-white/40 relative z-10">
                           <span>Assignee: <span className="text-white/70 font-medium">{wf.assignee}</span></span>
                           <span>Due: <span className="text-white/70 font-mono">{wf.dueDate}</span></span>
                         </div>
-                        <div className="flex items-center gap-2 pt-2 border-t border-white/5">
-                           <button className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 rounded text-[10px] font-bold text-white/60 transition-all">View Details</button>
+                        <div className="flex items-center gap-2 pt-2 border-t border-gold/10 relative z-10">
+                           <button className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 rounded text-[10px] font-bold text-white/60 transition-all">Details</button>
                            <button className="flex-1 py-1.5 bg-gold/10 hover:bg-gold/20 text-gold rounded text-[10px] font-bold transition-all">Process</button>
                         </div>
                       </div>
@@ -508,12 +510,12 @@ export default function QuantumGovernancePage() {
                       { name: 'Allowed Algorithms', val: 'FIPS Approved Only', status: 'compliant' },
                       { name: 'Hybrid PQC Policy', val: 'Critical Systems Only', status: 'warning' },
                     ].map((policy, i) => (
-                      <div key={i} className="p-4 rounded-xl bg-white/[0.03] border border-white/10 flex items-center justify-between">
-                        <div>
+                      <div key={i} className={GLASS_PANEL_CLASSES + " p-4 flex items-center justify-between"}>
+                        <div className="relative z-10">
                           <h6 className="text-xs font-bold text-white mb-0.5">{policy.name}</h6>
                           <p className="text-[10px] text-white/40">{policy.val}</p>
                         </div>
-                        <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                        <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded relative z-10 ${
                           policy.status === 'compliant' ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'
                         }`}>{policy.status}</span>
                       </div>
@@ -530,11 +532,11 @@ export default function QuantumGovernancePage() {
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
-                    className="overflow-x-auto rounded-xl border border-white/10 bg-white/[0.01]"
+                    className="overflow-x-auto rounded-xl border border-gold/20 bg-[#0f1428]/45 backdrop-blur-xl"
                   >
                     <table className="w-full border-collapse">
                       <thead>
-                        <tr className="border-b border-white/10 text-left bg-white/[0.03]">
+                        <tr className="border-b border-gold/20 text-left bg-gold/[0.03]">
                           <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Vendor</th>
                           <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Product</th>
                           <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">PQC Roadmap</th>
@@ -542,7 +544,7 @@ export default function QuantumGovernancePage() {
                           <th className="p-4 text-[10px] font-black uppercase tracking-widest text-white/40">Status</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-white/5">
+                      <tbody className="divide-y divide-gold/10">
                         {vendors.map((vendor, i) => (
                           <tr key={i} className="hover:bg-white/[0.02] transition-colors group">
                             <td className="p-4 text-xs font-bold text-white">{vendor.name}</td>
@@ -572,8 +574,8 @@ export default function QuantumGovernancePage() {
                     className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
                   >
                     {evidence.map(ev => (
-                      <div key={ev.id} className="p-4 rounded-xl bg-white/[0.03] border border-white/10 space-y-3 group hover:border-gold/30 transition-all">
-                        <div className="flex items-center gap-3">
+                      <div key={ev.id} className={GLASS_PANEL_CLASSES + " p-4 space-y-3"}>
+                        <div className="flex items-center gap-3 relative z-10">
                           <div className="h-10 w-10 rounded-lg bg-white/5 flex items-center justify-center">
                             <Download className="h-5 w-5 text-white/30 group-hover:text-gold transition-colors" />
                           </div>
@@ -582,7 +584,7 @@ export default function QuantumGovernancePage() {
                             <p className="text-[9px] text-white/30 uppercase">{ev.type} · {ev.uploadedAt}</p>
                           </div>
                         </div>
-                        <div className="flex items-center justify-between pt-3 border-t border-white/5">
+                        <div className="flex items-center justify-between pt-3 border-t border-gold/10 relative z-10">
                            <span className="text-[9px] text-white/20">Owner: {ev.owner}</span>
                            <button className="text-[9px] font-black text-gold uppercase tracking-widest hover:underline">Download</button>
                         </div>
@@ -601,14 +603,14 @@ export default function QuantumGovernancePage() {
 
         {/* Right Side: Intelligence Panel */}
         <aside className="lg:col-span-3 space-y-6">
-          <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/10 space-y-6">
-            <h4 className="text-[11px] font-black uppercase tracking-widest text-gold/80 flex items-center gap-2">
+          <div className={GLASS_PANEL_CLASSES + " p-6 space-y-6"}>
+            <h4 className="text-[11px] font-black uppercase tracking-widest text-gold/80 flex items-center gap-2 relative z-10">
               <Sparkles className="h-4 w-4" /> Intelligence Panel
             </h4>
 
             {/* Top Governance Gaps */}
-            <div className="space-y-4">
-              <h5 className="text-[9px] font-black uppercase tracking-widest text-white/30 border-b border-white/5 pb-2">Top Governance Gaps</h5>
+            <div className="space-y-4 relative z-10">
+              <h5 className="text-[9px] font-black uppercase tracking-widest text-white/30 border-b border-gold/10 pb-2">Top Governance Gaps</h5>
               {[
                 { label: 'Unowned Assets', count: 12, color: 'text-red-400' },
                 { label: 'Policy Violations', count: 5, color: 'text-orange-400' },
@@ -622,8 +624,8 @@ export default function QuantumGovernancePage() {
             </div>
 
             {/* Upcoming Deadlines */}
-            <div className="space-y-4">
-              <h5 className="text-[9px] font-black uppercase tracking-widest text-white/30 border-b border-white/5 pb-2">Upcoming Deadlines</h5>
+            <div className="space-y-4 relative z-10">
+              <h5 className="text-[9px] font-black uppercase tracking-widest text-white/30 border-b border-gold/10 pb-2">Upcoming Deadlines</h5>
               {[
                 { label: 'Migration Plan Approval', date: '2026-05-15', urgent: true },
                 { label: 'Key Rotation - Edge', date: '2026-05-20', urgent: false },
@@ -640,8 +642,8 @@ export default function QuantumGovernancePage() {
             </div>
 
             {/* High-Risk Exceptions */}
-            <div className="space-y-4">
-              <h5 className="text-[9px] font-black uppercase tracking-widest text-white/30 border-b border-white/5 pb-2">High-Risk Exceptions</h5>
+            <div className="space-y-4 relative z-10">
+              <h5 className="text-[9px] font-black uppercase tracking-widest text-white/30 border-b border-gold/10 pb-2">High-Risk Exceptions</h5>
               <div className="p-3 rounded-lg bg-red-500/5 border border-red-500/10 space-y-2">
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="h-3 w-3 text-red-400" />
@@ -651,14 +653,14 @@ export default function QuantumGovernancePage() {
               </div>
             </div>
 
-            <button className="w-full py-2.5 bg-gold/10 hover:bg-gold/20 border border-gold/30 text-gold rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(212,175,55,0.05)]">
+            <button className="w-full py-2.5 bg-gold/10 hover:bg-gold/20 border border-gold/30 text-gold rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(212,175,55,0.05)] relative z-10">
               Generate Board Brief
             </button>
           </div>
 
-          <div className="p-6 rounded-2xl bg-gradient-to-br from-cyber-navy/40 to-black border border-white/5 space-y-4">
-             <h4 className="text-[11px] font-black uppercase tracking-widest text-white/60">Operational Readiness</h4>
-             <div className="space-y-3">
+          <div className={GLASS_PANEL_CLASSES + " p-6 space-y-4"}>
+             <h4 className="text-[11px] font-black uppercase tracking-widest text-white/60 relative z-10">Operational Readiness</h4>
+             <div className="space-y-3 relative z-10">
                {[
                  { label: 'Algorithm Agility', val: 78 },
                  { label: 'Rotation Automation', val: 45 },
@@ -690,15 +692,15 @@ export default function QuantumGovernancePage() {
             "Quantum risk is amplified when cryptography is unmanaged. The biggest exposure is not only vulnerable algorithms — it is the inability to find, govern, rotate, and prove control over cryptography."
           </p>
           
-          <div className="flex items-center gap-8 mb-8">
+          <div className="flex items-center gap-8 mb-8 flex-wrap">
             <div className="text-center">
               <div className="text-5xl font-black text-white mb-2">42<span className="text-gold/50 text-2xl">.8</span></div>
               <p className="text-[10px] font-black uppercase tracking-widest text-white/30">Current Deficit</p>
             </div>
-            <div className="flex-1 space-y-4">
+            <div className="flex-1 min-w-[200px] space-y-4">
               <div className="space-y-1.5">
-                <div className="flex justify-between text-[10px] font-black uppercase tracking-wider">
-                  <span className="text-white/60">Risk Interpretation: <span className="text-yellow-400">Moderate Governance Gap</span></span>
+                <div className="flex justify-between text-[10px] font-black uppercase tracking-wider flex-wrap gap-2">
+                  <span className="text-white/60">Risk Interpretation: <span className="text-yellow-400 font-bold">Moderate Governance Gap</span></span>
                   <span className="text-white/20">Threshold: 20.0</span>
                 </div>
                 <div className="h-2 bg-white/5 rounded-full overflow-hidden border border-white/5">
@@ -709,7 +711,7 @@ export default function QuantumGovernancePage() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {[
                   { label: 'Strong', color: 'bg-green-500' },
                   { label: 'Moderate', color: 'bg-yellow-500' },
@@ -726,9 +728,9 @@ export default function QuantumGovernancePage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-4 rounded-xl border border-white/5 space-y-3 glass-panel">
-              <h6 className="text-[10px] font-black uppercase tracking-widest text-gold/60">Top Deficit Drivers</h6>
-              <ul className="space-y-2">
+            <div className={GLASS_PANEL_CLASSES + " p-4 space-y-3"}>
+              <h6 className="text-[10px] font-black uppercase tracking-widest text-gold/60 relative z-10">Top Deficit Drivers</h6>
+              <ul className="space-y-2 relative z-10">
                 {[
                   'Missing Technical Owners for 12% of Assets',
                   'Rotation Policy Violation in Legacy Segment',
@@ -741,11 +743,11 @@ export default function QuantumGovernancePage() {
                 ))}
               </ul>
             </div>
-            <div className="p-4 rounded-xl border border-white/5 flex flex-col justify-center gap-4 glass-panel">
-              <p className="text-[10px] text-white/40 leading-relaxed">
+            <div className={GLASS_PANEL_CLASSES + " p-4 flex flex-col justify-center gap-4"}>
+              <p className="text-[10px] text-white/40 leading-relaxed relative z-10">
                 Until governance, accountability, and cryptographic lifecycle management are addressed, PQC slogans do not land.
               </p>
-              <button className="w-full py-2 bg-gold/10 hover:bg-gold/20 border border-gold/30 text-gold rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all">
+              <button className="w-full py-2 bg-gold/10 hover:bg-gold/20 border border-gold/30 text-gold rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all relative z-10">
                 Run Full Governance Audit
               </button>
             </div>

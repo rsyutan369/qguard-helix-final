@@ -830,7 +830,6 @@ function PreferencesTab({
                 <option value="overview">Overview</option>
                 <option value="quantum-risk">Quantum Risk</option>
                 <option value="scanner">PQC Scanner</option>
-                <option value="hybrid-metrics">Hybrid Metrics</option>
               </select>
             </label>
             <ToggleRow title="Telemetry sync" description="Use live profile telemetry and account activity streams." checked={draft.telemetryOptIn} onChange={(value) => updateDraft({ telemetryOptIn: value })} />

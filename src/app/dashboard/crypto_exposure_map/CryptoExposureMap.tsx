@@ -3,7 +3,7 @@ import {
   Globe, Server, Database, Shield, Lock, Unlock,
   Wifi, Cloud, Radio, Eye, Loader2, RefreshCw, ExternalLink
 } from 'lucide-react';
-import { useAuth } from '@/contexts/auth-context';
+import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 
 type MapNode = {
   id: string;
@@ -35,6 +35,8 @@ type RiskDistribution = {
   low: number;
 };
 
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+
 function getRiskColor(risk: number) {
   if (risk >= 80) return '#ef4444';
   if (risk >= 60) return '#f97316';
@@ -54,45 +56,20 @@ function getNodeIcon(type: string) {
 }
 
 export default function CryptoExposureMap() {
-  const { session } = useAuth();
-  const [nodes, setNodes] = useState<MapNode[]>([]);
-  const [distribution, setDistribution] = useState<RiskDistribution>({ critical: 0, high: 0, medium: 0, low: 0 });
+  const { data, loading, error, refresh } = useScannerIntelligence();
+  const nodes = (data.exposure.nodes || []) as MapNode[];
+  const distribution = data.exposure.distribution as RiskDistribution;
   const [selectedNode, setSelectedNode] = useState<MapNode | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
 
-  const fetchMap = useCallback(async () => {
-    if (!session?.access_token) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/v1/scanner/exposure-map', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error?.message || 'Unable to load exposure map');
-      setNodes(json?.data?.nodes || []);
-      setDistribution(json?.data?.distribution || { critical: 0, high: 0, medium: 0, low: 0 });
-      setSelectedNode((current) => {
-        if (!current) return null;
-        return (json?.data?.nodes || []).find((node: MapNode) => node.id === current.id) || null;
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load exposure map');
-    } finally {
-      setLoading(false);
-    }
-  }, [session?.access_token]);
-
   useEffect(() => {
-    fetchMap();
-  }, [fetchMap]);
+    setSelectedNode((current) => {
+      if (!current) return null;
+      return nodes.find((node) => node.id === current.id) || null;
+    });
+  }, [nodes]);
 
   const drawParticles = useCallback(() => {
     const canvas = canvasRef.current;
@@ -139,7 +116,7 @@ export default function CryptoExposureMap() {
             <span className="text-white/10">|</span>
             <span className="flex items-center gap-1.5 text-green-400"><span className="h-2 w-2 rounded-full bg-green-500" /> Secured: {secured}</span>
           </div>
-          <button onClick={fetchMap} className="px-3 py-2 rounded-lg border border-gold/20 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
+          <button onClick={refresh} className="px-3 py-2 rounded-lg border border-gold/20 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider flex items-center gap-2">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
         </div>
@@ -148,7 +125,7 @@ export default function CryptoExposureMap() {
       {error && <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>}
 
       <div className="grid lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-3 rounded-xl border relative overflow-hidden glass-panel" style={{ minHeight: 520 }}>
+        <div className={GLASS_PANEL_CLASSES + " lg:col-span-3"} style={{ minHeight: 520 }}>
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_30%,rgba(212,175,55,0.06),transparent_60%)]" />
 
@@ -218,7 +195,7 @@ export default function CryptoExposureMap() {
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-xl border p-5 relative overflow-hidden glass-panel">
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_100%_0%,rgba(212,175,55,0.05),transparent_50%)]" />
             <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white/50 mb-4 relative z-10">
               <Eye className="h-3.5 w-3.5 inline mr-2 text-gold/50" /> Node Inspector
@@ -233,20 +210,20 @@ export default function CryptoExposureMap() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.02]">
+                  <div className="p-2.5 rounded-lg border border-gold/10 bg-[#0f1428]/35">
                     <div className="text-lg font-black" style={{ color: getRiskColor(selectedNode.risk) }}>{selectedNode.risk}</div>
                     <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">Risk Score</div>
                   </div>
-                  <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.02]">
+                  <div className="p-2.5 rounded-lg border border-gold/10 bg-[#0f1428]/35">
                     <div className="text-lg font-black text-white">{selectedNode.linkedFindings.length}</div>
                     <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">Findings</div>
                   </div>
                 </div>
-                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.02]">
+                <div className="p-2.5 rounded-lg border border-gold/10 bg-[#0f1428]/35">
                   <div className="text-[9px] uppercase tracking-wider text-white/30 font-bold mb-1">Detected Algorithm</div>
                   <div className="text-xs font-mono font-bold text-white/70">{selectedNode.algorithm}</div>
                 </div>
-                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.02]">
+                <div className="p-2.5 rounded-lg border border-gold/10 bg-[#0f1428]/35">
                   <div className="text-[9px] uppercase tracking-wider text-white/30 font-bold mb-1">Migration Path</div>
                   <div className="text-xs text-gold/80">{selectedNode.recommendedMigrationPath || 'Manual review'}</div>
                 </div>
@@ -257,9 +234,9 @@ export default function CryptoExposureMap() {
                     <span className="text-[9px] font-black uppercase tracking-wider text-green-400 flex items-center gap-1"><Shield className="h-3 w-3" /> {selectedNode.pqcReadiness}</span>
                   )}
                 </div>
-                <div className="space-y-2 max-h-44 overflow-y-auto">
+                <div className="space-y-2 max-h-44 overflow-y-auto scrollbar-thin">
                   {selectedNode.linkedFindings.map((finding) => (
-                    <div key={finding.id} className="rounded-lg border border-gold/10 bg-white/[0.02] p-2">
+                    <div key={finding.id} className="rounded-lg border border-gold/10 bg-[#0f1428]/35 p-2">
                       <div className="text-[10px] font-bold text-white/70">{finding.algorithm}</div>
                       <div className="text-[9px] text-white/35">{finding.category} - {finding.status}</div>
                     </div>
@@ -274,20 +251,22 @@ export default function CryptoExposureMap() {
             )}
           </div>
 
-          <div className="rounded-xl border p-5 glass-panel">
-            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white/50 mb-3">Risk Distribution</h3>
-            {[
-              { label: 'Critical (80+)', count: distribution.critical, color: '#ef4444' },
-              { label: 'High (60-79)', count: distribution.high, color: '#f97316' },
-              { label: 'Medium (40-59)', count: distribution.medium, color: '#eab308' },
-              { label: 'Low (0-39)', count: distribution.low, color: '#22c55e' },
-            ].map((level) => (
-              <div key={level.label} className="flex items-center gap-3 py-1.5">
-                <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: level.color }} />
-                <span className="text-[10px] text-white/40 font-bold flex-1">{level.label}</span>
-                <span className="text-xs font-black text-white/60">{level.count}</span>
-              </div>
-            ))}
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
+            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white/50 mb-3 relative z-10">Risk Distribution</h3>
+            <div className="relative z-10">
+              {[
+                { label: 'Critical (80+)', count: distribution.critical, color: '#ef4444' },
+                { label: 'High (60-79)', count: distribution.high, color: '#f97316' },
+                { label: 'Medium (40-59)', count: distribution.medium, color: '#eab308' },
+                { label: 'Low (0-39)', count: distribution.low, color: '#22c55e' },
+              ].map((level) => (
+                <div key={level.label} className="flex items-center gap-3 py-1.5">
+                  <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: level.color }} />
+                  <span className="text-[10px] text-white/40 font-bold flex-1">{level.label}</span>
+                  <span className="text-xs font-black text-white/60">{level.count}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>

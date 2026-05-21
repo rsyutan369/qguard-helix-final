@@ -24,6 +24,28 @@ export default defineConfig(({mode}) => {
           let apiApp: any = null
           let apiAppPromise: Promise<any> | null = null
 
+          const isApiSourceFile = (file: string) => {
+            const normalizedFile = file.replace(/\\/g, '/')
+            const normalizedRoot = rootDir.replace(/\\/g, '/')
+            return normalizedFile.startsWith(`${normalizedRoot}/src/api-server/`)
+          }
+
+          const resetApiServer = () => {
+            apiApp = null
+            apiAppPromise = null
+          }
+
+          const invalidateApiServer = (file: string) => {
+            resetApiServer()
+            const normalizedFile = file.replace(/\\/g, '/')
+            void server.moduleGraph.getModuleByUrl(normalizedFile).then((moduleNode) => {
+              if (moduleNode) server.moduleGraph.invalidateModule(moduleNode)
+            })
+            void server.moduleGraph.getModuleByUrl('/src/api-server/index.ts').then((moduleNode) => {
+              if (moduleNode) server.moduleGraph.invalidateModule(moduleNode)
+            })
+          }
+
           const loadApiServer = () => {
             if (apiApp) return Promise.resolve(apiApp)
             if (!apiAppPromise) {
@@ -39,6 +61,14 @@ export default defineConfig(({mode}) => {
                 })
             }
             return apiAppPromise
+          }
+
+          for (const eventName of ['add', 'change', 'unlink'] as const) {
+            server.watcher.on(eventName, (file) => {
+              if (isApiSourceFile(file)) {
+                invalidateApiServer(file)
+              }
+            })
           }
 
           server.middlewares.use((req: any, res: any, next: any) => {

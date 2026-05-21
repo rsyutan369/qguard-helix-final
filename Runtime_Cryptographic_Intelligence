@@ -1,0 +1,438 @@
+Context:
+
+Runtime Cryptographic Intelligence is:
+
+> A live telemetry and analysis engine that continuously monitors how cryptography is being used across applications, APIs, endpoints, cloud workloads, containers, VPNs, databases, messaging systems, and infrastructure in real time.
+>
+# Why This Is Critical for Our Qguard Helix Quantum Cyber Defense Platform:
+
+
+The biggest problem organizations face is:
+
+## They DO NOT KNOW:
+
+- where cryptography is used
+- which applications use vulnerable crypto
+- where keys are exchanged
+- what certificates are weak
+- which services still use RSA/ECC
+- where deprecated TLS versions exist
+- where shadow crypto exists
+- which applications secretly downgrade encryption
+- which vendors embed weak cryptography
+- where Harvest Now Decrypt Later exposure occurs
+
+Static asset inventories miss this.
+
+Runtime intelligence exposes it LIVE.
+
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+
+Build and implement an enterprise-grade Runtime Cryptographic Intelligence (RCI) engine for the Qguard Helix Quantum Cyber Defense Platform.
+
+The Runtime Cryptographic Intelligence system must continuously monitor, analyze, validate, and correlate live cryptographic operations across enterprise infrastructure in real time.
+
+The architecture must support:
+
+* real-time cryptographic observability
+* post-quantum cryptography validation
+* live TLS analysis
+* runtime crypto telemetry
+* cryptographic threat hunting
+* AI-driven anomaly detection
+* migration validation
+* governance and compliance visibility
+* hybrid PQC runtime verification
+* cryptographic drift detection
+
+The system must be production-grade, scalable, modular, and enterprise-ready.
+
+---
+
+## CORE OBJECTIVE
+
+The Runtime Cryptographic Intelligence engine must provide continuous live visibility into:
+
+* encryption operations
+* decryption operations
+* TLS handshakes
+* key exchanges
+* certificate validation
+* cryptographic library usage
+* cipher suite negotiation
+* runtime key usage
+* protocol downgrade attempts
+* PQC hybrid sessions
+* weak cryptographic operations
+* anomalous cryptographic behavior
+
+The platform must identify cryptographic weaknesses vulnerable to:
+
+Harvest Now, Decrypt Later (HNDL) attacks.
+
+---
+
+## SYSTEM ARCHITECTURE
+
+Implement the architecture using:
+
+Frontend:
+
+* Next.js
+* React
+* Tailwind
+* shadcn/ui
+* Recharts
+* Framer Motion
+* SSE/WebSocket telemetry
+
+Backend:
+
+* FastAPI (Python)
+* Redis Streams
+* Celery workers
+* PostgreSQL
+* ClickHouse (telemetry analytics)
+* Neo4j (crypto dependency mapping)
+* Kafka or NATS for event streaming
+
+Agent Runtime:
+
+* Go or Rust lightweight agents
+* optional eBPF kernel hooks
+* OpenTelemetry support
+
+Deployment:
+
+* Docker
+* Kubernetes
+* Helm
+* gRPC internal communication
+
+---
+
+## RUNTIME AGENT REQUIREMENTS
+
+Implement lightweight runtime agents capable of:
+
+1. TLS handshake inspection
+2. Cipher suite detection
+3. Key exchange detection
+4. Certificate validation
+5. Runtime crypto library discovery
+6. OpenSSL/BoringSSL/WolfSSL detection
+7. Process-level cryptographic monitoring
+8. API crypto usage monitoring
+9. Runtime PQC verification
+10. Key lifecycle telemetry
+11. Entropy monitoring
+12. Cryptographic drift detection
+13. Downgrade attack detection
+
+Agents must support:
+
+* Windows
+* Linux
+* macOS
+* Containers
+* Kubernetes nodes
+* Cloud workloads
+
+Agents must stream telemetry in real time to the Qguard Helix backend.
+
+---
+
+## PASSIVE NETWORK SENSOR
+
+Implement passive cryptographic sensors capable of analyzing:
+
+* TLS traffic
+* SSH
+* IPSec
+* VPN tunnels
+* mTLS
+* HTTPS APIs
+* service mesh encryption
+* Kubernetes ingress TLS
+
+The sensors must detect:
+
+* TLS versions
+* cipher suites
+* weak ciphers
+* RSA/ECC usage
+* PQC hybrid negotiation
+* certificate chains
+* downgrade attempts
+* expired certificates
+* self-signed certificates
+
+---
+
+## POST-QUANTUM CRYPTOGRAPHY DETECTION
+
+Implement detection and validation for:
+
+* ML-KEM (Kyber)
+* ML-DSA (Dilithium)
+* SLH-DSA
+* Falcon
+* SPHINCS+
+* X25519
+* hybrid TLS deployments
+
+Detect:
+
+* hybrid PQC sessions
+* fallback-to-RSA events
+* unsupported PQC negotiation
+* partial PQC migration
+* quantum-vulnerable sessions
+
+---
+
+## RUNTIME CRYPTOGRAPHIC OBSERVABILITY
+
+Implement live telemetry panels for:
+
+* crypto operations/sec
+* encryption operations
+* decryption operations
+* key exchanges
+* TLS handshakes
+* certificate events
+* entropy quality
+* PQC sessions
+* protocol usage
+* cipher suite usage
+* weak crypto detections
+* runtime process telemetry
+
+All telemetry must update in real time using:
+
+* Server-Sent Events (SSE)
+  or
+* WebSockets
+
+---
+
+## CRYPTOGRAPHIC THREAT HUNTING
+
+Implement AI-driven threat hunting capable of detecting:
+
+* downgrade attacks
+* suspicious decryption spikes
+* anomalous encryption volume
+* rogue certificate issuance
+* unauthorized PKI activity
+* stealth crypto miners
+* ransomware encryption patterns
+* weak protocol fallback
+* unusual key generation activity
+* cryptographic abuse patterns
+
+Implement behavioral baselining and anomaly scoring.
+
+---
+
+## AI-DRIVEN INTELLIGENCE ENGINE
+
+Implement AI correlation and intelligence capabilities:
+
+* anomaly scoring
+* risk prioritization
+* migration recommendations
+* remediation suggestions
+* runtime crypto policy analysis
+* drift detection analysis
+* HNDL exposure scoring
+
+Generate:
+
+Quantum Exposure Score (Q-Score)
+
+based on:
+
+* RSA/ECC usage
+* weak TLS usage
+* PQC adoption
+* certificate health
+* migration progress
+* entropy quality
+* protocol security posture
+
+---
+
+## KEY LIFECYCLE INTELLIGENCE
+
+Implement telemetry and visualization for:
+
+* key generation
+* key rotation
+* key expiration
+* compromised keys
+* QRNG entropy quality
+* HSM usage
+* cloud KMS usage
+* certificate trust chains
+
+Support:
+
+* AWS KMS
+* Azure Key Vault
+* GCP KMS
+* HashiCorp Vault
+* HSM integrations
+
+---
+
+## CRYPTOGRAPHIC DRIFT DETECTION
+
+Implement continuous drift detection capable of identifying:
+
+* cipher suite changes
+* unauthorized certificate replacement
+* protocol downgrade
+* crypto policy violations
+* shadow cryptography
+* unmanaged TLS deployments
+* deprecated crypto re-enabled
+
+---
+
+## CRYPTO DEPENDENCY MAPPING
+
+Build a live cryptographic dependency graph using Neo4j.
+
+Visualize:
+
+Application
+→ API
+→ TLS
+→ Certificate
+→ Key Vault
+→ HSM
+→ Database Encryption
+→ Cloud KMS
+→ VPN
+
+Enable interactive graph traversal and risk visualization.
+
+---
+
+## MIGRATION VALIDATION ENGINE
+
+Validate live PQC migration status.
+
+Detect:
+
+* migrated assets
+* failed migrations
+* unsupported systems
+* hybrid deployment status
+* runtime PQC verification
+* fallback-to-classical events
+
+Show:
+
+* migration progress
+* validation score
+* runtime compliance
+
+---
+
+## GOVERNANCE & COMPLIANCE
+
+Implement dashboards and reporting for:
+
+* NIST PQC readiness
+* CNSA 2.0 alignment
+* crypto policy compliance
+* migration audit trails
+* cryptographic inventory governance
+* runtime compliance validation
+
+---
+
+## DASHBOARD UI REQUIREMENTS
+
+Design must be:
+
+* enterprise-grade
+* futuristic
+* elegant
+* dark quantum SOC style
+* neon blue + gold theme
+* glassmorphism
+* responsive
+* telemetry-rich
+* not overcrowded
+
+Dashboard sections must include:
+
+* Runtime Cryptographic Intelligence
+* Threat Hunting
+* PQC Verification
+* Quantum Telemetry
+* Key Lifecycle Intelligence
+* Migration Validation
+* TLS Handshake Intelligence
+* Runtime Process Intelligence
+* Certificate Intelligence
+* Drift Detection
+* Quantum Exposure Analytics
+* AI Risk Insights
+* Crypto Dependency Map
+
+---
+
+## REAL-TIME DATA REQUIREMENTS
+
+NO MOCK DATA.
+
+All dashboards, charts, alerts, telemetry, metrics, and threat panels must display:
+
+accurate live runtime telemetry from agents and sensors.
+
+---
+
+## AUTOMATED RESPONSE ACTIONS
+
+Implement action buttons for:
+
+* Rotate Key
+* Revoke Certificate
+* Force Hybrid TLS
+* Disable Weak Cipher
+* Trigger Migration Wizard
+* Export Forensics
+* Isolate Asset
+* Enforce PQC Policy
+
+---
+
+## SECURITY REQUIREMENTS
+
+Implement:
+
+* mTLS between agents and backend
+* PQC hybrid transport
+* signed telemetry
+* tamper detection
+* zero-trust agent authentication
+* RBAC
+* tenant isolation
+* encrypted telemetry storage
+* audit logging
+
+---
+
+## GOAL
+
+The final platform must function as:
+
+an enterprise-grade Runtime Cryptographic Observability and Quantum Defense Platform capable of detecting, analyzing, validating, and defending against cryptographic weaknesses vulnerable to quantum-era attacks in real time.

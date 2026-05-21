@@ -11,6 +11,8 @@ export interface DashboardSummary {
   totalCbomItems: number
   activeMigrations: number
   failedMigrations: number
+  completedMigrations: number
+  migrationCompletionRate: number
   criticalExposures: number
   highExposures: number
   unresolvedVulns: number
@@ -215,7 +217,7 @@ export function useDashboard() {
   useEffect(() => {
     if (!token || !user) return
     refreshAll()
-  }, [token, user])
+  }, [token, user, refreshAll])
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
@@ -235,12 +237,12 @@ export function useDashboard() {
     const channels: ReturnType<typeof supabase.channel>[] = []
 
     const tables = [
-      { name: 'assets', callback: fetchSummary },
-      { name: 'crypto_exposures', callback: fetchSummary },
-      { name: 'migration_jobs', callback: fetchSummary },
+      { name: 'assets', callback: () => { fetchSummary(); fetchExposureMap(); fetchRecommendations(); } },
+      { name: 'crypto_exposures', callback: () => { fetchSummary(); fetchExposureMap(); fetchRecommendations(); } },
+      { name: 'migration_jobs', callback: () => { fetchSummary(); fetchActivity(); fetchRecommendations(); fetchHealth(); } },
       { name: 'security_events', callback: fetchEvents },
-      { name: 'pqc_scan_sessions', callback: () => { fetchSummary(); fetchActivity(); } },
-      { name: 'pqc_scan_results', callback: fetchSummary },
+      { name: 'pqc_scan_sessions', callback: () => { fetchSummary(); fetchActivity(); fetchExposureMap(); fetchEvents(); fetchRecommendations(); } },
+      { name: 'pqc_scan_results', callback: () => { fetchSummary(); fetchExposureMap(); fetchRecommendations(); } },
       { name: 'asset_relationships', callback: fetchExposureMap },
     ]
 
@@ -263,7 +265,7 @@ export function useDashboard() {
         supabase.removeChannel(channel)
       }
     }
-  }, [user, fetchSummary, fetchEvents, fetchExposureMap, fetchActivity])
+  }, [user, fetchSummary, fetchEvents, fetchExposureMap, fetchActivity, fetchRecommendations, fetchHealth])
 
   // SSE connection for real-time metric pushes (fallback for complex updates)
   useEffect(() => {
@@ -281,11 +283,13 @@ export function useDashboard() {
       es.addEventListener('metrics-update', () => {
         fetchSummary()
         fetchActivity()
+        fetchRecommendations()
       })
       es.addEventListener('scan-complete', () => {
         fetchSummary()
         fetchExposureMap()
         fetchEvents()
+        fetchRecommendations()
       })
     }
 
@@ -295,7 +299,7 @@ export function useDashboard() {
       eventSourceRef.current = null
       setSseConnected(false)
     }
-  }, [token, fetchSummary, fetchExposureMap, fetchEvents, fetchActivity])
+  }, [token, fetchSummary, fetchExposureMap, fetchEvents, fetchActivity, fetchRecommendations])
 
   return {
     summary,

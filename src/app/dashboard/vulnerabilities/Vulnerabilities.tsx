@@ -1,98 +1,714 @@
-import { useEffect, useState } from 'react';
-import { ShieldAlert, AlertCircle, ShieldCheck, Filter, Search } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
-import { motion } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Activity,
+  BarChart3,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Eye,
+  FileText,
+  Filter,
+  MoreVertical,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  ShieldAlert,
+  ShieldCheck,
+  Target,
+  XCircle,
+} from 'lucide-react'
+import { useAuth } from '@/contexts/auth-context'
+import { supabase } from '@/lib/supabase'
+import { cn } from '@/lib/utils'
 
-export default function Vulnerabilities() {
-  const [vulnerabilities, setVulnerabilities] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+type LoadState = 'loading' | 'success' | 'error'
+type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
+
+type VulnerabilityRow = {
+  id: string
+  title: string
+  description: string
+  asset: string
+  assetType: string
+  environment: string
+  severity: Severity
+  exposureLevel: string
+  type: string
+  detectedAt: string | null
+  status: string
+  algorithm: string
+  remediation: string
+}
+
+type VulnerabilityMetrics = {
+  criticalExposure: number
+  criticalExposureDelta: number
+  legacyAlgorithms: number
+  legacyAlgorithmsDelta: number
+  remediated: number
+  remediatedDelta: number
+  totalVulnerabilities: number
+  current7d: number
+}
+
+type BreakdownRow = {
+  severity?: Severity
+  label?: string
+  count: number
+  percent: number
+}
+
+type TrendPoint = {
+  label: string
+  critical: number
+  high: number
+  medium: number
+  low: number
+  info: number
+}
+
+type TopAsset = {
+  asset: string
+  severity: Severity
+  count: number
+}
+
+type ScanStatus = {
+  latestScanAt: string | null
+  nextScanAt: string | null
+  activeScans: number
+  latestStatus: string
+  telemetryEvents: number
+}
+
+type VulnerabilitySnapshot = {
+  generatedAt: string | null
+  metrics: VulnerabilityMetrics
+  filters: {
+    environments: string[]
+    assetTypes: string[]
+    vulnerabilityTypes: string[]
+  }
+  vulnerabilities: VulnerabilityRow[]
+  severityBreakdown: BreakdownRow[]
+  assetTypeBreakdown: BreakdownRow[]
+  trend: TrendPoint[]
+  topAssets: TopAsset[]
+  scanStatus: ScanStatus
+}
+
+const EMPTY_SNAPSHOT: VulnerabilitySnapshot = {
+  generatedAt: null,
+  metrics: {
+    criticalExposure: 0,
+    criticalExposureDelta: 0,
+    legacyAlgorithms: 0,
+    legacyAlgorithmsDelta: 0,
+    remediated: 0,
+    remediatedDelta: 0,
+    totalVulnerabilities: 0,
+    current7d: 0,
+  },
+  filters: { environments: [], assetTypes: [], vulnerabilityTypes: [] },
+  vulnerabilities: [],
+  severityBreakdown: [
+    { severity: 'critical', count: 0, percent: 0 },
+    { severity: 'high', count: 0, percent: 0 },
+    { severity: 'medium', count: 0, percent: 0 },
+    { severity: 'low', count: 0, percent: 0 },
+    { severity: 'info', count: 0, percent: 0 },
+  ],
+  assetTypeBreakdown: [],
+  trend: [],
+  topAssets: [],
+  scanStatus: {
+    latestScanAt: null,
+    nextScanAt: null,
+    activeScans: 0,
+    latestStatus: 'not_started',
+    telemetryEvents: 0,
+  },
+}
+
+const RED = '#EF4444'
+const ORANGE = '#F97316'
+const GOLD = '#FBBF24'
+const GREEN = '#22C55E'
+const BLUE = '#3B82F6'
+const CYAN = '#06B6D4'
+const PURPLE = '#A855F7'
+
+const SEVERITY_COLORS: Record<Severity, string> = {
+  critical: RED,
+  high: ORANGE,
+  medium: GOLD,
+  low: GREEN,
+  info: BLUE,
+}
+
+const ASSET_COLORS = [BLUE, CYAN, PURPLE, ORANGE, '#64748B', GREEN]
+
+const GLASS_PANEL_CLASSES =
+  'group relative overflow-hidden rounded-lg border border-gold/18 bg-[#07101D]/72 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(251,191,36,0.035),0_0_34px_rgba(0,0,0,0.32)] transition-all duration-500 hover:-translate-y-0.5 hover:border-gold/65 hover:bg-[#0A1728]/80 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-24px_60px_rgba(251,191,36,0.12),0_14px_42px_rgba(0,0,0,0.45),0_0_54px_rgba(251,191,36,0.32)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/70 before:to-transparent after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-52 after:w-52 after:rounded-full after:bg-gold/10 after:blur-3xl after:transition-all group-hover:after:bg-gold/20'
+
+function numberFmt(value: number) {
+  return new Intl.NumberFormat('en-US').format(Math.max(0, Math.round(value || 0)))
+}
+
+function formatDelta(value: number) {
+  if (value > 0) return `+ ${numberFmt(value)} vs last 7 days`
+  if (value < 0) return `${numberFmt(value)} vs last 7 days`
+  return '0 vs last 7 days'
+}
+
+function dateTime(value: string | null) {
+  if (!value) return { date: '--', time: '--' }
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return { date: '--', time: '--' }
+  return {
+    date: date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
+    time: date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+  }
+}
+
+function relativeTime(value: string | null) {
+  if (!value) return 'Not scheduled'
+  const ms = new Date(value).getTime()
+  if (!Number.isFinite(ms)) return 'Not scheduled'
+  return new Date(value).toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function severityClass(severity: Severity) {
+  if (severity === 'critical') return 'border-red-500/35 bg-red-500/10 text-red-300'
+  if (severity === 'high') return 'border-orange-500/35 bg-orange-500/10 text-orange-300'
+  if (severity === 'medium') return 'border-gold/35 bg-gold/10 text-gold'
+  if (severity === 'low') return 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
+  return 'border-sky-500/35 bg-sky-500/10 text-sky-300'
+}
+
+function severityRank(severity: string) {
+  if (severity === 'critical') return 5
+  if (severity === 'high') return 4
+  if (severity === 'medium') return 3
+  if (severity === 'low') return 2
+  return 1
+}
+
+function useVulnerabilitySnapshot() {
+  const { session, user } = useAuth()
+  const token = session?.access_token
+  const [snapshot, setSnapshot] = useState<VulnerabilitySnapshot>(EMPTY_SNAPSHOT)
+  const [state, setState] = useState<LoadState>('loading')
+  const [error, setError] = useState<string | null>(null)
+  const [sseConnected, setSseConnected] = useState(false)
+  const eventSourceRef = useRef<EventSource | null>(null)
+
+  const fetchSnapshot = useCallback(async () => {
+    if (!token) return
+    setState((current) => current === 'success' ? current : 'loading')
+    try {
+      const response = await fetch('/api/v1/dashboard/vulnerabilities', {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`)
+      setSnapshot(payload.data || EMPTY_SNAPSHOT)
+      setState('success')
+      setError(null)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to load vulnerability telemetry'
+      console.error('Vulnerability telemetry failed:', err)
+      setError(message)
+      setState('error')
+    }
+  }, [token])
 
   useEffect(() => {
-    async function fetchVulnerabilities() {
-      const { data, error } = await supabase
-        .from('crypto_inventory')
-        .select(`
-          *,
-          assets(name, environment)
-        `)
-        .eq('is_vulnerable', true);
-      
-      if (error) console.error('Error fetching vulnerabilities:', error);
-      else setVulnerabilities(data || []);
-      setLoading(false);
+    if (!token || !user) return
+    fetchSnapshot()
+  }, [token, user, fetchSnapshot])
+
+  useEffect(() => {
+    if (!user) return
+    const tables = [
+      'assets',
+      'crypto_inventory',
+      'crypto_exposures',
+      'pqc_scan_sessions',
+      'pqc_scan_results',
+      'vulnerabilities',
+      'certificates',
+      'migration_jobs',
+      'security_events',
+    ]
+
+    const channels = tables.map((table) => supabase
+      .channel(`vulnerabilities-${table}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` },
+        () => fetchSnapshot()
+      )
+      .subscribe())
+
+    return () => {
+      for (const channel of channels) {
+        supabase.removeChannel(channel)
+      }
+    }
+  }, [user, fetchSnapshot])
+
+  useEffect(() => {
+    if (!token) return
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+
+    const connect = () => {
+      const eventSource = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
+      eventSourceRef.current = eventSource
+      eventSource.onopen = () => setSseConnected(true)
+      eventSource.onerror = () => {
+        setSseConnected(false)
+        eventSource.close()
+        retryTimer = setTimeout(connect, 10000)
+      }
+      eventSource.addEventListener('metrics-update', fetchSnapshot)
+      eventSource.addEventListener('scan-complete', fetchSnapshot)
     }
 
-    fetchVulnerabilities();
-  }, []);
+    connect()
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer)
+      eventSourceRef.current?.close()
+      eventSourceRef.current = null
+      setSseConnected(false)
+    }
+  }, [token, fetchSnapshot])
+
+  return { snapshot, state, error, sseConnected, refresh: fetchSnapshot }
+}
+
+function GlassPanel({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <section className={cn(GLASS_PANEL_CLASSES, className)}>
+      <div className="relative z-10 h-full">{children}</div>
+    </section>
+  )
+}
+
+function SectionTitle({ icon: Icon, children, suffix }: { icon: LucideIcon; children: ReactNode; suffix?: ReactNode }) {
+  return (
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h2 className="font-mono text-xs font-black uppercase tracking-[0.17em] text-white">
+        <Icon className="mr-2 inline h-4 w-4 text-gold" />
+        {children}
+      </h2>
+      {suffix}
+    </div>
+  )
+}
+
+function Sparkline({ values, color }: { values: number[]; color: string }) {
+  const width = 150
+  const height = 48
+  const max = Math.max(1, ...values)
+  const points = values.length
+    ? values.map((value, index) => {
+      const x = values.length === 1 ? width : (index / (values.length - 1)) * width
+      const y = height - (value / max) * (height - 8) - 4
+      return `${x},${y}`
+    }).join(' ')
+    : `0,${height - 4} ${width},${height - 4}`
 
   return (
-    <div className="p-8 space-y-6">
-      <header>
-        <h1 className="text-3xl font-black uppercase tracking-tighter text-white">Quantum <span className="text-red-500">Vulnerabilities</span></h1>
-        <p className="text-white/50 mt-1">Identified cryptographic weaknesses vulnerable to Harvest Now, Decrypt Later (HNDL) attacks.</p>
-      </header>
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-12 w-40 overflow-visible">
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div className="p-4 border border-red-500/20 bg-red-500/5 rounded-xl">
-          <div className="text-[10px] font-black uppercase tracking-widest text-red-500/60 mb-1">Critical Exposure</div>
-          <div className="text-2xl font-black text-red-500">{vulnerabilities.length}</div>
+function MetricCard({ label, value, detail, tone, values }: { label: string; value: string; detail: string; tone: 'red' | 'gold' | 'green'; values: number[] }) {
+  const color = tone === 'red' ? RED : tone === 'green' ? GREEN : GOLD
+  const panelClass = tone === 'red'
+    ? 'border-red-500/25 bg-red-950/15 hover:border-red-400/55'
+    : tone === 'green'
+      ? 'border-emerald-500/25 bg-emerald-950/15 hover:border-emerald-400/55'
+      : 'border-gold/25 bg-gold/[0.055] hover:border-gold/65'
+
+  return (
+    <GlassPanel className={cn('p-5', panelClass)}>
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <div className="font-mono text-[10px] font-black uppercase tracking-[0.18em]" style={{ color }}>{label}</div>
+          <div className="mt-2 font-mono text-4xl font-black leading-none" style={{ color }}>{value}</div>
         </div>
-        <div className="p-4 border border-yellow-500/20 bg-yellow-500/5 rounded-xl">
-          <div className="text-[10px] font-black uppercase tracking-widest text-yellow-500/60 mb-1">Legacy Algorithms</div>
-          <div className="text-2xl font-black text-yellow-500">
-            {vulnerabilities.filter(v => v.algorithm === 'RSA' || v.algorithm === 'SHA-1').length}
+        <Sparkline values={values} color={color} />
+      </div>
+      <div className="mt-4 flex items-center justify-between border-t border-white/6 pt-3 text-xs">
+        <span className="text-white/60">{label === 'Critical Exposure' ? 'Assets at severe risk' : label === 'Legacy Algorithms' ? 'Detected in use' : 'Vulnerabilities fixed'}</span>
+        <span className={detail.startsWith('+') ? 'text-emerald-300' : detail.startsWith('-') ? 'text-red-300' : 'text-white/45'}>{detail}</span>
+      </div>
+    </GlassPanel>
+  )
+}
+
+function Donut({ total, rows, colors }: { total: number; rows: BreakdownRow[]; colors: string[] }) {
+  let cursor = 0
+  const safeTotal = Math.max(1, total)
+  const segments = rows.map((row, index) => {
+    const size = (row.count / safeTotal) * 100
+    const start = cursor
+    cursor += size
+    return `${colors[index] || GOLD} ${start}% ${cursor}%`
+  })
+  const gradient = `conic-gradient(${segments.join(', ') || '#334155 0 100%'})`
+
+  return (
+    <div className="grid gap-5 md:grid-cols-[160px_minmax(0,1fr)]">
+      <div className="flex justify-center">
+        <div className="relative flex h-36 w-36 items-center justify-center rounded-full" style={{ background: gradient }}>
+          <div className="absolute inset-6 rounded-full bg-[#07101D] shadow-[inset_0_0_24px_rgba(0,0,0,0.55)]" />
+          <div className="relative text-center">
+            <div className="font-mono text-3xl font-black text-white">{numberFmt(total)}</div>
+            <div className="text-[10px] text-white/45">Total</div>
           </div>
-        </div>
-        <div className="p-4 border border-green-500/20 bg-green-500/5 rounded-xl">
-          <div className="text-[10px] font-black uppercase tracking-widest text-green-500/60 mb-1">Remediated</div>
-          <div className="text-2xl font-black text-green-500">12</div>
         </div>
       </div>
-
-      <div className="space-y-4">
-        {loading ? (
-          <div className="p-12 text-center text-gold/50 font-black uppercase tracking-widest animate-pulse">Scanning for vulnerabilities...</div>
-        ) : vulnerabilities.length === 0 ? (
-          <div className="p-20 text-center border border-dashed border-white/10 rounded-xl">
-            <ShieldCheck className="h-12 w-12 text-green-500 mx-auto mb-4 opacity-50" />
-            <div className="text-white/50 uppercase font-black tracking-widest">No Critical Vulnerabilities Detected</div>
-            <p className="text-xs text-white/30 mt-2 uppercase">Your enterprise cryptographic posture is currently stable.</p>
+      <div className="space-y-3 self-center">
+        {rows.map((row, index) => (
+          <div key={row.label || row.severity || index} className="flex items-center gap-3 text-sm">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: colors[index] || GOLD }} />
+            <span className="flex-1 capitalize text-white/65">{row.label || row.severity}</span>
+            <span className="font-mono font-bold text-white">{numberFmt(row.count)} ({row.percent}%)</span>
           </div>
-        ) : vulnerabilities.map((vuln, i) => (
-          <motion.div
-            key={vuln.id}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: i * 0.05 }}
-            className="p-5 border rounded-xl flex items-center justify-between group hover:border-red-500/40 transition-colors glass-panel"
-          >
-            <div className="flex items-center gap-4">
-              <div className="h-10 w-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
-                <AlertCircle className="h-6 w-6" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-black text-white uppercase tracking-tight">{vuln.algorithm} Detected</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-red-500 text-white font-black uppercase">Critical</span>
-                </div>
-                <div className="text-xs text-white/40 mt-1 uppercase font-bold tracking-wider">
-                  Asset: <span className="text-white/70">{vuln.assets?.name}</span> • Env: <span className="text-white/70">{vuln.assets?.environment}</span>
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex items-center gap-6">
-              <div className="text-right">
-                <div className="text-[10px] font-black text-white/30 uppercase tracking-widest mb-1">Exposure Level</div>
-                <div className="text-xs font-bold text-white/70 uppercase">{vuln.exposure_level}</div>
-              </div>
-              <button className="px-4 py-2 bg-red-500/10 border border-red-500/30 rounded text-red-500 text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all">
-                Remediate
-              </button>
-            </div>
-          </motion.div>
         ))}
       </div>
     </div>
-  );
+  )
+}
+
+function TrendChart({ data }: { data: TrendPoint[] }) {
+  const width = 520
+  const height = 200
+  const pad = 30
+  const series = [
+    { key: 'critical' as const, label: 'Critical', color: RED },
+    { key: 'high' as const, label: 'High', color: ORANGE },
+    { key: 'medium' as const, label: 'Medium', color: GOLD },
+    { key: 'low' as const, label: 'Low', color: GREEN },
+    { key: 'info' as const, label: 'Info', color: BLUE },
+  ]
+  const max = Math.max(1, ...data.flatMap((point) => series.map((item) => Number(point[item.key] || 0))))
+  const pathFor = (key: keyof TrendPoint) => data.map((point, index) => {
+    const x = pad + (index / Math.max(1, data.length - 1)) * (width - pad * 2)
+    const y = height - pad - (Number(point[key] || 0) / max) * (height - pad * 2)
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
+  }).join(' ')
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full">
+        {[0, 1, 2, 3].map((line) => (
+          <line key={line} x1={pad} x2={width - pad} y1={pad + line * ((height - pad * 2) / 3)} y2={pad + line * ((height - pad * 2) / 3)} stroke="rgba(255,255,255,0.07)" />
+        ))}
+        {data.map((point, index) => {
+          const x = pad + (index / Math.max(1, data.length - 1)) * (width - pad * 2)
+          return (
+            <g key={point.label}>
+              <line x1={x} x2={x} y1={pad} y2={height - pad} stroke="rgba(255,255,255,0.05)" />
+              <text x={x} y={height - 6} textAnchor="middle" className="fill-white/45 text-[10px]">{point.label}</text>
+            </g>
+          )
+        })}
+        {series.map((item) => (
+          <path key={item.key} d={pathFor(item.key)} fill="none" stroke={item.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+      </svg>
+      <div className="flex flex-wrap items-center gap-5 text-[10px] font-bold text-white/45">
+        {series.map((item) => (
+          <span key={item.key} className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} /> {item.label}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EmptyState({ label }: { label: string }) {
+  return (
+    <div className="rounded-md border border-white/5 bg-white/[0.025] p-8 text-center text-xs font-semibold text-white/40">
+      {label}
+    </div>
+  )
+}
+
+function exportJson(name: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${name}-${new Date().toISOString().slice(0, 10)}.json`
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+export default function Vulnerabilities() {
+  const { snapshot, state, error, sseConnected, refresh } = useVulnerabilitySnapshot()
+  const [severityFilter, setSeverityFilter] = useState<'all' | Severity>('all')
+  const [assetTypeFilter, setAssetTypeFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const [query, setQuery] = useState('')
+
+  const metrics = snapshot.metrics
+  const filteredRows = useMemo(() => snapshot.vulnerabilities.filter((row) => {
+    if (severityFilter !== 'all' && row.severity !== severityFilter) return false
+    if (assetTypeFilter !== 'all' && row.assetType !== assetTypeFilter) return false
+    if (typeFilter !== 'all' && row.type !== typeFilter) return false
+    if (environmentFilter !== 'all' && row.environment !== environmentFilter) return false
+    const haystack = `${row.title} ${row.description} ${row.asset} ${row.type} ${row.algorithm}`.toLowerCase()
+    return haystack.includes(query.toLowerCase())
+  }), [assetTypeFilter, environmentFilter, query, severityFilter, snapshot.vulnerabilities, typeFilter])
+
+  const metricTrend = useMemo(() => snapshot.trend.map((point) => point.critical + point.high + point.medium + point.low + point.info), [snapshot.trend])
+  const criticalTrend = useMemo(() => snapshot.trend.map((point) => point.critical), [snapshot.trend])
+  const legacyTrend = useMemo(() => snapshot.trend.map((point) => point.high + point.medium), [snapshot.trend])
+  const generatedAt = snapshot.generatedAt ? new Date(snapshot.generatedAt) : new Date()
+
+  const scanPct = snapshot.scanStatus.latestStatus === 'completed' ? 100 : snapshot.scanStatus.activeScans ? 66 : snapshot.vulnerabilities.length ? 100 : 0
+
+  return (
+    <main className="min-h-screen space-y-4 bg-[#02070E] p-3 text-white md:p-4">
+      <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div>
+          <h1 className="font-mono text-3xl font-black uppercase tracking-tight text-white md:text-4xl">Quantum <span className="text-red-400">Vulnerabilities</span></h1>
+          <p className="mt-2 max-w-4xl text-base text-white/58">Identified cryptographic weaknesses vulnerable to Harvest Now, Decrypt Later (HNDL) attacks.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <select value={environmentFilter} onChange={(event) => setEnvironmentFilter(event.target.value)} className="h-10 rounded-md border border-white/10 bg-black/20 px-4 text-sm text-white/70 outline-none focus:border-gold/40">
+            <option value="all">All Environments</option>
+            {snapshot.filters.environments.map((environment) => <option key={environment} value={environment}>{environment}</option>)}
+          </select>
+          <div className="inline-flex h-10 items-center gap-2 rounded-md border border-white/10 bg-black/20 px-4 text-sm text-white/70">
+            <span>Last 7 Days</span>
+            <CalendarDays className="h-4 w-4 text-gold" />
+          </div>
+          <button type="button" onClick={refresh} className="flex h-10 w-14 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/70 hover:border-gold/40 hover:text-gold">
+            <RefreshCw className={cn('h-4 w-4', state === 'loading' && 'animate-spin')} />
+          </button>
+          <a href="/dashboard/scanner" className="inline-flex h-10 items-center gap-2 rounded-md border border-red-500 bg-red-500 px-4 text-sm font-black text-white shadow-[0_0_22px_rgba(239,68,68,0.35)] hover:bg-red-400">
+            <Plus className="h-4 w-4" />
+            New Scan
+          </a>
+        </div>
+      </header>
+
+      <div className="space-y-4">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <MetricCard label="Critical Exposure" value={numberFmt(metrics.criticalExposure)} detail={formatDelta(metrics.criticalExposureDelta)} tone="red" values={criticalTrend} />
+            <MetricCard label="Legacy Algorithms" value={numberFmt(metrics.legacyAlgorithms)} detail={formatDelta(metrics.legacyAlgorithmsDelta)} tone="gold" values={legacyTrend} />
+            <MetricCard label="Remediated" value={numberFmt(metrics.remediated)} detail={formatDelta(metrics.remediatedDelta)} tone="green" values={metricTrend} />
+          </div>
+
+          <GlassPanel className="p-4">
+            <div className="grid gap-3 xl:grid-cols-[160px_170px_190px_minmax(220px,1fr)_90px]">
+              <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value as 'all' | Severity)} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm text-white/70 outline-none focus:border-gold/40">
+                <option value="all">All Severity</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+                <option value="info">Info</option>
+              </select>
+              <select value={assetTypeFilter} onChange={(event) => setAssetTypeFilter(event.target.value)} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm text-white/70 outline-none focus:border-gold/40">
+                <option value="all">All Asset Types</option>
+                {snapshot.filters.assetTypes.map((assetType) => <option key={assetType} value={assetType}>{assetType}</option>)}
+              </select>
+              <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-sm text-white/70 outline-none focus:border-gold/40">
+                <option value="all">All Vulnerability Types</option>
+                {snapshot.filters.vulnerabilityTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search vulnerabilities, assets..." className="h-10 w-full rounded-md border border-white/10 bg-black/20 pl-10 pr-3 text-sm text-white outline-none placeholder:text-white/35 focus:border-gold/40" />
+              </div>
+              <button type="button" className="inline-flex items-center justify-center gap-2 rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs font-black text-white/70 hover:border-gold/40 hover:text-gold">
+                <Filter className="h-4 w-4" />
+                Filters
+              </button>
+            </div>
+          </GlassPanel>
+
+          <GlassPanel className="p-0">
+            {filteredRows.length === 0 ? (
+              <div className="p-6">
+                <EmptyState label="No vulnerabilities match the current filters." />
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[980px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-white/8 bg-white/[0.025]">
+                      {['Vulnerability', 'Asset', 'Exposure Level', 'First Detected', 'Status', 'Actions'].map((header) => (
+                        <th key={header} className="px-4 py-4 font-mono text-[10px] font-black uppercase tracking-[0.18em] text-white/42">{header}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/6">
+                    {filteredRows.slice(0, 5).map((row) => {
+                      const detected = dateTime(row.detectedAt)
+                      return (
+                        <tr key={row.id} className="transition hover:bg-gold/[0.04]">
+                          <td className="px-4 py-4">
+                            <div className="flex items-start gap-3">
+                              <div className={cn('mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border', severityClass(row.severity))}>
+                                <XCircle className="h-4 w-4" />
+                              </div>
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-mono text-sm font-black uppercase text-white/92">{row.title}</span>
+                                  <span className={cn('rounded px-2 py-0.5 font-mono text-[9px] font-black uppercase', severityClass(row.severity))}>{row.severity}</span>
+                                </div>
+                                <div className="mt-1 max-w-xl text-xs leading-relaxed text-white/50">{row.description}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4">
+                            <div className="text-sm text-white/80">{row.asset}</div>
+                            <span className="mt-1 inline-flex rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] text-white/45">{row.assetType}</span>
+                          </td>
+                          <td className={cn('px-4 py-4 font-mono text-xs font-black uppercase', row.exposureLevel.toLowerCase().includes('moderate') ? 'text-gold' : row.exposureLevel.toLowerCase().includes('high') ? 'text-red-300' : 'text-white/55')}>{row.exposureLevel}</td>
+                          <td className="px-4 py-4 font-mono text-xs text-white/58">
+                            <div>{detected.date}</div>
+                            <div className="mt-1">{detected.time}</div>
+                          </td>
+                          <td className="px-4 py-4">
+                            <span className={cn('rounded border px-4 py-2 font-mono text-[10px] font-black uppercase', row.status === 'Remediated' ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300' : 'border-red-500/40 bg-red-500/10 text-red-300')}>
+                              {row.status === 'Remediated' ? 'Fixed' : 'Remediate'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4">
+                            <div className="flex items-center gap-2">
+                              <a href="/dashboard/crypto-exposure" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`View ${row.title}`}>
+                                <Eye className="h-4 w-4" />
+                              </a>
+                              <a href="/dashboard/pqc-orchestration" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Plan remediation for ${row.title}`}>
+                                <BarChart3 className="h-4 w-4" />
+                              </a>
+                              <button type="button" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Actions for ${row.title}`}>
+                                <MoreVertical className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="flex items-center justify-between border-t border-white/6 px-4 py-3 text-sm text-white/45">
+              <span>Showing 1 to {numberFmt(Math.min(5, filteredRows.length))} of {numberFmt(filteredRows.length)} results</span>
+              <div className="flex items-center gap-2">
+                <button type="button" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 text-white/35"><ChevronLeft className="h-4 w-4" /></button>
+                {[1, 2, 3, 4, 5].map((page) => (
+                  <button type="button" key={page} className={cn('h-8 w-8 rounded border text-sm', page === 1 ? 'border-red-500 text-red-300' : 'border-white/10 text-white/35')}>{page}</button>
+                ))}
+                <span className="text-white/35">...</span>
+                <button type="button" className="h-8 w-8 rounded border border-white/10 text-white/35">8</button>
+                <button type="button" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 text-white/35"><ChevronRight className="h-4 w-4" /></button>
+              </div>
+            </div>
+          </GlassPanel>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(260px,0.72fr)_minmax(340px,1fr)_minmax(280px,0.78fr)]">
+          <GlassPanel className="p-4">
+            <SectionTitle icon={Activity}>Scan Status</SectionTitle>
+            <div className="grid gap-4 sm:grid-cols-[90px_minmax(0,1fr)]">
+              <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-[conic-gradient(#3B82F6_var(--scan),rgba(255,255,255,0.08)_0)]" style={{ '--scan': `${scanPct}%` } as React.CSSProperties}>
+                <div className="absolute inset-3 rounded-full bg-[#07101D]" />
+                <Activity className="relative h-6 w-6 text-blue-400" />
+              </div>
+              <div className="space-y-2 text-xs text-white/55">
+                <div><span className="text-white/35">Last Scan</span><br />{relativeTime(snapshot.scanStatus.latestScanAt)}</div>
+                <div><span className="text-white/35">Next Scan</span><br />{relativeTime(snapshot.scanStatus.nextScanAt)}</div>
+                <button type="button" onClick={refresh} className="mt-2 h-9 w-full rounded border border-blue-500/50 bg-blue-500/5 text-xs font-black text-blue-300 hover:bg-blue-500/10">Run New Scan</button>
+              </div>
+            </div>
+          </GlassPanel>
+
+          <GlassPanel className="p-4">
+            <SectionTitle icon={Settings}>Quick Actions</SectionTitle>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {[
+                { label: 'Run Quantum Scan', detail: 'Start a new vulnerability scan', href: '/dashboard/scanner', icon: Target },
+                { label: 'Add Asset', detail: 'Add new asset for scanning', href: '/dashboard/assets_map', icon: Plus },
+                { label: 'View Reports', detail: 'View scan and compliance reports', href: '/dashboard/audit-vault', icon: FileText },
+                { label: 'Manage Policies', detail: 'Configure detection policies', href: '/dashboard/crypto-policies', icon: Settings },
+              ].map((action) => {
+                const Icon = action.icon
+                return (
+                  <a key={action.label} href={action.href} className="flex items-center gap-3 rounded-md border border-white/10 bg-white/[0.025] p-3 transition hover:border-gold/40 hover:bg-gold/[0.06]">
+                    <Icon className="h-4 w-4 text-white/65" />
+                    <div>
+                      <div className="text-xs font-black text-white/85">{action.label}</div>
+                      <div className="mt-1 text-[10px] text-white/40">{action.detail}</div>
+                    </div>
+                  </a>
+                )
+              })}
+            </div>
+          </GlassPanel>
+
+          <GlassPanel className="p-4">
+            <SectionTitle icon={ShieldAlert}>Top Vulnerable Assets</SectionTitle>
+            {snapshot.topAssets.length === 0 ? (
+              <EmptyState label="No vulnerable assets detected." />
+            ) : (
+              <div className="space-y-3">
+                {snapshot.topAssets.map((asset) => (
+                  <div key={asset.asset} className="flex items-center gap-3 text-xs">
+                    <ShieldAlert className="h-4 w-4 text-white/45" />
+                    <span className="min-w-0 flex-1 truncate text-white/75">{asset.asset}</span>
+                    <span className={cn('rounded border px-2 py-1 text-[9px] font-black capitalize', severityClass(asset.severity))}>{asset.severity}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <a href="/dashboard/assets_map" className="mt-4 flex h-9 items-center justify-center rounded border border-blue-500/45 text-xs font-black text-blue-300 hover:bg-blue-500/10">View All Assets</a>
+          </GlassPanel>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.78fr)_minmax(0,0.95fr)_minmax(0,0.82fr)]">
+        <GlassPanel className="p-5">
+          <SectionTitle icon={ShieldAlert}>Vulnerabilities By Severity</SectionTitle>
+          <Donut total={metrics.totalVulnerabilities} rows={snapshot.severityBreakdown} colors={[RED, ORANGE, GOLD, GREEN, BLUE]} />
+        </GlassPanel>
+
+        <GlassPanel className="p-5">
+          <SectionTitle icon={BarChart3}>Trend Over Time</SectionTitle>
+          <TrendChart data={snapshot.trend} />
+        </GlassPanel>
+
+        <GlassPanel className="p-5">
+          <SectionTitle icon={Activity}>Vulnerabilities By Asset Type</SectionTitle>
+          <Donut total={metrics.totalVulnerabilities} rows={snapshot.assetTypeBreakdown} colors={ASSET_COLORS} />
+        </GlassPanel>
+      </div>
+
+      <footer className="flex flex-col gap-2 border-t border-white/5 pt-3 text-[10px] font-mono uppercase tracking-wider text-white/30 md:flex-row md:items-center md:justify-between">
+        <span>{error ? `Telemetry warning: ${error}` : 'Vulnerability telemetry synchronized'}</span>
+        <span>Live stream: {sseConnected ? 'connected' : 'standby'} / Snapshot: {snapshot.generatedAt ? relativeTime(snapshot.generatedAt) : 'pending'} / Generated: {generatedAt.toLocaleTimeString('en-US', { hour12: false })}</span>
+        <button type="button" onClick={() => exportJson('vulnerability-report', snapshot)} className="inline-flex items-center gap-2 text-gold hover:text-[#FFE8A8]"><Download className="h-3.5 w-3.5" /> Export Snapshot</button>
+      </footer>
+    </main>
+  )
 }

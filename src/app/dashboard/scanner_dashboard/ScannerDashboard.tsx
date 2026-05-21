@@ -6,7 +6,8 @@ import {
   Loader2, Server, Database, Globe, Wifi, Lock, Layers,
   Plus, Trash2, History, Network, RefreshCw, Copy, Download,
   RotateCcw, Eraser, FileWarning, KeyRound, Settings, Eye,
-  PowerOff, ClipboardCheck, Package, Cloud, Code2, HardDrive
+  PowerOff, ClipboardCheck, Package, Cloud, Code2, HardDrive,
+  Calendar, ChevronDown, Cpu, Sparkles
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import {
@@ -96,11 +97,25 @@ type HistoryEntry = {
   telemetry: any[];
   moduleStates?: ModuleState[];
   scannerModulesUsed?: string[];
+  summary?: ScanSummary | null;
+  findings?: DefensiveFinding[];
+  recommendations?: string[];
+  enterpriseScanner2?: any;
   errorLogs: string[];
   linkedCbomRecords: string[];
   linkedAssetRecords: string[];
   linkedExposureNodes: string[];
 };
+
+type ScheduledScan = {
+  id: string;
+  scheduledFor: string;
+  createdAt: string;
+  status: 'scheduled';
+  targets: string[];
+};
+
+type HistoryTimeframe = 'last7' | 'all';
 
 type AgentPolicy = {
   enabled?: boolean;
@@ -285,8 +300,216 @@ function serializeLogs(logs: LogEntry[]) {
   return logs.map((entry) => `[${entry.elapsed || entry.timestamp}] [${entry.level}] ${entry.moduleName ? `[${entry.moduleName}] ` : ''}${entry.message}`).join('\n');
 }
 
+function safeText(value: unknown, fallback = '') {
+  return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
+function directDashboardThreatLevel(value: unknown): DefensiveFinding['threatLevel'] | null {
+  const normalized = String(value || '').toUpperCase();
+  if (normalized === 'CRITICAL' || normalized === 'HIGH' || normalized === 'MEDIUM' || normalized === 'LOW' || normalized === 'SAFE') {
+    return normalized;
+  }
+  if (normalized === 'MODERATE') return 'MEDIUM';
+  return null;
+}
+
+function inferDashboardThreatLevel(input: {
+  algorithm: string;
+  category?: string;
+  status?: string;
+  severity?: unknown;
+  rawSeverity?: unknown;
+}): DefensiveFinding['threatLevel'] {
+  const direct = directDashboardThreatLevel(input.severity) || directDashboardThreatLevel(input.rawSeverity);
+  if (direct) return direct;
+
+  const algorithm = input.algorithm.toLowerCase();
+  const category = String(input.category || '').toLowerCase();
+  const status = String(input.status || '').toLowerCase();
+
+  if (status.includes('pqc-ready') || algorithm.includes('aes-256') || algorithm.includes('ml-kem') || algorithm.includes('ml-dsa')) return 'SAFE';
+  if (algorithm.includes('tlsv1.3') || algorithm.includes('tls 1.3') || algorithm.includes('tls-1.3')) return 'LOW';
+  if (algorithm.includes('tlsv1.0') || algorithm === 'tlsv1' || algorithm.includes('tls 1.0') || algorithm.includes('tls-1.0')) return 'CRITICAL';
+  if (algorithm.includes('tlsv1.1') || algorithm.includes('tls 1.1') || algorithm.includes('tls-1.1')) return 'CRITICAL';
+  if (algorithm.includes('rsa-1024') || algorithm.includes('md5') || algorithm.includes('sha-1') || algorithm.includes('sha1')) return 'CRITICAL';
+  if (algorithm.includes('expired certificate') || category.includes('expired')) return 'CRITICAL';
+
+  if (algorithm.includes('wide crypto attack surface')) return 'HIGH';
+  if (algorithm.includes('hndl risk')) return 'HIGH';
+  if (algorithm.includes('ecdsa') || algorithm.includes('ecdhe') || algorithm.includes('ecdh') || algorithm.includes('x25519')) return 'HIGH';
+  if (algorithm.includes('rsa-2048') || algorithm.includes('rsa 2048') || algorithm.includes('dhe') || algorithm.includes('diffie')) return 'HIGH';
+  if (category.includes('certificate') && status.includes('quantum-vulnerable')) return 'HIGH';
+  if (category.includes('key exchange') && status.includes('quantum-vulnerable')) return 'HIGH';
+
+  if (algorithm.includes('tlsv1.2') || algorithm.includes('tls 1.2') || algorithm.includes('tls-1.2')) return 'MEDIUM';
+  if (algorithm.includes('nist pqc deadline')) return 'MEDIUM';
+  if (algorithm.includes('no hybrid crypto')) return 'MEDIUM';
+  if (algorithm.includes('no certificate pinning')) return 'MEDIUM';
+  if (algorithm.includes('regulatory compliance gap')) return 'LOW';
+  if (status.includes('quantum-vulnerable') || status.includes('legacy') || status.includes('misconfigured')) return 'MEDIUM';
+
+  return 'LOW';
+}
+
+function normalizeDashboardFinding(finding: Partial<DefensiveFinding> & Record<string, unknown>, index = 0): DefensiveFinding {
+  const raw = (finding.raw && typeof finding.raw === 'object' ? finding.raw : {}) as Record<string, unknown>;
+  const algorithm = safeText(finding.algorithm, safeText(raw.algorithm, 'Unknown algorithm'));
+  const category = safeText(finding.category, safeText(raw.category, 'Stored Finding'));
+  const location = safeText(finding.location, safeText(raw.location, 'Stored scanner result'));
+  const status = safeText(finding.status, '');
+  const threatLevel = inferDashboardThreatLevel({
+    algorithm,
+    category,
+    status,
+    severity: finding.threatLevel || finding.severity,
+    rawSeverity: raw.threatLevel || raw.severity,
+  });
+
+  return {
+    id: safeText(finding.id, safeText(raw.id, `finding-${index + 1}`)),
+    algorithm,
+    category,
+    location,
+    threatLevel,
+    status: status || (threatLevel === 'SAFE' ? 'PQC-ready' : 'Quantum-vulnerable'),
+    description: safeText(finding.description, safeText(raw.description, 'Persisted scanner finding')),
+    recommendation: safeText(finding.recommendation, safeText(raw.recommendation, 'Review against NIST PQC migration policy')),
+    pqcReplacement: typeof finding.pqcReplacement === 'string' ? finding.pqcReplacement : null,
+    keySize: typeof finding.keySize === 'number' ? finding.keySize : null,
+    evidence: safeText(finding.evidence, `${safeText(finding.detectionMethod, 'scanner')}: ${location}`),
+    detectionMethod: safeText(finding.detectionMethod, safeText(raw.phase, 'persisted-scan-result')),
+    source: safeText(finding.source, 'authorized-scanner-history'),
+  };
+}
+
+function normalizeDashboardFindings(value: unknown): DefensiveFinding[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((finding, index) => normalizeDashboardFinding(
+    finding && typeof finding === 'object' ? finding as Partial<DefensiveFinding> & Record<string, unknown> : {},
+    index
+  ));
+}
+
+function dateInputFor(offsetDays = 1) {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function isHistoryEntryInLastDays(entry: HistoryEntry, days: number, offsetDays = 0) {
+  const value = Date.parse(entry.startedAt || entry.completedAt || '');
+  if (!Number.isFinite(value)) return false;
+  const end = Date.now() - offsetDays * 86400000;
+  const start = end - days * 86400000;
+  return value >= start && value <= end;
+}
+
+function filterHistoryByTimeframe(entries: HistoryEntry[], timeframe: HistoryTimeframe) {
+  if (timeframe === 'last7') return entries.filter((entry) => isHistoryEntryInLastDays(entry, 7));
+  return entries;
+}
+
+function historyMetricSnapshot(entries: HistoryEntry[]) {
+  const assetKeys = new Set<string>();
+  const vulnerableAssetKeys = new Set<string>();
+  let totalFindings = 0;
+  let critical = 0;
+  let vulnerableFindings = 0;
+  let pqcReady = 0;
+  let weightedRisk = 0;
+  let riskWeight = 0;
+
+  entries.forEach((entry) => {
+    const summary = entry.summary;
+    const entryAssets = entry.linkedAssetRecords?.length
+      ? entry.linkedAssetRecords
+      : [entry.target || entry.scanId].filter(Boolean);
+    entryAssets.forEach((asset) => assetKeys.add(asset));
+    if ((entry.vulnerableFindings || summary?.vulnerable || 0) > 0) {
+      entryAssets.forEach((asset) => vulnerableAssetKeys.add(asset));
+    }
+
+    const findingsCount = summary?.totalFindings ?? entry.detectedComponents ?? entry.findings?.length ?? 0;
+    totalFindings += findingsCount;
+    critical += summary?.critical ?? normalizeDashboardFindings(entry.findings).filter((finding) => finding.threatLevel === 'CRITICAL').length;
+    vulnerableFindings += summary?.vulnerable ?? entry.vulnerableFindings ?? 0;
+    pqcReady += summary?.pqcReady ?? entry.pqcReadyFindings ?? 0;
+
+    const risk = entry.riskScore ?? summary?.riskScore;
+    if (typeof risk === 'number' && Number.isFinite(risk)) {
+      const weight = Math.max(1, findingsCount);
+      weightedRisk += risk * weight;
+      riskWeight += weight;
+    }
+  });
+
+  const riskScore = riskWeight > 0 ? Math.round(weightedRisk / riskWeight) : 0;
+  const pqcReadiness = totalFindings > 0 ? Math.round((pqcReady / totalFindings) * 100) : 0;
+
+  return {
+    totalAssetsScanned: assetKeys.size || entries.reduce((sum, entry) => sum + Math.max(0, entry.summary?.targetsScanned ?? 0), 0),
+    vulnerableAssets: vulnerableAssetKeys.size,
+    riskScore,
+    criticalFindings: critical,
+    pqcReadiness,
+    totalFindings,
+    vulnerableFindings,
+    pqcReady,
+  };
+}
+
+function formatCompactNumber(value: number) {
+  return Number.isFinite(value) ? value.toLocaleString() : '0';
+}
+
+function formatTrend(current: number, previous: number) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return '0% vs previous 7 days';
+  if (previous <= 0) return current > 0 ? 'new vs previous 7 days' : '0% vs previous 7 days';
+  const delta = ((current - previous) / previous) * 100;
+  const sign = delta > 0 ? '+' : delta < 0 ? '-' : '';
+  return `${sign}${Math.abs(delta).toFixed(1)}% vs previous 7 days`;
+}
+
+function trendClass(current: number, previous: number, higherIsBetter: boolean) {
+  if (previous <= 0) return current > 0 && higherIsBetter ? 'text-green-400' : current > 0 ? 'text-yellow-400' : 'text-white/35';
+  const improved = higherIsBetter ? current >= previous : current <= previous;
+  return improved ? 'text-green-400' : 'text-red-400';
+}
+
+function csvCell(value: unknown) {
+  const text = String(value ?? '').replace(/\r?\n/g, ' ');
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+
 export default function ScannerDashboard() {
   const { session, user } = useAuth();
+
+  // Floating notifications
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   const [status, setStatus] = useState<ScanStatus>('idle');
   const [activeTab, setActiveTab] = useState<TabId>('setup');
   const [sevFilter, setSevFilter] = useState<string | null>(null);
@@ -301,6 +524,15 @@ export default function ScannerDashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [modules, setModules] = useState<ModuleState[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [expandedHistoryFinding, setExpandedHistoryFinding] = useState<string | null>(null);
+  const [historyFindingSearch, setHistoryFindingSearch] = useState('');
+  const [historySeverityFilter, setHistorySeverityFilter] = useState<string | null>(null);
+  const [historyTimeframe, setHistoryTimeframe] = useState<HistoryTimeframe>('last7');
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(dateInputFor(1));
+  const [scheduleTime, setScheduleTime] = useState('02:00');
+  const [scheduledScans, setScheduledScans] = useState<ScheduledScan[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -399,6 +631,28 @@ export default function ScannerDashboard() {
     fetchHistory();
     fetchAgents();
   }, [fetchAgents, fetchHistory]);
+
+  useEffect(() => {
+    const scopedHistory = filterHistoryByTimeframe(history, historyTimeframe);
+    if (scopedHistory.length === 0) {
+      setSelectedHistoryId(null);
+      return;
+    }
+    if (!selectedHistoryId || !scopedHistory.some((entry) => entry.scanId === selectedHistoryId)) {
+      setSelectedHistoryId(scopedHistory[0].scanId);
+    }
+  }, [history, historyTimeframe, selectedHistoryId]);
+
+  useEffect(() => {
+    if (!user?.id || typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem(`qguard:scheduled-scans:${user.id}`);
+      const parsed = stored ? JSON.parse(stored) : [];
+      setScheduledScans(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setScheduledScans([]);
+    }
+  }, [user?.id]);
 
   useEffect(() => {
     if (!terminalPaused && terminalPinned) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -589,6 +843,159 @@ export default function ScannerDashboard() {
     URL.revokeObjectURL(url);
   }, [findings, jobId, logs, modules, progress, status, summary, targets]);
 
+  const handleOpenSchedule = useCallback(() => {
+    setScheduleDate((value) => value || dateInputFor(1));
+    setScheduleTime((value) => value || '02:00');
+    setScheduleOpen(true);
+  }, []);
+
+  const handleSaveSchedule = useCallback(() => {
+    const scheduledAt = new Date(`${scheduleDate}T${scheduleTime || '00:00'}:00`);
+    if (!scheduleDate || Number.isNaN(scheduledAt.getTime())) {
+      showToast('Select a valid scan date.');
+      return;
+    }
+    if (scheduledAt.getTime() <= Date.now()) {
+      showToast('Select a future scan date and time.');
+      return;
+    }
+
+    const scheduledTargets = targets.length > 0
+      ? targets.map((target) => target.normalized || target.raw)
+      : history[0]?.target
+        ? [history[0].target]
+        : [];
+
+    if (scheduledTargets.length === 0) {
+      showToast('Add an authorized target before scheduling.');
+      return;
+    }
+
+    const nextSchedule: ScheduledScan = {
+      id: `scheduled-${Date.now()}`,
+      scheduledFor: scheduledAt.toISOString(),
+      createdAt: new Date().toISOString(),
+      status: 'scheduled',
+      targets: scheduledTargets,
+    };
+
+    setScheduledScans((prev) => {
+      const next = [nextSchedule, ...prev].slice(0, 20);
+      if (user?.id && typeof window !== 'undefined') {
+        window.localStorage.setItem(`qguard:scheduled-scans:${user.id}`, JSON.stringify(next));
+      }
+      return next;
+    });
+    setScheduleOpen(false);
+    showToast(`Scan scheduled for ${scheduledAt.toLocaleString()}.`);
+  }, [history, scheduleDate, scheduleTime, showToast, targets, user?.id]);
+
+  const handleShowLast7Days = useCallback(async () => {
+    setHistoryTimeframe('last7');
+    setActiveTab('history');
+    await fetchHistory();
+    showToast('Showing scans from the last 7 days.');
+  }, [fetchHistory, showToast]);
+
+  const handleExportScannerReport = useCallback(() => {
+    const scopedHistory = filterHistoryByTimeframe(history, historyTimeframe);
+    const generatedAt = new Date().toISOString();
+    const latestHistory = scopedHistory[0] || history[0] || null;
+    const exportSummary = summary || latestHistory?.summary || null;
+    const liveFindings = normalizeDashboardFindings(findings);
+    const persistedFindingRows = scopedHistory.flatMap((entry) =>
+      normalizeDashboardFindings(entry.findings).map((finding) => ({
+        scanId: entry.scanId,
+        target: entry.target,
+        startedAt: entry.startedAt,
+        completedAt: entry.completedAt || '',
+        finding,
+      }))
+    );
+    const liveFindingRows = liveFindings.map((finding) => ({
+      scanId: jobId || 'live-session',
+      target: targets.map((target) => target.normalized || target.raw).join('; ') || latestHistory?.target || '',
+      startedAt: scanStartedAt ? new Date(scanStartedAt).toISOString() : generatedAt,
+      completedAt: status === 'completed' ? generatedAt : '',
+      finding,
+    }));
+    const findingRows = liveFindingRows.length > 0 ? liveFindingRows : persistedFindingRows;
+
+    if (!exportSummary && findingRows.length === 0 && scopedHistory.length === 0 && logs.length === 0) {
+      showToast('No scanner data is available to export yet.');
+      return;
+    }
+
+    const rows: unknown[][] = [
+      ['QGuard Scanner Report'],
+      ['Generated At', generatedAt],
+      ['Timeframe', historyTimeframe === 'last7' ? 'Last 7 days' : 'All recorded scans'],
+      [],
+      ['SUMMARY'],
+      ['Total Assets Scanned', 'Total Findings', 'Critical', 'High', 'Medium', 'Low', 'Safe', 'Vulnerable', 'PQC Ready', 'Risk Score', 'Q Score'],
+      [
+        exportSummary?.targetsScanned ?? '',
+        exportSummary?.totalFindings ?? findingRows.length,
+        exportSummary?.critical ?? '',
+        exportSummary?.high ?? '',
+        exportSummary?.medium ?? '',
+        exportSummary?.low ?? '',
+        exportSummary?.safe ?? '',
+        exportSummary?.vulnerable ?? '',
+        exportSummary?.pqcReady ?? '',
+        exportSummary?.riskScore ?? '',
+        exportSummary?.qScore ?? '',
+      ],
+      [],
+      ['FINDINGS'],
+      ['Scan ID', 'Target', 'Started At', 'Completed At', 'Algorithm', 'Category', 'Location', 'Threat Level', 'Status', 'Source', 'Evidence', 'Recommendation', 'PQC Replacement'],
+      ...findingRows.map((row) => [
+        row.scanId,
+        row.target,
+        row.startedAt,
+        row.completedAt,
+        row.finding.algorithm,
+        row.finding.category,
+        row.finding.location,
+        row.finding.threatLevel,
+        row.finding.status,
+        row.finding.source,
+        row.finding.evidence,
+        row.finding.recommendation,
+        row.finding.pqcReplacement || '',
+      ]),
+      [],
+      ['SCAN HISTORY'],
+      ['Scan ID', 'Target', 'Started At', 'Completed At', 'Status', 'Components', 'Vulnerable', 'PQC Ready', 'Risk Score', 'Q Score'],
+      ...scopedHistory.map((entry) => [
+        entry.scanId,
+        entry.target,
+        entry.startedAt,
+        entry.completedAt || '',
+        entry.status,
+        entry.detectedComponents,
+        entry.vulnerableFindings,
+        entry.pqcReadyFindings,
+        entry.riskScore ?? '',
+        entry.qScore ?? '',
+      ]),
+      [],
+      ['TELEMETRY'],
+      ['Timestamp', 'Level', 'Module', 'Severity', 'Message'],
+      ...logs.map((entry) => [
+        entry.timestamp,
+        entry.level,
+        entry.moduleName || entry.phase || '',
+        entry.severity || '',
+        entry.message,
+      ]),
+    ];
+    const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n');
+    const stamp = generatedAt.replace(/[:.]/g, '-');
+    downloadTextFile(`qguard-scanner-report-${stamp}.csv`, csv, 'text/csv;charset=utf-8');
+    showToast(`Exported ${findingRows.length} finding(s) and ${scopedHistory.length} scan record(s).`);
+  }, [findings, history, historyTimeframe, jobId, logs, scanStartedAt, showToast, status, summary, targets]);
+
   const handleClearTerminal = useCallback(() => {
     if (isRunning) return;
     setLogs([]);
@@ -740,6 +1147,68 @@ export default function ScannerDashboard() {
     if (!isRunning) void handleStart();
   }, [addLog, handleStart, isRunning]);
 
+  const handleOpenHistoryInFindings = useCallback((entry: HistoryEntry) => {
+    const storedFindings = normalizeDashboardFindings(entry.findings);
+    setFindings(storedFindings);
+    setSummary(entry.summary || {
+      targetsScanned: 1,
+      totalFindings: storedFindings.length,
+      critical: storedFindings.filter((finding) => finding.threatLevel === 'CRITICAL').length,
+      high: storedFindings.filter((finding) => finding.threatLevel === 'HIGH').length,
+      medium: storedFindings.filter((finding) => finding.threatLevel === 'MEDIUM').length,
+      low: storedFindings.filter((finding) => finding.threatLevel === 'LOW').length,
+      safe: storedFindings.filter((finding) => finding.threatLevel === 'SAFE').length,
+      vulnerable: storedFindings.filter((finding) => finding.threatLevel !== 'SAFE').length,
+      pqcReady: storedFindings.filter((finding) => finding.threatLevel === 'SAFE').length,
+      riskScore: entry.riskScore ?? 0,
+      qScore: entry.qScore ?? 0,
+    });
+    setModules(entry.moduleStates || []);
+    setLogs((entry.telemetry || []).slice(-500).map((event: any) => ({
+      timestamp: event.timestamp || entry.startedAt,
+      level: statusToLevel(String(event.type || ''), event.status),
+      message: String(event.message || event.type || 'Stored scanner event'),
+      phase: event.phase,
+      severity: event.severity,
+      moduleName: event.moduleName || event.module?.name,
+      elapsed: formatElapsed(Date.parse(entry.startedAt), event.timestamp),
+    })));
+    setStatus(entry.status === 'completed' ? 'completed' : 'idle');
+    setProgress(100);
+    setExpandedFinding(null);
+    setActiveTab('findings');
+  }, []);
+
+  const handleDownloadHistoryAudit = useCallback((entry: HistoryEntry) => {
+    const auditFindings = normalizeDashboardFindings(entry.findings);
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      scanId: entry.scanId,
+      target: entry.target,
+      scanType: entry.scanType,
+      startedAt: entry.startedAt,
+      completedAt: entry.completedAt,
+      status: entry.status,
+      summary: entry.summary,
+      findings: auditFindings,
+      moduleStates: entry.moduleStates || [],
+      telemetry: entry.telemetry || [],
+      linkedCbomRecords: entry.linkedCbomRecords || [],
+      linkedAssetRecords: entry.linkedAssetRecords || [],
+      linkedExposureNodes: entry.linkedExposureNodes || [],
+      enterpriseScanner2: entry.enterpriseScanner2 || null,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `qguard-audit-${entry.scanId}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
   const riskLabel = summary
     ? summary.riskScore >= 80 ? 'Critical' : summary.riskScore >= 60 ? 'High' : summary.riskScore >= 40 ? 'Medium' : 'Low'
     : 'Idle';
@@ -755,7 +1224,107 @@ export default function ScannerDashboard() {
     vulnerable: summary?.vulnerable ?? findings.filter((finding) => finding.threatLevel !== 'SAFE').length,
   };
 
+  const displayedHistory = filterHistoryByTimeframe(history, historyTimeframe);
+  const previousSevenDayHistory = history.filter((entry) => isHistoryEntryInLastDays(entry, 7, 7));
+  const historyMetrics = historyMetricSnapshot(displayedHistory);
+  const previousMetrics = historyMetricSnapshot(previousSevenDayHistory);
+  const currentScanReadiness = summary?.totalFindings
+    ? Math.round(((summary.pqcReady ?? 0) / Math.max(1, summary.totalFindings)) * 100)
+    : 0;
+  const dashboardMetrics = status !== 'idle' && summary
+    ? {
+        totalAssetsScanned: summary.targetsScanned,
+        vulnerableAssets: summary.vulnerable > 0 ? Math.max(1, summary.targetsScanned) : 0,
+        riskScore: summary.riskScore,
+        criticalFindings: summary.critical,
+        pqcReadiness: currentScanReadiness,
+        totalFindings: summary.totalFindings,
+        vulnerableFindings: summary.vulnerable,
+        pqcReady: summary.pqcReady,
+      }
+    : historyMetrics;
+  const dashboardRiskLabel = dashboardMetrics.riskScore >= 80
+    ? 'Critical Risk'
+    : dashboardMetrics.riskScore >= 60
+      ? 'High Risk'
+      : dashboardMetrics.riskScore >= 40
+        ? 'Medium Risk'
+        : dashboardMetrics.riskScore > 0
+          ? 'Low Risk'
+          : 'No Scan Data';
+  const dashboardFindings = findings.length > 0
+    ? findings
+    : displayedHistory.flatMap((entry) => normalizeDashboardFindings(entry.findings));
+  const dashboardSeverityCounts = {
+    critical: dashboardFindings.filter((finding) => finding.threatLevel === 'CRITICAL').length,
+    high: dashboardFindings.filter((finding) => finding.threatLevel === 'HIGH').length,
+    medium: dashboardFindings.filter((finding) => finding.threatLevel === 'MEDIUM').length,
+    low: dashboardFindings.filter((finding) => finding.threatLevel === 'LOW').length,
+    safe: dashboardFindings.filter((finding) => finding.threatLevel === 'SAFE').length,
+  };
+  const dashboardSeverityTotal = Math.max(1, Object.values(dashboardSeverityCounts).reduce((sum, value) => sum + value, 0));
+  const riskDistributionRows = [
+    { label: 'Critical', count: dashboardSeverityCounts.critical, color: '#ef4444' },
+    { label: 'High', count: dashboardSeverityCounts.high, color: '#f97316' },
+    { label: 'Medium', count: dashboardSeverityCounts.medium, color: '#eab308' },
+    { label: 'Low', count: dashboardSeverityCounts.low, color: '#22c55e' },
+    { label: 'Secure', count: dashboardSeverityCounts.safe, color: '#06b6d4' },
+  ];
+  const threatRank: Record<DefensiveFinding['threatLevel'], number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, SAFE: 0 };
+  const topVulnerableAlgorithmMap = new Map<string, { algo: string; assets: number; risk: DefensiveFinding['threatLevel'] }>();
+  dashboardFindings
+    .filter((finding) => finding.threatLevel !== 'SAFE')
+    .forEach((finding) => {
+      const current = topVulnerableAlgorithmMap.get(finding.algorithm) || { algo: finding.algorithm, assets: 0, risk: finding.threatLevel };
+      current.assets += 1;
+      if (threatRank[finding.threatLevel] > threatRank[current.risk]) current.risk = finding.threatLevel;
+      topVulnerableAlgorithmMap.set(finding.algorithm, current);
+    });
+  const topVulnerableAlgorithmRows = Array.from(topVulnerableAlgorithmMap.values())
+    .sort((a, b) => threatRank[b.risk] - threatRank[a.risk] || b.assets - a.assets)
+    .slice(0, 8)
+    .map((row) => ({
+      ...row,
+      color: row.risk === 'CRITICAL' ? 'text-red-400' : row.risk === 'HIGH' ? 'text-orange-400' : row.risk === 'MEDIUM' ? 'text-yellow-400' : 'text-green-400',
+    }));
+  const assetOutcomeRows = [
+    { label: 'Scanned', value: dashboardMetrics.totalAssetsScanned, color: '#3b82f6' },
+    { label: 'Vulnerable', value: dashboardMetrics.vulnerableAssets, color: '#ef4444' },
+    { label: 'Findings', value: dashboardMetrics.totalFindings, color: '#f97316' },
+    { label: 'PQC Ready', value: dashboardMetrics.pqcReady, color: '#22c55e' },
+    { label: 'Scheduled', value: scheduledScans.filter((scan) => Date.parse(scan.scheduledFor) > Date.now()).length, color: '#a855f7' },
+  ];
+  const nextScheduledScan = scheduledScans
+    .filter((scan) => Date.parse(scan.scheduledFor) > Date.now())
+    .sort((a, b) => Date.parse(a.scheduledFor) - Date.parse(b.scheduledFor))[0] || null;
+  const historyEmptyText = history.length === 0
+    ? 'No authorized scan history available'
+    : historyTimeframe === 'last7'
+      ? 'No scans recorded in the last 7 days'
+      : 'No authorized scan history available';
+
   const failedModules = modules.filter((module) => module.status === 'Failed');
+  const selectedHistoryEntry = displayedHistory.find((entry) => entry.scanId === selectedHistoryId) || displayedHistory[0] || null;
+  const selectedHistoryFindings = normalizeDashboardFindings(selectedHistoryEntry?.findings);
+  const selectedHistorySummary = selectedHistoryEntry?.summary || null;
+  const historyFindingQuery = historyFindingSearch.trim().toLowerCase();
+  const filteredHistoryFindings = selectedHistoryFindings.filter((finding) => {
+    const severityMatch = !historySeverityFilter || finding.threatLevel.toLowerCase() === historySeverityFilter;
+    const queryMatch = !historyFindingQuery ||
+      finding.algorithm.toLowerCase().includes(historyFindingQuery) ||
+      finding.category.toLowerCase().includes(historyFindingQuery) ||
+      finding.location.toLowerCase().includes(historyFindingQuery) ||
+      finding.evidence.toLowerCase().includes(historyFindingQuery) ||
+      finding.recommendation.toLowerCase().includes(historyFindingQuery);
+    return severityMatch && queryMatch;
+  });
+  const selectedHistorySeverityCounts = {
+    critical: selectedHistorySummary?.critical ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'CRITICAL').length,
+    high: selectedHistorySummary?.high ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'HIGH').length,
+    medium: selectedHistorySummary?.medium ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'MEDIUM').length,
+    low: selectedHistorySummary?.low ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'LOW').length,
+    safe: selectedHistorySummary?.safe ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'SAFE').length,
+  };
   const terminalVisible = status !== 'idle' || logs.length > 0;
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null;
   const tenantId = user?.id || 'tenant_id_here';
@@ -1136,9 +1705,211 @@ npm run agent:watch`;
       </div>
 
       {activeTab === 'setup' && (
-        <div className="grid lg:grid-cols-2 gap-6">
+        <div className="space-y-8 animate-in fade-in duration-500">
+          {/* 1. Cloned Premium Gold Header Section */}
+          <header className="flex flex-col xl:flex-row xl:items-end justify-between gap-6 mb-6 mt-2">
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 rounded bg-gold/10 border border-gold/20">
+                  <Cpu className="w-6 h-6 text-gold" />
+                </div>
+                <h1 className="text-3xl font-black uppercase tracking-tight text-white leading-none">
+                  PQC <span className="text-gold">Scanner</span>
+                </h1>
+              </div>
+              <p className="text-white/50 text-sm font-medium">Discover and analyze quantum-vulnerable cryptographic assets across your infrastructure.</p>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-3 overflow-x-auto pb-1 xl:pb-0 shrink-0 select-none custom-scrollbar">
+              {/* Scan Now / Stop Scan Button */}
+              <button
+                onClick={() => {
+                  if (isRunning) {
+                    void handleCancel();
+                    showToast('Quantum scan terminated by operator.');
+                  } else {
+                    if (targets.length === 0) {
+                      showToast('Please enter and add authorized targets to the Scan Queue below.');
+                      return;
+                    }
+                    if (!authorizationAccepted) {
+                      showToast('Please accept the authorization check before initiating the scan.');
+                      return;
+                    }
+                    void handleStart();
+                    showToast('Quantum scanning engines initialized...');
+                  }
+                }}
+                className={`px-4 py-2.5 border rounded-lg text-white transition-all flex items-center gap-2 group shrink-0 ${
+                  isRunning
+                    ? 'border-red-500/30 bg-red-500/10 hover:bg-red-500/20'
+                    : 'bg-gold/10 hover:bg-gold/20 border-gold/30 shadow-[0_0_20px_rgba(212,175,55,0.15)] animate-pulse'
+                }`}
+              >
+                {isRunning ? (
+                  <Pause className="w-4 h-4 text-red-500 animate-pulse" />
+                ) : (
+                  <Play className="w-4 h-4 text-gold group-hover:scale-110 transition-transform" />
+                )}
+                <div className="text-left leading-none">
+                  <div className={`text-[10px] font-black uppercase tracking-wider ${isRunning ? 'text-red-400' : 'text-gold'}`}>
+                    {isRunning ? 'Stop Scan' : 'Scan Now'}
+                  </div>
+                  <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">
+                    {isRunning ? 'Scan in Progress' : 'Start New Scan'}
+                  </div>
+                </div>
+              </button>
+
+              {/* Schedule Scan */}
+              <button
+                onClick={handleOpenSchedule}
+                className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white transition-all flex items-center gap-2 group shrink-0"
+              >
+                <Calendar className="w-4 h-4 text-gold group-hover:rotate-12 transition-transform" />
+                <div className="text-left leading-none">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-white">Schedule Scan</div>
+                  <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">
+                    {nextScheduledScan ? new Date(nextScheduledScan.scheduledFor).toLocaleDateString() : 'Automate Scans'}
+                  </div>
+                </div>
+              </button>
+
+              {/* Export Report */}
+              <button
+                onClick={handleExportScannerReport}
+                className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white transition-all flex items-center gap-2 group shrink-0"
+              >
+                <Download className="w-4 h-4 text-gold group-hover:-translate-y-0.5 transition-transform" />
+                <div className="text-left leading-none">
+                  <div className="text-[10px] font-black uppercase tracking-wider text-white">Export Report</div>
+                  <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">Download Results</div>
+                </div>
+              </button>
+
+              {/* Timeframe Dropdown */}
+              <div className="relative group/dropdown shrink-0">
+                <button
+                  onClick={() => void handleShowLast7Days()}
+                  className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-white hover:border-gold/30 transition-all flex items-center gap-3 text-left"
+                >
+                  <Calendar className="w-4 h-4 text-gold shrink-0" />
+                  <div className="leading-none">
+                    <div className="text-[10px] font-black uppercase tracking-wider text-white">Last 7 Days</div>
+                    <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">{displayedHistory.length} Scans</div>
+                  </div>
+                  <ChevronDown className="w-3.5 h-3.5 text-white/40 group-hover/dropdown:text-gold transition-colors ml-1 shrink-0" />
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* 2. Metrics Grid (5 Columns) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-6">
+            {/* Metric 1: Total Assets Scanned */}
+            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
+              <div className="space-y-1">
+                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block">TOTAL ASSETS SCANNED</span>
+                <span className="text-2xl font-black text-white block leading-none font-mono">
+                  {formatCompactNumber(dashboardMetrics.totalAssetsScanned)}
+                </span>
+                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.totalAssetsScanned, previousMetrics.totalAssetsScanned, true)}`}>
+                  {formatTrend(dashboardMetrics.totalAssetsScanned, previousMetrics.totalAssetsScanned)}
+                </span>
+              </div>
+              <div className="shrink-0 ml-4">
+                <Layers className="w-6 h-6 text-gold drop-shadow-[0_0_6px_rgba(255,211,107,0.4)]" />
+              </div>
+            </div>
+
+            {/* Metric 2: Vulnerable Assets */}
+            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
+              <div className="space-y-1">
+                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block">VULNERABLE ASSETS</span>
+                <span className="text-2xl font-black text-white block leading-none font-mono">
+                  {formatCompactNumber(dashboardMetrics.vulnerableAssets)}
+                </span>
+                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.vulnerableAssets, previousMetrics.vulnerableAssets, false)}`}>
+                  {formatTrend(dashboardMetrics.vulnerableAssets, previousMetrics.vulnerableAssets)}
+                </span>
+              </div>
+              <div className="shrink-0 ml-4">
+                <AlertTriangle className="w-6 h-6 text-gold drop-shadow-[0_0_6px_rgba(255,211,107,0.4)]" />
+              </div>
+            </div>
+
+            {/* Metric 3: Risk Score */}
+            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
+              <div className="space-y-1">
+                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block">RISK SCORE</span>
+                <span className="text-2xl font-black text-white block leading-none font-mono">
+                  {dashboardMetrics.riskScore}/100
+                </span>
+                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.riskScore, previousMetrics.riskScore, false)}`}>
+                  {dashboardRiskLabel}
+                </span>
+              </div>
+              <div className="shrink-0 ml-4">
+                <svg className="w-16 h-8" viewBox="0 0 60 20">
+                  <path
+                    d="M0,15 Q10,12 20,18 T40,6 T60,2"
+                    fill="none"
+                    stroke="#ef4444"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    className="drop-shadow-[0_0_4px_rgba(239,68,68,0.5)]"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            {/* Metric 4: Critical Findings */}
+            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES} border-red-500/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(239,68,68,0.03),0_0_40px_rgba(239,68,68,0.1)] hover:border-red-500/70 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(239,68,68,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(239,68,68,0.4)]`}>
+              <div className="space-y-1">
+                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block font-mono">CRITICAL FINDINGS</span>
+                <span className="text-2xl font-black text-red-500 block leading-none font-mono">
+                  {formatCompactNumber(dashboardMetrics.criticalFindings)}
+                </span>
+                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.criticalFindings, previousMetrics.criticalFindings, false)}`}>
+                  {formatTrend(dashboardMetrics.criticalFindings, previousMetrics.criticalFindings)}
+                </span>
+              </div>
+              <div className="shrink-0 ml-4">
+                <Target className="w-6 h-6 text-red-500 drop-shadow-[0_0_6px_rgba(239,68,68,0.4)]" />
+              </div>
+            </div>
+
+            {/* Metric 5: PQC Readiness */}
+            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
+              <div className="space-y-1">
+                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block font-mono">PQC READINESS</span>
+                <span className="text-2xl font-black text-white block leading-none font-mono">
+                  {dashboardMetrics.pqcReadiness}%
+                </span>
+                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness, true)}`}>
+                  {formatTrend(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness)}
+                </span>
+              </div>
+              <div className="shrink-0 ml-4">
+                <svg className="w-12 h-12 rotate-[-90deg]">
+                  <circle cx="24" cy="24" r="18" stroke="rgba(255,255,255,0.05)" strokeWidth="4" fill="none" />
+                  <circle
+                    cx="24" cy="24" r="18"
+                    stroke="#10b981" strokeWidth="4" fill="none"
+                    strokeDasharray={`${2 * Math.PI * 18}`}
+                    strokeDashoffset={`${2 * Math.PI * 18 * (1 - Math.max(0, Math.min(100, dashboardMetrics.pqcReadiness)) / 100)}`}
+                    strokeLinecap="round"
+                    className="drop-shadow-[0_0_4px_rgba(16,185,129,0.5)]"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-6">
           <div className="space-y-4">
-            <div className="rounded-xl border p-5 glass-panel">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
               <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 mb-4 flex items-center gap-2">
                 <Target className="h-4 w-4 text-gold" /> Authorized Asset Input
               </h2>
@@ -1189,7 +1960,7 @@ npm run agent:watch`;
             )}
           </div>
 
-          <div className="rounded-xl border p-5 flex flex-col glass-panel">
+          <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col"}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 flex items-center gap-2">
                 <Network className="h-4 w-4 text-gold" /> Scan Queue ({targets.length})
@@ -1233,6 +2004,7 @@ npm run agent:watch`;
             </div>
           </div>
         </div>
+      </div>
       )}
 
       {activeTab === 'agents' && (
@@ -1245,7 +2017,7 @@ npm run agent:watch`;
           )}
 
           <div className="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
-            <div className="rounded-xl border p-5 glass-panel">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
               <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-5">
                 <div>
                   <h2 className="text-lg font-black uppercase tracking-tight text-white">
@@ -1280,7 +2052,7 @@ npm run agent:watch`;
               </div>
             </div>
 
-            <div className="rounded-xl border p-5 glass-panel">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
               <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-3 flex items-center gap-2">
                 <Shield className="h-4 w-4 text-gold" /> Tenant Isolation
               </h3>
@@ -1297,7 +2069,7 @@ npm run agent:watch`;
 
           <div className="grid xl:grid-cols-[420px_minmax(0,1fr)] gap-6">
             <div className="space-y-4">
-              <div className="rounded-xl border p-5 glass-panel">
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
                 <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                   <Plus className="h-4 w-4 text-gold" /> Create New Collector Agent
                 </h3>
@@ -1392,7 +2164,7 @@ npm run agent:watch`;
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-xl border p-5 glass-panel">
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
                 <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                   <ClipboardCheck className="h-4 w-4 text-gold" /> Agent Setup Workflow
                 </h3>
@@ -1415,7 +2187,7 @@ npm run agent:watch`;
                 </div>
               </div>
 
-              <div className="rounded-xl border p-5 glass-panel">
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
                 <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                   <Terminal className="h-4 w-4 text-gold" /> Installation Commands
                 </h3>
@@ -1449,7 +2221,7 @@ npm run agent:watch`;
           </div>
 
           <div className="grid xl:grid-cols-[minmax(0,1fr)_420px] gap-6">
-            <div className="rounded-xl border overflow-hidden glass-panel">
+            <div className={GLASS_PANEL_CLASSES + " overflow-hidden"}>
               <div className="px-5 py-4 border-b border-gold/10 flex flex-col md:flex-row md:items-center justify-between gap-3">
                 <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
                   <Server className="h-4 w-4 text-gold" /> Registered Agents
@@ -1511,7 +2283,7 @@ npm run agent:watch`;
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-xl border p-5 glass-panel">
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
                 <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                   <Activity className="h-4 w-4 text-gold" /> Connection Status
                 </h3>
@@ -1543,7 +2315,7 @@ npm run agent:watch`;
                 )}
               </div>
 
-              <div className="rounded-xl border p-5 glass-panel">
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
                 <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                   <Terminal className="h-4 w-4 text-gold" /> Recent Telemetry
                 </h3>
@@ -1578,7 +2350,7 @@ npm run agent:watch`;
           </div>
 
           <div className="grid lg:grid-cols-2 gap-6">
-            <div className="rounded-xl border p-5 glass-panel">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
               <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                 <Lock className="h-4 w-4 text-gold" /> Security Notes
               </h3>
@@ -1596,7 +2368,7 @@ npm run agent:watch`;
               </div>
             </div>
 
-            <div className="rounded-xl border p-5 glass-panel">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
               <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
                 <FileWarning className="h-4 w-4 text-gold" /> Troubleshooting
               </h3>
@@ -1625,7 +2397,7 @@ npm run agent:watch`;
 
       {activeTab === 'settings' && (
         <div className="space-y-6">
-          <div className="rounded-xl border p-5 glass-panel">
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
             <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 mb-4 flex items-center gap-2">
               <Settings className="h-4 w-4 text-gold" /> Scanner Settings
             </h2>
@@ -1645,7 +2417,7 @@ npm run agent:watch`;
             </div>
           </div>
 
-          <div className="rounded-xl border p-5 glass-panel">
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
             <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
               <Code2 className="h-4 w-4 text-gold" /> Tenant API References
             </h3>
@@ -1671,7 +2443,7 @@ npm run agent:watch`;
         <div className="space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
             {kpis.map((kpi, index) => (
-              <motion.div key={kpi.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className="p-4 rounded-xl border glass-panel">
+              <motion.div key={kpi.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className={GLASS_PANEL_CLASSES + " p-4"}>
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <kpi.icon className="h-3 w-3 text-gold/40" />
                   <span className="text-[9px] font-black uppercase tracking-[0.15em] text-white/35">{kpi.label}</span>
@@ -1680,7 +2452,456 @@ npm run agent:watch`;
               </motion.div>
             ))}
           </div>
-          <div className="rounded-xl border p-5 glass-panel">
+
+          {/* Cloned Metrics & Activity Dashboard (2 Cards Per Row) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            {/* Row 1 : Vulnerabilities by Type and Top Vulnerable Algorithms */}
+
+            {/* 1. Vulnerabilities by Type Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10 space-y-2">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-2">Vulnerabilities by Type</h3>
+
+                <div className="space-y-1.5">
+                  {[
+                    { label: 'RSA', count: 1256, max: 1500, color: 'from-red-600 to-red-500', shadow: 'shadow-[0_0_8px_rgba(239,68,68,0.3)]' },
+                    { label: 'ECC', count: 865, max: 1500, color: 'from-orange-600 to-orange-500', shadow: 'shadow-[0_0_8px_rgba(249,115,22,0.3)]' },
+                    { label: 'Weak TLS', count: 643, max: 1500, color: 'from-yellow-600 to-yellow-500', shadow: 'shadow-[0_0_8px_rgba(234,179,8,0.3)]' },
+                    { label: 'SHA-1', count: 512, max: 1500, color: 'from-yellow-500 to-yellow-400', shadow: 'shadow-[0_0_8px_rgba(234,179,8,0.2)]' },
+                    { label: 'MD5', count: 276, max: 1500, color: 'from-amber-500 to-amber-400', shadow: 'shadow-[0_0_8px_rgba(245,158,11,0.2)]' },
+                    { label: '3DES', count: 214, max: 1500, color: 'from-amber-400 to-yellow-400', shadow: 'shadow-[0_0_8px_rgba(250,204,21,0.2)]' },
+                    { label: 'Other', count: 187, max: 1500, color: 'from-gold/70 to-gold/50', shadow: 'shadow-[0_0_8px_rgba(212,175,55,0.2)]' }
+                  ].map((item) => {
+                    const pct = (item.count / item.max) * 100;
+                    return (
+                      <div key={item.label} className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[8px] font-bold">
+                          <span className="text-white/50 font-mono tracking-wider">{item.label}</span>
+                          <span className="text-white/80 font-mono">{item.count.toLocaleString()}</span>
+                        </div>
+                        <div className="h-1 rounded-full bg-white/[0.04] overflow-hidden flex">
+                          <div
+                            className={`h-full rounded-full bg-gradient-to-r ${item.color} ${item.shadow}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Top Vulnerable Algorithms Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-2">Top Vulnerable Algorithms</h3>
+                <div className="overflow-x-auto scrollbar-none">
+                  <table className="w-full text-left text-[8px] font-bold">
+                    <thead>
+                      <tr className="border-b border-gold/10 text-white/30 uppercase tracking-[0.1em]">
+                        <th className="pb-1 font-black">Algorithm</th>
+                        <th className="pb-1 font-black text-center">Assets</th>
+                        <th className="pb-1 font-black text-right">Risk Level</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gold/5 text-white/70">
+                      {topVulnerableAlgorithmRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="py-6 text-center text-white/25 uppercase tracking-widest">No vulnerable algorithms recorded</td>
+                        </tr>
+                      ) : topVulnerableAlgorithmRows.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-white/5 transition-colors">
+                          <td className="py-1 font-mono">{row.algo}</td>
+                          <td className="py-1 font-mono text-center">{formatCompactNumber(row.assets)}</td>
+                          <td className={`py-1 font-black text-right uppercase tracking-wider ${row.color}`}>{row.risk}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Row 2 : Recent Alerts and Scan Activities */}
+
+            {/* 3. Recent Alerts Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10 space-y-3.5">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B]">Recent Alerts</h3>
+
+                <div className="space-y-3">
+                  {[
+                    { title: 'Critical Vulnerability Detected', desc: 'RSA-1024 key detected on web-server-01', time: '5m ago', type: 'critical' },
+                    { title: 'Weak TLS Version Detected', desc: 'TLS 1.0 enabled on api.payment.local', time: '15m ago', type: 'warning' },
+                    { title: 'Expired Certificate Found', desc: 'Certificate expired on mail.enterprise.com', time: '27m ago', type: 'critical' },
+                    { title: 'Deprecated Algorithm Detected', desc: 'SHA-1 usage detected on legacy-app-02', time: '45m ago', type: 'warning' },
+                    { title: 'New Asset Discovered', desc: '10.0.50.23 added to scan scope', time: '1h ago', type: 'info' }
+                  ].map((alert, idx) => {
+                    const isCritical = alert.type === 'critical';
+                    const isWarning = alert.type === 'warning';
+                    return (
+                      <div key={idx} className="flex gap-2">
+                        <div className="shrink-0 mt-0.5">
+                          {isCritical ? (
+                            <div className="w-5.5 h-5.5 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-500">
+                              <AlertTriangle className="w-3 h-3" />
+                            </div>
+                          ) : isWarning ? (
+                            <div className="w-5.5 h-5.5 rounded-full bg-yellow-500/10 border border-yellow-500/20 flex items-center justify-center text-yellow-500">
+                              <AlertTriangle className="w-3 h-3" />
+                            </div>
+                          ) : (
+                            <div className="w-5.5 h-5.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
+                              <Globe className="w-3 h-3" />
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className={`text-[8.5px] font-black uppercase tracking-wider ${isCritical ? 'text-red-400' : isWarning ? 'text-yellow-400' : 'text-cyan-400'}`}>
+                              {alert.title}
+                            </span>
+                            <span className="text-[7.5px] font-mono text-white/30 shrink-0">{alert.time}</span>
+                          </div>
+                          <p className="text-[9px] text-white/50 mt-0.5 leading-normal break-words">{alert.desc}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button className="w-full text-center text-[8.5px] font-black uppercase tracking-widest text-gold/70 hover:text-gold hover:underline pt-2 border-t border-gold/5 block">
+                  View All Alerts →
+                </button>
+              </div>
+            </div>
+
+            {/* 4. Scan Activities Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10 space-y-2">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-1">Scan Activities</h3>
+
+                <div className="space-y-1.5">
+                  {[
+                    { title: 'Full Infrastructure Scan', time: 'May 24, 2025 10:30 AM', status: 'Completed' },
+                    { title: 'Web Applications Scan', time: 'May 24, 2025 02:15 AM', status: 'Completed' },
+                    { title: 'Internal Network Scan', time: 'May 23, 2025 10:30 PM', status: 'Completed' },
+                    { title: 'Cloud Assets Scan', time: 'May 23, 2025 05:20 PM', status: 'Completed' },
+                    { title: 'Certificates Scan', time: 'May 23, 2025 01:10 PM', status: 'Completed' }
+                  ].map((scan, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-1.5 rounded border border-gold/5 bg-white/[0.01] hover:bg-white/5 transition-colors">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <Target className="w-3 h-3 text-gold/60 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-[8.5px] font-bold text-white/70 leading-none truncate">{scan.title}</div>
+                          <div className="text-[7.5px] font-mono text-white/30 mt-0.5">{scan.time}</div>
+                        </div>
+                      </div>
+                      <span className="px-1 py-0.5 rounded border border-green-500/20 bg-green-500/10 text-green-400 text-[7px] font-black uppercase tracking-wider shrink-0">
+                        {scan.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <button className="w-full text-center text-[8.5px] font-black uppercase tracking-widest text-gold/70 hover:text-gold hover:underline pt-1">
+                  View All Scans →
+                </button>
+              </div>
+            </div>
+
+            {/* Row 3 : Scan Outcomes and PQC Migration Readiness */}
+
+            {/* 5. Scan Outcomes Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-4">Scan Outcomes</h3>
+                <div className="flex items-center justify-between gap-4">
+                  {/* SVG Donut */}
+                  <div className="relative w-28 h-28 flex items-center justify-center shrink-0">
+                    <svg className="w-full h-full transform rotate-[-90deg]" viewBox="0 0 100 100">
+                      <circle cx="50" cy="50" r="40" stroke="rgba(255,255,255,0.03)" strokeWidth="8" fill="none" />
+
+                      {/* Other: 4.4% -> grey (#6b7280) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#6b7280" strokeWidth="8" fill="none"
+                        strokeDasharray="11.1 251.2"
+                        strokeDashoffset="-240.3"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(107,114,128,0.5)]"
+                      />
+
+                      {/* Test: 12.8% -> purple (#a855f7) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#a855f7" strokeWidth="8" fill="none"
+                        strokeDasharray="32.2 251.2"
+                        strokeDashoffset="-208.1"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(168,85,247,0.5)]"
+                      />
+
+                      {/* Development: 22.1% -> orange (#f97316) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#f97316" strokeWidth="8" fill="none"
+                        strokeDasharray="55.5 251.2"
+                        strokeDashoffset="-152.6"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(249,115,22,0.5)]"
+                      />
+
+                      {/* Staging: 16.8% -> teal (#14b8a6) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#14b8a6" strokeWidth="8" fill="none"
+                        strokeDasharray="42.2 251.2"
+                        strokeDashoffset="-110.3"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(20,184,166,0.5)]"
+                      />
+
+                      {/* Production: 43.9% -> blue (#3b82f6) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#3b82f6" strokeWidth="8" fill="none"
+                        strokeDasharray="110.3 251.2"
+                        strokeDashoffset="0"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(59,130,246,0.5)]"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                      <span className="text-sm font-black text-white leading-none font-mono">{formatCompactNumber(dashboardMetrics.totalAssetsScanned)}</span>
+                      <span className="text-[7px] text-white/30 font-bold uppercase mt-1">Assets</span>
+                    </div>
+                  </div>
+
+                  {/* Legend */}
+                  <div className="space-y-1 flex-1 text-[8px] font-bold">
+                    {assetOutcomeRows.map((row) => (
+                      <div key={row.label} className="flex items-center justify-between text-white/70">
+                        <span className="flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: row.color }} /> {row.label}
+                        </span>
+                        <span className="font-mono text-white/50">{formatCompactNumber(row.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 6. PQC Migration Readiness Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between shrink-0"}>
+              <div className="relative z-10 space-y-3">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B]">PQC Migration Readiness</h3>
+
+                <div className="flex items-center gap-4">
+                  {/* Progress Circle */}
+                  <div className="relative w-16 h-16 flex items-center justify-center shrink-0">
+                    <svg className="w-full h-full rotate-[-90deg]">
+                      <circle cx="32" cy="32" r="26" stroke="rgba(255,255,255,0.03)" strokeWidth="5" fill="none" />
+                      <circle
+                        cx="32" cy="32" r="26"
+                        stroke="#FFD36B" strokeWidth="5" fill="none"
+                        strokeDasharray={`${2 * Math.PI * 26}`}
+                        strokeDashoffset={`${2 * Math.PI * 26 * (1 - Math.max(0, Math.min(100, dashboardMetrics.pqcReadiness)) / 100)}`}
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(255,211,107,0.5)]"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <span className="text-xs font-black text-white font-mono">{dashboardMetrics.pqcReadiness}%</span>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 space-y-0.5">
+                    <div className="text-sm font-black text-white">Ready</div>
+                    <div className={`text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 ${trendClass(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness, true)}`}>
+                      {formatTrend(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness)}
+                    </div>
+                  </div>
+                </div>
+
+                <button className="w-full text-center text-[8.5px] font-black uppercase tracking-widest text-gold/70 hover:text-gold hover:underline pt-2 border-t border-gold/5 block">
+                  View Migration Dashboard →
+                </button>
+              </div>
+            </div>
+
+            {/* Row 4 : Risk Trend (Last 30 days) and Risk Distribution */}
+
+            {/* 7. Risk Trend Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10 space-y-3">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B]">Risk Trend (Last 30 Days)</h3>
+                <div className="relative h-24 w-full">
+                  <svg className="w-full h-full" viewBox="0 0 300 100" preserveAspectRatio="none">
+                    {/* Y Axis Grid Lines */}
+                    <line x1="0" y1="20" x2="300" y2="20" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3 3" />
+                    <line x1="0" y1="50" x2="300" y2="50" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3 3" />
+                    <line x1="0" y1="80" x2="300" y2="80" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3 3" />
+
+                    {/* Gradient fill under the line */}
+                    <defs>
+                      <linearGradient id="riskTrendGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#FFD36B" stopOpacity="0.15" />
+                        <stop offset="100%" stopColor="#FFD36B" stopOpacity="0" />
+                      </linearGradient>
+                    </defs>
+
+                    {/* Fill path */}
+                    <path
+                      d="M 15,75 Q 50,60 85,72 T 155,50 T 225,25 T 285,15 L 285,100 L 15,100 Z"
+                      fill="url(#riskTrendGrad)"
+                    />
+
+                    {/* Golden Line Path */}
+                    <path
+                      d="M 15,75 Q 50,60 85,72 T 155,50 T 225,25 T 285,15"
+                      fill="none"
+                      stroke="#FFD36B"
+                      strokeWidth="2"
+                      className="drop-shadow-[0_0_6px_rgba(255,211,107,0.6)]"
+                    />
+
+                    {/* Interactive glowing points */}
+                    {[
+                      { x: 15, y: 75, val: 34 },
+                      { x: 50, y: 60, val: 45 },
+                      { x: 85, y: 72, val: 38 },
+                      { x: 120, y: 58, val: 48 },
+                      { x: 155, y: 50, val: 55 },
+                      { x: 190, y: 35, val: 68 },
+                      { x: 225, y: 25, val: 78 },
+                      { x: 255, y: 32, val: 72 },
+                      { x: 285, y: 15, val: 89 }
+                    ].map((pt, idx) => (
+                      <g key={idx} className="group/pt cursor-pointer">
+                        <circle
+                          cx={pt.x}
+                          cy={pt.y}
+                          r="3.5"
+                          fill="#FFD36B"
+                          stroke="#0f1428"
+                          strokeWidth="1.2"
+                          className="transition-all duration-300 group-hover/pt:r-5"
+                        />
+                        <circle
+                          cx={pt.x}
+                          cy={pt.y}
+                          r="7"
+                          fill="#FFD36B"
+                          opacity="0.2"
+                          className="animate-ping"
+                          style={{ animationDuration: '3s', animationDelay: `${idx * 0.3}s` }}
+                        />
+                      </g>
+                    ))}
+                  </svg>
+                </div>
+                {/* X Axis Labels */}
+                <div className="flex justify-between text-[7px] font-mono text-white/30 uppercase px-1">
+                  <span>Apr 25</span>
+                  <span>May 2</span>
+                  <span>May 9</span>
+                  <span>May 16</span>
+                  <span>May 23</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 8. Risk Distribution Card */}
+            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
+              <div className="relative z-10">
+                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-4">Risk Distribution</h3>
+                <div className="flex items-center justify-between gap-4">
+                  {/* SVG Donut */}
+                  <div className="relative w-28 h-28 flex items-center justify-center shrink-0">
+                    <svg className="w-full h-full transform rotate-[-90deg]" viewBox="0 0 100 100">
+                      <circle cx="50" cy="50" r="40" stroke="rgba(255,255,255,0.03)" strokeWidth="8" fill="none" />
+
+                      {/* Secure: 13.9% -> color: cyan/teal (#06b6d4) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#06b6d4" strokeWidth="8" fill="none"
+                        strokeDasharray="34.9 251.2"
+                        strokeDashoffset="0"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(6,182,212,0.5)]"
+                      />
+
+                      {/* Low: 36.4% -> color: green (#22c55e) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#22c55e" strokeWidth="8" fill="none"
+                        strokeDasharray="91.4 251.2"
+                        strokeDashoffset="-34.9"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(34,197,94,0.5)]"
+                      />
+
+                      {/* Medium: 32.9% -> color: yellow (#eab308) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#eab308" strokeWidth="8" fill="none"
+                        strokeDasharray="82.6 251.2"
+                        strokeDashoffset="-126.3"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(234,179,8,0.5)]"
+                      />
+
+                      {/* High: 14.3% -> color: orange (#f97316) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#f97316" strokeWidth="8" fill="none"
+                        strokeDasharray="35.9 251.2"
+                        strokeDashoffset="-208.9"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(249,115,22,0.5)]"
+                      />
+
+                      {/* Critical: 2.5% -> color: red (#ef4444) */}
+                      <circle
+                        cx="50" cy="50" r="40"
+                        stroke="#ef4444" strokeWidth="8" fill="none"
+                        strokeDasharray="6.3 251.2"
+                        strokeDashoffset="-244.8"
+                        strokeLinecap="round"
+                        className="drop-shadow-[0_0_6px_rgba(239,68,68,0.5)]"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                      <span className="text-sm font-black text-white leading-none font-mono">{formatCompactNumber(dashboardMetrics.totalFindings)}</span>
+                      <span className="text-[7px] text-white/30 font-bold uppercase mt-1">Findings</span>
+                    </div>
+                  </div>
+
+                  {/* Legend */}
+                  <div className="space-y-1 flex-1 text-[8px] font-bold">
+                    {riskDistributionRows.map((row) => (
+                      <div key={row.label} className="flex items-center justify-between text-white/70">
+                        <span className="flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: row.color }} /> {row.label}
+                        </span>
+                        <span className="font-mono text-white/50">
+                          {formatCompactNumber(row.count)} ({((row.count / dashboardSeverityTotal) * 100).toFixed(1)}%)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
             <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 mb-3">Defensive Scanner Scope</h2>
             <div className="grid md:grid-cols-3 gap-3 text-xs text-white/45">
               <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">Public TLS certificate, protocol, cipher, API header, web crypto, GitHub code-pattern, and SSH public metadata checks.</div>
@@ -1781,7 +3002,7 @@ npm run agent:watch`;
       )}
 
       {activeTab === 'logs' && (
-        <div className="rounded-xl border overflow-hidden flex flex-col h-[600px] glass-panel">
+        <div className={GLASS_PANEL_CLASSES + " overflow-hidden flex flex-col h-[600px]"}>
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gold/10 bg-gold/[0.03] shrink-0">
             <Terminal className="h-3.5 w-3.5 text-gold/50" />
             <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/50">Scanner Telemetry</span>
@@ -1812,13 +3033,18 @@ npm run agent:watch`;
               <RefreshCw className={`h-3.5 w-3.5 ${historyLoading ? 'animate-spin' : ''}`} /> Refresh
             </button>
           </div>
+          <div className="grid xl:grid-cols-[minmax(360px,0.95fr)_minmax(520px,1.35fr)] gap-4 items-start">
           <div className="space-y-3">
-            {history.length === 0 ? (
+            {displayedHistory.length === 0 ? (
               <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold border border-dashed border-white/10 rounded-xl">
-                No authorized scan history available
+                {historyEmptyText}
               </div>
-            ) : history.map((entry) => (
-              <div key={entry.scanId} className="p-4 rounded-xl border hover:transition-colors glass-panel">
+            ) : displayedHistory.map((entry) => (
+              <div
+                key={entry.scanId}
+                onClick={() => setSelectedHistoryId(entry.scanId)}
+                className={`${GLASS_PANEL_CLASSES} p-4 cursor-pointer ${selectedHistoryEntry?.scanId === entry.scanId ? 'border-gold/70 bg-gold/[0.04]' : ''}`}
+              >
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-3">
                   <div className="flex items-center gap-3">
                     <History className="h-5 w-5 text-gold/60" />
@@ -1846,19 +3072,286 @@ npm run agent:watch`;
                     </div>
                   </div>
                 </div>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedHistoryId(entry.scanId);
+                    }}
+                    className="px-3 py-1.5 rounded border border-gold/25 text-[9px] font-black uppercase tracking-wider text-gold hover:bg-gold/10 transition-colors flex items-center gap-1.5"
+                  >
+                    <Eye className="h-3 w-3" /> Review Findings
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleOpenHistoryInFindings(entry);
+                    }}
+                    disabled={!entry.findings?.length}
+                    className="px-3 py-1.5 rounded border border-white/10 text-[9px] font-black uppercase tracking-wider text-white/50 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Open In Findings
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleDownloadHistoryAudit(entry);
+                    }}
+                    className="px-3 py-1.5 rounded border border-white/10 text-[9px] font-black uppercase tracking-wider text-white/50 hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
+                  >
+                    <Download className="h-3 w-3" /> Audit JSON
+                  </button>
+                </div>
                 <div className="text-[10px] text-white/40 border-t border-gold/5 pt-3 grid md:grid-cols-2 gap-2">
                   <span><span className="font-bold text-white/60 mr-2">Target:</span>{entry.target}</span>
                   <span><span className="font-bold text-white/60 mr-2">Status:</span>{entry.status}</span>
-                  <span><span className="font-bold text-white/60 mr-2">CBOM Records:</span>{entry.linkedCbomRecords.length}</span>
-                  <span><span className="font-bold text-white/60 mr-2">Exposure Nodes:</span>{entry.linkedExposureNodes.length}</span>
+                  <span><span className="font-bold text-white/60 mr-2">CBOM Records:</span>{entry.linkedCbomRecords?.length || 0}</span>
+                  <span><span className="font-bold text-white/60 mr-2">Exposure Nodes:</span>{entry.linkedExposureNodes?.length || 0}</span>
                   <span><span className="font-bold text-white/60 mr-2">Modules:</span>{entry.scannerModulesUsed?.length || entry.moduleStates?.filter((module) => module.status !== 'Skipped').length || 0}</span>
                   <span><span className="font-bold text-white/60 mr-2">Errors:</span>{entry.errorLogs?.length || 0}</span>
+                  <span><span className="font-bold text-white/60 mr-2">Persisted Findings:</span>{entry.findings?.length || 0}</span>
                 </div>
               </div>
             ))}
           </div>
+
+          <div className={GLASS_PANEL_CLASSES + " p-4"}>
+            {!selectedHistoryEntry ? (
+              <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold">
+                Select a scan to review persisted findings
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-gold mb-2">Persisted Audit Details</div>
+                    <h3 className="text-base font-black text-white/85 break-all">{selectedHistoryEntry.scanId}</h3>
+                    <div className="text-[10px] text-white/35 font-mono mt-1">{selectedHistoryEntry.target}</div>
+                    <div className="text-[10px] text-white/30 font-mono mt-1">
+                      {new Date(selectedHistoryEntry.startedAt).toLocaleString()} - {formatMs(selectedHistoryEntry.durationMs)}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 shrink-0">
+                    {[
+                      ['Critical', selectedHistorySeverityCounts.critical, 'text-red-400'],
+                      ['High', selectedHistorySeverityCounts.high, 'text-orange-400'],
+                      ['Medium', selectedHistorySeverityCounts.medium, 'text-yellow-400'],
+                      ['Low', selectedHistorySeverityCounts.low, 'text-green-400'],
+                      ['Safe', selectedHistorySeverityCounts.safe, 'text-green-400'],
+                    ].map(([label, count, color]) => (
+                      <div key={String(label)} className="px-3 py-2 rounded border border-white/5 text-center glass-panel">
+                        <div className={`text-sm font-black ${color}`}>{count}</div>
+                        <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3 items-center">
+                  <div className="relative flex-1 min-w-[220px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/25" />
+                    <input
+                      type="text"
+                      placeholder="Search persisted findings..."
+                      value={historyFindingSearch}
+                      onChange={(event) => setHistoryFindingSearch(event.target.value)}
+                      className="w-full border rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none focus:transition-colors text-white placeholder-white/20 glass-panel"
+                    />
+                  </div>
+                  {['critical', 'high', 'medium', 'low', 'safe'].map((severity) => (
+                    <button
+                      key={severity}
+                      onClick={() => setHistorySeverityFilter(historySeverityFilter === severity ? null : severity)}
+                      className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all ${historySeverityFilter === severity ? `${sevColor(severity).br} ${sevColor(severity).b} ${sevColor(severity).t}` : 'text-white/35'} glass-panel`}
+                    >
+                      {severity}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-2 max-h-[620px] overflow-y-auto pr-1">
+                  {filteredHistoryFindings.length === 0 ? (
+                    <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold border border-dashed border-white/10 rounded-xl">
+                      {selectedHistoryFindings.length === 0 ? 'No persisted findings were recorded for this scan' : 'No persisted findings match filters'}
+                    </div>
+                  ) : filteredHistoryFindings.map((finding, index) => {
+                    const severity = finding.threatLevel.toLowerCase();
+                    const sc = sevColor(severity);
+                    const isExpanded = expandedHistoryFinding === finding.id;
+                    const Icon = targetIcon(finding.category);
+                    return (
+                      <motion.div key={finding.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: Math.min(index * 0.015, 0.35) }} className={`rounded-xl border overflow-hidden ${sc.br} ${sc.b}`}>
+                        <button onClick={() => setExpandedHistoryFinding(isExpanded ? null : finding.id)} className="w-full text-left p-4 flex items-center gap-3 group">
+                          <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${sc.d}`} />
+                          <Icon className="h-4 w-4 text-gold/40 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                              <span className="text-xs font-bold text-white/80">{finding.algorithm}</span>
+                              <span className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${sc.br} ${sc.b} ${sc.t}`}>{finding.threatLevel}</span>
+                              <span className="text-[9px] font-bold text-gold/50">{finding.status}</span>
+                            </div>
+                            <div className="text-[10px] text-white/35 font-mono truncate">{finding.location}</div>
+                          </div>
+                          <div className="text-right shrink-0 hidden lg:block">
+                            <div className="text-[10px] font-bold text-gold/60">{finding.pqcReplacement || 'Review'}</div>
+                            <div className="text-[9px] text-white/20">{finding.detectionMethod}</div>
+                          </div>
+                          <ChevronRight className={`h-4 w-4 text-white/15 shrink-0 transition-transform ${isExpanded ? 'rotate-90 text-gold' : ''}`} />
+                        </button>
+                        <AnimatePresence>
+                          {isExpanded && (
+                            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="border-t px-4 py-4 glass-panel">
+                              <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
+                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
+                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Category</div>
+                                  <div className="text-xs font-mono text-white/70">{finding.category}</div>
+                                </div>
+                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
+                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Key Size</div>
+                                  <div className="text-xs font-mono text-white/70">{finding.keySize ? `${finding.keySize} bit` : 'Unknown'}</div>
+                                </div>
+                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
+                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Source</div>
+                                  <div className="text-xs font-mono text-cyan-400">{finding.source}</div>
+                                </div>
+                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
+                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Replacement</div>
+                                  <div className="text-xs font-mono text-green-400">{finding.pqcReplacement || 'Manual review'}</div>
+                                </div>
+                              </div>
+                              <p className="text-xs text-white/45 leading-relaxed mb-2">{finding.description}</p>
+                              <div className="p-2.5 rounded-lg border border-gold/15 bg-gold/[0.03] mb-2">
+                                <div className="text-[8px] font-black uppercase tracking-wider text-gold/70 mb-0.5">Evidence</div>
+                                <div className="text-xs text-white/60 break-words">{finding.evidence}</div>
+                              </div>
+                              <div className="p-2.5 rounded-lg border border-green-500/15 bg-green-500/[0.03]">
+                                <div className="text-[8px] font-black uppercase tracking-wider text-green-400/60 mb-0.5">Remediation</div>
+                                <div className="text-xs text-green-400/80">{finding.recommendation}</div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+          </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {scheduleOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+            onClick={() => setScheduleOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              onClick={(event) => event.stopPropagation()}
+              className={`${GLASS_PANEL_CLASSES} w-full max-w-lg p-5`}
+            >
+              <div className="flex items-start justify-between gap-4 mb-5">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-gold mb-2">Schedule Scan</div>
+                  <h3 className="text-lg font-black text-white/90">Select Scan Date</h3>
+                </div>
+                <button
+                  onClick={() => setScheduleOpen(false)}
+                  className="rounded-lg border border-white/10 p-2 text-white/45 hover:text-white hover:border-gold/30 transition-colors"
+                  aria-label="Close schedule dialog"
+                >
+                  <XCircle className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-3 mb-4">
+                <label className="block">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Date</span>
+                  <input
+                    type="date"
+                    value={scheduleDate}
+                    min={dateInputFor(0)}
+                    onChange={(event) => setScheduleDate(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gold/15 bg-white/[0.03] px-3 py-2 text-sm text-white focus:outline-none focus:border-gold/50"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Time</span>
+                  <input
+                    type="time"
+                    value={scheduleTime}
+                    onChange={(event) => setScheduleTime(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gold/15 bg-white/[0.03] px-3 py-2 text-sm text-white focus:outline-none focus:border-gold/50"
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3 mb-4">
+                <div className="text-[9px] font-black uppercase tracking-wider text-white/30 mb-1">Targets</div>
+                <div className="text-xs text-white/60 font-mono break-words">
+                  {targets.length > 0
+                    ? targets.map((target) => target.normalized || target.raw).join(', ')
+                    : history[0]?.target || 'No authorized target queued'}
+                </div>
+              </div>
+
+              {scheduledScans.length > 0 && (
+                <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 mb-4">
+                  <div className="text-[9px] font-black uppercase tracking-wider text-white/30 mb-2">Upcoming</div>
+                  <div className="space-y-2 max-h-28 overflow-y-auto">
+                    {scheduledScans
+                      .filter((scan) => Date.parse(scan.scheduledFor) > Date.now())
+                      .slice(0, 3)
+                      .map((scan) => (
+                        <div key={scan.id} className="flex items-center justify-between gap-3 text-xs">
+                          <span className="text-white/65">{new Date(scan.scheduledFor).toLocaleString()}</span>
+                          <span className="text-white/30 font-mono">{scan.targets.length} target(s)</span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setScheduleOpen(false)}
+                  className="px-4 py-2 rounded-lg border border-white/10 text-[10px] font-black uppercase tracking-wider text-white/45 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveSchedule}
+                  className="px-4 py-2 rounded-lg border border-gold/30 bg-gold/10 text-[10px] font-black uppercase tracking-wider text-gold hover:bg-gold/20 transition-colors"
+                >
+                  Save Schedule
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            className="fixed bottom-6 right-6 z-50 px-6 py-3 rounded-lg border border-[#FFD36B]/30 bg-[#0f1428]/90 backdrop-blur-xl shadow-[0_0_30px_rgba(255,211,107,0.3)] text-white font-medium flex items-center gap-3 text-sm"
+          >
+            <Sparkles className="w-5 h-5 text-gold animate-pulse" />
+            <span>{toast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

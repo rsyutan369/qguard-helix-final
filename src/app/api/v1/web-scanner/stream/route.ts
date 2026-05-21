@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
-import { executeWebScan } from '@/lib/web-scanner/scan-orchestrator'
-import type { WebScanTargetType, SSEEvent } from '@/lib/web-scanner/types'
+import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
+import type { WebScanTargetType, SSEEvent } from '@/lib/scanner/web-scanner/types'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'

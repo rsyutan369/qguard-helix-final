@@ -31,6 +31,8 @@ import { getScannerRuntimeHealth } from './runtime-health'
 
 const SCAN_TIMEOUT = 120_000 // 120 seconds max for enterprise scans
 const MODULE_TIMEOUT = 15_000 // 15 seconds per individual module
+const TLS_MODULE_TIMEOUT = 45_000 // TLS needs room for primary handshake + protocol/cipher probes
+const TLS_MAX_RETRIES = 1
 const MAX_RETRIES = 2 // Retry failed modules up to 2 times
 const RETRY_DELAY = 500 // 500ms between retries
 
@@ -48,12 +50,29 @@ async function withRetry<T>(
   let lastError: string | null = null
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
-      const result = await Promise.race([
-        fn(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`${moduleName} timed out after ${timeout}ms`)), timeout)
-        ),
-      ])
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const result = await new Promise<T>((resolve, reject) => {
+        let settled = false
+        timer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          reject(new Error(`${moduleName} timed out after ${timeout}ms`))
+        }, timeout)
+
+        fn()
+          .then((value) => {
+            if (settled) return
+            settled = true
+            if (timer) clearTimeout(timer)
+            resolve(value)
+          })
+          .catch((err) => {
+            if (settled) return
+            settled = true
+            if (timer) clearTimeout(timer)
+            reject(err)
+          })
+      })
       return { result, attempts: attempt, error: null }
     } catch (err) {
       lastError = (err as Error).message
@@ -196,10 +215,7 @@ export async function executeWebScan(
   const isGitHub = targetType === 'github'
 
   try {
-    // Create a timeout promise
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Scan timeout exceeded')), SCAN_TIMEOUT)
-    })
+    let scanTimeout: ReturnType<typeof setTimeout> | undefined
 
     const scanPromise = (async () => {
       // ─── Phase 1: Initialization ────────────────────────────────────
@@ -247,9 +263,15 @@ export async function executeWebScan(
         try {
           const tlsAttempt = await withRetry(
             () => analyzeTls(hostname, port),
-            'TLS Analyzer'
+            'TLS Analyzer',
+            TLS_MAX_RETRIES,
+            TLS_MODULE_TIMEOUT
           )
           tlsResult = tlsAttempt.result
+
+          if (!tlsResult) {
+            throw new Error(tlsAttempt.error || 'TLS Analyzer completed without handshake metadata')
+          }
 
           if (tlsAttempt.attempts > 1 && tlsResult) {
             addFinding({
@@ -343,18 +365,19 @@ export async function executeWebScan(
           }
           moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, tlsAttempt.error)
         } catch (err) {
-          moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, (err as Error).message)
+          const message = (err as Error).message || 'TLS handshake failed'
           addFinding({
             phase: 'tls-handshake',
             algorithm: 'TLS Connection Failed',
             location: `${hostname}:${port}`,
             threatLevel: 'MEDIUM',
             category: 'Connectivity',
-            description: `TLS handshake failed: ${(err as Error).message}`,
-            recommendation: 'Verify target is accessible and supports TLS',
+            description: `TLS handshake could not be completed from this scanner runtime: ${message}`,
+            recommendation: 'Verify the target accepts inbound TLS from the scanner runtime or deploy a tenant collector agent from an authorized network path.',
             quantumBreakTime: 'N/A',
             classicalBreakTime: 'N/A',
           })
+          moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, message)
         }
         phaseComplete('tls-handshake', 'TLS Analysis Complete', 30)
 
@@ -758,7 +781,14 @@ export async function executeWebScan(
     })()
 
     // Race scan against timeout
-    return await Promise.race([scanPromise, timeoutPromise])
+    return await Promise.race([
+      scanPromise,
+      new Promise<never>((_, reject) => {
+        scanTimeout = setTimeout(() => reject(new Error('Scan timeout exceeded')), SCAN_TIMEOUT)
+      }),
+    ]).finally(() => {
+      if (scanTimeout) clearTimeout(scanTimeout)
+    })
   } catch (err) {
     const duration = (Date.now() - startTime) / 1000
 

@@ -13,8 +13,8 @@ import { classifyCipherSuite } from './cipher-suite-analyzer'
 
 const dnsResolve4 = promisify(dns.resolve4)
 
-const CONNECTION_TIMEOUT = 10_000 // 10 seconds
-const PROBE_TIMEOUT = 3_500
+const CONNECTION_TIMEOUT = 15_000 // 15 seconds for the primary TLS handshake
+const PROBE_TIMEOUT = 4_000
 const TLS_PROTOCOLS: tls.SecureVersion[] = ['TLSv1', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3']
 const TLS12_CIPHER_PROBES: { standardName: string; opensslName: string }[] = [
   { standardName: 'TLS_RSA_WITH_AES_128_GCM_SHA256', opensslName: 'AES128-GCM-SHA256' },
@@ -97,13 +97,13 @@ export function parseTarget(target: string, targetType: string): { hostname: str
 /**
  * Resolve hostname to IP and validate it's not private
  */
-async function resolveAndValidate(hostname: string): Promise<string> {
+async function resolveAndValidate(hostname: string): Promise<string[]> {
   // If it's already an IP, validate directly
   if (net.isIP(hostname)) {
     if (isPrivateIp(hostname)) {
       throw new Error(`SSRF protection: scanning private IP addresses is not allowed`)
     }
-    return hostname
+    return [hostname]
   }
 
   // Resolve hostname. Prefer authoritative A records, but fall back to OS
@@ -139,11 +139,48 @@ async function resolveAndValidate(hostname: string): Promise<string> {
     }
   }
 
-  return addresses[0]
+  return Array.from(new Set(addresses))
+}
+
+async function connectTlsAny(
+  hostname: string,
+  port: number,
+  options: Partial<tls.ConnectionOptions>,
+  timeoutMs: number,
+  connectHosts: string[]
+): Promise<{ result: TlsAnalysisResult; connectHost: string }> {
+  let lastError: Error | null = null
+
+  for (const connectHost of connectHosts) {
+    try {
+      return {
+        result: await connectTls(hostname, port, options, timeoutMs, connectHost),
+        connectHost,
+      }
+    } catch (err) {
+      lastError = err as Error
+    }
+  }
+
+  throw lastError || new Error(`TLS connection failed to ${hostname}:${port}`)
 }
 
 function normalizeCipherName(cipher: tls.CipherNameAndProtocol | null): string {
   return cipher?.standardName || cipher?.name || 'unknown'
+}
+
+function formatSocketError(err: Error & { code?: string; errors?: unknown[] }): string {
+  const details = Array.isArray(err.errors)
+    ? err.errors
+        .map((item) => {
+          const nested = item as Error & { code?: string; address?: string; port?: number }
+          return [nested.code, nested.address, nested.port, nested.message].filter(Boolean).join(' ')
+        })
+        .filter(Boolean)
+        .join('; ')
+    : ''
+
+  return [err.code, err.message, details].filter(Boolean).join(' - ') || err.name || 'socket error'
 }
 
 function extractKeyExchange(
@@ -187,16 +224,18 @@ function connectTls(
   hostname: string,
   port: number,
   options: Partial<tls.ConnectionOptions> = {},
-  timeoutMs = CONNECTION_TIMEOUT
+  timeoutMs = CONNECTION_TIMEOUT,
+  connectHost = hostname
 ): Promise<TlsAnalysisResult> {
   return new Promise((resolve, reject) => {
     let settled = false
     let timeout: ReturnType<typeof setTimeout> | undefined
+    const servername = net.isIP(hostname) ? undefined : hostname
     const socket = tls.connect(
       {
-        host: hostname,
+        host: connectHost,
         port,
-        servername: hostname,
+        servername,
         rejectUnauthorized: false,
         timeout: timeoutMs,
         ...options,
@@ -264,7 +303,7 @@ function connectTls(
       if (settled) return
       settled = true
       if (timeout) clearTimeout(timeout)
-      reject(new Error(`TLS connection failed to ${hostname}:${port}: ${err.message}`))
+      reject(new Error(`TLS connection failed to ${hostname}:${port}: ${formatSocketError(err)}`))
     })
 
     socket.on('timeout', () => {
@@ -277,7 +316,7 @@ function connectTls(
   })
 }
 
-async function probeProtocol(hostname: string, port: number, protocol: tls.SecureVersion): Promise<TlsProtocolProbe> {
+async function probeProtocol(hostname: string, port: number, protocol: tls.SecureVersion, connectHost = hostname): Promise<TlsProtocolProbe> {
   try {
     const result = await connectTls(
       hostname,
@@ -287,7 +326,8 @@ async function probeProtocol(hostname: string, port: number, protocol: tls.Secur
         maxVersion: protocol,
         ciphers: protocol === 'TLSv1.3' ? undefined : 'DEFAULT:@SECLEVEL=0',
       },
-      PROBE_TIMEOUT
+      PROBE_TIMEOUT,
+      connectHost
     )
 
     return {
@@ -307,7 +347,7 @@ async function probeProtocol(hostname: string, port: number, protocol: tls.Secur
   }
 }
 
-async function enumerateTls12CipherSuites(hostname: string, port: number): Promise<CipherSuiteDetail[]> {
+async function enumerateTls12CipherSuites(hostname: string, port: number, connectHost = hostname): Promise<CipherSuiteDetail[]> {
   const probes = await Promise.all(
     TLS12_CIPHER_PROBES.map(async (probe) => {
       try {
@@ -319,7 +359,8 @@ async function enumerateTls12CipherSuites(hostname: string, port: number): Promi
             maxVersion: 'TLSv1.2',
             ciphers: `${probe.opensslName}:@SECLEVEL=0`,
           },
-          PROBE_TIMEOUT
+          PROBE_TIMEOUT,
+          connectHost
         )
         return classifyCipherSuite(probe.standardName || result.cipherSuite, result.tlsVersion)
       } catch {
@@ -344,21 +385,24 @@ export async function analyzeTls(
   port: number = 443
 ): Promise<TlsAnalysisResult> {
   // Resolve and validate target
-  await resolveAndValidate(hostname)
+  const connectHosts = await resolveAndValidate(hostname)
 
-  const primary = await connectTls(
+  const primaryConnection = await connectTlsAny(
     hostname,
     port,
     {
       minVersion: 'TLSv1' as tls.SecureVersion,
       ciphers: 'DEFAULT:@SECLEVEL=0',
     },
-    CONNECTION_TIMEOUT
+    CONNECTION_TIMEOUT,
+    connectHosts
   )
+  const primary = primaryConnection.result
+  const connectHost = primaryConnection.connectHost
 
   const [protocolSupport, enumeratedTls12Suites] = await Promise.all([
-    Promise.all(TLS_PROTOCOLS.map((protocol) => probeProtocol(hostname, port, protocol))),
-    enumerateTls12CipherSuites(hostname, port),
+    Promise.all(TLS_PROTOCOLS.map((protocol) => probeProtocol(hostname, port, protocol, connectHost))),
+    enumerateTls12CipherSuites(hostname, port, connectHost),
   ])
 
   const supportedProtocols = protocolSupport

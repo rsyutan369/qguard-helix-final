@@ -18,7 +18,7 @@ DECLARE
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies'
+        'scanner_agent_policies', 'runtime_crypto_events'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
@@ -212,6 +212,41 @@ BEGIN
         EXECUTE 'ALTER TABLE public.scanner_alerts ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP WITH TIME ZONE';
         EXECUTE 'ALTER TABLE public.scanner_alerts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
         EXECUTE 'ALTER TABLE public.scanner_alerts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.runtime_crypto_events') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS agent_id UUID';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS connector_account_id UUID';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS asset_id UUID';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS source_type VARCHAR(50) DEFAULT ''local-agent''';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS event_type VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS operation_type VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS severity VARCHAR(20) DEFAULT ''low''';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS risk_score INTEGER DEFAULT 0';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS asset_name VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS asset_type VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS host VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS port INTEGER';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS protocol VARCHAR(50)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS tls_version VARCHAR(50)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS cipher_suite VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS key_exchange_algorithm VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS algorithm VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS key_size INTEGER';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS certificate_fingerprint TEXT';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS package_name VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS package_version VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS process_name VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS process_id INTEGER';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS is_pqc BOOLEAN DEFAULT FALSE';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS is_legacy BOOLEAN DEFAULT FALSE';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS downgrade_detected BOOLEAN DEFAULT FALSE';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS shadow_crypto BOOLEAN DEFAULT FALSE';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS hndl_risk BOOLEAN DEFAULT FALSE';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS event_hash TEXT';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
     END IF;
 
     IF to_regclass('public.scanner_agent_policies') IS NOT NULL THEN
@@ -896,7 +931,61 @@ CREATE INDEX IF NOT EXISTS idx_scanner_evidence_algorithm ON scanner_evidence(ob
 CREATE INDEX IF NOT EXISTS idx_scanner_evidence_type ON scanner_evidence(evidence_type);
 
 -- ============================================================
--- 23. SCANNER ALERTS
+-- 23. RUNTIME CRYPTO EVENTS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS runtime_crypto_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    agent_id UUID REFERENCES scanner_agents(id) ON DELETE SET NULL,
+    connector_account_id UUID REFERENCES connector_accounts(id) ON DELETE SET NULL,
+    asset_id UUID REFERENCES assets(id) ON DELETE SET NULL,
+    source_type VARCHAR(50) NOT NULL DEFAULT 'local-agent',
+    event_type VARCHAR(100) NOT NULL,
+    operation_type VARCHAR(100),
+    severity VARCHAR(20) NOT NULL DEFAULT 'low',
+    risk_score INTEGER NOT NULL DEFAULT 0,
+    asset_name VARCHAR(255),
+    asset_type VARCHAR(100),
+    host VARCHAR(255),
+    port INTEGER,
+    protocol VARCHAR(50),
+    tls_version VARCHAR(50),
+    cipher_suite VARCHAR(255),
+    key_exchange_algorithm VARCHAR(100),
+    algorithm VARCHAR(100),
+    key_size INTEGER,
+    certificate_fingerprint TEXT,
+    package_name VARCHAR(255),
+    package_version VARCHAR(100),
+    process_name VARCHAR(255),
+    process_id INTEGER,
+    is_pqc BOOLEAN DEFAULT FALSE,
+    is_legacy BOOLEAN DEFAULT FALSE,
+    downgrade_detected BOOLEAN DEFAULT FALSE,
+    shadow_crypto BOOLEAN DEFAULT FALSE,
+    hndl_risk BOOLEAN DEFAULT FALSE,
+    event_hash TEXT NOT NULL,
+    metadata JSONB DEFAULT '{}',
+    observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE runtime_crypto_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS runtime_crypto_events_user_isolation ON runtime_crypto_events;
+CREATE POLICY runtime_crypto_events_user_isolation ON runtime_crypto_events
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_user ON runtime_crypto_events(user_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_agent ON runtime_crypto_events(agent_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_asset ON runtime_crypto_events(asset_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_type ON runtime_crypto_events(user_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_severity ON runtime_crypto_events(user_id, severity);
+CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_hash ON runtime_crypto_events(event_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_crypto_events_user_hash ON runtime_crypto_events(user_id, event_hash);
+
+-- ============================================================
+-- 24. SCANNER ALERTS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scanner_alerts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -928,7 +1017,7 @@ CREATE INDEX IF NOT EXISTS idx_scanner_alerts_status ON scanner_alerts(user_id, 
 CREATE INDEX IF NOT EXISTS idx_scanner_alerts_severity ON scanner_alerts(severity);
 
 -- ============================================================
--- 24. SCANNER AGENT POLICIES
+-- 25. SCANNER AGENT POLICIES
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scanner_agent_policies (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -975,6 +1064,9 @@ DECLARE
     expiring_certs INTEGER := 0;
     failed_migrations INTEGER := 0;
     active_migrations INTEGER := 0;
+    completed_migrations INTEGER := 0;
+    total_migrations INTEGER := 0;
+    migration_completion_rate INTEGER := 0;
     score INTEGER := 1000;
     risk_band TEXT;
     previous_score INTEGER := 0;
@@ -999,7 +1091,10 @@ BEGIN
 
     -- Count migrations
     SELECT COUNT(*) INTO failed_migrations FROM migration_jobs WHERE user_id = p_user_id AND status = 'failed';
-    SELECT COUNT(*) INTO active_migrations FROM migration_jobs WHERE user_id = p_user_id AND status IN ('pending', 'running');
+    SELECT COUNT(*) INTO active_migrations FROM migration_jobs WHERE user_id = p_user_id AND status IN ('pending', 'queued', 'running', 'in_progress', 'paused');
+    SELECT COUNT(*) INTO completed_migrations FROM migration_jobs WHERE user_id = p_user_id AND status = 'completed';
+    SELECT COUNT(*) INTO total_migrations FROM migration_jobs WHERE user_id = p_user_id;
+    migration_completion_rate := CASE WHEN total_migrations > 0 THEN ROUND((completed_migrations::NUMERIC / total_migrations::NUMERIC) * 100)::INTEGER ELSE 0 END;
 
     -- Calculate score (start from 1000, deduct)
     score := score - (critical_exposures * 80);
@@ -1028,6 +1123,8 @@ BEGIN
         'expiringCerts', expiring_certs,
         'failedMigrations', failed_migrations,
         'activeMigrations', active_migrations,
+        'completedMigrations', completed_migrations,
+        'migrationCompletionRate', migration_completion_rate,
         'trend', trend
     );
 END;
@@ -1055,6 +1152,8 @@ BEGIN
         'totalCbomItems', (risk_data->>'totalCbomItems')::INTEGER,
         'activeMigrations', (risk_data->>'activeMigrations')::INTEGER,
         'failedMigrations', (risk_data->>'failedMigrations')::INTEGER,
+        'completedMigrations', (risk_data->>'completedMigrations')::INTEGER,
+        'migrationCompletionRate', (risk_data->>'migrationCompletionRate')::INTEGER,
         'criticalExposures', (risk_data->>'criticalExposures')::INTEGER,
         'highExposures', (risk_data->>'highExposures')::INTEGER,
         'unresolvedVulns', (risk_data->>'unresolvedVulns')::INTEGER,
@@ -1138,7 +1237,7 @@ DECLARE
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies'
+        'scanner_agent_policies', 'runtime_crypto_events'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP

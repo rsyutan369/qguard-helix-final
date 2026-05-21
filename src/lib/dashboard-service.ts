@@ -8,6 +8,8 @@ export interface DashboardSummary {
   totalCbomItems: number;
   activeMigrations: number;
   failedMigrations: number;
+  completedMigrations: number;
+  migrationCompletionRate: number;
   criticalExposures: number;
   highExposures: number;
   unresolvedVulns: number;
@@ -82,6 +84,8 @@ const EMPTY_SUMMARY: DashboardSummary = {
   totalCbomItems: 0,
   activeMigrations: 0,
   failedMigrations: 0,
+  completedMigrations: 0,
+  migrationCompletionRate: 0,
   criticalExposures: 0,
   highExposures: 0,
   unresolvedVulns: 0,

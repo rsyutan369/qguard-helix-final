@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getScannerRuntimeHealth } from '@/lib/web-scanner/runtime-health'
+import { getScannerRuntimeHealth } from '@/lib/scanner/web-scanner/runtime-health'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'

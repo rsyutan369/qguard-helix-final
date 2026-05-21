@@ -33,6 +33,7 @@ const memoryStore = (() => {
       connectors: any[]
       evidence: any[]
       alerts: any[]
+      runtimeCryptoEvents: any[]
     }
   }
   if (!g.__qguard_agent_scanner_store__) {
@@ -43,6 +44,7 @@ const memoryStore = (() => {
       connectors: [],
       evidence: [],
       alerts: [],
+      runtimeCryptoEvents: [],
     }
   }
   return g.__qguard_agent_scanner_store__
@@ -84,6 +86,11 @@ function severityRank(severity: string) {
     case 'safe': return 1
     default: return 0
   }
+}
+
+function isMissingRuntimeTable(error: any) {
+  const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
+  return text.includes('42p01') || text.includes('pgrst205') || text.includes('does not exist') || text.includes('could not find the table')
 }
 
 function jsonError(res: Response, status: number, code: string, message: string) {
@@ -234,6 +241,387 @@ function evidenceAllowedByPolicy(evidence: ScannerEvidenceRecord, policy: Return
   return false
 }
 
+const RUNTIME_FORBIDDEN_KEYS = new Set([
+  'body',
+  'content',
+  'data',
+  'packet',
+  'password',
+  'payload',
+  'plaintext',
+  'private_key',
+  'privatekey',
+  'raw_body',
+  'raw_content',
+  'raw_payload',
+  'secret',
+  'token',
+])
+
+const RUNTIME_EVIDENCE_TYPES = new Set([
+  'tls-certificate',
+  'tls-protocol',
+  'tls-cipher',
+  'ssh-metadata',
+  'package-manifest',
+  'config-reference',
+  'jwt-algorithm',
+  'crypto-library',
+])
+
+type RuntimeCryptoEventRecord = {
+  userId?: string
+  agentId?: string | null
+  connectorAccountId?: string | null
+  assetId?: string | null
+  sourceType: string
+  eventType: string
+  operationType: string
+  severity: FindingSeverity
+  riskScore: number
+  assetName: string
+  assetType?: string | null
+  host?: string | null
+  port?: number | null
+  protocol?: string | null
+  tlsVersion?: string | null
+  cipherSuite?: string | null
+  keyExchangeAlgorithm?: string | null
+  algorithm?: string | null
+  keySize?: number | null
+  certificateFingerprint?: string | null
+  packageName?: string | null
+  packageVersion?: string | null
+  processName?: string | null
+  processId?: number | null
+  isPqc: boolean
+  isLegacy: boolean
+  downgradeDetected: boolean
+  shadowCrypto: boolean
+  hndlRisk: boolean
+  eventHash: string
+  metadata: Record<string, unknown>
+  observedAt: string
+}
+
+function containsForbiddenRuntimeField(value: unknown): string | null {
+  const visit = (current: unknown, path: string, depth: number): string | null => {
+    if (!current || typeof current !== 'object' || depth > 6) return null
+    if (Array.isArray(current)) {
+      for (let index = 0; index < current.length; index += 1) {
+        const found = visit(current[index], `${path}[${index}]`, depth + 1)
+        if (found) return found
+      }
+      return null
+    }
+    for (const [key, nested] of Object.entries(current as Record<string, unknown>)) {
+      const normalized = key.toLowerCase().replace(/[\s-]+/g, '_')
+      if (RUNTIME_FORBIDDEN_KEYS.has(normalized)) return path ? `${path}.${key}` : key
+      const found = visit(nested, path ? `${path}.${key}` : key, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+  return visit(value, '', 0)
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, nested]) => nested !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+  return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`).join(',')}}`
+}
+
+function runtimeEventHash(event: Omit<RuntimeCryptoEventRecord, 'eventHash'>) {
+  return createHash('sha256').update(stableJson({
+    userId: event.userId,
+    agentId: event.agentId,
+    sourceType: event.sourceType,
+    eventType: event.eventType,
+    assetName: event.assetName,
+    host: event.host,
+    port: event.port,
+    protocol: event.protocol,
+    tlsVersion: event.tlsVersion,
+    cipherSuite: event.cipherSuite,
+    keyExchangeAlgorithm: event.keyExchangeAlgorithm,
+    algorithm: event.algorithm,
+    certificateFingerprint: event.certificateFingerprint,
+    packageName: event.packageName,
+    packageVersion: event.packageVersion,
+    processName: event.processName,
+    observedAt: event.observedAt,
+  })).digest('hex')
+}
+
+function sanitizeRuntimeMetadata(value: unknown, depth = 0): unknown {
+  if (depth > 3) return undefined
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
+  if (typeof value === 'string') return value.slice(0, 500)
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeRuntimeMetadata(item, depth + 1)).filter((item) => item !== undefined)
+  if (value && typeof value === 'object') {
+    const output: Record<string, unknown> = {}
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
+      const normalized = key.toLowerCase().replace(/[\s-]+/g, '_')
+      if (RUNTIME_FORBIDDEN_KEYS.has(normalized)) continue
+      const sanitized = sanitizeRuntimeMetadata(nested, depth + 1)
+      if (sanitized !== undefined) output[key.slice(0, 80)] = sanitized
+    }
+    return output
+  }
+  return undefined
+}
+
+function normalizeRuntimeProtocol(value: unknown) {
+  const protocol = cleanString(value, 50)
+  if (!protocol) return null
+  return protocol.replace(/^TLSv/i, 'TLS-').replace(/^TLS\s+/i, 'TLS-')
+}
+
+function runtimeOperationType(text: string) {
+  const lower = text.toLowerCase()
+  if (lower.includes('decrypt') || lower.includes('unwrap')) return 'decryption'
+  if (lower.includes('encrypt') || lower.includes('cipher') || lower.includes('aes')) return 'encryption'
+  if (lower.includes('sign') || lower.includes('jwt') || lower.includes('signature')) return 'signing'
+  if (lower.includes('verify') || lower.includes('validation')) return 'verification'
+  if (lower.includes('package') || lower.includes('config') || lower.includes('library')) return 'discovery'
+  if (lower.includes('tls') || lower.includes('ssh') || lower.includes('handshake') || lower.includes('key exchange') || lower.includes('kex')) return 'key_exchange'
+  if (lower.includes('key') || lower.includes('entropy') || lower.includes('rotate')) return 'key_usage'
+  return 'other'
+}
+
+function runtimeSeverity(input: {
+  explicitSeverity?: string | null
+  isPqc: boolean
+  isLegacy: boolean
+  downgradeDetected: boolean
+  shadowCrypto: boolean
+  hndlRisk: boolean
+  keySize?: number | null
+  algorithmText: string
+}) {
+  let computed: FindingSeverity = input.isPqc && !input.isLegacy ? 'safe' : 'low'
+  if (input.shadowCrypto) computed = 'moderate'
+  if (input.isLegacy) computed = 'high'
+  if (input.downgradeDetected || input.hndlRisk || (input.keySize && input.keySize <= 1024)) computed = 'critical'
+  if (/md5|sha-?1|3des|rc4|des|ssl|tls-?1\.[01]/i.test(input.algorithmText)) computed = 'critical'
+  const explicit = cleanString(input.explicitSeverity, 20) as FindingSeverity | null
+  return explicit && severityRank(explicit) > severityRank(computed) ? explicit : computed
+}
+
+function runtimeRiskScore(severity: FindingSeverity, flags: { isLegacy: boolean; downgradeDetected: boolean; shadowCrypto: boolean; hndlRisk: boolean }) {
+  const base = severity === 'critical' ? 90 : severity === 'high' ? 72 : severity === 'moderate' || severity === 'medium' ? 55 : severity === 'low' ? 28 : 5
+  const boost = (flags.downgradeDetected ? 5 : 0) + (flags.hndlRisk ? 5 : 0) + (flags.shadowCrypto ? 3 : 0) + (flags.isLegacy ? 2 : 0)
+  return Math.max(0, Math.min(100, base + boost))
+}
+
+function normalizeRuntimeCryptoEvent(raw: any, sourceType: string, agent?: any, connector?: any): RuntimeCryptoEventRecord | null {
+  const eventType = cleanString(raw?.eventType || raw?.event_type || raw?.evidenceType || raw?.evidence_type, 100)
+  const assetName = cleanString(raw?.assetName || raw?.asset_name || raw?.host || raw?.target || raw?.packageName || raw?.package_name || raw?.filePath || raw?.file_path, 255)
+  if (!eventType || !assetName) return null
+
+  const metadata = (sanitizeRuntimeMetadata(raw?.metadata || raw?.rawEvidence || raw?.raw_evidence || {}) || {}) as Record<string, unknown>
+  const algorithm = cleanString(raw?.algorithm || raw?.observedAlgorithm || raw?.observed_algorithm, 100)
+  const keyExchangeAlgorithm = cleanString(raw?.keyExchangeAlgorithm || raw?.key_exchange_algorithm || metadata.keyExchangeAlgorithm || metadata.key_exchange_algorithm, 100)
+  const cipherSuite = cleanString(raw?.cipherSuite || raw?.cipher_suite || metadata.cipherSuite || metadata.cipher_suite, 255)
+  const tlsVersion = normalizeRuntimeProtocol(raw?.tlsVersion || raw?.tls_version || (eventType.includes('tls-protocol') ? algorithm : null) || metadata.protocol)
+  const protocol = normalizeRuntimeProtocol(raw?.protocol || metadata.protocol)
+  const keySize = raw?.keySize || raw?.key_size ? Number(raw?.keySize || raw?.key_size) : null
+  const observedAt = cleanString(raw?.observedAt || raw?.observed_at, 80) || new Date().toISOString()
+  const algorithmText = `${eventType} ${algorithm || ''} ${keyExchangeAlgorithm || ''} ${cipherSuite || ''} ${tlsVersion || ''} ${protocol || ''} ${JSON.stringify(metadata)}`.toLowerCase()
+  const isPqc = Boolean(raw?.isPqc || raw?.is_pqc) || /ml-kem|ml-dsa|kyber|dilithium|sphincs|sntrup|pqc|post-quantum|hybrid/.test(algorithmText)
+  const isLegacy = Boolean(raw?.isLegacy || raw?.is_legacy) || /rsa|ecdsa|ecc|ecdh|dsa|dh-|diffie|sha-?1|md5|3des|des|rc4|ssl|tls-?1\.[01]|aes-128-cbc/.test(algorithmText)
+  const downgradeDetected = Boolean(raw?.downgradeDetected || raw?.downgrade_detected) || /downgrade|fallback|ssl|tls-?1\.[01]/.test(algorithmText)
+  const shadowCrypto = Boolean(raw?.shadowCrypto || raw?.shadow_crypto) || /package|config|unknown|embedded|vendor|library/.test(algorithmText)
+  const hndlRisk = Boolean(raw?.hndlRisk || raw?.hndl_risk) || (isLegacy && Boolean(raw?.host || raw?.target) && /rsa|ecdsa|ecc|dh|tls|certificate/.test(algorithmText))
+  const severity = runtimeSeverity({
+    explicitSeverity: raw?.severity,
+    isPqc,
+    isLegacy,
+    downgradeDetected,
+    shadowCrypto,
+    hndlRisk,
+    keySize,
+    algorithmText,
+  })
+  const riskScore = Number(raw?.riskScore || raw?.risk_score) || runtimeRiskScore(severity, { isLegacy, downgradeDetected, shadowCrypto, hndlRisk })
+  const withoutHash = {
+    userId: agent?.user_id || connector?.user_id || cleanString(raw?.userId || raw?.user_id, 80) || undefined,
+    agentId: agent?.id || cleanString(raw?.agentId || raw?.agent_id, 80) || null,
+    connectorAccountId: connector?.id || cleanString(raw?.connectorAccountId || raw?.connector_account_id, 80) || null,
+    assetId: cleanString(raw?.assetId || raw?.asset_id, 80) || null,
+    sourceType,
+    eventType,
+    operationType: cleanString(raw?.operationType || raw?.operation_type, 100) || runtimeOperationType(algorithmText),
+    severity,
+    riskScore: Math.max(0, Math.min(100, Math.round(riskScore))),
+    assetName,
+    assetType: cleanString(raw?.assetType || raw?.asset_type, 100),
+    host: cleanString(raw?.host, 255),
+    port: raw?.port === undefined || raw?.port === null ? null : Number(raw.port),
+    protocol,
+    tlsVersion,
+    cipherSuite,
+    keyExchangeAlgorithm,
+    algorithm,
+    keySize,
+    certificateFingerprint: cleanString(raw?.certificateFingerprint || raw?.certificate_fingerprint, 255),
+    packageName: cleanString(raw?.packageName || raw?.package_name, 255),
+    packageVersion: cleanString(raw?.packageVersion || raw?.package_version, 100),
+    processName: cleanString(raw?.processName || raw?.process_name, 255),
+    processId: raw?.processId || raw?.process_id ? Number(raw?.processId || raw?.process_id) : null,
+    isPqc,
+    isLegacy,
+    downgradeDetected,
+    shadowCrypto,
+    hndlRisk,
+    metadata,
+    observedAt,
+  }
+
+  return {
+    ...withoutHash,
+    eventHash: cleanString(raw?.eventHash || raw?.event_hash, 128) || runtimeEventHash(withoutHash),
+  }
+}
+
+function runtimeEventDbRow(event: RuntimeCryptoEventRecord, userId: string) {
+  return {
+    user_id: userId,
+    agent_id: event.agentId || null,
+    connector_account_id: event.connectorAccountId || null,
+    asset_id: event.assetId || null,
+    source_type: event.sourceType,
+    event_type: event.eventType,
+    operation_type: event.operationType,
+    severity: event.severity,
+    risk_score: event.riskScore,
+    asset_name: event.assetName,
+    asset_type: event.assetType || null,
+    host: event.host || null,
+    port: event.port || null,
+    protocol: event.protocol || null,
+    tls_version: event.tlsVersion || null,
+    cipher_suite: event.cipherSuite || null,
+    key_exchange_algorithm: event.keyExchangeAlgorithm || null,
+    algorithm: event.algorithm || null,
+    key_size: event.keySize || null,
+    certificate_fingerprint: event.certificateFingerprint || null,
+    package_name: event.packageName || null,
+    package_version: event.packageVersion || null,
+    process_name: event.processName || null,
+    process_id: event.processId || null,
+    is_pqc: event.isPqc,
+    is_legacy: event.isLegacy,
+    downgrade_detected: event.downgradeDetected,
+    shadow_crypto: event.shadowCrypto,
+    hndl_risk: event.hndlRisk,
+    event_hash: event.eventHash,
+    metadata: event.metadata || {},
+    observed_at: event.observedAt,
+  }
+}
+
+async function persistRuntimeCryptoEvents(client: SupabaseClient | null, userId: string, events: RuntimeCryptoEventRecord[]) {
+  if (events.length === 0) return { accepted: 0, inserted: 0, duplicateCount: 0, tableAvailable: true }
+  const rows = events.map((event) => runtimeEventDbRow(event, userId))
+
+  if (client) {
+    const { data, error } = await (client.from('runtime_crypto_events') as any)
+      .upsert(rows, { onConflict: 'user_id,event_hash', ignoreDuplicates: true })
+      .select('id,event_hash')
+    if (error) {
+      if (isMissingRuntimeTable(error)) {
+        console.warn('runtime_crypto_events table missing; runtime event persistence skipped')
+        return { accepted: events.length, inserted: 0, duplicateCount: 0, tableAvailable: false }
+      }
+      throw error
+    }
+    const inserted = data?.length || 0
+    return { accepted: events.length, inserted, duplicateCount: Math.max(0, events.length - inserted), tableAvailable: true }
+  }
+
+  let inserted = 0
+  for (const row of rows) {
+    const duplicate = memoryStore.runtimeCryptoEvents.some((item) => item.user_id === userId && item.event_hash === row.event_hash)
+    if (duplicate) continue
+    memoryStore.runtimeCryptoEvents.unshift({ id: randomId('runtime-event'), ...row, created_at: new Date().toISOString() })
+    inserted += 1
+  }
+  return { accepted: events.length, inserted, duplicateCount: Math.max(0, events.length - inserted), tableAvailable: true }
+}
+
+function runtimeEventToEvidence(event: RuntimeCryptoEventRecord): ScannerEvidenceRecord {
+  const eventType = RUNTIME_EVIDENCE_TYPES.has(event.eventType) ? event.eventType : event.protocol?.toLowerCase().includes('ssh') ? 'ssh-metadata' : event.protocol?.toLowerCase().includes('tls') || event.tlsVersion ? 'tls-protocol' : event.packageName ? 'package-manifest' : event.metadata?.filePath ? 'config-reference' : 'crypto-library'
+  return {
+    userId: event.userId,
+    agentId: event.agentId,
+    connectorAccountId: event.connectorAccountId,
+    sourceType: event.sourceType as ScannerEvidenceRecord['sourceType'],
+    evidenceType: eventType as ScannerEvidenceRecord['evidenceType'],
+    assetName: event.assetName,
+    assetType: event.assetType || null,
+    target: event.host ? `${event.protocol || 'runtime'}://${event.host}${event.port ? `:${event.port}` : ''}` : null,
+    host: event.host || null,
+    port: event.port || null,
+    protocol: event.protocol || event.tlsVersion || null,
+    observedAlgorithm: event.algorithm || event.keyExchangeAlgorithm || event.cipherSuite || event.tlsVersion || null,
+    keySize: event.keySize || null,
+    certificateFingerprint: event.certificateFingerprint || null,
+    filePath: cleanString(event.metadata?.filePath || event.metadata?.file_path, 1000),
+    packageName: event.packageName || null,
+    packageVersion: event.packageVersion || null,
+    confidence: 'high',
+    rawEvidence: {
+      ...event.metadata,
+      runtimeEventHash: event.eventHash,
+      operationType: event.operationType,
+      isPqc: event.isPqc,
+      isLegacy: event.isLegacy,
+      downgradeDetected: event.downgradeDetected,
+      shadowCrypto: event.shadowCrypto,
+      hndlRisk: event.hndlRisk,
+      riskScore: event.riskScore,
+    },
+    observedAt: event.observedAt,
+  }
+}
+
+function runtimeEventsFromEvidence(evidence: ScannerEvidenceRecord[]) {
+  return evidence
+    .map((item) => normalizeRuntimeCryptoEvent({
+      eventType: item.evidenceType,
+      operationType: runtimeOperationType(`${item.evidenceType} ${item.observedAlgorithm || ''} ${item.protocol || ''}`),
+      assetName: item.assetName,
+      assetType: item.assetType,
+      target: item.target,
+      host: item.host,
+      port: item.port,
+      protocol: item.protocol,
+      tlsVersion: item.evidenceType === 'tls-protocol' ? item.observedAlgorithm : item.protocol,
+      cipherSuite: item.evidenceType === 'tls-cipher' ? item.observedAlgorithm : null,
+      keyExchangeAlgorithm: item.evidenceType === 'ssh-metadata' ? item.observedAlgorithm : null,
+      algorithm: item.observedAlgorithm,
+      keySize: item.keySize,
+      certificateFingerprint: item.certificateFingerprint,
+      filePath: item.filePath,
+      packageName: item.packageName,
+      packageVersion: item.packageVersion,
+      rawEvidence: item.rawEvidence,
+      metadata: {
+        ...(item.rawEvidence || {}),
+        evidenceId: item.id,
+        evidenceType: item.evidenceType,
+        target: item.target,
+        filePath: item.filePath,
+      },
+      observedAt: item.observedAt,
+    }, item.sourceType, { id: item.agentId, user_id: item.userId }, item.connectorAccountId ? { id: item.connectorAccountId, user_id: item.userId } : undefined))
+    .filter(Boolean) as RuntimeCryptoEventRecord[]
+}
+
 function dbEvidenceRow(evidence: ScannerEvidenceRecord, userId: string) {
   return {
     user_id: userId,
@@ -290,7 +678,7 @@ async function persistEvidenceFindings(
   evidence: ScannerEvidenceRecord[],
   findings: ScanFinding[],
   sourceLabel: string,
-  options: { alertThreshold?: string } = {}
+  options: { alertThreshold?: string; persistRuntimeEvents?: boolean } = {}
 ) {
   const now = new Date().toISOString()
   const linkedAssetIds: string[] = []
@@ -560,7 +948,7 @@ async function processEvidenceBatch(
   userId: string,
   evidence: ScannerEvidenceRecord[],
   sourceLabel: string,
-  options: { alertThreshold?: string } = {}
+  options: { alertThreshold?: string; persistRuntimeEvents?: boolean } = {}
 ) {
   const rows = evidence.map((item) => dbEvidenceRow(item, userId))
   let insertedEvidence: ScannerEvidenceRecord[] = evidence
@@ -596,6 +984,10 @@ async function processEvidenceBatch(
       memoryStore.evidence.unshift(row)
       item.id = row.id
     }
+  }
+
+  if (options.persistRuntimeEvents !== false) {
+    await persistRuntimeCryptoEvents(client, userId, runtimeEventsFromEvidence(insertedEvidence))
   }
 
   const scanId = randomId('evidence-scan')
@@ -636,6 +1028,186 @@ async function processEvidenceBatch(
     scanner2,
     links,
   }
+}
+
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {}
+}
+
+async function activePolicyForAgent(client: SupabaseClient | null, agent: any) {
+  if (client) {
+    const { data } = await client
+      .from('scanner_agent_policies')
+      .select('*')
+      .eq('agent_id', agent.id)
+      .eq('user_id', agent.user_id)
+      .eq('enabled', true)
+      .limit(1)
+      .maybeSingle()
+    if (data) return normalizePolicy(data)
+  }
+  return normalizePolicy(agent.policy || {})
+}
+
+function remediationJobMetadata(job: any) {
+  return asRecord(job?.metadata)
+}
+
+function remediationJobIsHndl(job: any) {
+  const metadata = remediationJobMetadata(job)
+  const text = [
+    job?.name,
+    job?.job_type,
+    job?.target_algorithm,
+    job?.strategy,
+    metadata.source,
+    metadata.workflow,
+    metadata.workflowType,
+    metadata.findingType,
+    metadata.hndlFindingId,
+    metadata.sourceFindingId,
+    metadata.detectionId,
+    metadata.riskCategory,
+  ].filter(Boolean).join(' ').toLowerCase()
+  return (
+    text.includes('hndl') ||
+    text.includes('harvest-now') ||
+    text.includes('harvest now') ||
+    text.includes('decrypt later')
+  )
+}
+
+function remediationTarget(job: any) {
+  const metadata = remediationJobMetadata(job)
+  return cleanString(
+    metadata.target ||
+    metadata.endpoint ||
+    metadata.url ||
+    metadata.host ||
+    metadata.assetName ||
+    metadata.asset_name ||
+    metadata.location ||
+    job?.asset_name ||
+    job?.name,
+    500
+  )
+}
+
+function remediationFilePath(job: any) {
+  const metadata = remediationJobMetadata(job)
+  return cleanString(metadata.filePath || metadata.file_path || metadata.path || metadata.configPath || metadata.config_path, 1000)
+}
+
+function remediationAdapter(job: any) {
+  const metadata = remediationJobMetadata(job)
+  const text = [
+    job?.name,
+    job?.job_type,
+    metadata.assetType,
+    metadata.asset_type,
+    metadata.resourceType,
+    metadata.provider,
+    metadata.target,
+    metadata.location,
+    metadata.filePath,
+    metadata.path,
+    metadata.remediationAdapter,
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  if (/kubernetes|k8s|cluster|ingress|helm|namespace/.test(text)) return 'kubernetes'
+  if (/container|docker|image|registry|podman/.test(text)) return 'container'
+  if (/aws|azure|gcp|cloud|load balancer|alb|elb|cdn|cloudfront|gateway/.test(text)) return 'cloud'
+  if (/iam|identity|access|oauth|oidc|saml|jwt|credential|secret|key vault|kms/.test(text)) return 'identity_access'
+  if (/repo|source|code|package|dependency|manifest|config|library|application/.test(text)) return 'code_application'
+  if (/https?:\/\/|website|web app|web_application|tls|ssl|ssh|protocol|certificate|cipher/.test(text)) return 'network_protocol'
+  return 'universal'
+}
+
+function remediationProbeEvidence(job: any, agent: any): ScannerEvidenceRecord | null {
+  const target = remediationTarget(job)
+  const filePath = remediationFilePath(job)
+  const assetName = cleanString(remediationJobMetadata(job).assetName || remediationJobMetadata(job).asset_name || job?.name, 255) || 'HNDL remediation target'
+
+  if (filePath) {
+    return normalizeEvidence({
+      evidenceType: 'config-reference',
+      assetName,
+      assetType: remediationAdapter(job),
+      filePath,
+      rawEvidence: {
+        remediationJobId: job?.id,
+        remediationProbe: true,
+      },
+    }, 'local-agent', agent)
+  }
+
+  if (!target) return null
+  const parsed = parsePolicyTarget(target)
+  if (!parsed?.host) {
+    return normalizeEvidence({
+      evidenceType: 'config-reference',
+      assetName,
+      assetType: remediationAdapter(job),
+      target,
+      rawEvidence: {
+        remediationJobId: job?.id,
+        remediationProbe: true,
+      },
+    }, 'local-agent', agent)
+  }
+
+  return normalizeEvidence({
+    evidenceType: parsed.port === 22 ? 'ssh-metadata' : 'tls-protocol',
+    assetName: parsed.host,
+    assetType: remediationAdapter(job),
+    target,
+    host: parsed.host,
+    port: parsed.port || (target.toLowerCase().startsWith('ssh') ? 22 : 443),
+    protocol: parsed.port === 22 ? 'SSH' : 'TLS',
+    rawEvidence: {
+      remediationJobId: job?.id,
+      remediationProbe: true,
+    },
+  }, 'local-agent', agent)
+}
+
+function remediationJobAllowedForAgent(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any) {
+  const probe = remediationProbeEvidence(job, agent)
+  if (!probe) return policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0
+  return evidenceAllowedByPolicy(probe, policy, true)
+}
+
+function remediationJobPayload(job: any) {
+  const metadata = remediationJobMetadata(job)
+  return {
+    id: job.id,
+    assetId: job.asset_id || null,
+    name: job.name || 'HNDL Remediation',
+    jobType: job.job_type || 'hndl_mitigation',
+    status: job.status || 'running',
+    targetAlgorithm: job.target_algorithm || 'ML-KEM-768 hybrid',
+    strategy: job.strategy || 'guarded_agent_execution',
+    progress: Number(job.progress || 0),
+    adapter: remediationAdapter(job),
+    target: remediationTarget(job),
+    filePath: remediationFilePath(job),
+    metadata,
+    startedAt: job.started_at || null,
+    completedAt: job.completed_at || null,
+    createdAt: job.created_at || null,
+    updatedAt: job.updated_at || null,
+  }
+}
+
+function remediationEventSeverity(status: string) {
+  if (status === 'failed') return 'error'
+  if (status === 'blocked' || status === 'manual_required' || status === 'paused') return 'warning'
+  if (status === 'completed') return 'success'
+  return 'info'
+}
+
+function sanitizeAgentMetadata(value: unknown) {
+  return (sanitizeRuntimeMetadata(value || {}) || {}) as Record<string, unknown>
 }
 
 router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) => {
@@ -1092,6 +1664,79 @@ router.post('/agent/telemetry', requireAgentAuth, async (req: AgentRequest, res)
   res.json({ data: { status: 'accepted' } })
 })
 
+router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest, res) => {
+  const client = req.client || null
+  const agent = req.agent!
+  const payload = Array.isArray(req.body?.events) ? req.body.events : []
+  if (payload.length === 0) {
+    jsonError(res, 400, 'NO_RUNTIME_EVENTS', 'events array is required')
+    return
+  }
+  if (payload.length > 1000) {
+    jsonError(res, 413, 'TOO_MANY_RUNTIME_EVENTS', 'A maximum of 1000 runtime events can be uploaded at once')
+    return
+  }
+
+  const forbidden = payload.map((item: any) => containsForbiddenRuntimeField(item)).find(Boolean)
+  if (forbidden) {
+    jsonError(res, 400, 'RUNTIME_EVENT_CONTAINS_FORBIDDEN_DATA', `Runtime crypto events are metadata-only. Remove forbidden field "${forbidden}".`)
+    return
+  }
+
+  const policy = normalizePolicy(agent.policy || {})
+  const scanTypes = new Set(policy.scanTypes.map((item: string) => String(item).toLowerCase()))
+  const runtimeAllowed = scanTypes.has('runtime') || ['tls', 'ssh', 'packages', 'configs'].some((type) => scanTypes.has(type))
+  if (!runtimeAllowed) {
+    jsonError(res, 403, 'RUNTIME_TELEMETRY_DISABLED', 'Runtime crypto telemetry is disabled by this agent policy')
+    return
+  }
+
+  const normalized = payload
+    .map((item: any) => normalizeRuntimeCryptoEvent(item, 'local-agent', agent))
+    .filter(Boolean) as RuntimeCryptoEventRecord[]
+  const policyAllowed = normalized.filter((event) => evidenceAllowedByPolicy(runtimeEventToEvidence(event), policy))
+  const rejectedEventCount = normalized.length - policyAllowed.length
+
+  if (policyAllowed.length === 0) {
+    jsonError(res, 403, 'RUNTIME_EVENTS_OUT_OF_POLICY', 'Uploaded runtime events do not match this agent policy')
+    return
+  }
+
+  const persistence = await persistRuntimeCryptoEvents(client, agent.user_id, policyAllowed)
+  const evidence = policyAllowed.map(runtimeEventToEvidence)
+  const evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-runtime:${agent.name || agent.id}`, {
+    alertThreshold: policy.alertThreshold,
+    persistRuntimeEvents: false,
+  })
+
+  if (client) {
+    await client.from('agent_heartbeats').insert({
+      user_id: agent.user_id,
+      agent_id: agent.id,
+      status: 'runtime_events',
+      telemetry: {
+        acceptedRuntimeEvents: policyAllowed.length,
+        insertedRuntimeEvents: persistence.inserted,
+        duplicateRuntimeEvents: persistence.duplicateCount,
+        rejectedEventCount,
+      },
+      observed_at: new Date().toISOString(),
+    })
+  }
+
+  res.json({
+    data: {
+      ...persistence,
+      rejectedEventCount,
+      evidence: {
+        evidenceCount: evidenceResult.evidenceCount,
+        findingCount: evidenceResult.findingCount,
+        links: evidenceResult.links,
+      },
+    },
+  })
+})
+
 router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) => {
   const client = req.client || null
   const agent = req.agent!
@@ -1121,6 +1766,304 @@ router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) 
     alertThreshold: policy.alertThreshold,
   })
   res.json({ data: { ...result, rejectedEvidenceCount } })
+})
+
+router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest, res) => {
+  const client = req.client || null
+  const agent = req.agent!
+  if (!client) {
+    res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: 'database_unavailable' } })
+    return
+  }
+
+  const policy = await activePolicyForAgent(client, agent)
+  if (!policy.enabled) {
+    res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: 'agent_policy_disabled' } })
+    return
+  }
+
+  const now = new Date().toISOString()
+  const { data: jobs, error } = await client
+    .from('migration_jobs')
+    .select('*')
+    .eq('user_id', agent.user_id)
+    .in('status', ['running', 'in_progress', 'executing'])
+    .order('updated_at', { ascending: true })
+    .limit(25)
+
+  if (error) {
+    jsonError(res, 500, 'REMEDIATION_JOB_READ_FAILED', error.message)
+    return
+  }
+
+  const claimable = (jobs || [])
+    .filter((job: any) => remediationJobIsHndl(job))
+    .filter((job: any) => {
+      const metadata = remediationJobMetadata(job)
+      const assignedAgentId = cleanString(metadata.assignedAgentId || metadata.assigned_agent_id, 120)
+      return !assignedAgentId || assignedAgentId === agent.id
+    })
+    .filter((job: any) => remediationJobAllowedForAgent(job, policy, agent))
+    .slice(0, 5)
+
+  const claimedJobs: any[] = []
+  for (const job of claimable) {
+    const metadata = remediationJobMetadata(job)
+    const claimedAt = cleanString(metadata.claimedAt || metadata.claimed_at, 80) || now
+    const nextMetadata = {
+      ...metadata,
+      assignedAgentId: agent.id,
+      assignedAgentName: agent.name || agent.hostname || agent.id,
+      assignedAgentHostname: agent.hostname || null,
+      claimedAt,
+      lastClaimedAt: now,
+      executorMode: 'guarded-agent',
+      executorAdapter: remediationAdapter(job),
+      executorVersion: agent.version || null,
+    }
+
+    const { error: updateError } = await client
+      .from('migration_jobs')
+      .update({
+        status: 'running',
+        started_at: job.started_at || now,
+        updated_at: now,
+        metadata: nextMetadata,
+      })
+      .eq('id', job.id)
+      .eq('user_id', agent.user_id)
+
+    if (updateError) {
+      console.warn('[agent-remediation] Claim failed:', updateError.message)
+      continue
+    }
+
+    await client.from('migration_events').insert({
+      user_id: agent.user_id,
+      migration_id: job.id,
+      event_type: 'agent-remediation-claimed',
+      severity: 'info',
+      message: `QGuard agent ${agent.name || agent.id} claimed HNDL remediation workflow.`,
+      metadata: {
+        agentId: agent.id,
+        agentName: agent.name || null,
+        adapter: remediationAdapter(job),
+        target: remediationTarget(job),
+      },
+      created_at: now,
+    })
+
+    claimedJobs.push({ ...job, metadata: nextMetadata, status: 'running', started_at: job.started_at || now, updated_at: now })
+  }
+
+  await client.from('agent_heartbeats').insert({
+    user_id: agent.user_id,
+    agent_id: agent.id,
+    status: 'remediation_poll',
+    telemetry: {
+      availableJobs: jobs?.length || 0,
+      claimedJobs: claimedJobs.length,
+      hndlCandidates: (jobs || []).filter((job: any) => remediationJobIsHndl(job)).length,
+    },
+    observed_at: now,
+  })
+
+  res.json({
+    data: {
+      jobs: claimedJobs.map(remediationJobPayload),
+      observedAt: now,
+    },
+  })
+})
+
+router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: AgentRequest, res) => {
+  const client = req.client || null
+  const agent = req.agent!
+  if (!client) {
+    jsonError(res, 503, 'DATABASE_UNAVAILABLE', 'Remediation job execution requires the database-backed migration workflow')
+    return
+  }
+
+  const { data: job, error: readError } = await client
+    .from('migration_jobs')
+    .select('*')
+    .eq('id', req.params.id)
+    .eq('user_id', agent.user_id)
+    .maybeSingle()
+
+  if (readError || !job) {
+    jsonError(res, 404, 'REMEDIATION_JOB_NOT_FOUND', 'Remediation job not found for this tenant')
+    return
+  }
+  if (!remediationJobIsHndl(job)) {
+    jsonError(res, 400, 'NOT_HNDL_REMEDIATION', 'Only Harvest Now, Decrypt Later remediation jobs can be executed by this endpoint')
+    return
+  }
+
+  const policy = await activePolicyForAgent(client, agent)
+  if (!policy.enabled || !remediationJobAllowedForAgent(job, policy, agent)) {
+    jsonError(res, 403, 'REMEDIATION_OUT_OF_POLICY', 'This remediation job is outside the agent policy scope')
+    return
+  }
+
+  const now = new Date().toISOString()
+  const currentMetadata = remediationJobMetadata(job)
+  const assignedAgentId = cleanString(currentMetadata.assignedAgentId || currentMetadata.assigned_agent_id, 120)
+  if (assignedAgentId && assignedAgentId !== agent.id) {
+    jsonError(res, 403, 'REMEDIATION_JOB_ASSIGNED', 'This remediation job is assigned to a different agent')
+    return
+  }
+
+  const eventType = cleanString(req.body?.eventType || req.body?.event_type, 100) || 'agent-remediation-progress'
+  const message = cleanString(req.body?.message, 1000) || 'HNDL remediation agent event recorded.'
+  const requestedStatus = (cleanString(req.body?.status, 50) || 'running').toLowerCase()
+  const requestedProgress = Number(req.body?.progress)
+  const progress = Number.isFinite(requestedProgress)
+    ? Math.max(0, Math.min(100, Math.round(requestedProgress)))
+    : Math.max(0, Math.min(100, Number(job.progress || 0)))
+  const eventMetadata = sanitizeAgentMetadata(req.body?.metadata)
+  let validation = sanitizeAgentMetadata(req.body?.validation)
+
+  const payloadEvidence = Array.isArray(req.body?.evidence) ? req.body.evidence : []
+  const normalizedEvidence = payloadEvidence
+    .slice(0, 200)
+    .map((item: any) => normalizeEvidence(item, 'local-agent', agent))
+    .filter(Boolean) as ScannerEvidenceRecord[]
+  const evidence = normalizedEvidence.filter((item) => evidenceAllowedByPolicy(item, policy))
+  const rejectedEvidenceCount = normalizedEvidence.length - evidence.length
+  if (normalizedEvidence.length > 0 && evidence.length === 0) {
+    jsonError(res, 403, 'REMEDIATION_EVIDENCE_OUT_OF_POLICY', 'Validation evidence does not match this agent policy')
+    return
+  }
+
+  let evidenceResult: Awaited<ReturnType<typeof processEvidenceBatch>> | null = null
+  if (evidence.length > 0) {
+    try {
+      evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-remediation:${agent.name || agent.id}`, {
+        alertThreshold: policy.alertThreshold,
+      })
+      const hndlRiskCount = Array.isArray(evidenceResult.scanner2?.hndlRisks) ? evidenceResult.scanner2.hndlRisks.length : 0
+      validation = {
+        ...validation,
+        passed: hndlRiskCount === 0,
+        hndlRiskRemaining: hndlRiskCount > 0,
+        hndlRiskCount,
+        evidenceCount: evidenceResult.evidenceCount,
+        findingCount: evidenceResult.findingCount,
+        scanSessionId: evidenceResult.links?.scanSessionId || null,
+        quantumReadiness: evidenceResult.scanner2?.quantumReadiness || null,
+        validatedAt: now,
+      }
+    } catch (error) {
+      jsonError(res, 500, 'REMEDIATION_EVIDENCE_PROCESS_FAILED', (error as Error).message)
+      return
+    }
+  }
+
+  if (requestedStatus === 'completed') {
+    const validationPassed = validation.passed === true && validation.hndlRiskRemaining === false
+    if (!validationPassed || !evidenceResult) {
+      jsonError(res, 409, 'REMEDIATION_VALIDATION_REQUIRED', 'Completion requires fresh validation evidence proving no active HNDL risk remains')
+      return
+    }
+  }
+
+  let nextStatus = job.status || 'running'
+  if (['running', 'in_progress', 'executing', 'validating', 'planned'].includes(requestedStatus)) nextStatus = 'running'
+  if (['blocked', 'manual_required', 'paused', 'requires_manual_change'].includes(requestedStatus)) nextStatus = 'paused'
+  if (requestedStatus === 'failed') nextStatus = 'failed'
+  if (requestedStatus === 'completed') nextStatus = 'completed'
+
+  const eventRecord = {
+    eventType,
+    status: requestedStatus,
+    progress,
+    message,
+    at: now,
+    agentId: agent.id,
+    adapter: remediationAdapter(job),
+  }
+  const recentEvents = Array.isArray(currentMetadata.executorEvents)
+    ? currentMetadata.executorEvents.slice(-19)
+    : []
+  const nextMetadata = {
+    ...currentMetadata,
+    assignedAgentId: agent.id,
+    assignedAgentName: agent.name || agent.hostname || agent.id,
+    assignedAgentHostname: agent.hostname || null,
+    executorMode: 'guarded-agent',
+    executorAdapter: remediationAdapter(job),
+    executorVersion: agent.version || null,
+    executorState: {
+      status: requestedStatus,
+      progress,
+      lastUpdatedAt: now,
+      evidenceCount: evidence.length,
+      rejectedEvidenceCount,
+    },
+    lastExecutorEvent: eventRecord,
+    lastValidation: validation,
+    lastEvidenceResult: evidenceResult ? {
+      evidenceCount: evidenceResult.evidenceCount,
+      findingCount: evidenceResult.findingCount,
+      scanSessionId: evidenceResult.links?.scanSessionId || null,
+    } : currentMetadata.lastEvidenceResult || null,
+    executorEvents: [...recentEvents, eventRecord],
+  }
+
+  const updatePayload: Record<string, unknown> = {
+    status: nextStatus,
+    progress: nextStatus === 'completed' ? 100 : progress,
+    started_at: job.started_at || now,
+    updated_at: now,
+    metadata: nextMetadata,
+  }
+  if (nextStatus === 'completed') updatePayload.completed_at = now
+
+  const { error: updateError } = await client
+    .from('migration_jobs')
+    .update(updatePayload)
+    .eq('id', job.id)
+    .eq('user_id', agent.user_id)
+
+  if (updateError) {
+    jsonError(res, 500, 'REMEDIATION_JOB_UPDATE_FAILED', updateError.message)
+    return
+  }
+
+  await client.from('migration_events').insert({
+    user_id: agent.user_id,
+    migration_id: job.id,
+    event_type: eventType,
+    severity: remediationEventSeverity(requestedStatus),
+    message,
+    metadata: {
+      ...eventMetadata,
+      agentId: agent.id,
+      adapter: remediationAdapter(job),
+      status: requestedStatus,
+      progress,
+      validation,
+      evidenceCount: evidence.length,
+      rejectedEvidenceCount,
+    },
+    created_at: now,
+  })
+
+  res.json({
+    data: {
+      jobId: job.id,
+      status: nextStatus,
+      progress: updatePayload.progress,
+      validation,
+      evidence: evidenceResult ? {
+        evidenceCount: evidenceResult.evidenceCount,
+        findingCount: evidenceResult.findingCount,
+        scanSessionId: evidenceResult.links?.scanSessionId || null,
+      } : null,
+      observedAt: now,
+    },
+  })
 })
 
 let schedulerStarted = false

@@ -1,9 +1,19 @@
 import express from 'express'
 import dashboardRoutes from './dashboard'
+import behavioralAnalyticsRoutes from './behavioral-analytics'
+import telemetryCorrelationRoutes from './telemetry-correlation'
+import quantumRiskScoringRoutes from './quantum-risk-scoring'
+import tlsTelemetryRoutes from './tls-telemetry'
+import pkiVisibilityRoutes from './pki-visibility'
+import { protocolAnalyticsRoutes, encryptionMonitoringRoutes } from './crypto-operations-dashboard'
+import { continuousTrustRoutes, identityTrustRoutes, deviceTrustRoutes, trustAnalyticsRoutes, zeroTrustRoutes } from './trust-center-dashboard'
+import { cryptoPoliciesRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
+import { runtimeTelemetryRoutes, certificateTelemetryRoutes, keyAnalyticsRoutes, apiEncryptionRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
 import profileRoutes from './profile'
 import scannerRoutes from './scanner'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import serviceRecordRoutes from './service-records'
+import migrationRoutes from './migration'
 import { getServerUser, getServiceClient } from '@/lib/supabase-server'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
 
@@ -412,7 +422,28 @@ export function createApiServer() {
   })
 
   // Dashboard API routes
+  app.use('/api/v1/dashboard/behavioral-analytics', behavioralAnalyticsRoutes)
+  app.use('/api/v1/dashboard/telemetry-correlation', telemetryCorrelationRoutes)
+  app.use('/api/v1/dashboard/quantum-risk-scoring', quantumRiskScoringRoutes)
+  app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
+  app.use('/api/v1/dashboard/pki-visibility', pkiVisibilityRoutes)
+  app.use('/api/v1/dashboard/protocol-analytics', protocolAnalyticsRoutes)
+  app.use('/api/v1/dashboard/encryption-monitoring', encryptionMonitoringRoutes)
+  app.use('/api/v1/dashboard/continuous-trust', continuousTrustRoutes)
+  app.use('/api/v1/dashboard/identity-trust', identityTrustRoutes)
+  app.use('/api/v1/dashboard/device-trust', deviceTrustRoutes)
+  app.use('/api/v1/dashboard/trust-analytics', trustAnalyticsRoutes)
+  app.use('/api/v1/dashboard/zero-trust', zeroTrustRoutes)
+  app.use('/api/v1/dashboard/crypto-policies', cryptoPoliciesRoutes)
+  app.use('/api/v1/dashboard/audit-vault', auditVaultRoutes)
+  app.use('/api/v1/dashboard/regulatory-mapping', regulatoryMappingRoutes)
+  app.use('/api/v1/dashboard/runtime-telemetry', runtimeTelemetryRoutes)
+  app.use('/api/v1/dashboard/certificate-telemetry', certificateTelemetryRoutes)
+  app.use('/api/v1/dashboard/key-analytics', keyAnalyticsRoutes)
+  app.use('/api/v1/dashboard/api-encryption', apiEncryptionRoutes)
+  app.use('/api/v1/dashboard/multi-cloud-telemetry', multiCloudTelemetryRoutes)
   app.use('/api/v1/dashboard', dashboardRoutes)
+  app.use('/api/v1/migration', migrationRoutes)
   app.use('/api/v1/profile', profileRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)

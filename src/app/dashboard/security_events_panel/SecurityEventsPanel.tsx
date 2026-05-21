@@ -1,10 +1,10 @@
-import { useEffect, useState, useRef } from 'react';
+import { useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Bell, AlertTriangle, Shield, CheckCircle, Info, 
   ExternalLink, FileSearch, ShieldAlert, History
 } from 'lucide-react';
-import { SecurityEvent, dashboardService } from '@/lib/dashboard-service';
+import type { SecurityEvent } from '@/hooks/use-dashboard';
 
 interface Props {
   events: SecurityEvent[];
@@ -41,17 +41,16 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
 
   return (
     <div className={`flex flex-col h-full overflow-hidden ${GLASS_PANEL_CLASSES}`}>
-      <div className="p-4 border-b border-gold/10 flex justify-between items-center bg-white/[0.02]">
-        <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
-          <Bell className="h-3.5 w-3.5 text-gold" />
+      <div className="flex justify-between items-center px-4 py-3.5 border-b border-white/5 bg-white/[0.01]">
+        <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
+          <Bell className="h-4 w-4 text-gold" />
           Security Events
         </h2>
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-gold/10 border border-gold/20">
-            <span className="w-1.5 h-1.5 bg-gold rounded-full animate-pulse" />
-            <span className="text-[9px] font-black text-gold uppercase tracking-widest">Real-time</span>
+          <span className="w-1.5 h-1.5 bg-gold rounded-full animate-pulse" />
+          <span className="text-[9px] font-black text-gold uppercase tracking-widest">Real-time</span>
         </div>
       </div>
-
       <div 
         ref={scrollRef}
         className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar"
@@ -89,7 +88,7 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
                     <div className="flex justify-between items-start gap-2">
                       <div className="text-[10px] font-black uppercase tracking-wider">{event.eventType.replace(/_/g, ' ')}</div>
                       <div className="text-[8px] font-mono opacity-50 whitespace-nowrap">
-                        {new Date(event.createdAt).toLocaleTimeString()}
+                        {new Date(event.timestamp).toLocaleTimeString()}
                       </div>
                     </div>
                     <p className="text-[11px] text-white/70 leading-relaxed font-medium">

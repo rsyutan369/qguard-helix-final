@@ -136,7 +136,12 @@ export function ExposureMap({ nodes, edges, loading, onNodeClick, onStartScan }:
   const [selectedNode, setSelectedNode] = useState<SimulationNode | null>(null)
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [draggingNode, setDraggingNode] = useState<string | null>(null)
-  const dragOffset = useRef({ x: 0, y: 0 })
+  
+  // Interactive zoom, pan, and drag states
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  const lastMousePos = useRef({ x: 0, y: 0 })
 
   useEffect(() => {
     const updateDimensions = () => {
@@ -156,32 +161,60 @@ export function ExposureMap({ nodes, edges, loading, onNodeClick, onStartScan }:
     setSimulation(sim)
   }, [dimensions.width, dimensions.height, nodes, edges])
 
-  const handleMouseDown = useCallback((e: React.MouseEvent, node: SimulationNode) => {
+  // Attach mouse wheel zoom event listener directly (avoids passive listener browser blocks)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    
+    const handleWheelRaw = (e: WheelEvent) => {
+      e.preventDefault()
+      const zoomFactor = 1.08
+      setZoom(z => {
+        if (e.deltaY < 0) {
+          return Math.min(z * zoomFactor, 3.5)
+        } else {
+          return Math.max(z / zoomFactor, 0.4)
+        }
+      })
+    }
+    el.addEventListener('wheel', handleWheelRaw, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheelRaw)
+  }, [])
+
+  const handleNodeMouseDown = useCallback((e: React.MouseEvent, node: SimulationNode) => {
     e.stopPropagation()
     setDraggingNode(node.id)
-    const rect = (e.target as SVGElement).closest('svg')!.getBoundingClientRect()
-    dragOffset.current = {
-      x: e.clientX - rect.left - node.x,
-      y: e.clientY - rect.top - node.y,
-    }
+    lastMousePos.current = { x: e.clientX, y: e.clientY }
+  }, [])
+
+  const handleBgMouseDown = useCallback((e: React.MouseEvent) => {
+    setIsPanning(true)
+    lastMousePos.current = { x: e.clientX, y: e.clientY }
   }, [])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!draggingNode || !containerRef.current) return
-    const rect = containerRef.current.getBoundingClientRect()
-    const x = e.clientX - rect.left - dragOffset.current.x
-    const y = e.clientY - rect.top - dragOffset.current.y
-
-    setSimulation(prev => ({
-      ...prev,
-      simNodes: prev.simNodes.map(n =>
-        n.id === draggingNode ? { ...n, x, y } : n
-      ),
-    }))
-  }, [draggingNode])
+    if (draggingNode) {
+      const dx = (e.clientX - lastMousePos.current.x) / zoom
+      const dy = (e.clientY - lastMousePos.current.y) / zoom
+      lastMousePos.current = { x: e.clientX, y: e.clientY }
+      
+      setSimulation(prev => ({
+        ...prev,
+        simNodes: prev.simNodes.map(n =>
+          n.id === draggingNode ? { ...n, x: n.x + dx, y: n.y + dy } : n
+        ),
+      }))
+    } else if (isPanning) {
+      const dx = e.clientX - lastMousePos.current.x
+      const dy = e.clientY - lastMousePos.current.y
+      lastMousePos.current = { x: e.clientX, y: e.clientY }
+      setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }))
+    }
+  }, [draggingNode, isPanning, zoom])
 
   const handleMouseUp = useCallback(() => {
     setDraggingNode(null)
+    setIsPanning(false)
   }, [])
 
   const isLoading = loading === 'loading'
@@ -210,13 +243,20 @@ export function ExposureMap({ nodes, edges, loading, onNodeClick, onStartScan }:
 
       <div
         ref={containerRef}
-        className="flex-1 rounded-lg border border-gold/10 bg-black/20 relative overflow-hidden"
+        className="flex-1 rounded-lg border border-gold/10 bg-black/20 relative overflow-hidden cursor-grab active:cursor-grabbing select-none"
+        onMouseDown={handleBgMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        {/* Grid background */}
-        <div className="absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(212,175,55,0.3)_1px,transparent_1px),linear-gradient(90deg,rgba(212,175,55,0.3)_1px,transparent_1px)] [background-size:20px_20px]" />
+        {/* Grid background with zoom and pan transform applied via CSS background-position & size */}
+        <div 
+          className="absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(212,175,55,0.3)_1px,transparent_1px),linear-gradient(90deg,rgba(212,175,55,0.3)_1px,transparent_1px)]"
+          style={{
+            backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
+            backgroundPosition: `${pan.x}px ${pan.y}px`
+          }}
+        />
 
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -264,87 +304,129 @@ export function ExposureMap({ nodes, edges, loading, onNodeClick, onStartScan }:
 
         {!isLoading && !isEmpty && (
           <svg className="absolute inset-0 w-full h-full" viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}>
-            {/* Edges */}
-            {simulation.simEdges.map((edge, i) => {
-              const source = simulation.simNodes.find(n => n.id === edge.source)
-              const target = simulation.simNodes.find(n => n.id === edge.target)
-              if (!source || !target) return null
-              return (
-                <line
-                  key={`edge-${i}`}
-                  x1={source.x}
-                  y1={source.y}
-                  x2={target.x}
-                  y2={target.y}
-                  stroke="rgba(212,175,55,0.15)"
-                  strokeWidth={1}
-                  strokeDasharray="4 4"
-                />
-              )
-            })}
-
-            {/* Nodes */}
-            {simulation.simNodes.map((node) => {
-              const Icon = typeIcons[node.data.type] || typeIcons.default
-              const isHovered = hoveredNode === node.id
-              const isSelected = selectedNode?.id === node.id
-              const color = node.data.color || riskColors.moderate
-
-              return (
-                <g
-                  key={node.id}
-                  transform={`translate(${node.x}, ${node.y})`}
-                  onMouseEnter={() => setHoveredNode(node.id)}
-                  onMouseLeave={() => setHoveredNode(null)}
-                  onMouseDown={(e) => handleMouseDown(e, node)}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setSelectedNode(node)
-                    onNodeClick?.(node.data)
-                  }}
-                  className="cursor-pointer"
-                  style={{ cursor: 'pointer' }}
-                >
-                  {/* Glow effect */}
-                  {(isHovered || isSelected) && (
-                    <circle
-                      r={node.radius + 8}
-                      fill={color}
-                      opacity={0.15}
-                      className="animate-pulse"
-                    />
-                  )}
-                  {/* Outer ring */}
-                  <circle
-                    r={node.radius}
-                    fill="rgba(0,0,0,0.6)"
-                    stroke={color}
-                    strokeWidth={isSelected ? 2.5 : 1.5}
-                    opacity={isHovered ? 1 : 0.8}
+            <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+              {/* Edges */}
+              {simulation.simEdges.map((edge, i) => {
+                const source = simulation.simNodes.find(n => n.id === edge.source)
+                const target = simulation.simNodes.find(n => n.id === edge.target)
+                if (!source || !target) return null
+                return (
+                  <line
+                    key={`edge-${i}`}
+                    x1={source.x}
+                    y1={source.y}
+                    x2={target.x}
+                    y2={target.y}
+                    stroke="rgba(212,175,55,0.15)"
+                    strokeWidth={1}
+                    strokeDasharray="4 4"
                   />
-                  {/* Icon background */}
-                  <circle r={node.radius - 4} fill="rgba(0,0,0,0.8)" />
-                  {/* Icon placeholder - use foreignObject for Lucide icons */}
-                  <foreignObject x={-10} y={-10} width={20} height={20} style={{ pointerEvents: 'none' }}>
-                    <div className="flex items-center justify-center w-full h-full">
-                      <Icon className="h-4 w-4" style={{ color }} />
-                    </div>
-                  </foreignObject>
-                  {/* Label */}
-                  <text
-                    y={node.radius + 14}
-                    textAnchor="middle"
-                    fill="rgba(255,255,255,0.7)"
-                    fontSize={10}
-                    fontWeight={600}
-                    style={{ pointerEvents: 'none' }}
+                )
+              })}
+
+              {/* Nodes */}
+              {simulation.simNodes.map((node) => {
+                const Icon = typeIcons[node.data.type] || typeIcons.default
+                const isHovered = hoveredNode === node.id
+                const isSelected = selectedNode?.id === node.id
+                const color = node.data.color || riskColors.moderate
+
+                return (
+                  <g
+                    key={node.id}
+                    transform={`translate(${node.x}, ${node.y})`}
+                    onMouseEnter={() => setHoveredNode(node.id)}
+                    onMouseLeave={() => setHoveredNode(null)}
+                    onMouseDown={(e) => handleNodeMouseDown(e, node)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSelectedNode(node)
+                      onNodeClick?.(node.data)
+                    }}
+                    className="cursor-pointer"
+                    style={{ cursor: 'pointer' }}
                   >
-                    {node.data.name.length > 14 ? node.data.name.slice(0, 12) + '...' : node.data.name}
-                  </text>
-                </g>
-              )
-            })}
+                    {/* Glow effect */}
+                    {(isHovered || isSelected) && (
+                      <circle
+                        r={node.radius + 8}
+                        fill={color}
+                        opacity={0.15}
+                        className="animate-pulse"
+                      />
+                    )}
+                    {/* Outer ring */}
+                    <circle
+                      r={node.radius}
+                      fill="rgba(0,0,0,0.6)"
+                      stroke={color}
+                      strokeWidth={isSelected ? 2.5 : 1.5}
+                      opacity={isHovered ? 1 : 0.8}
+                    />
+                    {/* Icon background */}
+                    <circle r={node.radius - 4} fill="rgba(0,0,0,0.8)" />
+                    {/* Icon placeholder - use foreignObject for Lucide icons */}
+                    <foreignObject x={-10} y={-10} width={20} height={20} style={{ pointerEvents: 'none' }}>
+                      <div className="flex items-center justify-center w-full h-full">
+                        <Icon className="h-4 w-4" style={{ color }} />
+                      </div>
+                    </foreignObject>
+                    {/* Label */}
+                    <text
+                      y={node.radius + 14}
+                      textAnchor="middle"
+                      fill="rgba(255,255,255,0.7)"
+                      fontSize={10}
+                      fontWeight={600}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {node.data.name.length > 14 ? node.data.name.slice(0, 12) + '...' : node.data.name}
+                    </text>
+                  </g>
+                )
+              })}
+            </g>
           </svg>
+        )}
+
+        {/* Floating Zoom & Pan Controls overlay */}
+        {!isLoading && !isEmpty && (
+          <div className="absolute left-3 bottom-3 flex flex-col gap-1.5 z-10">
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setZoom(z => Math.min(z * 1.15, 3.5))
+              }}
+              onMouseDown={e => e.stopPropagation()}
+              className="w-7 h-7 rounded border border-gold/30 bg-black/75 hover:bg-gold/15 text-gold font-bold text-xs flex items-center justify-center transition-all select-none"
+              title="Zoom In"
+            >
+              ＋
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setZoom(z => Math.max(z / 1.15, 0.4))
+              }}
+              onMouseDown={e => e.stopPropagation()}
+              className="w-7 h-7 rounded border border-gold/30 bg-black/75 hover:bg-gold/15 text-gold font-bold text-xs flex items-center justify-center transition-all select-none"
+              title="Zoom Out"
+            >
+              －
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setZoom(1)
+                setPan({ x: 0, y: 0 })
+              }}
+              onMouseDown={e => e.stopPropagation()}
+              className="w-7 h-7 rounded border border-gold/30 bg-black/75 hover:bg-gold/15 text-gold font-bold text-xs flex items-center justify-center transition-all select-none"
+              title="Reset Zoom & Pan"
+            >
+              ☉
+            </button>
+          </div>
         )}
 
         {/* Node Detail Drawer */}
@@ -355,6 +437,7 @@ export function ExposureMap({ nodes, edges, loading, onNodeClick, onStartScan }:
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
               className="absolute right-2 top-2 bottom-2 w-64 bg-black/90 border border-gold/20 rounded-lg p-4 overflow-y-auto z-10"
+              onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="flex justify-between items-start mb-3">
                 <h3 className="text-xs font-bold text-white uppercase tracking-wider truncate pr-2">{selectedNode.data.name}</h3>
