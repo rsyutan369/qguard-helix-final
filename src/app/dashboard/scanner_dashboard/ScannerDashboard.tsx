@@ -171,6 +171,55 @@ type ScannerAlertRow = {
   created_at?: string | null;
 };
 
+type ConnectorAccount = {
+  id: string;
+  provider: string;
+  display_name?: string | null;
+  status?: string | null;
+  scopes?: string[];
+  capabilities?: Record<string, unknown>;
+  policy?: AgentPolicy;
+  last_sync_at?: string | null;
+  metadata?: Record<string, any>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+type PatchOption = {
+  id: string;
+  label: string;
+  actionType: string;
+  requiresConnector: boolean;
+  requiredScopes: string[];
+  summary: string;
+  validation: string;
+};
+
+type PatchOptionGroup = {
+  assetClass: string;
+  options: PatchOption[];
+};
+
+type OperatorAction = {
+  id: string;
+  migration_id?: string | null;
+  connector_account_id?: string | null;
+  action_type?: string | null;
+  asset_class?: string | null;
+  status?: string | null;
+  approval_mode?: string | null;
+  patch_plan?: Record<string, any>;
+  evidence?: Record<string, any>;
+  validation?: Record<string, any>;
+  metadata?: Record<string, any>;
+  requested_at?: string | null;
+  approved_at?: string | null;
+  applied_at?: string | null;
+  validated_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 type AgentFormState = {
   name: string;
   environment: string;
@@ -179,6 +228,22 @@ type AgentFormState = {
   intervalSeconds: string;
   scanTypes: string[];
   alertThreshold: string;
+};
+
+type ConnectorFormState = {
+  provider: string;
+  displayName: string;
+  scopes: string;
+  allowedTargets: string;
+  allowedPaths: string;
+};
+
+type OperatorPatchFormState = {
+  assetClass: string;
+  optionId: string;
+  connectorId: string;
+  target: string;
+  migrationJobId: string;
 };
 
 type OneTimeAgentToken = {
@@ -543,6 +608,9 @@ export default function ScannerDashboard() {
   const [agents, setAgents] = useState<CollectorAgent[]>([]);
   const [agentEvidence, setAgentEvidence] = useState<ScannerEvidenceRow[]>([]);
   const [agentAlerts, setAgentAlerts] = useState<ScannerAlertRow[]>([]);
+  const [connectors, setConnectors] = useState<ConnectorAccount[]>([]);
+  const [patchOptionGroups, setPatchOptionGroups] = useState<PatchOptionGroup[]>([]);
+  const [operatorActions, setOperatorActions] = useState<OperatorAction[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -557,6 +625,21 @@ export default function ScannerDashboard() {
     scanTypes: ['tls', 'ssh', 'packages', 'configs'],
     alertThreshold: 'moderate',
   });
+  const [connectorForm, setConnectorForm] = useState<ConnectorFormState>({
+    provider: 'kubernetes',
+    displayName: 'Production Kubernetes Connector',
+    scopes: 'kubernetes:read\nkubernetes:patch:ingress\nkubernetes:patch:cert-manager\nkubernetes:patch:service-mesh',
+    allowedTargets: 'https://api.customer.com',
+    allowedPaths: '/etc/kubernetes/manifests',
+  });
+  const [operatorPatchForm, setOperatorPatchForm] = useState<OperatorPatchFormState>({
+    assetClass: 'kubernetes',
+    optionId: 'k8s-ingress-tls-profile',
+    connectorId: '',
+    target: 'https://api.customer.com',
+    migrationJobId: '',
+  });
+  const [operatorEvidenceJson, setOperatorEvidenceJson] = useState('[\n  {\n    "evidenceType": "tls-protocol",\n    "assetName": "api.customer.com",\n    "target": "https://api.customer.com",\n    "host": "api.customer.com",\n    "port": 443,\n    "protocol": "TLS",\n    "observedAlgorithm": "TLS-1.3",\n    "rawEvidence": { "operatorValidation": true, "hndlRisk": false }\n  }\n]');
   const abortRef = useRef<AbortController | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -604,22 +687,40 @@ export default function ScannerDashboard() {
     setAgentsLoading(true);
     setAgentsError(null);
     try {
-      const [agentsRes, evidenceRes, alertsRes] = await Promise.all([
+      const [agentsRes, evidenceRes, alertsRes, patchOptionsRes, operatorActionsRes] = await Promise.all([
         fetch('/api/v1/agent-scanner/agents', { headers }),
         fetch('/api/v1/agent-scanner/evidence', { headers }),
         fetch('/api/v1/agent-scanner/alerts', { headers }),
+        fetch('/api/v1/agent-scanner/remediation/patch-options', { headers }),
+        fetch('/api/v1/agent-scanner/remediation/operator-actions', { headers }),
       ]);
       const agentsJson = await agentsRes.json();
       const evidenceJson = await evidenceRes.json();
       const alertsJson = await alertsRes.json();
+      const patchOptionsJson = await patchOptionsRes.json();
+      const operatorActionsJson = await operatorActionsRes.json();
       if (!agentsRes.ok) throw new Error(agentsJson?.error?.message || 'Unable to load collector agents');
       if (!evidenceRes.ok) throw new Error(evidenceJson?.error?.message || 'Unable to load collector evidence');
       if (!alertsRes.ok) throw new Error(alertsJson?.error?.message || 'Unable to load collector alerts');
+      if (!patchOptionsRes.ok) throw new Error(patchOptionsJson?.error?.message || 'Unable to load remediation patch options');
+      if (!operatorActionsRes.ok) throw new Error(operatorActionsJson?.error?.message || 'Unable to load remediation operator actions');
       const nextAgents = agentsJson?.data?.agents || [];
       setAgents(nextAgents);
       setAgentEvidence(evidenceJson?.data?.evidence || []);
       setAgentAlerts(alertsJson?.data?.alerts || []);
+      setPatchOptionGroups(patchOptionsJson?.data?.options || []);
+      setConnectors(patchOptionsJson?.data?.connectors || []);
+      setOperatorActions(operatorActionsJson?.data?.actions || []);
       setSelectedAgentId((current) => current || nextAgents[0]?.id || null);
+      setOperatorPatchForm((current) => {
+        const currentGroup = (patchOptionsJson?.data?.options || []).find((group: PatchOptionGroup) => group.assetClass === current.assetClass);
+        const optionStillExists = currentGroup?.options?.some((option: PatchOption) => option.id === current.optionId);
+        return {
+          ...current,
+          optionId: optionStillExists ? current.optionId : currentGroup?.options?.[0]?.id || current.optionId,
+          connectorId: current.connectorId || patchOptionsJson?.data?.connectors?.[0]?.id || '',
+        };
+      });
     } catch (err) {
       setAgentsError(err instanceof Error ? err.message : 'Collector agents load failed');
     } finally {
@@ -1060,6 +1161,145 @@ export default function ScannerDashboard() {
     }
   }, [agentForm, agentPolicyFromForm, authHeaders, fetchAgents]);
 
+  const connectorPolicyFromForm = useCallback(() => ({
+    enabled: true,
+    intervalSeconds: 300,
+    allowedTargets: connectorForm.allowedTargets.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+    allowedPaths: connectorForm.allowedPaths.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+    scanTypes: ['tls', 'ssh', 'packages', 'configs', 'runtime'],
+    alertThreshold: 'moderate',
+  }), [connectorForm.allowedPaths, connectorForm.allowedTargets]);
+
+  const handleCreateConnector = useCallback(async () => {
+    const headers = authHeaders();
+    if (!headers) {
+      setAgentsError('Sign in before creating a connector.');
+      return;
+    }
+    setAgentsLoading(true);
+    setAgentsError(null);
+    try {
+      const scopes = connectorForm.scopes.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+      const response = await fetch('/api/v1/agent-scanner/connectors', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: connectorForm.provider,
+          displayName: connectorForm.displayName,
+          scopes,
+          capabilities: Object.fromEntries(scopes.map((scope) => [scope, true])),
+          policy: connectorPolicyFromForm(),
+          metadata: { source: 'dashboard-operator-patch-workflow', connectorMode: 'operator-approved' },
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error?.message || 'Unable to create connector');
+      const connectorId = json?.data?.connector?.id || '';
+      setOperatorPatchForm((current) => ({ ...current, connectorId: connectorId || current.connectorId }));
+      await fetchAgents();
+      showToast('Connector registered for operator-approved remediation.');
+    } catch (err) {
+      setAgentsError(err instanceof Error ? err.message : 'Connector creation failed');
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, [authHeaders, connectorForm, connectorPolicyFromForm, fetchAgents, showToast]);
+
+  const handleCreateOperatorAction = useCallback(async () => {
+    const headers = authHeaders();
+    if (!headers) {
+      setAgentsError('Sign in before creating an operator patch action.');
+      return;
+    }
+    setAgentsLoading(true);
+    setAgentsError(null);
+    try {
+      const response = await fetch('/api/v1/agent-scanner/remediation/operator-actions', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assetClass: operatorPatchForm.assetClass,
+          optionId: operatorPatchForm.optionId,
+          connectorId: operatorPatchForm.connectorId || undefined,
+          target: operatorPatchForm.target,
+          jobId: operatorPatchForm.migrationJobId || undefined,
+          approvalMode: 'operator_approved',
+          status: 'planned',
+          payload: {
+            createdFrom: 'Agent Collector Scanners',
+            tenant: user?.id,
+          },
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error?.message || 'Unable to create operator patch action');
+      await fetchAgents();
+      const blocked = (json?.data?.missingScopes || []).length > 0;
+      showToast(blocked ? 'Patch action created but blocked by missing connector scopes.' : 'Patch action created and queued for approval.');
+    } catch (err) {
+      setAgentsError(err instanceof Error ? err.message : 'Operator patch action failed');
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, [authHeaders, fetchAgents, operatorPatchForm, showToast, user?.id]);
+
+  const handleUpdateOperatorAction = useCallback(async (actionId: string, nextStatus: string) => {
+    const headers = authHeaders();
+    if (!headers) return;
+    setAgentsLoading(true);
+    setAgentsError(null);
+    try {
+      const response = await fetch(`/api/v1/agent-scanner/remediation/operator-actions/${actionId}/status`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: nextStatus,
+          message: `Operator marked patch action as ${nextStatus}.`,
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error?.message || 'Unable to update operator action');
+      await fetchAgents();
+      showToast(`Patch action marked ${nextStatus}.`);
+    } catch (err) {
+      setAgentsError(err instanceof Error ? err.message : 'Operator action update failed');
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, [authHeaders, fetchAgents, showToast]);
+
+  const handleValidateOperatorAction = useCallback(async (actionId: string) => {
+    const headers = authHeaders();
+    if (!headers) return;
+    setAgentsLoading(true);
+    setAgentsError(null);
+    try {
+      let evidence: unknown = [];
+      try {
+        evidence = JSON.parse(operatorEvidenceJson || '[]');
+      } catch {
+        throw new Error('Validation evidence must be valid JSON array data.');
+      }
+      const response = await fetch(`/api/v1/agent-scanner/remediation/operator-actions/${actionId}/status`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'validated',
+          message: 'Operator submitted post-patch validation evidence.',
+          evidence,
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error?.message || 'Unable to validate operator action');
+      await fetchAgents();
+      showToast(json?.data?.validation?.passed ? 'Validation passed and remediation can close.' : 'Validation evidence was processed; risk remains under review.');
+    } catch (err) {
+      setAgentsError(err instanceof Error ? err.message : 'Operator validation failed');
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, [authHeaders, fetchAgents, operatorEvidenceJson, showToast]);
+
   const handleRotateAgentToken = useCallback(async (agentId: string) => {
     const headers = authHeaders();
     if (!headers) return;
@@ -1336,6 +1576,17 @@ export default function ScannerDashboard() {
   const onlineAgents = agents.filter(isAgentOnline).length;
   const revokedAgents = agents.filter((agent) => agent.status === 'revoked' || agent.revoked_at).length;
   const unhealthyAgents = agents.filter((agent) => ['degraded', 'unhealthy'].includes(String(agent.status))).length;
+  const selectedPatchGroup = patchOptionGroups.find((group) => group.assetClass === operatorPatchForm.assetClass) || patchOptionGroups[0] || { assetClass: 'network_protocol', options: [] };
+  const selectedPatchOption = selectedPatchGroup.options.find((option) => option.id === operatorPatchForm.optionId) || selectedPatchGroup.options[0] || null;
+  const selectedConnector = connectors.find((connector) => connector.id === operatorPatchForm.connectorId) || null;
+  const connectorScopeSet = new Set((selectedConnector?.scopes || []).map((scope) => scope.toLowerCase()));
+  const selectedMissingScopes = selectedPatchOption?.requiredScopes?.filter((scope) => !connectorScopeSet.has(scope.toLowerCase())) || [];
+  const operatorActionStats = {
+    total: operatorActions.length,
+    blocked: operatorActions.filter((action) => action.status === 'blocked').length,
+    active: operatorActions.filter((action) => ['planned', 'approved', 'applying', 'applied', 'validating'].includes(String(action.status))).length,
+    validated: operatorActions.filter((action) => action.status === 'validated').length,
+  };
 
   const commandAgentId = selectedAgent?.id || oneTimeAgentToken?.agentId || 'agent_id_here';
   const dockerCommand = `docker run -d \\
@@ -2215,6 +2466,187 @@ npm run agent:watch`;
                 </div>
                 <div className="mt-3 text-[10px] text-white/35">
                   Commands intentionally use placeholders for agent tokens. Paste the one-time token only in the customer-controlled deployment environment.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid xl:grid-cols-[420px_minmax(0,1fr)] gap-6">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
+              <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
+                <Cloud className="h-4 w-4 text-gold" /> Connector Access
+              </h3>
+              <div className="space-y-3">
+                <select
+                  value={connectorForm.provider}
+                  onChange={(e) => setConnectorForm((prev) => ({
+                    ...prev,
+                    provider: e.target.value,
+                    displayName: prev.displayName || `${e.target.value} Connector`,
+                  }))}
+                  className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                >
+                  {['kubernetes', 'aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'okta', 'entra-id', 'auth0', 'custom'].map((provider) => (
+                    <option key={provider} value={provider}>{provider}</option>
+                  ))}
+                </select>
+                <input
+                  value={connectorForm.displayName}
+                  onChange={(e) => setConnectorForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                  placeholder="Connector display name"
+                  className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                />
+                <textarea
+                  value={connectorForm.scopes}
+                  onChange={(e) => setConnectorForm((prev) => ({ ...prev, scopes: e.target.value }))}
+                  className="w-full h-24 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none resize-none glass-panel"
+                  placeholder={'kubernetes:read\nkubernetes:patch:ingress'}
+                />
+                <textarea
+                  value={connectorForm.allowedTargets}
+                  onChange={(e) => setConnectorForm((prev) => ({ ...prev, allowedTargets: e.target.value }))}
+                  className="w-full h-20 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none resize-none glass-panel"
+                  placeholder={'https://api.customer.com\nlb.customer.com:443'}
+                />
+                <textarea
+                  value={connectorForm.allowedPaths}
+                  onChange={(e) => setConnectorForm((prev) => ({ ...prev, allowedPaths: e.target.value }))}
+                  className="w-full h-20 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none resize-none glass-panel"
+                  placeholder={'/etc/kubernetes/manifests\n/repos/customer-api'}
+                />
+                <button
+                  onClick={handleCreateConnector}
+                  disabled={agentsLoading || !connectorForm.provider.trim() || !connectorForm.scopes.trim()}
+                  className="w-full py-3 rounded-lg border border-gold/30 bg-gold/10 text-gold text-xs font-black uppercase tracking-[0.15em] flex items-center justify-center gap-2 hover:bg-gold hover:text-black transition-colors disabled:opacity-50"
+                >
+                  {agentsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cloud className="h-4 w-4" />}
+                  Register Connector
+                </button>
+                <div className="text-[10px] leading-relaxed text-white/35">
+                  Connectors are scoped by tenant, policy, target, path, and declared permissions. They create operator-approved workflows; they do not execute hidden changes.
+                </div>
+              </div>
+            </div>
+
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
+                <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                  <Settings className="h-4 w-4 text-gold" /> Operator Patch Workflow
+                </h3>
+                <div className="grid grid-cols-4 gap-2 text-center">
+                  {[
+                    ['Actions', operatorActionStats.total],
+                    ['Active', operatorActionStats.active],
+                    ['Blocked', operatorActionStats.blocked],
+                    ['Validated', operatorActionStats.validated],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-lg border border-gold/10 bg-white/[0.02] px-3 py-2">
+                      <div className="text-[8px] font-black uppercase tracking-wider text-white/30">{label}</div>
+                      <div className="text-sm font-black text-white/80">{value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid lg:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <select
+                      value={operatorPatchForm.assetClass}
+                      onChange={(e) => {
+                        const nextGroup = patchOptionGroups.find((group) => group.assetClass === e.target.value);
+                        setOperatorPatchForm((prev) => ({ ...prev, assetClass: e.target.value, optionId: nextGroup?.options?.[0]?.id || prev.optionId }));
+                      }}
+                      className="border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                    >
+                      {patchOptionGroups.map((group) => (
+                        <option key={group.assetClass} value={group.assetClass}>{group.assetClass.replace(/_/g, ' ')}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={operatorPatchForm.optionId}
+                      onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, optionId: e.target.value }))}
+                      className="border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                    >
+                      {selectedPatchGroup.options.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <select
+                    value={operatorPatchForm.connectorId}
+                    onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, connectorId: e.target.value }))}
+                    className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                  >
+                    <option value="">No connector / agent validation only</option>
+                    {connectors.map((connector) => (
+                      <option key={connector.id} value={connector.id}>{connector.display_name || connector.provider} ({connector.status || 'connected'})</option>
+                    ))}
+                  </select>
+                  <input
+                    value={operatorPatchForm.target}
+                    onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, target: e.target.value }))}
+                    placeholder="Target endpoint, cluster resource, cloud ARN, identity app, or workload"
+                    className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                  />
+                  <input
+                    value={operatorPatchForm.migrationJobId}
+                    onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, migrationJobId: e.target.value }))}
+                    placeholder="Optional migration job ID from PQC Orchestration"
+                    className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
+                  />
+                  {selectedPatchOption && (
+                    <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                      <div className="text-xs font-bold text-white/75">{selectedPatchOption.summary}</div>
+                      <div className="mt-2 text-[10px] text-white/40">{selectedPatchOption.validation}</div>
+                      {selectedPatchOption.requiresConnector && (
+                        <div className={`mt-2 text-[10px] ${selectedMissingScopes.length ? 'text-yellow-300' : 'text-green-400'}`}>
+                          {selectedMissingScopes.length ? `Missing scopes: ${selectedMissingScopes.join(', ')}` : 'Connector scope check passed.'}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    onClick={handleCreateOperatorAction}
+                    disabled={agentsLoading || !selectedPatchOption || (selectedPatchOption.requiresConnector && !operatorPatchForm.connectorId)}
+                    className="w-full py-3 rounded-lg bg-gold text-black text-xs font-black uppercase tracking-[0.15em] flex items-center justify-center gap-2 hover:bg-yellow-400 transition-colors disabled:opacity-50"
+                  >
+                    {agentsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />}
+                    Create Patch Action
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <textarea
+                    value={operatorEvidenceJson}
+                    onChange={(e) => setOperatorEvidenceJson(e.target.value)}
+                    className="w-full h-40 border rounded-lg p-3 text-[10px] font-mono text-white focus:outline-none resize-none glass-panel"
+                    placeholder="Validation evidence JSON array"
+                  />
+                  <div className="max-h-72 overflow-y-auto space-y-2">
+                    {operatorActions.length === 0 ? (
+                      <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-6 text-center text-xs font-bold uppercase tracking-widest text-white/20">
+                        No operator patch actions yet
+                      </div>
+                    ) : operatorActions.slice(0, 8).map((action) => (
+                      <div key={action.id} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-xs font-bold text-white/80">{action.patch_plan?.optionLabel || action.action_type || 'Patch action'}</div>
+                            <div className="text-[10px] font-mono text-white/30">{action.id}</div>
+                          </div>
+                          <span className={`px-2 py-1 rounded border text-[8px] font-black uppercase tracking-wider ${agentStatusClass(action.status || 'planned')}`}>{action.status || 'planned'}</span>
+                        </div>
+                        <div className="mt-2 text-[10px] text-white/40">{action.asset_class} {action.patch_plan?.target ? `-> ${action.patch_plan.target}` : ''}</div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          <button onClick={() => handleUpdateOperatorAction(action.id, 'approved')} className="px-2 py-1.5 rounded border border-gold/20 text-[9px] font-black uppercase tracking-wider text-gold hover:bg-gold/10">Approve</button>
+                          <button onClick={() => handleUpdateOperatorAction(action.id, 'applied')} className="px-2 py-1.5 rounded border border-cyan-400/20 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:bg-cyan-400/10">Applied</button>
+                          <button onClick={() => handleValidateOperatorAction(action.id)} className="px-2 py-1.5 rounded border border-green-400/20 text-[9px] font-black uppercase tracking-wider text-green-300 hover:bg-green-400/10">Validate</button>
+                          <button onClick={() => handleUpdateOperatorAction(action.id, 'failed')} className="px-2 py-1.5 rounded border border-red-400/20 text-[9px] font-black uppercase tracking-wider text-red-300 hover:bg-red-400/10">Fail</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>

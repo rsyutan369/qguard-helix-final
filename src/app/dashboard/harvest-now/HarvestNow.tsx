@@ -23,6 +23,7 @@ import {
   UserCog,
   Zap,
 } from 'lucide-react';
+import { useAuth } from '@/contexts/auth-context';
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
 
 type Severity = 'Critical' | 'High' | 'Medium' | 'Low' | 'Info';
@@ -58,16 +59,26 @@ type MissionEvent = {
 };
 
 type ActionItem = {
+  actionType: DefenseActionType;
   label: string;
   detail: string;
   icon: LucideIcon;
   count: number;
+  href: string;
 };
 
 type TimerAnchor = {
   firstSeenMs: number;
   source: 'telemetry' | 'session';
 };
+
+type DefenseActionType =
+  | 'isolate_asset'
+  | 'kill_process'
+  | 'revoke_credentials'
+  | 'patch_harden'
+  | 'backup_restore'
+  | 'deploy_honeypot';
 
 const RESPONSE_WINDOW_MS = 60 * 60 * 1000;
 
@@ -338,9 +349,12 @@ function SectionHeader({ children, action }: { children: string; action?: string
 }
 
 export default function HarvestNow() {
+  const { session } = useAuth();
   const { data, loading, error, connected, refresh } = useScannerIntelligence();
   const [now, setNow] = useState(() => Date.now());
   const [dismissedReminderId, setDismissedReminderId] = useState<string | null>(null);
+  const [defenseActionPending, setDefenseActionPending] = useState<DefenseActionType | null>(null);
+  const [defenseActionNotice, setDefenseActionNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const threatTimerAnchorsRef = useRef<Map<string, TimerAnchor>>(new Map());
 
   useEffect(() => {
@@ -490,13 +504,66 @@ export default function HarvestNow() {
   }, [data.history.history, data.telemetry]);
 
   const defenseActions = useMemo<ActionItem[]>(() => [
-    { label: 'Isolate Asset', detail: 'Block threat propagation', icon: Network, count: assetTotals.compromised },
-    { label: 'Kill Process', detail: 'Terminate malicious process', icon: Zap, count: data.runtime.alerts },
-    { label: 'Revoke Credentials', detail: 'Invalidate exposed keys', icon: Fingerprint, count: data.runtime.keyRotations },
-    { label: 'Patch & Harden', detail: 'Apply security hardening', icon: Settings, count: data.summary.vulnerableComponents },
-    { label: 'Backup & Restore', detail: 'Recover from clean backup', icon: Database, count: data.summary.completedScans },
-    { label: 'Deploy Honeypot', detail: 'Trap and analyze attacker', icon: Crosshair, count: activeThreatCount },
+    { actionType: 'isolate_asset', label: 'Isolate Asset', detail: 'Block threat propagation', icon: Network, count: assetTotals.compromised, href: '/dashboard/asset-intelligence?source=harvest-now&defenseAction=isolate_asset' },
+    { actionType: 'kill_process', label: 'Kill Process', detail: 'Terminate malicious process', icon: Zap, count: data.runtime.alerts, href: '/dashboard/runtime-crypto-intel?source=harvest-now&defenseAction=kill_process' },
+    { actionType: 'revoke_credentials', label: 'Revoke Credentials', detail: 'Invalidate exposed keys', icon: Fingerprint, count: data.runtime.keyRotations, href: '/dashboard/identity-trust?source=harvest-now&defenseAction=revoke_credentials' },
+    { actionType: 'patch_harden', label: 'Patch & Harden', detail: 'Apply security hardening', icon: Settings, count: data.summary.vulnerableComponents, href: '/dashboard/scanner?source=harvest-now&defenseAction=patch_harden' },
+    { actionType: 'backup_restore', label: 'Backup & Restore', detail: 'Recover from clean backup', icon: Database, count: data.summary.completedScans, href: '/dashboard/migration-sandbox?source=harvest-now&defenseAction=backup_restore' },
+    { actionType: 'deploy_honeypot', label: 'Deploy Honeypot', detail: 'Trap and analyze attacker', icon: Crosshair, count: activeThreatCount, href: '/dashboard/runtime-crypto-intel?source=harvest-now&defenseAction=deploy_honeypot' },
   ], [activeThreatCount, assetTotals.compromised, data.runtime.alerts, data.runtime.keyRotations, data.summary.completedScans, data.summary.vulnerableComponents]);
+
+  const handleDefenseAction = async (action: ActionItem) => {
+    if (!session?.access_token) {
+      window.location.assign(action.href);
+      return;
+    }
+
+    setDefenseActionPending(action.actionType);
+    setDefenseActionNotice(null);
+    try {
+      const response = await fetch('/api/v1/dashboard/harvest-now/defense-action', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          actionType: action.actionType,
+          linkedSignalCount: action.count,
+          activeThreatCount,
+          totalFindings: data.summary.totalFindings,
+          primaryThreat,
+          threatIds: threats.slice(0, 100).map((threat) => threat.id),
+          threats: threats.slice(0, 12).map((threat) => ({
+            id: threat.id,
+            name: threat.name,
+            location: threat.location,
+            severity: threat.severity,
+            recommendation: threat.recommendation,
+            detectedAt: threat.timestamp,
+          })),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || `Defense action failed with HTTP ${response.status}`);
+
+      const createdJobs = Number(payload?.data?.createdJobs || 0);
+      const linkedJobs = Number(payload?.data?.linkedJobs || 0);
+      setDefenseActionNotice({
+        tone: 'success',
+        message: `${action.label} playbook recorded. ${formatNumber(createdJobs)} new workflow(s), ${formatNumber(linkedJobs)} linked remediation job(s).`,
+      });
+      await refresh();
+      window.location.assign(payload?.data?.redirectUrl || action.href);
+    } catch (err) {
+      setDefenseActionNotice({
+        tone: 'error',
+        message: err instanceof Error ? err.message : `${action.label} could not be recorded.`,
+      });
+    } finally {
+      setDefenseActionPending(null);
+    }
+  };
 
   const sparkValues = useMemo(() => {
     const riskHistory = data.history.history
@@ -989,21 +1056,39 @@ export default function HarvestNow() {
           <div className={PANEL}>
             <div className="relative z-10 p-4">
               <SectionHeader>Defense Actions</SectionHeader>
+              {defenseActionNotice && (
+                <div className={`mb-3 rounded-md border px-3 py-2 text-[10px] font-bold leading-5 ${
+                  defenseActionNotice.tone === 'success'
+                    ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+                    : 'border-red-400/35 bg-red-500/10 text-red-200'
+                }`}>
+                  {defenseActionNotice.message}
+                </div>
+              )}
               <div className="grid gap-3 md:grid-cols-2">
                 {defenseActions.map((action) => {
                   const Icon = action.icon;
+                  const pending = defenseActionPending === action.actionType;
                   return (
-                    <a key={action.label} href="/dashboard/pqc-orchestration" className="grid grid-cols-[44px_1fr_18px] items-center gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-3 transition hover:border-gold/50 hover:bg-gold/[0.06]">
+                    <button
+                      key={action.label}
+                      type="button"
+                      disabled={Boolean(defenseActionPending)}
+                      onClick={() => handleDefenseAction(action)}
+                      className="grid grid-cols-[44px_1fr_18px] items-center gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-3 text-left transition hover:border-gold/50 hover:bg-gold/[0.06] disabled:cursor-wait disabled:opacity-60"
+                    >
                       <div className="grid h-11 w-11 place-items-center rounded-md border border-red-400/35 bg-red-500/10 text-red-300">
-                        <Icon className="h-5 w-5" />
+                        <Icon className={`h-5 w-5 ${pending ? 'animate-pulse' : ''}`} />
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-xs font-black uppercase tracking-[0.1em] text-white">{action.label}</p>
                         <p className="truncate text-[10px] font-medium text-white/42">{action.detail}</p>
-                        <p className="mt-1 font-mono text-[10px] font-black text-gold">{formatNumber(action.count)} linked signals</p>
+                        <p className="mt-1 font-mono text-[10px] font-black text-gold">
+                          {pending ? 'creating response task...' : `${formatNumber(action.count)} linked signals`}
+                        </p>
                       </div>
                       <ChevronRight className="h-4 w-4 text-white/25" />
-                    </a>
+                    </button>
                   );
                 })}
               </div>

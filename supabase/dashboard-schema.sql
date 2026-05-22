@@ -18,7 +18,7 @@ DECLARE
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies', 'runtime_crypto_events'
+        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
@@ -261,6 +261,25 @@ BEGIN
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.remediation_operator_actions') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS migration_id UUID';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS connector_account_id UUID';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS action_type VARCHAR(120)';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS asset_class VARCHAR(80)';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT ''planned''';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS approval_mode VARCHAR(80) DEFAULT ''operator_approved''';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS patch_plan JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS evidence JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS validation JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS applied_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS validated_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
     END IF;
 END;
 $$;
@@ -985,7 +1004,42 @@ CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_hash ON runtime_crypto_even
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_crypto_events_user_hash ON runtime_crypto_events(user_id, event_hash);
 
 -- ============================================================
--- 24. SCANNER ALERTS
+-- 24. REMEDIATION OPERATOR ACTIONS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS remediation_operator_actions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    migration_id UUID REFERENCES migration_jobs(id) ON DELETE SET NULL,
+    connector_account_id UUID REFERENCES connector_accounts(id) ON DELETE SET NULL,
+    action_type VARCHAR(120) NOT NULL,
+    asset_class VARCHAR(80) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'planned', -- planned, approved, blocked, applying, applied, validating, validated, failed, cancelled
+    approval_mode VARCHAR(80) DEFAULT 'operator_approved',
+    patch_plan JSONB DEFAULT '{}',
+    evidence JSONB DEFAULT '{}',
+    validation JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    requested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    approved_at TIMESTAMP WITH TIME ZONE,
+    applied_at TIMESTAMP WITH TIME ZONE,
+    validated_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE remediation_operator_actions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS remediation_operator_actions_user_isolation ON remediation_operator_actions;
+CREATE POLICY remediation_operator_actions_user_isolation ON remediation_operator_actions
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_remediation_operator_actions_user ON remediation_operator_actions(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_remediation_operator_actions_migration ON remediation_operator_actions(migration_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_remediation_operator_actions_connector ON remediation_operator_actions(connector_account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_remediation_operator_actions_status ON remediation_operator_actions(user_id, status);
+
+-- ============================================================
+-- 25. SCANNER ALERTS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scanner_alerts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1017,7 +1071,7 @@ CREATE INDEX IF NOT EXISTS idx_scanner_alerts_status ON scanner_alerts(user_id, 
 CREATE INDEX IF NOT EXISTS idx_scanner_alerts_severity ON scanner_alerts(severity);
 
 -- ============================================================
--- 25. SCANNER AGENT POLICIES
+-- 26. SCANNER AGENT POLICIES
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scanner_agent_policies (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1237,7 +1291,7 @@ DECLARE
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies', 'runtime_crypto_events'
+        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP

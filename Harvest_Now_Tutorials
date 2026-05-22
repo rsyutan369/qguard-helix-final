@@ -1,0 +1,53 @@
+Yes, we can test it locally, and the honest answer is:
+
+The agent can really scan and validate assets it is authorized to reach.
+It can only remediate automatically where it has safe, approved execution access. For external cloud, Kubernetes, IAM, websites, and managed services, it will not fake remediation. It will create the workflow, generate remediation steps, wait for the connector/operator/platform action, then rescan and prove whether the risk is gone.
+
+Local Test
+
+Start the platform:
+npm run dev
+Enroll or use an existing QGuard agent from the dashboard scanner/agent area.
+
+In another terminal, run the agent:
+
+$env:QGUARD_API_URL="http://localhost:3000"
+$env:QGUARD_AGENT_ID="your-agent-id"
+$env:QGUARD_AGENT_TOKEN="your-agent-token"
+npm run agent:watch
+Go to:
+/dashboard/harvest-now
+/dashboard/pqc-orchestration
+/dashboard/live_migration_ops
+Click Start Remediation / resume the queued HNDL job.
+
+Watch the job progress. The agent should:
+
+claim job -> precheck scan -> plan remediation -> execute if allowed -> rescan -> complete only if validated
+For safe local config patch testing, enable guarded remediation:
+
+$env:QGUARD_ENABLE_REMEDIATION="true"
+$env:QGUARD_ENABLE_CONFIG_PATCHES="true"
+npm run agent:watch
+The agent can detect vulnerable encryption signals such as weak TLS versions, classical TLS certificates, RSA/ECDSA/DH references, SSH crypto metadata, weak config references, JWT RSA/ECDSA algorithms, package/crypto library evidence, and runtime crypto events where telemetry exists.
+
+Asset Workflows
+Websites / Web Apps / Network Protocols
+Add the target to the agent policy, for example https://example.com or ssh://host:22. The agent scans TLS/SSH, certificate algorithm, cipher/protocol metadata, and validates after change. Remediation usually requires updating CDN, load balancer, web server, cert automation, or service mesh. Agent completes only after rescan passes.
+
+Apps / Code
+Add the repo/app folder to allowedPaths. Agent scans manifests and config files for crypto references. With guarded patch flags enabled, it can safely patch known local toggles like PQC/TLS hybrid flags or TLS protocol config. Otherwise it creates remediation evidence and waits for developer/operator change, then rescans.
+
+Containers
+Agent can scan Dockerfiles, manifests, configs, and package files if mounted in allowedPaths. Actual remediation requires rebuilding/redeploying the image. Agent validates after the updated container/config is present.
+
+Kubernetes
+Agent can scan manifests/configs locally. Real cluster remediation needs cluster access or a connector/operator workflow to patch ingress, cert-manager, service mesh, workload config, or TLS policy. The current safe path is: dashboard queues job, agent prepares plan, operator/platform applies change, agent rescans.
+
+Cloud Assets
+Cloud remediation is not automatic unless a cloud connector with permissions exists. The worker will classify the job, produce an action plan, and pause as manual_required until AWS/Azure/GCP/CDN/KMS/load-balancer changes are applied. Then it validates by rescanning reachable endpoints or connector evidence.
+
+IAM / Identity / Access
+Agent can detect config/JWT/signing references if evidence is available. Actual remediation needs IdP/KMS/key-management access. It should be connector-backed or operator-approved, then validated through new evidence.
+
+So the platform can trigger the workflow automatically, but the agent must already be enrolled and running. Users do not need to manually run PowerShell every time once the agent is installed as a service; the PowerShell command is mainly for local testing or first-time setup.

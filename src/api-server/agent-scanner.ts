@@ -34,6 +34,7 @@ const memoryStore = (() => {
       evidence: any[]
       alerts: any[]
       runtimeCryptoEvents: any[]
+      operatorActions: any[]
     }
   }
   if (!g.__qguard_agent_scanner_store__) {
@@ -45,6 +46,7 @@ const memoryStore = (() => {
       evidence: [],
       alerts: [],
       runtimeCryptoEvents: [],
+      operatorActions: [],
     }
   }
   return g.__qguard_agent_scanner_store__
@@ -1210,6 +1212,181 @@ function sanitizeAgentMetadata(value: unknown) {
   return (sanitizeRuntimeMetadata(value || {}) || {}) as Record<string, unknown>
 }
 
+const PATCH_OPTION_GROUPS = {
+  kubernetes: [
+    {
+      id: 'k8s-ingress-tls-profile',
+      label: 'Patch Ingress TLS Profile',
+      actionType: 'patch_kubernetes_ingress_tls',
+      requiresConnector: true,
+      requiredScopes: ['kubernetes:read', 'kubernetes:patch:ingress'],
+      summary: 'Patch Ingress or Gateway TLS policy to enforce approved TLS versions, certificate references, and hybrid/PQC-ready termination where supported.',
+      validation: 'Upload connector evidence for the patched ingress/gateway and rescan the public endpoint.',
+    },
+    {
+      id: 'k8s-cert-manager-issuer',
+      label: 'Patch cert-manager Issuer',
+      actionType: 'patch_kubernetes_cert_manager',
+      requiresConnector: true,
+      requiredScopes: ['kubernetes:read', 'kubernetes:patch:cert-manager'],
+      summary: 'Update Issuer, ClusterIssuer, Certificate, or Secret references used by TLS workloads.',
+      validation: 'Upload certificate evidence and verify the served certificate/key exchange after rollout.',
+    },
+    {
+      id: 'k8s-service-mesh-mtls',
+      label: 'Patch Service Mesh mTLS Policy',
+      actionType: 'patch_kubernetes_service_mesh',
+      requiresConnector: true,
+      requiredScopes: ['kubernetes:read', 'kubernetes:patch:service-mesh'],
+      summary: 'Patch Istio, Linkerd, Consul, or mesh policy objects that control mTLS, cipher, and workload TLS settings.',
+      validation: 'Upload mesh policy evidence and runtime TLS observations from the affected workload.',
+    },
+    {
+      id: 'k8s-workload-crypto-config',
+      label: 'Patch Workload Crypto Config',
+      actionType: 'patch_kubernetes_workload_config',
+      requiresConnector: true,
+      requiredScopes: ['kubernetes:read', 'kubernetes:patch:workload'],
+      summary: 'Patch ConfigMap, Secret reference, Deployment env, or mounted configuration used by application crypto.',
+      validation: 'Upload changed manifest/config evidence and rescan the workload endpoint or app folder.',
+    },
+  ],
+  cloud: [
+    {
+      id: 'cloud-load-balancer-tls-policy',
+      label: 'Patch Load Balancer TLS Policy',
+      actionType: 'patch_cloud_load_balancer_tls',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:load-balancer'],
+      summary: 'Update AWS ALB/NLB, Azure Application Gateway/Front Door, GCP HTTPS LB, or equivalent TLS/security policy.',
+      validation: 'Connector uploads LB policy evidence, then QGuard rescans the public endpoint.',
+    },
+    {
+      id: 'cloud-cdn-edge-tls-policy',
+      label: 'Patch CDN / Edge TLS Policy',
+      actionType: 'patch_cloud_cdn_tls',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:cdn'],
+      summary: 'Apply an approved TLS/certificate profile at CloudFront, Azure Front Door/CDN, Cloud CDN, or edge gateway.',
+      validation: 'Connector uploads edge config evidence and endpoint TLS evidence after propagation.',
+    },
+    {
+      id: 'cloud-kms-key-policy',
+      label: 'Patch KMS / Key Policy',
+      actionType: 'patch_cloud_kms_policy',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:kms'],
+      summary: 'Rotate, wrap, or re-policy vulnerable key usage through KMS, Key Vault, Cloud KMS, HSM, or private CA services.',
+      validation: 'Connector uploads KMS/key metadata and runtime evidence that vulnerable key usage stopped.',
+    },
+    {
+      id: 'cloud-certificate-manager',
+      label: 'Patch Certificate Manager',
+      actionType: 'patch_cloud_certificate_manager',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:certificate'],
+      summary: 'Replace or reissue certificates through ACM, Azure Key Vault Certificates, Google Certificate Manager, or private CA.',
+      validation: 'Upload certificate-manager evidence and rescan served certificates.',
+    },
+  ],
+  identity_access: [
+    {
+      id: 'iam-oidc-jwt-algorithm-policy',
+      label: 'Patch OIDC / JWT Algorithm Policy',
+      actionType: 'patch_iam_jwt_algorithm_policy',
+      requiresConnector: true,
+      requiredScopes: ['identity:read', 'identity:patch:policy'],
+      summary: 'Migrate token signing or verification policy away from vulnerable RSA/ECDSA-only assumptions where the provider supports stronger/hybrid controls.',
+      validation: 'Upload IdP policy metadata and signed-token header evidence after rotation.',
+    },
+    {
+      id: 'iam-saml-certificate-rotation',
+      label: 'Patch SAML Signing Certificate',
+      actionType: 'patch_iam_saml_certificate',
+      requiresConnector: true,
+      requiredScopes: ['identity:read', 'identity:patch:certificate'],
+      summary: 'Rotate SAML signing/encryption certificates and update relying-party trust metadata.',
+      validation: 'Upload IdP certificate evidence and relying-party metadata confirmation.',
+    },
+    {
+      id: 'iam-kms-credential-rotation',
+      label: 'Patch Credential / KMS Binding',
+      actionType: 'patch_iam_kms_binding',
+      requiresConnector: true,
+      requiredScopes: ['identity:read', 'identity:patch:credential'],
+      summary: 'Rotate exposed credentials or rebind identity workloads to approved KMS/HSM-backed keys.',
+      validation: 'Upload credential/key metadata and runtime evidence showing old key usage has stopped.',
+    },
+  ],
+  network_protocol: [
+    {
+      id: 'network-tls-profile',
+      label: 'Patch TLS Protocol Profile',
+      actionType: 'patch_network_tls_profile',
+      requiresConnector: false,
+      requiredScopes: ['agent:target-scan'],
+      summary: 'Apply approved TLS versions, cipher suites, certificate chain, and hybrid/PQC-capable termination through the owning server/LB/CDN.',
+      validation: 'Agent rescans TLS certificate, protocol, and cipher evidence.',
+    },
+    {
+      id: 'network-ssh-kex-policy',
+      label: 'Patch SSH KEX Policy',
+      actionType: 'patch_network_ssh_policy',
+      requiresConnector: false,
+      requiredScopes: ['agent:target-scan'],
+      summary: 'Update SSH KEX/host-key policy and remove deprecated DH/DSA/RSA-only algorithms where operationally safe.',
+      validation: 'Agent rescans SSH metadata and uploads observed KEX/host-key algorithms.',
+    },
+  ],
+  code_application: [
+    {
+      id: 'code-crypto-config-toggle',
+      label: 'Patch App Crypto Configuration',
+      actionType: 'patch_code_crypto_config',
+      requiresConnector: false,
+      requiredScopes: ['agent:path-scan'],
+      summary: 'Patch approved local config toggles such as PQC_ENABLED, HYBRID_KEM, TLS_HYBRID_KEM, and TLS protocol settings.',
+      validation: 'Agent rescans the authorized app folder and uploads config evidence.',
+    },
+    {
+      id: 'code-dependency-upgrade-plan',
+      label: 'Create Dependency Upgrade Plan',
+      actionType: 'patch_code_dependency_plan',
+      requiresConnector: false,
+      requiredScopes: ['agent:path-scan'],
+      summary: 'Create an operator-approved package upgrade plan for vulnerable crypto libraries found in manifests.',
+      validation: 'Agent rescans manifests after the developer upgrades dependencies.',
+    },
+  ],
+  container: [
+    {
+      id: 'container-image-crypto-profile',
+      label: 'Patch Container Crypto Profile',
+      actionType: 'patch_container_crypto_profile',
+      requiresConnector: true,
+      requiredScopes: ['container:read', 'container:patch:image'],
+      summary: 'Patch image/runtime crypto config, rebuild, and redeploy through the container delivery system.',
+      validation: 'Upload image digest/config evidence and rescan the running endpoint.',
+    },
+  ],
+}
+
+function patchOptionsForAssetClass(assetClass: string) {
+  const key = assetClass.replace(/-/g, '_').toLowerCase()
+  return (PATCH_OPTION_GROUPS as Record<string, any[]>)[key] || PATCH_OPTION_GROUPS.network_protocol
+}
+
+function allPatchOptionGroups() {
+  return Object.entries(PATCH_OPTION_GROUPS).map(([assetClass, options]) => ({ assetClass, options }))
+}
+
+function actionStatusTimestamp(status: string, now: string) {
+  if (status === 'approved') return { approved_at: now }
+  if (status === 'applied') return { applied_at: now }
+  if (status === 'validated') return { validated_at: now, applied_at: now }
+  return {}
+}
+
 router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) => {
   const client = req.client || null
   const user = req.user!
@@ -1554,6 +1731,366 @@ router.post('/connectors/:id/evidence', requireUserAuth, async (req: AuthedReque
     alertThreshold: policy.alertThreshold,
   })
   res.json({ data: { ...result, rejectedEvidenceCount } })
+})
+
+router.get('/remediation/patch-options', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  const jobId = cleanString(req.query.jobId, 120)
+  let job: any = null
+  let connectors: any[] = []
+
+  if (client) {
+    if (jobId) {
+      const { data } = await client
+        .from('migration_jobs')
+        .select('id, name, job_type, status, target_algorithm, strategy, metadata')
+        .eq('id', jobId)
+        .eq('user_id', user.id)
+        .limit(1)
+        .maybeSingle()
+      job = data || null
+    }
+    const { data } = await client
+      .from('connector_accounts')
+      .select('id, provider, display_name, status, scopes, capabilities, policy, last_sync_at, metadata, created_at, updated_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+    connectors = data || []
+  } else {
+    connectors = memoryStore.connectors.filter((item) => item.user_id === user.id).map(({ token_ref, ...connector }) => connector)
+  }
+
+  const recommendedAssetClass = job ? remediationAdapter(job) : cleanString(req.query.assetClass, 80) || 'network_protocol'
+  res.json({
+    data: {
+      recommendedAssetClass,
+      options: allPatchOptionGroups(),
+      recommendedOptions: patchOptionsForAssetClass(recommendedAssetClass),
+      connectors,
+      job: job ? remediationJobPayload(job) : null,
+    },
+  })
+})
+
+router.get('/remediation/operator-actions', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  const jobId = cleanString(req.query.jobId, 120)
+
+  if (client) {
+    let query = client
+      .from('remediation_operator_actions')
+      .select('id, user_id, migration_id, connector_account_id, action_type, asset_class, status, approval_mode, patch_plan, evidence, validation, metadata, requested_at, approved_at, applied_at, validated_at, created_at, updated_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(200)
+    if (jobId) query = query.eq('migration_id', jobId)
+    const { data, error } = await query
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'OPERATOR_ACTIONS_LOAD_FAILED', error.message)
+      return
+    }
+    if (!error) {
+      res.json({ data: { actions: data || [] } })
+      return
+    }
+  }
+
+  const actions = memoryStore.operatorActions
+    .filter((item) => item.user_id === user.id && (!jobId || item.migration_id === jobId))
+    .slice(0, 200)
+  res.json({ data: { actions } })
+})
+
+router.post('/remediation/operator-actions', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  const now = new Date().toISOString()
+  const jobId = cleanString(req.body?.jobId || req.body?.migrationId || req.body?.migration_id, 120)
+  const connectorId = cleanString(req.body?.connectorId || req.body?.connector_account_id, 120)
+  const assetClass = (cleanString(req.body?.assetClass || req.body?.asset_class, 80) || 'network_protocol').replace(/-/g, '_').toLowerCase()
+  const optionId = cleanString(req.body?.optionId || req.body?.option_id, 120)
+  const option = patchOptionsForAssetClass(assetClass).find((item) => item.id === optionId) || patchOptionsForAssetClass(assetClass)[0]
+  const actionType = cleanString(req.body?.actionType || req.body?.action_type, 120) || option.actionType
+  const approvalMode = cleanString(req.body?.approvalMode || req.body?.approval_mode, 80) || 'operator_approved'
+  const requestedStatus = cleanString(req.body?.status, 50) || 'planned'
+  const target = cleanString(req.body?.target, 500)
+  const connectorRequired = option.requiresConnector === true
+
+  let connector: any = null
+  let job: any = null
+  if (client) {
+    if (connectorId) {
+      const { data } = await client.from('connector_accounts').select('*').eq('id', connectorId).eq('user_id', user.id).limit(1).maybeSingle()
+      connector = data || null
+      if (!connector) {
+        jsonError(res, 404, 'CONNECTOR_NOT_FOUND', 'Connector account not found for this tenant')
+        return
+      }
+    }
+    if (jobId) {
+      const { data } = await client.from('migration_jobs').select('*').eq('id', jobId).eq('user_id', user.id).limit(1).maybeSingle()
+      job = data || null
+      if (!job) {
+        jsonError(res, 404, 'MIGRATION_JOB_NOT_FOUND', 'Migration job not found for this tenant')
+        return
+      }
+    }
+  } else {
+    connector = connectorId ? memoryStore.connectors.find((item) => item.id === connectorId && item.user_id === user.id) : null
+  }
+
+  if (connectorRequired && !connectorId) {
+    jsonError(res, 400, 'CONNECTOR_REQUIRED', 'This patch option requires a connector with scoped permissions')
+    return
+  }
+
+  const connectorScopes = new Set((connector?.scopes || []).map((scope: string) => String(scope).toLowerCase()))
+  const missingScopes = connector && Array.isArray(option.requiredScopes)
+    ? option.requiredScopes.filter((scope: string) => !connectorScopes.has(scope.toLowerCase()))
+    : []
+
+  const patchPlan = sanitizeAgentMetadata({
+    optionId: option.id,
+    optionLabel: option.label,
+    target,
+    summary: option.summary,
+    validation: option.validation,
+    requiredScopes: option.requiredScopes,
+    missingScopes,
+    requestedBy: user.id,
+    requestedAt: now,
+    dryRun: req.body?.dryRun !== false,
+    payload: sanitizeAgentMetadata(req.body?.payload),
+  })
+
+  const row = {
+    user_id: user.id,
+    migration_id: jobId || null,
+    connector_account_id: connectorId || null,
+    action_type: actionType,
+    asset_class: assetClass,
+    status: missingScopes.length > 0 ? 'blocked' : requestedStatus,
+    approval_mode: approvalMode,
+    patch_plan: patchPlan,
+    evidence: {},
+    validation: {},
+    metadata: sanitizeAgentMetadata({
+      connectorProvider: connector?.provider || null,
+      connectorDisplayName: connector?.display_name || null,
+      jobName: job?.name || null,
+      source: 'dashboard-operator-workflow',
+    }),
+    requested_at: now,
+    created_at: now,
+    updated_at: now,
+  }
+
+  let action: any = null
+  if (client) {
+    const { data, error } = await client.from('remediation_operator_actions').insert(row).select('*').single()
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'OPERATOR_ACTION_CREATE_FAILED', error.message)
+      return
+    }
+    action = data || { id: randomId('operator-action'), ...row }
+    if (error && isMissingRuntimeTable(error)) memoryStore.operatorActions.unshift(action)
+
+    if (jobId && job) {
+      const metadata = remediationJobMetadata(job)
+      const actions = Array.isArray(metadata.operatorActions) ? metadata.operatorActions.slice(-19) : []
+      await client.from('migration_jobs').update({
+        status: job.status === 'completed' ? job.status : 'paused',
+        updated_at: now,
+        metadata: {
+          ...metadata,
+          operatorActions: [...actions, {
+            id: action.id,
+            actionType,
+            assetClass,
+            status: action.status || row.status,
+            connectorId: connectorId || null,
+            optionId: option.id,
+            requestedAt: now,
+          }],
+          lastOperatorPatchAction: {
+            id: action.id,
+            actionType,
+            assetClass,
+            status: action.status || row.status,
+            connectorId: connectorId || null,
+            requestedAt: now,
+          },
+        },
+      }).eq('id', jobId).eq('user_id', user.id)
+
+      await client.from('migration_events').insert({
+        user_id: user.id,
+        migration_id: jobId,
+        event_type: 'operator-patch-action-created',
+        severity: missingScopes.length > 0 ? 'warning' : 'info',
+        message: `${option.label} action ${missingScopes.length > 0 ? 'blocked by missing connector scopes' : 'created'} for ${job.name || 'HNDL remediation'}.`,
+        metadata: { actionId: action.id, assetClass, actionType, option, connectorId, missingScopes },
+        created_at: now,
+      })
+    }
+  } else {
+    action = { id: randomId('operator-action'), ...row }
+    memoryStore.operatorActions.unshift(action)
+  }
+
+  res.json({ data: { action, missingScopes, option } })
+})
+
+router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  const now = new Date().toISOString()
+  const status = (cleanString(req.body?.status, 50) || 'applied').toLowerCase()
+  const allowedStatuses = new Set(['planned', 'approved', 'blocked', 'applying', 'applied', 'validating', 'validated', 'failed', 'cancelled'])
+  if (!allowedStatuses.has(status)) {
+    jsonError(res, 400, 'INVALID_OPERATOR_ACTION_STATUS', 'Unsupported operator action status')
+    return
+  }
+
+  let action: any = null
+  if (client) {
+    const { data, error } = await client
+      .from('remediation_operator_actions')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle()
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'OPERATOR_ACTION_READ_FAILED', error.message)
+      return
+    }
+    action = data || null
+    if (error && isMissingRuntimeTable(error)) {
+      action = memoryStore.operatorActions.find((item) => item.id === req.params.id && item.user_id === user.id) || null
+    }
+  } else {
+    action = memoryStore.operatorActions.find((item) => item.id === req.params.id && item.user_id === user.id)
+  }
+  if (!action) {
+    jsonError(res, 404, 'OPERATOR_ACTION_NOT_FOUND', 'Operator action not found for this tenant')
+    return
+  }
+
+  let connector: any = null
+  if (client && action.connector_account_id) {
+    const { data } = await client.from('connector_accounts').select('*').eq('id', action.connector_account_id).eq('user_id', user.id).limit(1).maybeSingle()
+    connector = data || null
+  }
+
+  const payloadEvidence = Array.isArray(req.body?.evidence) ? req.body.evidence : []
+  const normalizedEvidence = payloadEvidence
+    .slice(0, 300)
+    .map((item: any) => normalizeEvidence(item, connector ? 'connector' : 'scanner-api', null, connector))
+    .filter(Boolean) as ScannerEvidenceRecord[]
+  const connectorPolicy = normalizePolicy(connector?.policy || {})
+  const evidence = normalizedEvidence.filter((item) => evidenceAllowedByPolicy(item, connectorPolicy, true))
+  if (normalizedEvidence.length > 0 && evidence.length === 0) {
+    jsonError(res, 403, 'OPERATOR_EVIDENCE_OUT_OF_POLICY', 'Submitted validation evidence is outside connector policy')
+    return
+  }
+
+  let evidenceResult: Awaited<ReturnType<typeof processEvidenceBatch>> | null = null
+  let validation = sanitizeAgentMetadata(req.body?.validation)
+  if (evidence.length > 0) {
+    evidenceResult = await processEvidenceBatch(client, user.id, evidence, connector ? `connector-remediation:${connector.provider}` : 'operator-remediation', {
+      alertThreshold: connectorPolicy.alertThreshold,
+    })
+    const hndlRiskCount = Array.isArray(evidenceResult.scanner2?.hndlRisks) ? evidenceResult.scanner2.hndlRisks.length : 0
+    validation = {
+      ...validation,
+      passed: hndlRiskCount === 0,
+      hndlRiskRemaining: hndlRiskCount > 0,
+      hndlRiskCount,
+      evidenceCount: evidenceResult.evidenceCount,
+      findingCount: evidenceResult.findingCount,
+      scanSessionId: evidenceResult.links?.scanSessionId || null,
+      validatedAt: now,
+    }
+  }
+
+  const nextStatus = status === 'validated' && validation.passed !== true ? 'validating' : status
+  const updatePayload: Record<string, unknown> = {
+    status: nextStatus,
+    evidence: sanitizeAgentMetadata({ ...(action.evidence || {}), submittedAt: now, evidenceCount: evidence.length, payload: sanitizeAgentMetadata(req.body?.evidenceMetadata) }),
+    validation,
+    metadata: sanitizeAgentMetadata({ ...(action.metadata || {}), lastStatusMessage: cleanString(req.body?.message, 1000) }),
+    updated_at: now,
+    ...actionStatusTimestamp(nextStatus, now),
+  }
+
+  if (client) {
+    const { data, error } = await client
+      .from('remediation_operator_actions')
+      .update(updatePayload)
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+      .select('*')
+      .single()
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'OPERATOR_ACTION_UPDATE_FAILED', error.message)
+      return
+    }
+    action = data || { ...action, ...updatePayload }
+    if (error && isMissingRuntimeTable(error)) Object.assign(action, updatePayload)
+
+    if (action.migration_id) {
+      const migrationUpdate: Record<string, unknown> = {
+        updated_at: now,
+        metadata: {
+          ...(await client.from('migration_jobs').select('metadata').eq('id', action.migration_id).eq('user_id', user.id).limit(1).maybeSingle()).data?.metadata || {},
+          lastOperatorPatchAction: {
+            id: action.id,
+            actionType: action.action_type,
+            assetClass: action.asset_class,
+            status: nextStatus,
+            validation,
+            updatedAt: now,
+          },
+        },
+      }
+      if (nextStatus === 'validated' && validation.passed === true) {
+        migrationUpdate.status = 'completed'
+        migrationUpdate.progress = 100
+        migrationUpdate.completed_at = now
+      } else if (nextStatus === 'failed') {
+        migrationUpdate.status = 'failed'
+      } else {
+        migrationUpdate.status = 'paused'
+      }
+      await client.from('migration_jobs').update(migrationUpdate).eq('id', action.migration_id).eq('user_id', user.id)
+      await client.from('migration_events').insert({
+        user_id: user.id,
+        migration_id: action.migration_id,
+        event_type: `operator-patch-action-${nextStatus}`,
+        severity: nextStatus === 'failed' ? 'error' : nextStatus === 'validated' ? 'success' : 'info',
+        message: cleanString(req.body?.message, 1000) || `Operator patch action ${nextStatus}.`,
+        metadata: { actionId: action.id, status: nextStatus, validation, evidenceResult },
+        created_at: now,
+      })
+    }
+  } else {
+    Object.assign(action, updatePayload)
+  }
+
+  res.json({
+    data: {
+      action,
+      validation,
+      evidence: evidenceResult ? {
+        evidenceCount: evidenceResult.evidenceCount,
+        findingCount: evidenceResult.findingCount,
+        scanSessionId: evidenceResult.links?.scanSessionId || null,
+      } : null,
+    },
+  })
 })
 
 router.post('/alerts/:id/acknowledge', requireUserAuth, async (req: AuthedRequest, res) => {

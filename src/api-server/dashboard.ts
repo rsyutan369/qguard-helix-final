@@ -29,6 +29,11 @@ function isMissingRpc(error: any) {
   return text.includes('42883') || text.includes('pgrst202') || text.includes('could not find the function') || text.includes('does not exist')
 }
 
+function isMissingTable(error: any) {
+  const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
+  return text.includes('42p01') || text.includes('pgrst205') || text.includes('does not exist') || text.includes('could not find the table')
+}
+
 async function safeCount(client: any, table: string, userId: string, apply?: (query: any) => any) {
   try {
     let query = client.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
@@ -1388,6 +1393,350 @@ function migrationJobFromHndlCandidate(userId: string, candidate: HndlRemediatio
     },
   }
 }
+
+const HNDL_DEFENSE_ACTIONS: Record<string, {
+  actionType: string
+  label: string
+  detail: string
+  eventType: string
+  assetClass: string
+  optionLabel: string
+  redirectPath: string
+  severity: 'critical' | 'warning' | 'info'
+  playbook: string[]
+}> = {
+  isolate_asset: {
+    actionType: 'isolate_asset',
+    label: 'Isolate Asset',
+    detail: 'Block propagation by isolating affected assets or network paths.',
+    eventType: 'hndl-defense-isolate-asset',
+    assetClass: 'network_protocol',
+    optionLabel: 'Isolate affected asset',
+    redirectPath: '/dashboard/asset-intelligence',
+    severity: 'critical',
+    playbook: ['Confirm owner and blast radius', 'Apply approved containment policy', 'Validate asset isolation with fresh telemetry'],
+  },
+  kill_process: {
+    actionType: 'kill_process',
+    label: 'Kill Process',
+    detail: 'Terminate or quarantine the runtime process producing HNDL telemetry.',
+    eventType: 'hndl-defense-kill-process',
+    assetClass: 'code_application',
+    optionLabel: 'Terminate malicious process',
+    redirectPath: '/dashboard/runtime-crypto-intel',
+    severity: 'critical',
+    playbook: ['Identify process and workload owner', 'Terminate or quarantine through the authorized agent', 'Rescan runtime crypto events for recurrence'],
+  },
+  revoke_credentials: {
+    actionType: 'revoke_credentials',
+    label: 'Revoke Credentials',
+    detail: 'Invalidate exposed credentials, tokens, certificates, and key bindings.',
+    eventType: 'hndl-defense-revoke-credentials',
+    assetClass: 'identity_access',
+    optionLabel: 'Revoke exposed credentials',
+    redirectPath: '/dashboard/identity-trust',
+    severity: 'critical',
+    playbook: ['Locate exposed identity or key material', 'Rotate or revoke through connector-approved controls', 'Validate new credential evidence'],
+  },
+  patch_harden: {
+    actionType: 'patch_harden',
+    label: 'Patch & Harden',
+    detail: 'Apply TLS, crypto policy, dependency, or platform hardening.',
+    eventType: 'hndl-defense-patch-harden',
+    assetClass: 'network_protocol',
+    optionLabel: 'Patch and harden HNDL exposure',
+    redirectPath: '/dashboard/scanner',
+    severity: 'warning',
+    playbook: ['Create approved patch plan', 'Apply change through agent, connector, or operator workflow', 'Rescan target and validate HNDL risk is cleared'],
+  },
+  backup_restore: {
+    actionType: 'backup_restore',
+    label: 'Backup & Restore',
+    detail: 'Recover affected service or configuration from a known-clean baseline.',
+    eventType: 'hndl-defense-backup-restore',
+    assetClass: 'code_application',
+    optionLabel: 'Backup and restore clean baseline',
+    redirectPath: '/dashboard/migration-sandbox',
+    severity: 'warning',
+    playbook: ['Snapshot current state', 'Restore known-clean baseline or configuration', 'Run sandbox validation before production cutover'],
+  },
+  deploy_honeypot: {
+    actionType: 'deploy_honeypot',
+    label: 'Deploy Honeypot',
+    detail: 'Divert suspicious activity into monitored deception telemetry.',
+    eventType: 'hndl-defense-deploy-honeypot',
+    assetClass: 'network_protocol',
+    optionLabel: 'Deploy HNDL deception monitor',
+    redirectPath: '/dashboard/runtime-crypto-intel',
+    severity: 'warning',
+    playbook: ['Define decoy scope and safe telemetry boundary', 'Deploy monitored deception endpoint', 'Correlate runtime events and scanner alerts'],
+  },
+}
+
+function harvestRedirect(path: string, actionType: string, extra: Record<string, string | number | boolean | null | undefined> = {}) {
+  const params = new URLSearchParams({
+    source: 'harvest-now',
+    defenseAction: actionType,
+  })
+  for (const [key, value] of Object.entries(extra)) {
+    if (value !== null && value !== undefined && value !== '') params.set(key, String(value))
+  }
+  return `${path}?${params.toString()}`
+}
+
+function migrationJobFromDefenseThreat(userId: string, threat: any, action: typeof HNDL_DEFENSE_ACTIONS[string], now: string) {
+  const row = recordOf(threat)
+  const findingId = textValue(row.id, `hndl-defense-${Date.now()}`)
+  const assetName = textValue(row.location, 'Tenant HNDL scope')
+  const severity = textValue(row.severity, 'High')
+  const algorithm = textValue(row.name, 'Harvest Now, Decrypt Later exposure')
+  return {
+    user_id: userId,
+    asset_id: null,
+    name: `HNDL Remediation: ${assetName}`,
+    job_type: 'hndl_remediation',
+    status: 'pending',
+    target_algorithm: replacementForAlgorithm(algorithm, 'hndl remediation'),
+    strategy: 'hndl_mitigate_validate',
+    progress: 0,
+    metadata: {
+      source: 'harvest-now',
+      workflow: 'hndl-remediation',
+      hndlFindingId: findingId,
+      sourceFindingId: findingId,
+      subtitle: `${action.label} response from Harvest Now telemetry`,
+      priority: titleCase(severity),
+      eta: 'Pending launch',
+      assetName,
+      environment: 'tenant scope',
+      algorithm,
+      category: 'HNDL defense action',
+      recommendation: textValue(row.recommendation, action.detail),
+      responseWindowHours: 1,
+      defenseAction: action.actionType,
+      defenseActionLabel: action.label,
+      defensePlaybook: action.playbook,
+      requestedAt: now,
+    },
+  }
+}
+
+router.post('/harvest-now/defense-action', async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user
+    const token = (req as any).token
+    const client = createAuthClient(token)
+    const body = recordOf(req.body)
+    const actionType = textValue(body.actionType || body.action_type, '').replace(/-/g, '_').toLowerCase()
+    const action = HNDL_DEFENSE_ACTIONS[actionType]
+
+    if (!client) {
+      return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+    }
+    if (!action) {
+      return res.status(400).json({ error: { code: 'INVALID_DEFENSE_ACTION', message: 'Unsupported Harvest Now defense action' } })
+    }
+
+    const now = new Date().toISOString()
+    const requestedFindingIds = new Set(
+      (Array.isArray(body.threatIds) ? body.threatIds : [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )
+    const activeThreatCount = Math.max(0, Number(body.activeThreatCount || 0))
+    const linkedSignalCount = Math.max(0, Number(body.linkedSignalCount || activeThreatCount || 0))
+    const primaryThreat = recordOf(body.primaryThreat)
+    const threats = Array.isArray(body.threats) ? body.threats.slice(0, 25).map(recordOf) : []
+
+    const [assets, jobs, scanResults, scanSessions] = await Promise.all([
+      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
+      safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
+      safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
+    ])
+
+    const existingHndlJobs = (jobs || [])
+      .filter((job: any) => {
+        const findingId = linkedHndlFindingId(job)
+        const metadata = recordOf(job.metadata)
+        const source = textValue(metadata.source, '')
+        const workflow = textValue(metadata.workflow, '')
+        const rawStatus = String(job.status || '').toLowerCase()
+        const active = normalizeJobStatus(job.status) !== 'completed' && !['cancelled', 'canceled'].includes(rawStatus)
+        const requested = requestedFindingIds.size === 0 || (findingId && requestedFindingIds.has(findingId))
+        return active && requested && (source === 'harvest-now' || workflow === 'hndl-remediation' || Boolean(findingId))
+      })
+      .slice(0, 100)
+
+    const candidates = buildHndlRemediationCandidates([...(scanResults || []), ...hndlRowsFromScanSessions(scanSessions || [])], assets || [], jobs || [])
+      .filter((candidate) => requestedFindingIds.size === 0 || requestedFindingIds.has(candidate.findingId))
+
+    let createdJobs: any[] = []
+    const rows = candidates.map((candidate) => {
+      const job = migrationJobFromHndlCandidate(user.id, candidate)
+      return {
+        ...job,
+        metadata: {
+          ...job.metadata,
+          defenseAction: action.actionType,
+          defenseActionLabel: action.label,
+          defensePlaybook: action.playbook,
+          requestedAt: now,
+        },
+      }
+    })
+
+    if (rows.length === 0 && existingHndlJobs.length === 0 && (primaryThreat.id || threats.length > 0)) {
+      rows.push(migrationJobFromDefenseThreat(user.id, primaryThreat.id ? primaryThreat : threats[0], action, now))
+    }
+
+    if (rows.length > 0) {
+      const { data: inserted, error } = await client
+        .from('migration_jobs')
+        .insert(rows)
+        .select('id, name, status, metadata, created_at, updated_at')
+
+      if (error) {
+        return res.status(500).json({ error: { code: 'DEFENSE_WORKFLOW_QUEUE_FAILED', message: error.message || 'Failed to queue Harvest Now defense workflows' } })
+      }
+      createdJobs = inserted || []
+    }
+
+    const linkedJobs = [...existingHndlJobs, ...createdJobs]
+    const primaryJob = linkedJobs[0] || null
+    const patchPlan = {
+      optionId: `harvest-${action.actionType}`,
+      optionLabel: action.optionLabel,
+      target: textValue(primaryThreat.location, textValue(primaryThreat.name, 'Tenant HNDL scope')),
+      summary: action.detail,
+      validation: 'Validate with fresh scanner, connector, runtime, or agent evidence before marking remediation complete.',
+      requiredScopes: [],
+      missingScopes: [],
+      requestedBy: user.id,
+      requestedAt: now,
+      source: 'harvest-now',
+      activeThreatCount,
+      linkedSignalCount,
+      threatIds: Array.from(requestedFindingIds).slice(0, 100),
+      playbook: action.playbook,
+    }
+
+    let operatorAction: any = null
+    const operatorRow = {
+      user_id: user.id,
+      migration_id: primaryJob?.id || null,
+      connector_account_id: null,
+      action_type: action.actionType,
+      asset_class: action.assetClass,
+      status: 'planned',
+      approval_mode: 'operator_approved',
+      patch_plan: patchPlan,
+      evidence: {},
+      validation: {},
+      metadata: {
+        source: 'harvest-now',
+        workflow: 'hndl-defense-action',
+        linkedJobIds: linkedJobs.map((job: any) => job.id).filter(Boolean).slice(0, 100),
+        threats,
+      },
+      requested_at: now,
+      created_at: now,
+      updated_at: now,
+    }
+
+    const operatorInsert = await client
+      .from('remediation_operator_actions')
+      .insert(operatorRow)
+      .select('id, action_type, asset_class, status, migration_id, patch_plan, created_at')
+      .single()
+    if (operatorInsert.error && !isMissingTable(operatorInsert.error)) {
+      return res.status(500).json({ error: { code: 'DEFENSE_OPERATOR_ACTION_FAILED', message: operatorInsert.error.message || 'Failed to create operator action' } })
+    }
+    operatorAction = operatorInsert.data || null
+
+    const migrationEvents = linkedJobs.map((job: any) => ({
+      user_id: user.id,
+      migration_id: job.id,
+      event_type: action.eventType,
+      severity: action.severity,
+      message: `${action.label} requested from Harvest Now for ${job.name || 'HNDL remediation workflow'}.`,
+      metadata: {
+        source: 'harvest-now',
+        workflow: 'hndl-defense-action',
+        defenseAction: action.actionType,
+        operatorActionId: operatorAction?.id || null,
+        linkedSignalCount,
+        activeThreatCount,
+        playbook: action.playbook,
+      },
+      created_at: now,
+    }))
+    if (migrationEvents.length > 0) {
+      const { error } = await client.from('migration_events').insert(migrationEvents)
+      if (error && !isMissingTable(error)) {
+        return res.status(500).json({ error: { code: 'DEFENSE_EVENT_FAILED', message: error.message || 'Failed to record migration event' } })
+      }
+    }
+
+    const { error: securityEventError } = await client.from('security_events').insert({
+      user_id: user.id,
+      event_type: action.eventType,
+      severity: action.severity,
+      message: `${action.label} playbook requested for ${linkedSignalCount || activeThreatCount} Harvest Now linked signal(s).`,
+      asset_id: null,
+      resource_name: textValue(primaryThreat.location, textValue(primaryThreat.name, 'Harvest Now telemetry')),
+      resource_type: 'hndl-defense-action',
+      metadata: {
+        source: 'harvest-now',
+        workflow: 'hndl-defense-action',
+        defenseAction: action.actionType,
+        operatorActionId: operatorAction?.id || null,
+        linkedJobIds: linkedJobs.map((job: any) => job.id).filter(Boolean).slice(0, 100),
+        linkedSignalCount,
+        activeThreatCount,
+        redirectPath: action.redirectPath,
+      },
+      created_at: now,
+    })
+    if (securityEventError && !isMissingTable(securityEventError)) {
+      return res.status(500).json({ error: { code: 'DEFENSE_SECURITY_EVENT_FAILED', message: securityEventError.message || 'Failed to record security event' } })
+    }
+
+    await client.from('audit_logs').insert({
+      user_id: user.id,
+      action: 'hndl_defense_action_requested',
+      entity_type: 'hndl_defense_action',
+      entity_id: null,
+      details: {
+        defenseAction: action.actionType,
+        linkedJobIds: linkedJobs.map((job: any) => job.id).filter(Boolean).slice(0, 100),
+        operatorActionId: operatorAction?.id || null,
+        linkedSignalCount,
+        activeThreatCount,
+      },
+      ip_address: req.ip?.replace('::ffff:', '') || null,
+      user_agent: String(req.headers['user-agent'] || '').slice(0, 500),
+      created_at: now,
+    })
+
+    return res.json({
+      data: {
+        action: action.actionType,
+        label: action.label,
+        status: 'planned',
+        createdJobs: createdJobs.length,
+        linkedJobs: linkedJobs.length,
+        operatorAction,
+        redirectUrl: harvestRedirect(action.redirectPath, action.actionType, { jobs: linkedJobs.length, operatorAction: operatorAction?.id || null }),
+        orchestrationUrl: harvestRedirect('/dashboard/pqc-orchestration', action.actionType, { jobs: linkedJobs.length }),
+        recordedAt: now,
+      },
+    })
+  } catch (err) {
+    console.error('Harvest Now defense action error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to record Harvest Now defense action' } })
+  }
+})
 
 router.post('/pqc-orchestration/hndl-remediation', async (req: Request, res: Response) => {
   try {
