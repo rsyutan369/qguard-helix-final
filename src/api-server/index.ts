@@ -10,6 +10,7 @@ import { continuousTrustRoutes, identityTrustRoutes, deviceTrustRoutes, trustAna
 import { cryptoPoliciesRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
 import { runtimeTelemetryRoutes, certificateTelemetryRoutes, keyAnalyticsRoutes, apiEncryptionRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
 import profileRoutes from './profile'
+import billingRoutes from './billing'
 import scannerRoutes from './scanner'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import serviceRecordRoutes from './service-records'
@@ -153,7 +154,12 @@ function setNoStoreShareHeaders(res: express.Response) {
 export function createApiServer() {
   const app = express()
 
-  app.use(express.json({ limit: '8mb' }))
+  app.use(express.json({
+    limit: '8mb',
+    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = Buffer.from(buf)
+    },
+  }))
 
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -445,6 +451,7 @@ export function createApiServer() {
   app.use('/api/v1/dashboard', dashboardRoutes)
   app.use('/api/v1/migration', migrationRoutes)
   app.use('/api/v1/profile', profileRoutes)
+  app.use('/api/v1/billing', billingRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)
   app.use('/api/v1', serviceRecordRoutes)

@@ -6,6 +6,7 @@ import {
   Bell,
   CheckCircle2,
   Clock3,
+  CreditCard,
   Globe2,
   KeyRound,
   Laptop,
@@ -25,6 +26,7 @@ import {
   UserCog,
   XCircle,
 } from 'lucide-react'
+import BillingTab from './BillingTab'
 import {
   MfaEnrollment,
   ProfileTheme,
@@ -36,8 +38,9 @@ import {
   UserSession,
   useProfileSettings,
 } from '@/hooks/use-profile-settings'
+import { useBillingSettings } from '@/hooks/use-billing-settings'
 
-type SettingsTab = 'profile' | 'security' | 'preferences' | 'activity'
+type SettingsTab = 'profile' | 'security' | 'preferences' | 'activity' | 'billing'
 
 const inputClass = 'w-full rounded-lg border border-gold/15 bg-[#0f1428]/45 px-3 py-2.5 text-sm text-white outline-none transition focus:border-gold/50 focus:bg-[#0f1428]/65'
 const labelClass = 'mb-1.5 block text-[10px] font-black uppercase tracking-[0.16em] text-white/35'
@@ -49,6 +52,7 @@ const TABS: { key: SettingsTab; label: string; icon: typeof UserCog }[] = [
   { key: 'security', label: 'Security', icon: ShieldCheck },
   { key: 'preferences', label: 'Preferences', icon: Settings },
   { key: 'activity', label: 'Activity', icon: Activity },
+  { key: 'billing', label: 'Billing', icon: CreditCard },
 ]
 
 const THEME_OPTIONS: { key: ProfileTheme; label: string; accent: string }[] = [
@@ -91,6 +95,12 @@ function createProfileDraft(profile?: UserProfileSettings | null): ProfileDraft 
     department: profile?.department || '',
     jobTitle: profile?.jobTitle || '',
   }
+}
+
+function initialSettingsTab(): SettingsTab {
+  if (typeof window === 'undefined') return 'profile'
+  const candidate = new URLSearchParams(window.location.search).get('tab') as SettingsTab | null
+  return candidate && TABS.some((tab) => tab.key === candidate) ? candidate : 'profile'
 }
 
 function validateProfileDraft(draft: ProfileDraft) {
@@ -928,7 +938,22 @@ export default function ProfileSettingsPage() {
     setDeviceTrust,
     revokeSession,
   } = useProfileSettings()
-  const [activeTab, setActiveTab] = useState<SettingsTab>('profile')
+  const {
+    billing,
+    loading: billingLoading,
+    saving: billingSaving,
+    error: billingError,
+    schemaReady: billingSchemaReady,
+    sseConnected: billingSseConnected,
+    refresh: refreshBilling,
+    runSubscriptionAction,
+    createPaymentMethodSession,
+    updatePaymentMethod,
+    removePaymentMethod,
+    updateNotifications,
+    downloadInvoice,
+  } = useBillingSettings()
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => initialSettingsTab())
   const [profileDraft, setProfileDraft] = useState<ProfileDraft>(() => createProfileDraft())
   const [profileDirty, setProfileDirty] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -1048,7 +1073,14 @@ export default function ProfileSettingsPage() {
             <button
               key={tab.key}
               type="button"
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => {
+                setActiveTab(tab.key)
+                if (typeof window !== 'undefined') {
+                  const url = new URL(window.location.href)
+                  url.searchParams.set('tab', tab.key)
+                  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+                }
+              }}
               className={`relative flex items-center gap-2 rounded-t-lg border px-4 py-3 text-xs font-black uppercase tracking-[0.12em] transition ${
                 active ? 'border-gold/35 border-b-black bg-gold/[0.08] text-gold' : 'border-transparent text-white/35 hover:bg-white/[0.03] hover:text-white/70'
               }`}
@@ -1108,6 +1140,28 @@ export default function ProfileSettingsPage() {
           activity={activity}
           saving={saving}
           onRefresh={() => showNotice(refreshActivity, 'Activity refreshed.')}
+        />
+      )}
+
+      {activeTab === 'billing' && (
+        <BillingTab
+          billing={billing}
+          loading={billingLoading}
+          saving={billingSaving}
+          error={billingError}
+          schemaReady={billingSchemaReady}
+          sseConnected={billingSseConnected}
+          onRefresh={refreshBilling}
+          onAction={runSubscriptionAction}
+          onSetupPaymentMethod={createPaymentMethodSession}
+          onUpdatePaymentMethod={updatePaymentMethod}
+          onRemovePaymentMethod={removePaymentMethod}
+          onUpdateNotifications={updateNotifications}
+          onDownloadInvoice={downloadInvoice}
+          onNotice={(message) => {
+            setNotice(message)
+            window.setTimeout(() => setNotice(null), 4500)
+          }}
         />
       )}
     </div>
