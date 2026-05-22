@@ -1,1149 +1,1664 @@
-'use client'
-
-import Link from 'next/link'
-import { useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
+import { Link } from 'react-router-dom'
+import type { LucideIcon } from 'lucide-react'
 import {
-  Shield, Scan, RefreshCw, KeyRound, Lock, Activity, Zap,
-  ChevronRight, BookOpen, Terminal, Rocket, HelpCircle,
-  CheckCircle, Code, ArrowRight, ExternalLink, Menu, X,
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  Bell,
+  BookOpen,
+  Box,
+  Check,
+  CheckCircle,
+  ChevronDown,
+  ChevronRight,
+  ClipboardCheck,
+  Cloud,
+  Code,
+  Copy,
+  Cpu,
+  Database,
+  Download,
+  EyeOff,
+  FileDown,
+  FileText,
+  Fingerprint,
+  Gauge,
+  Globe,
+  HelpCircle,
+  KeyRound,
+  Layers,
+  LifeBuoy,
+  Lock,
+  Menu,
+  MonitorCheck,
+  Network,
+  PlayCircle,
+  Radio,
+  RefreshCw,
+  Rocket,
+  Route,
+  ScanSearch,
+  Search,
+  Server,
+  Settings,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Terminal,
+  Users,
+  Webhook,
+  Workflow,
+  Wrench,
+  X,
+  Zap,
 } from 'lucide-react'
+import { useAuth } from '@/contexts/auth-context'
+import { cn } from '@/lib/utils'
 
-/* ─────────────────────────────────────────────
-   Sidebar navigation structure
-───────────────────────────────────────────── */
-const NAV = [
+type Topic = {
+  id: string
+  title: string
+  body: string
+  bullets?: string[]
+  callout?: string
+}
+
+type CodeExample = {
+  title: string
+  language: string
+  code: string
+}
+
+type Walkthrough = {
+  id: string
+  title: string
+  audience: string
+  steps: string[]
+  href: string
+}
+
+type DocSection = {
+  id: string
+  group: string
+  title: string
+  summary: string
+  icon: LucideIcon
+  image: string
+  tags: string[]
+  quickLinks: Array<{ label: string; href: string; icon: LucideIcon }>
+  topics: Topic[]
+  examples?: CodeExample[]
+  walkthroughs?: Walkthrough[]
+}
+
+type LiveDocsStatus = {
+  platform: string
+  dashboard: string
+  realtime: string
+  scanner: string
+  migration: string
+  timestamp: string | null
+  metrics: Record<string, number>
+}
+
+const EMPTY_STATUS: LiveDocsStatus = {
+  platform: 'checking',
+  dashboard: 'waiting',
+  realtime: 'not connected',
+  scanner: 'unknown',
+  migration: 'unknown',
+  timestamp: null,
+  metrics: {},
+}
+
+const LOCAL_PROGRESS_KEY = 'qguard-docs-progress-v1'
+
+const MODULE_LINKS = [
+  { label: 'Dashboard', href: '/dashboard', icon: Gauge, desc: 'Operational overview, KPIs, and readiness posture.' },
+  { label: 'PQC Onboarding', href: '/dashboard/pqc-onboarding', icon: Route, desc: 'Six-phase migration process and onboarding progress.' },
+  { label: 'PQC Scanner', href: '/dashboard/scanner', icon: ScanSearch, desc: 'Asset discovery, findings, evidence, and agent collectors.' },
+  { label: 'Harvest Now', href: '/dashboard/harvest-now', icon: EyeOff, desc: 'HNDL threat detection and critical defense actions.' },
+  { label: 'Runtime Crypto Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity, desc: 'Runtime cryptographic events, process signals, and risk telemetry.' },
+  { label: 'Crypto Agility', href: '/dashboard/crypto-agility', icon: Workflow, desc: 'Hybrid crypto policies, key rotation, and algorithm switching.' },
+  { label: 'PQC Orchestration', href: '/dashboard/pqc-orchestration', icon: Network, desc: 'Migration jobs, execution queue, and live orchestration logs.' },
+  { label: 'Migration Sandbox', href: '/dashboard/migration-sandbox', icon: Box, desc: 'Safe testing, rollback, and migration validation.' },
+  { label: 'Quantum Vault', href: '/dashboard/vault', icon: Lock, desc: 'Zero-knowledge encrypted storage and secure sharing.' },
+  { label: 'Compliance', href: '/dashboard/compliance', icon: ClipboardCheck, desc: 'Evidence, regulatory readiness, and governance status.' },
+  { label: 'Telemetry', href: '/dashboard/runtime-telemetry', icon: Radio, desc: 'Live system telemetry and monitoring health.' },
+  { label: 'Settings', href: '/dashboard/settings', icon: Settings, desc: 'Account, organization, security preferences, and profile.' },
+]
+
+const DEFENSE_ACTIONS = [
   {
-    section: 'Getting Started',
-    icon: Rocket,
-    items: [
-      { id: 'overview',      label: 'Platform Overview'    },
-      { id: 'quickstart',    label: 'Quick Start Guide'    },
-      { id: 'account-setup', label: 'Account Setup'        },
-      { id: 'dashboard',     label: 'Dashboard Walkthrough'},
-    ],
+    title: 'Isolate Asset',
+    when: 'Use when an asset shows active compromise, HNDL exposure, downgrade attempts, or suspicious lateral movement.',
+    impact: 'Network access is restricted. Business traffic may pause until the asset is cleared.',
+    workflow: ['Confirm alert evidence', 'Notify asset owner', 'Apply isolation policy', 'Monitor telemetry for containment', 'Document evidence in audit trail'],
+    href: '/dashboard/asset-intelligence',
   },
   {
-    section: 'Core Features',
+    title: 'Kill Process',
+    when: 'Use when runtime telemetry identifies a malicious or unsafe process using weak cryptography.',
+    impact: 'The process terminates immediately. Dependent services may need restart or rollback.',
+    workflow: ['Validate process identity', 'Capture process hash', 'Terminate process', 'Verify runtime events stop', 'Open remediation ticket'],
+    href: '/dashboard/runtime-crypto-intel',
+  },
+  {
+    title: 'Revoke Credentials',
+    when: 'Use when keys, tokens, certificates, or sessions are exposed, weak, or suspected compromised.',
+    impact: 'Users or services relying on credentials may need reauthentication or new key material.',
+    workflow: ['Identify credential scope', 'Rotate or revoke material', 'Update dependent services', 'Confirm no failed handshakes', 'Record compliance evidence'],
+    href: '/dashboard/identity-trust',
+  },
+  {
+    title: 'Patch & Harden',
+    when: 'Use when findings require dependency upgrades, TLS policy hardening, or cryptographic configuration changes.',
+    impact: 'Change windows may be required. Backward compatibility should be tested in hybrid mode.',
+    workflow: ['Review patch plan', 'Apply policy or package update', 'Run validation scan', 'Compare findings', 'Promote to production'],
+    href: '/dashboard/scanner',
+  },
+  {
+    title: 'Backup & Restore',
+    when: 'Use before high-risk migrations, rollback events, or incident response recovery.',
+    impact: 'Requires backup verification and recovery-point confirmation before restoration.',
+    workflow: ['Create recovery snapshot', 'Validate integrity', 'Run migration or response action', 'Restore if validation fails', 'Attach recovery evidence'],
+    href: '/dashboard/migration-sandbox',
+  },
+]
+
+const FAQ = [
+  ['What is PQC?', 'Post-Quantum Cryptography is a family of cryptographic algorithms designed to resist attacks from future quantum computers. Qguard Helix helps identify vulnerable classical cryptography and migrate to PQC-safe controls.'],
+  ['What is HNDL?', 'Harvest Now, Decrypt Later is an attack strategy where adversaries steal encrypted traffic or files today and wait for future quantum computers to decrypt them.'],
+  ['Do I need to migrate everything immediately?', 'No. Start with high-value data, public-facing TLS, identity systems, long-lived certificates, secrets, and regulated workloads. The platform prioritizes based on risk and business impact.'],
+  ['Why use hybrid cryptography?', 'Hybrid mode combines classical and PQC algorithms during transition so systems remain compatible while improving quantum resilience.'],
+  ['How is tenant data isolated?', 'Live dashboards query authenticated user-scoped records and backend routes filter data by the current user or tenant. Realtime subscriptions follow the same user-scoped filters.'],
+  ['Can Qguard Helix integrate with SIEM and CI/CD?', 'Yes. API, webhook, scanner, telemetry, and export flows are documented for SIEM ingestion, CI/CD gates, cloud workflows, and custom automation.'],
+]
+
+const SECTIONS: DocSection[] = [
+  {
+    id: 'platform-introduction',
+    group: 'Foundation',
+    title: 'Platform Introduction',
+    summary: 'Understand Qguard Helix, the quantum threat landscape, HNDL risk, NIST PQC, Quantum Vault, and why migration must begin now.',
     icon: Shield,
-    items: [
-      { id: 'scanner',    label: 'Quantum Vulnerability Scanner' },
-      { id: 'migration',  label: 'PQC Migration Wizard'          },
-      { id: 'keygen',     label: 'Quantum Key Generator'         },
-      { id: 'vault',      label: 'Quantum Vault'                 },
-      { id: 'monitoring', label: 'Continuous Monitoring'         },
-      { id: 'simulator',  label: 'Threat Simulator'              },
+    image: '/Gold_Shield.png',
+    tags: ['intro', 'qguard helix', 'architecture', 'quantum threat', 'hndl', 'crqc', 'nist', 'vault'],
+    quickLinks: [
+      { label: 'Open Dashboard', href: '/dashboard', icon: Gauge },
+      { label: 'Start Onboarding', href: '/dashboard/pqc-onboarding', icon: Route },
+      { label: 'Review NIST', href: '/dashboard/compliance', icon: ClipboardCheck },
+    ],
+    topics: [
+      {
+        id: 'what-is-qguard',
+        title: 'What is Qguard Helix?',
+        body: 'Qguard Helix is an enterprise post-quantum security platform for discovering cryptographic risk, prioritizing quantum exposure, orchestrating migration, validating outcomes, and continuously monitoring runtime cryptographic behavior.',
+        bullets: ['Single operating surface for PQC readiness', 'Tenant-scoped dashboards and audit trails', 'Scanner, runtime telemetry, migration, compliance, and response workflows', 'Beginner-friendly explanations with operator-grade controls'],
+      },
+      {
+        id: 'architecture',
+        title: 'Platform architecture overview',
+        body: 'The platform combines a React dashboard, Express API routes, Supabase-backed data stores, scanner engines, agent collectors, runtime event pipelines, SSE streams, and realtime subscriptions.',
+        bullets: ['Frontend pages subscribe to authenticated telemetry', 'API routes aggregate tenant-specific findings and KPIs', 'Scanner and agent systems populate scan sessions, findings, runtime events, alerts, and migration jobs', 'Governance surfaces transform evidence into compliance posture'],
+        callout: 'For operators: treat the API and realtime streams as source-of-truth delivery paths. Avoid manually copying metrics between modules.',
+      },
+      {
+        id: 'quantum-threats',
+        title: 'Quantum threat landscape and CRQC',
+        body: 'A Cryptographically Relevant Quantum Computer can break widely deployed public-key algorithms such as RSA and ECC. While exact timing is uncertain, long-lived data, certificates, secrets, identities, and regulated records are already exposed to collection risk.',
+        bullets: ['RSA and ECC are primary migration targets', 'Long-lived encrypted data is highest priority', 'Identity, PKI, TLS, API gateways, and critical workloads should move first'],
+      },
+      {
+        id: 'hndl',
+        title: 'Harvest Now, Decrypt Later',
+        body: 'HNDL attacks capture encrypted information today for future decryption. Qguard Helix detects HNDL exposure by correlating weak cryptography, critical assets, telemetry, scanner findings, certificates, and runtime behavior.',
+        bullets: ['Red critical alerts flag urgent risk', 'Defense actions can isolate assets, revoke credentials, and harden services', 'Evidence is retained for incident response and compliance'],
+      },
+      {
+        id: 'nist-pqc',
+        title: 'NIST PQC overview',
+        body: 'NIST PQC standards guide organizations toward algorithms such as ML-KEM for key establishment and ML-DSA for digital signatures. Qguard Helix maps findings, migration plans, and governance evidence to NIST-aligned workflows.',
+        bullets: ['ML-KEM replaces quantum-vulnerable key exchange', 'ML-DSA supports post-quantum signatures', 'Hybrid cryptography supports safe transition and compatibility'],
+      },
     ],
   },
   {
-    section: 'QRNG Services',
-    icon: Zap,
-    items: [
-      { id: 'otp',        label: 'OTP / Multi-Factor Auth'       },
-      { id: 'pki-certs',  label: 'PKI Certificate Authority'     },
-      { id: 'tokenize',   label: 'Data Tokenization'             },
-      { id: 'comm',       label: 'Secure Communications'         },
-      { id: 'cloud-seed', label: 'Cloud Infrastructure Seeding'  },
-      { id: 'key-mgmt',   label: 'Encryption Key Management'     },
+    id: 'onboarding-setup',
+    group: 'Foundation',
+    title: 'Onboarding & Initial Setup',
+    summary: 'Configure accounts, organization metadata, teams, agents, scanner deployment, API integrations, asset discovery, environments, and access control.',
+    icon: Rocket,
+    image: '/NEW_LOGO.png',
+    tags: ['account setup', 'organization onboarding', 'team management', 'agent installation', 'permissions', 'api integrations'],
+    quickLinks: [
+      { label: 'Profile & Settings', href: '/dashboard/settings', icon: Settings },
+      { label: 'Agent Scanners', href: '/dashboard/scanner', icon: ScanSearch },
+      { label: 'Assets', href: '/dashboard/assets', icon: Database },
+    ],
+    topics: [
+      {
+        id: 'account-org',
+        title: 'Account and organization setup',
+        body: 'Begin by creating an administrator account, confirming email, completing the organization profile, and assigning project ownership. Strong organization metadata improves reports and client overview panels.',
+        bullets: ['Add company name, department, role, and security owner', 'Enable MFA and trusted-device policies', 'Invite analysts, administrators, compliance officers, and DevOps owners', 'Assign least-privilege permissions by operational role'],
+      },
+      {
+        id: 'agents',
+        title: 'Agent installation and scanner deployment',
+        body: 'Deploy collectors where runtime and asset evidence is needed. Agents register into the tenant workspace and report heartbeat, metadata, runtime cryptographic events, scan evidence, and alerts.',
+        bullets: ['Use scoped enrollment tokens', 'Install agents on target hosts, clusters, and monitored environments', 'Confirm heartbeat and policy assignment', 'Rotate or revoke tokens when agents are retired'],
+      },
+      {
+        id: 'api-integrations',
+        title: 'API integrations and environment configuration',
+        body: 'Connect API sources, cloud accounts, SIEM destinations, CI/CD systems, and scanner targets. Environment labels help segment dev, staging, production, cloud, and regulated zones.',
+        bullets: ['Create API credentials with minimum required scope', 'Use webhooks for incident and SIEM forwarding', 'Document environment ownership', 'Run initial asset discovery before migration planning'],
+      },
+      {
+        id: 'permissions',
+        title: 'Permissions and access control',
+        body: 'Separate duties for administrators, migration operators, responders, auditors, and viewers. Sensitive actions such as credential revocation and process termination should require clear ownership and audit evidence.',
+        bullets: ['Administrators manage users and organization policy', 'Security analysts triage alerts and findings', 'DevOps teams execute migrations and rollbacks', 'Compliance users review evidence and reports'],
+      },
+    ],
+    walkthroughs: [
+      {
+        id: 'wizard-account',
+        title: 'Create your first operating workspace',
+        audience: 'New administrators',
+        href: '/dashboard/settings',
+        steps: ['Create an account and verify email', 'Complete company and role details', 'Enable MFA', 'Invite security and DevOps owners', 'Open the dashboard and confirm live status'],
+      },
+      {
+        id: 'wizard-agent',
+        title: 'Deploy your first collector agent',
+        audience: 'Security and DevOps teams',
+        href: '/dashboard/scanner',
+        steps: ['Open Scanner', 'Create a tenant-scoped agent token', 'Run the install command on a host', 'Confirm heartbeat', 'Assign scan scope'],
+      },
     ],
   },
   {
-    section: 'Tutorials',
-    icon: Terminal,
-    items: [
-      { id: 'tutorial-scan',      label: 'Run Your First Scan'       },
-      { id: 'tutorial-migrate',   label: 'Migrate RSA to ML-KEM'     },
-      { id: 'tutorial-vault',     label: 'Store Files in the Vault'  },
-      { id: 'tutorial-keygen',    label: 'Generate QRNG Keys'        },
-      { id: 'tutorial-otp',       label: 'Quantum OTP Setup'         },
-      { id: 'tutorial-pki',       label: 'Issue PQC Certificates'    },
-      { id: 'tutorial-tokenize',  label: 'Tokenize Sensitive Data'   },
-      { id: 'tutorial-comm',      label: 'Secure Messaging Setup'    },
-      { id: 'tutorial-cloud',     label: 'Seed Cloud Infrastructure' },
+    id: 'discovery-inventory',
+    group: 'Operations',
+    title: 'Discovery & Inventory',
+    summary: 'Learn how asset discovery, cryptographic inventory scanning, runtime telemetry, certificates, secrets detection, cloud/container scanning, TLS/PQC exposure scanning, and risk classification work.',
+    icon: ScanSearch,
+    image: '/inventory.png',
+    tags: ['asset discovery', 'cryptographic inventory', 'certificate discovery', 'secrets detection', 'cloud scanning', 'container scanning', 'tls exposure'],
+    quickLinks: [
+      { label: 'Run Scanner', href: '/dashboard/scanner', icon: ScanSearch },
+      { label: 'CBOM Explorer', href: '/dashboard/cbom', icon: Layers },
+      { label: 'Crypto Exposure', href: '/dashboard/crypto-exposure', icon: Globe },
+    ],
+    topics: [
+      {
+        id: 'asset-discovery',
+        title: 'Asset discovery process',
+        body: 'Discovery starts by identifying systems, applications, services, repositories, certificates, APIs, containers, and cloud workloads. Assets become the anchor for scan results, telemetry, remediation, and compliance evidence.',
+        bullets: ['Name assets consistently', 'Assign owners and criticality', 'Tag environments', 'Preserve asset relationships for exposure maps'],
+      },
+      {
+        id: 'crypto-inventory',
+        title: 'Cryptographic inventory scanning',
+        body: 'The scanner builds a cryptographic bill of materials by identifying algorithms, key sizes, protocols, certificate properties, package metadata, secrets, and vulnerable implementations.',
+        bullets: ['RSA, ECC, DH, SHA-1, weak TLS, CBC, 3DES, and deprecated primitives are highlighted', 'Quantum-safe and hybrid controls are recognized', 'Findings are linked to remediation recommendations'],
+      },
+      {
+        id: 'runtime-collection',
+        title: 'Runtime telemetry collection',
+        body: 'Runtime telemetry captures cryptographic activity as it happens, including process context, algorithm usage, TLS properties, package data, downgrade attempts, and HNDL risk signals.',
+        bullets: ['Agent events are stored as tenant-scoped runtime crypto events', 'Alerts correlate scanner and runtime sources', 'SSE and realtime subscriptions keep dashboards current'],
+      },
+      {
+        id: 'interpret-results',
+        title: 'Interpreting scan results',
+        body: 'Focus first on critical and high findings affecting public-facing systems, long-lived data, identity, certificates, secrets, payment flows, and regulated workloads.',
+        bullets: ['Critical means immediate owner review', 'High means migration planning should be scheduled', 'Medium and low findings support hardening and lifecycle cleanup'],
+      },
+    ],
+    walkthroughs: [
+      {
+        id: 'tutorial-first-scan',
+        title: 'Run your first PQC scan',
+        audience: 'Beginners and analysts',
+        href: '/dashboard/scanner',
+        steps: ['Open the Scanner dashboard', 'Choose scope and target', 'Start the scan', 'Wait for module progress to complete', 'Review findings and export evidence'],
+      },
+      {
+        id: 'tutorial-review-vulns',
+        title: 'Review vulnerabilities and exposure',
+        audience: 'Security teams',
+        href: '/dashboard/vulnerabilities',
+        steps: ['Open Vulnerabilities', 'Filter by critical and high severity', 'Open affected asset context', 'Review remediation guidance', 'Queue migration or defense action'],
+      },
     ],
   },
   {
-    section: 'Reference',
-    icon: Code,
-    items: [
-      { id: 'algorithms',  label: 'Supported Algorithms'  },
-      { id: 'q-score',     label: 'Q-Score Explained'     },
-      { id: 'compliance',  label: 'NIST FIPS Compliance'  },
-      { id: 'faq-docs',    label: 'FAQ'                   },
+    id: 'hndl',
+    group: 'Threat Response',
+    title: 'Harvest Now, Decrypt Later',
+    summary: 'Detect HNDL attacks, understand red critical alerts, prioritize risk, monitor live telemetry, integrate threat intelligence, and execute automated defense actions.',
+    icon: EyeOff,
+    image: '/HNDL.png',
+    tags: ['hndl', 'harvest now decrypt later', 'critical alerts', 'threat intelligence', 'defense actions', 'incident response'],
+    quickLinks: [
+      { label: 'Open HNDL', href: '/dashboard/harvest-now', icon: EyeOff },
+      { label: 'Threat Intel', href: '/dashboard/threat-intel', icon: Radio },
+      { label: 'Runtime Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity },
+    ],
+    topics: [
+      {
+        id: 'how-hndl-works',
+        title: 'How HNDL attacks work',
+        body: 'Adversaries collect encrypted data, TLS sessions, documents, backups, traffic, or files now and retain them until a future quantum computer can decrypt vulnerable cryptography.',
+        bullets: ['Long retention data has elevated risk', 'Weak public-key cryptography is highest priority', 'Critical business services should be migrated early'],
+      },
+      {
+        id: 'alerting',
+        title: 'Alerting system and red critical remediation',
+        body: 'Critical red alerts indicate a likely high-impact exposure. Operators should validate evidence, identify owners, choose a defense action, and confirm telemetry stabilizes after remediation.',
+        bullets: ['Red alerts appear in threat and runtime panels', 'Automated actions can queue migration or incident workflows', 'Evidence should be exported for incident review'],
+      },
+      {
+        id: 'mitigation',
+        title: 'Mitigation recommendations and automated defense',
+        body: 'The platform recommends actions such as isolate asset, kill process, revoke credentials, patch and harden, or backup and restore based on threat context and asset impact.',
+        bullets: ['Use isolation for active compromise', 'Use revocation for key or credential exposure', 'Use patching for configuration or dependency weakness', 'Use backup and restore for recovery and rollback'],
+      },
+    ],
+    walkthroughs: [
+      {
+        id: 'tutorial-hndl-response',
+        title: 'Respond to an HNDL threat',
+        audience: 'Incident responders',
+        href: '/dashboard/harvest-now',
+        steps: ['Open the HNDL dashboard', 'Review critical alert evidence', 'Select an action', 'Queue remediation workflow', 'Monitor runtime telemetry and audit evidence'],
+      },
     ],
   },
   {
-    section: 'Business',
-    icon: HelpCircle,
-    items: [
-      { id: 'why-quantum',  label: 'Why Quantum Security Now'  },
-      { id: 'ciso-brief',   label: 'Enterprise CISO Brief'     },
-      { id: 'use-cases',    label: 'Industry Use Cases'        },
-    ],
-  },
-  {
-    section: 'Operational',
+    id: 'runtime-intelligence',
+    group: 'Threat Response',
+    title: 'Runtime Cryptographic Intelligence',
+    summary: 'Understand runtime crypto telemetry, process-level monitoring, key usage telemetry, certificate intelligence, binary/file integrity, ETW/eBPF concepts, and live event monitoring.',
     icon: Activity,
-    items: [
-      { id: 'deployment',   label: 'Deployment Guide'          },
-      { id: 'rate-limits',  label: 'Rate Limits & SLAs'        },
-      { id: 'audit-trails', label: 'Monitoring & Audit'        },
+    image: '/monitoring.png',
+    tags: ['runtime telemetry', 'process monitoring', 'key usage', 'certificate intelligence', 'binary integrity', 'file integrity', 'ebpf', 'etw'],
+    quickLinks: [
+      { label: 'Runtime Crypto Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity },
+      { label: 'TLS Telemetry', href: '/dashboard/tls-telemetry', icon: ShieldCheck },
+      { label: 'PKI Visibility', href: '/dashboard/pki-visibility', icon: FileText },
+    ],
+    topics: [
+      {
+        id: 'pipeline',
+        title: 'How runtime crypto telemetry works',
+        body: 'Runtime telemetry observes cryptographic behavior from agents, connectors, and integrations. Events are normalized into operation type, algorithm, key size, process, asset, certificate, protocol, and risk fields.',
+        bullets: ['Process-level monitoring helps attribute risk', 'Key usage telemetry highlights sensitive operations', 'Certificate intelligence detects weak or expiring trust chains', 'Live event monitoring updates dashboards in real time'],
+      },
+      {
+        id: 'integrity',
+        title: 'Binary and file integrity verification',
+        body: 'Integrity checks validate whether monitored binaries, libraries, files, and configuration artifacts changed unexpectedly during migration or incident response.',
+        bullets: ['Hash and metadata changes become telemetry evidence', 'Unexpected changes can trigger scanner alerts', 'Evidence supports rollback and compliance decisions'],
+      },
+      {
+        id: 'ebpf-etw',
+        title: 'eBPF and ETW telemetry explained',
+        body: 'Linux eBPF and Windows ETW are operating-system telemetry mechanisms that can observe runtime events with low overhead. Qguard Helix uses the concept to explain how collectors can capture cryptographic behavior close to the workload.',
+        bullets: ['eBPF is common in Linux runtime observability', 'ETW is used in Windows event tracing', 'Collectors normalize data before it reaches dashboards'],
+      },
+    ],
+    examples: [
+      {
+        title: 'Runtime telemetry event shape',
+        language: 'json',
+        code: `{
+  "asset_id": "api-gateway-prod",
+  "operation_type": "key_exchange",
+  "algorithm": "RSA-2048",
+  "tls_version": "TLS 1.2",
+  "is_legacy": true,
+  "hndl_risk": true,
+  "risk_score": 91
+}`,
+      },
     ],
   },
   {
-    section: 'Developer',
+    id: 'crypto-agility',
+    group: 'Migration',
+    title: 'Crypto Agility',
+    summary: 'Define crypto agility, hybrid cryptography, algorithm migration strategies, dynamic policy updates, key rotation, orchestration, migration planning, rollback, and fallback.',
+    icon: Workflow,
+    image: '/CPM_PQC.png',
+    tags: ['crypto agility', 'hybrid cryptography', 'algorithm migration', 'key rotation', 'orchestration', 'rollback'],
+    quickLinks: [
+      { label: 'Crypto Agility', href: '/dashboard/crypto-agility', icon: Workflow },
+      { label: 'Keys', href: '/dashboard/keys', icon: KeyRound },
+      { label: 'PQC Orchestration', href: '/dashboard/pqc-orchestration', icon: Network },
+    ],
+    topics: [
+      {
+        id: 'meaning',
+        title: 'What crypto agility means',
+        body: 'Crypto agility is the ability to identify, replace, rotate, validate, and govern cryptographic controls without disrupting business operations.',
+        bullets: ['Inventory algorithms and dependencies', 'Abstract cryptographic policy from application code', 'Switch algorithms with validation and rollback', 'Keep evidence for audits'],
+      },
+      {
+        id: 'hybrid',
+        title: 'Hybrid cryptography workflows',
+        body: 'Hybrid cryptography combines classical and post-quantum mechanisms during transition. It reduces migration risk while supporting older clients and systems.',
+        bullets: ['Use hybrid TLS and hybrid key exchange for compatibility', 'Validate handshake telemetry', 'Retire classical fallbacks after confidence increases'],
+      },
+      {
+        id: 'rotation',
+        title: 'Key rotation lifecycle',
+        body: 'Key rotation replaces old or exposed key material with stronger material. In Qguard Helix, key generation, rotation records, entropy quality, and revocation state are tracked for operations and audit.',
+        bullets: ['Generate new keys', 'Deploy to dependent services', 'Validate service health', 'Revoke old material', 'Record evidence'],
+      },
+      {
+        id: 'rollback',
+        title: 'Rollback and fallback strategies',
+        body: 'Migration plans should define what to do if compatibility, performance, or validation checks fail. Rollback is safer when backups, evidence, and telemetry are prepared before execution.',
+        bullets: ['Use sandbox testing first', 'Capture before and after telemetry', 'Keep fallback policy time-limited', 'Avoid permanent weak fallback paths'],
+      },
+    ],
+    examples: [
+      {
+        title: 'Hybrid migration policy example',
+        language: 'json',
+        code: `{
+  "policy": "hybrid-tls-edge",
+  "from": "RSA/ECDHE",
+  "to": "ML-KEM-768 + X25519",
+  "fallback": "time-boxed",
+  "validation": ["tls-handshake", "certificate-chain", "runtime-events"]
+}`,
+      },
+    ],
+  },
+  {
+    id: 'pqc-migration-process',
+    group: 'Migration',
+    title: 'PQC Migration Process',
+    summary: 'Follow the six-phase migration process: awareness, discovery, risk planning, execution, testing, validation, monitoring, simulation, rollback, and compliance verification.',
+    icon: Route,
+    image: '/Migration_Planner.png',
+    tags: ['migration process', 'awareness', 'discovery', 'risk assessment', 'migration execution', 'testing', 'validation'],
+    quickLinks: [
+      { label: 'PQC Onboarding', href: '/dashboard/pqc-onboarding', icon: Route },
+      { label: 'Migration Planner', href: '/dashboard/migration-planner', icon: Rocket },
+      { label: 'Live Migration', href: '/dashboard/live-migration', icon: Radio },
+    ],
+    topics: [
+      {
+        id: 'phase-awareness',
+        title: '1. Awareness & Preparation',
+        body: 'Identify business owners, critical systems, data classes, compliance obligations, migration windows, and expected business impact.',
+        bullets: ['Define scope', 'Assign ownership', 'Document risk appetite', 'Prepare evidence and communications'],
+      },
+      {
+        id: 'phase-discovery',
+        title: '2. Discovery & Inventory',
+        body: 'Run scans and collect runtime telemetry to build a complete cryptographic inventory before changing systems.',
+        bullets: ['Discover assets', 'Scan certificates and TLS', 'Deploy agents', 'Create CBOM evidence'],
+      },
+      {
+        id: 'phase-risk',
+        title: '3. Risk Assessment & Planning',
+        body: 'Prioritize findings based on HNDL risk, data retention, exploitability, business criticality, compliance impact, and migration difficulty.',
+        bullets: ['Triage findings', 'Select target algorithms', 'Plan hybrid compatibility', 'Create rollback plan'],
+      },
+      {
+        id: 'phase-execution',
+        title: '4. Migration Execution',
+        body: 'Execute migration jobs through orchestration, migration terminal, policy updates, key rotation, certificate updates, and application changes.',
+        bullets: ['Run jobs in controlled windows', 'Watch live telemetry', 'Pause or rollback if needed', 'Record operator actions'],
+      },
+      {
+        id: 'phase-testing',
+        title: '5. Migration Testing',
+        body: 'Validate behavior in sandbox and production-like environments, including performance, compatibility, TLS handshakes, key exchange, certificates, and application workflows.',
+        bullets: ['Run validation scans', 'Compare findings before and after', 'Test rollback', 'Confirm no critical residual exposures'],
+      },
+      {
+        id: 'phase-validation',
+        title: '6. Validation & Monitoring',
+        body: 'Move into steady-state monitoring with runtime telemetry, compliance evidence, reports, and continuous crypto governance.',
+        bullets: ['Enable continuous trust', 'Map evidence to controls', 'Generate reports', 'Monitor drift and runtime events'],
+      },
+    ],
+    walkthroughs: [
+      {
+        id: 'tutorial-execute-migration',
+        title: 'Execute a migration workflow',
+        audience: 'Migration operators',
+        href: '/dashboard/pqc-orchestration',
+        steps: ['Open PQC Orchestration', 'Review queued workflows', 'Select target algorithm and owner', 'Start execution', 'Watch telemetry logs', 'Validate completion'],
+      },
+      {
+        id: 'tutorial-rollback',
+        title: 'Perform rollback safely',
+        audience: 'DevOps and SRE teams',
+        href: '/dashboard/migration-sandbox',
+        steps: ['Open Migration Sandbox', 'Select affected migration job', 'Review backup point', 'Run rollback simulation', 'Apply rollback only if validation fails', 'Attach audit evidence'],
+      },
+    ],
+  },
+  {
+    id: 'compliance-governance',
+    group: 'Governance',
+    title: 'Compliance & Governance',
+    summary: 'Map Qguard Helix evidence to NIST SP 800-208, NIST IR 8547, NIST SP 800-53, crypto governance workflows, audit logs, risk scoring, reporting, and regulatory readiness.',
+    icon: ClipboardCheck,
+    image: '/Governance_Compliance.png',
+    tags: ['compliance', 'governance', 'nist sp 800-208', 'nist ir 8547', 'nist sp 800-53', 'audit logging', 'evidence'],
+    quickLinks: [
+      { label: 'Compliance', href: '/dashboard/compliance', icon: ClipboardCheck },
+      { label: 'Quantum Governance', href: '/dashboard/quantum-governance', icon: ShieldCheck },
+      { label: 'Audit Vault', href: '/dashboard/audit-vault', icon: Database },
+    ],
+    topics: [
+      {
+        id: 'nist',
+        title: 'NIST alignment',
+        body: 'The platform organizes migration evidence around NIST-aligned cryptographic modernization, including guidance related to post-quantum planning, key management, control families, and migration readiness.',
+        bullets: ['NIST SP 800-208 for stateful hash-based signatures context', 'NIST IR 8547 for migration planning context', 'NIST SP 800-53 for security control mapping', 'NIST PQC standards for algorithm selection'],
+      },
+      {
+        id: 'audit',
+        title: 'Audit logging and compliance evidence',
+        body: 'Every scan, migration, runtime alert, defense action, and operator decision should produce evidence. Evidence makes migration defensible to auditors and leadership.',
+        bullets: ['Capture before and after scan results', 'Record operator actions and approvals', 'Store migration logs and validation artifacts', 'Export reports for governance reviews'],
+      },
+      {
+        id: 'risk-scoring',
+        title: 'Risk scoring and reporting workflows',
+        body: 'Risk scoring blends severity, business criticality, runtime telemetry, HNDL exposure, migration progress, compliance evidence, and residual findings.',
+        bullets: ['Critical and high exposures drive immediate action', 'Completed migrations reduce residual risk', 'Runtime events can re-open risk after deployment'],
+      },
+    ],
+  },
+  {
+    id: 'defense-actions',
+    group: 'Threat Response',
+    title: 'Defense Actions',
+    summary: 'Operational guidance for isolate asset, kill process, revoke credentials, patch and harden, and backup and restore actions.',
+    icon: ShieldAlert,
+    image: '/Threat_Intelligence.png',
+    tags: ['isolate asset', 'kill process', 'revoke credentials', 'patch harden', 'backup restore', 'remediation'],
+    quickLinks: [
+      { label: 'Harvest Now', href: '/dashboard/harvest-now', icon: EyeOff },
+      { label: 'Runtime Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity },
+      { label: 'Audit Vault', href: '/dashboard/audit-vault', icon: Database },
+    ],
+    topics: [
+      {
+        id: 'action-model',
+        title: 'How defense actions behave',
+        body: 'Defense actions are operational responses triggered from risk, runtime, scanner, and HNDL contexts. Each action should be validated, monitored, and recorded.',
+        bullets: ['Actions should be tenant-scoped', 'High-impact actions require ownership confirmation', 'Telemetry should update after action execution', 'Evidence should be saved for incident response'],
+      },
+      {
+        id: 'automation',
+        title: 'Automation options',
+        body: 'Actions may be manual, approval-based, or automated through policy. Automation is recommended only after test runs, ownership rules, and rollback behavior are understood.',
+        bullets: ['Use manual mode for first deployment', 'Use approval mode for production', 'Use automation for well-understood, low-risk controls', 'Always monitor realtime behavior after automation'],
+      },
+    ],
+  },
+  {
+    id: 'monitoring-alerts',
+    group: 'Operations',
+    title: 'Monitoring & Alerts',
+    summary: 'Understand dashboards, threat alerts, signal correlation, incident workflows, monitoring panels, KPIs, real-time logs, status indicators, and severity levels.',
+    icon: MonitorCheck,
+    image: '/monitoring.png',
+    tags: ['monitoring', 'alerts', 'incident workflow', 'kpi', 'logs', 'severity', 'status indicators'],
+    quickLinks: [
+      { label: 'Telemetry Correlation', href: '/dashboard/telemetry-correlation', icon: Network },
+      { label: 'Runtime Telemetry', href: '/dashboard/runtime-telemetry', icon: Radio },
+      { label: 'Threat Intel', href: '/dashboard/threat-intel', icon: Bell },
+    ],
+    topics: [
+      {
+        id: 'dashboard-overview',
+        title: 'Dashboard overview and KPIs',
+        body: 'Operational dashboards show readiness, exposure, runtime events, migration progress, compliance status, scanner health, and alert volume.',
+        bullets: ['Readiness shows PQC posture', 'Risk score shows residual exposure', 'Activity feed shows live changes', 'SSE indicators show stream health'],
+      },
+      {
+        id: 'severity',
+        title: 'Alert severity levels',
+        body: 'Severity communicates urgency and impact. Critical alerts should be validated immediately and linked to response workflows.',
+        bullets: ['Critical: immediate action or executive visibility', 'High: schedule remediation and owner review', 'Medium: hardening or planned migration', 'Low/info: monitor and document'],
+      },
+      {
+        id: 'correlation',
+        title: 'Signal correlation and incident workflow',
+        body: 'Correlation combines scanner findings, runtime events, security events, migration logs, and compliance evidence to reduce mismatched metrics and stale decisions.',
+        bullets: ['Use correlated evidence before defense actions', 'Check asset owner and environment', 'Confirm whether migration reduced risk', 'Export incident report after closure'],
+      },
+    ],
+  },
+  {
+    id: 'api-integrations',
+    group: 'Developer',
+    title: 'API & Integrations',
+    summary: 'API authentication, SDK examples, webhooks, SIEM, cloud, CI/CD, agent APIs, SSE/WebSocket telemetry APIs, and integration patterns.',
     icon: Code,
-    items: [
-      { id: 'api-docs', label: 'API Documentation →' },
+    image: '/Secure_communication.png',
+    tags: ['api', 'sdk', 'webhooks', 'siem', 'cloud integrations', 'ci/cd', 'agent api', 'sse', 'websocket'],
+    quickLinks: [
+      { label: 'API Encryption', href: '/dashboard/api-encryption', icon: Webhook },
+      { label: 'Cloud Security', href: '/dashboard/cloud', icon: Cloud },
+      { label: 'Agent Scanner', href: '/dashboard/scanner', icon: Server },
+    ],
+    topics: [
+      {
+        id: 'auth',
+        title: 'API authentication',
+        body: 'Authenticated routes use Bearer tokens from the signed-in session. Server routes validate the token and then query user-scoped data.',
+        bullets: ['Use Authorization: Bearer <token>', 'Never share service-role credentials with clients', 'Rotate tokens and secrets regularly', 'Scope integrations to least privilege'],
+      },
+      {
+        id: 'siem',
+        title: 'SIEM, cloud, and CI/CD integrations',
+        body: 'Export findings, alerts, runtime events, and compliance evidence to SIEM, cloud security tooling, and CI/CD quality gates.',
+        bullets: ['Send critical alerts to SIEM', 'Fail CI when critical crypto risk appears', 'Forward migration events to change management', 'Store reports in audit systems'],
+      },
+      {
+        id: 'sse',
+        title: 'SSE and WebSocket telemetry APIs',
+        body: 'The platform uses SSE streams for live metric updates and module-specific event updates. WebSocket-style integrations should follow the same event schema and tenant isolation model.',
+        bullets: ['Metrics stream emits heartbeat and metric updates', 'Scanner and dashboard streams update module surfaces', 'Clients reconnect on stream errors'],
+      },
+    ],
+    examples: [
+      {
+        title: 'Fetch dashboard health',
+        language: 'ts',
+        code: `const response = await fetch('/api/v1/dashboard/health', {
+  headers: { Authorization: \`Bearer \${session.access_token}\` }
+})
+const { data } = await response.json()`,
+      },
+      {
+        title: 'Subscribe to metrics SSE',
+        language: 'ts',
+        code: `const stream = new EventSource(
+  \`/api/v1/metrics/stream?token=\${encodeURIComponent(token)}\`
+)
+stream.addEventListener('metrics-update', (event) => {
+  const payload = JSON.parse(event.data)
+  console.log(payload.counts)
+})`,
+      },
+      {
+        title: 'Webhook event example',
+        language: 'json',
+        code: `{
+  "type": "critical_crypto_exposure",
+  "asset": "payments-api-prod",
+  "severity": "critical",
+  "recommendedAction": "revoke_credentials",
+  "timestamp": "2026-05-22T08:30:00Z"
+}`,
+      },
+    ],
+  },
+  {
+    id: 'troubleshooting',
+    group: 'Support',
+    title: 'Troubleshooting',
+    summary: 'Resolve onboarding issues, scanner connectivity, agent deployment, migration failures, telemetry synchronization, performance optimization, and frequently asked questions.',
+    icon: Wrench,
+    image: '/governance.png',
+    tags: ['troubleshooting', 'faq', 'scanner connectivity', 'agent deployment', 'migration failures', 'telemetry sync', 'performance'],
+    quickLinks: [
+      { label: 'Settings', href: '/dashboard/settings', icon: Settings },
+      { label: 'Scanner', href: '/dashboard/scanner', icon: ScanSearch },
+      { label: 'Live Migration', href: '/dashboard/live-migration', icon: Radio },
+    ],
+    topics: [
+      {
+        id: 'onboarding-issues',
+        title: 'Common onboarding issues',
+        body: 'Most onboarding problems come from missing profile metadata, incomplete asset ownership, expired tokens, incorrect environment labels, or insufficient permissions.',
+        bullets: ['Confirm profile and organization details', 'Check user role and MFA status', 'Verify assets have owners', 'Refresh the browser after permission changes'],
+      },
+      {
+        id: 'scanner-connectivity',
+        title: 'Scanner connectivity problems',
+        body: 'If scanner jobs do not start or agents do not report, validate network access, token status, agent heartbeat, policy scope, and backend scanner alerts.',
+        bullets: ['Check agent token expiration', 'Verify host can reach the API', 'Confirm policy scope includes the target', 'Review scanner alerts and module logs'],
+      },
+      {
+        id: 'migration-failures',
+        title: 'Migration failures',
+        body: 'Migration failures should be handled through the orchestration and sandbox workflow. Pause, inspect logs, validate rollback, fix compatibility, and retry.',
+        bullets: ['Do not rerun blindly', 'Review failed job metadata', 'Use sandbox validation', 'Capture rollback evidence', 'Escalate if production impact is likely'],
+      },
+      {
+        id: 'telemetry-sync',
+        title: 'Telemetry synchronization problems',
+        body: 'If metrics look stale, check live stream status, authenticated session, API health, Supabase realtime subscription state, and whether source tables have recent tenant-scoped records.',
+        bullets: ['Refresh the page', 'Confirm sign-in session', 'Check `/api/v1/health`', 'Check metrics stream indicator', 'Verify recent runtime or scanner events exist'],
+      },
+      {
+        id: 'performance',
+        title: 'Performance optimization',
+        body: 'Large tenants should scope scans, batch migration jobs, stream telemetry rather than polling aggressively, and use dashboards designed for repeated operational review.',
+        bullets: ['Use targeted scan scopes', 'Limit large exports to audit windows', 'Archive closed alerts', 'Avoid unnecessary full environment scans during business hours'],
+      },
+    ],
+  },
+  {
+    id: 'tutorials',
+    group: 'Training',
+    title: 'Tutorials & Walkthroughs',
+    summary: 'Beginner-friendly walkthroughs for first scan, agents, vulnerabilities, migrations, HNDL response, remediation, telemetry, runtime crypto monitoring, reports, and compliance.',
+    icon: BookOpen,
+    image: '/quantum_key_generation.png',
+    tags: ['tutorial', 'walkthrough', 'first scan', 'deploy agents', 'reports', 'compliance', 'remediation'],
+    quickLinks: [
+      { label: 'Run First Scan', href: '/dashboard/scanner', icon: ScanSearch },
+      { label: 'Generate Reports', href: '/dashboard/compliance', icon: FileDown },
+      { label: 'View Telemetry', href: '/dashboard/runtime-telemetry', icon: Radio },
+    ],
+    topics: [
+      {
+        id: 'training-path',
+        title: 'Recommended training path',
+        body: 'New users should complete the tutorials in order: first scan, deploy agents, review vulnerabilities, respond to HNDL, execute migration, validate telemetry, and generate reports.',
+        bullets: ['Start with discovery', 'Move into risk and response', 'Practice migration in sandbox', 'Finish with compliance evidence'],
+      },
+      {
+        id: 'training-progress',
+        title: 'Progress tracking',
+        body: 'This Documentation Center stores local tutorial completion in your browser so new users and operators can track onboarding progress.',
+        bullets: ['Mark cards complete after practice', 'Use quick links to open platform modules', 'Download guides for team training'],
+      },
+    ],
+    walkthroughs: [
+      {
+        id: 'tutorial-deploy-agents',
+        title: 'Deploy agents',
+        audience: 'DevOps teams',
+        href: '/dashboard/scanner',
+        steps: ['Create token', 'Run install command', 'Confirm heartbeat', 'Assign policy', 'Validate telemetry'],
+      },
+      {
+        id: 'tutorial-remediation',
+        title: 'Perform remediations',
+        audience: 'Security operators',
+        href: '/dashboard/harvest-now',
+        steps: ['Open a finding', 'Choose defense action', 'Review impact', 'Execute or queue', 'Verify activity feed and evidence'],
+      },
+      {
+        id: 'tutorial-runtime-monitoring',
+        title: 'Monitor runtime crypto activity',
+        audience: 'SOC analysts',
+        href: '/dashboard/runtime-crypto-intel',
+        steps: ['Open Runtime Crypto Intel', 'Filter for legacy crypto', 'Review process context', 'Check top risks', 'Export findings'],
+      },
+      {
+        id: 'tutorial-reports',
+        title: 'Generate compliance reports',
+        audience: 'Compliance officers',
+        href: '/dashboard/compliance',
+        steps: ['Open Compliance', 'Review NIST mapping', 'Confirm evidence freshness', 'Export report', 'Attach to governance workflow'],
+      },
     ],
   },
 ]
 
-/* ─────────────────────────────────────────────
-   Doc content sections
-───────────────────────────────────────────── */
-const SECTIONS: Record<string, React.ReactNode> = {
+const WIZARD_STEPS = [
+  { id: 'wizard-profile', label: 'Set up account', href: '/dashboard/settings' },
+  { id: 'wizard-agent', label: 'Deploy agent', href: '/dashboard/scanner' },
+  { id: 'wizard-scan', label: 'Run first scan', href: '/dashboard/scanner' },
+  { id: 'wizard-risk', label: 'Review risk', href: '/dashboard/quantum-risk' },
+  { id: 'wizard-migrate', label: 'Execute migration', href: '/dashboard/pqc-orchestration' },
+  { id: 'wizard-monitor', label: 'Validate monitoring', href: '/dashboard/runtime-telemetry' },
+]
 
-  /* ── GETTING STARTED ── */
-  overview: (
-    <Doc title="Platform Overview" badge="Introduction">
-      <P>Qguard Helix is the world's first consumer-grade quantum cybersecurity platform. It detects cryptographic vulnerabilities that will be broken by quantum computers, automates migration to NIST-approved post-quantum algorithms, and provides ongoing protection for your digital life.</P>
-      <H2>Why Quantum Security Now?</H2>
-      <P>Quantum computers are advancing rapidly. Nation-state actors are already running <Strong>Harvest Now, Decrypt Later (HNDL)</Strong> attacks — capturing your encrypted data today to decrypt it once quantum computers are powerful enough. Experts estimate Q-Day (the day a quantum computer breaks RSA-2048) could arrive between 2030–2040.</P>
-      <P>QGuard gives you the tools to act before it's too late.</P>
-      <H2>Platform Modules</H2>
-      <Grid>
-        <FeatureCard icon={Scan}       color="var(--qg-cyan)"   title="Scanner"    desc="Detect RSA, ECC, SHA-1 and weak TLS across devices, files and cloud" />
-        <FeatureCard icon={RefreshCw}  color="var(--qg-violet)" title="Migration"  desc="One-click migration to ML-KEM and ML-DSA with hybrid compatibility" />
-        <FeatureCard icon={KeyRound}   color="var(--qg-green)"  title="Key Gen"    desc="True quantum-random key generation with ≥99.7% entropy quality" />
-        <FeatureCard icon={Lock}       color="var(--qg-cyan)"   title="Vault"      desc="Zero-knowledge PQC-encrypted file storage and secure messaging" />
-        <FeatureCard icon={Activity}   color="var(--qg-violet)" title="Monitoring" desc="Always-on background scanning with real-time Q-Score alerts" />
-        <FeatureCard icon={Zap}        color="var(--qg-amber)"  title="Simulator"  desc="Live Shor's algorithm demo — see your RSA keys cracked in real time" />
-      </Grid>
-    </Doc>
-  ),
+function loadProgress(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LOCAL_PROGRESS_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return new Set<string>(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [])
+  } catch {
+    return new Set<string>()
+  }
+}
 
-  quickstart: (
-    <Doc title="Quick Start Guide" badge="Getting Started">
-      <P>Get quantum-safe in under 15 minutes. Follow these steps to go from zero to fully protected.</P>
-      <Steps>
-        <Step n={1} title="Create your account">Go to <InlineCode>/register</InlineCode> and sign up with your email. A verification link will be sent — confirm it to activate your account.</Step>
-        <Step n={2} title="Run your first scan">Navigate to <strong>Dashboard → Scanner</strong>. Click <strong>Start Scan</strong>. QGuard will analyse your connected devices, files, and cloud accounts for quantum-vulnerable cryptography and generate your <strong>Q-Score</strong>.</Step>
-        <Step n={3} title="Review your Q-Score">Your Q-Score (0–100) reflects your overall quantum readiness. A score below 60 means critical vulnerabilities exist. The scanner report lists every finding with severity, location, and recommended remediation.</Step>
-        <Step n={4} title="Run the Migration Wizard">For each critical finding, click <strong>Migrate</strong>. The wizard replaces legacy algorithms with NIST FIPS 203/204 compliant post-quantum equivalents. Enable <strong>Hybrid Mode</strong> to maintain backward compatibility during transition.</Step>
-        <Step n={5} title="Enable Continuous Monitoring">Toggle monitoring <strong>ON</strong> in Settings. QGuard runs background scans and alerts you whenever new quantum vulnerabilities are detected in your environment.</Step>
-      </Steps>
-      <Callout type="success">After completing these steps your Q-Score should reach 85+ and you will be protected against all known quantum attack vectors as of NIST PQC Round 3 finalists.</Callout>
-    </Doc>
-  ),
+function saveProgress(value: Set<string>) {
+  localStorage.setItem(LOCAL_PROGRESS_KEY, JSON.stringify(Array.from(value)))
+}
 
-  'account-setup': (
-    <Doc title="Account Setup" badge="Getting Started">
-      <H2>Registration</H2>
-      <P>Visit <InlineCode>/register</InlineCode> to create your free account. Enter your email, choose a strong password, and verify your email address. No credit card is required for the Free tier.</P>
-      <H2>Profile & Security Settings</H2>
-      <P>After logging in, navigate to <strong>Dashboard → Settings</strong> to configure:</P>
-      <ul style={{ paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {['Two-factor authentication (TOTP or hardware key)', 'Notification preferences for scan alerts', 'Connected cloud accounts (Google Drive, OneDrive, Dropbox)', 'Family sharing — invite up to 5 users (Pro/Elite plans)', 'Billing and plan management'].map(i => <Li key={i}>{i}</Li>)}
-      </ul>
-      <H2>Plans</H2>
-      <Table
-        heads={['Feature', 'Free', 'Pro ($10/mo)', 'Elite ($50/mo)']}
-        rows={[
-          ['Quantum Scans',        '5 scans',     'Unlimited',   'Unlimited'       ],
-          ['PQC Migration Wizard', '—',           '✓',           '✓'               ],
-          ['QRNG Keys',           '5/day',       'Unlimited',   'Unlimited'       ],
-          ['Quantum Vault',       '5 GB / 1 mo', '50 GB / 2 yr','100 GB / 5 yr'  ],
-          ['Family Sharing',      '—',           '2 users',     'Up to 5 users'   ],
-          ['Quantum Messaging',   '—',           '✓',           '✓'               ],
-          ['Priority Support',    '—',           '✓',           '✓'               ],
-        ]}
+function textOf(section: DocSection) {
+  return [
+    section.title,
+    section.summary,
+    section.group,
+    ...section.tags,
+    ...section.topics.flatMap((topic) => [topic.title, topic.body, ...(topic.bullets || [])]),
+    ...(section.walkthroughs || []).flatMap((item) => [item.title, item.audience, ...item.steps]),
+  ].join(' ').toLowerCase()
+}
+
+function useDocsLiveStatus() {
+  const { session } = useAuth()
+  const token = session?.access_token
+  const [status, setStatus] = useState<LiveDocsStatus>(EMPTY_STATUS)
+  const [connected, setConnected] = useState(false)
+
+  const refresh = useCallback(async () => {
+    try {
+      const health = await fetch('/api/v1/health').then((res) => res.json()).catch(() => null)
+      const dashboard = token
+        ? await fetch('/api/v1/dashboard/health', { headers: { Authorization: `Bearer ${token}` } }).then((res) => res.json()).catch(() => null)
+        : null
+
+      setStatus((current) => ({
+        ...current,
+        platform: health?.data?.status || 'unknown',
+        dashboard: dashboard?.data?.status || (token ? 'unknown' : 'sign in for tenant health'),
+        scanner: dashboard?.data?.services?.scanner || health?.data?.services?.scanner || 'unknown',
+        migration: dashboard?.data?.services?.migration || 'unknown',
+        realtime: dashboard?.data?.services?.realtime || current.realtime,
+        timestamp: dashboard?.data?.timestamp || health?.data?.timestamp || new Date().toISOString(),
+      }))
+    } catch {
+      setStatus((current) => ({ ...current, platform: 'degraded', timestamp: new Date().toISOString() }))
+    }
+  }, [token])
+
+  useEffect(() => {
+    refresh()
+    const interval = setInterval(refresh, 30_000)
+    return () => clearInterval(interval)
+  }, [refresh])
+
+  useEffect(() => {
+    if (!token) {
+      setConnected(false)
+      return
+    }
+
+    const stream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
+    stream.onopen = () => {
+      setConnected(true)
+      setStatus((current) => ({ ...current, realtime: 'connected' }))
+    }
+    stream.onerror = () => {
+      setConnected(false)
+      setStatus((current) => ({ ...current, realtime: 'reconnecting' }))
+    }
+    stream.addEventListener('metrics-update', (event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data)
+        setStatus((current) => ({
+          ...current,
+          realtime: 'connected',
+          timestamp: payload.timestamp || current.timestamp,
+          metrics: payload.counts || current.metrics,
+        }))
+      } catch {
+        refresh()
+      }
+    })
+
+    return () => {
+      stream.close()
+      setConnected(false)
+    }
+  }, [token, refresh])
+
+  return { status, connected, refresh, authenticated: Boolean(token) }
+}
+
+function statusClass(value: string) {
+  const lower = value.toLowerCase()
+  if (lower.includes('ok') || lower.includes('healthy') || lower.includes('connected') || lower.includes('operational')) return 'text-emerald-300 border-emerald-500/25 bg-emerald-500/10'
+  if (lower.includes('sign in') || lower.includes('waiting') || lower.includes('reconnect')) return 'text-amber-300 border-amber-400/25 bg-amber-400/10'
+  return 'text-red-300 border-red-500/25 bg-red-500/10'
+}
+
+function numberFmt(value: number) {
+  return new Intl.NumberFormat('en-US').format(value || 0)
+}
+
+function percent(value: number, total: number) {
+  if (!total) return 0
+  return Math.round((value / total) * 100)
+}
+
+function copyText(value: string) {
+  navigator.clipboard?.writeText(value).catch(() => undefined)
+}
+
+function escapePdfText(value: string) {
+  return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
+}
+
+function makePdf(title: string, lines: string[]) {
+  const text = [title, '', ...lines].slice(0, 38)
+  const content = [
+    'BT',
+    '/F1 18 Tf',
+    '48 760 Td',
+    `(${escapePdfText(title)}) Tj`,
+    '/F1 10 Tf',
+    ...text.slice(2).map((line) => `0 -18 Td (${escapePdfText(line.slice(0, 92))}) Tj`),
+    'ET',
+  ].join('\n')
+  const objects = [
+    '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+    '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+    '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj',
+    '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+    `5 0 obj << /Length ${content.length} >> stream\n${content}\nendstream endobj`,
+  ]
+  let offset = 9
+  const xref = ['0000000000 65535 f ']
+  const body = objects.map((obj) => {
+    const current = offset
+    offset += obj.length + 1
+    xref.push(`${String(current).padStart(10, '0')} 00000 n `)
+    return obj
+  }).join('\n')
+  const trailer = `xref\n0 ${xref.length}\n${xref.join('\n')}\ntrailer << /Size ${xref.length} /Root 1 0 R >>\nstartxref\n${offset}\n%%EOF`
+  return `%PDF-1.4\n${body}\n${trailer}`
+}
+
+function downloadGuide(section: DocSection) {
+  const lines = [
+    section.summary,
+    '',
+    ...section.topics.flatMap((topic) => [
+      topic.title,
+      topic.body,
+      ...(topic.bullets || []).map((bullet) => `- ${bullet}`),
+      '',
+    ]),
+  ]
+  const blob = new Blob([makePdf(`${section.title} Guide`, lines)], { type: 'application/pdf' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `qguard-${section.id}-guide.pdf`
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function LogoMark() {
+  return (
+    <Link to="/" className="flex items-center gap-3 no-underline">
+      <div className="grid h-10 w-10 place-items-center overflow-hidden rounded-lg border border-gold/30 bg-gold/10">
+        <img src="/NEW_LOGO.png" alt="" className="h-full w-full object-cover" />
+      </div>
+      <div>
+        <div className="text-sm font-black uppercase tracking-[0.1em] text-gold">Qguard Helix</div>
+        <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/35">Documentation Center</div>
+      </div>
+    </Link>
+  )
+}
+
+function SearchBox({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="relative block min-w-0 flex-1">
+      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-11 w-full rounded-lg border border-white/10 bg-black/30 pl-10 pr-4 text-sm font-semibold text-white outline-none placeholder:text-white/35 focus:border-gold/60"
+        placeholder="Search modules, tutorials, APIs, HNDL, NIST, telemetry..."
+        aria-label="Search documentation"
       />
-    </Doc>
-  ),
+    </label>
+  )
+}
 
-  dashboard: (
-    <Doc title="Dashboard Walkthrough" badge="Getting Started">
-      <P>The QGuard dashboard is your central command for quantum security. Here's what each section does.</P>
-      <H2>Overview Panel</H2>
-      <P>The landing page of your dashboard shows your live <strong>Q-Score</strong>, the number of active vulnerabilities, last scan time, and a summary of each module's status. The Q-Score gauge updates automatically after every scan.</P>
-      <H2>Sidebar Modules</H2>
-      <Table
-        heads={['Module', 'What You Can Do']}
-        rows={[
-          ['Scanner',       'Run on-demand scans, view scan history, export reports'   ],
-          ['Migrate',       'Review migration queue, apply PQC patches, rollback'      ],
-          ['Keys',          'Generate QRNG key pairs, export, revoke, push to HSM'     ],
-          ['Vault',         'Upload/download files, share encrypted links, set expiry' ],
-          ['Monitoring',    'View real-time alerts, configure alert rules, view trend'  ],
-          ['Simulator',     'Run Shor\'s attack demo, compare classic vs PQC timing'   ],
-          ['Web Scanner',   'Audit external URLs for weak TLS, expired certs, HNDL risk'],
-          ['Settings',      'Account, 2FA, billing, notifications, family sharing'     ],
-        ]}
-      />
-      <H2>Q-Score Explained</H2>
-      <P>Your Q-Score is calculated from the severity and count of vulnerabilities detected. 100 = fully quantum-safe. Each unmitigated RSA/ECC key reduces your score. Migrating findings improves it in real time.</P>
-    </Doc>
-  ),
+function GlassPanel({ children, className }: { children: ReactNode; className?: string; key?: string | number }) {
+  return (
+    <section className={cn(
+      'relative overflow-hidden rounded-lg border border-[#FFD36B]/15 bg-[#07101d]/78 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_16px_46px_rgba(0,0,0,0.35)] backdrop-blur-xl before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFE7A0]/55 before:to-transparent',
+      className,
+    )}>
+      <div className="relative z-10 h-full">{children}</div>
+    </section>
+  )
+}
 
-  /* ── CORE FEATURES ── */
-  scanner: (
-    <Doc title="Quantum Vulnerability Scanner" badge="Core Feature">
-      <P>The Scanner is QGuard's detection engine. It identifies every cryptographic primitive in your environment that is vulnerable to quantum attack — and assigns each finding a severity level.</P>
-      <H2>What It Detects</H2>
-      <Table
-        heads={['Algorithm', "Why It's Vulnerable", 'Severity']}
-        rows={[
-          ['RSA-1024 / RSA-2048', "Shor's algorithm breaks it in polynomial time", 'Critical'],
-          ['ECDSA / ECDH',        "Shor's algorithm solves ECDLP exponentially faster", 'Critical'],
-          ['Diffie-Hellman',      'Quantum speedup breaks key exchange',             'High'    ],
-          ['SHA-1',               'Grover\'s algorithm halves effective security',   'Medium'  ],
-          ['AES-128',             'Grover reduces to 64-bit effective security',     'Low'     ],
-          ['MD5',                 'Already broken classically + Grover speed-up',    'Critical'],
-        ]}
-      />
-      <H2>Running a Scan</H2>
-      <Steps>
-        <Step n={1} title="Select scope">Choose from: Device Files, Cloud Storage, Git Repositories, TLS/SSL Certificates, or Custom Path.</Step>
-        <Step n={2} title="Start scan">Click Start Scan. The engine performs deep static analysis and certificate inspection. Average scan time: 3–5 minutes.</Step>
-        <Step n={3} title="Review findings">Each finding shows: algorithm type, file/service location, severity, estimated years until breakable, and a one-click migration action.</Step>
-        <Step n={4} title="Export report">Export a PDF compliance report (NIST FIPS aligned) for audit purposes from the top-right of the scan results.</Step>
-      </Steps>
-      <Callout type="info">The scanner runs locally first. Only anonymised metadata is sent to QGuard servers for Q-Score calculation — your actual files and data never leave your device.</Callout>
-    </Doc>
-  ),
+function StatusPill({ label, value }: { label: string; value: string; key?: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/25 p-3">
+      <div className="text-[9px] font-black uppercase tracking-[0.18em] text-white/35">{label}</div>
+      <div className={cn('mt-2 inline-flex rounded border px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em]', statusClass(value))}>{value}</div>
+    </div>
+  )
+}
 
-  migration: (
-    <Doc title="PQC Migration Wizard" badge="Core Feature">
-      <P>The Migration Wizard replaces every quantum-vulnerable algorithm in your stack with a NIST-approved post-quantum equivalent — with a single click.</P>
-      <H2>Supported Replacements</H2>
-      <Table
-        heads={['Legacy Algorithm', 'PQC Replacement', 'Standard']}
-        rows={[
-          ['RSA (encryption)',   'ML-KEM (Kyber)',   'NIST FIPS 203'],
-          ['ECDSA (signatures)', 'ML-DSA (Dilithium)','NIST FIPS 204'],
-          ['RSA-PSS',           'SPHINCS+',          'NIST FIPS 205'],
-          ['ECDH',              'ML-KEM',            'NIST FIPS 203'],
-          ['SHA-1 / MD5',       'SHA-3 / BLAKE3',   'NIST SP 800-185'],
-        ]}
-      />
-      <H2>Hybrid Mode</H2>
-      <P>Hybrid Mode runs your existing classical algorithm <em>alongside</em> the new PQC algorithm simultaneously. This gives you full backward compatibility during the transition window — no downtime, no breaking changes.</P>
-      <Callout type="success">Hybrid Mode is recommended for all production environments. Disable it only after all consumers of your keys/certs have been updated.</Callout>
-      <H2>Rollback</H2>
-      <P>Every migration creates a snapshot before applying changes. If anything breaks, navigate to <strong>Migrate → Snapshots</strong> and click <strong>Restore</strong> to roll back instantly.</P>
-    </Doc>
-  ),
+function HeaderStatus({ status, connected, authenticated, onRefresh }: { status: LiveDocsStatus; connected: boolean; authenticated: boolean; onRefresh: () => void }) {
+  return (
+    <GlassPanel className="p-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-black uppercase tracking-[0.18em] text-white">Live Platform Status</div>
+          <div className="mt-1 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.14em] text-white/35">
+            <span className={cn('h-2 w-2 rounded-full', connected ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]' : 'bg-amber-400')} />
+            {authenticated ? 'Tenant telemetry linked' : 'Public health only'}
+          </div>
+        </div>
+        <button type="button" onClick={onRefresh} className="grid h-9 w-9 place-items-center rounded-md border border-white/10 bg-black/25 text-white/55 hover:border-gold/50 hover:text-gold" aria-label="Refresh live status">
+          <RefreshCw className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <StatusPill label="API" value={status.platform} />
+        <StatusPill label="Tenant" value={status.dashboard} />
+        <StatusPill label="Realtime" value={status.realtime} />
+        <StatusPill label="Scanner" value={status.scanner} />
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <Metric label="Runtime Events" value={numberFmt(status.metrics.runtimeEvents || 0)} />
+        <Metric label="Risks" value={numberFmt(status.metrics.runtimeRisks || 0)} />
+        <Metric label="Keys" value={numberFmt(status.metrics.activeKeys || 0)} />
+      </div>
+    </GlassPanel>
+  )
+}
 
-  keygen: (
-    <Doc title="Quantum Key Generator" badge="Core Feature">
-      <P>QGuard's Key Generator produces cryptographic key pairs seeded with genuine quantum randomness — far stronger than anything a classical PRNG can produce.</P>
-      <H2>Supported Key Types</H2>
-      <Table
-        heads={['Type', 'Algorithm', 'Use Case']}
-        rows={[
-          ['Key Encapsulation', 'ML-KEM-512',    'General encryption (128-bit PQ security)' ],
-          ['Key Encapsulation', 'ML-KEM-768',    'Recommended (192-bit PQ security)'        ],
-          ['Key Encapsulation', 'ML-KEM-1024',   'Maximum security (256-bit PQ security)'   ],
-          ['Digital Signature', 'ML-DSA-44',     'Fast signing (128-bit PQ security)'       ],
-          ['Digital Signature', 'ML-DSA-65',     'Recommended signing (192-bit PQ security)'],
-          ['Digital Signature', 'SPHINCS+-SHA2', 'Stateless hash-based signatures'          ],
-        ]}
-      />
-      <H2>Entropy Source</H2>
-      <P>QGuard uses a combination of hardware QRNG (via cloud quantum APIs) and OS entropy mixing. Every generated key has an <strong>entropy quality score ≥ 99.7%</strong>, verified by NIST SP 800-90B statistical tests.</P>
-      <H2>Export Options</H2>
-      <ul style={{ paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {['PEM / DER file download', 'Push directly to HSM (Hardware Security Module)', 'Copy public key to clipboard', 'QR code for mobile transfer', 'Revoke at any time from the Keys dashboard'].map(i => <Li key={i}>{i}</Li>)}
-      </ul>
-    </Doc>
-  ),
+function Metric({ label, value }: { label: string; value: string; key?: string }) {
+  return (
+    <div className="rounded-md border border-white/8 bg-black/20 p-3">
+      <div className="text-[9px] font-black uppercase tracking-[0.16em] text-white/35">{label}</div>
+      <div className="mt-1 text-xl font-black text-white">{value}</div>
+    </div>
+  )
+}
 
-  vault: (
-    <Doc title="Quantum Vault" badge="Core Feature">
-      <P>The Quantum Vault is a zero-knowledge, PQC-encrypted file storage system. Every file is encrypted client-side with ML-KEM-1024 before it ever leaves your device.</P>
-      <H2>Architecture</H2>
-      <ul style={{ paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {['Client-side ML-KEM-1024 encryption before upload', 'Zero-knowledge: QGuard servers never see plaintext', 'Merkle-proof file integrity verification', 'End-to-end encrypted sharing with expiry links', 'Cross-device sync with encrypted delta sync', 'Instant key revocation controls'].map(i => <Li key={i}>{i}</Li>)}
-      </ul>
-      <H2>Using the Vault</H2>
-      <Steps>
-        <Step n={1} title="Upload files">Drag and drop files into the Vault panel or click Upload. Files are encrypted locally before transfer.</Step>
-        <Step n={2} title="Organise">Create folders, add tags, and search across your vault contents. All metadata is also encrypted.</Step>
-        <Step n={3} title="Share securely">Right-click any file → Share → Generate encrypted link. Set an expiry time (1 hour to 30 days) and optional password.</Step>
-        <Step n={4} title="Family sharing">Invite up to 5 family members (Pro/Elite). Shared folders use per-member ML-KEM key wrapping — revoking one member doesn't affect others.</Step>
-      </Steps>
-      <Callout type="info">Even if QGuard servers were completely compromised, an attacker would only obtain ciphertext protected by ML-KEM-1024 — computationally infeasible to break, even with a quantum computer.</Callout>
-    </Doc>
-  ),
+function Sidebar({
+  sections,
+  active,
+  onSelect,
+  mobileOpen,
+  onClose,
+}: {
+  sections: DocSection[]
+  active: string
+  onSelect: (id: string) => void
+  mobileOpen: boolean
+  onClose: () => void
+}) {
+  const [closedGroups, setClosedGroups] = useState<Set<string>>(new Set())
+  const groups = useMemo(() => {
+    const result = new Map<string, DocSection[]>()
+    for (const section of sections) {
+      const current = result.get(section.group) || []
+      current.push(section)
+      result.set(section.group, current)
+    }
+    return Array.from(result.entries())
+  }, [sections])
 
-  monitoring: (
-    <Doc title="Continuous Monitoring" badge="Core Feature">
-      <P>Continuous Monitoring runs background scans on a configurable schedule and alerts you the moment a new quantum vulnerability is detected.</P>
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Enable monitoring">Go to Settings → Monitoring and toggle it ON. Choose scan frequency: hourly, daily, or weekly.</Step>
-        <Step n={2} title="Configure scope">Select which scopes to monitor: local files, cloud storage, TLS certificates, git repos.</Step>
-        <Step n={3} title="Receive alerts">Alerts are sent via email, in-app notification, and optionally via webhook. Each alert includes severity, location, and a direct link to the finding.</Step>
-        <Step n={4} title="Track your Q-Score trend">The Monitoring dashboard shows a 30-day Q-Score timeline — see exactly when new risks were introduced and when they were resolved.</Step>
-      </Steps>
-      <H2>Alert Severity Levels</H2>
-      <Table
-        heads={['Level', 'Meaning', 'Response Time']}
-        rows={[
-          ['Critical', 'Key breakable in <5 years by projected quantum hardware', 'Immediate'   ],
-          ['High',     'Key breakable in 5–10 years',                            'Within 1 week'],
-          ['Medium',   'Key weakened but not immediately breakable',             'Within 1 month'],
-          ['Low',      'Best-practice deviation, low risk',                     'Next cycle'   ],
-        ]}
-      />
-    </Doc>
-  ),
+  const toggleGroup = (group: string) => {
+    setClosedGroups((current) => {
+      const next = new Set(current)
+      if (next.has(group)) next.delete(group)
+      else next.add(group)
+      return next
+    })
+  }
 
-  simulator: (
-    <Doc title="Threat Simulator" badge="Core Feature">
-      <P>The Threat Simulator gives you a live, interactive demonstration of how quantum computers break classical encryption. It's the most powerful tool for understanding your actual risk.</P>
-      <H2>Shor's Algorithm Demo</H2>
-      <P>Upload an RSA public key or paste an RSA-2048 modulus. The simulator visualises Shor's algorithm factoring the key — showing you exactly how many quantum operations it would take and the estimated time on projected 2030–2035 quantum hardware.</P>
-      <H2>Grover's Algorithm Demo</H2>
-      <P>Simulate a Grover's search attack against AES-128 and SHA-1. See the effective security reduction (AES-128 → 64-bit equivalent) in real time.</P>
-      <H2>Q-Day Timeline</H2>
-      <P>Based on current qubit scaling projections (IBM, Google, IonQ roadmaps), the simulator generates a personalised timeline showing when each of your detected vulnerabilities is likely to become exploitable.</P>
-      <Callout type="warning">The simulator uses realistic projections based on published quantum computing roadmaps. Actual Q-Day may arrive earlier than projected — this is why migrating now is critical.</Callout>
-    </Doc>
-  ),
+  return (
+    <aside className={cn(
+      'fixed inset-y-0 left-0 z-40 w-[300px] border-r border-gold/15 bg-[#050816]/96 p-4 backdrop-blur-xl transition lg:sticky lg:top-0 lg:z-10 lg:h-screen lg:translate-x-0',
+      mobileOpen ? 'translate-x-0' : '-translate-x-full',
+    )}>
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <LogoMark />
+        <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-md border border-white/10 text-white/60 lg:hidden" aria-label="Close documentation navigation">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <nav className="h-[calc(100vh-92px)] overflow-y-auto pr-1">
+        <div className="space-y-4">
+          {groups.map(([group, items]) => {
+            const closed = closedGroups.has(group)
+            return (
+              <div key={group}>
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group)}
+                  className="mb-2 flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-[10px] font-black uppercase tracking-[0.18em] text-gold/70 hover:bg-gold/10 hover:text-gold"
+                >
+                  {group}
+                  <ChevronDown className={cn('h-3.5 w-3.5 transition', closed && '-rotate-90')} />
+                </button>
+                {!closed && (
+                  <div className="space-y-1">
+                    {items.map((section) => {
+                      const Icon = section.icon
+                      const selected = active === section.id
+                      return (
+                        <button
+                          type="button"
+                          key={section.id}
+                          onClick={() => {
+                            onSelect(section.id)
+                            onClose()
+                          }}
+                          className={cn(
+                            'flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition',
+                            selected ? 'border-gold/35 bg-gold/10 text-gold shadow-[0_0_18px_rgba(255,211,107,0.14)]' : 'border-transparent text-white/55 hover:border-white/10 hover:bg-white/[0.04] hover:text-white',
+                          )}
+                        >
+                          <Icon className="h-4 w-4 shrink-0" />
+                          <span className="min-w-0 text-xs font-bold leading-snug">{section.title}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </nav>
+    </aside>
+  )
+}
 
-  /* ── TUTORIALS ── */
-  'tutorial-scan': (
-    <Doc title="Tutorial: Run Your First Scan" badge="Tutorial">
-      <P>This tutorial walks you through running a complete quantum vulnerability scan from start to finish.</P>
-      <Steps>
-        <Step n={1} title="Log in and open the Scanner">From your dashboard sidebar, click <strong>Scanner</strong>. If this is your first scan, you'll see the Quick Start prompt.</Step>
-        <Step n={2} title="Choose your scan scope">Select one or more of the available scan targets:<br /><br />
-          • <strong>Device Files</strong> — scans your local filesystem for certificates, keys, and config files<br />
-          • <strong>Cloud Storage</strong> — connect Google Drive, Dropbox, or OneDrive<br />
-          • <strong>Git Repositories</strong> — paste a repo URL or connect GitHub/GitLab<br />
-          • <strong>TLS Certificates</strong> — enter a domain to inspect its certificate chain
-        </Step>
-        <Step n={3} title="Start the scan">Click <strong>Start Scan</strong>. A progress bar shows the scan stages: Discovery → Analysis → Risk Scoring → Report.</Step>
-        <Step n={4} title="Review the Q-Score report">Once complete, your Q-Score updates and a full findings report appears. Each row shows: file path, algorithm type, key size, severity, and years until breakable.</Step>
-        <Step n={5} title="Take action">Click <strong>Migrate</strong> next to any critical finding to launch the Migration Wizard, or click <strong>Dismiss</strong> to acknowledge low-risk findings.</Step>
-        <Step n={6} title="Export your compliance report">Click <strong>Export PDF</strong> in the top-right of the report to generate an audit-ready NIST FIPS compliance document.</Step>
-      </Steps>
-      <Callout type="success">Your first scan typically takes 3–5 minutes for a standard device. Large repositories or cloud accounts with 10,000+ files may take up to 20 minutes.</Callout>
-    </Doc>
-  ),
+function Breadcrumb({ section }: { section: DocSection }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-white/45">
+      <Link to="/" className="text-white/45 no-underline hover:text-gold">Home</Link>
+      <ChevronRight className="h-3.5 w-3.5" />
+      <span>Docs</span>
+      <ChevronRight className="h-3.5 w-3.5" />
+      <span className="text-gold">{section.title}</span>
+    </div>
+  )
+}
 
-  'tutorial-migrate': (
-    <Doc title="Tutorial: Migrate RSA to ML-KEM" badge="Tutorial">
-      <P>This tutorial shows you how to replace an RSA-2048 key pair with a NIST FIPS 203 ML-KEM-768 key pair using the Migration Wizard.</P>
-      <Steps>
-        <Step n={1} title="Find the RSA finding">Run a scan (see Tutorial: Run Your First Scan). In the results, locate any finding with Algorithm: <InlineCode>RSA-2048</InlineCode>.</Step>
-        <Step n={2} title="Open the Migration Wizard">Click <strong>Migrate</strong> on that finding. The wizard opens and pre-selects ML-KEM-768 as the replacement algorithm.</Step>
-        <Step n={3} title="Enable Hybrid Mode">Toggle <strong>Hybrid Mode ON</strong>. This keeps your existing RSA key active while adding the new ML-KEM key — zero downtime for any services that depend on the old key.</Step>
-        <Step n={4} title="Generate the new key pair">Click <strong>Generate ML-KEM-768 Key Pair</strong>. QGuard generates a quantum-random key pair and shows you the public key fingerprint.</Step>
-        <Step n={5} title="Apply the migration">Click <strong>Apply Migration</strong>. QGuard updates the relevant config files, certificates, or code references and creates a rollback snapshot.</Step>
-        <Step n={6} title="Verify and disable Hybrid Mode">Test your services with the new key. Once confirmed working, return to Migrate → Active Migrations and click <strong>Disable Hybrid Mode</strong> to complete the transition.</Step>
-      </Steps>
-      <Callout type="info">Your rollback snapshot is retained for 30 days. If anything goes wrong, go to Migrate → Snapshots and click Restore.</Callout>
-    </Doc>
-  ),
+function SectionHero({ section, onDownload }: { section: DocSection; onDownload: () => void }) {
+  const Icon = section.icon
+  return (
+    <GlassPanel className="p-4 md:p-5">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_290px]">
+        <div>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="rounded border border-gold/30 bg-gold/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.15em] text-gold">{section.group}</span>
+            {section.tags.slice(0, 4).map((tag) => (
+              <span key={tag} className="rounded border border-white/10 bg-white/[0.03] px-2 py-1 text-[10px] font-bold text-white/45">{tag}</span>
+            ))}
+          </div>
+          <h1 className="flex items-center gap-3 text-3xl font-black leading-tight text-white md:text-4xl">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-gold/30 bg-gold/10 text-gold">
+              <Icon className="h-6 w-6" />
+            </span>
+            {section.title}
+          </h1>
+          <p className="mt-4 max-w-4xl text-sm leading-6 text-white/62">{section.summary}</p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            {section.quickLinks.map((link) => {
+              const LinkIcon = link.icon
+              return (
+                <Link key={link.href} to={link.href} className="inline-flex h-10 items-center gap-2 rounded-md border border-blue-400/30 bg-blue-500/5 px-4 text-xs font-black text-blue-300 no-underline hover:bg-blue-500/10">
+                  <LinkIcon className="h-4 w-4" />
+                  {link.label}
+                </Link>
+              )
+            })}
+            <button type="button" onClick={onDownload} className="inline-flex h-10 items-center gap-2 rounded-md border border-gold/35 bg-gold/10 px-4 text-xs font-black text-gold hover:bg-gold/20">
+              <FileDown className="h-4 w-4" />
+              Download PDF Guide
+            </button>
+          </div>
+        </div>
+        <div className="relative min-h-[190px] overflow-hidden rounded-lg border border-white/10 bg-black/25">
+          <img src={section.image} alt="" className="h-full min-h-[190px] w-full object-cover opacity-70" />
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(2,6,13,0.82))]" />
+          <div className="absolute bottom-4 left-4 right-4">
+            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-gold">Official Guide</div>
+            <div className="mt-1 text-sm font-black text-white">Enterprise knowledge base and operator handbook</div>
+          </div>
+        </div>
+      </div>
+    </GlassPanel>
+  )
+}
 
-  'tutorial-vault': (
-    <Doc title="Tutorial: Store Files in the Vault" badge="Tutorial">
-      <Steps>
-        <Step n={1} title="Open the Vault">Click <strong>Vault</strong> in your dashboard sidebar.</Step>
-        <Step n={2} title="Upload a file">Drag and drop any file into the vault area, or click <strong>Upload File</strong>. QGuard encrypts the file locally with ML-KEM-1024 before upload. You'll see an encryption progress indicator.</Step>
-        <Step n={3} title="Verify integrity">After upload, the vault displays a Merkle-proof integrity badge (✓). This confirms the file has not been tampered with in transit or at rest.</Step>
-        <Step n={4} title="Share a file">Right-click the file → <strong>Share</strong>. Choose an expiry (e.g. 24 hours) and copy the encrypted share link. Only recipients with the link can decrypt the file.</Step>
-        <Step n={5} title="Revoke access">To revoke a share link before it expires, right-click → <strong>Revoke Link</strong>. The link becomes immediately invalid.</Step>
-      </Steps>
-    </Doc>
-  ),
+function Wizard({ completed, onToggle }: { completed: Set<string>; onToggle: (id: string) => void }) {
+  const done = WIZARD_STEPS.filter((step) => completed.has(step.id)).length
+  const width = percent(done, WIZARD_STEPS.length)
 
-  'tutorial-keygen': (
-    <Doc title="Tutorial: Generate QRNG Keys" badge="Tutorial">
-      <Steps>
-        <Step n={1} title="Open Key Generator">Click <strong>Keys</strong> in your dashboard sidebar, then click <strong>Generate New Key Pair</strong>.</Step>
-        <Step n={2} title="Select algorithm">Choose your algorithm: ML-KEM-768 for encryption or ML-DSA-65 for signing. For maximum security, use ML-KEM-1024.</Step>
-        <Step n={3} title="Set key name and expiry">Give the key a descriptive name (e.g. "API Server Signing Key") and optionally set an expiry date.</Step>
-        <Step n={4} title="Generate">Click <strong>Generate</strong>. QGuard fetches quantum entropy, generates your key pair, and displays the entropy quality score (target: ≥99.7%).</Step>
-        <Step n={5} title="Export">Click <strong>Download PEM</strong> to save the private key locally (it is never stored on QGuard servers). Copy the public key to deploy to your services.</Step>
-      </Steps>
-      <Callout type="warning">Your private key is shown only once. Download and store it securely in a hardware security module or encrypted backup. QGuard does not retain your private key.</Callout>
-    </Doc>
-  ),
+  return (
+    <GlassPanel className="p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div className="text-[11px] font-black uppercase tracking-[0.18em] text-gold">Getting Started Wizard</div>
+          <h2 className="mt-1 text-xl font-black text-white">New user onboarding path</h2>
+        </div>
+        <div className="text-sm font-black text-white">{done}/{WIZARD_STEPS.length} complete</div>
+      </div>
+      <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-gold shadow-[0_0_18px_rgba(255,211,107,0.75)]" style={{ width: `${width}%` }} />
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {WIZARD_STEPS.map((step, index) => {
+          const doneStep = completed.has(step.id)
+          return (
+            <div key={step.id} className="rounded-lg border border-white/10 bg-black/20 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[9px] font-black uppercase tracking-[0.16em] text-white/35">Step {index + 1}</div>
+                  <div className="mt-1 text-sm font-black text-white">{step.label}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onToggle(step.id)}
+                  className={cn('grid h-8 w-8 place-items-center rounded-md border', doneStep ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-white/45')}
+                  aria-label={`Mark ${step.label} ${doneStep ? 'incomplete' : 'complete'}`}
+                  title={doneStep ? 'Mark incomplete' : 'Mark complete'}
+                >
+                  <Check className="h-4 w-4" />
+                </button>
+              </div>
+              <Link to={step.href} className="mt-3 inline-flex items-center gap-2 text-xs font-black text-blue-300 no-underline hover:text-gold">
+                Open module <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          )
+        })}
+      </div>
+    </GlassPanel>
+  )
+}
 
-  /* ── REFERENCE ── */
-  algorithms: (
-    <Doc title="Supported Algorithms" badge="Reference">
-      <H2>Post-Quantum Algorithms</H2>
-      <Table
-        heads={['Algorithm', 'Type', 'Standard', 'Security Level']}
-        rows={[
-          ['ML-KEM-512',       'Key Encapsulation', 'NIST FIPS 203', 'Category 1 (128-bit PQ)'],
-          ['ML-KEM-768',       'Key Encapsulation', 'NIST FIPS 203', 'Category 3 (192-bit PQ)'],
-          ['ML-KEM-1024',      'Key Encapsulation', 'NIST FIPS 203', 'Category 5 (256-bit PQ)'],
-          ['ML-DSA-44',        'Digital Signature', 'NIST FIPS 204', 'Category 2 (128-bit PQ)'],
-          ['ML-DSA-65',        'Digital Signature', 'NIST FIPS 204', 'Category 3 (192-bit PQ)'],
-          ['ML-DSA-87',        'Digital Signature', 'NIST FIPS 204', 'Category 5 (256-bit PQ)'],
-          ['SPHINCS+-SHA2-128','Digital Signature', 'NIST FIPS 205', 'Category 1 (128-bit PQ)'],
-          ['SPHINCS+-SHA2-256','Digital Signature', 'NIST FIPS 205', 'Category 5 (256-bit PQ)'],
-        ]}
-      />
-      <H2>Legacy Algorithms Detected</H2>
-      <Table
-        heads={['Algorithm', 'Quantum Attack', 'Recommended Replacement']}
-        rows={[
-          ['RSA-2048',   "Shor's", 'ML-KEM-768 + ML-DSA-65'],
-          ['ECDSA P-256',"Shor's", 'ML-DSA-65'              ],
-          ['ECDH P-384', "Shor's", 'ML-KEM-768'             ],
-          ['SHA-1',      "Grover's",'SHA-3-256'             ],
-          ['AES-128',    "Grover's",'AES-256'               ],
-          ['MD5',        'Classical + Grover','SHA-3-256'   ],
-        ]}
-      />
-    </Doc>
-  ),
+function ModuleCatalog() {
+  return (
+    <GlassPanel className="p-4">
+      <div className="mb-4 flex items-center gap-2">
+        <Layers className="h-4 w-4 text-gold" />
+        <h2 className="text-[12px] font-black uppercase tracking-[0.18em] text-white">Platform Module Map</h2>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {MODULE_LINKS.map((item) => {
+          const Icon = item.icon
+          return (
+            <Link key={item.href} to={item.href} className="group rounded-lg border border-white/10 bg-black/20 p-4 text-white no-underline transition hover:-translate-y-0.5 hover:border-gold/45 hover:bg-gold/[0.04] hover:shadow-[0_0_24px_rgba(255,211,107,0.18)]">
+              <div className="flex items-start gap-3">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-gold/25 bg-gold/10 text-gold">
+                  <Icon className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-black">{item.label}<ArrowRight className="h-3.5 w-3.5 text-white/25 group-hover:text-gold" /></div>
+                  <p className="mt-1 text-xs leading-5 text-white/52">{item.desc}</p>
+                </div>
+              </div>
+            </Link>
+          )
+        })}
+      </div>
+    </GlassPanel>
+  )
+}
 
-  'q-score': (
-    <Doc title="Q-Score Explained" badge="Reference">
-      <P>The Q-Score is QGuard's proprietary quantum readiness metric, ranging from 0 (fully vulnerable) to 100 (fully quantum-safe).</P>
-      <H2>Score Bands</H2>
-      <Table
-        heads={['Score', 'Status', 'Meaning']}
-        rows={[
-          ['90–100', '✅ Quantum Safe',   'All cryptography meets NIST PQC standards'         ],
-          ['70–89',  '⚡ Good',           'Minor vulnerabilities; low priority migration needed'],
-          ['50–69',  '⚠️ At Risk',        'Significant vulnerabilities; action recommended'    ],
-          ['25–49',  '🔴 Vulnerable',     'Critical vulnerabilities; immediate action required' ],
-          ['0–24',   '💀 Critical',       'Severely exposed; harvesting attacks likely already occurring'],
-        ]}
-      />
-      <H2>Score Calculation</H2>
-      <P>Each vulnerability deducts points based on: severity (Critical = -15 pts, High = -8 pts, Medium = -4 pts, Low = -1 pt), the number of instances, and whether HNDL attack exposure exists. Migrating a vulnerability restores its point deduction immediately.</P>
-    </Doc>
-  ),
+function TopicAccordion({ topic, defaultOpen }: { topic: Topic; defaultOpen?: boolean; key?: string }) {
+  const [open, setOpen] = useState(Boolean(defaultOpen))
+  return (
+    <div id={topic.id} className="rounded-lg border border-white/10 bg-black/20">
+      <button type="button" onClick={() => setOpen((value) => !value)} className="flex w-full items-center justify-between gap-4 p-4 text-left">
+        <div>
+          <h3 className="text-base font-black text-white">{topic.title}</h3>
+          {!open ? <p className="mt-1 line-clamp-1 text-xs text-white/42">{topic.body}</p> : null}
+        </div>
+        <ChevronDown className={cn('h-5 w-5 shrink-0 text-gold transition', open && 'rotate-180')} />
+      </button>
+      {open ? (
+        <div className="border-t border-white/8 p-4 pt-3">
+          <p className="text-sm leading-6 text-white/62">{topic.body}</p>
+          {topic.bullets?.length ? (
+            <ul className="mt-4 grid gap-2 md:grid-cols-2">
+              {topic.bullets.map((bullet) => (
+                <li key={bullet} className="grid grid-cols-[18px_1fr] gap-2 text-xs leading-5 text-white/62">
+                  <CheckCircle className="mt-0.5 h-4 w-4 text-emerald-300" />
+                  <span>{bullet}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {topic.callout ? (
+            <div className="mt-4 rounded-md border border-gold/25 bg-gold/10 p-3 text-xs leading-5 text-gold">
+              {topic.callout}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
-  compliance: (
-    <Doc title="NIST FIPS Compliance" badge="Reference">
-      <P>QGuard is built to the following NIST Post-Quantum Cryptography standards, published August 2024.</P>
-      <Table
-        heads={['Standard', 'Algorithm', 'Type', 'Status']}
-        rows={[
-          ['NIST FIPS 203', 'ML-KEM (Module-Lattice KEM)',       'Key Encapsulation', 'Final Standard ✓'],
-          ['NIST FIPS 204', 'ML-DSA (Module-Lattice DSA)',       'Digital Signature', 'Final Standard ✓'],
-          ['NIST FIPS 205', 'SPHINCS+ (Stateless Hash Sigs)',    'Digital Signature', 'Final Standard ✓'],
-          ['NIST SP 800-90B','QRNG Entropy Validation',         'Entropy Testing',   'Compliant ✓'     ],
-          ['NIST SP 800-208','Leighton-Micali Signatures (LMS)', 'Stateful Sigs',    'Supported ✓'     ],
-        ]}
-      />
-      <Callout type="info">QGuard's migration reports include a NIST FIPS compliance attestation suitable for regulatory audits and enterprise security questionnaires.</Callout>
-    </Doc>
-  ),
+function WalkthroughCard({ item, completed, onToggle }: { item: Walkthrough; completed: boolean; onToggle: () => void; key?: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-[9px] font-black uppercase tracking-[0.16em] text-gold">{item.audience}</div>
+          <h3 className="mt-1 text-base font-black text-white">{item.title}</h3>
+        </div>
+        <button
+          type="button"
+          onClick={onToggle}
+          className={cn('grid h-9 w-9 place-items-center rounded-md border', completed ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/[0.03] text-white/45')}
+          aria-label={`Mark ${item.title} ${completed ? 'incomplete' : 'complete'}`}
+          title={completed ? 'Completed' : 'Mark complete'}
+        >
+          <Check className="h-4 w-4" />
+        </button>
+      </div>
+      <ol className="mt-4 space-y-2">
+        {item.steps.map((step, index) => (
+          <li key={step} className="grid grid-cols-[24px_1fr] gap-3 text-xs leading-5 text-white/62">
+            <span className="grid h-6 w-6 place-items-center rounded-full border border-gold/25 bg-gold/10 text-[10px] font-black text-gold">{index + 1}</span>
+            <span>{step}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <Link to={item.href} className="inline-flex items-center gap-2 text-xs font-black text-blue-300 no-underline hover:text-gold">
+          Open walkthrough module <ArrowRight className="h-4 w-4" />
+        </Link>
+        <VideoPlaceholder />
+      </div>
+    </div>
+  )
+}
 
-  'faq-docs': (
-    <Doc title="FAQ" badge="Reference">
-      {[
-        { q: 'Does QGuard perform actual quantum computations?', a: 'No. QGuard uses NIST-approved post-quantum algorithms that run on classical hardware. The QRNG Key Generator can optionally connect to real quantum hardware via cloud APIs for true quantum entropy.' },
-        { q: 'Is my data safe when I use the Scanner?', a: 'Yes. All scanning is performed locally first. Only anonymised metadata (algorithm type, key size, file path hash) is sent to QGuard servers for Q-Score calculation. Your actual file contents are never transmitted.' },
-        { q: 'What is Hybrid Mode in the Migration Wizard?', a: 'Hybrid Mode runs your existing classical algorithm alongside the new PQC algorithm simultaneously. This ensures zero downtime and full backward compatibility during the transition window.' },
-        { q: 'Can I use QGuard for my company\'s infrastructure?', a: 'Yes. QGuard Pro and Elite plans support CI/CD pipeline integration, API key access, and compliance report generation for enterprise environments.' },
-        { q: 'How often should I run a scan?', a: 'We recommend enabling Continuous Monitoring for automatic daily scans. At minimum, run a manual scan whenever you deploy new services, add new certificates, or update third-party libraries.' },
-        { q: 'What happens to my data if I cancel my subscription?', a: 'Your Quantum Vault data is retained for 30 days after cancellation. You can export all your data at any time from Settings → Data Export. After 30 days, data is permanently deleted from our servers.' },
-      ].map(({ q, a }) => (
-        <div key={q} style={{ marginBottom: 24, paddingBottom: 24, borderBottom: '1px solid var(--qg-border)' }}>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 700, color: 'var(--qg-text-primary)', marginBottom: 8 }}>{q}</div>
-          <div style={{ fontSize: 14, lineHeight: 1.75, color: 'var(--qg-text-secondary)' }}>{a}</div>
+function VideoPlaceholder() {
+  return (
+    <button type="button" className="inline-flex h-8 items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-3 text-[10px] font-black uppercase tracking-[0.12em] text-white/55 hover:border-gold/35 hover:text-gold" title="Tutorial video placeholder" aria-label="Tutorial video placeholder">
+      <PlayCircle className="h-3.5 w-3.5" />
+      Video
+    </button>
+  )
+}
+
+function CodeBlock({ example }: { example: CodeExample; key?: string }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-white/10 bg-[#030711]">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <div>
+          <div className="text-sm font-black text-white">{example.title}</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">{example.language}</div>
+        </div>
+        <button type="button" onClick={() => copyText(example.code)} className="grid h-8 w-8 place-items-center rounded-md border border-white/10 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Copy ${example.title}`}>
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <pre className="max-h-[320px] overflow-auto p-4 text-xs leading-6 text-white/70"><code>{example.code}</code></pre>
+    </div>
+  )
+}
+
+function DefenseActionGrid() {
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {DEFENSE_ACTIONS.map((action) => (
+        <div key={action.title} className="rounded-lg border border-white/10 bg-black/20 p-4">
+          <div className="mb-2 flex items-center gap-2">
+            <ShieldAlert className="h-4 w-4 text-red-300" />
+            <h3 className="text-base font-black text-white">{action.title}</h3>
+          </div>
+          <p className="text-xs leading-5 text-white/58"><span className="font-black text-gold">When:</span> {action.when}</p>
+          <p className="mt-2 text-xs leading-5 text-white/58"><span className="font-black text-gold">Impact:</span> {action.impact}</p>
+          <div className="mt-3 rounded-md border border-white/8 bg-black/25 p-3">
+            <div className="mb-2 text-[9px] font-black uppercase tracking-[0.16em] text-white/35">Recommended Workflow</div>
+            <ol className="space-y-1">
+              {action.workflow.map((step, index) => (
+                <li key={step} className="text-xs text-white/58">{index + 1}. {step}</li>
+              ))}
+            </ol>
+          </div>
+          <Link to={action.href} className="mt-3 inline-flex items-center gap-2 text-xs font-black text-blue-300 no-underline hover:text-gold">
+            Open related module <ArrowRight className="h-4 w-4" />
+          </Link>
         </div>
       ))}
-    </Doc>
-  ),
-
-  /* ── QRNG SERVICES ── */
-  otp: (
-    <Doc title="OTP / Multi-Factor Auth" badge="QRNG Service">
-      <P>QGuard generates one-time passwords seeded with genuine quantum randomness from the AerSimulator entropy pipeline. Unlike classical PRNGs, quantum-random OTPs are provably unpredictable — eliminating seed-prediction attacks that compromise traditional TOTP/HOTP implementations.</P>
-      <H2>Key Features</H2>
-      <Table
-        heads={['Feature', 'Description']}
-        rows={[
-          ['TOTP Generation',      'RFC 6238 compliant time-based OTP with quantum-random secret seeds'],
-          ['HOTP Generation',      'RFC 4226 compliant counter-based OTP for offline scenarios'],
-          ['Timing-Safe Validation','Constant-time comparison prevents timing side-channel attacks'],
-          ['Entropy Pipeline',     'Seeds derived from Qiskit AerSimulator quantum circuit execution'],
-          ['Configurable Digits',  '6, 8, or 10 digit codes with configurable time windows (30s/60s)'],
-          ['Batch Generation',     'Generate up to 1,000 OTP seeds in a single API call'],
-        ]}
-      />
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Entropy harvest">QGuard executes quantum circuits on the AerSimulator backend, measuring qubits in superposition to produce true random bits.</Step>
-        <Step n={2} title="Seed derivation">Raw quantum bits are conditioned through NIST SP 800-90B compliant health tests, then used to derive TOTP/HOTP secret seeds.</Step>
-        <Step n={3} title="OTP generation">The quantum-random seed is combined with the current timestamp (TOTP) or counter (HOTP) via HMAC-SHA256 to produce a one-time code.</Step>
-        <Step n={4} title="Timing-safe validation">When a user submits an OTP, QGuard performs constant-time comparison to prevent timing side-channel leakage.</Step>
-      </Steps>
-      <Callout type="info">Integrate quantum OTP into your existing MFA flow via the <Strong>/api/v1/otp/generate</Strong> and <Strong>/api/v1/otp/verify</Strong> endpoints. See API Documentation for full reference.</Callout>
-      <ApiRefLink href="/docs/api/otp" service="OTP" />
-    </Doc>
-  ),
-
-  'pki-certs': (
-    <Doc title="PKI Certificate Authority" badge="QRNG Service">
-      <P>QGuard operates a post-quantum certificate authority (CA) that issues X.509 certificates signed with ML-DSA (FIPS 204) and SPHINCS+ (FIPS 205). Certificates are quantum-resistant from day one, protecting your PKI infrastructure against Harvest Now, Decrypt Later attacks.</P>
-      <H2>Key Features</H2>
-      <Table
-        heads={['Feature', 'Description']}
-        rows={[
-          ['PQC Signing Algorithms', 'ML-DSA-44, ML-DSA-65, ML-DSA-87, SPHINCS+-SHA2-128/256'],
-          ['CSR Signing',            'Submit standard PKCS#10 CSRs and receive PQC-signed certificates'],
-          ['Certificate Lifecycle',  'Issue, renew, revoke, and query certificate status via API'],
-          ['Hybrid Certificates',    'Dual-signed certificates (RSA + ML-DSA) for backward compatibility'],
-          ['CRL & OCSP',             'Certificate revocation lists and OCSP responder endpoints'],
-          ['Quantum-Random Serial',  'Certificate serial numbers generated from quantum entropy'],
-        ]}
-      />
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Generate a CSR">Create a Certificate Signing Request using your preferred tool (e.g. OpenSSL). Include your subject details and public key.</Step>
-        <Step n={2} title="Submit to QGuard CA">POST the CSR to the <InlineCode>/api/v1/pki/sign</InlineCode> endpoint. Select your preferred PQC algorithm (ML-DSA-65 recommended).</Step>
-        <Step n={3} title="Certificate issuance">QGuard validates the CSR, generates a quantum-random serial number, signs the certificate with the selected PQC algorithm, and returns the signed X.509 certificate.</Step>
-        <Step n={4} title="Deploy and monitor">Install the certificate in your infrastructure. QGuard monitors expiry and sends renewal reminders 30 days before expiration.</Step>
-        <Step n={5} title="Revoke if needed">Call <InlineCode>/api/v1/pki/revoke</InlineCode> with the certificate serial number. The CRL is updated within 60 seconds.</Step>
-      </Steps>
-      <Callout type="success">QGuard CA certificates are compatible with all major TLS libraries that support PQC. Enable Hybrid Mode to maintain backward compatibility with legacy clients.</Callout>
-      <ApiRefLink href="/docs/api/pki" service="PKI" />
-    </Doc>
-  ),
-
-  tokenize: (
-    <Doc title="Data Tokenization" badge="QRNG Service">
-      <P>QGuard provides format-preserving encryption (FPE) using the FF3-1 algorithm for PCI-DSS compliant data tokenization. Replace sensitive values (credit card numbers, SSNs, medical record IDs) with quantum-random tokens that preserve the original format — no schema changes required.</P>
-      <H2>Key Features</H2>
-      <Table
-        heads={['Feature', 'Description']}
-        rows={[
-          ['FF3-1 Algorithm',       'NIST SP 800-38G Rev 1 compliant format-preserving encryption'],
-          ['PCI-DSS Ready',         'Tokenized data is out of scope for PCI-DSS audits'],
-          ['HMAC Binding',          'Tokens are cryptographically bound to prevent token-swap attacks'],
-          ['Batch Operations',      'Tokenize/detokenize up to 10,000 values per API call'],
-          ['Format Preservation',   'Output matches input format (e.g. 16-digit card → 16-digit token)'],
-          ['Quantum-Random Tweak',  'FF3-1 tweak values derived from QRNG entropy'],
-        ]}
-      />
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Define token format">Specify the alphabet and length constraints for your tokens. QGuard supports numeric, alphanumeric, and custom character sets.</Step>
-        <Step n={2} title="Submit sensitive data">POST plaintext values to <InlineCode>/api/v1/tokenize</InlineCode>. Values are encrypted in-memory and never written to disk in plaintext.</Step>
-        <Step n={3} title="Receive tokens">QGuard returns format-preserving tokens. Store these in your database instead of the original sensitive data.</Step>
-        <Step n={4} title="Detokenize when needed">Authorized services call <InlineCode>/api/v1/detokenize</InlineCode> with valid credentials to retrieve original values. All access is logged.</Step>
-      </Steps>
-      <Callout type="warning">Detokenization requires elevated API credentials with the <InlineCode>tokenize:read</InlineCode> scope. All detokenization requests are logged in the audit trail for compliance.</Callout>
-      <ApiRefLink href="/docs/api/tokenize" service="Tokenization" />
-    </Doc>
-  ),
-
-  comm: (
-    <Doc title="Secure Communications" badge="QRNG Service">
-      <P>QGuard generates quantum-random session keys for end-to-end encrypted communications. Whether you need secure messaging, VPN key generation, or email encryption, QGuard provides AEAD-protected keys that are immune to quantum harvest attacks.</P>
-      <H2>Key Features</H2>
-      <Table
-        heads={['Feature', 'Description']}
-        rows={[
-          ['E2E Session Keys',    'Generate ephemeral ML-KEM session keys for each conversation'],
-          ['VPN Key Generation',  'Quantum-random pre-shared keys for WireGuard and IPsec tunnels'],
-          ['Email Encryption',    'S/MIME and PGP key generation with quantum-random entropy'],
-          ['AEAD Protection',     'AES-256-GCM and ChaCha20-Poly1305 authenticated encryption'],
-          ['Forward Secrecy',     'Ephemeral key exchange ensures past sessions remain secure'],
-          ['Key Derivation',      'HKDF-SHA384 with quantum-random salt for derived keys'],
-        ]}
-      />
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Initiate key exchange">Client A requests an ephemeral ML-KEM key pair from QGuard. The public key is sent to Client B.</Step>
-        <Step n={2} title="Encapsulate session key">Client B encapsulates a shared secret using Client A's public key. The ciphertext is sent back to Client A.</Step>
-        <Step n={3} title="Derive AEAD keys">Both clients derive symmetric encryption keys from the shared secret using HKDF with a quantum-random salt.</Step>
-        <Step n={4} title="Encrypt communications">Messages are encrypted with AES-256-GCM or ChaCha20-Poly1305 using the derived keys. Each message uses a unique nonce.</Step>
-        <Step n={5} title="Rotate keys">Session keys are rotated automatically after a configurable interval or message count to maintain forward secrecy.</Step>
-      </Steps>
-      <Callout type="info">QGuard's secure communication keys are compatible with Signal Protocol, Matrix, and custom E2E implementations. See API Documentation for integration guides.</Callout>
-      <ApiRefLink href="/docs/api/comm" service="Secure Communications" />
-    </Doc>
-  ),
-
-  'cloud-seed': (
-    <Doc title="Cloud Infrastructure Seeding" badge="QRNG Service">
-      <P>Inject quantum entropy directly into your cloud infrastructure. QGuard provides quantum-random seeds for Kubernetes secrets, AWS KMS custom key stores, HashiCorp Vault, and other cloud-native services — via real-time SSE streaming or batch API calls.</P>
-      <H2>Key Features</H2>
-      <Table
-        heads={['Feature', 'Description']}
-        rows={[
-          ['Kubernetes Secrets',   'Quantum-random values injected directly into K8s Secret objects'],
-          ['AWS KMS Seeding',      'Custom key material for AWS KMS external key stores'],
-          ['HashiCorp Vault',      'Transit engine and auto-unseal with quantum entropy'],
-          ['SSE Streaming',        'Real-time Server-Sent Events stream of quantum random bytes'],
-          ['Batch API',            'Request up to 1 MB of quantum entropy per API call'],
-          ['Entropy Health',       'Every batch includes NIST SP 800-90B health test results'],
-        ]}
-      />
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Configure target">Specify your cloud target (K8s namespace, AWS KMS key ID, Vault path) in the QGuard dashboard or via API.</Step>
-        <Step n={2} title="Generate quantum entropy">QGuard executes quantum circuits and collects raw random bytes. Entropy is health-tested before delivery.</Step>
-        <Step n={3} title="Deliver to target">Entropy is delivered via SSE stream for real-time consumption or via batch API. All delivery is TLS-protected.</Step>
-        <Step n={4} title="Seed infrastructure">Your infrastructure consumes the quantum entropy to generate secrets, keys, nonces, and initialization vectors.</Step>
-      </Steps>
-      <Callout type="success">Use the SSE streaming endpoint <InlineCode>/api/v1/qrng/stream</InlineCode> for continuous entropy delivery to high-throughput systems. Average latency: &lt;50ms per 256-bit block.</Callout>
-      <ApiRefLink href="/docs/api/cloud" service="Cloud Seeding" />
-    </Doc>
-  ),
-
-  'key-mgmt': (
-    <Doc title="Encryption Key Management" badge="QRNG Service">
-      <P>QGuard provides comprehensive post-quantum key lifecycle management. Generate, rotate, export, and revoke ML-KEM, ML-DSA, and AES keys — all seeded with quantum randomness and managed through a unified API.</P>
-      <H2>Key Features</H2>
-      <Table
-        heads={['Feature', 'Description']}
-        rows={[
-          ['ML-KEM Generation',  'ML-KEM-512/768/1024 key pairs for quantum-safe encryption'],
-          ['ML-DSA Generation',  'ML-DSA-44/65/87 key pairs for quantum-safe digital signatures'],
-          ['AES Key Generation', 'AES-128/192/256 symmetric keys from quantum entropy'],
-          ['Key Rotation',       'Automated rotation on schedule or on-demand via API'],
-          ['Export Formats',     'PEM, DER, JWK, and raw binary export formats'],
-          ['Key Metadata',       'Tags, expiry, usage policies, and audit trail per key'],
-        ]}
-      />
-      <H2>How It Works</H2>
-      <Steps>
-        <Step n={1} title="Request key generation">Call <InlineCode>/api/v1/keys/generate</InlineCode> with the desired algorithm, security level, and metadata (name, expiry, usage policy).</Step>
-        <Step n={2} title="Quantum entropy seeding">QGuard harvests quantum random bits from the AerSimulator backend and uses them to seed the key generation algorithm.</Step>
-        <Step n={3} title="Key storage">The generated key pair is encrypted with your account master key and stored in QGuard's secure key store. Private keys are never stored in plaintext.</Step>
-        <Step n={4} title="Export or deploy">Export keys in PEM, DER, or JWK format. Alternatively, push keys directly to HSMs, cloud KMS, or infrastructure endpoints.</Step>
-        <Step n={5} title="Rotate and revoke">Set automatic rotation schedules or manually rotate keys. Revoked keys are added to the key revocation list and cannot be used for new operations.</Step>
-      </Steps>
-      <Callout type="info">All key operations are logged in the immutable audit trail. Access the key audit log via <InlineCode>/api/v1/keys/audit</InlineCode> for compliance reporting.</Callout>
-      <ApiRefLink href="/docs/api/keys" service="Key Management" />
-    </Doc>
-  ),
-
-  /* ── TUTORIALS (QRNG Services) ── */
-  'tutorial-otp': (
-    <Doc title="Tutorial: Quantum OTP Setup" badge="Tutorial">
-      <P>Set up quantum-random one-time passwords for your application's multi-factor authentication flow.</P>
-      <Steps>
-        <Step n={1} title="Generate a TOTP secret">Call <InlineCode>POST /api/v1/otp/generate</InlineCode> with <InlineCode>{`{"type":"totp","digits":6,"period":30}`}</InlineCode>. The response includes a Base32-encoded quantum-random secret and a provisioning URI.</Step>
-        <Step n={2} title="Display QR code">Convert the provisioning URI into a QR code and display it to the user. They scan it with any TOTP-compatible authenticator app (Google Authenticator, Authy, etc.).</Step>
-        <Step n={3} title="Store the secret">Save the secret server-side, associated with the user's account. Never expose the secret after initial setup.</Step>
-        <Step n={4} title="Verify OTP on login">When the user enters a 6-digit code, call <InlineCode>POST /api/v1/otp/verify</InlineCode> with the code and secret. QGuard performs timing-safe validation and returns a boolean result.</Step>
-        <Step n={5} title="Handle clock drift">QGuard accepts codes within a configurable window (default: +/- 1 period). Adjust the <InlineCode>window</InlineCode> parameter for stricter or more lenient validation.</Step>
-      </Steps>
-      <Callout type="success">Quantum-random TOTP secrets eliminate seed-prediction attacks. Your users' MFA is protected by provably unpredictable entropy.</Callout>
-    </Doc>
-  ),
-
-  'tutorial-pki': (
-    <Doc title="Tutorial: Issue PQC Certificates" badge="Tutorial">
-      <P>Issue your first post-quantum X.509 certificate using QGuard's built-in certificate authority.</P>
-      <Steps>
-        <Step n={1} title="Generate a key pair">Use QGuard's key generator or OpenSSL to create an ML-DSA-65 key pair for your server.</Step>
-        <Step n={2} title="Create a CSR">Generate a PKCS#10 Certificate Signing Request with your server's subject details and the ML-DSA-65 public key.</Step>
-        <Step n={3} title="Submit the CSR">Call <InlineCode>POST /api/v1/pki/sign</InlineCode> with the PEM-encoded CSR and your desired validity period (e.g. 365 days).</Step>
-        <Step n={4} title="Download the certificate">The API returns a PEM-encoded X.509 certificate signed by QGuard's PQC CA. Download and install it on your server.</Step>
-        <Step n={5} title="Configure your server">Update your web server (Nginx, Apache, etc.) to use the new PQC certificate and private key. Test with <InlineCode>openssl s_client</InlineCode> to verify the certificate chain.</Step>
-      </Steps>
-      <Callout type="info">For production deployments, use Hybrid Mode to issue dual-signed certificates (RSA + ML-DSA) that work with both legacy and PQC-capable clients.</Callout>
-    </Doc>
-  ),
-
-  'tutorial-tokenize': (
-    <Doc title="Tutorial: Tokenize Sensitive Data" badge="Tutorial">
-      <P>Replace credit card numbers and other sensitive data with quantum-random tokens using format-preserving encryption.</P>
-      <Steps>
-        <Step n={1} title="Define your token policy">Decide which fields to tokenize (e.g. card numbers, SSNs). Specify the format: <InlineCode>{`{"alphabet":"0123456789","length":16}`}</InlineCode>.</Step>
-        <Step n={2} title="Tokenize data">Call <InlineCode>POST /api/v1/tokenize</InlineCode> with an array of plaintext values. QGuard returns format-preserving tokens that match the original length and character set.</Step>
-        <Step n={3} title="Store tokens">Replace sensitive values in your database with the returned tokens. Your database schema requires zero changes.</Step>
-        <Step n={4} title="Detokenize when needed">Authorized services call <InlineCode>POST /api/v1/detokenize</InlineCode> to retrieve original values. This requires the <InlineCode>tokenize:read</InlineCode> API scope.</Step>
-        <Step n={5} title="Audit access">Review all tokenization and detokenization events in the audit trail via <InlineCode>GET /api/v1/tokenize/audit</InlineCode>.</Step>
-      </Steps>
-      <Callout type="warning">Never store both the token and the original value. Once tokenized, delete the plaintext from all systems except the QGuard token vault.</Callout>
-    </Doc>
-  ),
-
-  'tutorial-comm': (
-    <Doc title="Tutorial: Secure Messaging Setup" badge="Tutorial">
-      <P>Set up end-to-end encrypted messaging between two clients using quantum-random session keys.</P>
-      <Steps>
-        <Step n={1} title="Generate ephemeral keys">Client A calls <InlineCode>POST /api/v1/comm/keygen</InlineCode> to generate an ephemeral ML-KEM-768 key pair. The public key is shared with Client B.</Step>
-        <Step n={2} title="Encapsulate shared secret">Client B calls <InlineCode>POST /api/v1/comm/encapsulate</InlineCode> with Client A's public key. QGuard returns a ciphertext and the shared secret.</Step>
-        <Step n={3} title="Decapsulate">Client A calls <InlineCode>POST /api/v1/comm/decapsulate</InlineCode> with the ciphertext and their private key to recover the same shared secret.</Step>
-        <Step n={4} title="Derive encryption keys">Both clients derive AES-256-GCM keys from the shared secret using HKDF. Use a unique salt per session.</Step>
-        <Step n={5} title="Send encrypted messages">Encrypt each message with AES-256-GCM using a unique nonce. The recipient decrypts using the shared derived key.</Step>
-      </Steps>
-      <Callout type="success">This key exchange is quantum-safe. Even if an attacker records all network traffic today, they cannot decrypt it with a future quantum computer.</Callout>
-    </Doc>
-  ),
-
-  'tutorial-cloud': (
-    <Doc title="Tutorial: Seed Cloud Infrastructure" badge="Tutorial">
-      <P>Inject quantum entropy into your Kubernetes cluster secrets and cloud key management systems.</P>
-      <Steps>
-        <Step n={1} title="Connect your cluster">Configure your K8s cluster credentials in the QGuard dashboard under Settings, or provide a kubeconfig via API.</Step>
-        <Step n={2} title="Request entropy batch">Call <InlineCode>GET /api/v1/qrng/stream</InlineCode> to open an SSE connection, or <InlineCode>POST /api/v1/qrng/batch</InlineCode> for a one-time entropy delivery of up to 1 MB.</Step>
-        <Step n={3} title="Create K8s secrets">Use the quantum entropy to generate values for your Kubernetes Secret objects. QGuard provides a helper CLI: <InlineCode>qguard seed k8s --namespace prod</InlineCode>.</Step>
-        <Step n={4} title="Seed cloud KMS">For AWS KMS, call <InlineCode>POST /api/v1/cloud-seed/aws-kms</InlineCode> with your KMS key ID to import quantum-random key material into your external key store.</Step>
-        <Step n={5} title="Verify entropy quality">Check the <InlineCode>entropy_quality</InlineCode> field in the API response. All delivered entropy must pass NIST SP 800-90B health tests with a score of 99.7% or higher.</Step>
-      </Steps>
-      <Callout type="info">For continuous seeding, use the SSE streaming endpoint with a persistent connection. QGuard delivers fresh quantum entropy every 100ms.</Callout>
-    </Doc>
-  ),
-
-  /* ── BUSINESS ── */
-  'why-quantum': (
-    <Doc title="Why Quantum Security Now" badge="Business">
-      <P>Quantum computers pose an existential threat to modern encryption. The question is not whether they will break today's cryptography — it's when. Organizations that wait for Q-Day to act will find themselves years behind in a migration that takes years to complete.</P>
-      <H2>Harvest Now, Decrypt Later (HNDL)</H2>
-      <P>Nation-state actors and advanced persistent threats are already executing HNDL attacks: capturing encrypted network traffic, stored data, and key exchanges today with the intention of decrypting them once quantum computers are powerful enough. Data with a secrecy lifespan beyond 2030 is already at risk.</P>
-      <H2>Q-Day Timeline</H2>
-      <Table
-        heads={['Year Range', 'Milestone', 'Risk Level']}
-        rows={[
-          ['2024–2026', 'NIST PQC standards finalized; early adopters begin migration', 'Preparation window'],
-          ['2027–2030', 'Quantum computers reach 1,000+ logical qubits; HNDL attacks intensify', 'High risk for long-lived data'],
-          ['2030–2035', 'Cryptographically relevant quantum computers likely operational', 'Critical — RSA-2048 breakable'],
-          ['2035–2040', 'Widespread quantum capability; all classical public-key crypto at risk', 'Catastrophic if unmigrated'],
-        ]}
-      />
-      <H2>Cost of Inaction</H2>
-      <P>Organizations that delay PQC migration face: regulatory non-compliance (NIST mandates PQC by 2035), loss of sensitive data already harvested via HNDL, costly emergency migrations under time pressure, and reputational damage from quantum-enabled breaches. The average enterprise PQC migration takes 3-5 years — starting now is not early, it's on time.</P>
-      <H2>Why Act Now</H2>
-      <P>QGuard enables you to begin your post-quantum migration today with zero disruption. Hybrid Mode ensures backward compatibility while you transition. Every day you wait is another day your encrypted data is being harvested for future decryption.</P>
-      <Callout type="warning">The U.S. Government (NSA CNSA 2.0) mandates that National Security Systems must transition to PQC by 2035. NIST recommends beginning migration immediately.</Callout>
-    </Doc>
-  ),
-
-  'ciso-brief': (
-    <Doc title="Enterprise CISO Brief" badge="Business">
-      <P>QGuard provides enterprise-grade quantum security that maps directly to your existing risk framework. This brief summarizes the platform capabilities, compliance posture, and deployment options for security leadership evaluation.</P>
-      <H2>Executive Summary</H2>
-      <P>QGuard is a unified platform for post-quantum cryptographic migration. It detects quantum-vulnerable cryptography across your infrastructure, automates migration to NIST FIPS 203/204/205 standards, and provides continuous monitoring to maintain quantum readiness. Deployment options include cloud SaaS, hybrid, and on-premises.</P>
-      <H2>Risk Framework (NIST CSF Mapping)</H2>
-      <Table
-        heads={['NIST CSF Function', 'QGuard Capability']}
-        rows={[
-          ['Identify',  'Quantum vulnerability scanning across all cryptographic assets'],
-          ['Protect',   'PQC migration wizard with hybrid mode for zero-downtime transition'],
-          ['Detect',    'Continuous monitoring with real-time Q-Score and alerting'],
-          ['Respond',   'Automated remediation recommendations with one-click migration'],
-          ['Recover',   'Rollback snapshots for every migration; 30-day retention'],
-        ]}
-      />
-      <H2>Compliance Coverage</H2>
-      <Table
-        heads={['Framework', 'QGuard Support']}
-        rows={[
-          ['NIST FIPS 203/204/205', 'Full compliance — all PQC algorithms are NIST-approved finals'],
-          ['SOC 2 Type II',         'Audit-ready reports; continuous monitoring evidence'],
-          ['GDPR',                  'Data tokenization; encryption of personal data at rest and in transit'],
-          ['HIPAA',                 'PHI encryption with PQC; audit trail for all access'],
-          ['PCI-DSS',               'Format-preserving tokenization for cardholder data'],
-          ['CNSA 2.0',              'Meets NSA requirements for National Security Systems'],
-        ]}
-      />
-      <H2>Deployment Models</H2>
-      <Table
-        heads={['Model', 'Description', 'Best For']}
-        rows={[
-          ['Cloud SaaS',  'Fully managed by QGuard; zero infrastructure overhead',       'SMBs and fast-moving teams'],
-          ['Hybrid',      'Control plane in QGuard cloud; data plane in your environment', 'Regulated enterprises'],
-          ['On-Premises',  'Entire platform deployed in your data center or private cloud', 'Government and defense'],
-        ]}
-      />
-      <H2>SLA Targets</H2>
-      <P>QGuard Enterprise delivers 99.9% platform availability, sub-200ms API response times (p95), 24/7 dedicated support with 1-hour critical response SLA, and quarterly security review briefings with your security team.</P>
-      <Callout type="success">Request a personalized threat assessment and proof-of-concept deployment by contacting your QGuard Enterprise account team.</Callout>
-    </Doc>
-  ),
-
-  'use-cases': (
-    <Doc title="Industry Use Cases" badge="Business">
-      <P>QGuard serves organizations across regulated industries where data protection is paramount and quantum readiness is becoming a compliance requirement.</P>
-      <H2>Financial Services</H2>
-      <P><Strong>Scenario:</Strong> A global bank needs to protect transaction data, customer PII, and inter-bank communications from HNDL attacks while maintaining PCI-DSS compliance.</P>
-      <P><Strong>Solution:</Strong> QGuard Scanner audits all cryptographic assets across the bank's infrastructure. The Migration Wizard replaces RSA and ECDSA keys with ML-KEM and ML-DSA in hybrid mode. Data Tokenization (FF3-1) protects cardholder data with format-preserving quantum-random tokens, keeping the bank out of PCI-DSS scope for tokenized fields.</P>
-      <H2>Healthcare</H2>
-      <P><Strong>Scenario:</Strong> A hospital network must protect patient health information (PHI) under HIPAA, with data retention requirements spanning 7+ years — well within the Q-Day window.</P>
-      <P><Strong>Solution:</Strong> QGuard Vault encrypts all PHI with ML-KEM-1024. Continuous Monitoring alerts security teams to any quantum-vulnerable cryptography in medical devices, EHR systems, and network infrastructure. Audit trails provide HIPAA-compliant access logs.</P>
-      <H2>Government & Defense</H2>
-      <P><Strong>Scenario:</Strong> A defense agency must comply with NSA CNSA 2.0 mandates requiring PQC for all National Security Systems by 2035.</P>
-      <P><Strong>Solution:</Strong> QGuard On-Premises deployment provides air-gapped quantum security. PKI Certificate Authority issues ML-DSA certificates for classified networks. Cloud Infrastructure Seeding provides quantum entropy for hardware security modules. Full CNSA 2.0 compliance reporting is built in.</P>
-      <H2>Technology (Zero-Trust Architecture)</H2>
-      <P><Strong>Scenario:</Strong> A SaaS platform implementing zero-trust architecture needs quantum-safe mTLS, service mesh encryption, and API authentication across microservices.</P>
-      <P><Strong>Solution:</Strong> QGuard's PKI CA issues short-lived PQC certificates for mTLS. Secure Communications provides quantum-random session keys for service-to-service encryption. OTP services secure developer and operator MFA. Key Management handles automated rotation across all services.</P>
-      <Callout type="info">Contact our solutions team for a tailored deployment plan for your industry. QGuard offers proof-of-concept engagements for enterprise customers.</Callout>
-    </Doc>
-  ),
-
-  /* ── OPERATIONAL ── */
-  deployment: (
-    <Doc title="Deployment Guide" badge="Operational">
-      <P>This guide covers the environment configuration required to deploy the QGuard platform, including the Next.js frontend, Supabase backend, and QRNG FastAPI service.</P>
-      <H2>Environment Variables</H2>
-      <Table
-        heads={['Variable', 'Description', 'Example']}
-        rows={[
-          ['NEXT_PUBLIC_SUPABASE_URL',     'Your Supabase project URL',           'https://xyz.supabase.co'],
-          ['NEXT_PUBLIC_SUPABASE_ANON_KEY','Supabase anonymous/public key',       'eyJhbGciOi...'],
-          ['SUPABASE_SERVICE_ROLE_KEY',    'Supabase service role key (server only)','eyJhbGciOi...'],
-          ['QRNG_API_URL',                'QRNG FastAPI service URL',             'http://localhost:8420'],
-          ['NEXT_PUBLIC_APP_URL',          'Public URL of the QGuard app',        'https://app.qguard.io'],
-        ]}
-      />
-      <H2>Database Setup (Supabase)</H2>
-      <Steps>
-        <Step n={1} title="Create a Supabase project">Go to supabase.com and create a new project. Note your project URL and anon key.</Step>
-        <Step n={2} title="Run migrations">Apply database migrations from <InlineCode>supabase/migrations/</InlineCode> using the Supabase CLI: <InlineCode>supabase db push</InlineCode>.</Step>
-        <Step n={3} title="Configure RLS">Row Level Security policies are included in the migrations. Verify they are active in the Supabase dashboard under Authentication → Policies.</Step>
-        <Step n={4} title="Set environment variables">Add your Supabase URL and keys to <InlineCode>.env.local</InlineCode>. Never commit this file to version control.</Step>
-      </Steps>
-      <H2>QRNG Service (FastAPI)</H2>
-      <Steps>
-        <Step n={1} title="Install dependencies">Navigate to the QRNG service directory and run <InlineCode>pip install -r requirements.txt</InlineCode>. Python 3.10+ is required.</Step>
-        <Step n={2} title="Start the service">Run <InlineCode>uvicorn main:app --host 0.0.0.0 --port 8420</InlineCode>. The QRNG service listens on port 8420 by default.</Step>
-        <Step n={3} title="Verify health">Call <InlineCode>GET http://localhost:8420/health</InlineCode>. A healthy response returns <InlineCode>{`{"status":"ok","entropy_source":"aer_simulator"}`}</InlineCode>.</Step>
-      </Steps>
-      <Callout type="warning">Never expose <InlineCode>SUPABASE_SERVICE_ROLE_KEY</InlineCode> to the client. This key bypasses Row Level Security and must only be used in server-side code.</Callout>
-    </Doc>
-  ),
-
-  'rate-limits': (
-    <Doc title="Rate Limits & SLAs" badge="Operational">
-      <P>QGuard enforces per-endpoint rate limits to ensure fair usage and platform stability. Limits vary by subscription tier.</P>
-      <H2>Rate Limits by Tier</H2>
-      <Table
-        heads={['Endpoint', 'Free', 'Pro', 'Enterprise']}
-        rows={[
-          ['Quantum Scan',           '5/day',       '100/day',      'Unlimited'     ],
-          ['Key Generation',         '5/day',       '1,000/day',    'Unlimited'     ],
-          ['OTP Generate/Verify',    '50/day',      '10,000/day',   'Unlimited'     ],
-          ['Tokenize/Detokenize',    '100/day',     '50,000/day',   'Unlimited'     ],
-          ['PKI Certificate Sign',   '2/day',       '100/day',      '10,000/day'    ],
-          ['QRNG Entropy (batch)',   '10 KB/day',   '10 MB/day',    '1 GB/day'      ],
-          ['QRNG Entropy (stream)',  'Not available','1 hr/day',     'Unlimited'     ],
-        ]}
-      />
-      <H2>Burst Handling</H2>
-      <P>QGuard uses a token bucket algorithm for rate limiting. Short bursts above the per-second limit are allowed (up to 2x the per-second rate for 10 seconds) before throttling kicks in. This accommodates legitimate traffic spikes without penalizing normal usage.</P>
-      <H2>429 Responses</H2>
-      <P>When a rate limit is exceeded, the API returns HTTP 429 with a <InlineCode>Retry-After</InlineCode> header indicating when the next request will be accepted. Implement exponential backoff in your client to handle 429 responses gracefully.</P>
-      <H2>SLA Targets</H2>
-      <Table
-        heads={['Metric', 'Free', 'Pro', 'Enterprise']}
-        rows={[
-          ['Uptime',           'Best effort', '99.5%',     '99.9%'          ],
-          ['API Response (p95)','<500ms',     '<200ms',    '<100ms'         ],
-          ['Support Response',  'Community',  '24hr email','1hr critical'   ],
-          ['Data Durability',   '99.9%',      '99.99%',   '99.999%'        ],
-        ]}
-      />
-      <Callout type="info">Enterprise customers can request custom rate limits and dedicated API endpoints. Contact your account team for a tailored SLA agreement.</Callout>
-    </Doc>
-  ),
-
-  'audit-trails': (
-    <Doc title="Monitoring & Audit" badge="Operational">
-      <P>QGuard provides comprehensive health monitoring, metrics collection, and immutable audit logging for compliance and operational visibility.</P>
-      <H2>Health Endpoints</H2>
-      <Table
-        heads={['Endpoint', 'Description', 'Response']}
-        rows={[
-          ['GET /health',           'Platform health check',           '{"status":"ok","version":"1.0.0"}'],
-          ['GET /health/qrng',      'QRNG service health',            '{"status":"ok","entropy_source":"aer_simulator"}'],
-          ['GET /health/db',        'Database connectivity check',     '{"status":"ok","latency_ms":12}'],
-          ['GET /metrics',          'Prometheus-compatible metrics',    'OpenMetrics format'],
-        ]}
-      />
-      <H2>Metrics Collection</H2>
-      <P>QGuard exposes Prometheus-compatible metrics at <InlineCode>/metrics</InlineCode>. Key metrics include: API request rate, error rate, response latency (p50/p95/p99), QRNG entropy generation rate, active scan count, and key generation throughput. Configure your Prometheus or Datadog agent to scrape this endpoint.</P>
-      <H2>Audit Log Access</H2>
-      <P>Every API call, key operation, scan result, and authentication event is recorded in an immutable audit log. Access the audit log via <InlineCode>GET /api/v1/audit</InlineCode> with filters for date range, event type, user, and resource. Audit logs are retained for 1 year (Pro) or 7 years (Enterprise).</P>
-      <H2>Logging Best Practices</H2>
-      <Steps>
-        <Step n={1} title="Enable structured logging">Configure your application to emit JSON-formatted logs. QGuard's API responses include a <InlineCode>x-request-id</InlineCode> header for request correlation.</Step>
-        <Step n={2} title="Forward to SIEM">Export audit logs to your SIEM (Splunk, Elastic, Sentinel) using the webhook integration or the bulk export API.</Step>
-        <Step n={3} title="Set up alerts">Configure alerts for: failed authentication attempts ({'>'} 5 in 1 minute), rate limit violations, entropy quality drops below 99.5%, and certificate expiry within 30 days.</Step>
-        <Step n={4} title="Regular review">Schedule monthly audit log reviews. QGuard generates a compliance summary report that highlights anomalies and access patterns.</Step>
-      </Steps>
-      <Callout type="success">QGuard audit logs are cryptographically signed and tamper-evident. Any modification to a log entry invalidates its signature chain.</Callout>
-    </Doc>
-  ),
+    </div>
+  )
 }
 
-/* ─────────────────────────────────────────────
-   Reusable sub-components
-───────────────────────────────────────────── */
-function Doc({ title, badge, children }: { title: string; badge: string; children: React.ReactNode }) {
+function FaqPanel() {
   return (
-    <article>
-      <div style={{ marginBottom: 32 }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--qg-cyan)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>{badge}</span>
-        <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 'clamp(24px, 3vw, 36px)', fontWeight: 800, marginTop: 8, marginBottom: 0, letterSpacing: '-0.02em', color: 'var(--qg-text-primary)' }}>{title}</h1>
+    <GlassPanel className="p-4">
+      <div className="mb-4 flex items-center gap-2">
+        <HelpCircle className="h-4 w-4 text-gold" />
+        <h2 className="text-[12px] font-black uppercase tracking-[0.18em] text-white">FAQ</h2>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>{children}</div>
-    </article>
-  )
-}
-
-function H2({ children }: { children: React.ReactNode }) {
-  return <h2 style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 700, color: 'var(--qg-text-primary)', marginTop: 24, marginBottom: 4, paddingTop: 24, borderTop: '1px solid var(--qg-border)' }}>{children}</h2>
-}
-
-function P({ children }: { children: React.ReactNode }) {
-  return <p style={{ fontSize: 15, lineHeight: 1.8, color: 'var(--qg-text-secondary)' }}>{children}</p>
-}
-
-function Strong({ children }: { children: React.ReactNode }) {
-  return <strong style={{ color: 'var(--qg-text-primary)', fontWeight: 600 }}>{children}</strong>
-}
-
-function InlineCode({ children }: { children: React.ReactNode }) {
-  return <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'rgba(0,212,255,0.08)', border: '1px solid rgba(0,212,255,0.2)', borderRadius: 4, padding: '1px 6px', color: 'var(--qg-cyan)' }}>{children}</code>
-}
-
-function Li({ children }: { children: React.ReactNode }) {
-  return <li style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--qg-text-secondary)', listStyleType: 'disc' }}>{children}</li>
-}
-
-function Grid({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginTop: 8 }}>{children}</div>
-}
-
-function FeatureCard({ icon: Icon, color, title, desc }: { icon: React.ElementType<{ size?: number; style?: React.CSSProperties }>; color: string; title: string; desc: string }) {
-  return (
-    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--qg-border)', borderRadius: 12, padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <Icon size={16} style={{ color }} />
-        <span style={{ fontFamily: 'var(--font-display)', fontSize: 12, fontWeight: 700, color: 'var(--qg-text-primary)' }}>{title}</span>
+      <div className="space-y-3">
+        {FAQ.map(([question, answer]) => (
+          <details key={question} className="rounded-lg border border-white/10 bg-black/20 p-4">
+            <summary className="cursor-pointer text-sm font-black text-white">{question}</summary>
+            <p className="mt-3 text-sm leading-6 text-white/58">{answer}</p>
+          </details>
+        ))}
       </div>
-      <p style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--qg-text-secondary)', margin: 0 }}>{desc}</p>
-    </div>
+    </GlassPanel>
   )
 }
 
-function Steps({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>{children}</div>
-}
-
-function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
+function Toc({ section, completedCount, totalProgress, status, onDownload }: { section: DocSection; completedCount: number; totalProgress: number; status: LiveDocsStatus; onDownload: () => void }) {
   return (
-    <div style={{ display: 'flex', gap: 16, padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--qg-border)', borderRadius: 12 }}>
-      <div style={{ flexShrink: 0, width: 28, height: 28, borderRadius: '50%', background: 'linear-gradient(135deg, var(--qg-cyan), var(--qg-violet))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-display)', fontSize: 11, fontWeight: 800, color: 'var(--qg-black)' }}>{n}</div>
-      <div>
-        <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--qg-text-primary)', marginBottom: 4 }}>{title}</div>
-        <div style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--qg-text-secondary)' }}>{children}</div>
-      </div>
-    </div>
-  )
-}
-
-function Callout({ type, children }: { type: 'info' | 'success' | 'warning'; children: React.ReactNode }) {
-  const colors = { info: 'var(--qg-cyan)', success: 'var(--qg-green)', warning: 'var(--qg-amber)' }
-  const color = colors[type]
-  return (
-    <div style={{ padding: '14px 18px', borderRadius: 10, borderTop: `1px solid ${color}33`, borderRight: `1px solid ${color}33`, borderBottom: `1px solid ${color}33`, borderLeft: `3px solid ${color}`, background: `${color}0d` }}>
-      <p style={{ fontSize: 13, lineHeight: 1.7, color: 'var(--qg-text-secondary)', margin: 0 }}>{children}</p>
-    </div>
-  )
-}
-
-function ApiRefLink({ href, service }: { href: string; service: string }) {
-  return (
-    <div style={{
-      marginTop: 24, padding: '14px 18px', borderRadius: 10,
-      border: '1px solid rgba(0,212,255,0.3)',
-      background: 'rgba(0,212,255,0.04)',
-      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    }}>
-      <span style={{ fontSize: 13, color: 'var(--qg-text-secondary)' }}>
-        Ready to integrate? View the complete {service} API reference with interactive playground.
-      </span>
-      <a href={href} style={{
-        fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
-        color: 'var(--qg-cyan)', textDecoration: 'none',
-        display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
-      }}>
-        API Docs →
-      </a>
-    </div>
-  )
-}
-
-function Table({ heads, rows }: { heads: string[]; rows: string[][] }) {
-  return (
-    <div style={{ overflowX: 'auto', borderRadius: 10, border: '1px solid var(--qg-border)', marginTop: 8 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr style={{ background: 'rgba(0,212,255,0.06)' }}>
-            {heads.map(h => <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: 'var(--qg-cyan)', letterSpacing: '0.08em', textTransform: 'uppercase', borderBottom: '1px solid var(--qg-border)', whiteSpace: 'nowrap' }}>{h}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i} style={{ borderBottom: i < rows.length - 1 ? '1px solid rgba(255,255,255,0.04)' : undefined }}>
-              {row.map((cell, j) => <td key={j} style={{ padding: '10px 16px', color: j === 0 ? 'var(--qg-text-primary)' : 'var(--qg-text-secondary)', verticalAlign: 'top' }}>{cell}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-/* ─────────────────────────────────────────────
-   Main Docs Page
-───────────────────────────────────────────── */
-export default function DocsPage() {
-  const [active, setActive] = useState('overview')
-  const [mobileOpen, setMobileOpen] = useState(false)
-
-  const content = SECTIONS[active] ?? SECTIONS['overview']
-
-  return (
-    <div style={{ background: 'var(--qg-black)', minHeight: '100vh', color: 'var(--qg-text-primary)' }}>
-
-      {/* Top bar */}
-      <header style={{
-        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 50,
-        background: 'rgba(3,3,8,0.92)', backdropFilter: 'blur(20px)',
-        borderBottom: '1px solid var(--qg-border)',
-        height: 60,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 24px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <button
-            onClick={() => setMobileOpen(o => !o)}
-            style={{ display: 'flex', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--qg-text-secondary)', padding: 4 }}
-            className="lg:hidden"
-          >
-            {mobileOpen ? <X size={20} /> : <Menu size={20} />}
-          </button>
-          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none' }}>
-            <BookOpen size={18} style={{ color: 'var(--qg-cyan)' }} />
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 800, background: 'linear-gradient(135deg, var(--qg-cyan), var(--qg-violet))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-              QGuard Docs
-            </span>
-          </Link>
-          <span style={{ width: 1, height: 16, background: 'var(--qg-border)' }} />
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--qg-text-muted)', letterSpacing: '0.08em' }}>v1.0 · NIST FIPS 203/204</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Link href="/" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--qg-text-secondary)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}
-            onMouseEnter={e => e.currentTarget.style.color = 'var(--qg-cyan)'}
-            onMouseLeave={e => e.currentTarget.style.color = 'var(--qg-text-secondary)'}
-          >
-            ← Back to Home
-          </Link>
-          <Link href="/login" style={{
-            fontFamily: 'var(--font-display)', fontSize: 11, fontWeight: 700,
-            padding: '6px 16px', borderRadius: 8, textDecoration: 'none',
-            background: 'linear-gradient(135deg, var(--qg-cyan), var(--qg-violet))',
-            color: 'var(--qg-black)', letterSpacing: '0.06em',
-          }}>
-            Get Started Free
-          </Link>
-        </div>
-      </header>
-
-      <div style={{ display: 'flex', paddingTop: 60, minHeight: '100vh' }}>
-
-        {/* Sidebar */}
-        <aside style={{
-          width: 260, flexShrink: 0, position: 'fixed', top: 60, bottom: 0,
-          overflowY: 'auto', borderRight: '1px solid var(--qg-border)',
-          background: 'rgba(10,10,26,0.8)', backdropFilter: 'blur(12px)',
-          padding: '24px 0',
-          zIndex: 40,
-          transform: mobileOpen ? 'translateX(0)' : undefined,
-        }}
-        >
-          {NAV.map(({ section, icon: SectionIcon, items }) => (
-            <div key={section} style={{ marginBottom: 28 }}>
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '0 20px', marginBottom: 8,
-                fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700,
-                color: 'var(--qg-text-muted)', letterSpacing: '0.15em', textTransform: 'uppercase',
-              }}>
-                <SectionIcon size={12} />
-                {section}
-              </div>
-              {items.map(({ id, label }) => (
-                <button
-                  key={id}
-                  onClick={() => id === 'api-docs' ? window.location.href = '/docs/api' : setActive(id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    width: '100%', padding: '7px 20px', textAlign: 'left',
-                    background: active === id ? 'rgba(0,212,255,0.08)' : 'none',
-                    borderTop: 'none', borderRight: 'none', borderBottom: 'none',
-                    borderLeft: active === id ? '2px solid var(--qg-cyan)' : '2px solid transparent',
-                    cursor: 'pointer',
-                    fontFamily: 'var(--font-body)', fontSize: 13,
-                    fontWeight: active === id ? 600 : 400,
-                    color: active === id ? 'var(--qg-cyan)' : 'var(--qg-text-secondary)',
-                    transition: 'all 0.15s',
-                  }}
-                  onMouseEnter={e => { if (active !== id) { e.currentTarget.style.color = 'var(--qg-text-primary)'; e.currentTarget.style.background = 'rgba(255,255,255,0.03)' } }}
-                  onMouseLeave={e => { if (active !== id) { e.currentTarget.style.color = 'var(--qg-text-secondary)'; e.currentTarget.style.background = 'none' } }}
-                >
-                  <ChevronRight size={12} style={{ opacity: active === id ? 1 : 0, color: 'var(--qg-cyan)', flexShrink: 0 }} />
-                  {label}
-                </button>
-              ))}
-            </div>
-          ))}
-        </aside>
-
-        {/* Main content */}
-        <main style={{
-          flex: 1,
-          marginLeft: 260,
-          padding: '48px 48px',
-          maxWidth: 'calc(100% - 260px)',
-          minWidth: 0,
-        }}>
-          {content}
-
-          {/* Bottom nav */}
-          <div style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            marginTop: 64, paddingTop: 32, borderTop: '1px solid var(--qg-border)',
-          }}>
-            {(() => {
-              const allItems = NAV.flatMap(s => s.items)
-              const idx = allItems.findIndex(i => i.id === active)
-              const prev = allItems[idx - 1]
-              const next = allItems[idx + 1]
-              return (
-                <>
-                  {prev ? (
-                    <button onClick={() => setActive(prev.id)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: '1px solid var(--qg-border)', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', color: 'var(--qg-text-secondary)', fontSize: 13, transition: 'all 0.2s' }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--qg-cyan)'; e.currentTarget.style.color = 'var(--qg-cyan)' }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--qg-border)'; e.currentTarget.style.color = 'var(--qg-text-secondary)' }}
-                    >
-                      ← {prev.label}
-                    </button>
-                  ) : <div />}
-                  {next && (
-                    <button onClick={() => setActive(next.id)} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'linear-gradient(135deg, rgba(0,212,255,0.1), rgba(139,92,246,0.1))', border: '1px solid rgba(0,212,255,0.3)', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', color: 'var(--qg-cyan)', fontSize: 13, transition: 'all 0.2s' }}>
-                      {next.label} <ArrowRight size={14} />
-                    </button>
-                  )}
-                </>
-              )
-            })()}
+    <aside className="hidden xl:block">
+      <div className="sticky top-5 space-y-4">
+        <GlassPanel className="p-4">
+          <div className="mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-white">On This Page</div>
+          <div className="space-y-2">
+            {section.topics.map((topic) => (
+              <a key={topic.id} href={`#${topic.id}`} className="block rounded-md px-2 py-1.5 text-xs font-bold text-white/50 no-underline hover:bg-gold/10 hover:text-gold">
+                {topic.title}
+              </a>
+            ))}
           </div>
-        </main>
+          <button type="button" onClick={onDownload} className="mt-4 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-gold/30 bg-gold/10 text-xs font-black text-gold hover:bg-gold/20">
+            <Download className="h-4 w-4" />
+            Download Guide
+          </button>
+        </GlassPanel>
+        <GlassPanel className="p-4">
+          <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-white">Training Progress</div>
+          <div className="text-3xl font-black text-gold">{totalProgress}%</div>
+          <div className="mt-1 text-xs text-white/45">{completedCount} tutorials completed</div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full bg-gold" style={{ width: `${totalProgress}%` }} />
+          </div>
+        </GlassPanel>
+        <GlassPanel className="p-4">
+          <div className="mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-white">Help & Support</div>
+          <p className="text-xs leading-5 text-white/55">For implementation help, open settings or contact your Qguard Helix administrator.</p>
+          <Link to="/dashboard/settings" className="mt-4 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-blue-400/30 bg-blue-500/5 text-xs font-black text-blue-300 no-underline hover:bg-blue-500/10">
+            <LifeBuoy className="h-4 w-4" />
+            Contact Support
+          </Link>
+          <div className="mt-3 text-[10px] text-white/35">Last status: {status.timestamp ? new Date(status.timestamp).toLocaleTimeString() : 'waiting'}</div>
+        </GlassPanel>
       </div>
+    </aside>
+  )
+}
+
+function SectionContent({
+  section,
+  completed,
+  onToggleProgress,
+}: {
+  section: DocSection
+  completed: Set<string>
+  onToggleProgress: (id: string) => void
+}) {
+  return (
+    <div className="space-y-4">
+      {section.id === 'platform-introduction' ? <ModuleCatalog /> : null}
+      {section.id === 'defense-actions' ? <DefenseActionGrid /> : null}
+      <GlassPanel className="p-4">
+        <div className="mb-4 flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-gold" />
+          <h2 className="text-[12px] font-black uppercase tracking-[0.18em] text-white">Documentation</h2>
+        </div>
+        <div className="space-y-3">
+          {section.topics.map((topic, index) => <TopicAccordion key={topic.id} topic={topic} defaultOpen={index === 0} />)}
+        </div>
+      </GlassPanel>
+      {section.walkthroughs?.length ? (
+        <GlassPanel className="p-4">
+          <div className="mb-4 flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-gold" />
+            <h2 className="text-[12px] font-black uppercase tracking-[0.18em] text-white">Step-by-Step Walkthroughs</h2>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {section.walkthroughs.map((item) => (
+              <WalkthroughCard
+                key={item.id}
+                item={item}
+                completed={completed.has(item.id)}
+                onToggle={() => onToggleProgress(item.id)}
+              />
+            ))}
+          </div>
+        </GlassPanel>
+      ) : null}
+      {section.examples?.length ? (
+        <GlassPanel className="p-4">
+          <div className="mb-4 flex items-center gap-2">
+            <Code className="h-4 w-4 text-gold" />
+            <h2 className="text-[12px] font-black uppercase tracking-[0.18em] text-white">Code Snippets & Examples</h2>
+          </div>
+          <div className="grid gap-3">
+            {section.examples.map((example) => <CodeBlock key={example.title} example={example} />)}
+          </div>
+        </GlassPanel>
+      ) : null}
+      {section.id === 'troubleshooting' ? <FaqPanel /> : null}
     </div>
+  )
+}
+
+export default function DocsPage() {
+  const [query, setQuery] = useState('')
+  const [activeId, setActiveId] = useState('platform-introduction')
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const [completed, setCompleted] = useState<Set<string>>(() => loadProgress())
+  const { status, connected, refresh, authenticated } = useDocsLiveStatus()
+
+  const filteredSections = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return SECTIONS
+    return SECTIONS.filter((section) => textOf(section).includes(q))
+  }, [query])
+
+  useEffect(() => {
+    if (filteredSections.length && !filteredSections.some((section) => section.id === activeId)) {
+      setActiveId(filteredSections[0].id)
+    }
+  }, [filteredSections, activeId])
+
+  const activeSection = filteredSections.find((section) => section.id === activeId) || filteredSections[0] || SECTIONS[0]
+  const allWalkthroughIds = useMemo(() => [
+    ...WIZARD_STEPS.map((step) => step.id),
+    ...SECTIONS.flatMap((section) => section.walkthroughs || []).map((item) => item.id),
+  ], [])
+  const completedCount = allWalkthroughIds.filter((id) => completed.has(id)).length
+  const progress = percent(completedCount, allWalkthroughIds.length)
+
+  const toggleProgress = (id: string) => {
+    setCompleted((current) => {
+      const next = new Set<string>(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      saveProgress(next)
+      return next
+    })
+  }
+
+  const pageStyle = {
+    '--gold': '#FFD36B',
+  } as CSSProperties
+
+  return (
+    <main className="min-h-screen bg-[#02060d] text-white" style={pageStyle}>
+      <div className="pointer-events-none fixed inset-0 opacity-70" aria-hidden="true">
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,211,107,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(56,189,248,0.025)_1px,transparent_1px)] bg-[size:44px_44px]" />
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,211,107,0.08),transparent_34%,rgba(56,189,248,0.05)_100%)]" />
+      </div>
+
+      <div className="relative z-10 flex">
+        <Sidebar
+          sections={filteredSections}
+          active={activeSection.id}
+          onSelect={setActiveId}
+          mobileOpen={mobileOpen}
+          onClose={() => setMobileOpen(false)}
+        />
+        {mobileOpen ? <button type="button" aria-label="Close overlay" className="fixed inset-0 z-30 bg-black/60 lg:hidden" onClick={() => setMobileOpen(false)} /> : null}
+
+        <div className="min-w-0 flex-1">
+          <header className="sticky top-0 z-20 border-b border-gold/15 bg-[#02060d]/90 px-4 py-3 backdrop-blur-xl lg:px-6">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={() => setMobileOpen(true)} className="grid h-10 w-10 place-items-center rounded-lg border border-white/10 bg-black/25 text-white/70 lg:hidden" aria-label="Open documentation navigation">
+                  <Menu className="h-4 w-4" />
+                </button>
+                <div className="hidden lg:block"><LogoMark /></div>
+              </div>
+              <SearchBox value={query} onChange={setQuery} />
+              <div className="flex items-center gap-2">
+                <Link to="/dashboard" className="inline-flex h-10 items-center gap-2 rounded-md border border-gold/30 bg-gold/10 px-4 text-xs font-black text-gold no-underline hover:bg-gold/20">
+                  Open Platform <ArrowRight className="h-4 w-4" />
+                </Link>
+              </div>
+            </div>
+          </header>
+
+          <div className="grid gap-5 p-4 lg:p-6 xl:grid-cols-[minmax(0,1fr)_300px] 2xl:grid-cols-[minmax(0,1fr)_330px]">
+            <div className="min-w-0 space-y-4">
+              <Breadcrumb section={activeSection} />
+              <SectionHero section={activeSection} onDownload={() => downloadGuide(activeSection)} />
+              <HeaderStatus status={status} connected={connected} authenticated={authenticated} onRefresh={refresh} />
+              <Wizard completed={completed} onToggle={toggleProgress} />
+              {query && (
+                <GlassPanel className="p-4">
+                  <div className="text-sm font-black text-white">{filteredSections.length} matching documentation section{filteredSections.length === 1 ? '' : 's'}</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {filteredSections.map((section) => (
+                      <button key={section.id} type="button" onClick={() => setActiveId(section.id)} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs font-bold text-white/60 hover:border-gold/40 hover:text-gold">
+                        {section.title}
+                      </button>
+                    ))}
+                  </div>
+                </GlassPanel>
+              )}
+              <SectionContent section={activeSection} completed={completed} onToggleProgress={toggleProgress} />
+            </div>
+            <Toc
+              section={activeSection}
+              completedCount={completedCount}
+              totalProgress={progress}
+              status={status}
+              onDownload={() => downloadGuide(activeSection)}
+            />
+          </div>
+        </div>
+      </div>
+    </main>
   )
 }

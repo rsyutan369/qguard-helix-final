@@ -14,12 +14,13 @@ import { useAuth } from '@/contexts/auth-context';
 
 const NAV_SECTIONS = [
   {
-    label: 'Core',
+    label: 'Core Modules',
     collapsible: true,
     items: [
       { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
       { name: 'Quantum Risk', path: '/dashboard/quantum-risk', icon: Eye },
       { name: 'Migration Planner', path: '/dashboard/migration-planner', icon: Route },
+      { name: 'PQC Onboarding & Migration Process', path: '/dashboard/pqc-onboarding', icon: ClipboardCheck },
     ],
   },
   {
@@ -135,7 +136,7 @@ export default function DashboardLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
-    'Core': true,
+    'Core Modules': true,
     'Quantum Tools': false,
     'Discovery': false,
     'Operations': false,
@@ -270,7 +271,7 @@ export default function DashboardLayout() {
                             )}
                             <Icon className={`shrink-0 ${collapsed ? 'h-5 w-5' : 'h-4 w-4'}`} />
                             {!collapsed && (
-                              <span className="text-[11px] font-bold tracking-wide truncate">{item.name}</span>
+                              <span className="min-w-0 break-words text-[11px] font-bold leading-snug tracking-wide">{item.name}</span>
                             )}
                           </Link>
                         );

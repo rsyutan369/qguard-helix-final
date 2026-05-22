@@ -4,6 +4,7 @@ import Landing from './pages/Landing';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
+import DocsPage from './app/docs/page';
 import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
@@ -12,6 +13,7 @@ import MigrationTerminal from './app/dashboard/migration_terminal/page';
 import Vulnerabilities from './app/dashboard/vulnerabilities/page';
 import QuantumRiskOverview from './app/dashboard/quantum_risk_overview/page';
 import MigrationPlanner from './app/dashboard/migration_planner/page';
+import PqcOnboardingPage from './app/dashboard/pqc-onboarding/page';
 import CbomExplorer from './app/dashboard/cbom_explorer/page';
 import CryptoExposureMap from './app/dashboard/crypto_exposure_map/page';
 import MigrationTimeline from './app/dashboard/migration_timeline/page';
@@ -78,6 +80,7 @@ export default function App() {
         <Route path="/authentication/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/authentication/register" element={<RegisterPage />} />
+        <Route path="/docs" element={<DocsPage />} />
         <Route path="/vault/shared/:id" element={<SharedFilePage />} />
         <Route path="/dashboard" element={<DashboardLayout />}>
           <Route index element={<DashboardPage />} />
@@ -97,6 +100,8 @@ export default function App() {
 
           <Route path="migration-planner" element={<MigrationPlanner />} />
           <Route path="migration_planner" element={<MigrationPlanner />} />
+          <Route path="pqc-onboarding" element={<PqcOnboardingPage />} />
+          <Route path="pqc-onboarding-migration-process" element={<PqcOnboardingPage />} />
 
           <Route path="cbom" element={<CbomExplorer />} />
           <Route path="cbom_explorer" element={<CbomExplorer />} />

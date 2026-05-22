@@ -7,7 +7,8 @@ const router = Router()
  * Middleware: require authentication on all dashboard routes.
  */
 async function requireAuth(req: Request, res: Response, next: Function) {
-  const token = getToken(req)
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : null
+  const token = getToken(req) || queryToken
   if (!token) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   }
@@ -20,6 +21,20 @@ async function requireAuth(req: Request, res: Response, next: Function) {
   ;(req as any).user = user
   ;(req as any).token = token
   next()
+}
+
+function setSseHeaders(res: Response) {
+  res.status(200)
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+}
+
+function writeSse(res: Response, event: string, data: unknown) {
+  if (res.writableEnded) return
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 }
 
 router.use(requireAuth)
@@ -1135,6 +1150,431 @@ function complianceStatus(label: string, evidence: any[], metrics: { readiness: 
   if (metrics.readiness >= 70 && metrics.high <= Math.max(1, Math.floor(metrics.totalAssets * 0.15))) return 'Compliant'
   return 'At Risk'
 }
+
+function onboardingTaskStatus(done: boolean, active: boolean, blocked = false) {
+  if (blocked) return 'overdue'
+  if (done) return 'completed'
+  if (active) return 'in_progress'
+  return 'pending'
+}
+
+function onboardingTone(status: string) {
+  if (status === 'completed') return 'green'
+  if (status === 'in_progress') return 'blue'
+  if (status === 'overdue') return 'red'
+  return 'amber'
+}
+
+function normalizedSeverity(value: unknown) {
+  const text = String(value || '').toLowerCase()
+  if (text.includes('critical')) return 'critical'
+  if (text.includes('high')) return 'high'
+  if (text.includes('medium') || text.includes('moderate') || text.includes('warning')) return 'medium'
+  if (text.includes('low')) return 'low'
+  return 'info'
+}
+
+function statusLabelForOnboarding(status: string) {
+  if (status === 'completed') return 'Completed'
+  if (status === 'in_progress') return 'In Progress'
+  if (status === 'overdue') return 'Overdue'
+  return 'Pending'
+}
+
+function resourceForStep(step: number) {
+  const resources = [
+    [
+      { title: 'Tenant Readiness Checklist', type: 'Profile and governance record', href: '/dashboard/settings' },
+      { title: 'Scope Definition Worksheet', type: 'Asset ownership workflow', href: '/dashboard/assets' },
+      { title: 'Access and Session Controls', type: 'Security configuration', href: '/dashboard/settings' },
+      { title: 'Onboarding Evidence Vault', type: 'Audit evidence collection', href: '/dashboard/audit-vault' },
+    ],
+    [
+      { title: 'Discovery Scanner Console', type: 'Live scanner telemetry', href: '/dashboard/scanner' },
+      { title: 'CBOM Explorer', type: 'Cryptographic inventory', href: '/dashboard/cbom' },
+      { title: 'Runtime Discovery', type: 'Agent and runtime coverage', href: '/dashboard/runtime-discovery' },
+      { title: 'Asset Intelligence Map', type: 'Tenant-scoped asset graph', href: '/dashboard/asset-intelligence' },
+    ],
+    [
+      { title: 'Quantum Risk Dashboard', type: 'Risk and exposure scoring', href: '/dashboard/quantum-risk' },
+      { title: 'Vulnerability Review', type: 'Open finding triage', href: '/dashboard/vulnerabilities' },
+      { title: 'Harvest Now Risk Review', type: 'HNDL exposure workflow', href: '/dashboard/harvest-now' },
+      { title: 'Telemetry Correlation', type: 'Cross-source event analysis', href: '/dashboard/telemetry-correlation' },
+    ],
+    [
+      { title: 'Migration Execution Guide', type: 'Live orchestration workflow', href: '/dashboard/pqc-orchestration' },
+      { title: 'PQC Implementation Best Practices', type: 'Crypto-agility policy packs', href: '/dashboard/crypto-agility' },
+      { title: 'Migration Tools and Scripts', type: 'Migration terminal and logs', href: '/dashboard/migration-terminal' },
+      { title: 'Rollback Procedures', type: 'Sandbox and rollback validation', href: '/dashboard/migration-sandbox' },
+    ],
+    [
+      { title: 'Migration Sandbox', type: 'Pre-production validation', href: '/dashboard/migration-sandbox' },
+      { title: 'Live Migration Operations', type: 'Cutover monitoring', href: '/dashboard/live-migration' },
+      { title: 'TLS Telemetry Validation', type: 'Protocol verification', href: '/dashboard/tls-telemetry' },
+      { title: 'PKI Visibility Review', type: 'Certificate posture validation', href: '/dashboard/pki-visibility' },
+    ],
+    [
+      { title: 'Audit Vault', type: 'Final migration evidence', href: '/dashboard/audit-vault' },
+      { title: 'Continuous Trust Validation', type: 'Steady-state control checks', href: '/dashboard/continuous-trust' },
+      { title: 'Regulatory Mapping', type: 'Compliance evidence mapping', href: '/dashboard/regulatory-mapping' },
+      { title: 'Runtime Telemetry', type: 'Continuous event monitoring', href: '/dashboard/runtime-telemetry' },
+    ],
+  ]
+  return resources[Math.max(0, Math.min(5, step - 1))]
+}
+
+async function buildPqcOnboardingSnapshot(client: any, user: any) {
+  const [profileRows, assets, inventory, exposures, jobs, migrationEvents, scanSessions, scanResults, securityEvents, complianceEvidence, runtimeEvents, scannerAgents, scannerAlerts, generatedKeys, certificates] = await Promise.all([
+    safeRows(client, 'profiles', (q) => q.select('*').eq('id', user.id).limit(1)),
+    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(750)),
+    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', user.id).order('discovered_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(800)),
+    safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(700)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(120)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(700)),
+    safeRows(client, 'compliance_evidence', (q) => q.select('id, framework, control_id, status, evidence_type, description, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(300)),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, package_name, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(2400)),
+    safeRows(client, 'scanner_agents', (q) => q.select('id, name, status, hostname, platform, capabilities, last_seen_at, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
+    safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(900)),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, label, purpose, status, entropy_source, quality_score, created_at, expires_at, rotated_from').eq('user_id', user.id).order('created_at', { ascending: false }).limit(800)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, status, algorithm, not_after, is_quantum_safe, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(700)),
+  ])
+
+  const profile = profileRows?.[0] || {}
+  const now = Date.now()
+  const oneDay = 86_400_000
+  const since24h = now - oneDay
+
+  const activeAssets = (assets || []).filter((asset: any) => String(asset.status || 'active').toLowerCase() !== 'archived')
+  const completedJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'completed')
+  const runningJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'running')
+  const pendingJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'pending')
+  const failedJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'failed')
+  const activeScans = (scanSessions || []).filter((scan: any) => ['pending', 'running', 'analyzing', 'queued'].includes(String(scan.status || '').toLowerCase()))
+  const openAlerts = (scannerAlerts || []).filter((alert: any) => !['resolved', 'suppressed', 'closed'].includes(String(alert.status || '').toLowerCase()))
+  const criticalExposures = (exposures || []).filter((exposure: any) => severityRank(exposure.severity || '') >= 4).length
+  const highExposures = (exposures || []).filter((exposure: any) => severityRank(exposure.severity || '') >= 3).length
+  const openFindings = (scanResults || []).length + (exposures || []).length + openAlerts.length
+  const runtimeRisks = (runtimeEvents || []).filter((event: any) => event.is_legacy || event.downgrade_detected || event.shadow_crypto || event.hndl_risk || severityRank(event.severity || '') >= 3)
+  const runtime24h = (runtimeEvents || []).filter((event: any) => dateMs(event.observed_at || event.created_at) >= since24h)
+  const assessedAssets = new Set([
+    ...(inventory || []).map((item: any) => item.asset_id).filter(Boolean),
+    ...(scanResults || []).map((item: any) => item.asset_id).filter(Boolean),
+    ...(runtimeEvents || []).map((event: any) => event.asset_id).filter(Boolean),
+  ])
+  const safeInventory = (inventory || []).filter((item: any) => item.is_quantum_safe || isPqcReadyAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`))
+  const vulnerableInventory = (inventory || []).filter((item: any) => item.is_vulnerable && !item.is_quantum_safe)
+  const pqcCerts = (certificates || []).filter((cert: any) => cert.is_quantum_safe || isPqcReadyAlgorithm(`${cert.algorithm || ''}`))
+  const totalCryptoItems = Math.max(1, (inventory || []).length + (certificates || []).length)
+  const readinessScore = clampPercent(((safeInventory.length + pqcCerts.length + completedJobs.length) / Math.max(1, totalCryptoItems + jobs.length)) * 100)
+  const coverageScore = percentOf(assessedAssets.size, Math.max(1, activeAssets.length))
+  const riskScore = clampPercent(100 - Math.min(100, criticalExposures * 12 + Math.max(0, highExposures - criticalExposures) * 7 + runtimeRisks.length * 3 + failedJobs.length * 8))
+  const averageJobProgress = (jobs || []).length
+    ? clampPercent((jobs || []).reduce((sum: number, job: any) => sum + Number(job.progress || (normalizeJobStatus(job.status) === 'completed' ? 100 : 0)), 0) / jobs.length)
+    : 0
+  const validationScore = clampPercent((readinessScore * 0.45) + (riskScore * 0.35) + (complianceEvidence?.length ? 20 : 0))
+
+  let currentStep = 1
+  if (activeAssets.length || scanSessions.length || runtimeEvents.length || inventory.length) currentStep = 2
+  if (inventory.length || scanResults.length || exposures.length || runtimeRisks.length) currentStep = 3
+  if (jobs.length || migrationEvents.length) currentStep = 4
+  if (completedJobs.length && (failedJobs.length || openFindings || complianceEvidence.length || certificates.length)) currentStep = 5
+  if (completedJobs.length && validationScore >= 80 && failedJobs.length === 0 && criticalExposures === 0) currentStep = 6
+
+  const taskSets: Record<number, Array<{ label: string; detail: string; href: string; status: string; count: number; source: string }>> = {
+    1: [
+      { label: 'Confirm Tenant Profile', detail: 'Company, owner, and role profile are configured.', href: '/dashboard/settings', status: onboardingTaskStatus(Boolean(profile.company || profile.full_name || user.email), false), count: profile.company ? 1 : 0, source: 'profiles' },
+      { label: 'Register Business Assets', detail: 'Tenant assets are present for migration scoping.', href: '/dashboard/assets', status: onboardingTaskStatus(activeAssets.length > 0, activeAssets.length === 0), count: activeAssets.length, source: 'assets' },
+      { label: 'Assign Service Owners', detail: 'Assets include service ownership metadata.', href: '/dashboard/asset-intelligence', status: onboardingTaskStatus(activeAssets.some((asset: any) => asset.service_owner), activeAssets.length > 0), count: activeAssets.filter((asset: any) => asset.service_owner).length, source: 'assets.service_owner' },
+      { label: 'Prepare Audit Evidence', detail: 'Compliance and audit evidence collection has started.', href: '/dashboard/audit-vault', status: onboardingTaskStatus((complianceEvidence || []).length > 0, activeAssets.length > 0), count: (complianceEvidence || []).length, source: 'compliance_evidence' },
+    ],
+    2: [
+      { label: 'Run Discovery Scan', detail: 'PQC scan sessions have been recorded.', href: '/dashboard/scanner', status: onboardingTaskStatus(scanSessions.length > 0, activeScans.length > 0), count: scanSessions.length, source: 'pqc_scan_sessions' },
+      { label: 'Inventory Crypto Assets', detail: 'Cryptographic inventory rows are available.', href: '/dashboard/cbom', status: onboardingTaskStatus(inventory.length > 0, scanSessions.length > 0), count: inventory.length, source: 'crypto_inventory' },
+      { label: 'Collect Runtime Telemetry', detail: 'Runtime crypto events are flowing from agents or integrations.', href: '/dashboard/runtime-crypto-intel', status: onboardingTaskStatus(runtimeEvents.length > 0, scannerAgents.length > 0), count: runtimeEvents.length, source: 'runtime_crypto_events' },
+      { label: 'Register Collector Agents', detail: 'Scanner agents are connected for live discovery.', href: '/dashboard/scanner', status: onboardingTaskStatus(scannerAgents.length > 0, false), count: scannerAgents.length, source: 'scanner_agents' },
+    ],
+    3: [
+      { label: 'Tally Quantum Findings', detail: 'Scan findings and exposure rows are available for scoring.', href: '/dashboard/vulnerabilities', status: onboardingTaskStatus(openFindings > 0, scanSessions.length > 0), count: openFindings, source: 'pqc_scan_results + crypto_exposures + scanner_alerts' },
+      { label: 'Rank Critical Exposures', detail: 'Critical and high crypto risks are prioritized.', href: '/dashboard/quantum-risk', status: onboardingTaskStatus(highExposures > 0 || riskScore >= 90, openFindings > 0), count: criticalExposures + highExposures, source: 'crypto_exposures' },
+      { label: 'Correlate Runtime Detections', detail: 'Runtime risk events are included in the risk posture.', href: '/dashboard/telemetry-correlation', status: onboardingTaskStatus(runtimeRisks.length > 0, runtimeEvents.length > 0), count: runtimeRisks.length, source: 'runtime_crypto_events' },
+      { label: 'Build Migration Backlog', detail: 'Findings have a migration or remediation plan.', href: '/dashboard/migration-planner', status: onboardingTaskStatus(jobs.length > 0, openFindings > 0), count: jobs.length, source: 'migration_jobs' },
+    ],
+    4: [
+      { label: 'Implement PQC Algorithms', detail: 'Completed jobs or PQC-ready crypto items have been observed.', href: '/dashboard/pqc-orchestration', status: onboardingTaskStatus(completedJobs.length > 0 || safeInventory.length > 0, runningJobs.length > 0), count: completedJobs.length + safeInventory.length, source: 'migration_jobs + crypto_inventory' },
+      { label: 'Migrate Infrastructure Components', detail: 'Migration jobs are running across tenant assets.', href: '/dashboard/live-migration', status: onboardingTaskStatus(averageJobProgress >= 80 && jobs.length > 0, runningJobs.length > 0 || pendingJobs.length > 0, failedJobs.length > 0), count: jobs.length, source: 'migration_jobs' },
+      { label: 'Update Applications and Services', detail: 'Application and service assets are being moved to PQC targets.', href: '/dashboard/migration-terminal', status: onboardingTaskStatus(completedJobs.length >= Math.max(1, Math.ceil(jobs.length * 0.6)) && jobs.length > 0, jobs.length > 0), count: completedJobs.length, source: 'migration_jobs' },
+      { label: 'Data Migration and Encryption', detail: 'Keys, certificates, and encryption services are being updated.', href: '/dashboard/keys', status: onboardingTaskStatus((generatedKeys || []).length > 0 && readinessScore >= 60, (generatedKeys || []).length > 0 || runningJobs.length > 0), count: (generatedKeys || []).length, source: 'generated_keys' },
+      { label: 'Configure Security Controls', detail: 'Compliance evidence and security policies are being recorded.', href: '/dashboard/crypto-policies', status: onboardingTaskStatus((complianceEvidence || []).length > 0, jobs.length > 0), count: (complianceEvidence || []).length, source: 'compliance_evidence' },
+      { label: 'Validate Migration Integrity', detail: 'Failed jobs, alerts, and runtime risks are reconciled.', href: '/dashboard/migration-sandbox', status: onboardingTaskStatus(completedJobs.length > 0 && failedJobs.length === 0 && criticalExposures === 0, completedJobs.length > 0, failedJobs.length > 0), count: failedJobs.length, source: 'migration_jobs + crypto_exposures' },
+    ],
+    5: [
+      { label: 'Execute Sandbox Tests', detail: 'Completed migration jobs are ready for validation.', href: '/dashboard/migration-sandbox', status: onboardingTaskStatus(completedJobs.length > 0, runningJobs.length > 0), count: completedJobs.length, source: 'migration_jobs' },
+      { label: 'Validate TLS and PKI', detail: 'PQC certificates and TLS telemetry are checked.', href: '/dashboard/tls-telemetry', status: onboardingTaskStatus(pqcCerts.length > 0 || runtimeEvents.some((event: any) => event.is_pqc), runtimeEvents.length > 0), count: pqcCerts.length, source: 'certificates + runtime_crypto_events' },
+      { label: 'Resolve Failed Jobs', detail: 'No failed migration jobs remain.', href: '/dashboard/live-migration', status: onboardingTaskStatus(failedJobs.length === 0 && jobs.length > 0, failedJobs.length > 0, failedJobs.length > 0), count: failedJobs.length, source: 'migration_jobs' },
+      { label: 'Attach Audit Evidence', detail: 'Compliance evidence confirms the migration outcome.', href: '/dashboard/audit-vault', status: onboardingTaskStatus(complianceEvidence.length > 0, completedJobs.length > 0), count: complianceEvidence.length, source: 'compliance_evidence' },
+    ],
+    6: [
+      { label: 'Enable Continuous Monitoring', detail: 'Runtime telemetry and scanner agents remain active.', href: '/dashboard/runtime-telemetry', status: onboardingTaskStatus(runtime24h.length > 0 || scannerAgents.length > 0, true), count: runtime24h.length + scannerAgents.length, source: 'runtime_crypto_events + scanner_agents' },
+      { label: 'Maintain Governance Evidence', detail: 'Compliance records continue to sync.', href: '/dashboard/regulatory-mapping', status: onboardingTaskStatus(complianceEvidence.length > 0, completedJobs.length > 0), count: complianceEvidence.length, source: 'compliance_evidence' },
+      { label: 'Monitor Residual Risk', detail: 'High-risk detections are reduced and tracked.', href: '/dashboard/quantum-risk-scoring', status: onboardingTaskStatus(runtimeRisks.length === 0 && criticalExposures === 0, runtimeEvents.length > 0, runtimeRisks.length > 0 || criticalExposures > 0), count: runtimeRisks.length + criticalExposures, source: 'runtime_crypto_events + crypto_exposures' },
+      { label: 'Keep PQC Inventory Current', detail: 'PQC-ready inventory remains visible across the tenant.', href: '/dashboard/cbom', status: onboardingTaskStatus(readinessScore >= 80, inventory.length > 0), count: safeInventory.length, source: 'crypto_inventory' },
+    ],
+  }
+
+  const currentTasks = taskSets[currentStep]
+  const completedTasks = currentTasks.filter((task) => task.status === 'completed').length
+  const inProgressTasks = currentTasks.filter((task) => task.status === 'in_progress').length
+  const pendingTaskCount = currentTasks.filter((task) => task.status === 'pending').length
+  const overdueTaskCount = currentTasks.filter((task) => task.status === 'overdue').length
+  const stepProgress = clampPercent(((completedTasks + inProgressTasks * 0.5) / Math.max(1, currentTasks.length)) * 100)
+  const overallProgress = clampPercent((((currentStep - 1) / 6) * 100) + (stepProgress / 6))
+
+  const stepNames = [
+    { id: 1, title: 'Awareness & Preparation', href: '/dashboard/settings' },
+    { id: 2, title: 'Discovery & Inventory', href: '/dashboard/scanner' },
+    { id: 3, title: 'Risk Assessment & Planning', href: '/dashboard/quantum-risk' },
+    { id: 4, title: 'Migration Execution', href: '/dashboard/pqc-orchestration' },
+    { id: 5, title: 'Migration Testing', href: '/dashboard/migration-sandbox' },
+    { id: 6, title: 'Validation & Monitoring', href: '/dashboard/audit-vault' },
+  ]
+
+  const steps = stepNames.map((step) => ({
+    ...step,
+    status: step.id < currentStep ? 'completed' : step.id === currentStep ? 'current' : 'pending',
+    progress: step.id < currentStep ? 100 : step.id === currentStep ? stepProgress : 0,
+  }))
+
+  const currentStepMeta = stepNames[currentStep - 1]
+  const nextStep = stepNames[currentStep] || null
+  const firstAssetMeta = recordOf((assets || [])[0]?.metadata)
+  const allStartDates = [
+    profile.created_at,
+    ...(assets || []).map((asset: any) => asset.created_at),
+    ...(scanSessions || []).map((scan: any) => scan.started_at || scan.created_at),
+    ...(jobs || []).map((job: any) => job.started_at || job.created_at),
+  ].map(dateMs).filter(Boolean).sort((a, b) => a - b)
+  const targetDates = (jobs || [])
+    .map((job: any) => recordOf(job.metadata).targetGoLive || recordOf(job.metadata).target_go_live || recordOf(job.metadata).goLive || recordOf(job.metadata).go_live || job.completed_at)
+    .map(dateMs)
+    .filter(Boolean)
+    .sort((a, b) => b - a)
+
+  const projectManager = textValue(
+    profile.full_name || profile.name || profile.username || profile.email || user.email,
+    textValue(activeAssets.find((asset: any) => asset.service_owner)?.service_owner, 'Not assigned'),
+  )
+  const status = failedJobs.length || criticalExposures > 0
+    ? 'Action Required'
+    : currentStep === 6
+      ? 'Monitoring'
+      : jobs.length || activeScans.length || openFindings
+        ? 'In Progress'
+        : 'Preparing'
+
+  const activityItems = [
+    ...(migrationEvents || []).map((event: any) => ({
+      id: `migration-${event.id}`,
+      type: 'migration',
+      title: event.message || titleCase(event.event_type || 'Migration event'),
+      actor: textValue(recordOf(event.metadata).actor || recordOf(event.metadata).operator, 'Migration pipeline'),
+      timestamp: event.created_at,
+      severity: normalizedSeverity(event.severity),
+    })),
+    ...(securityEvents || []).map((event: any) => ({
+      id: `security-${event.id}`,
+      type: 'security',
+      title: event.message || titleCase(event.event_type || 'Security event'),
+      actor: textValue(event.resource_name, textValue(event.resource_type, 'Security telemetry')),
+      timestamp: event.created_at,
+      severity: normalizedSeverity(event.severity),
+    })),
+    ...(runtimeEvents || []).map((event: any) => ({
+      id: `runtime-${event.id}`,
+      type: 'runtime',
+      title: titleCase(event.event_type || event.operation_type || 'Runtime crypto event'),
+      actor: textValue(event.asset_name || event.host || event.source_type, 'Runtime collector'),
+      timestamp: event.observed_at || event.created_at,
+      severity: normalizedSeverity(event.severity || (event.is_legacy || event.downgrade_detected ? 'high' : 'info')),
+    })),
+    ...(scanSessions || []).map((scan: any) => ({
+      id: `scan-${scan.id}`,
+      type: 'scan',
+      title: `PQC scan ${titleCase(String(scan.status || 'recorded'))}`,
+      actor: 'Scanner engine',
+      timestamp: scan.completed_at || scan.updated_at || scan.started_at || scan.created_at,
+      severity: normalizedSeverity(Number(scan.findings_count || 0) > 0 ? 'medium' : 'info'),
+    })),
+    ...(openAlerts || []).map((alert: any) => ({
+      id: `alert-${alert.id}`,
+      type: 'alert',
+      title: alert.title || alert.message || titleCase(alert.category || 'Scanner alert'),
+      actor: 'Agent scanner',
+      timestamp: alert.updated_at || alert.created_at,
+      severity: normalizedSeverity(alert.severity),
+    })),
+  ].filter((item) => item.timestamp)
+    .sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp))
+    .slice(0, 10)
+
+  const benefits = [
+    {
+      label: 'Quantum-Ready Infrastructure',
+      value: `${readinessScore}%`,
+      detail: `${safeInventory.length + pqcCerts.length} PQC-ready crypto items`,
+      status: readinessScore >= 80 ? 'completed' : readinessScore > 0 ? 'in_progress' : 'pending',
+    },
+    {
+      label: 'Risk Reduction & Resilience',
+      value: `${riskScore}%`,
+      detail: `${criticalExposures + highExposures} high-priority exposures`,
+      status: riskScore >= 80 ? 'completed' : criticalExposures ? 'overdue' : 'in_progress',
+    },
+    {
+      label: 'Regulatory Compliance',
+      value: String(complianceEvidence.length),
+      detail: 'Compliance evidence records',
+      status: complianceEvidence.length > 0 ? 'completed' : jobs.length > 0 ? 'in_progress' : 'pending',
+    },
+    {
+      label: 'Future-Proof Investment',
+      value: `${completedJobs.length}/${Math.max(1, jobs.length)}`,
+      detail: 'Completed migration workflows',
+      status: completedJobs.length === jobs.length && jobs.length > 0 ? 'completed' : jobs.length > 0 ? 'in_progress' : 'pending',
+    },
+    {
+      label: 'Continuous Protection',
+      value: String(runtime24h.length + scannerAgents.length),
+      detail: 'Runtime events and collectors',
+      status: runtime24h.length || scannerAgents.length ? 'in_progress' : 'pending',
+    },
+  ]
+
+  return {
+    generatedAt: new Date().toISOString(),
+    currentStep,
+    currentStepTitle: currentStepMeta.title,
+    currentStepStatus: status,
+    nextStep: nextStep ? { title: nextStep.title, href: nextStep.href } : null,
+    overallProgress,
+    stepProgress,
+    steps,
+    stepOverview: {
+      bullets: currentTasks.map((task) => task.detail),
+      tasksCompleted: completedTasks,
+      inProgress: inProgressTasks,
+      pending: pendingTaskCount,
+      overdue: overdueTaskCount,
+      totalTasks: currentTasks.length,
+    },
+    tasks: currentTasks.map((task) => ({
+      ...task,
+      labelStatus: statusLabelForOnboarding(task.status),
+      tone: onboardingTone(task.status),
+    })),
+    resources: resourceForStep(currentStep),
+    activity: activityItems,
+    client: {
+      name: textValue(profile.company || firstAssetMeta.organization || firstAssetMeta.clientName || firstAssetMeta.client_name, textValue(profile.full_name || profile.name || user.email, 'Not configured')),
+      industry: textValue(profile.industry || firstAssetMeta.industry || firstAssetMeta.sector, 'Not configured'),
+      onboardingStartDate: allStartDates.length ? new Date(allStartDates[0]).toISOString() : null,
+      targetGoLive: targetDates.length ? new Date(targetDates[0]).toISOString() : null,
+      projectManager,
+      status,
+      avatarUrl: profile.avatar_url || user.user_metadata?.avatar_url || null,
+      email: user.email || profile.email || null,
+    },
+    metrics: {
+      assets: activeAssets.length,
+      assessedAssets: assessedAssets.size,
+      findings: openFindings,
+      criticalExposures,
+      highExposures,
+      riskScore,
+      readinessScore,
+      migrationJobs: jobs.length,
+      completedMigrations: completedJobs.length,
+      runningMigrations: runningJobs.length,
+      failedMigrations: failedJobs.length,
+      runtimeEvents: runtimeEvents.length,
+      runtimeEvents24h: runtime24h.length,
+      activeScans: activeScans.length,
+      scannerAgents: scannerAgents.length,
+      openAlerts: openAlerts.length,
+      generatedKeys: (generatedKeys || []).length,
+      certificates: (certificates || []).length,
+      vulnerableCryptoItems: vulnerableInventory.length,
+      coverageScore,
+    },
+    benefits,
+    sync: {
+      userId: user.id,
+      sourceTables: {
+        assets: assets.length,
+        crypto_inventory: inventory.length,
+        crypto_exposures: exposures.length,
+        migration_jobs: jobs.length,
+        migration_events: migrationEvents.length,
+        pqc_scan_sessions: scanSessions.length,
+        pqc_scan_results: scanResults.length,
+        security_events: securityEvents.length,
+        compliance_evidence: complianceEvidence.length,
+        runtime_crypto_events: runtimeEvents.length,
+        scanner_agents: scannerAgents.length,
+        scanner_alerts: scannerAlerts.length,
+        generated_keys: generatedKeys.length,
+        certificates: certificates.length,
+      },
+    },
+  }
+}
+
+router.get('/pqc-onboarding', async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user
+    const token = (req as any).token
+    const client = createAuthClient(token)
+
+    if (!client) {
+      return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+    }
+
+    return res.json({ data: await buildPqcOnboardingSnapshot(client, user) })
+  } catch (err) {
+    console.error('PQC onboarding dashboard error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch PQC onboarding telemetry' } })
+  }
+})
+
+router.get('/pqc-onboarding/stream', async (req: Request, res: Response) => {
+  const user = (req as any).user
+  const token = (req as any).token
+  const client = createAuthClient(token)
+
+  if (!client) {
+    return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+  }
+
+  setSseHeaders(res)
+  writeSse(res, 'connected', { timestamp: new Date().toISOString(), userId: user.id })
+
+  const emitSnapshot = async () => {
+    const snapshot = await buildPqcOnboardingSnapshot(client, user)
+    writeSse(res, 'pqc-onboarding-update', snapshot)
+  }
+
+  await emitSnapshot().catch((error) => console.warn('PQC onboarding stream initial emit failed:', error?.message || error))
+  const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 15_000)
+  const poll = setInterval(() => emitSnapshot().catch(() => undefined), 8_000)
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    clearInterval(poll)
+    res.end()
+  })
+})
 
 type HndlRemediationCandidate = {
   findingId: string
