@@ -7,25 +7,27 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
 import { Hero195 } from "@/components/ui/hero-195";
+import { StickyFeatureSection } from "@/components/ui/sticky-scroll-cards-section";
+import { QuantumFeaturesMarquee } from "@/components/ui/QuantumFeaturesMarquee";
 import {
   Activity,
-  Gamepad2,
+  Calendar,
   Shield,
   Check,
+  CheckCircle2,
   Clock,
   Cloud,
   Hourglass as HourglassIcon,
   Map,
   Database,
+  Key,
   KeyRound,
   Lock,
-  LockKeyhole,
   AlertTriangle,
   MoveRight,
   FileCheck,
   Users,
   Search,
-  SearchCheck,
   Zap,
   TrendingDown,
   Globe,
@@ -33,19 +35,19 @@ import {
   Play,
   ChevronDown,
   Plus,
+  RefreshCw,
   RefreshCcw,
-  Star,
   Twitter,
   Linkedin,
-  Youtube,
-  Facebook,
   Github,
   Flame,
+  Sparkles,
+  Terminal,
+  Info,
   type LucideIcon
 } from 'lucide-react';
 import { CyberBackground } from '../components/CyberBackground';
 import { Button } from '../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { TooltipProvider } from '../components/ui/tooltip';
 import hourGlassVideo from '../assets/Hour_Glass_Video.mp4';
@@ -70,19 +72,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
 const MS_PER_SECOND = 1000;
-const ENTERPRISE_CYCLE_MS = 5000;
 const USE_CASE_CYCLE_MS = 6200;
-
-type EnterpriseProtectionFeature = {
-  id: string;
-  name: string;
-  title: string;
-  description: string;
-  metric: string;
-  status: string;
-  image: string;
-  icon: LucideIcon;
-};
 
 type QuantumUseCaseFeature = {
   id: number;
@@ -94,83 +84,255 @@ type QuantumUseCaseFeature = {
   keyFeatures: string[];
 };
 
-const ENTERPRISE_PROTECTION_FEATURES: EnterpriseProtectionFeature[] = [
+type MigrationStep = {
+  id: string;
+  num: string;
+  title: string;
+  description: string;
+  details: string;
+  badge: string;
+  icon: LucideIcon;
+};
+
+type CryptoKey = {
+  name: string;
+  type: string;
+  keySize: string;
+  structure: string;
+  securityBits: number;
+  quantumStatus: 'vulnerable' | 'symmetric' | 'pqc';
+  quantumAttackModel: string;
+  assessment: string;
+};
+
+type RoadmapMilestone = {
+  id: string;
+  quarter: string;
+  title: string;
+  subtitle: string;
+  status: 'active' | 'scheduled';
+  statusLabel: string;
+  description: string;
+  deliverables: string[];
+  metrics: Array<{ name: string; val: string }>;
+};
+
+const MIGRATION_PROCESS_STEPS: MigrationStep[] = [
   {
-    id: "scanner",
-    name: "Scanner",
-    title: "Quantum Vulnerability Scanner",
-    description:
-      "Comprehensive quantum-vulnerability detection across your entire attack surface. Scan your assets for cryptographic algorithms vulnerable to quantum attacks. Get your real-time Q-Score.",
-    metric: "92/100 Q-Score",
-    status: "Active",
-    image: "/Scanner.png",
-    icon: SearchCheck
+    id: '01',
+    num: '01',
+    title: 'Discover',
+    description: 'Identify all crypto assets and their dependencies.',
+    details: 'Automated scans crawl network databases, cloud containers, SSH keystores, TLS endpoints, and custom proprietary protocol tunnels to build a secure unified index of all certificates and operational ciphers.',
+    badge: 'STANDARDS-COMPLIANT',
+    icon: Search
   },
   {
-    id: "migration",
-    name: "Migration",
-    title: "PQC Migration Wizard",
-    description:
-      "One-click migration to NIST-approved post-quantum cryptography. ML-KEM (Kyber) for encryption, ML-DSA (Dilithium) for signatures.",
-    metric: "62% Ready",
-    status: "PQC Ready",
-    image: "/migration_wizard.png",
+    id: '02',
+    num: '02',
+    title: 'Assess',
+    description: 'Analyze risks and prioritize based on impact.',
+    details: 'Flag weak hashing protocols, vulnerable asymmetric algorithm families, and forecast decryptions calculated on Shor timelines. Assign high-risk status to critical system elements first.',
+    badge: 'AI-POWERED THREAT MODELING',
+    icon: Shield
+  },
+  {
+    id: '03',
+    num: '03',
+    title: 'Plan',
+    description: 'Build a migration roadmap aligned with NIST PQC.',
+    details: 'Compile sequential project roadmaps matching NIST migration criteria. Establish dual-key and hybrid strategy envelopes so infrastructure remains resilient during ongoing migrations.',
+    badge: 'NIST ALIGNED ADVISORY',
+    icon: FileCheck
+  },
+  {
+    id: '04',
+    num: '04',
+    title: 'Migrate',
+    description: 'Execute migration with hybrid and PQC technology.',
+    details: 'Deploy post-quantum algorithms such as ML-KEM keys and ML-DSA signatures dynamically alongside safe fallback controls. Provision high-entropy grids across active channels.',
+    badge: 'ACTIVE HARDENING',
     icon: RefreshCcw
   },
   {
-    id: "keygen",
-    name: "Keygen",
-    title: "Quantum Key Generator",
-    description:
-      "Generate true quantum-random keys using QRNG entropy sources. Far superior to classical pseudo-random number generators.",
-    metric: "99.997% Entropy",
-    status: "Secure",
-    image: "/Encryption_key.png",
-    icon: KeyRound
+    id: '05',
+    num: '05',
+    title: 'Validate',
+    description: 'Verify compatibility, performance, and security.',
+    details: 'Validate that larger post-quantum packet sizes navigate gateways, hardware decoders, firewalls, and routers without packet fragmentation or latency anomalies.',
+    badge: 'PERFORMANCE GUARANTEED',
+    icon: Check
   },
   {
-    id: "simulator",
-    name: "Simulator",
-    title: "Threat Simulator",
-    description:
-      "Watch Shor's algorithm crack weak RSA keys in real-time. Earn Quantum Shield badges and compete on leaderboards.",
-    metric: "2,341 Runs",
-    status: "Simulating",
-    image: "/simulator.png",
-    icon: Gamepad2
-  },
-  {
-    id: "vault",
-    name: "Vault",
-    title: "Secure Quantum Vault",
-    description:
-      "PQC-encrypted secure vault for file storage and messaging, delivering end-to-end quantum-resistant protection for encrypted files, communications, and sensitive data.",
-    metric: "12,580 Files",
-    status: "Encrypted",
-    image: "/vault.png",
-    icon: LockKeyhole
-  },
-  {
-    id: "monitor",
-    name: "Monitor",
-    title: "Continuous Monitoring",
-    description:
-      "Always-on background scanning with real-time alerts. Track your Q-Score trend and get proactive protection recommendations.",
-    metric: "24.8K Events",
-    status: "Real-Time",
-    image: "/monitoring.png",
+    id: '06',
+    num: '06',
+    title: 'Monitor',
+    description: 'Continuously monitor, optimize, and stay ready.',
+    details: 'Continuous monitoring flags unauthorized non-PQC ciphers, runs audits against compliance guidance, and keeps firmware and ciphers modular automatically.',
+    badge: 'ZERO STATE DECAY',
     icon: Activity
+  }
+];
+
+const CRYPTO_SANDBOX_KEYS: CryptoKey[] = [
+  {
+    name: "RSA-2048",
+    type: "Legacy Public-Key Encryption / Signature",
+    keySize: "2048-bit modulus",
+    structure: "Integer Factorization",
+    securityBits: 112,
+    quantumStatus: "vulnerable",
+    quantumAttackModel:
+      "Vulnerable to Shor's algorithm on a future large-scale fault-tolerant quantum computer.",
+    assessment:
+      "Requires inventory, risk scoring, and migration planning toward NIST-approved PQC where supported."
   },
   {
-    id: "governance",
-    name: "Governance",
-    title: "Governance & Compliance",
+    name: "ECDSA P-256",
+    type: "Legacy Elliptic-Curve Digital Signature",
+    keySize: "256-bit curve",
+    structure: "Elliptic-Curve Discrete Logarithm",
+    securityBits: 128,
+    quantumStatus: "vulnerable",
+    quantumAttackModel:
+      "Vulnerable to Shor's algorithm on a future large-scale fault-tolerant quantum computer.",
+    assessment:
+      "Prioritize for signature migration planning using ML-DSA or SLH-DSA where protocol and vendor support exists."
+  },
+  {
+    name: "AES-256",
+    type: "Symmetric Block Cipher",
+    keySize: "256-bit key",
+    structure: "Symmetric-Key Cryptography",
+    securityBits: 256,
+    quantumStatus: "symmetric",
+    quantumAttackModel:
+      "Not affected by Shor's algorithm. Grover's algorithm gives a quadratic brute-force speedup.",
+    assessment:
+      "AES-256 is commonly treated as providing about 128-bit post-quantum security when implemented correctly."
+  },
+  {
+    name: "ML-KEM-768",
+    type: "NIST FIPS 203 Key Encapsulation Mechanism",
+    keySize: "Public key: 1184 bytes; Ciphertext: 1088 bytes",
+    structure: "Module-Lattice / Module-LWE",
+    securityBits: 192,
+    quantumStatus: "pqc",
+    quantumAttackModel:
+      "No known efficient quantum attack comparable to Shor's attack on RSA/ECC.",
+    assessment:
+      "NIST-standardized PQC target for quantum-resistant key establishment. Not mathematically proven unbreakable."
+  },
+  {
+    name: "ML-DSA-65",
+    type: "NIST FIPS 204 Digital Signature",
+    keySize: "Public key: 1952 bytes; Signature: 3309 bytes",
+    structure: "Module-Lattice Digital Signature",
+    securityBits: 192,
+    quantumStatus: "pqc",
+    quantumAttackModel:
+      "No known efficient quantum attack comparable to Shor's attack on RSA/ECC.",
+    assessment:
+      "NIST-standardized PQC target for quantum-resistant digital signatures. Requires correct implementation and validation."
+  },
+  {
+    name: "SLH-DSA",
+    type: "NIST FIPS 205 Stateless Hash-Based Signature",
+    keySize: "Parameter-dependent",
+    structure: "Stateless Hash-Based Signature",
+    securityBits: 128,
+    quantumStatus: "pqc",
+    quantumAttackModel:
+      "Hash-based design. No known Shor-style polynomial-time attack applies.",
+    assessment:
+      "Useful as a conservative signature option where larger signatures and performance tradeoffs are acceptable."
+  }
+];
+
+const ROADMAP_MILESTONES: RoadmapMilestone[] = [
+  {
+    id: "01",
+    quarter: "2026",
+    title: "Cryptographic Inventory & Discovery",
+    subtitle: "CRYPTOGRAPHIC ASSET IDENTIFICATION",
+    status: "active",
+    statusLabel: "FOUNDATION PHASE",
     description:
-      "Enterprise-grade policy enforcement and compliance reporting. Align your cryptographic posture with NIST 800-203 and CNSA 2.0 standards automatically with full audit trails.",
-    metric: "100% Compliant",
-    status: "Audited",
-    image: "/governance.png",
-    icon: FileCheck
+      "Establish a complete cryptographic inventory across applications, services, certificates, keys, protocols, libraries, APIs, cloud workloads, VPNs, PKI, and vendor dependencies. Identify where quantum-vulnerable public-key cryptography such as RSA, Diffie-Hellman, ECDH, ECDSA, and DSA is used.",
+    deliverables: [
+      "Discover TLS certificates, SSH keys, VPN handshakes, signing keys, PKI assets, and embedded cryptographic libraries",
+      "Build a CBOM / cryptographic bill of materials for applications, services, containers, cloud assets, and third-party dependencies",
+      "Identify deprecated TLS versions, weak cipher suites, SHA-1 usage, unmanaged certificates, shadow crypto, and hardcoded keys",
+      "Classify long-lived data exposure for Harvest Now, Decrypt Later risk",
+      "Create initial quantum-risk scoring and owner mapping per asset"
+    ],
+    metrics: [
+      { name: "Primary NIST Goal", val: "Inventory" },
+      { name: "Risk Focus", val: "RSA / ECC / DH" }
+    ]
+  },
+  {
+    id: "02",
+    quarter: "2027",
+    title: "Risk Prioritization & PQC Pilot Planning",
+    subtitle: "ROADMAP, TESTING, AND CRYPTO-AGILITY",
+    status: "scheduled",
+    statusLabel: "PLANNED TARGET",
+    description:
+      "Prioritize migration based on data sensitivity, certificate lifetime, algorithm exposure, business criticality, vendor readiness, protocol support, and operational risk. Begin controlled pilots using NIST-standardized post-quantum algorithms where supported.",
+    deliverables: [
+      "Create migration tiers for high-value and long-lived data systems",
+      "Validate crypto-agility patterns that separate algorithm policy from application logic",
+      "Pilot ML-KEM for key establishment in supported test environments",
+      "Pilot ML-DSA and SLH-DSA for digital signature use cases where applicable",
+      "Measure interoperability, latency, certificate size impact, handshake behavior, rollback requirements, and operational readiness"
+    ],
+    metrics: [
+      { name: "Primary NIST Goal", val: "Prioritize" },
+      { name: "PQC Standards", val: "FIPS 203 / 204 / 205" }
+    ]
+  },
+  {
+    id: "03",
+    quarter: "2028",
+    title: "Phased PQC Migration & Hybrid Deployment",
+    subtitle: "CONTROLLED TRANSITION TO QUANTUM-RESISTANT CRYPTO",
+    status: "scheduled",
+    statusLabel: "PLANNED TARGET",
+    description:
+      "Start phased migration of priority systems using approved PQC algorithms and hybrid transition patterns where interoperability requires classical and post-quantum mechanisms during the transition period. Avoid unsupported production claims and validate each integration against vendor, protocol, compliance, and performance requirements.",
+    deliverables: [
+      "Deploy ML-KEM-based key establishment where product, protocol, and compliance support are available",
+      "Migrate selected signing workflows toward ML-DSA or SLH-DSA based on use case, performance, and signature-size requirements",
+      "Update certificate lifecycle management, PKI workflows, key rotation procedures, and backup/restore controls",
+      "Coordinate third-party vendor readiness reviews and contractual PQC migration commitments",
+      "Maintain rollback plans, interoperability tests, monitoring, and phased cutover controls"
+    ],
+    metrics: [
+      { name: "Primary NIST Goal", val: "Migrate" },
+      { name: "Deployment Mode", val: "Phased / Hybrid" }
+    ]
+  },
+  {
+    id: "04",
+    quarter: "2029",
+    title: "Validation, Governance & Continuous Crypto-Agility",
+    subtitle: "POST-MIGRATION ASSURANCE AND CONTINUOUS MONITORING",
+    status: "scheduled",
+    statusLabel: "PLANNED TARGET",
+    description:
+      "Validate migrated systems, continuously monitor cryptographic posture, enforce approved algorithm policy, and maintain crypto-agility so algorithms, libraries, certificates, and protocols can be updated as standards, vendor support, and compliance requirements evolve.",
+    deliverables: [
+      "Continuously monitor for reintroduced RSA/ECC dependencies, deprecated TLS, weak certificates, and unmanaged cryptographic assets",
+      "Verify PQC implementation status, key lifecycle controls, certificate rotations, and logging evidence",
+      "Maintain governance dashboards for compliance, audit readiness, asset ownership, exception handling, and executive reporting",
+      "Update cryptographic policy as NIST, IETF, vendors, and regulators evolve implementation guidance",
+      "Operate recurring validation, incident response playbooks, and crypto-agility change controls"
+    ],
+    metrics: [
+      { name: "Primary NIST Goal", val: "Validate" },
+      { name: "Operating Model", val: "Continuous Crypto-Agility" }
+    ]
   }
 ];
 
@@ -413,60 +575,90 @@ const TESTIMONIALS = [
   }
 ];
 
-const PRICING_PLANS = [
+type PricingPlan = {
+  name: string;
+  description: string;
+  priceMonthly: number;
+  priceYearly: number;
+  badge: string;
+  icon: LucideIcon;
+  features: string[];
+  notIncluded: string[];
+  ctaText: string;
+  popular: boolean;
+};
+
+const PRICING_PLANS: PricingPlan[] = [
   {
-    name: "Starter Plan",
-    price: "5",
-    yearlyPrice: "3",
-    period: "month",
+    name: "Starter",
+    description: "Essential post-quantum discovery tools for growing systems targeting early compliance.",
+    priceMonthly: 490,
+    priceYearly: 390,
+    badge: "BASIC DISCOVERY",
+    icon: Shield,
     features: [
-      "10 quantum vulnerability scans per month",
-      "Q-Score dashboard",
-      "Threat simulator (basic)",
-      "5 QRNG keys per month",
-      "5 GB Quantum Vault"
+      "Passive Cryptographic Discovery",
+      "Legacy Cipher Vulnerability Scanning",
+      "Identify up to 250 Active Endpoints",
+      "Basic Q-Score Risk Indicator",
+      "Weekly Automated Posture Scan",
+      "NIST PQC Standards Alignment Reports",
+      "Standard Email Support (24hr SLA)"
     ],
-    description: "Get started with quantum security at no cost",
-    buttonText: "Start Free",
-    isPopular: false
+    notIncluded: [
+      "Active Hybrid Orchestrator Controls",
+      "Real-time VPN Packet Inspections",
+      "Custom SOC 2 Crypto Audits",
+      "Dedicated Post-Quantum Cryptographers"
+    ],
+    ctaText: "Start Scanning Today",
+    popular: false
   },
   {
     name: "Pro",
-    price: "10",
-    yearlyPrice: "8",
-    period: "month",
+    description: "Advanced intelligence, automated assessments, and live hybrid orchestration controls.",
+    priceMonthly: 1490,
+    priceYearly: 1195,
+    badge: "MOST POPULAR",
+    icon: Zap,
     features: [
-      "Unlimited deep scans",
-      "Full PQC migration wizard",
-      "Advanced threat simulator",
-      "Unlimited QRNG keys",
-      "20 GB Quantum Vault with 2 years data retention",
-      "Quantum Messaging",
-      "Advanced QML detection",
-      "Priority support"
+      "Everything in Starter tier",
+      "Automated Hybrid Cryptography Orchestration",
+      "Up to 2,500 Monitored Endpoints",
+      "Active Q-Score Risk Priority Analytics",
+      "Real-time VPN and Network Packet Inspects",
+      "Continuous ML-KEM/Kyber Handshake Simulation",
+      "NIST PQC, NSA Suite B & CNSA 2.0 Audits",
+      "Priority 24/7 Engineering Hotline"
     ],
-    description: "Ideal for individuals and small teams",
-    buttonText: "Go Pro",
-    isPopular: true
+    notIncluded: [
+      "Enterprise Dedicated Post-Quantum Team",
+      "Custom Hardware Security Module (HSM) patches"
+    ],
+    ctaText: "Elevate Your Security",
+    popular: true
   },
   {
     name: "Elite",
-    price: "50",
-    yearlyPrice: "40",
-    period: "month",
+    description: "Full enterprise capabilities, customized threat assessments, and comprehensive crypto-agility.",
+    priceMonthly: 4990,
+    priceYearly: 3990,
+    badge: "ENTERPRISE AGILITY",
+    icon: Sparkles,
     features: [
-      "Unlimited deep scans",
-      "Full PQC migration wizard",
-      "Advanced threat simulator",
-      "Unlimited QRNG keys",
-      "50 GB Quantum Vault",
-      "Quantum Messaging",
-      "Advanced QML detection",
-      "Priority support"
+      "Full Global Access to platforms & APIs",
+      "Unlimited Monitored Crypto Endpoints",
+      "Custom HSM and KMS Direct Cryptographic Integrations",
+      "Continuous Intercept Protection (Anti-Harvesting)",
+      "Real-Time Live Cryptographic Telemetry Grid",
+      "Tailored SOC 2 & PCI-DSS 4.0 Quantum Compliance",
+      "Dedicated Post-Quantum Architect Assigned",
+      "Co-Authoring Migration Playbook Support",
+      "Uptime SLA guarantee & Custom MSA contracts"
     ],
-    description: "Maximum protection for families and power users",
-    buttonText: "Go Elite",
-    isPopular: false
+    notIncluded: [],
+    ctaText: "Establish Quantum Agility",
+    popular: false
   }
 ];
 
@@ -611,131 +803,547 @@ function getQuantumCountdown(now: Date) {
 }
 
 function EnterpriseProtectionShowcase() {
-  const [activeIndex, setActiveIndex] = useState(0);
-  const activeFeature = ENTERPRISE_PROTECTION_FEATURES[activeIndex];
-  const ActiveIcon = activeFeature.icon;
+  const [selectedKey, setSelectedKey] = useState<CryptoKey>(CRYPTO_SANDBOX_KEYS[0]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
+  const [assessmentResult, setAssessmentResult] = useState<'idle' | 'risk' | 'resilient'>('idle');
+
+  const getStatusMeta = (status: CryptoKey['quantumStatus']) => {
+    if (status === 'vulnerable') {
+      return {
+        label: 'QUANTUM-VULNERABLE',
+        className: 'bg-red-50 text-red-700 border-red-200'
+      };
+    }
+
+    if (status === 'symmetric') {
+      return {
+        label: 'SYMMETRIC RESILIENT',
+        className: 'bg-amber-50 text-amber-700 border-amber-200'
+      };
+    }
+
+    return {
+      label: 'NIST PQC',
+      className: 'bg-cyan-100 text-cyan-800 border-cyan-300'
+    };
+  };
+
+  const runAssessment = () => {
+    setIsRunning(true);
+    setAssessmentResult('idle');
+    setConsoleLogs([]);
+
+    const logs = [
+      `Initializing cryptographic risk assessment for ${selectedKey.name}...`,
+      'Checking algorithm family, key size, and cryptographic purpose...',
+      'Mapping exposure against NIST PQC migration guidance...',
+      'Evaluating Shor/Grover relevance and post-quantum readiness...'
+    ];
+
+    let logIndex = 0;
+
+    const interval = window.setInterval(() => {
+      if (logIndex < logs.length) {
+        const nextLog = logs[logIndex];
+        setConsoleLogs((prev) => [...prev, nextLog]);
+        logIndex += 1;
+        return;
+      }
+
+      window.clearInterval(interval);
+      setIsRunning(false);
+
+      if (selectedKey.quantumStatus === 'vulnerable') {
+        setConsoleLogs((prev) => [
+          ...prev,
+          `>> FINDING: ${selectedKey.name} relies on a quantum-vulnerable public-key hardness assumption.`,
+          ">> IMPACT: A future cryptographically relevant quantum computer could break this algorithm class using Shor's algorithm.",
+          '! ACTION: Prioritize inventory, exposure mapping, crypto-agility, and migration planning toward NIST-approved PQC.'
+        ]);
+        setAssessmentResult('risk');
+        return;
+      }
+
+      if (selectedKey.quantumStatus === 'symmetric') {
+        setConsoleLogs((prev) => [
+          ...prev,
+          ">> FINDING: Shor's algorithm does not apply to symmetric ciphers such as AES.",
+          ">> IMPACT: Grover's algorithm can reduce brute-force resistance quadratically.",
+          'OK STATUS: AES-256 remains appropriate for post-quantum security when implemented correctly.'
+        ]);
+        setAssessmentResult('resilient');
+        return;
+      }
+
+      setConsoleLogs((prev) => [
+        ...prev,
+        `>> FINDING: ${selectedKey.name} is aligned with finalized NIST post-quantum cryptography standards.`,
+        ">> IMPACT: No known efficient quantum attack equivalent to Shor's attack on RSA/ECC applies.",
+        'OK STATUS: Suitable PQC migration target, subject to correct implementation, validation, and protocol support.'
+      ]);
+      setAssessmentResult('resilient');
+    }, 850);
+  };
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setActiveIndex((current) => (current + 1) % ENTERPRISE_PROTECTION_FEATURES.length);
-    }, ENTERPRISE_CYCLE_MS);
-
-    return () => window.clearInterval(timer);
-  }, []);
+    setConsoleLogs([
+      `Console ready. Selected cryptographic primitive: ${selectedKey.name}.`,
+      'Awaiting quantum risk assessment trigger...'
+    ]);
+    setAssessmentResult('idle');
+  }, [selectedKey]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 36 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.75 }}
-      viewport={{ once: true, amount: 0.18 }}
-      className="mt-24"
+    <section
+      id="simulator"
+      className="mt-24 overflow-hidden border-t-2 border-slate-950 bg-slate-50 bg-[radial-gradient(#e2e8f0_1.5px,transparent_1.5px)] bg-[size:24px_24px] py-24 relative"
     >
-      <div className="mb-10 text-center md:mb-14">
-        <h3 className="text-4xl font-black leading-tight tracking-[0.08em] text-white md:text-6xl">
-          Enterprise-Grade <span className="block text-gold gold-glow md:inline">Protection</span>
-        </h3>
-        <p className="mt-4 text-sm leading-7 text-muted-foreground md:text-base">
-          Everything you need to survive the quantum computing revolution.
-        </p>
-      </div>
+      <div className="absolute right-0 bottom-0 h-80 w-80 rounded-full bg-cyan-100/30 blur-[80px]" />
+      <div className="absolute left-0 top-0 h-80 w-80 bg-cyan-100/20 blur-[80px]" />
 
-      <div className="group relative overflow-hidden rounded-2xl border border-gold/25 bg-cyber-navy/35 shadow-[0_32px_120px_rgba(0,0,0,0.5)] backdrop-blur-2xl transition-all duration-500 hover:border-gold/55 hover:shadow-[0_0_46px_rgba(212,175,55,0.24),0_32px_120px_rgba(0,0,0,0.55)]">
-        <div className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(212,175,55,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(212,175,55,0.08)_1px,transparent_1px)] [background-size:38px_38px]" />
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_24%_18%,rgba(212,175,55,0.18),transparent_38%),radial-gradient(circle_at_78%_58%,rgba(255,243,193,0.08),transparent_36%)]" />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.1),transparent_30%,rgba(212,175,55,0.08)_100%)] opacity-60" />
+      <div className="relative z-10 mx-auto max-w-7xl px-6">
+        <div className="mx-auto mb-16 max-w-3xl space-y-4 text-center">
+          <div className="inline-flex">
+            <span className="inline-flex items-center gap-1.5 rounded-none border-2 border-slate-950 bg-white px-3 py-1 font-mono text-xs font-bold leading-none tracking-widest text-slate-950 shadow-[2px_2px_0px_rgba(9,13,22,0.15)] select-none">
+              <Sparkles className="h-3.5 w-3.5 animate-pulse text-[#00c5eb]" />
+              INTERACTIVE CRYPTOGRAPHIC PLAYGROUND
+            </span>
+          </div>
 
-        <div className="relative z-10 grid min-h-[620px] gap-8 p-6 md:min-h-[560px] md:p-10 lg:grid-cols-[0.9fr_1.1fr] lg:p-12">
-          <motion.div
-            key={activeFeature.id}
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.42 }}
-            className="relative flex h-full min-h-[360px] flex-col justify-between overflow-hidden rounded-2xl border border-gold/15 bg-black/30 p-7 shadow-[0_18px_70px_rgba(0,0,0,0.36)] backdrop-blur-xl transition-all duration-500 group-hover:border-gold/35 md:p-8"
-          >
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(145deg,rgba(255,255,255,0.08),transparent_32%,rgba(212,175,55,0.1))]" />
-            <div className="relative z-10">
-              <div className="mb-8 flex items-center justify-between gap-4">
-                <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-gold/25 bg-gold/10 text-gold shadow-[0_0_28px_rgba(212,175,55,0.2)] transition-all duration-500 group-hover:scale-105 group-hover:shadow-[0_0_34px_rgba(212,175,55,0.4)]">
-                  <ActiveIcon className="h-8 w-8" />
-                </div>
-                <span className="rounded-full border border-gold/25 bg-gold/10 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-gold">
-                  {activeFeature.status}
+          <h2 className="mt-2 text-2xl font-black uppercase tracking-tight text-[#090d16] md:text-3xl select-none">
+            QUANTUM RISK ASSESSMENT SANDBOX
+          </h2>
+
+          <p className="mx-auto max-w-xl font-mono text-xs leading-relaxed tracking-wide text-slate-500 sm:text-sm select-none">
+            Simulate how cryptographic discovery identifies quantum-vulnerable
+            RSA/ECC assets, symmetric-key resilience, and NIST-standardized PQC
+            migration targets such as ML-KEM, ML-DSA, and SLH-DSA.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 items-stretch gap-8 lg:grid-cols-12">
+          <div className="relative flex flex-col justify-between rounded-none border-2 border-slate-950 bg-white p-6 shadow-[4px_4px_0px_#090d16] lg:col-span-5">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none">
+                  AVAILABLE CRYPTO PRIMITIVES
+                </span>
+
+                <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wide text-slate-500 select-none">
+                  <Key className="h-3 w-3" /> Select to assess
                 </span>
               </div>
 
-              <span className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-gold">
-                {activeFeature.name}
-              </span>
-              <h4 className="mt-6 max-w-xl text-3xl font-black leading-tight tracking-normal text-white md:text-4xl">
-                {activeFeature.title}
-              </h4>
-              <p className="mt-6 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base md:leading-8">
-                {activeFeature.description}
-              </p>
+              <div className="space-y-3">
+                {CRYPTO_SANDBOX_KEYS.map((cryptoKey) => {
+                  const isSelected = selectedKey.name === cryptoKey.name;
+                  const statusMeta = getStatusMeta(cryptoKey.quantumStatus);
+
+                  return (
+                    <button
+                      key={cryptoKey.name}
+                      type="button"
+                      onClick={() => {
+                        if (!isRunning) setSelectedKey(cryptoKey);
+                      }}
+                      className={`relative flex w-full items-center justify-between overflow-hidden rounded-none border p-4 text-left transition-all ${
+                        isSelected
+                          ? 'border-2 border-[#090d16] bg-cyan-50/25 shadow-[2px_2px_0px_rgba(9,13,22,0.1)]'
+                          : 'border-slate-200 bg-white hover:border-[#090d16] hover:bg-slate-50'
+                      } ${isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                    >
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-bold uppercase tracking-wide text-slate-950 select-none">
+                            {cryptoKey.name}
+                          </span>
+
+                          <span className={`rounded-none border px-1.5 py-0.5 font-mono text-[8px] font-extrabold uppercase tracking-wider select-none ${statusMeta.className}`}>
+                            {statusMeta.label}
+                          </span>
+                        </div>
+
+                        <span className="mt-1 block font-mono text-[9px] uppercase tracking-widest text-slate-400 select-none">
+                          {cryptoKey.type}
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="font-mono text-[11px] font-bold text-slate-700 select-none">
+                          {cryptoKey.keySize}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            <div className="relative z-10 mt-8 grid gap-3 sm:grid-cols-[minmax(110px,auto)_minmax(170px,auto)]">
-              <span className="inline-flex min-h-10 items-center justify-center rounded-full border border-gold/25 bg-gold/10 px-5 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-gold">
-                {activeFeature.status}
-              </span>
-              <span className="inline-flex min-h-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] px-5 py-2 font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-white/75">
-                {activeFeature.metric}
-              </span>
-            </div>
-          </motion.div>
+            <div className="mt-8 flex items-center gap-4 border-t-2 border-dashed border-slate-200 pt-6">
+              <div className="flex-shrink-0 border-2 border-slate-900 bg-slate-50 p-3 text-slate-950">
+                <Shield className="h-5 w-5 text-[#090d16]" />
+              </div>
 
-          <div className="relative min-h-[310px] overflow-hidden rounded-2xl border border-gold/15 bg-black/25 shadow-2xl md:min-h-[420px]">
-            <motion.img
-              key={activeFeature.image}
-              src={activeFeature.image}
-              alt={`${activeFeature.title} preview`}
-              initial={{ opacity: 0, scale: 1.04 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.5 }}
-              className="absolute inset-0 h-full w-full object-cover opacity-75 saturate-75 transition-all duration-700 group-hover:opacity-90 group-hover:saturate-100"
-            />
-            <div className="absolute inset-0 bg-gradient-to-r from-cyber-black/82 via-cyber-black/28 to-cyber-black/42" />
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,transparent_20%,rgba(0,2,5,0.78)_100%)]" />
-            <div className="absolute bottom-6 left-6 right-6 flex flex-col gap-3 rounded-xl border border-gold/15 bg-cyber-black/58 px-5 py-4 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between">
-              <span className="font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-white/70">
-                Enterprise module {activeIndex + 1}/{ENTERPRISE_PROTECTION_FEATURES.length}
-              </span>
-              <span className="h-2.5 w-2.5 rounded-full bg-gold shadow-[0_0_18px_rgba(212,175,55,0.85)]" />
+              <div className="text-left text-[11px]">
+                <p className="font-mono font-extrabold uppercase tracking-wider text-slate-950 select-none">
+                  Recommended Defense Alignment:
+                </p>
+
+                <p className="mt-1 leading-relaxed text-slate-500">
+                  Align migration with NIST FIPS 203 ML-KEM for key
+                  establishment, FIPS 204 ML-DSA for digital signatures, and
+                  FIPS 205 SLH-DSA where stateless hash-based signatures are
+                  appropriate.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="quantum-sandbox-console relative flex min-h-[460px] flex-col justify-between border-2 border-[#090d16] bg-[#040810] p-6 font-mono text-white shadow-[6px_6px_0px_#090d16] lg:col-span-7">
+            <div className="absolute top-0 inset-x-0 h-[3px] bg-[#00c5eb]" />
+
+            <div>
+              <div className="flex items-center justify-between border-b border-slate-900 pb-3.5 select-none">
+                <div className="flex items-center gap-1.5">
+                  <div className="h-2 w-2 rotate-45 rounded-none bg-rose-500" />
+                  <div className="h-2 w-2 rotate-45 rounded-none bg-amber-500" />
+                  <div className="h-2 w-2 rotate-45 rounded-none bg-emerald-500" />
+
+                  <span className="ml-2 font-mono text-[9px] font-bold uppercase tracking-widest text-slate-400">
+                    PQC_RISK_ASSESSMENT_CORE
+                  </span>
+                </div>
+
+                <span className="font-mono text-[9px] font-bold tracking-widest text-[#00c5eb]">
+                  STATUS: READY
+                </span>
+              </div>
+
+              <div className="my-5 grid grid-cols-1 gap-4 border border-slate-900 bg-[#0a101d] p-4 text-left sm:grid-cols-3">
+                <div>
+                  <span className="mb-1 block font-mono text-[8px] font-bold uppercase tracking-widest text-slate-500 select-none">
+                    ALGORITHM / STANDARD
+                  </span>
+
+                  <span className="font-mono text-[10px] font-bold text-slate-300 select-text">
+                    {selectedKey.structure}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="mb-1 block font-mono text-[8px] font-bold uppercase tracking-widest text-slate-500 select-none">
+                    QUANTUM ATTACK MODEL
+                  </span>
+
+                  <span className="font-mono text-[10px] font-bold text-slate-300 select-text">
+                    {selectedKey.quantumAttackModel}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="mb-1 block font-mono text-[8px] font-bold uppercase tracking-widest text-slate-500 select-none">
+                    RISK ASSESSMENT
+                  </span>
+
+                  <span
+                    className={`font-mono text-[10px] font-bold select-text ${
+                      selectedKey.quantumStatus === 'vulnerable'
+                        ? 'text-red-400'
+                        : 'text-[#00c5eb]'
+                    }`}
+                  >
+                    {selectedKey.assessment}
+                  </span>
+                </div>
+              </div>
+
+              <div className="min-h-[140px] max-h-48 space-y-2 overflow-y-auto pr-2 text-left text-[11px] leading-relaxed tracking-wide">
+                {consoleLogs.map((log, index) => (
+                  <motion.div
+                    key={`${log}-${index}`}
+                    initial={{ opacity: 0, x: -3 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className={
+                      log?.startsWith('!')
+                        ? 'font-bold text-red-400'
+                        : log?.startsWith('OK')
+                          ? 'font-bold text-emerald-400'
+                          : log?.startsWith('>>')
+                            ? 'font-bold text-cyan-400'
+                            : 'text-slate-400'
+                    }
+                  >
+                    <span className="mr-2 text-slate-600 select-none">
+                      [{new Date().toLocaleTimeString('en-US', { hour12: false })}]
+                    </span>
+
+                    <span className="select-text">{log}</span>
+                  </motion.div>
+                ))}
+
+                {isRunning && (
+                  <div className="mt-3 flex items-center justify-start gap-2 font-bold text-[#00c5eb]">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    <span>Evaluating quantum-relevant cryptographic exposure...</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-col items-center justify-between gap-4 border-t border-slate-900 pt-6 sm:flex-row">
+              <div className="w-full text-left sm:w-auto">
+                <AnimatePresence mode="wait">
+                  {assessmentResult === 'idle' && (
+                    <motion.span
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="block font-mono text-[9px] uppercase tracking-wider text-slate-500 select-none"
+                    >
+                      * Run assessment to classify the selected primitive
+                      against quantum-relevant risk models.
+                    </motion.span>
+                  )}
+
+                  {assessmentResult === 'risk' && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="inline-flex items-center gap-2 border border-red-500 bg-red-950/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-red-400 select-none"
+                    >
+                      <AlertTriangle className="h-4 w-4 shrink-0 text-red-500" />
+                      <span>QUANTUM MIGRATION REQUIRED</span>
+                    </motion.div>
+                  )}
+
+                  {assessmentResult === 'resilient' && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="inline-flex items-center gap-2 border border-emerald-500 bg-emerald-950/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400 select-none"
+                    >
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                      <span>POST-QUANTUM RISK ACCEPTABLE</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              <button
+                type="button"
+                disabled={isRunning}
+                onClick={runAssessment}
+                className="rounded-none border-2 border-[#00c5eb] bg-[#00c5eb] px-5 py-3 text-center font-mono text-[10.5px] font-extrabold uppercase tracking-widest text-slate-950 transition-all duration-150 hover:bg-[#00c5eb]/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500 whitespace-nowrap select-none"
+              >
+                <Terminal className="mr-1.5 inline-block h-3.5 w-3.5 shrink-0 text-slate-950" />
+                {isRunning ? 'Assessment Running...' : 'Run Quantum Risk Assessment'}
+              </button>
             </div>
           </div>
         </div>
       </div>
+    </section>
+  );
+}
 
-      <nav aria-label="Enterprise protection modules" className="mt-8 flex justify-center px-2">
-        <ol className="flex flex-wrap items-center justify-center gap-2">
-          {ENTERPRISE_PROTECTION_FEATURES.map((feature, index) => {
-            const isCurrent = activeIndex === index;
+function RoadmapSection() {
+  const [selectedId, setSelectedId] = useState<string>("01");
+  const currentMilestone =
+    ROADMAP_MILESTONES.find((milestone) => milestone.id === selectedId) || ROADMAP_MILESTONES[0];
 
-            return (
-              <li key={feature.id}>
-                <button
-                  type="button"
-                  aria-label={feature.title}
-                  title={feature.title}
-                  onClick={() => setActiveIndex(index)}
-                  className={`group flex min-h-9 items-center gap-2 rounded-full border px-3.5 py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.08em] transition-all duration-300 ${isCurrent
-                    ? 'border-gold bg-gold text-cyber-black shadow-[0_0_28px_rgba(212,175,55,0.36)]'
-                    : 'border-gold/15 bg-white/[0.04] text-white/60 hover:border-gold/45 hover:bg-gold/10 hover:text-gold'
-                    }`}
-                >
-                  <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] ${isCurrent ? 'bg-cyber-black text-gold' : 'bg-white/10 text-white/65 group-hover:bg-gold/20 group-hover:text-gold'
-                    }`}>
-                    {index + 1}
-                  </span>
-                  <span className="hidden sm:inline">{feature.name}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
-    </motion.div>
+  return (
+    <section
+      id="roadmap"
+      className="relative overflow-hidden border-t-2 border-slate-950 bg-white bg-[radial-gradient(#e2e8f0_1.5px,transparent_1.5px)] bg-[size:24px_24px] py-24"
+    >
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(rgba(2,6,23,0.02)_1px,transparent_1px)] bg-[size:20px_20px]" />
+
+      <div className="relative z-10 mx-auto max-w-7xl px-6">
+        <div className="mx-auto mb-16 max-w-3xl space-y-4 text-center select-none">
+          <span className="rounded-none border-2 border-slate-950 bg-slate-50 px-3 py-1.5 font-mono text-[10px] font-bold uppercase leading-none tracking-widest text-[#000] shadow-[2px_2px_0px_rgba(9,13,22,0.15)]">
+            NIST-ALIGNED PQC ROADMAP
+          </span>
+
+          <h2 className="mt-4 font-sans text-3xl font-black uppercase leading-none tracking-tight text-slate-950 md:text-4xl">
+            2026-2029 POST-QUANTUM MIGRATION PLAN
+          </h2>
+
+          <p className="mx-auto max-w-xl font-mono text-xs leading-relaxed tracking-wide text-slate-500 sm:text-sm">
+            A phased enterprise roadmap for discovering quantum-vulnerable
+            cryptography, prioritizing migration, piloting NIST-standardized
+            PQC, and operating continuous crypto-agility.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
+          <div className="space-y-4 lg:col-span-12 xl:col-span-5">
+            <div className="mb-4 border-b border-dashed border-slate-200 pb-2 text-left font-mono text-xs font-bold uppercase tracking-widest text-slate-400 select-none">
+              // MIGRATION PHASES: 2026 - 2029
+            </div>
+
+            <div className="relative space-y-6 pl-6 before:absolute before:left-2.5 before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-200">
+              {ROADMAP_MILESTONES.map((milestone) => {
+                const isSelected = milestone.id === selectedId;
+                const dotStyle =
+                  milestone.status === "active"
+                    ? "bg-[#00c5eb] border-slate-950 border-2 scale-125 animate-pulse"
+                    : "bg-white border-slate-900 border-2";
+
+                return (
+                  <button
+                    type="button"
+                    key={milestone.id}
+                    className="group relative w-full cursor-pointer text-left"
+                    onClick={() => setSelectedId(milestone.id)}
+                  >
+                    <div
+                      className={`absolute -left-[21px] top-1.5 z-10 h-3.5 w-3.5 rounded-full transition-all duration-300 ${dotStyle}`}
+                    />
+
+                    <div
+                      className={`rounded-none border-2 p-4 text-left transition-all duration-200 ${
+                        isSelected
+                          ? "pqc-roadmap-phase--selected translate-x-1.5 border-slate-950 bg-[#040810] text-white shadow-[4px_4px_0px_rgba(0,197,235,1)]"
+                          : "border-slate-900 bg-white text-slate-900 shadow-[2px_2px_0px_#090d16] hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between pointer-events-none select-none">
+                        <span
+                          className={`font-mono text-[10px] font-bold tracking-wider ${
+                            isSelected ? "text-[#00c5eb]" : "text-slate-500"
+                          }`}
+                        >
+                          {milestone.quarter}
+                        </span>
+
+                        <span
+                          className={`rounded-none px-2 py-0.5 font-mono text-[8px] font-black uppercase ${
+                            milestone.status === "active"
+                              ? "border border-cyan-400 bg-cyan-100 text-cyan-950"
+                              : "border border-slate-200 bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {milestone.statusLabel}
+                        </span>
+                      </div>
+
+                      <h4 className="mt-2 font-sans text-sm font-black uppercase tracking-tight select-none">
+                        {milestone.title}
+                      </h4>
+
+                      <p
+                        className={`mt-0.5 font-mono text-[10px] uppercase tracking-wider select-none ${
+                          isSelected ? "text-amber-400" : "text-slate-400"
+                        }`}
+                      >
+                        {milestone.subtitle}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="lg:col-span-12 xl:col-span-7">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={selectedId}
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.25 }}
+                className="pqc-roadmap-detail relative overflow-hidden rounded-none border-2 border-[#090d16] bg-[#040810] p-6 text-left text-white shadow-[6px_6px_0px_#090d16] md:p-8"
+              >
+                <div className="absolute top-0 inset-x-0 h-[3px] bg-[#00c5eb]" />
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:16px_16px]" />
+
+                <div className="relative z-10 space-y-6">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-dashed border-slate-900 pb-4 select-none">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-none border border-slate-900 bg-slate-950 p-1 px-2.5 font-mono text-[10px] font-bold text-cyan-400">
+                        PHASE {currentMilestone.id}
+                      </div>
+
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-slate-500">
+                        // NIST PQC MIGRATION UNIT
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-yellow-400">
+                      <Calendar className="h-4 w-4 shrink-0 text-yellow-400" />
+                      {currentMilestone.quarter}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <span className="block font-mono text-[10px] font-bold uppercase tracking-widest text-[#00c5eb] select-none">
+                      OBJECTIVE FOCUS
+                    </span>
+
+                    <h3 className="font-sans text-xl font-black uppercase tracking-tight text-white md:text-2xl select-none">
+                      {currentMilestone.title}
+                    </h3>
+
+                    <p className="max-w-2xl font-sans text-xs leading-relaxed text-slate-300 select-text">
+                      {currentMilestone.description}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 rounded-none border border-slate-900 bg-[#0a101d] p-4 select-none">
+                    {currentMilestone.metrics.map((metric) => (
+                      <div key={metric.name} className="space-y-1">
+                        <span className="block font-mono text-[9px] uppercase tracking-wider text-slate-500">
+                          {metric.name}
+                        </span>
+
+                        <span className="font-mono text-base font-black tracking-wider text-white">
+                          {metric.val}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="space-y-3 pt-2">
+                    <span className="block font-mono text-[10px] font-bold uppercase tracking-widest text-[#00c5eb] select-none">
+                      KEY DELIVERABLES & CONTROLS:
+                    </span>
+
+                    <ul className="space-y-2.5">
+                      {currentMilestone.deliverables.map((item, index) => (
+                        <li
+                          key={`${currentMilestone.id}-${index}`}
+                          className="flex items-start gap-2.5 text-slate-300"
+                        >
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#00c5eb]" />
+
+                          <span className="font-sans text-xs font-medium leading-relaxed tracking-wide select-text">
+                            {item}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-4 border-t border-dashed border-slate-900 pt-4 select-none">
+                    <span className="font-mono text-[9px] uppercase tracking-widest text-slate-500">
+                      // TARGET: INVENTORY - PRIORITIZE - MIGRATE - VALIDATE
+                    </span>
+
+                    <div className="flex items-center gap-1.5 font-sans text-xs tracking-wide text-slate-400">
+                      <span className="h-2 w-2 rounded-full bg-[#00c5eb] animate-pulse" />
+                      Crypto-agility roadmap online
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -787,7 +1395,7 @@ function QuantumSecurityUseCasesSection() {
             <span className="h-px w-24 bg-gradient-to-r from-transparent via-gold/70 to-transparent" />
           </div>
           <h3 className="text-4xl font-black uppercase leading-[1.02] tracking-[0.08em] text-white md:text-6xl">
-            Quantum Security
+            Quantum Encryption Services
             <span className="mt-2 block text-gold gold-glow">Use Cases</span>
           </h3>
           <div className="mx-auto mt-6 flex w-full max-w-xl items-center justify-center gap-3">
@@ -1051,8 +1659,88 @@ function TestimonialsSection() {
   );
 }
 
+function triggerPricingConfetti() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+
+  if (!context) return;
+
+  const colors = ["#00c5eb", "#facc15", "#090d16", "#38bdf8", "#fef08a"];
+  const particleCount = 150;
+  const origin = { x: window.innerWidth / 2, y: window.innerHeight * 0.65 };
+  const particles = Array.from({ length: particleCount }, () => {
+    const angle = (-90 + (Math.random() - 0.5) * 80) * (Math.PI / 180);
+    const speed = 5 + Math.random() * 9;
+
+    return {
+      x: origin.x,
+      y: origin.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      rotation: Math.random() * Math.PI,
+      spin: (Math.random() - 0.5) * 0.35,
+      size: 5 + Math.random() * 7,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      alpha: 1
+    };
+  });
+  const start = performance.now();
+  const duration = 1250;
+
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  canvas.style.position = 'fixed';
+  canvas.style.inset = '0';
+  canvas.style.pointerEvents = 'none';
+  canvas.style.zIndex = '9999';
+  document.body.appendChild(canvas);
+
+  const draw = (now: number) => {
+    const progress = Math.min((now - start) / duration, 1);
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach((particle) => {
+      particle.vy += 0.16;
+      particle.x += particle.vx;
+      particle.y += particle.vy;
+      particle.rotation += particle.spin;
+      particle.alpha = 1 - progress;
+
+      context.save();
+      context.globalAlpha = Math.max(particle.alpha, 0);
+      context.translate(particle.x, particle.y);
+      context.rotate(particle.rotation);
+      context.fillStyle = particle.color;
+      context.fillRect(-particle.size / 2, -particle.size / 2, particle.size, particle.size * 0.58);
+      context.restore();
+    });
+
+    if (progress < 1) {
+      requestAnimationFrame(draw);
+      return;
+    }
+
+    canvas.remove();
+  };
+
+  requestAnimationFrame(draw);
+}
+
 function PricingSection() {
-  const [isMonthly, setIsMonthly] = useState(true);
+  const navigate = useNavigate();
+  const [billingPeriod, setBillingPeriod] = useState<"monthly" | "yearly">("yearly");
+
+  const handleToggle = (period: "monthly" | "yearly") => {
+    if (period === "yearly" && billingPeriod !== "yearly") {
+      triggerPricingConfetti();
+    }
+
+    setBillingPeriod(period);
+  };
+
+  const onRequestDemo = () => navigate('/auth');
 
   return (
     <motion.section
@@ -1061,119 +1749,218 @@ function PricingSection() {
       whileInView={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.75 }}
       viewport={{ once: true, amount: 0.14 }}
-      className="relative mt-24 scroll-mt-24 overflow-hidden rounded-2xl border border-gold/15 bg-cyber-navy/20 px-6 py-24 shadow-[0_30px_120px_rgba(0,0,0,0.42)] backdrop-blur-2xl sm:px-10"
+      className="relative mt-24 scroll-mt-24 overflow-hidden border-t-2 border-slate-950 bg-white bg-[radial-gradient(#e2e8f0_1.5px,transparent_1.5px)] bg-[size:24px_24px] py-24"
     >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_8%,rgba(212,175,55,0.16),transparent_36%),radial-gradient(circle_at_82%_70%,rgba(255,243,193,0.08),transparent_35%)]" />
-      <div className="pointer-events-none absolute inset-0 opacity-30 [background-image:radial-gradient(circle,rgba(212,175,55,0.22)_1px,transparent_1px)] [background-size:34px_34px]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(rgba(2,6,23,0.01)_1px,transparent_1px)] bg-[size:20px_20px]" />
 
-      <div className="relative z-10 mx-auto max-w-6xl">
-        <header className="mx-auto mb-12 max-w-3xl text-center">
-          <h3 className="text-4xl font-black leading-tight tracking-[0.04em] text-white md:text-5xl">
-            Simple, Transparent <span className="text-gold gold-glow">Pricing</span>
+      <div className="relative z-10 mx-auto max-w-7xl px-6">
+        <div className="mx-auto max-w-3xl select-none space-y-4 text-center">
+          <span className="inline-flex rounded-none border-2 border-slate-950 bg-slate-50 px-3 py-1.5 font-mono text-[10px] font-bold uppercase leading-none tracking-widest text-[#000] shadow-[2px_2px_0px_rgba(9,13,22,0.15)]">
+            Pricing Scheme
+          </span>
+          <h3 className="mt-4 font-sans text-3xl font-black uppercase leading-none tracking-tight text-slate-950 md:text-4xl">
+            Invest in Post-Quantum Transition
           </h3>
-          <p className="mt-5 text-sm leading-7 text-muted-foreground md:text-base">
-            Quantum protection at every budget level
+          <p className="mx-auto max-w-xl font-mono text-xs leading-relaxed tracking-wide text-slate-500 sm:text-sm">
+            Transparent plans tailored to your enterprise migration velocity. Lock in long-term safety and establish certified crypto-agility.
           </p>
-        </header>
-
-        <div className="mb-12 flex items-center justify-center gap-3">
-          <span className={`font-mono text-sm font-bold transition-colors ${isMonthly ? 'text-white' : 'text-muted-foreground'}`}>
-            Monthly
-          </span>
-          <button
-            type="button"
-            aria-label="Toggle annual billing"
-            aria-pressed={!isMonthly}
-            onClick={() => setIsMonthly((current) => !current)}
-            className={`relative h-7 w-14 rounded-full border transition-all duration-300 ${isMonthly
-              ? 'border-gold/20 bg-white/10'
-              : 'border-gold/70 bg-gold/25 shadow-[0_0_24px_rgba(212,175,55,0.24)]'
-              }`}
-          >
-            <span
-              className={`absolute top-1 h-5 w-5 rounded-full bg-gold shadow-[0_0_14px_rgba(212,175,55,0.55)] transition-all duration-300 ${isMonthly ? 'left-1' : 'left-8'
-                }`}
-            />
-          </button>
-          <span className={`font-mono text-sm font-bold transition-colors ${!isMonthly ? 'text-white' : 'text-muted-foreground'}`}>
-            Annual <span className="text-gold">(Save 20%)</span>
-          </span>
         </div>
 
-        <div className="grid items-end gap-6 lg:grid-cols-3">
-          {PRICING_PLANS.map((plan, index) => {
-            const displayedPrice = isMonthly ? plan.price : plan.yearlyPrice;
+        <div className="mt-10 flex justify-center">
+          <div className="relative z-10 inline-flex h-[46px] w-[300px] select-none items-center gap-1.5 rounded-none border-2 border-slate-950 bg-white p-1 shadow-[3px_3px_0px_#090d16]">
+            <motion.div
+              className="absolute bottom-1 top-1 rounded-none bg-slate-950"
+              initial={false}
+              animate={{
+                left: billingPeriod === "monthly" ? "4px" : "150px",
+                width: "142px"
+              }}
+              transition={{ type: "spring", stiffness: 350, damping: 28 }}
+            />
+
+            <button
+              type="button"
+              onClick={() => handleToggle("monthly")}
+              aria-pressed={billingPeriod === "monthly"}
+              className={`relative z-20 flex-1 cursor-pointer rounded-none py-2 text-center font-mono text-xs font-bold uppercase transition-colors duration-200 ${
+                billingPeriod === "monthly"
+                  ? "animate-pulse text-[#fff]"
+                  : "text-slate-500 hover:text-slate-950"
+              }`}
+            >
+              Monthly
+            </button>
+            <button
+              type="button"
+              onClick={() => handleToggle("yearly")}
+              aria-pressed={billingPeriod === "yearly"}
+              className={`relative z-20 flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-none py-2 text-center font-mono text-xs font-bold uppercase transition-colors duration-200 ${
+                billingPeriod === "yearly"
+                  ? "text-[#fff]"
+                  : "text-slate-500 hover:text-slate-950"
+              }`}
+            >
+              Yearly
+              <span className={`rounded-none px-1.5 py-0.5 font-sans text-[9px] font-black tracking-tight transition-colors duration-200 ${
+                billingPeriod === "yearly"
+                  ? "border border-slate-800 bg-slate-900 text-yellow-400"
+                  : "bg-yellow-400 text-slate-950"
+              }`}>
+                -20%
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-16 grid grid-cols-1 items-stretch gap-8 lg:grid-cols-3">
+          {PRICING_PLANS.map((plan, idx) => {
+            const Icon = plan.icon;
+            const price = billingPeriod === "monthly" ? plan.priceMonthly : plan.priceYearly;
+            const savings = billingPeriod === "yearly" ? (plan.priceMonthly - plan.priceYearly) * 12 : 0;
 
             return (
               <motion.div
                 key={plan.name}
-                initial={{ opacity: 0, y: 28 }}
-                whileInView={{ opacity: 1, y: plan.isPopular ? -12 : 0 }}
-                transition={{ delay: index * 0.12, duration: 0.55 }}
-                viewport={{ once: true, amount: 0.24 }}
-                whileHover={{ y: plan.isPopular ? -18 : -8 }}
-                className={`group relative flex min-h-[560px] flex-col overflow-hidden rounded-2xl p-7 shadow-[0_22px_90px_rgba(0,0,0,0.38)] backdrop-blur-2xl transition-all duration-500 ${plan.isPopular
-                  ? 'border-2 border-gold/80 bg-gold/[0.075] shadow-[0_0_45px_rgba(212,175,55,0.24),0_28px_100px_rgba(0,0,0,0.45)]'
-                  : 'border border-gold/14 bg-white/[0.045] hover:border-gold/45 hover:bg-gold/[0.055]'
-                  }`}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-100px" }}
+                transition={{ duration: 0.4, delay: idx * 0.1 }}
+                className={`relative flex h-full flex-col justify-between rounded-none border-2 bg-white text-left transition-all duration-200 ${
+                  plan.popular
+                    ? "z-10 border-[#00c5eb] shadow-[6px_6px_0px_rgba(0,197,235,1)] lg:scale-105"
+                    : "border-[#090d16] shadow-[6px_6px_0px_#090d16]"
+                }`}
+                id={`pricing-plan-${plan.name.toLowerCase()}`}
               >
-                <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(145deg,rgba(255,255,255,0.12),transparent_34%,rgba(212,175,55,0.1))] opacity-45 transition-opacity duration-500 group-hover:opacity-70" />
+                <div className={`absolute left-0 right-0 top-0 z-0 h-[3px] ${plan.popular ? "bg-[#00c5eb]" : "bg-[#090d16]"}`} />
 
-                {plan.isPopular && (
-                  <div className="absolute right-0 top-0 flex items-center gap-1 rounded-bl-xl bg-gold px-4 py-2 font-mono text-[10px] font-black uppercase tracking-[0.1em] text-cyber-black">
-                    <Star className="h-3 w-3 fill-current" />
-                    Popular
+                {plan.popular && (
+                  <div className="absolute -top-[16px] left-1/2 z-30 -translate-x-1/2 select-none whitespace-nowrap rounded-none border-2 border-slate-950 bg-[#00c5eb] px-3.5 py-1 font-mono text-[9px] font-black uppercase tracking-widest text-slate-950 shadow-md">
+                    Recommended for Transition
                   </div>
                 )}
 
-                <div className="relative z-10 flex h-full flex-col">
-                  <p className={`mb-8 font-mono text-xs font-black uppercase tracking-[0.2em] ${plan.isPopular ? 'text-gold' : 'text-white/55'}`}>
-                    {plan.name}
-                  </p>
-
-                  <div className="mb-3 flex items-end justify-center gap-2">
-                    <span className="text-6xl font-black leading-none tracking-tight text-white md:text-7xl">
-                      ${displayedPrice}
+                <div className="space-y-6 p-6 md:p-8">
+                  <div className="flex select-none items-center justify-between">
+                    <span className={`rounded-none border px-2 py-1 font-mono text-[9px] font-bold tracking-wider ${
+                      plan.popular
+                        ? "border-cyan-300 bg-cyan-50 text-cyan-600"
+                        : "border-slate-200 bg-slate-50 text-slate-600"
+                    }`}>
+                      {plan.badge}
                     </span>
-                    {Number(plan.price) > 0 && (
-                      <span className="mb-3 font-mono text-sm text-muted-foreground">
-                        / {plan.period}
+                    <div className={`rounded-none border-2 p-2 ${
+                      plan.popular
+                        ? "border-[#00c5eb] bg-cyan-50 text-[#00c5eb]"
+                        : "border-slate-950 bg-slate-50 text-slate-950"
+                    }`}>
+                      <Icon className="h-5 w-5" />
+                    </div>
+                  </div>
+
+                  <div className="select-none">
+                    <h4 className="font-sans text-xl font-black uppercase tracking-tight text-slate-950">
+                      {plan.name}
+                    </h4>
+                    <p className="mt-1 min-h-[40px] font-sans text-xs leading-relaxed tracking-wide text-slate-500">
+                      {plan.description}
+                    </p>
+                  </div>
+
+                  <div className="select-none border-y border-dashed border-slate-200 py-4">
+                    <div className="flex items-baseline gap-1.5 overflow-hidden">
+                      <span className="flex items-center font-mono text-4xl font-black text-slate-950">
+                        $
+                        <motion.span
+                          key={price}
+                          initial={{ y: -12, opacity: 0 }}
+                          animate={{ y: 0, opacity: 1 }}
+                          transition={{ duration: 0.2 }}
+                          className="inline-block"
+                        >
+                          {price}
+                        </motion.span>
                       </span>
+                      <span className="font-mono text-xs text-slate-400">
+                        / month
+                      </span>
+                    </div>
+
+                    {billingPeriod === "yearly" ? (
+                      <p className="mt-1.5 font-mono text-[10px] font-bold uppercase tracking-wide text-emerald-600">
+                        Billed annually (Save ${savings}/year)
+                      </p>
+                    ) : (
+                      <p className="mt-1.5 font-mono text-[10px] text-slate-400">
+                        Cancel or scale active nodes monthly
+                      </p>
                     )}
                   </div>
 
-                  <p className="mb-8 text-center font-mono text-xs tracking-[0.08em] text-muted-foreground">
-                    {isMonthly ? "billed monthly" : "billed annually"}
-                  </p>
+                  <div className="space-y-3">
+                    <p className="select-none font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-500">
+                      Capabilities Included:
+                    </p>
+                    <ul className="space-y-2.5 text-xs">
+                      {plan.features.map((feat) => (
+                        <li key={feat} className="flex items-start gap-2 leading-tight text-slate-700">
+                          <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                          <span className="select-text font-sans font-medium tracking-wide">{feat}</span>
+                        </li>
+                      ))}
 
-                  <ul className="mb-8 flex-1 space-y-0">
-                    {plan.features.map((feature) => (
-                      <li key={feature} className="flex gap-3 border-b border-white/5 py-3 text-sm leading-6 text-muted-foreground">
-                        <Check className="mt-1 h-4 w-4 shrink-0 text-gold" />
-                        <span>{feature}</span>
-                      </li>
-                    ))}
-                  </ul>
+                      {plan.notIncluded.map((feat) => (
+                        <li key={feat} className="flex select-none items-start gap-2 leading-tight text-slate-400 line-through opacity-65">
+                          <span className="ml-1.5 mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-300" />
+                          <span className="select-none pl-1 font-sans">{feat}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
 
-                  <a href="/auth" className="no-underline mt-auto">
-                    <button
-                      type="button"
-                      className={`w-full min-h-12 rounded-xl border px-5 font-bold uppercase tracking-[0.12em] transition-all duration-300 ${plan.isPopular
-                        ? 'border-gold bg-gold text-cyber-black shadow-[0_0_26px_rgba(212,175,55,0.32)] hover:bg-white hover:shadow-[0_0_38px_rgba(212,175,55,0.45)]'
-                        : 'border-gold/24 bg-white/[0.035] text-white hover:border-gold/65 hover:text-gold hover:shadow-[0_0_24px_rgba(212,175,55,0.2)]'
-                        }`}
-                    >
-                      {plan.buttonText}
-                    </button>
-                  </a>
-
-                  <p className="mt-5 text-center font-mono text-xs leading-5 text-muted-foreground">
-                    {plan.description}
+                <div className="border-t border-dashed border-slate-200 bg-slate-50 p-6 md:p-8">
+                  <button
+                    type="button"
+                    onClick={onRequestDemo}
+                    className={`w-full cursor-pointer rounded-none border-2 px-4 py-3 text-center font-mono text-xs font-bold uppercase tracking-wider transition-all duration-150 active:scale-[0.98] ${
+                      plan.popular
+                        ? "border-[#00c5eb] bg-[#00c5eb] text-slate-950 shadow-[2px_2px_0px_#090d16] hover:bg-[#00c5eb]/90"
+                        : "border-slate-950 bg-slate-950 text-[#fff] shadow-[2px_2px_0px_rgba(2,6,23,0.3)] hover:bg-slate-800"
+                    }`}
+                  >
+                    {plan.ctaText}
+                  </button>
+                  <p className="mt-3 select-none text-center font-mono text-[9px] uppercase tracking-widest text-slate-400">
+                    Deployable in under 15 minutes
                   </p>
                 </div>
               </motion.div>
             );
           })}
+        </div>
+
+        <div className="mx-auto mt-14 flex max-w-4xl flex-col items-center justify-between gap-5 rounded-none border-2 border-slate-950 bg-white p-5 text-left shadow-[4px_4px_0px_#090d16] sm:flex-row">
+          <div className="flex items-start gap-3">
+            <div className="shrink-0 select-none rounded-none border-2 border-slate-900 bg-slate-50 p-2.5 text-slate-500">
+              <Info className="h-4 w-4 text-slate-950" />
+            </div>
+            <div>
+              <h4 className="select-none font-sans text-xs font-black uppercase tracking-tight text-slate-950">
+                Lattice-Migration Trial Assistance
+              </h4>
+              <p className="mt-1 max-w-xl select-text font-sans text-[10px] leading-relaxed tracking-wide text-slate-500">
+                Deploy QGuard Helix key checks alongside your standard infrastructure risk-free. If ML-KEM/Kyber envelope payload checks create any performance degradation, our enterprise security agents will rollback configurations with zero footprint.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onRequestDemo}
+            className="shrink-0 cursor-pointer whitespace-nowrap rounded-none border-2 border-slate-950 bg-white px-5 py-2.5 font-mono text-xs font-bold uppercase text-slate-950 shadow-[3px_3px_0px_#090d16] transition-all hover:bg-slate-50 active:scale-95"
+          >
+            Speak to a PQC Expert
+          </button>
         </div>
       </div>
     </motion.section>
@@ -1460,6 +2247,91 @@ const InactionCard = ({ risk, i }: any) => {
   );
 };
 
+function MigrationProcessSection() {
+  const [selectedStepId, setSelectedStepId] = useState<string>('01');
+  const selectedStep = MIGRATION_PROCESS_STEPS.find((step) => step.id === selectedStepId) || MIGRATION_PROCESS_STEPS[0];
+  const selectedIndex = MIGRATION_PROCESS_STEPS.findIndex((step) => step.id === selectedStep.id);
+  const implementationPercent = Math.round(((selectedIndex + 1) / MIGRATION_PROCESS_STEPS.length) * 100);
+  const SelectedIcon = selectedStep.icon;
+
+  return (
+    <motion.section
+      id="migration-process"
+      initial={{ opacity: 0, y: 36 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.75 }}
+      viewport={{ once: true, amount: 0.2 }}
+      className="migration-process scroll-mt-24"
+    >
+      <div className="migration-process__header">
+        <span className="migration-process__eyebrow">Strategic Deployment Pipeline</span>
+        <h3>Our Post-Quantum Migration Process</h3>
+        <p>
+          A comprehensive, modular migration architecture formulated around global government standards to fortify digital footprints with zero downtime.
+        </p>
+      </div>
+
+      <div className="migration-process__cards" role="tablist" aria-label="Post-quantum migration process steps">
+        {MIGRATION_PROCESS_STEPS.map((step) => {
+          const Icon = step.icon;
+          const selected = step.id === selectedStep.id;
+
+          return (
+            <button
+              key={step.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-controls="migration-process-details"
+              onClick={() => setSelectedStepId(step.id)}
+              className={`migration-process__card ${selected ? 'migration-process__card--active' : ''}`}
+            >
+              <span className="migration-process__num">{step.num}</span>
+              <span className="migration-process__icon">
+                <Icon className="h-6 w-6" />
+              </span>
+              <span className="migration-process__card-title">{step.title}</span>
+              <span className="migration-process__card-copy">{step.description}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <motion.div
+        key={selectedStep.id}
+        id="migration-process-details"
+        role="tabpanel"
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.28 }}
+        className="migration-process__detail"
+      >
+        <div className="migration-process__detail-main">
+          <div className="migration-process__badge-row">
+            <span className="migration-process__spec">Stage {selectedStep.num} Specification Infrastructure</span>
+            <span className="migration-process__badge">// {selectedStep.badge}</span>
+          </div>
+          <h4>
+            <span>{selectedStep.num}</span>
+            {selectedStep.title} Workflow Integration
+          </h4>
+          <p>{selectedStep.details}</p>
+        </div>
+
+        <div className="migration-process__status" aria-label={`${selectedStep.title} module status`}>
+          <SelectedIcon className="h-8 w-8" />
+          <strong>Module Status</strong>
+          <span>Protocol: Secured Sync</span>
+          <div className="migration-process__progress">
+            <i style={{ width: `${implementationPercent}%` }} />
+          </div>
+          <small>{implementationPercent}% Implemented</small>
+        </div>
+      </motion.div>
+    </motion.section>
+  );
+}
+
 const slideModules = import.meta.glob('/public/slideshow/*.{png,jpg,jpeg,gif,webp}', { eager: true, query: '?url', import: 'default' });
 const QUANTUM_THREAT_SLIDES = Object.keys(slideModules)
   .map(key => key.replace('/public', ''))
@@ -1493,9 +2365,8 @@ function QuantumThreatSlideshow() {
           <button
             key={idx}
             onClick={() => setCurrentIndex(idx)}
-            className={`transition-all duration-500 h-1.5 rounded-full ${
-              idx === currentIndex ? "w-10 bg-gold shadow-[0_0_16px_rgba(212,175,55,0.9)]" : "w-3 bg-white/30 hover:bg-white/60 hover:shadow-[0_0_10px_rgba(255,255,255,0.5)]"
-            }`}
+            className={`transition-all duration-500 h-1.5 rounded-full ${idx === currentIndex ? "w-10 bg-gold shadow-[0_0_16px_rgba(212,175,55,0.9)]" : "w-3 bg-white/30 hover:bg-white/60 hover:shadow-[0_0_10px_rgba(255,255,255,0.5)]"
+              }`}
             aria-label={`Go to slide ${idx + 1}`}
           />
         ))}
@@ -1511,6 +2382,8 @@ export default function App() {
   const [expandedNistPhase, setExpandedNistPhase] = useState<number | null>(null);
   const [heroTypedLength, setHeroTypedLength] = useState(0);
   const [navScrolled, setNavScrolled] = useState(false);
+  const [isPlatformMenuOpen, setIsPlatformMenuOpen] = useState(false);
+  const [isSolutionsMenuOpen, setIsSolutionsMenuOpen] = useState(false);
   const countdownUnits = useMemo(() => getQuantumCountdown(now), [now]);
   const typedLineOne = HERO_LINE_ONE.slice(0, heroTypedLength);
   const typedLineTwoLength = Math.max(0, heroTypedLength - HERO_LINE_ONE.length);
@@ -1562,75 +2435,250 @@ export default function App() {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-transparent text-foreground selection:bg-quantum-blue/30 overflow-x-hidden">
-        <CyberBackground />
+      <div className="qguard-home qguard-home--light min-h-screen overflow-x-hidden bg-transparent text-foreground selection:bg-quantum-blue/30">
+        <CyberBackground variant="light" />
 
         {/* Navigation Bar */}
-        <header className={`fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-2xl transition-all duration-300 ${navScrolled
-          ? 'border-gold/24 bg-cyber-black/92 shadow-[0_12px_40px_rgba(0,0,0,0.35),0_0_24px_rgba(212,175,55,0.08)]'
-          : 'border-gold/12 bg-cyber-black/82'
-          }`}>
-          <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
-            <a href="#hero" className="group flex min-w-0 items-center gap-3 no-underline">
+        <header className={`homepage-nav fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-2xl transition-all duration-300 ${navScrolled ? 'homepage-nav--scrolled' : ''}`}>
+          <div className="mx-auto flex h-16 max-w-[96rem] items-center justify-between px-4 sm:px-6">
+            <a href="#hero" className="homepage-nav__brand group flex min-w-0 items-center gap-3 no-underline">
               <img
                 src="/NEW_LOGO.png"
                 alt="Qguard Helix logo"
-                className="h-16 w-auto shrink-0 object-contain drop-shadow-[0_0_18px_rgba(212,175,55,0.18)]"
+                className="homepage-nav__logo h-16 w-auto shrink-0 object-contain"
               />
-              <span className="hidden min-w-0 flex-col leading-none lg:flex">
-                <span className="whitespace-nowrap text-lg font-black tracking-[0.03em] text-gold gold-glow transition-colors group-hover:text-white">
+              <span className="hidden min-w-0 flex-col leading-none sm:flex">
+                <span className="homepage-nav__wordmark whitespace-nowrap text-lg font-black tracking-[0.03em] text-gold gold-glow transition-colors group-hover:text-cyan-600">
                   Qguard Helix
                 </span>
-                <span className="mt-1 whitespace-nowrap bg-gradient-to-r from-gold via-white to-gold bg-clip-text font-mono text-[10px] font-black uppercase tracking-[0.32em] text-transparent drop-shadow-[0_0_10px_rgba(212,175,55,0.55)]">
-                  Quantum Defense
+                <span className="homepage-logo-subtitle homepage-nav__tagline mt-1 whitespace-nowrap bg-gradient-to-r from-cyan-500 via-slate-600 to-violet-600 bg-clip-text font-mono text-[10px] font-black uppercase tracking-[0.32em] text-transparent">
+                  Quantum Cyber Defense
                 </span>
               </span>
             </a>
 
-            <nav className="hidden items-center gap-6 lg:flex">
+            <nav className="homepage-nav__links hidden items-center lg:flex">
               {[
-                { label: 'Home', href: '#hero' },
-                { label: 'Features', href: '#features' },
+                { label: 'Platform', href: '#migration-process', active: true, dropdown: true },
+                { label: 'Solutions', href: '#nist-strategy', dropdown: true },
+                { label: 'Resources', href: '/docs', dropdown: true },
                 { label: 'Pricing', href: '#pricing' },
-                { label: 'Testimonials', href: '#testimonials' },
-                { label: 'FAQ', href: '#faq' },
-                { label: 'Docs', href: '/docs' }
-              ].map((item) => (
-                <a
-                  key={item.label}
-                  href={item.href}
-                  className="text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold"
-                >
-                  {item.label}
-                </a>
-              ))}
-              <div className="h-6 w-px bg-gold/20" />
-              <a
-                href="/auth"
-                className="rounded-lg px-4 py-2 text-sm font-bold text-white no-underline transition-all hover:bg-gold/10 hover:text-gold"
+                { label: 'Company', href: '#testimonials' }
+              ].map((item) => {
+                if (item.label === 'Platform') {
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      aria-expanded={isPlatformMenuOpen}
+                      aria-controls="homepage-platform-menu"
+                      onClick={() => {
+                        setIsPlatformMenuOpen((open) => !open);
+                        setIsSolutionsMenuOpen(false);
+                      }}
+                      className={`homepage-nav__link homepage-nav__link--button ${isPlatformMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
+                    >
+                      {item.label}
+                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isPlatformMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                  );
+                }
+
+                if (item.label === 'Solutions') {
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      aria-expanded={isSolutionsMenuOpen}
+                      aria-controls="homepage-solutions-menu"
+                      onClick={() => {
+                        setIsSolutionsMenuOpen((open) => !open);
+                        setIsPlatformMenuOpen(false);
+                      }}
+                      className={`homepage-nav__link homepage-nav__link--button ${isSolutionsMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
+                    >
+                      {item.label}
+                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isSolutionsMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                  );
+                }
+
+                return (
+                  <a
+                    key={item.label}
+                    href={item.href}
+                    onClick={() => {
+                      setIsPlatformMenuOpen(false);
+                      setIsSolutionsMenuOpen(false);
+                    }}
+                    className="homepage-nav__link text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold"
+                  >
+                    {item.label}
+                    {item.dropdown && <ChevronDown className="h-3.5 w-3.5" />}
+                  </a>
+                );
+              })}
+              <div
+                id="homepage-platform-menu"
+                className={`homepage-nav__platform-menu ${isPlatformMenuOpen ? 'homepage-nav__platform-menu--open' : ''}`}
               >
-                Sign In
-              </a>
-              <a
-                href="/auth"
-                className="inline-flex h-11 items-center gap-2 rounded-lg bg-gold px-6 font-black uppercase tracking-[0.12em] text-cyber-black no-underline shadow-[0_0_24px_rgba(212,175,55,0.28)] transition-all hover:bg-white hover:shadow-[0_0_38px_rgba(212,175,55,0.45)]"
+                <span className="homepage-nav__menu-kicker">Platform Sections</span>
+                {[
+                  {
+                    title: 'Post-Quantum Migration Process',
+                    description: 'A phased workflow for discovery, assessment, migration, validation, and monitoring.',
+                    href: '#migration-process',
+                    icon: RefreshCcw
+                  },
+                  {
+                    title: 'Core Platform Capabilities',
+                    description: 'Runtime crypto visibility, risk scoring, orchestration, governance, and crypto-agility.',
+                    href: '#core-capabilities-section',
+                    icon: Activity
+                  },
+                  {
+                    title: 'Removing the RoadBlocks',
+                    description: 'Practical answers for PQC readiness, crypto inventory gaps, vendors, VPNs, and TLS risk.',
+                    href: '#mitigation-roadblocks-section',
+                    icon: Lock
+                  },
+                  {
+                    title: 'Quantum Risk Assessment Sandbox',
+                    description: 'Interactive classification of RSA, ECC, symmetric crypto, and NIST PQC primitives.',
+                    href: '#simulator',
+                    icon: Terminal
+                  },
+                  {
+                    title: 'Post Quantum Roadmap',
+                    description: 'A 2026-2029 plan for inventory, prioritization, pilots, migration, and assurance.',
+                    href: '#roadmap',
+                    icon: Calendar
+                  },
+                  {
+                    title: 'Qguard Helix Command Center',
+                    description: 'Unified operational surface for scanning, vaulting, policy, planning, and monitoring.',
+                    href: '#command-center',
+                    icon: Database
+                  },
+                  {
+                    title: 'Quantum Encryption Services Use Cases',
+                    description: 'Applied encryption, QRNG, authentication, tokenization, and secure communication patterns.',
+                    href: '#use-cases',
+                    icon: KeyRound
+                  }
+                ].map((entry) => (
+                  <a
+                    href={entry.href}
+                    className="homepage-nav__menu-item no-underline"
+                    key={entry.title}
+                    onClick={() => {
+                      setIsPlatformMenuOpen(false);
+                      setIsSolutionsMenuOpen(false);
+                    }}
+                  >
+                    <span className="homepage-nav__menu-icon">
+                      <entry.icon className="h-4 w-4" />
+                    </span>
+                    <span>
+                      <strong>{entry.title}</strong>
+                      <small>{entry.description}</small>
+                    </span>
+                  </a>
+                ))}
+              </div>
+              <div
+                id="homepage-solutions-menu"
+                className={`homepage-nav__platform-menu homepage-nav__solutions-menu ${isSolutionsMenuOpen ? 'homepage-nav__platform-menu--open' : ''}`}
               >
-                <Users className="h-4 w-4" />
-                Get Started Free
-              </a>
+                <span className="homepage-nav__menu-kicker">Solution Suites</span>
+                {[
+                  {
+                    title: 'Crypto Asset Discovery',
+                    description: 'Inventory certificates, keys, endpoints, collector agents, weak ciphers, and CBOM evidence.',
+                    href: '/dashboard/scanner',
+                    icon: Search
+                  },
+                  {
+                    title: 'Runtime Crypto Intelligence',
+                    description: 'Monitor live cryptographic operations, TLS behavior, key usage, and runtime risk signals.',
+                    href: '/dashboard/runtime-crypto-intel',
+                    icon: Activity
+                  },
+                  {
+                    title: 'Harvest Now Defense',
+                    description: 'Detect long-lived data exposure and trigger tenant-scoped remediation workflows.',
+                    href: '/dashboard/harvest-now',
+                    icon: Shield
+                  },
+                  {
+                    title: 'PQC Migration Orchestration',
+                    description: 'Coordinate hybrid deployments, migration jobs, readiness telemetry, and rollback controls.',
+                    href: '/dashboard/pqc-orchestration',
+                    icon: RefreshCw
+                  },
+                  {
+                    title: 'Governance & Compliance',
+                    description: 'Manage cryptographic policy, audit evidence, NIST alignment, and compliance reporting.',
+                    href: '/dashboard/compliance',
+                    icon: FileCheck
+                  },
+                  {
+                    title: 'Encryption & Key Services',
+                    description: 'Operate QRNG, key generation, PKI, vault, tokenization, and secure communications tools.',
+                    href: '/dashboard/keys',
+                    icon: KeyRound
+                  }
+                ].map((entry) => (
+                  <a
+                    href={entry.href}
+                    className="homepage-nav__menu-item no-underline"
+                    key={entry.title}
+                    onClick={() => {
+                      setIsPlatformMenuOpen(false);
+                      setIsSolutionsMenuOpen(false);
+                    }}
+                  >
+                    <span className="homepage-nav__menu-icon">
+                      <entry.icon className="h-4 w-4" />
+                    </span>
+                    <span>
+                      <strong>{entry.title}</strong>
+                      <small>{entry.description}</small>
+                    </span>
+                  </a>
+                ))}
+              </div>
             </nav>
 
-            <a
-              href="/auth"
-              className="inline-flex h-10 items-center rounded-lg bg-gold px-4 text-xs font-black uppercase tracking-[0.1em] text-cyber-black no-underline shadow-[0_0_20px_rgba(212,175,55,0.24)] transition-all hover:bg-white lg:hidden"
-            >
-              Start Free
-            </a>
+            <div className="homepage-nav__actions hidden items-center gap-4 lg:flex">
+              <div className="homepage-nav__status">
+                <span>Status:</span>
+                <i />
+                <strong>Active</strong>
+              </div>
+              <a
+                href="/login"
+                className="homepage-nav__auth inline-flex h-11 items-center gap-2 rounded-lg bg-gold px-6 font-black uppercase tracking-[0.12em] text-cyber-black no-underline shadow-[0_0_24px_rgba(212,175,55,0.28)] transition-all hover:bg-white hover:shadow-[0_0_38px_rgba(212,175,55,0.45)]"
+              >
+                <Users className="h-4 w-4" />
+                Login / Register
+              </a>
+            </div>
+
+            <div className="flex items-center gap-2 lg:hidden">
+              <a
+                href="/login"
+                className="homepage-nav__auth inline-flex h-10 items-center rounded-lg bg-gold px-4 text-xs font-black uppercase tracking-[0.1em] text-cyber-black no-underline shadow-[0_0_20px_rgba(212,175,55,0.24)] transition-all hover:bg-white"
+              >
+                Login
+              </a>
+            </div>
           </div>
         </header>
 
         {/* Hero Section */}
-        <section id="hero" className="relative pt-32 pb-20 px-6 min-h-screen flex flex-col justify-center">
+        <section id="hero" className="hero-shell relative pt-32 pb-20 px-6 min-h-screen flex flex-col justify-center">
+          <div className="hero-shell__network" aria-hidden="true" />
           <div className="max-w-7xl mx-auto grid lg:grid-cols-2 gap-12 items-center">
             {/* Left Column: Text & Atmosphere */}
             <motion.div
@@ -1639,7 +2687,7 @@ export default function App() {
               transition={{ duration: 0.8 }}
               className="relative z-10"
             >
-              <Badge className="bg-quantum-blue/10 text-quantum-blue border-quantum-blue/20 px-3 py-1 mb-6 uppercase tracking-[0.3em] font-mono animate-pulse">
+              <Badge className="hero-alert-badge bg-quantum-blue/10 text-quantum-blue border-quantum-blue/20 px-3 py-1 mb-6 uppercase tracking-[0.3em] font-mono animate-pulse">
                 Critical Threat Warning: Y2Q Approaching
               </Badge>
               <h1 className="hero-title text-6xl md:text-8xl font-bold leading-[0.9] tracking-normal mb-8 uppercase" aria-label={HERO_ACCESSIBLE_TITLE}>
@@ -1677,7 +2725,7 @@ export default function App() {
 
               <div className="flex flex-wrap gap-4">
                 <a href="/auth" className="no-underline">
-                  <Button size="lg" className="bg-gold hover:bg-gold/80 text-cyber-black px-8 rounded-none uppercase font-bold tracking-widest shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all hover:scale-105 group h-14">
+                  <Button size="lg" className="hero-primary-cta bg-gold hover:bg-gold/80 text-cyber-black px-8 rounded-none uppercase font-bold tracking-widest shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all hover:scale-105 group h-14">
                     Start Migration Strategy
                     <MoveRight className="ml-2 group-hover:translate-x-1 transition-transform" />
                   </Button>
@@ -1691,7 +2739,7 @@ export default function App() {
                 viewport={{ once: true }}
                 whileHover={{ y: -5, scale: 1.02, boxShadow: "0 0 40px rgba(212, 175, 55, 0.25)" }}
                 transition={{ duration: 0.4 }}
-                className="mt-16 p-6 rounded-xl border border-gold/20 bg-white/[0.03] backdrop-blur-md border-l-4 border-l-gold relative overflow-hidden group cursor-default transition-all shadow-[0_20px_50px_rgba(0,0,0,0.3)] hover:border-gold/40 hover:bg-white/[0.05]"
+                className="hero-alert-card mt-16 p-6 rounded-xl border border-gold/20 bg-white/[0.03] backdrop-blur-md border-l-4 border-l-gold relative overflow-hidden group cursor-default transition-all shadow-[0_20px_50px_rgba(0,0,0,0.3)] hover:border-gold/40 hover:bg-white/[0.05]"
               >
                 <div className="flex items-start gap-4 relative z-10">
                   <div className="w-12 h-12 rounded-full border border-gold/30 flex items-center justify-center bg-gold/10 shrink-0 shadow-[0_0_15px_rgba(212,175,55,0.1)] group-hover:shadow-[0_0_25px_rgba(212,175,55,0.3)] transition-all">
@@ -1722,7 +2770,7 @@ export default function App() {
               <motion.div
                 animate={{ y: [0, -8, 0] }}
                 transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
-                className="relative w-full max-w-[590px] group rounded-xl p-[2px]"
+                className="hero-intel-frame relative w-full max-w-[590px] group rounded-xl p-[2px]"
               >
                 {/* Soft Neon Gradient Beam behind */}
                 <div className="absolute inset-0 rounded-xl bg-[conic-gradient(from_var(--border-angle),#00F3FF,#22c55e,#D4AF37,#f97316,#ef4444,#00F3FF)] animate-border-beam pointer-events-none" />
@@ -1893,65 +2941,6 @@ export default function App() {
                 <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent pointer-events-none" />
               </div>
             </motion.div>
-          </div>
-        </section>
-
-        {/* The Road Ahead - Roadmap Cards */}
-        <section id="roadmap" className="py-32 px-6 relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_10%,rgba(212,175,55,0.08),transparent_38%)]" />
-          <div className="max-w-7xl mx-auto">
-            <div className="flex justify-between items-end mb-20 border-b border-white/10 pb-8">
-              <div>
-                <span className="text-gold font-mono text-sm uppercase tracking-widest">Phase 01-04</span>
-                <h2 className="text-5xl font-bold uppercase tracking-normal mt-2 text-gold gold-glow">The Road <span className="italic">Ahead</span></h2>
-              </div>
-              <div className="hidden md:block text-right max-w-xs">
-                <p className="text-xs text-white/70 leading-relaxed">
-                  Strategic roadmap for enterprise quantum readiness integration.
-                  Derived from NIST PQC guidelines and NSA directives.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {[
-                { step: "01", title: "The New Gold Standards", desc: "NIST has finalized ML-KEM, ML-DSA, and SLH-DSA for immediate global adoption.", icon: FileCheck, image: "/nist.png" },
-                { step: "02", title: "Harvest Now, Decrypt Later", desc: "Understand why data captured today is the biggest liability for national security.", icon: Skull, image: "/harvest.png" },
-                { step: "03", title: "A Ten-Year Countdown", desc: "Experts predict quantum superiority over RSA-2048 within the next decade.", icon: Clock, image: "/countdown.png" },
-                { step: "04", title: "End Denial, Start Inventory", desc: "Identify every cryptographic endpoint in your infrastructure today.", icon: Database, image: "/inventory.png" }
-              ].map((card, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, y: 30 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.1 }}
-                  whileHover={{ y: -10 }}
-                  className="relative group h-full"
-                >
-                  <Card className="relative h-full overflow-hidden rounded-lg border border-gold/14 bg-white/[0.045] shadow-[0_20px_80px_rgba(0,0,0,0.38)] backdrop-blur-xl transition-all duration-500 flex flex-col hover:border-gold/65 hover:bg-gold/[0.075] hover:shadow-[0_0_42px_rgba(212,175,55,0.30),0_26px_90px_rgba(0,0,0,0.5)]">
-                    <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(145deg,rgba(255,255,255,0.13),transparent_30%,rgba(212,175,55,0.1))] opacity-45 transition-opacity duration-500 group-hover:opacity-75" />
-                    <CardHeader className="relative z-10">
-                      <span className="text-5xl font-black text-gold/12 absolute top-2 right-4 -z-10 group-hover:text-gold/28 transition-colors">{card.step}</span>
-                      <div className="w-12 h-12 rounded-lg bg-gold/10 border border-gold/25 flex items-center justify-center mb-4 shadow-[0_0_24px_rgba(212,175,55,0.18)] transition-all duration-500 group-hover:scale-110 group-hover:shadow-[0_0_34px_rgba(212,175,55,0.42)]">
-                        <card.icon className="w-6 h-6 text-gold" />
-                      </div>
-                      <CardTitle className="text-xl uppercase tracking-wide font-black text-white group-hover:text-gold transition-colors">{card.title}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="relative z-10 flex-grow">
-                      <p className="text-white/78 text-sm leading-7 mb-6 group-hover:text-white/90 transition-colors">
-                        {card.desc}
-                      </p>
-                      <img
-                        src={card.image}
-                        alt={card.title}
-                        className="w-full h-32 object-cover opacity-35 grayscale contrast-125 group-hover:opacity-75 group-hover:grayscale-0 transition-all duration-700 rounded-lg scale-110 group-hover:scale-100"
-                        referrerPolicy="no-referrer"
-                      />
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
           </div>
         </section>
 
@@ -2157,7 +3146,7 @@ export default function App() {
         <section className="py-20 relative overflow-hidden">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(212,175,55,0.06),transparent_45%)]" />
           <div className="max-w-6xl mx-auto px-6">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               className="text-center mb-16"
@@ -2190,11 +3179,11 @@ export default function App() {
 
         {/* Impact of Inaction Section */}
         <section className="py-40 relative overflow-hidden">
-          {/* Section Darkening Overlay */}
+          {/* Section light wash overlay */}
           <motion.div
             initial={{ opacity: 0 }}
             whileInView={{ opacity: 1 }}
-            className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black pointer-events-none z-0"
+            className="absolute inset-0 bg-gradient-to-b from-white/75 via-transparent to-white/75 pointer-events-none z-0"
           />
 
           <div className="max-w-7xl mx-auto px-6 relative z-10">
@@ -2239,73 +3228,20 @@ export default function App() {
           </div>
         </section>
 
-        <section className="py-20 relative overflow-hidden">
+        <section className="py-20 relative">
           <div className="max-w-7xl mx-auto px-6">
-            <motion.div
-              id="features"
-              initial={{ opacity: 0, y: 36 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.75 }}
-              viewport={{ once: true, amount: 0.2 }}
-              className="scroll-mt-24 rounded-lg border border-gold/15 bg-cyber-navy/25 p-6 shadow-[0_28px_100px_rgba(0,0,0,0.45)] backdrop-blur-xl sm:p-10"
-            >
-              <div className="text-center mb-14">
-                <h3 className="text-3xl md:text-5xl font-bold tracking-[0.12em] text-white">
-                  How QGuard Helix <span className="text-gold gold-glow">Protects You</span>
-                </h3>
-                <p className="mt-4 text-sm md:text-base text-muted-foreground tracking-wide">
-                  Three steps to quantum-safe digital life
-                </p>
-              </div>
+            <MigrationProcessSection />
 
-              <div className="grid gap-6 lg:grid-cols-3">
-                {[
-                  {
-                    step: "Step 01",
-                    title: "Scan",
-                    icon: Search,
-                    desc: "Detect quantum-vulnerable cryptographic assets across your environment, including RSA, ECC, SHA-1, weak TLS configurations, and other legacy algorithms. Gain full visibility into exposure across applications, infrastructure, and data flows."
-                  },
-                  {
-                    step: "Step 02",
-                    title: "Migrate",
-                    icon: RefreshCcw,
-                    desc: "Easy transition to quantum-safe cryptography using ML-KEM (Kyber) and ML-DSA (Dilithium), with hybrid compatibility modes to ensure secure interoperability with existing systems and minimize operational disruption."
-                  },
-                  {
-                    step: "Step 03",
-                    title: "Protect",
-                    icon: Shield,
-                    desc: "Maintain ongoing security with real-time threat monitoring, Quantum Vault-backed secure storage, and intelligent alerting. Stay protected as quantum threats evolve with continuous assessment and adaptive defense mechanisms."
-                  }
-                ].map((step, i) => (
-                  <motion.div
-                    key={step.title}
-                    initial={{ opacity: 0, y: 24 }}
-                    whileInView={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.12 }}
-                    whileHover={{ y: -10 }}
-                    className="group relative min-h-[350px] overflow-hidden rounded-lg border border-gold/15 bg-white/[0.045] px-8 py-10 text-center shadow-[0_20px_80px_rgba(0,0,0,0.38)] backdrop-blur-xl transition-all duration-500 hover:border-gold/65 hover:bg-gold/[0.075] hover:shadow-[0_0_42px_rgba(212,175,55,0.32),0_26px_90px_rgba(0,0,0,0.5)]"
-                  >
-                    <div className="absolute inset-0 bg-[linear-gradient(145deg,rgba(255,255,255,0.13),transparent_28%,rgba(212,175,55,0.1)_100%)] opacity-45 transition-opacity duration-500 group-hover:opacity-70 pointer-events-none" />
-                    <div className="relative z-10 flex h-full flex-col items-center">
-                      <span className="font-mono text-[11px] uppercase tracking-[0.36em] text-gold">{step.step}</span>
-                      <div className="mt-9 mb-8 flex h-16 w-16 items-center justify-center rounded-lg border border-gold/25 bg-gold/10 text-gold shadow-[0_0_24px_rgba(212,175,55,0.2)] transition-all duration-500 group-hover:scale-110 group-hover:shadow-[0_0_32px_rgba(212,175,55,0.45)]">
-                        <step.icon className="h-8 w-8" />
-                      </div>
-                      <h4 className="mb-4 text-2xl font-bold uppercase tracking-wide text-white transition-colors group-hover:text-gold">
-                        {step.title}
-                      </h4>
-                      <p className="text-sm leading-7 text-muted-foreground transition-colors group-hover:text-white/78">
-                        {step.desc}
-                      </p>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-            </motion.div>
+            <div className="mt-24 w-full">
+              <StickyFeatureSection />
+            </div>
+
+            <div className="w-full">
+              <QuantumFeaturesMarquee />
+            </div>
 
             <EnterpriseProtectionShowcase />
+            <RoadmapSection />
             <div className="h-32 w-full" />
             <Hero195 />
             <div className="h-32 w-full" />
@@ -2316,94 +3252,130 @@ export default function App() {
           </div>
         </section>
 
-        {/* Footer / CTA Final */}
-        <footer className="pt-32 pb-16 bg-transparent border-t border-gold/20 relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-gold to-transparent" />
+        {/* Footer */}
+        <footer className="homepage-footer relative overflow-hidden px-6 py-16">
+          <div className="homepage-footer__grid relative z-10 mx-auto grid max-w-[96rem] gap-12 lg:grid-cols-[1.55fr_2fr_1.2fr]">
+            <div className="space-y-7">
+              <a href="#hero" className="homepage-footer__brand no-underline">
+                <img
+                  src="/NEW_LOGO.png"
+                  alt="Qguard Helix logo"
+                  className="homepage-footer__brand-logo"
+                />
+                <span className="homepage-footer__brand-copy">
+                  <strong>
+                    QGUARD <span>HELIX</span>
+                  </strong>
+                  <small>// QUANTUM CYBER DEFENSE</small>
+                </span>
+              </a>
 
-          <div className="max-w-6xl mx-auto px-6 relative z-10">
-            <motion.div
-              initial={{ opacity: 0, y: 50 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              className="flex flex-col items-center text-center space-y-10"
-            >
-              <h2 className="text-5xl md:text-7xl font-black uppercase tracking-tighter leading-[0.85]">
-                <span className="text-gold">The Future is</span> <br />
-                <span className="text-white italic underline decoration-gold/50 decoration-wavy underline-offset-8">Quantum.</span>
-              </h2>
-              <p className="text-xl text-white/70 uppercase tracking-widest font-light max-w-2xl">
-                Secure your organization's legacy today with military-grade PQC infrastructure.
+              <p className="homepage-footer__description">
+                <span>
+                  Empowering enterprises to build a quantum-secure future with
+                  confidence through cryptographic automation, continuous
+                  vulnerability scanning, and real-time lattice defense protection.
+                </span>
               </p>
 
-              <div className="flex flex-col sm:flex-row justify-center gap-6 pt-6">
-                <Button
-                  onClick={() => navigate('/auth')}
-                  size="lg"
-                  className="bg-gold text-black hover:bg-yellow-400 px-12 rounded-xl h-14 font-black uppercase tracking-[0.15em] transition-all shadow-[0_0_20px_rgba(212,175,55,0.3)] hover:shadow-[0_0_35px_rgba(212,175,55,0.5)] hover:scale-105"
-                >
-                  Request PQC Audit
-                </Button>
-              </div>
-
-              {/* Status Modules */}
-              <div className="pt-20 w-full grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="homepage-footer__socials" aria-label="Qguard Helix social links">
                 {[
-                  { label: "AES-256", status: "Endangered", border: "border-red-500/30", bg: "bg-red-500/5", text: "text-red-400" },
-                  { label: "RSA-2048", status: "Deprecated", border: "border-orange-500/30", bg: "bg-orange-500/5", text: "text-orange-400" },
-                  { label: "PQC Migration", status: "V1.0 Ready", border: "border-green-500/30", bg: "bg-green-500/5", text: "text-green-400" },
-                  { label: "NIST 800-203", status: "Compliant", border: "border-cyan-500/30", bg: "bg-cyan-500/5", text: "text-cyan-400" }
-                ].map((item, i) => (
-                  <motion.div
-                    key={i}
-                    whileHover={{ scale: 1.05, y: -5 }}
-                    className={`p-4 rounded-xl border ${item.border} ${item.bg} flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-300 hover:shadow-[0_0_20px_rgba(255,255,255,0.1)]`}
+                  { icon: Twitter, href: "#", name: "X" },
+                  { icon: Linkedin, href: "#", name: "LinkedIn" },
+                  { icon: Github, href: "#", name: "GitHub" }
+                ].map((social) => (
+                  <a
+                    key={social.name}
+                    href={social.href}
+                    className="homepage-footer__social"
+                    aria-label={social.name}
                   >
-                    <span className="text-[10px] font-black uppercase tracking-widest text-white/50">{item.label}</span>
-                    <span className={`text-[11px] font-black uppercase tracking-[0.2em] ${item.text}`}>{item.status}</span>
-                  </motion.div>
+                    <social.icon className="h-4 w-4" />
+                  </a>
                 ))}
               </div>
+            </div>
 
-              <div className="w-full border-t border-white/10 mt-16 pt-16 flex flex-col md:flex-row items-center justify-between gap-8">
-                {/* Logo + Copyright */}
-                <div className="flex flex-col items-center md:items-start gap-4">
-                  <img
-                    src="/NEW_LOGO.png"
-                    alt="Qguard Helix logo"
-                    className="h-28 w-auto object-contain drop-shadow-[0_0_24px_rgba(212,175,55,0.25)]"
-                  />
-                  <div className="text-[10px] font-mono text-white/60 uppercase tracking-[0.3em]">
-                    &copy; {new Date().getFullYear()} Qguard Helix Defense // Secure // Modernize // Future-Proof
-                  </div>
+            <nav className="homepage-footer__columns" aria-label="Footer navigation">
+              {[
+                {
+                  title: "Platform",
+                  links: [
+                    { label: "Overview", href: "#hero" },
+                    { label: "Features", href: "#migration-process" },
+                    { label: "Security", href: "#simulator" },
+                    { label: "Integrations", href: "#command-center" }
+                  ]
+                },
+                {
+                  title: "Solutions",
+                  links: [
+                    { label: "By Industry", href: "#use-cases" },
+                    { label: "Use Cases", href: "#use-cases" },
+                    { label: "Migration Services", href: "#roadmap" },
+                    { label: "Compliance", href: "#nist-strategy" }
+                  ]
+                },
+                {
+                  title: "Resources",
+                  links: [
+                    { label: "Documentation", href: "/docs" },
+                    { label: "Whitepapers", href: "/docs" },
+                    { label: "Blog", href: "/docs" },
+                    { label: "Webinars", href: "/docs" }
+                  ]
+                },
+                {
+                  title: "Company",
+                  links: [
+                    { label: "About Us", href: "#testimonials" },
+                    { label: "Careers", href: "#testimonials" },
+                    { label: "Partners", href: "#testimonials" },
+                    { label: "Contact", href: "/login" }
+                  ]
+                }
+              ].map((column) => (
+                <div className="homepage-footer__column" key={column.title}>
+                  <h3>{column.title}</h3>
+                  <ul>
+                    {column.links.map((link) => (
+                      <li key={`${column.title}-${link.label}`}>
+                        <a href={link.href}>{link.label}</a>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
+              ))}
+            </nav>
 
-                {/* Social Icons */}
-                <div className="flex items-center gap-4">
-                  {[
-                    { icon: Twitter, href: "#", name: "X (Twitter)" },
-                    { icon: Linkedin, href: "#", name: "LinkedIn" },
-                    { icon: Github, href: "#", name: "GitHub" },
-                    { icon: Youtube, href: "#", name: "YouTube" },
-                    { icon: Facebook, href: "#", name: "Facebook" }
-                  ].map((social, i) => (
-                    <motion.a
-                      key={i}
-                      href={social.href}
-                      whileHover={{ y: -5, scale: 1.1 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="h-10 w-10 rounded-lg border border-gold/20 bg-black/50 flex items-center justify-center text-white/50 hover:text-gold hover:border-gold hover:bg-gold/10 transition-all shadow-[0_0_10px_rgba(0,0,0,0.5)]"
-                      aria-label={social.name}
-                    >
-                      <social.icon className="h-4 w-4" />
-                    </motion.a>
-                  ))}
-                </div>
-              </div>
-            </motion.div>
+            <aside className="homepage-footer__cta">
+              <h3>Ready to become quantum safe?</h3>
+              <p>
+                Schedule an active demo with our enterprise cryptographers to see
+                lattice encryption in effect.
+              </p>
+              <a href="/login" className="homepage-footer__cta-button">
+                Request Demo
+                <MoveRight className="h-4 w-4" />
+              </a>
+            </aside>
           </div>
 
-          {/* Subtle Deep Background Details */}
-          <div className="absolute -bottom-40 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-gold/10 blur-[150px] rounded-full pointer-events-none" />
+          <div className="homepage-footer__bottom relative z-10 mx-auto mt-20 flex max-w-[96rem] flex-col gap-6 border-t pt-8 md:flex-row md:items-center md:justify-between">
+            <p>&copy; {new Date().getFullYear()} Qguard Helix. All rights reserved.</p>
+
+            <div className="homepage-footer__legal">
+              <a href="/docs">Privacy Policy</a>
+              <a href="/docs">Terms of Service</a>
+              <a href="/docs">Security Specification</a>
+            </div>
+
+            <div className="homepage-footer__language" aria-label="Language selector">
+              <Globe className="h-4 w-4" />
+              <span>English</span>
+              <ChevronDown className="h-4 w-4" />
+            </div>
+          </div>
         </footer>
       </div>
     </TooltipProvider>

@@ -67,6 +67,7 @@ import CertificateTelemetryPage from './app/dashboard/certificate-telemetry/page
 import KeyAnalyticsPage from './app/dashboard/key-analytics/page';
 import ApiEncryptionPage from './app/dashboard/api-encryption/page';
 import MultiCloudTelemetryPage from './app/dashboard/multi-cloud-telemetry/page';
+import QFeaturesPage from './app/dashboard/q-features/page';
 
 export default function App() {
   return (
@@ -191,6 +192,7 @@ export default function App() {
           <Route path="key-analytics" element={<KeyAnalyticsPage />} />
           <Route path="api-encryption" element={<ApiEncryptionPage />} />
           <Route path="multi-cloud-telemetry" element={<MultiCloudTelemetryPage />} />
+          <Route path="q-features" element={<QFeaturesPage />} />
         </Route>
       </Routes>
     </Router>
