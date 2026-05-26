@@ -18,7 +18,8 @@ DECLARE
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions'
+        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions',
+        'vendor_assessments'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
@@ -171,6 +172,23 @@ BEGIN
         EXECUTE 'ALTER TABLE public.connector_accounts ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
         EXECUTE 'ALTER TABLE public.connector_accounts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
         EXECUTE 'ALTER TABLE public.connector_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.vendor_assessments') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS vendor_name VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS category VARCHAR(120)';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS readiness_status VARCHAR(80) DEFAULT ''Unknown''';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS score INTEGER DEFAULT 0';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS support JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS exposure_summary TEXT';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS contract_status TEXT';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS timeline TEXT';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS questionnaire_status VARCHAR(80) DEFAULT ''not_sent''';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS evidence JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS last_assessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.vendor_assessments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
     END IF;
 
     IF to_regclass('public.scanner_evidence') IS NOT NULL THEN
@@ -910,7 +928,40 @@ CREATE INDEX IF NOT EXISTS idx_connector_accounts_user ON connector_accounts(use
 CREATE INDEX IF NOT EXISTS idx_connector_accounts_provider ON connector_accounts(user_id, provider);
 
 -- ============================================================
--- 22. SCANNER EVIDENCE
+-- 22. VENDOR PQC ASSESSMENTS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS vendor_assessments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    vendor_name VARCHAR(255) NOT NULL,
+    category VARCHAR(120),
+    readiness_status VARCHAR(80) DEFAULT 'Unknown', -- Quantum Ready, Hybrid Ready, Migration Planned, Unknown, High Risk, Critical Dependency
+    score INTEGER DEFAULT 0,
+    support JSONB DEFAULT '{}', -- ML-KEM, ML-DSA, Hybrid TLS, PQC certificates, crypto agility
+    exposure_summary TEXT,
+    contract_status TEXT,
+    timeline TEXT,
+    questionnaire_status VARCHAR(80) DEFAULT 'not_sent',
+    evidence JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    last_assessed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE vendor_assessments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS vendor_assessments_user_isolation ON vendor_assessments;
+CREATE POLICY vendor_assessments_user_isolation ON vendor_assessments
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_vendor_assessments_user ON vendor_assessments(user_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_assessments_name ON vendor_assessments(user_id, vendor_name);
+CREATE INDEX IF NOT EXISTS idx_vendor_assessments_status ON vendor_assessments(user_id, readiness_status);
+CREATE INDEX IF NOT EXISTS idx_vendor_assessments_updated ON vendor_assessments(user_id, updated_at DESC);
+
+-- ============================================================
+-- 23. SCANNER EVIDENCE
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scanner_evidence (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1291,7 +1342,8 @@ DECLARE
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions'
+        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions',
+        'vendor_assessments'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP

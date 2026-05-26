@@ -893,7 +893,7 @@ export default function BehavioralAnalyticsPage() {
             <SectionTitle>Top Anomalous Entities</SectionTitle>
             <TopEntities rows={snapshot.topEntities} />
             <div className="mt-4 flex justify-end">
-              <a href="/dashboard/runtime-discovery" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
+              <a href="/dashboard/runtime-telemetry" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
                 View All Entities <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>

@@ -563,13 +563,13 @@ export default function EncryptionKeysPage() {
                 <thead>
                   <tr>
                     {['Fingerprint / Label', 'Algorithm', 'Bits', 'Source', 'Quality', 'Status', 'Created', 'Expires', 'Actions'].map(h => (
-                      <th key={h} style={{ padding: '12px', textAlign: h === 'Actions' ? 'right' : 'left', color: '#D4AF37', fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
+                      <th key={h} style={{ padding: '12px', textAlign: h === 'Actions' ? 'right' : 'left', color: 'var(--qg-module-label)', fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {keys.map(key => (
-                    <tr key={key.id} style={{ background: 'rgba(255,255,255,0.02)', transition: 'background 0.2s' }} className="hover:bg-white/[0.05]">
+                    <tr key={key.id} style={{ background: 'var(--qg-surface-inset)', transition: 'background 0.2s' }} className="hover:bg-white/[0.05]">
                       <td style={{ padding: '10px 12px' }}>
                         <div style={{ color: 'var(--qg-cyan)', fontSize: 11 }}>{key.fingerprint}</div>
                         {key.label && <div style={{ fontSize: 10, color: 'var(--qg-text-muted)', marginTop: 2 }}>{key.label}</div>}

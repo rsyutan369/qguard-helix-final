@@ -2,15 +2,16 @@ import { useState } from 'react';
 import { Outlet, Link, Navigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutDashboard, Map as MapIcon, Terminal, ShieldAlert, LogOut,
-  Eye, Route, Layers, Globe, Clock, ClipboardCheck,
-  Rocket, Radio, GitCompare, ChevronLeft,
+  LayoutDashboard, Map as MapIcon, ShieldAlert, LogOut,
+  Route, Layers, Globe, Clock, ClipboardCheck,
+  Rocket, GitCompare, ChevronLeft,
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
-  Activity, EyeOff, Brain, Settings, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Search, Ghost
+  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
+import ThemeToggle from '@/components/theme/ThemeToggle';
 
 const NAV_SECTIONS = [
   {
@@ -18,7 +19,6 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
-      { name: 'Quantum Risk', path: '/dashboard/quantum-risk', icon: Eye },
       { name: 'Migration Planner', path: '/dashboard/migration-planner', icon: Route },
       { name: 'PQC Onboarding & Migration Process', path: '/dashboard/pqc-onboarding', icon: ClipboardCheck },
     ],
@@ -45,9 +45,7 @@ const NAV_SECTIONS = [
       { name: 'CBOM Explorer', path: '/dashboard/cbom', icon: Layers },
       { name: 'Crypto Exposure', path: '/dashboard/crypto-exposure', icon: Globe },
       { name: 'Assets & CBOM', path: '/dashboard/assets', icon: MapIcon },
-      { name: 'Runtime Discovery', path: '/dashboard/runtime-discovery', icon: Search },
       { name: 'Shadow Crypto', path: '/dashboard/shadow-crypto', icon: Ghost },
-      { name: 'Asset Intelligence', path: '/dashboard/asset-intelligence', icon: Brain },
       { name: 'Harvest Now, Decrypt Later', path: '/dashboard/harvest-now', icon: EyeOff },
     ],
   },
@@ -58,18 +56,25 @@ const NAV_SECTIONS = [
       { name: 'Migration Timeline', path: '/dashboard/migration-timeline', icon: Clock },
       { name: 'Migration Phases', path: '/dashboard/migration-phases', icon: Layers },
       { name: 'Live Migration Ops', path: '/dashboard/live-migration', icon: Rocket },
-      { name: 'Migration Terminal', path: '/dashboard/migration-terminal', icon: Terminal },
-      { name: 'Hybrid Crypto Manager', path: '/dashboard/hybrid-crypto', icon: Settings },
       { name: 'Crypto-Agility Engine', path: '/dashboard/crypto-agility', icon: Zap },
       { name: 'PQC Orchestration', path: '/dashboard/pqc-orchestration', icon: Network },
       { name: 'Migration Sandbox', path: '/dashboard/migration-sandbox', icon: Box },
     ],
   },
   {
+    label: 'Ecosystem & Supply-Chain',
+    collapsible: true,
+    items: [
+      { name: 'Ecosystem Dependency Map', path: '/dashboard/ecosystem-dependency-map', icon: Globe },
+      { name: 'Vendor PQC Readiness Center', path: '/dashboard/vendor-pqc-readiness', icon: ClipboardCheck },
+      { name: 'Trust Chain Analyzer', path: '/dashboard/trust-chain-analyzer', icon: Network },
+      { name: 'Hybrid Crypto Compatibility Lab', path: '/dashboard/hybrid-crypto-lab', icon: Box },
+    ],
+  },
+  {
     label: 'Intelligence',
     collapsible: true,
     items: [
-      { name: 'Threat Intel', path: '/dashboard/threat-intel', icon: Radio },
       { name: 'Drift Detection', path: '/dashboard/drift', icon: GitCompare },
       { name: 'Vulnerabilities', path: '/dashboard/vulnerabilities', icon: ShieldAlert },
       { name: 'Runtime Cryptographic Intelligence', path: '/dashboard/runtime-crypto-intel', icon: Microscope },
@@ -83,6 +88,7 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'TLS Telemetry', path: '/dashboard/tls-telemetry', icon: Shield },
+      { name: 'TLS Orchestrator', path: '/dashboard/tls-orchestrator', icon: Network },
       { name: 'PKI Visibility', path: '/dashboard/pki-visibility', icon: Award },
       { name: 'Protocol Analytics', path: '/dashboard/protocol-analytics', icon: Activity },
       { name: 'Encryption Monitoring', path: '/dashboard/encryption-monitoring', icon: Lock },
@@ -140,6 +146,7 @@ export default function DashboardLayout() {
     'Quantum Tools': false,
     'Discovery': false,
     'Operations': false,
+    'Ecosystem & Supply-Chain': false,
     'Intelligence': false,
     'Observability': false,
     'Trust Center': false,
@@ -159,7 +166,7 @@ export default function DashboardLayout() {
 
   if (loading) {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#050816] text-gold">
+      <div className="qg-dashboard-shell grid min-h-screen place-items-center bg-[var(--qg-dashboard-bg)] text-[var(--qg-accent)]">
         <div className="rounded-lg border border-gold/20 bg-gold/[0.04] px-5 py-3 text-xs font-black uppercase tracking-[0.18em]">
           Securing session
         </div>
@@ -172,7 +179,7 @@ export default function DashboardLayout() {
   }
 
   return (
-    <div className="flex h-screen bg-[#050816] text-white font-mono overflow-hidden">
+    <div className="qg-dashboard-shell flex h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)] font-mono overflow-hidden">
       {/* Mobile overlay */}
       <AnimatePresence>
         {mobileOpen && (
@@ -188,7 +195,7 @@ export default function DashboardLayout() {
 
       {/* Sidebar */}
       <aside className={`
-        ${sidebarWidth} flex flex-col border-r border-[#FFD36B]/15 bg-[#050816]/90 backdrop-blur-2xl transition-all duration-300 z-50
+        qg-dashboard-sidebar ${sidebarWidth} flex flex-col border-r border-[#FFD36B]/15 bg-[#050816]/90 backdrop-blur-2xl transition-all duration-300 z-50
         fixed lg:relative inset-y-0 left-0
         ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
@@ -286,6 +293,8 @@ export default function DashboardLayout() {
 
         {/* Bottom controls */}
         <div className="border-t border-gold/15 p-2.5 space-y-1.5">
+          <ThemeToggle compact={collapsed} showSystem={!collapsed} className="w-full justify-center" />
+
           {/* Collapse toggle (desktop) */}
           <button
             onClick={() => setCollapsed(c => !c)}
@@ -311,9 +320,9 @@ export default function DashboardLayout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto relative" style={{ background: '#050816' }}>
+      <main className="qg-dashboard-main flex-1 overflow-y-auto relative" style={{ background: 'var(--qg-dashboard-bg)' }}>
         {/* Atmospheric Background Layers */}
-        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div className="qg-dashboard-bg-layers pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
           {/* Deep navy base */}
           <div className="absolute inset-0 bg-[#050816]" />
           {/* Gold radial glow — top right */}
@@ -325,7 +334,7 @@ export default function DashboardLayout() {
         </div>
 
         {/* Mobile header */}
-        <div className="lg:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-[#FFD36B]/15 bg-[#050816]/90 backdrop-blur-xl px-4 py-3">
+        <div className="qg-dashboard-mobile-header lg:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-[#FFD36B]/15 bg-[#050816]/90 backdrop-blur-xl px-4 py-3">
           <button
             onClick={() => setMobileOpen(true)}
             className="p-2 rounded-lg border border-gold/20 bg-gold/5 text-gold"
@@ -336,9 +345,10 @@ export default function DashboardLayout() {
             <ShieldAlert className="h-5 w-5 text-gold" />
             <span className="text-sm font-black uppercase tracking-wider text-gold">Qguard Helix</span>
           </div>
+          <ThemeToggle compact showSystem={false} className="ml-auto" />
         </div>
 
-        <div className="relative z-10 min-h-full">
+        <div className="dashboard-theme-scope relative z-10 min-h-full">
           <Outlet />
         </div>
       </main>

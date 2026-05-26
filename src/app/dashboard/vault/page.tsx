@@ -152,7 +152,7 @@ function severityColor(severity: string): string {
   switch (severity) {
     case 'critical': return 'var(--qg-red, #ef4444)'
     case 'warning': return 'var(--qg-amber, #f59e0b)'
-    default: return 'var(--qg-cyan, #d4af37)'
+    default: return 'var(--qg-cyan)'
   }
 }
 
@@ -1164,10 +1164,10 @@ export default function VaultPage() {
             🖥️
           </div>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--qg-text-primary)', marginBottom: 4 }}>
               QGuard Vault Desktop App
             </div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>
+            <div style={{ fontSize: 12, color: 'var(--qg-text-secondary)' }}>
               Offline post-quantum encryption with hardware-level security. Windows installers are available now.
             </div>
             <div style={{ fontSize: 11, color: 'rgba(212,175,55,0.72)', marginTop: 4 }}>
@@ -1182,8 +1182,8 @@ export default function VaultPage() {
             style={{
               padding: '10px 20px',
               borderRadius: 10,
-              background: 'linear-gradient(135deg, #d4af37, #fff3c1)',
-              color: '#fff',
+              background: 'linear-gradient(135deg, var(--qg-amber), var(--qg-accent-strong))',
+              color: 'var(--qg-on-accent)',
               fontSize: 12,
               fontWeight: 600,
               textDecoration: 'none',
@@ -1203,9 +1203,9 @@ export default function VaultPage() {
             style={{
               padding: '10px 20px',
               borderRadius: 10,
-              background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(212,175,55,0.25)',
-              color: 'rgba(255,255,255,0.9)',
+              background: 'var(--qg-card-bg)',
+              border: '1px solid var(--qg-card-border)',
+              color: 'var(--qg-text-primary)',
               fontSize: 12,
               fontWeight: 600,
               textDecoration: 'none',
@@ -1226,9 +1226,9 @@ export default function VaultPage() {
             style={{
               padding: '10px 20px',
               borderRadius: 10,
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: 'rgba(255,255,255,0.5)',
+              background: 'var(--qg-disabled-bg)',
+              border: '1px solid var(--qg-disabled-border)',
+              color: 'var(--qg-disabled-text)',
               fontSize: 12,
               fontWeight: 600,
               cursor: 'not-allowed',
@@ -1248,9 +1248,9 @@ export default function VaultPage() {
             style={{
               padding: '10px 20px',
               borderRadius: 10,
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: 'rgba(255,255,255,0.5)',
+              background: 'var(--qg-disabled-bg)',
+              border: '1px solid var(--qg-disabled-border)',
+              color: 'var(--qg-disabled-text)',
               fontSize: 12,
               fontWeight: 600,
               cursor: 'not-allowed',
@@ -1283,7 +1283,7 @@ export default function VaultPage() {
       <div className="q-card animate-fade-in-up" style={{ marginBottom: 24, padding: '18px 22px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 800, color: '#fff3c1', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--qg-amber)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
               Live Vault Activity
             </div>
             <div style={{ fontSize: 11, color: 'var(--qg-text-muted)', marginTop: 3 }}>
@@ -1328,7 +1328,7 @@ export default function VaultPage() {
               <div style={{ fontSize: 10, color: severityColor(event.severity), fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 5 }}>
                 {event.event_type.replace(/_/g, ' ')}
               </div>
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.72)', lineHeight: 1.4 }}>
+              <div style={{ fontSize: 12, color: 'var(--qg-text-secondary)', lineHeight: 1.4 }}>
                 {event.message || 'Vault health updated'}
               </div>
             </div>
@@ -1369,7 +1369,7 @@ export default function VaultPage() {
         </div>
         <div className="q-card stat-card animate-fade-in-up delay-400">
           <div className="stat-label">Shared</div>
-          <div className="stat-value" style={{ color: 'var(--qg-violet, #fff3c1)' }}>
+          <div className="stat-value" style={{ color: 'var(--qg-violet)' }}>
             {sharedLinks.filter(l => !l.is_revoked && !l.is_destroyed && (!l.expires_at || new Date(l.expires_at) > new Date())).length}
           </div>
           <div style={{ fontSize: 12, color: 'var(--qg-text-muted)' }}>Active share links</div>
@@ -1741,7 +1741,7 @@ export default function VaultPage() {
                 return (
                   <div key={link.id} style={{
                     padding: '14px 16px', borderRadius: 'var(--radius-md)',
-                    border: `1px solid ${isDestroyed ? 'rgba(239, 68, 68, 0.3)' : isActive ? 'var(--qg-violet, #fff3c1)' : 'var(--qg-border)'}`,
+                    border: `1px solid ${isDestroyed ? 'rgba(239, 68, 68, 0.3)' : isActive ? 'var(--qg-violet)' : 'var(--qg-border)'}`,
                     background: isDestroyed ? 'rgba(239, 68, 68, 0.03)' : isActive ? 'rgba(255, 243, 193, 0.03)' : 'transparent',
                     opacity: isActive ? 1 : 0.6,
                   }}>

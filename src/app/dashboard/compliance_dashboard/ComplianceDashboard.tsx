@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -24,14 +24,29 @@ import {
   ListChecks,
   LockKeyhole,
   Radar,
+  RefreshCw,
   ScrollText,
   Shield,
   ShieldCheck,
   Sparkles,
   Target,
-  UserCog,
+  Wifi,
+  WifiOff,
   X,
 } from 'lucide-react';
+import {
+  useComplianceDashboard,
+  type ComplianceCapabilityHighlight,
+  type ComplianceCertificateRow,
+  type ComplianceDashboardSnapshot,
+  type ComplianceFrameworkAlignment,
+  type ComplianceGovernancePolicyRow,
+  type ComplianceMaturityLevel,
+  type CompliancePolicyRow,
+  type CompliancePolicyViolation,
+  type ComplianceRequirementBreakdown,
+  type ComplianceTrendPoint,
+} from '@/hooks/use-compliance-dashboard';
 
 type Tone = 'gold' | 'green' | 'red' | 'muted';
 
@@ -41,65 +56,6 @@ type MetricCard = {
   detail: string;
   icon: LucideIcon;
   tone: Tone;
-};
-
-type CertificateRow = {
-  algorithm: string;
-  issuedTo: string;
-  issuedOn: string;
-  expiresOn: string;
-  status: 'Active' | 'Expired' | 'Expiring Soon';
-};
-
-type PolicyRow = {
-  name: string;
-  category: string;
-  status: 'Compliant' | 'Review';
-  lastReviewed: string;
-};
-
-type FrameworkAlignment = {
-  name: string;
-  score: number;
-};
-
-type MaturityLevel = {
-  label: string;
-  value: number;
-  color: string;
-};
-
-type PolicyTrendPoint = {
-  label: string;
-  value: number;
-};
-
-type GovernancePolicyRow = {
-  name: string;
-  category: string;
-  status: 'Enforced' | 'Draft';
-  coverage: number;
-  updated: string;
-};
-
-type PolicyViolation = {
-  title: string;
-  detail: string;
-  severity: 'High' | 'Medium' | 'Low';
-  time: string;
-  type: 'warning' | 'info';
-};
-
-type RequirementBreakdown = {
-  label: string;
-  value: number;
-  color: string;
-};
-
-type CapabilityHighlight = {
-  label: string;
-  detail: string;
-  icon: LucideIcon;
 };
 
 type ComplianceModalKey = 'frameworks' | 'maturity' | 'trend' | 'policies' | 'violations' | 'evidence';
@@ -115,240 +71,6 @@ type ComplianceModalContent = {
 
 const cx = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ');
 
-const metrics: MetricCard[] = [
-  {
-    title: 'NIST PQC Compliance',
-    value: '96%',
-    detail: 'Validated by NIST PQC Draft SP 800-208',
-    icon: ShieldCheck,
-    tone: 'gold',
-  },
-  {
-    title: 'Certificate Status',
-    value: '98% Active',
-    detail: '45 Active | 2 Expired',
-    icon: FileCheck2,
-    tone: 'green',
-  },
-  {
-    title: 'Policy Adherence',
-    value: '91% Met',
-    detail: '15 of 16 Policies',
-    icon: ClipboardCheck,
-    tone: 'green',
-  },
-  {
-    title: 'Threat Intelligence',
-    value: 'Low Risk',
-    detail: '3 Active Events',
-    icon: Radar,
-    tone: 'green',
-  },
-  {
-    title: 'System Audits',
-    value: 'Completed',
-    detail: '03/10/2024',
-    icon: ScrollText,
-    tone: 'green',
-  },
-  {
-    title: 'Key Management',
-    value: 'Secure',
-    detail: '128 Keys',
-    icon: KeyRound,
-    tone: 'green',
-  },
-];
-
-const checklist = [
-  { label: 'Q-Ready Algorithm Adoption', complete: true },
-  { label: 'NIST SP 800-208 Compliance', complete: true },
-  { label: 'Certificate Validity Checks', complete: true },
-  { label: 'Key Rotation Schedule', complete: true },
-  { label: 'Threat Vector Analysis', complete: true },
-  { label: 'Audit Trail Integrity', complete: true },
-  { label: 'Post-Quantum Migration Plan', complete: false },
-];
-
-const certificates: CertificateRow[] = [
-  { algorithm: 'ML-DSA-87', issuedTo: 'Ado Seam', issuedOn: '03/10/2024', expiresOn: '03/10/2025', status: 'Active' },
-  { algorithm: 'ML-KEM-768', issuedTo: 'Ascure Aarnox', issuedOn: '03/10/2024', expiresOn: '03/10/2025', status: 'Active' },
-  { algorithm: 'Falcon-512', issuedTo: 'Ascure Aarnox', issuedOn: '03/10/2024', expiresOn: '03/10/2025', status: 'Expired' },
-  { algorithm: 'SPHINCS+-128s', issuedTo: 'Post-Quantum ECC', issuedOn: '03/10/2024', expiresOn: '03/10/2025', status: 'Active' },
-  { algorithm: 'ML-DSA-65', issuedTo: 'Ascure Aerrox', issuedOn: '03/10/2024', expiresOn: '03/10/2025', status: 'Active' },
-  { algorithm: 'Falcon-512', issuedTo: 'RSA 3072 Legacy', issuedOn: '03/10/2024', expiresOn: '12/10/2024', status: 'Expiring Soon' },
-];
-
-const policies: PolicyRow[] = [
-  { name: 'Q-Cryptography Standard', category: 'Cryptography', status: 'Compliant', lastReviewed: '03/09/2024' },
-  { name: 'Audit Compliance', category: 'Governance', status: 'Compliant', lastReviewed: '03/08/2024' },
-  { name: 'Certificate Lifecycle', category: 'Identity', status: 'Compliant', lastReviewed: '03/07/2024' },
-  { name: 'Q-Cryptography Standard (PQC)', category: 'Cryptography', status: 'Compliant', lastReviewed: '03/06/2024' },
-  { name: 'Certifi Compliance', category: 'Compliance', status: 'Compliant', lastReviewed: '03/05/2024' },
-  { name: 'Audit Compliance', category: 'Governance', status: 'Compliant', lastReviewed: '03/04/2024' },
-];
-
-const frameworkAlignment: FrameworkAlignment[] = [
-  { name: 'NIST SP 800-208', score: 98 },
-  { name: 'NIST SP 800-57', score: 95 },
-  { name: 'ISO/IEC 27001', score: 94 },
-  { name: 'ISO/IEC 27002', score: 92 },
-  { name: 'NIST CSF 2.0', score: 90 },
-  { name: 'CIS Controls v8', score: 88 },
-];
-
-const maturityLevels: MaturityLevel[] = [
-  { label: 'Level 5 - Optimized', value: 18, color: '#FFD36B' },
-  { label: 'Level 4 - Managed', value: 42, color: '#D49B18' },
-  { label: 'Level 3 - Defined', value: 28, color: '#8F6B19' },
-  { label: 'Level 2 - Repeatable', value: 8, color: '#4D3910' },
-  { label: 'Level 1 - Initial', value: 4, color: '#2B210B' },
-];
-
-const policyTrend: PolicyTrendPoint[] = [
-  { label: 'May 9', value: 35 },
-  { label: 'May 10', value: 46 },
-  { label: 'May 11', value: 62 },
-  { label: 'May 12', value: 67 },
-  { label: 'May 13', value: 76 },
-  { label: 'May 14', value: 86 },
-  { label: 'May 15', value: 96 },
-];
-
-const governancePolicyMatrix: GovernancePolicyRow[] = [
-  { name: 'Post-Quantum Cryptography Policy', category: 'Cryptography', status: 'Enforced', coverage: 98, updated: 'May 15, 2026' },
-  { name: 'Cryptographic Algorithm Policy', category: 'Algorithms', status: 'Enforced', coverage: 96, updated: 'May 14, 2026' },
-  { name: 'Key Management Policy', category: 'Key Management', status: 'Enforced', coverage: 94, updated: 'May 13, 2026' },
-  { name: 'Certificate Lifecycle Policy', category: 'Certificates', status: 'Enforced', coverage: 92, updated: 'May 13, 2026' },
-  { name: 'Access Control Policy', category: 'Access Control', status: 'Enforced', coverage: 90, updated: 'May 12, 2026' },
-  { name: 'Data Protection Policy', category: 'Data Security', status: 'Enforced', coverage: 88, updated: 'May 11, 2026' },
-  { name: 'Vendor & Third-Party Policy', category: 'Third Party', status: 'Enforced', coverage: 85, updated: 'May 11, 2026' },
-  { name: 'Compliance & Audit Policy', category: 'Compliance', status: 'Draft', coverage: 60, updated: 'May 10, 2026' },
-];
-
-const policyViolations: PolicyViolation[] = [
-  { title: 'Weak Algorithm Usage', detail: 'RSA-1024 detected in 3 assets', severity: 'High', time: '5m ago', type: 'warning' },
-  { title: 'Expired Certificate', detail: '1 certificate expired', severity: 'Medium', time: '15m ago', type: 'warning' },
-  { title: 'PQC Unsupported Service', detail: '2 services not PQC ready', severity: 'Medium', time: '27m ago', type: 'warning' },
-  { title: 'Policy Drift Detected', detail: 'Key rotation policy drift in 1 asset', severity: 'Low', time: '45m ago', type: 'info' },
-  { title: 'New Asset Onboarded', detail: '10.0.50.23 added to scope', severity: 'Low', time: '1h ago', type: 'info' },
-];
-
-const requirementBreakdown: RequirementBreakdown[] = [
-  { label: 'Compliant', value: 230, color: '#42D95B' },
-  { label: 'Partially Compliant', value: 45, color: '#FFCF33' },
-  { label: 'Non-Compliant', value: 17, color: '#FF5D52' },
-  { label: 'Not Applicable', value: 10, color: '#B8B8B8' },
-];
-
-const capabilityHighlights: CapabilityHighlight[] = [
-  { label: 'Policy Enforcement', detail: 'Active across 1,248 assets', icon: ShieldCheck },
-  { label: 'Audit Trail', detail: 'All actions logged & immutable', icon: ScrollText },
-  { label: 'Automated Compliance', detail: 'Continuous monitoring enabled', icon: BadgeCheck },
-  { label: 'Risk Based Approach', detail: 'Prioritize critical risks', icon: Target },
-  { label: 'Reporting', detail: 'Real-time compliance reports', icon: ClipboardCheck },
-  { label: 'Data Residency', detail: 'Regional data governance', icon: Building2 },
-];
-
-const complianceModalContent: Record<ComplianceModalKey, ComplianceModalContent> = {
-  frameworks: {
-    title: 'Policy Framework Alignment',
-    eyebrow: 'Control Mapping',
-    summary: 'Framework coverage is mapped to cryptographic controls, certificate lifecycle evidence, and migration readiness signals.',
-    icon: Landmark,
-    metrics: [
-      { label: 'Average Alignment', value: '93%', tone: 'gold' },
-      { label: 'Mapped Controls', value: '302', tone: 'green' },
-      { label: 'Open Gaps', value: '7', tone: 'red' },
-    ],
-    bullets: [
-      'NIST and ISO controls are continuously reconciled with policy evidence.',
-      'Coverage gaps are routed to governance owners with asset-level context.',
-      'Evidence snapshots are audit-ready for security questionnaires and regulators.',
-    ],
-  },
-  maturity: {
-    title: 'Policy Maturity Model',
-    eyebrow: 'Operating Model',
-    summary: 'The current policy program is in Level 4 Managed with automated enforcement and measurable performance indicators.',
-    icon: Gauge,
-    metrics: [
-      { label: 'Current Level', value: '4', tone: 'gold' },
-      { label: 'Managed Coverage', value: '42%', tone: 'green' },
-      { label: 'Next Level Gap', value: '18%', tone: 'muted' },
-    ],
-    bullets: [
-      'Managed controls have assigned owners, target thresholds, and review cadences.',
-      'Optimization work focuses on predictive drift prevention and vendor evidence.',
-      'Repeatable policy reviews reduce exceptions before quarterly audit windows.',
-    ],
-  },
-  trend: {
-    title: 'Policy Compliance Over Time',
-    eyebrow: 'Seven-Day Trend',
-    summary: 'Compliance improved from 35% to 96% during the current measurement window ending May 15, 2026.',
-    icon: LineChart,
-    metrics: [
-      { label: 'This Week', value: '96%', tone: 'gold' },
-      { label: 'Last Week', value: '87%', tone: 'muted' },
-      { label: 'Change', value: '+9%', tone: 'green' },
-    ],
-    bullets: [
-      'Policy automation and certificate remediation are the main drivers of the gain.',
-      'Residual variance is concentrated in third-party and legacy algorithm controls.',
-      'Trend evidence is retained with timestamped control snapshots.',
-    ],
-  },
-  policies: {
-    title: 'Governance Policy Matrix',
-    eyebrow: 'Policy Registry',
-    summary: 'Governance policies are categorized by cryptographic domain, enforcement state, and coverage across monitored assets.',
-    icon: ListChecks,
-    metrics: [
-      { label: 'Enforced', value: '7', tone: 'green' },
-      { label: 'Draft', value: '1', tone: 'gold' },
-      { label: 'Avg Coverage', value: '88%', tone: 'muted' },
-    ],
-    bullets: [
-      'Policy coverage is measured against active assets and certificate inventories.',
-      'Draft policies remain visible so reviewers can track governance debt.',
-      'Each policy action is tied to immutable audit evidence.',
-    ],
-  },
-  violations: {
-    title: 'Policy Violations',
-    eyebrow: 'Exception Queue',
-    summary: 'Violations are grouped by severity and business risk so remediation teams can address critical exposure first.',
-    icon: AlertTriangle,
-    metrics: [
-      { label: 'High', value: '1', tone: 'red' },
-      { label: 'Medium', value: '2', tone: 'gold' },
-      { label: 'Low', value: '2', tone: 'green' },
-    ],
-    bullets: [
-      'Weak algorithm usage is the only high-severity active exception.',
-      'Certificate exceptions are eligible for automated renewal workflow routing.',
-      'Low-severity onboarding and drift signals are retained for audit traceability.',
-    ],
-  },
-  evidence: {
-    title: 'Compliance Requirements Evidence',
-    eyebrow: 'Evidence Vault',
-    summary: 'Requirement evidence combines policy state, asset scope, certificate health, and audit trail completeness.',
-    icon: FileCheck2,
-    metrics: [
-      { label: 'Overall Compliance', value: '96%', tone: 'green' },
-      { label: 'Evidence Items', value: '302', tone: 'gold' },
-      { label: 'Non-Compliant', value: '17', tone: 'red' },
-    ],
-    bullets: [
-      'Compliant evidence covers 230 mapped requirements across the current scope.',
-      'Partially compliant requirements are staged for control owner review.',
-      'Non-compliant findings link back to policy violations and remediation owners.',
-    ],
-  },
-};
-
 const particles = Array.from({ length: 36 }, (_, index) => ({
   left: `${(index * 17 + 8) % 100}%`,
   top: `${(index * 29 + 13) % 94}%`,
@@ -363,6 +85,208 @@ const toneClasses: Record<Tone, string> = {
   red: 'text-[#FF4D5A] drop-shadow-[0_0_8px_rgba(255,77,90,0.28)]',
   muted: 'text-white/64 drop-shadow-[0_0_8px_rgba(255,255,255,0.10)]',
 };
+
+const capabilityIconMap: Record<ComplianceCapabilityHighlight['iconKey'], LucideIcon> = {
+  shield: ShieldCheck,
+  audit: ScrollText,
+  check: BadgeCheck,
+  target: Target,
+  clipboard: ClipboardCheck,
+  building: Building2,
+};
+
+function pct(value: number) {
+  return `${Math.max(0, Math.min(100, Math.round(Number(value) || 0)))}%`;
+}
+
+function integer(value: number) {
+  return Math.round(Number(value) || 0).toLocaleString();
+}
+
+function readableDateTime(value?: string | null) {
+  if (!value) return 'Awaiting telemetry';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Awaiting telemetry';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function readinessLabel(score: number) {
+  if (score >= 90) return 'Optimal';
+  if (score >= 75) return 'Ready';
+  if (score >= 50) return 'Review';
+  if (score > 0) return 'At Risk';
+  return 'Awaiting Data';
+}
+
+function complianceTone(score: number): Tone {
+  if (score >= 80) return 'green';
+  if (score >= 50) return 'gold';
+  if (score > 0) return 'red';
+  return 'muted';
+}
+
+function buildMetricCards(snapshot: ComplianceDashboardSnapshot): MetricCard[] {
+  const { metrics: m } = snapshot;
+  return [
+    {
+      title: 'Post-Quantum Compliance',
+      value: pct(m.complianceScore),
+      detail: `${integer(m.auditEvents)} evidence and audit signals`,
+      icon: ShieldCheck,
+      tone: complianceTone(m.complianceScore),
+    },
+    {
+      title: 'Certificate Status',
+      value: `${pct(m.totalCertificates ? (m.activeCertificates / m.totalCertificates) * 100 : 0)} Active`,
+      detail: `${integer(m.activeCertificates)} active | ${integer(m.expiredCertificates)} expired | ${integer(m.expiringCertificates)} expiring`,
+      icon: FileCheck2,
+      tone: m.expiredCertificates > 0 ? 'red' : m.expiringCertificates > 0 ? 'gold' : 'green',
+    },
+    {
+      title: 'Policy Adherence',
+      value: pct(m.policyAdherence),
+      detail: `${integer(m.enforcedPolicies)} of ${integer(m.totalPolicies)} controls enforced`,
+      icon: ClipboardCheck,
+      tone: complianceTone(m.policyAdherence),
+    },
+    {
+      title: 'Quantum Risk',
+      value: `Q-${integer(m.qScore)}`,
+      detail: `${integer(m.criticalFindings)} critical | ${integer(m.highFindings)} high findings`,
+      icon: Radar,
+      tone: m.criticalFindings > 0 ? 'red' : m.highFindings > 0 ? 'gold' : 'green',
+    },
+    {
+      title: 'Migration State',
+      value: pct(m.migrationCompletionRate),
+      detail: `${integer(m.activeMigrationJobs)} active | ${integer(m.failedMigrationJobs)} failed jobs`,
+      icon: ScrollText,
+      tone: m.failedMigrationJobs > 0 ? 'red' : m.activeMigrationJobs > 0 ? 'gold' : 'green',
+    },
+    {
+      title: 'Key Management',
+      value: `${integer(m.secureKeys)} Secure`,
+      detail: `${integer(m.keyCount)} generated keys | ${integer(m.mlKemDeployments + m.mlDsaDeployments)} PQC deployments`,
+      icon: KeyRound,
+      tone: m.keyCount === 0 ? 'muted' : m.secureKeys >= m.keyCount ? 'green' : 'gold',
+    },
+  ];
+}
+
+function buildModalContent(snapshot: ComplianceDashboardSnapshot): Record<ComplianceModalKey, ComplianceModalContent> {
+  const { metrics: m } = snapshot;
+  const avgFramework = snapshot.frameworkAlignment.length
+    ? Math.round(snapshot.frameworkAlignment.reduce((sum, row) => sum + row.score, 0) / snapshot.frameworkAlignment.length)
+    : 0;
+  const openGaps = snapshot.frameworkAlignment.filter((row) => row.score < 75).length + m.criticalFindings + m.highFindings;
+  const latestTrend = snapshot.policyTrend[snapshot.policyTrend.length - 1]?.value || m.complianceScore;
+  const previousTrend = snapshot.policyTrend[Math.max(0, snapshot.policyTrend.length - 2)]?.value || latestTrend;
+
+  return {
+    frameworks: {
+      title: 'Policy Framework Alignment',
+      eyebrow: 'Live Control Mapping',
+      summary: 'Framework coverage is correlated from authenticated assets, CBOM inventory, runtime telemetry, certificates, migration jobs, and compliance evidence.',
+      icon: Landmark,
+      metrics: [
+        { label: 'Average Alignment', value: pct(avgFramework), tone: complianceTone(avgFramework) },
+        { label: 'Mapped Controls', value: integer(snapshot.frameworkAlignment.length), tone: 'green' },
+        { label: 'Open Gaps', value: integer(openGaps), tone: openGaps ? 'red' : 'green' },
+      ],
+      bullets: [
+        `${integer(m.totalAssets)} assets and ${integer(m.totalComponents)} cryptographic components are in scope.`,
+        `${integer(m.pqcReadyComponents)} components currently show PQC-ready or quantum-safe status.`,
+        `Latest activity was synchronized at ${readableDateTime(snapshot.source.latestActivityAt)}.`,
+      ],
+    },
+    maturity: {
+      title: 'Policy Maturity Model',
+      eyebrow: 'Operating Model',
+      summary: 'Maturity reflects evidence freshness, active monitoring, enforced controls, migration progress, and unresolved quantum exposure.',
+      icon: Gauge,
+      metrics: [
+        { label: 'Compliance Score', value: pct(m.complianceScore), tone: complianceTone(m.complianceScore) },
+        { label: 'Validation Score', value: pct(m.validationScore), tone: complianceTone(m.validationScore) },
+        { label: 'Runtime Events 24h', value: integer(m.runtimeEvents24h), tone: m.runtimeEvents24h ? 'green' : 'muted' },
+      ],
+      bullets: [
+        `${integer(m.enforcedPolicies)} governance controls are currently enforced.`,
+        `${integer(m.activeScans)} discovery scans and ${integer(m.activeMigrationJobs)} migration jobs are active.`,
+        `${integer(m.scannerAgents)} scanner agents are contributing posture data.`,
+      ],
+    },
+    trend: {
+      title: 'Policy Compliance Over Time',
+      eyebrow: 'Live Seven-Day Trend',
+      summary: 'The trend is generated from real compliance evidence, migration completions, scan output, and risk events observed in the current tenant scope.',
+      icon: LineChart,
+      metrics: [
+        { label: 'Current', value: pct(latestTrend), tone: complianceTone(latestTrend) },
+        { label: 'Previous', value: pct(previousTrend), tone: complianceTone(previousTrend) },
+        { label: 'Change', value: `${latestTrend - previousTrend >= 0 ? '+' : ''}${latestTrend - previousTrend}%`, tone: latestTrend >= previousTrend ? 'green' : 'red' },
+      ],
+      bullets: [
+        `${integer(m.completedScans)} completed scans are represented in the compliance window.`,
+        `${integer(m.remediatedItems)} remediation and migration events improved the current posture.`,
+        `${integer(m.hndlExposures)} Harvest Now, Decrypt Later signals remain in scope.`,
+      ],
+    },
+    policies: {
+      title: 'Governance Policy Matrix',
+      eyebrow: 'Policy Registry',
+      summary: 'Policies are derived from active controls, evidence rows, cryptographic inventory coverage, certificate posture, runtime monitoring, and audit retention.',
+      icon: ListChecks,
+      metrics: [
+        { label: 'Enforced', value: integer(m.enforcedPolicies), tone: 'green' },
+        { label: 'Total Controls', value: integer(m.totalPolicies), tone: 'gold' },
+        { label: 'Policy Score', value: pct(m.policyAdherence), tone: complianceTone(m.policyAdherence) },
+      ],
+      bullets: [
+        `${integer(m.vulnerableComponents)} vulnerable cryptographic components are reflected in control status.`,
+        `${integer(m.trustDependencies)} external or internal dependency links affect trust posture.`,
+        `${integer(m.auditEvents)} audit and evidence signals are retained for reviewers.`,
+      ],
+    },
+    violations: {
+      title: 'Policy Violations',
+      eyebrow: 'Exception Queue',
+      summary: 'Violations are correlated across exposures, vulnerabilities, compliance evidence, scanner alerts, certificates, HNDL signals, and migration failures.',
+      icon: AlertTriangle,
+      metrics: [
+        { label: 'Critical', value: integer(m.criticalFindings), tone: m.criticalFindings ? 'red' : 'green' },
+        { label: 'High', value: integer(m.highFindings), tone: m.highFindings ? 'gold' : 'green' },
+        { label: 'Open Items', value: integer(m.openFindings), tone: m.openFindings ? 'red' : 'green' },
+      ],
+      bullets: [
+        `${integer(m.vulnerableAssets)} assets currently carry vulnerable or exposed cryptographic posture.`,
+        `${integer(m.expiredCertificates + m.expiringCertificates)} certificate lifecycle issues require review.`,
+        `${integer(m.failedMigrationJobs)} migration workflows are failed or need rollback review.`,
+      ],
+    },
+    evidence: {
+      title: 'Compliance Requirements Evidence',
+      eyebrow: 'Evidence Vault',
+      summary: 'Requirement evidence combines policy state, asset scope, certificate health, runtime observations, migration records, and audit trail completeness.',
+      icon: FileCheck2,
+      metrics: [
+        { label: 'Overall Compliance', value: pct(m.complianceScore), tone: complianceTone(m.complianceScore) },
+        { label: 'Evidence Items', value: integer(m.auditEvents), tone: 'gold' },
+        { label: 'Non-Compliant', value: integer(m.criticalFindings + m.highFindings), tone: m.criticalFindings + m.highFindings ? 'red' : 'green' },
+      ],
+      bullets: [
+        `${integer(m.quantumSecuredAssets)} assets are currently counted as quantum-secured.`,
+        `${integer(m.hybridDeployments)} hybrid deployments are visible in telemetry.`,
+        `${integer(m.mlKemDeployments)} ML-KEM and ${integer(m.mlDsaDeployments)} ML-DSA deployment signals are recorded.`,
+      ],
+    },
+  };
+}
 
 function GlassPanel({
   children,
@@ -413,14 +337,26 @@ function PanelTitle({ icon: Icon, title, action }: { icon?: LucideIcon; title: s
   );
 }
 
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-[#FFD36B]/18 bg-white/[0.025] p-5 text-center text-sm font-semibold text-white/45">
+      {text}
+    </div>
+  );
+}
+
 function GoldShieldBadge({
   showMetric = true,
   compact = false,
   className,
+  score = 0,
+  label = 'Awaiting Data',
 }: {
   showMetric?: boolean;
   compact?: boolean;
   className?: string;
+  score?: number;
+  label?: string;
 }) {
   return (
     <div
@@ -440,8 +376,8 @@ function GoldShieldBadge({
       <div className="absolute inset-0 z-20 grid place-items-center">
         {showMetric ? (
           <div className="translate-y-[3%] text-center">
-            <div className="font-mono text-4xl font-black leading-none text-white drop-shadow-[0_0_16px_rgba(255,211,107,0.75)]">100%</div>
-            <div className="mt-1 text-xs font-black uppercase text-[#FFE8A8] drop-shadow-[0_0_10px_rgba(255,211,107,0.6)]">Compliant</div>
+            <div className="font-mono text-4xl font-black leading-none text-white drop-shadow-[0_0_16px_rgba(255,211,107,0.75)]">{pct(score)}</div>
+            <div className="mt-1 text-xs font-black uppercase text-[#FFE8A8] drop-shadow-[0_0_10px_rgba(255,211,107,0.6)]">{label}</div>
             <Check className="mx-auto mt-2 h-7 w-7 text-[#FFD36B] drop-shadow-[0_0_12px_rgba(255,211,107,0.9)]" />
           </div>
         ) : (
@@ -452,8 +388,12 @@ function GoldShieldBadge({
   );
 }
 
-function MiniAnalyticsGraph() {
-  const points = '4,54 34,40 63,47 93,28 122,35 151,20 181,27 210,8';
+function MiniAnalyticsGraph({ trend }: { trend: ComplianceTrendPoint[] }) {
+  const safeTrend = trend.length ? trend : [{ label: 'Current', value: 0 }];
+  const values = safeTrend.map((point) => Math.max(0, Math.min(100, point.value)));
+  const xFor = (index: number) => 4 + (safeTrend.length <= 1 ? 0 : (index / (safeTrend.length - 1)) * 206);
+  const yFor = (value: number) => 64 - (value / 100) * 56;
+  const points = values.map((value, index) => `${xFor(index)},${yFor(value)}`).join(' ');
 
   return (
     <div className="relative h-24 min-w-[210px] overflow-hidden rounded-lg border border-[#FFD36B]/10 p-3 glass-panel">
@@ -473,13 +413,21 @@ function MiniAnalyticsGraph() {
   );
 }
 
-function OverviewCard() {
+function OverviewCard({ snapshot }: { snapshot: ComplianceDashboardSnapshot }) {
+  const { metrics } = snapshot;
+  const overviewStats = [
+    { label: 'Compliant', value: integer(metrics.enforcedPolicies), tone: 'green' as Tone },
+    { label: 'Violations', value: integer(metrics.openFindings), tone: metrics.openFindings ? 'red' as Tone : 'green' as Tone },
+    { label: 'Pending', value: integer(metrics.activeScans + metrics.activeMigrationJobs), tone: metrics.activeScans + metrics.activeMigrationJobs ? 'gold' as Tone : 'muted' as Tone },
+    { label: 'Controls', value: integer(metrics.totalPolicies), tone: 'gold' as Tone },
+  ];
+
   return (
     <GlassPanel delay={0.08} className="min-h-[260px]">
       <PanelTitle icon={Shield} title="Quantum Compliance Overview" />
       <div className="grid gap-5 xl:grid-cols-[240px_1fr]">
         <div className="flex min-w-0 items-center justify-center rounded-lg border border-[#FFD36B]/10 px-2 py-3 glass-panel">
-          <GoldShieldBadge />
+          <GoldShieldBadge score={metrics.complianceScore} label={readinessLabel(metrics.complianceScore)} />
         </div>
 
         <div className="flex min-w-0 flex-col justify-between gap-5">
@@ -489,20 +437,15 @@ function OverviewCard() {
                 <FileText className="h-6 w-6" />
               </div>
               <div>
-                <div className="text-xs font-bold uppercase text-white/70">Total Policies</div>
-                <div className="font-mono text-5xl font-black leading-none text-white">210</div>
+                <div className="text-xs font-bold uppercase text-white/70">Authoritative Controls</div>
+                <div className="font-mono text-5xl font-black leading-none text-white">{integer(metrics.totalPolicies)}</div>
               </div>
             </div>
-            <MiniAnalyticsGraph />
+            <MiniAnalyticsGraph trend={snapshot.policyTrend} />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-4">
-            {[
-              { label: 'Compliant', value: '197', tone: 'green' as Tone },
-              { label: 'Violations', value: '13', tone: 'red' as Tone },
-              { label: 'Pending', value: '0', tone: 'muted' as Tone },
-              { label: 'Total Policies', value: '210', tone: 'gold' as Tone },
-            ].map((item) => (
+            {overviewStats.map((item) => (
               <div key={item.label} className="rounded-lg border border-[#FFD36B]/10 p-3 text-center glass-panel">
                 <div className="text-[11px] font-bold uppercase text-white/60">{item.label}</div>
                 <div className={cx('mt-2 font-mono text-3xl font-black', toneClasses[item.tone])}>{item.value}</div>
@@ -524,16 +467,19 @@ function OverviewCard() {
   );
 }
 
-function SecurityStatusCard() {
+function SecurityStatusCard({ snapshot }: { snapshot: ComplianceDashboardSnapshot }) {
+  const { metrics } = snapshot;
+  const label = readinessLabel(metrics.complianceScore);
+
   return (
     <GlassPanel delay={0.14} className="min-h-[260px]">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-lg font-black uppercase text-[#FFD36B]">Q-Security Status: Optimal</div>
-          <div className="mt-4 font-mono text-xl text-[#FFE8A8]">100% Compliance</div>
+          <div className="text-lg font-black uppercase text-[#FFD36B]">Q-Security Status: {label}</div>
+          <div className="mt-4 font-mono text-xl text-[#FFE8A8]">{pct(metrics.complianceScore)} Compliance</div>
         </div>
         <div className="mr-1 shrink-0 self-start rounded-lg border border-[#FFD36B]/12 p-1.5 glass-panel">
-          <GoldShieldBadge compact showMetric={false} />
+          <GoldShieldBadge compact showMetric={false} score={metrics.complianceScore} label={label} />
         </div>
       </div>
 
@@ -541,7 +487,7 @@ function SecurityStatusCard() {
         <div className="h-5 overflow-hidden rounded-full border border-[#FFD36B]/30 p-0.5 shadow-[inset_0_0_16px_rgba(0,0,0,0.65)] glass-panel">
           <motion.div
             initial={{ width: 0 }}
-            animate={{ width: '100%' }}
+            animate={{ width: `${metrics.complianceScore}%` }}
             transition={{ duration: 1.1, delay: 0.3, ease: 'easeOut' }}
             className="relative h-full rounded-full bg-[linear-gradient(90deg,#FFB300,#FFF0B3,#FFD36B,#FFB300)] shadow-[0_0_22px_rgba(255,179,0,0.7)]"
           >
@@ -554,9 +500,9 @@ function SecurityStatusCard() {
 
       <div className="space-y-3">
         {[
-          'System posture is optimal. All critical controls are active.',
-          'Quantum-secure badge verified across production clusters.',
-          'Policy evidence synchronized with immutable audit trail.',
+          `${integer(metrics.quantumSecuredAssets)} quantum-secured assets, ${integer(metrics.vulnerableAssets)} vulnerable assets in scope.`,
+          `${integer(metrics.mlKemDeployments)} ML-KEM and ${integer(metrics.mlDsaDeployments)} ML-DSA deployment signals synchronized.`,
+          `${integer(metrics.auditEvents)} audit and compliance evidence events retained.`,
         ].map((item) => (
           <div key={item} className="flex items-center gap-3 text-sm text-white/72">
             <span className="h-2.5 w-2.5 rounded-full bg-[#4DFF88] shadow-[0_0_14px_rgba(77,255,136,0.82)]" />
@@ -589,13 +535,15 @@ function MetricTile({ metric, index }: { metric: MetricCard; index: number }) {
   );
 }
 
-function ChecklistPanel() {
+function ChecklistPanel({ items }: { items: ComplianceDashboardSnapshot['checklist'] }) {
+  const completed = items.filter((item) => item.complete).length;
+
   return (
     <GlassPanel delay={0.2} className="min-h-[350px]">
       <PanelTitle
         icon={ClipboardCheck}
         title="Compliance Checklist"
-        action={<span className="font-mono text-xs font-black text-[#FFD36B]">6 / 7 COMPLETE</span>}
+        action={<span className="font-mono text-xs font-black text-[#FFD36B]">{completed} / {items.length || 0} COMPLETE</span>}
       />
 
       <div className="grid items-center gap-6 xl:grid-cols-[minmax(320px,0.95fr)_minmax(360px,1.05fr)]">
@@ -613,7 +561,8 @@ function ChecklistPanel() {
         </div>
 
         <div className="rounded-lg border border-[#FFD36B]/10 p-3 glass-panel">
-          {checklist.map((item) => (
+          {items.length === 0 && <EmptyState text="No compliance checklist signals are available yet. Run discovery or connect telemetry to populate this control list." />}
+          {items.map((item) => (
             <div
               key={item.label}
               className="group/check flex items-center gap-3 border-b border-[#FFD36B]/10 px-2 py-3 last:border-b-0 hover:bg-[#FFD36B]/6"
@@ -628,7 +577,10 @@ function ChecklistPanel() {
               >
                 {item.complete ? <Check className="h-3.5 w-3.5" /> : <span className="h-2 w-2 rounded-full border border-current" />}
               </span>
-              <span className="min-w-0 flex-1 text-sm font-semibold text-white/78 group-hover/check:text-white">{item.label}</span>
+              <span className="min-w-0 flex-1 text-sm font-semibold text-white/78 group-hover/check:text-white">
+                {item.label}
+                {item.detail && <span className="mt-0.5 block text-xs font-medium text-white/45">{item.detail}</span>}
+              </span>
               {item.complete ? <Check className="h-4 w-4 text-[#4DFF88]" /> : <AlertTriangle className="h-4 w-4 text-[#FFD36B]" />}
             </div>
           ))}
@@ -638,7 +590,7 @@ function ChecklistPanel() {
   );
 }
 
-function StatusPill({ status }: { status: CertificateRow['status'] }) {
+function StatusPill({ status }: { status: ComplianceCertificateRow['status'] }) {
   const config = {
     Active: 'border-[#4DFF88]/25 bg-[#4DFF88]/12 text-[#4DFF88]',
     Expired: 'border-[#FF4D5A]/25 bg-[#FF4D5A]/12 text-[#FF4D5A]',
@@ -680,7 +632,7 @@ function EnterpriseTable({
   );
 }
 
-function CertificateTable() {
+function CertificateTable({ rows }: { rows: ComplianceCertificateRow[] }) {
   return (
     <EnterpriseTable title="Digital Certificate Status" icon={BadgeCheck}>
       <table className="w-full min-w-[620px] border-collapse text-left">
@@ -694,7 +646,7 @@ function CertificateTable() {
           </tr>
         </thead>
         <tbody>
-          {certificates.map((cert) => (
+          {rows.map((cert) => (
             <tr key={`${cert.algorithm}-${cert.issuedTo}-${cert.status}`} className="border-b border-[#FFD36B]/8 transition hover:bg-[#FFD36B]/7">
               <td className="px-3 py-2.5 font-mono text-xs text-white/82">{cert.algorithm}</td>
               <td className="px-3 py-2.5 text-xs text-white/70">{cert.issuedTo}</td>
@@ -707,11 +659,12 @@ function CertificateTable() {
           ))}
         </tbody>
       </table>
+      {rows.length === 0 && <EmptyState text="No certificate telemetry has been recorded for this account yet." />}
     </EnterpriseTable>
   );
 }
 
-function PolicyTable() {
+function PolicyTable({ rows }: { rows: CompliancePolicyRow[] }) {
   return (
     <EnterpriseTable title="Governance Policies" icon={ShieldCheck}>
       <table className="w-full min-w-[620px] border-collapse text-left">
@@ -725,7 +678,7 @@ function PolicyTable() {
           </tr>
         </thead>
         <tbody>
-          {policies.map((policy, index) => (
+          {rows.map((policy, index) => (
             <tr key={`${policy.name}-${index}`} className="border-b border-[#FFD36B]/8 transition hover:bg-[#FFD36B]/7">
               <td className="px-3 py-2.5">
                 <div className="flex items-center gap-2 text-xs font-semibold text-white/82">
@@ -745,6 +698,7 @@ function PolicyTable() {
           ))}
         </tbody>
       </table>
+      {rows.length === 0 && <EmptyState text="No compliance policies or evidence rows have been synchronized yet." />}
     </EnterpriseTable>
   );
 }
@@ -774,11 +728,13 @@ function GoldActionButton({
 function ComplianceDetailModal({
   active,
   onClose,
+  contentMap,
 }: {
   active: ComplianceModalKey | null;
   onClose: () => void;
+  contentMap: Record<ComplianceModalKey, ComplianceModalContent>;
 }) {
-  const content = active ? complianceModalContent[active] : null;
+  const content = active ? contentMap[active] : null;
   const Icon = content?.icon ?? Info;
 
   return (
@@ -853,7 +809,9 @@ function ComplianceDetailModal({
   );
 }
 
-function FrameworkRadar() {
+function FrameworkRadar({ items }: { items: ComplianceFrameworkAlignment[] }) {
+  const safeItems = items.length ? items : [{ name: 'Awaiting Evidence', score: 0 }];
+
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[230px]">
       <div className="absolute inset-3 rounded-full border border-[#FFD36B]/12" />
@@ -879,8 +837,8 @@ function FrameworkRadar() {
         />
         <polygon points="50,28 64,38 64,59 50,69 36,59 36,38" fill="rgba(255,179,0,0.20)" stroke="rgba(255,244,192,0.50)" />
       </svg>
-      {frameworkAlignment.map((framework, index) => {
-        const angle = (index / frameworkAlignment.length) * Math.PI * 2 - Math.PI / 2;
+      {safeItems.map((framework, index) => {
+        const angle = (index / safeItems.length) * Math.PI * 2 - Math.PI / 2;
         const left = 50 + Math.cos(angle) * 41;
         const top = 50 + Math.sin(angle) * 41;
 
@@ -902,16 +860,18 @@ function FrameworkRadar() {
   );
 }
 
-function PolicyFrameworkAlignmentPanel({ onOpen }: { onOpen: () => void }) {
+function PolicyFrameworkAlignmentPanel({ onOpen, alignment }: { onOpen: () => void; alignment: ComplianceFrameworkAlignment[] }) {
+  const safeAlignment = alignment.length ? alignment : [{ name: 'Awaiting Evidence', score: 0 }];
+
   return (
     <GlassPanel delay={0.32} className="min-h-[350px]">
       <PanelTitle icon={Landmark} title="Policy Framework Alignment" />
 
       <div className="grid gap-5 sm:grid-cols-[minmax(160px,0.85fr)_minmax(220px,1fr)] xl:grid-cols-1">
-        <FrameworkRadar />
+        <FrameworkRadar items={safeAlignment} />
 
         <div className="flex min-w-0 flex-col justify-center gap-3">
-          {frameworkAlignment.map((framework) => (
+          {safeAlignment.map((framework) => (
             <div key={framework.name} className="grid grid-cols-[minmax(118px,1fr)_minmax(78px,0.9fr)_44px] items-center gap-3">
               <div className="truncate text-xs font-bold text-white/72">{framework.name}</div>
               <div className="h-1.5 overflow-hidden rounded-full bg-[#FFD36B]/8">
@@ -935,7 +895,11 @@ function PolicyFrameworkAlignmentPanel({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-function PolicyMaturityPanel({ onOpen }: { onOpen: () => void }) {
+function PolicyMaturityPanel({ onOpen, levels, score }: { onOpen: () => void; levels: ComplianceMaturityLevel[]; score: number }) {
+  const safeLevels = levels.length ? levels : [{ label: 'Level 1 - Initial', value: 0, color: '#2B210B' }];
+  const currentLevel = score >= 90 ? 5 : score >= 70 ? 4 : score >= 45 ? 3 : score >= 20 ? 2 : 1;
+  const currentLabel = currentLevel === 5 ? 'Optimized' : currentLevel === 4 ? 'Managed' : currentLevel === 3 ? 'Defined' : currentLevel === 2 ? 'Repeatable' : 'Initial';
+
   return (
     <GlassPanel delay={0.36} className="min-h-[350px]">
       <PanelTitle icon={Gauge} title="Policy Maturity Model" />
@@ -946,21 +910,21 @@ function PolicyMaturityPanel({ onOpen }: { onOpen: () => void }) {
             className="absolute inset-4 rounded-full shadow-[0_0_36px_rgba(255,211,107,0.14)]"
             style={{
               background:
-                'conic-gradient(#FFD36B 0% 18%, #D49B18 18% 60%, #8F6B19 60% 88%, #4D3910 88% 96%, #2B210B 96% 100%)',
+                `conic-gradient(#FFD36B 0% ${Math.max(0, Math.min(100, score))}%, rgba(255,211,107,0.08) ${Math.max(0, Math.min(100, score))}% 100%)`,
             }}
           />
           <div className="absolute inset-[28%] rounded-full border border-[#FFD36B]/18 bg-[#070A14] shadow-[inset_0_0_28px_rgba(255,211,107,0.10)]" />
           <div className="absolute inset-0 grid place-items-center text-center">
             <div>
               <div className="text-xs font-bold text-[#FFD36B]/80">Level</div>
-              <div className="font-mono text-6xl font-black leading-none text-white drop-shadow-[0_0_18px_rgba(255,211,107,0.48)]">4</div>
-              <div className="mt-1 text-xs font-bold text-white/68">Managed</div>
+              <div className="font-mono text-6xl font-black leading-none text-white drop-shadow-[0_0_18px_rgba(255,211,107,0.48)]">{currentLevel}</div>
+              <div className="mt-1 text-xs font-bold text-white/68">{currentLabel}</div>
             </div>
           </div>
         </div>
 
         <div className="space-y-3">
-          {maturityLevels.map((level) => (
+          {safeLevels.map((level) => (
             <div key={level.label} className="grid grid-cols-[18px_minmax(0,1fr)_42px] items-center gap-3 text-sm">
               <span className="h-2.5 w-2.5 rounded-sm border border-[#FFD36B]/35" style={{ backgroundColor: level.color }} />
               <span className="truncate text-white/70">{level.label}</span>
@@ -977,17 +941,20 @@ function PolicyMaturityPanel({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-function PolicyTrendPanel({ onOpen }: { onOpen: () => void }) {
+function PolicyTrendPanel({ onOpen, trend }: { onOpen: () => void; trend: ComplianceTrendPoint[] }) {
+  const safeTrend = trend.length ? trend : [{ label: 'Current', value: 0 }];
   const width = 430;
   const height = 224;
   const left = 42;
   const right = 416;
   const top = 20;
   const bottom = 152;
-  const xFor = (index: number) => left + (index / (policyTrend.length - 1)) * (right - left);
+  const xFor = (index: number) => left + (safeTrend.length <= 1 ? 0 : (index / (safeTrend.length - 1)) * (right - left));
   const yFor = (value: number) => bottom - (value / 100) * (bottom - top);
-  const points = policyTrend.map((point, index) => `${xFor(index)},${yFor(point.value)}`).join(' ');
-  const areaPoints = `${points} ${xFor(policyTrend.length - 1)},${bottom} ${xFor(0)},${bottom}`;
+  const points = safeTrend.map((point, index) => `${xFor(index)},${yFor(point.value)}`).join(' ');
+  const areaPoints = `${points} ${xFor(safeTrend.length - 1)},${bottom} ${xFor(0)},${bottom}`;
+  const current = safeTrend[safeTrend.length - 1]?.value || 0;
+  const previous = safeTrend[Math.max(0, safeTrend.length - 2)]?.value || current;
 
   return (
     <GlassPanel delay={0.4} className="min-h-[350px]">
@@ -1008,7 +975,7 @@ function PolicyTrendPanel({ onOpen }: { onOpen: () => void }) {
           })}
           <polygon points={areaPoints} fill="rgba(255,179,0,0.18)" />
           <polyline points={points} fill="none" stroke="#FFD36B" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-          {policyTrend.map((point, index) => (
+          {safeTrend.map((point, index) => (
             <g key={point.label}>
               <circle cx={xFor(index)} cy={yFor(point.value)} r="4" fill="#FFE8A8" stroke="#FFB300" strokeWidth="2" />
               <text x={xFor(index)} y="196" textAnchor="middle" fill="rgba(255,255,255,0.58)" fontSize="10" fontFamily="monospace">
@@ -1021,9 +988,9 @@ function PolicyTrendPanel({ onOpen }: { onOpen: () => void }) {
 
       <div className="mt-3 grid grid-cols-3 overflow-hidden rounded-lg border border-[#FFD36B]/10 bg-white/[0.03]">
         {[
-          { label: 'This Week', value: '96%', tone: 'gold' as Tone },
-          { label: 'Last Week', value: '87%', tone: 'muted' as Tone },
-          { label: 'Change', value: '+9%', tone: 'green' as Tone },
+          { label: 'Current', value: pct(current), tone: complianceTone(current) },
+          { label: 'Previous', value: pct(previous), tone: complianceTone(previous) },
+          { label: 'Change', value: `${current - previous >= 0 ? '+' : ''}${current - previous}%`, tone: current >= previous ? 'green' as Tone : 'red' as Tone },
         ].map((stat) => (
           <div key={stat.label} className="border-r border-[#FFD36B]/10 p-3 text-center last:border-r-0">
             <div className="text-[11px] font-black uppercase text-[#FFD36B]/78">{stat.label}</div>
@@ -1039,7 +1006,7 @@ function PolicyTrendPanel({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-function GovernanceStatusBadge({ status }: { status: GovernancePolicyRow['status'] }) {
+function GovernanceStatusBadge({ status }: { status: ComplianceGovernancePolicyRow['status'] }) {
   const config =
     status === 'Enforced'
       ? 'border-[#4DFF88]/24 bg-[#4DFF88]/10 text-[#4DFF88]'
@@ -1048,7 +1015,7 @@ function GovernanceStatusBadge({ status }: { status: GovernancePolicyRow['status
   return <span className={cx('inline-flex rounded-md border px-2 py-1 text-[11px] font-black', config)}>{status}</span>;
 }
 
-function GovernancePolicyMatrixPanel({ onOpen }: { onOpen: () => void }) {
+function GovernancePolicyMatrixPanel({ onOpen, rows }: { onOpen: () => void; rows: ComplianceGovernancePolicyRow[] }) {
   return (
     <GlassPanel delay={0.44} className="min-h-[350px] p-0">
       <div className="px-5 pt-4">
@@ -1066,7 +1033,7 @@ function GovernancePolicyMatrixPanel({ onOpen }: { onOpen: () => void }) {
             </tr>
           </thead>
           <tbody>
-            {governancePolicyMatrix.map((policy) => (
+            {rows.map((policy) => (
               <tr key={policy.name} className="border-b border-[#FFD36B]/8 hover:bg-[#FFD36B]/6">
                 <td className="px-2.5 py-2.5 text-xs font-semibold text-white/82">{policy.name}</td>
                 <td className="px-2.5 py-2.5 text-xs text-white/62">{policy.category}</td>
@@ -1089,6 +1056,7 @@ function GovernancePolicyMatrixPanel({ onOpen }: { onOpen: () => void }) {
             ))}
           </tbody>
         </table>
+        {rows.length === 0 && <EmptyState text="No governance policy controls have been synchronized yet." />}
       </div>
       <div className="p-5 pt-4">
         <GoldActionButton label="View All Policies" onClick={onOpen} />
@@ -1097,7 +1065,7 @@ function GovernancePolicyMatrixPanel({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-function SeverityBadge({ severity }: { severity: PolicyViolation['severity'] }) {
+function SeverityBadge({ severity }: { severity: CompliancePolicyViolation['severity'] }) {
   const config = {
     High: 'border-[#FF4D5A]/28 bg-[#FF4D5A]/12 text-[#FF6A73]',
     Medium: 'border-[#FFD36B]/30 bg-[#FFD36B]/10 text-[#FFD36B]',
@@ -1107,13 +1075,14 @@ function SeverityBadge({ severity }: { severity: PolicyViolation['severity'] }) 
   return <span className={cx('inline-flex rounded-md border px-2.5 py-1 text-xs font-black', config)}>{severity}</span>;
 }
 
-function PolicyViolationsPanel({ onOpen }: { onOpen: () => void }) {
+function PolicyViolationsPanel({ onOpen, rows }: { onOpen: () => void; rows: CompliancePolicyViolation[] }) {
   return (
     <GlassPanel delay={0.48} className="min-h-[350px]">
       <PanelTitle icon={AlertTriangle} title="Policy Violations" />
 
       <div className="space-y-1">
-        {policyViolations.map((violation) => {
+        {rows.length === 0 && <EmptyState text="No open compliance violations are currently correlated from live telemetry." />}
+        {rows.map((violation) => {
           const Icon = violation.type === 'warning' ? AlertTriangle : Info;
           const iconClass = violation.severity === 'Low' ? 'text-[#65CFFF] border-[#65CFFF]/35 bg-[#65CFFF]/8' : 'text-[#FFD36B] border-[#FFD36B]/35 bg-[#FFD36B]/8';
 
@@ -1140,8 +1109,21 @@ function PolicyViolationsPanel({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-function ComplianceRequirementsPanel({ onOpen, className }: { onOpen: () => void; className?: string }) {
-  const total = requirementBreakdown.reduce((sum, item) => sum + item.value, 0);
+function ComplianceRequirementsPanel({
+  onOpen,
+  className,
+  rows,
+  score,
+}: {
+  onOpen: () => void;
+  className?: string;
+  rows: ComplianceRequirementBreakdown[];
+  score: number;
+}) {
+  const safeRows = rows.length ? rows : [{ label: 'Awaiting Evidence', value: 0, color: '#B8B8B8' }];
+  const total = Math.max(1, safeRows.reduce((sum, item) => sum + item.value, 0));
+  const compliant = safeRows.find((item) => item.label.toLowerCase().includes('compliant') && !item.label.toLowerCase().includes('non'))?.value || 0;
+  const compliantDegrees = Math.round((compliant / total) * 100);
 
   return (
     <GlassPanel delay={0.52} className={cx('min-h-[350px]', className)}>
@@ -1153,20 +1135,20 @@ function ComplianceRequirementsPanel({ onOpen, className }: { onOpen: () => void
             className="absolute inset-3 rounded-full shadow-[0_0_42px_rgba(77,255,136,0.14)]"
             style={{
               background:
-                'conic-gradient(#42D95B 0% 76%, #FFCF33 76% 91%, #FF5D52 91% 97%, #B8B8B8 97% 100%)',
+                `conic-gradient(#42D95B 0% ${compliantDegrees}%, #FFCF33 ${compliantDegrees}% ${Math.max(compliantDegrees, Math.min(100, compliantDegrees + 14))}%, #FF5D52 ${Math.max(compliantDegrees, Math.min(100, compliantDegrees + 14))}% 100%)`,
             }}
           />
           <div className="absolute inset-[29%] rounded-full border border-[#FFD36B]/14 bg-[#070A14] shadow-[inset_0_0_28px_rgba(0,0,0,0.85)]" />
           <div className="absolute inset-0 grid place-items-center text-center">
             <div>
-              <div className="font-mono text-4xl font-black leading-none text-white">96%</div>
+              <div className="font-mono text-4xl font-black leading-none text-white">{pct(score)}</div>
               <div className="mt-1 text-xs font-bold text-white/62">Overall Compliance</div>
             </div>
           </div>
         </div>
 
         <div className="space-y-4">
-          {requirementBreakdown.map((requirement) => {
+          {safeRows.map((requirement) => {
             const percentage = Math.round((requirement.value / total) * 100);
 
             return (
@@ -1189,11 +1171,18 @@ function ComplianceRequirementsPanel({ onOpen, className }: { onOpen: () => void
   );
 }
 
-function CapabilityRail() {
+function CapabilityRail({ highlights }: { highlights: ComplianceCapabilityHighlight[] }) {
+  const safeHighlights = highlights.length ? highlights : [];
+
   return (
     <div className="grid overflow-hidden rounded-lg border border-[#FFD36B]/18 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_0_30px_rgba(255,211,107,0.10)] sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 glass-panel">
-      {capabilityHighlights.map((item) => {
-        const Icon = item.icon;
+      {safeHighlights.length === 0 && (
+        <div className="col-span-full p-4">
+          <EmptyState text="Compliance capability telemetry will appear after scans, runtime events, or audit evidence are synchronized." />
+        </div>
+      )}
+      {safeHighlights.map((item) => {
+        const Icon = capabilityIconMap[item.iconKey] || ShieldCheck;
 
         return (
           <div key={item.label} className="flex min-w-0 items-center gap-3 border-b border-r border-[#FFD36B]/10 p-4 last:border-r-0 2xl:border-b-0">
@@ -1211,7 +1200,7 @@ function CapabilityRail() {
   );
 }
 
-function PolicyIntelligenceSection({ onOpen }: { onOpen: (key: ComplianceModalKey) => void }) {
+function PolicyIntelligenceSection({ onOpen, snapshot }: { onOpen: (key: ComplianceModalKey) => void; snapshot: ComplianceDashboardSnapshot }) {
   return (
     <section className="space-y-4" aria-labelledby="policy-intelligence-heading">
       <div className="flex flex-col gap-3 rounded-lg border border-[#FFD36B]/14 px-4 py-3 sm:flex-row sm:items-center sm:justify-between glass-panel">
@@ -1228,18 +1217,18 @@ function PolicyIntelligenceSection({ onOpen }: { onOpen: (key: ComplianceModalKe
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
-        <PolicyFrameworkAlignmentPanel onOpen={() => onOpen('frameworks')} />
-        <PolicyMaturityPanel onOpen={() => onOpen('maturity')} />
-        <PolicyTrendPanel onOpen={() => onOpen('trend')} />
+        <PolicyFrameworkAlignmentPanel alignment={snapshot.frameworkAlignment} onOpen={() => onOpen('frameworks')} />
+        <PolicyMaturityPanel levels={snapshot.maturityLevels} score={snapshot.metrics.complianceScore} onOpen={() => onOpen('maturity')} />
+        <PolicyTrendPanel trend={snapshot.policyTrend} onOpen={() => onOpen('trend')} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-[minmax(0,1.15fr)_minmax(330px,0.85fr)_minmax(330px,0.95fr)]">
-        <GovernancePolicyMatrixPanel onOpen={() => onOpen('policies')} />
-        <PolicyViolationsPanel onOpen={() => onOpen('violations')} />
-        <ComplianceRequirementsPanel onOpen={() => onOpen('evidence')} className="xl:col-span-2 2xl:col-span-1" />
+        <GovernancePolicyMatrixPanel rows={snapshot.governancePolicyMatrix} onOpen={() => onOpen('policies')} />
+        <PolicyViolationsPanel rows={snapshot.policyViolations} onOpen={() => onOpen('violations')} />
+        <ComplianceRequirementsPanel rows={snapshot.requirementBreakdown} score={snapshot.metrics.complianceScore} onOpen={() => onOpen('evidence')} className="xl:col-span-2 2xl:col-span-1" />
       </div>
 
-      <CapabilityRail />
+      <CapabilityRail highlights={snapshot.capabilityHighlights} />
     </section>
   );
 }
@@ -1279,7 +1268,21 @@ function BackgroundAtmosphere() {
   );
 }
 
-function Header() {
+function Header({
+  snapshot,
+  loading,
+  error,
+  connected,
+  onRefresh,
+}: {
+  snapshot: ComplianceDashboardSnapshot;
+  loading: boolean;
+  error: string | null;
+  connected: boolean;
+  onRefresh: () => void;
+}) {
+  const alertCount = snapshot.metrics.criticalFindings + snapshot.metrics.highFindings + snapshot.metrics.failedMigrationJobs;
+
   return (
     <header className="relative z-10 mb-5 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
       <div>
@@ -1297,8 +1300,14 @@ function Header() {
           transition={{ duration: 0.55, delay: 0.08 }}
           className="mt-2 text-base font-medium text-white/82"
         >
-          Quantum Governance & Compliance Platform
+          Unified real-time governance, compliance, and quantum-readiness command layer
         </motion.p>
+        <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-black uppercase tracking-[0.12em] text-white/45">
+          <span>Latest Scan: {readableDateTime(snapshot.source.latestScanAt)}</span>
+          <span className="text-[#FFD36B]/50">/</span>
+          <span>Activity: {readableDateTime(snapshot.source.latestActivityAt)}</span>
+          {error && <span className="text-[#FF6A73]">/ {error}</span>}
+        </div>
       </div>
 
       <motion.div
@@ -1313,24 +1322,24 @@ function Header() {
           className="inline-flex h-12 items-center gap-2 rounded-lg border border-[#FFD36B]/22 px-4 text-[#FFD36B] transition hover:border-[#FFD36B]/45 hover:bg-[#FFD36B]/10 glass-panel"
         >
           <Bell className="h-5 w-5" />
-          <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#FFD36B] px-1 font-mono text-xs font-black text-[#050816]">3</span>
+          <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[#FFD36B] px-1 font-mono text-xs font-black text-[#050816]">{integer(alertCount)}</span>
         </button>
         <button
           type="button"
-          title="Administrator profile"
+          title="Refresh compliance telemetry"
+          onClick={onRefresh}
           className="inline-flex h-12 items-center gap-2 rounded-lg border border-[#FFD36B]/22 px-4 text-white/85 transition hover:border-[#FFD36B]/45 hover:bg-[#FFD36B]/10 glass-panel"
         >
-          <UserCog className="h-5 w-5 text-[#FFD36B]" />
-          <span className="text-sm font-bold">SYS-ADMIN</span>
-          <ChevronDown className="h-4 w-4 text-[#FFD36B]" />
+          <RefreshCw className={cx('h-5 w-5 text-[#FFD36B]', loading && 'animate-spin')} />
+          <span className="text-sm font-bold">REFRESH</span>
         </button>
         <button
           type="button"
-          title="Secure session status"
+          title="Live compliance stream status"
           className="inline-flex h-12 items-center gap-2 rounded-lg border border-[#4DFF88]/22 px-4 text-[#4DFF88] transition hover:border-[#4DFF88]/45 hover:bg-[#4DFF88]/10 glass-panel"
         >
-          <ShieldCheck className="h-5 w-5" />
-          <span className="text-sm font-black">SECURE</span>
+          {connected ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}
+          <span className="text-sm font-black">{connected ? 'LIVE' : 'SYNCING'}</span>
           <ChevronDown className="h-4 w-4 -rotate-90" />
         </button>
       </motion.div>
@@ -1340,37 +1349,47 @@ function Header() {
 
 export default function ComplianceDashboard() {
   const [activeModal, setActiveModal] = useState<ComplianceModalKey | null>(null);
+  const { snapshot, loading, error, connected, refresh } = useComplianceDashboard();
+  const metricCards = useMemo(() => buildMetricCards(snapshot), [snapshot]);
+  const modalContent = useMemo(() => buildModalContent(snapshot), [snapshot]);
 
   return (
     <div className="compliance-page relative min-h-screen overflow-hidden bg-[#050816] p-4 text-white sm:p-5 lg:p-6">
       <BackgroundAtmosphere />
 
       <div className="relative z-10 mx-auto max-w-[1420px]">
-        <Header />
+        <Header snapshot={snapshot} loading={loading} error={error} connected={connected} onRefresh={refresh} />
+
+        {loading && !snapshot.generatedAt && (
+          <div className="mb-4 flex items-center gap-3 rounded-lg border border-[#FFD36B]/18 bg-[#FFD36B]/8 px-4 py-3 text-sm font-black text-[#FFE8A8] shadow-[0_0_28px_rgba(255,211,107,0.10)] glass-panel">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Synchronizing compliance telemetry from assets, CBOM, migration, runtime, and audit pipelines...
+          </div>
+        )}
 
         <main className="space-y-4">
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,0.95fr)]">
-            <OverviewCard />
-            <SecurityStatusCard />
+            <OverviewCard snapshot={snapshot} />
+            <SecurityStatusCard snapshot={snapshot} />
           </div>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(300px,0.9fr)_minmax(0,1.9fr)]">
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-2">
-              {metrics.map((metric, index) => (
+              {metricCards.map((metric, index) => (
                 <div key={metric.title}>
                   <MetricTile metric={metric} index={index} />
                 </div>
               ))}
             </div>
-            <ChecklistPanel />
+            <ChecklistPanel items={snapshot.checklist} />
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">
-            <CertificateTable />
-            <PolicyTable />
+            <CertificateTable rows={snapshot.certificates} />
+            <PolicyTable rows={snapshot.policies} />
           </div>
 
-          <PolicyIntelligenceSection onOpen={setActiveModal} />
+          <PolicyIntelligenceSection onOpen={setActiveModal} snapshot={snapshot} />
 
           <div className="flex flex-wrap items-center justify-center gap-5 pb-1 pt-1 text-sm font-semibold text-[#FFD36B]/86">
             {[
@@ -1390,7 +1409,7 @@ export default function ComplianceDashboard() {
         </main>
       </div>
 
-      <ComplianceDetailModal active={activeModal} onClose={() => setActiveModal(null)} />
+      <ComplianceDetailModal active={activeModal} onClose={() => setActiveModal(null)} contentMap={modalContent} />
 
       <style>{`
         .compliance-page,

@@ -82,7 +82,7 @@ export type ScannerIntelligenceSnapshot = {
 };
 
 const EMPTY_SNAPSHOT: ScannerIntelligenceSnapshot = {
-  generatedAt: new Date(0).toISOString(),
+  generatedAt: '',
   mode: 'none',
   summary: {
     totalAssets: 0,
@@ -111,6 +111,44 @@ const EMPTY_SNAPSHOT: ScannerIntelligenceSnapshot = {
   telemetry: [],
   runtime: { operations: 0, activeSessions: 0, encryptedChannels: 0, keyRotations: 0, alerts: 0, complianceScore: 0 },
 };
+
+const SCANNER_CACHE_PREFIX = 'qguard-scanner-intelligence:v1:';
+const SOFT_LOADING_LIMIT_MS = 2200;
+
+function hasSnapshotData(snapshot?: ScannerIntelligenceSnapshot | null) {
+  if (!snapshot) return false;
+  return Boolean(
+    snapshot.summary.totalAssets ||
+    snapshot.summary.totalComponents ||
+    snapshot.summary.totalFindings ||
+    snapshot.cbom.entries.length ||
+    snapshot.assets.assets.length ||
+    snapshot.history.history.length ||
+    snapshot.findings.length ||
+    snapshot.telemetry.length,
+  );
+}
+
+function readCachedSnapshot(cacheKey?: string | null) {
+  if (!cacheKey || typeof window === 'undefined') return null;
+  try {
+    const cached = window.localStorage.getItem(cacheKey);
+    if (!cached) return null;
+    const snapshot = normalizeStreamSnapshot(JSON.parse(cached));
+    return hasSnapshotData(snapshot) ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSnapshot(cacheKey: string | null | undefined, snapshot: ScannerIntelligenceSnapshot) {
+  if (!cacheKey || typeof window === 'undefined' || !hasSnapshotData(snapshot)) return;
+  try {
+    window.localStorage.setItem(cacheKey, JSON.stringify(snapshot));
+  } catch {
+    // Local storage can be unavailable in hardened browser contexts.
+  }
+}
 
 async function fetchScannerData(path: string, headers: HeadersInit, signal?: AbortSignal) {
   const res = await fetch(path, { headers, signal });
@@ -294,9 +332,10 @@ function normalizeStreamSnapshot(payload: unknown): ScannerIntelligenceSnapshot 
   };
 }
 
-export function useScannerIntelligence() {
+export function useScannerIntelligence(options: { live?: boolean } = {}) {
   const { session } = useAuth();
   const token = session?.access_token;
+  const live = options.live !== false;
   const [data, setData] = useState<ScannerIntelligenceSnapshot>(EMPTY_SNAPSHOT);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +343,28 @@ export function useScannerIntelligence() {
   const abortRef = useRef<AbortController | null>(null);
 
   const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token]);
+  const cacheKey = useMemo(() => {
+    const tenantKey =
+      session?.user?.app_metadata?.tenant_id ||
+      session?.user?.app_metadata?.organization_id ||
+      session?.user?.user_metadata?.tenant_id ||
+      session?.user?.user_metadata?.organization_id ||
+      'default-tenant';
+    const userKey = session?.user?.id || token?.slice(0, 24);
+    return userKey ? `${SCANNER_CACHE_PREFIX}${tenantKey}:${userKey}` : null;
+  }, [
+    session?.user?.app_metadata?.organization_id,
+    session?.user?.app_metadata?.tenant_id,
+    session?.user?.id,
+    session?.user?.user_metadata?.organization_id,
+    session?.user?.user_metadata?.tenant_id,
+    token,
+  ]);
+
+  const applySnapshot = useCallback((snapshot: ScannerIntelligenceSnapshot) => {
+    setData(snapshot);
+    writeCachedSnapshot(cacheKey, snapshot);
+  }, [cacheKey]);
 
   const refresh = useCallback(async () => {
     if (!authHeaders) {
@@ -317,7 +378,7 @@ export function useScannerIntelligence() {
     setError(null);
     try {
       const snapshot = await fetchScannerIntelligence(authHeaders);
-      setData(snapshot);
+      applySnapshot(snapshot);
       setConnected(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load scanner intelligence');
@@ -325,7 +386,7 @@ export function useScannerIntelligence() {
     } finally {
       setLoading(false);
     }
-  }, [authHeaders]);
+  }, [applySnapshot, authHeaders]);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -341,7 +402,19 @@ export function useScannerIntelligence() {
 
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let loadingTimer: ReturnType<typeof setTimeout> | null = null;
     let eventSource: EventSource | null = null;
+    const cachedSnapshot = readCachedSnapshot(cacheKey);
+
+    if (cachedSnapshot) {
+      applySnapshot(cachedSnapshot);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      loadingTimer = setTimeout(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      }, SOFT_LOADING_LIMIT_MS);
+    }
 
     const clearPollTimer = () => {
       if (pollTimer) {
@@ -353,10 +426,14 @@ export function useScannerIntelligence() {
     const pollSnapshot = () => {
       void fetchScannerIntelligence(authHeaders, controller.signal)
         .then((nextSnapshot) => {
-          setData(nextSnapshot);
+          applySnapshot(nextSnapshot);
           setError(null);
           setConnected(true);
           setLoading(false);
+          if (loadingTimer) {
+            clearTimeout(loadingTimer);
+            loadingTimer = null;
+          }
         })
         .catch((err) => {
           if (!controller.signal.aborted) {
@@ -368,7 +445,7 @@ export function useScannerIntelligence() {
     };
 
     const startPolling = () => {
-      if (pollTimer || controller.signal.aborted) return;
+      if (!live || pollTimer || controller.signal.aborted) return;
       pollSnapshot();
       pollTimer = setInterval(pollSnapshot, 8000);
     };
@@ -387,8 +464,12 @@ export function useScannerIntelligence() {
           const snapshot = normalizeStreamSnapshot(JSON.parse((event as MessageEvent).data));
           if (!snapshot) throw new Error('Invalid scanner intelligence stream payload');
           clearPollTimer();
-          setData(snapshot);
+          applySnapshot(snapshot);
           setLoading(false);
+          if (loadingTimer) {
+            clearTimeout(loadingTimer);
+            loadingTimer = null;
+          }
           setError(null);
           setConnected(true);
         } catch (err) {
@@ -419,34 +500,20 @@ export function useScannerIntelligence() {
       };
     };
 
-    const connect = async () => {
-      try {
-        const snapshot = await fetchScannerIntelligence(authHeaders, controller.signal);
-        setData(snapshot);
-        setLoading(false);
-        setError(null);
-        setConnected(true);
-        connectStream();
-      } catch (err) {
-        if (!controller.signal.aborted) {
-          setConnected(false);
-          setError(err instanceof Error ? err.message : 'Unable to load scanner intelligence');
-          setLoading(false);
-          startPolling();
-        }
-      }
-    };
-
-    void connect();
+    if (live) {
+      connectStream();
+    }
+    pollSnapshot();
 
     return () => {
       controller.abort();
       eventSource?.close();
       clearPollTimer();
       if (retryTimer) clearTimeout(retryTimer);
+      if (loadingTimer) clearTimeout(loadingTimer);
       setConnected(false);
     };
-  }, [authHeaders, token]);
+  }, [applySnapshot, authHeaders, cacheKey, token, live]);
 
   return { data, loading, error, connected, refresh };
 }

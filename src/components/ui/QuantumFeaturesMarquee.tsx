@@ -75,9 +75,7 @@ const features = [
 ];
 
 export function QuantumFeaturesMarquee() {
-  const [selectedQuestion, setSelectedQuestion] = useState<string | null>(
-    "Can we migrate to ML-KEM without downtime?",
-  );
+  const [selectedQuestion, setSelectedQuestion] = useState<string | null>(null);
 
   const handleQuestionClick = (question: string) => {
     setSelectedQuestion((previous) => (previous === question ? null : question));

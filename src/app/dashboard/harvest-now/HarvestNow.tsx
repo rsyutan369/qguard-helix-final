@@ -129,11 +129,11 @@ function severityRank(severity: Severity) {
 }
 
 function severityClasses(severity: Severity) {
-  if (severity === 'Critical') return 'border-red-500/60 bg-red-500/15 text-red-300 shadow-[0_0_18px_rgba(239,68,68,0.25)]';
-  if (severity === 'High') return 'border-orange-400/55 bg-orange-500/15 text-orange-300';
+  if (severity === 'Critical') return 'border-red-500/60 bg-red-500/15 text-red-600 shadow-[0_0_18px_rgba(239,68,68,0.25)] dark:text-red-300';
+  if (severity === 'High') return 'border-orange-400/55 bg-orange-500/15 text-orange-600 dark:text-orange-300';
   if (severity === 'Medium') return 'border-gold/45 bg-gold/10 text-gold';
-  if (severity === 'Info') return 'border-sky-400/35 bg-sky-500/10 text-sky-300';
-  return 'border-white/15 bg-white/[0.04] text-white/50';
+  if (severity === 'Info') return 'border-sky-400/35 bg-sky-500/10 text-sky-600 dark:text-sky-300';
+  return 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]';
 }
 
 function toneDot(tone: Tone) {
@@ -341,9 +341,9 @@ function sparklinePath(values: number[], width = 156, height = 58) {
 
 function SectionHeader({ children, action }: { children: string; action?: string }) {
   return (
-    <div className="relative z-10 mb-2 flex items-center justify-between gap-3 border-b border-white/10 pb-1.5">
-      <h2 className="text-[11px] font-black uppercase tracking-[0.12em] text-white/72">{children}</h2>
-      {action && <span className="text-[9px] font-black uppercase tracking-[0.16em] text-red-400">{action}</span>}
+    <div className="relative z-10 mb-2 flex items-center justify-between gap-3 border-b border-[var(--qg-card-border)] pb-1.5">
+      <h2 className="text-[11px] font-black uppercase tracking-[0.12em] text-[var(--qg-dashboard-text-soft)]">{children}</h2>
+      {action && <span className="text-[9px] font-black uppercase tracking-[0.16em] text-red-600 dark:text-red-400">{action}</span>}
     </div>
   );
 }
@@ -504,7 +504,7 @@ export default function HarvestNow() {
   }, [data.history.history, data.telemetry]);
 
   const defenseActions = useMemo<ActionItem[]>(() => [
-    { actionType: 'isolate_asset', label: 'Isolate Asset', detail: 'Block threat propagation', icon: Network, count: assetTotals.compromised, href: '/dashboard/asset-intelligence?source=harvest-now&defenseAction=isolate_asset' },
+    { actionType: 'isolate_asset', label: 'Isolate Asset', detail: 'Block threat propagation', icon: Network, count: assetTotals.compromised, href: '/dashboard/assets?source=harvest-now&defenseAction=isolate_asset' },
     { actionType: 'kill_process', label: 'Kill Process', detail: 'Terminate malicious process', icon: Zap, count: data.runtime.alerts, href: '/dashboard/runtime-crypto-intel?source=harvest-now&defenseAction=kill_process' },
     { actionType: 'revoke_credentials', label: 'Revoke Credentials', detail: 'Invalidate exposed keys', icon: Fingerprint, count: data.runtime.keyRotations, href: '/dashboard/identity-trust?source=harvest-now&defenseAction=revoke_credentials' },
     { actionType: 'patch_harden', label: 'Patch & Harden', detail: 'Apply security hardening', icon: Settings, count: data.summary.vulnerableComponents, href: '/dashboard/scanner?source=harvest-now&defenseAction=patch_harden' },
@@ -578,7 +578,7 @@ export default function HarvestNow() {
   const pqcReadyChange = data.summary.pqcReadiness;
 
   return (
-    <div className="hndl-shell min-h-full bg-[#02050a] p-3 text-white md:p-4">
+    <div className="hndl-shell min-h-full bg-[var(--qg-dashboard-bg)] p-3 text-[var(--qg-dashboard-text)] md:p-4">
       <style>{`
         .hndl-shell {
           background:
@@ -712,6 +712,119 @@ export default function HarvestNow() {
         @keyframes hndlRunePulse {
           0%, 100% { transform: scale(1); opacity: 0.86; }
           50% { transform: scale(1.035); opacity: 1; }
+        }
+        .qg-theme-light .hndl-shell {
+          background:
+            radial-gradient(circle at 20% 8%, rgba(0, 197, 235, 0.17), transparent 30%),
+            radial-gradient(circle at 82% 12%, rgba(124, 58, 237, 0.08), transparent 28%),
+            linear-gradient(180deg, var(--qg-dashboard-bg) 0%, var(--qg-dashboard-bg-soft) 100%);
+          color: var(--qg-dashboard-text);
+        }
+        .qg-theme-light .hndl-panel,
+        .qg-theme-light .hndl-hero {
+          background:
+            linear-gradient(135deg, rgba(255,255,255,0.9), rgba(236,249,255,0.84)) !important;
+          border-color: var(--qg-card-border) !important;
+          color: var(--qg-dashboard-text) !important;
+          box-shadow: var(--qg-panel-shadow) !important;
+        }
+        .qg-theme-light .hndl-hero-alert {
+          background:
+            radial-gradient(circle at 14% 18%, rgba(239,68,68,0.12), transparent 28%),
+            linear-gradient(135deg, rgba(255,255,255,0.94), rgba(236,249,255,0.84)) !important;
+          animation: hndlLightRedPulse 2.8s ease-in-out infinite;
+        }
+        .qg-theme-light .hndl-hero-clear {
+          background:
+            radial-gradient(circle at 14% 18%, rgba(16,185,129,0.12), transparent 28%),
+            linear-gradient(135deg, rgba(255,255,255,0.94), rgba(236,249,255,0.84)) !important;
+          animation: hndlLightGreenPulse 3.2s ease-in-out infinite;
+        }
+        .qg-theme-light .hndl-panel::before,
+        .qg-theme-light .hndl-hero::before {
+          background:
+            linear-gradient(135deg, rgba(255,255,255,0.65), transparent 22%, rgba(0,197,235,0.08)),
+            repeating-linear-gradient(90deg, rgba(14,165,233,0.08) 0 1px, transparent 1px 42px);
+          opacity: 0.74;
+        }
+        .qg-theme-light .hndl-panel::after,
+        .qg-theme-light .hndl-hero::after {
+          background: linear-gradient(90deg, transparent, rgba(0,197,235,0.45), transparent);
+        }
+        .qg-theme-light .hndl-map,
+        .qg-theme-light .hndl-map-clear {
+          background:
+            radial-gradient(circle at 24% 46%, rgba(239,68,68,0.12), transparent 16%),
+            radial-gradient(circle at 55% 40%, rgba(14,165,233,0.13), transparent 18%),
+            radial-gradient(circle at 78% 52%, rgba(239,68,68,0.12), transparent 15%),
+            linear-gradient(180deg, rgba(255,255,255,0.86), rgba(236,249,255,0.76)) !important;
+          border-color: var(--qg-card-border) !important;
+        }
+        .qg-theme-light .hndl-map::before {
+          opacity: 0.56;
+          background-image:
+            radial-gradient(circle, rgba(239,68,68,0.45) 0 1px, transparent 1.5px),
+            linear-gradient(rgba(14,165,233,0.11) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(14,165,233,0.11) 1px, transparent 1px);
+        }
+        .qg-theme-light .hndl-shell [class*="bg-black/"],
+        .qg-theme-light .hndl-shell [class*="bg-[#05080d]"],
+        .qg-theme-light .hndl-shell [class*="bg-[#120606]"],
+        .qg-theme-light .hndl-shell [class*="bg-[#140606]"] {
+          background-color: rgba(255,255,255,0.78) !important;
+        }
+        .qg-theme-light .hndl-shell [class*="bg-white/"],
+        .qg-theme-light .hndl-shell [class*="bg-white\\["] {
+          background-color: rgba(236,249,255,0.78) !important;
+        }
+        .qg-theme-light .hndl-shell [class*="border-white"] {
+          border-color: var(--qg-card-border) !important;
+        }
+        .qg-theme-light .hndl-shell [class*="text-white/"] {
+          color: var(--qg-dashboard-text-soft) !important;
+        }
+        .qg-theme-light .hndl-shell .text-white,
+        .qg-theme-light .hndl-shell h1[class*="text-white"],
+        .qg-theme-light .hndl-shell h2[class*="text-white"],
+        .qg-theme-light .hndl-shell h3[class*="text-white"],
+        .qg-theme-light .hndl-shell p[class*="text-white"],
+        .qg-theme-light .hndl-shell span[class*="text-white"],
+        .qg-theme-light .hndl-shell [class*="font-black"][class*="text-white"] {
+          color: var(--qg-dashboard-text) !important;
+        }
+        .qg-theme-light .hndl-shell .text-red-100,
+        .qg-theme-light .hndl-shell .text-red-200,
+        .qg-theme-light .hndl-shell .text-red-300,
+        .qg-theme-light .hndl-shell .text-red-400 {
+          color: #dc2626 !important;
+        }
+        .qg-theme-light .hndl-shell .text-orange-300 {
+          color: #ea580c !important;
+        }
+        .qg-theme-light .hndl-shell .text-emerald-100,
+        .qg-theme-light .hndl-shell .text-emerald-200,
+        .qg-theme-light .hndl-shell .text-emerald-300,
+        .qg-theme-light .hndl-shell .text-emerald-400 {
+          color: #047857 !important;
+        }
+        .qg-theme-light .hndl-shell .text-sky-300,
+        .qg-theme-light .hndl-shell .text-sky-400 {
+          color: #0284c7 !important;
+        }
+        .qg-theme-light .hndl-shell .text-gold,
+        .qg-theme-light .hndl-shell .hover\\:text-gold:hover {
+          color: var(--qg-amber) !important;
+        }
+        .qg-theme-light .hndl-shell svg text {
+          fill: var(--qg-dashboard-text-soft) !important;
+        }
+        @keyframes hndlLightRedPulse {
+          0%, 100% { box-shadow: var(--qg-panel-shadow), 0 0 0 rgba(239,68,68,0); }
+          50% { box-shadow: var(--qg-hover-shadow), 0 0 36px rgba(239,68,68,0.12); }
+        }
+        @keyframes hndlLightGreenPulse {
+          0%, 100% { box-shadow: var(--qg-panel-shadow), 0 0 0 rgba(16,185,129,0); }
+          50% { box-shadow: var(--qg-hover-shadow), 0 0 34px rgba(16,185,129,0.1); }
         }
       `}</style>
 
@@ -1136,7 +1249,7 @@ export default function HarvestNow() {
                   </div>
                 </div>
               </div>
-              <a href="/dashboard/asset-intelligence" className="mt-4 flex h-9 items-center justify-center rounded border border-sky-400/25 text-[10px] font-black uppercase tracking-[0.14em] text-sky-300 transition hover:border-gold/60 hover:text-gold">
+              <a href="/dashboard/assets" className="mt-4 flex h-9 items-center justify-center rounded border border-sky-400/25 text-[10px] font-black uppercase tracking-[0.14em] text-sky-300 transition hover:border-gold/60 hover:text-gold">
                 View All Assets
               </a>
             </div>

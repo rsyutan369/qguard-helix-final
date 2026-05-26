@@ -729,6 +729,313 @@
   letter-spacing: 0.08em;
 }
 
+.qc-page-home-light {
+  --auth-gold: #00c5eb;
+  --auth-gold-soft: rgba(0, 197, 235, 0.2);
+  --auth-gold-faint: rgba(0, 197, 235, 0.08);
+  --auth-bg: #f8fbff;
+  --auth-panel: rgba(255, 255, 255, 0.9);
+  --auth-border: rgba(9, 13, 22, 0.16);
+  --auth-text: #090d16;
+  --auth-muted: #475569;
+  --auth-dim: #94a3b8;
+
+  background:
+    radial-gradient(circle at 18% 4%, rgba(139, 92, 246, 0.28), transparent 34%),
+    radial-gradient(circle at 82% 10%, rgba(0, 197, 235, 0.24), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, #f8fbff 50%, #eef8ff 100%);
+  color: var(--auth-text);
+}
+
+.qc-page-home-light > .fixed {
+  opacity: 0.5;
+}
+
+.qc-page-home-light::before {
+  background:
+    linear-gradient(90deg, transparent, rgba(0, 197, 235, 0.12), transparent),
+    repeating-linear-gradient(180deg, rgba(9, 13, 22, 0.035) 0 1px, transparent 1px 9px);
+  opacity: 0.5;
+}
+
+.qc-page-home-light .qc-hex-grid {
+  background-image:
+    linear-gradient(rgba(139, 92, 246, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 197, 235, 0.08) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 88% 72% at 52% 38%, black 32%, transparent 100%);
+  mask-image: radial-gradient(ellipse 88% 72% at 52% 38%, black 32%, transparent 100%);
+}
+
+.qc-page-home-light .qc-radial-glow {
+  background:
+    radial-gradient(ellipse 60% 38% at 73% 24%, rgba(0, 197, 235, 0.16), transparent 64%),
+    radial-gradient(ellipse 58% 42% at 18% 18%, rgba(139, 92, 246, 0.14), transparent 66%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, rgba(244, 250, 255, 0.28) 100%);
+}
+
+.qc-page-home-light .qc-login-shell {
+  width: min(calc(100% - clamp(2rem, 6vw, 7rem)), 1240px);
+  min-height: auto;
+  margin-block: clamp(6rem, 8vw, 7.5rem) clamp(2.5rem, 5vw, 4rem);
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 420px);
+  align-items: center;
+  gap: clamp(2rem, 4vw, 4.5rem);
+  overflow: hidden;
+  border: 2px solid #090d16;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(244, 252, 255, 0.94)),
+    #ffffff;
+  padding: clamp(2rem, 4vw, 3.75rem);
+  box-shadow: 8px 8px 0 #090d16, 0 30px 90px rgba(14, 116, 144, 0.14);
+}
+
+.qc-page-home-light .qc-login-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0, 197, 235, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(139, 92, 246, 0.045) 1px, transparent 1px);
+  background-size: 38px 38px;
+  opacity: 0.75;
+}
+
+.qc-page-home-light .qc-login-shell::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 4px;
+  background: linear-gradient(90deg, #8b5cf6, #00c5eb, #67e8f9);
+}
+
+.qc-page-home-light .qc-login-hero,
+.qc-page-home-light .qc-login-panel {
+  position: relative;
+  z-index: 2;
+}
+
+.qc-page-home-light .qc-auth-nav {
+  border-bottom: 2px solid rgba(0, 197, 235, 0.85);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.1);
+}
+
+.qc-page-home-light .qc-auth-logo-video {
+  filter: drop-shadow(0 16px 28px rgba(0, 197, 235, 0.2));
+}
+
+.qc-page-home-light .qc-auth-brand-title {
+  background: linear-gradient(90deg, #090d16 0 60%, #00c5eb 60% 100%);
+  background-clip: text;
+  color: transparent;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+}
+
+.qc-page-home-light .qc-auth-brand-subtitle {
+  color: #00a6cf;
+  text-shadow: none;
+}
+
+.qc-page-home-light .qc-auth-nav-link {
+  border: 1px solid rgba(9, 13, 22, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+  color: #334155;
+}
+
+.qc-page-home-light .qc-auth-nav-link:hover {
+  border-color: rgba(0, 197, 235, 0.45);
+  background: rgba(236, 254, 255, 0.86);
+  color: #00a6cf;
+}
+
+.qc-page-home-light .qc-auth-nav-cta {
+  border: 2px solid #090d16;
+  background: #090d16;
+  color: #ffffff;
+  box-shadow: 3px 3px 0 rgba(0, 197, 235, 0.9);
+}
+
+.qc-page-home-light .qc-auth-nav-cta:hover {
+  background: #00c5eb;
+  color: #090d16;
+  box-shadow: 4px 4px 0 #090d16;
+}
+
+.qc-page-home-light .qc-login-kicker {
+  border: 2px solid #090d16;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.84);
+  color: #00a6cf;
+  box-shadow: 3px 3px 0 rgba(9, 13, 22, 0.16);
+}
+
+.qc-page-home-light .qc-auth-title {
+  color: #090d16;
+  font-size: clamp(3.6rem, 5vw, 5.5rem);
+  text-shadow: none;
+}
+
+.qc-page-home-light .qc-auth-title span {
+  color: #00c5eb;
+  text-shadow: 0 0 22px rgba(0, 197, 235, 0.22);
+}
+
+.qc-page-home-light .qc-auth-lede {
+  color: #475569;
+}
+
+.qc-page-home-light .qc-signal-card,
+.qc-page-home-light .qc-card,
+.qc-page-home-light .qc-status-bar {
+  border: 2px solid #090d16;
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 6px 6px 0 #090d16, 0 22px 64px rgba(14, 116, 144, 0.12);
+}
+
+.qc-page-home-light .qc-signal-card::before,
+.qc-page-home-light .qc-card::before {
+  border-radius: 0;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.92), transparent 36%, rgba(0, 197, 235, 0.08));
+}
+
+.qc-page-home-light .qc-card::after {
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: #00c5eb;
+  box-shadow: none;
+}
+
+.qc-page-home-light .qc-signal-card:hover {
+  border-color: #00c5eb;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 7px 7px 0 #00c5eb, 0 26px 70px rgba(14, 116, 144, 0.16);
+}
+
+.qc-page-home-light .qc-signal-card svg,
+.qc-page-home-light .qc-logo-icon,
+.qc-page-home-light .qc-field-icon,
+.qc-page-home-light .qc-forgot-btn,
+.qc-page-home-light .qc-card-link,
+.qc-page-home-light .qc-status-percent {
+  color: #00a6cf;
+  filter: none;
+}
+
+.qc-page-home-light .qc-signal-card span,
+.qc-page-home-light .qc-subtitle,
+.qc-page-home-light .qc-remember-label,
+.qc-page-home-light .qc-card-footer,
+.qc-page-home-light .qc-status-label {
+  color: #64748b;
+}
+
+.qc-page-home-light .qc-signal-card strong,
+.qc-page-home-light .qc-heading,
+.qc-page-home-light .qc-logo-text {
+  color: #090d16;
+  text-shadow: none;
+}
+
+.qc-page-home-light .qc-logo-icon {
+  border: 2px solid #090d16;
+  border-radius: 0;
+  background: #ecfeff;
+  box-shadow: 2px 2px 0 #090d16;
+}
+
+.qc-page-home-light .qc-protocol-tag,
+.qc-page-home-light .qc-field-label {
+  color: #00a6cf;
+}
+
+.qc-page-home-light .qc-input {
+  border: 1px solid #cbd5e1;
+  border-radius: 0;
+  background: rgba(248, 251, 255, 0.92);
+  color: #090d16;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.qc-page-home-light .qc-input:focus {
+  border-color: #00c5eb;
+  box-shadow: 0 0 0 3px rgba(0, 197, 235, 0.16);
+}
+
+.qc-page-home-light .qc-input::placeholder {
+  color: #94a3b8;
+}
+
+.qc-page-home-light .qc-checkbox {
+  accent-color: #00c5eb;
+}
+
+.qc-page-home-light .qc-btn {
+  border-radius: 0;
+}
+
+.qc-page-home-light .qc-btn-cyan {
+  border: 2px solid #090d16;
+  background: #00c5eb;
+  color: #090d16;
+  box-shadow: 3px 3px 0 #090d16;
+}
+
+.qc-page-home-light .qc-btn-cyan:hover:not(:disabled) {
+  background: #67e8f9;
+  box-shadow: 4px 4px 0 #090d16;
+}
+
+.qc-page-home-light .qc-btn-ghost {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+}
+
+.qc-page-home-light .qc-btn-ghost:hover:not(:disabled) {
+  border-color: #00c5eb;
+  background: #ecfeff;
+  color: #090d16;
+}
+
+.qc-page-home-light .qc-divider-line {
+  background: linear-gradient(90deg, transparent, rgba(0, 197, 235, 0.42), transparent);
+}
+
+.qc-page-home-light .qc-divider-text {
+  color: #94a3b8;
+}
+
+.qc-page-home-light .qc-alert-error {
+  border: 1px solid rgba(220, 38, 38, 0.28);
+  background: rgba(254, 226, 226, 0.82);
+  color: #b91c1c;
+}
+
+.qc-page-home-light .qc-alert-success {
+  border: 1px solid rgba(5, 150, 105, 0.24);
+  background: rgba(209, 250, 229, 0.82);
+  color: #047857;
+}
+
+.qc-page-home-light .qc-status-track {
+  background: #dbeafe;
+}
+
+.qc-page-home-light .qc-status-fill-bar {
+  background: linear-gradient(90deg, #00c5eb, #8b5cf6, #00c5eb);
+  box-shadow: 0 0 12px rgba(0, 197, 235, 0.55);
+}
+
 @media (max-width: 960px) {
   .qc-auth-nav {
     padding-inline: 1.5rem;
@@ -756,6 +1063,29 @@
 
   .qc-login-panel {
     max-width: 400px;
+  }
+
+  .qc-page-home-light .qc-login-shell {
+    width: min(calc(100% - 2rem), 720px);
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+    gap: 2.25rem;
+    margin-block: 5.75rem 2rem;
+    padding: clamp(1.5rem, 4vw, 2.25rem);
+  }
+
+  .qc-page-home-light .qc-login-hero {
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .qc-page-home-light .qc-auth-lede {
+    margin-inline: 0;
+  }
+
+  .qc-page-home-light .qc-login-panel {
+    justify-self: center;
+    max-width: 460px;
   }
 }
 
@@ -795,5 +1125,21 @@
   .qc-remember-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .qc-page-home-light .qc-login-shell {
+    width: min(calc(100% - 1rem), 430px);
+    margin-block: 5rem 1rem;
+    padding: 1rem;
+    box-shadow: 5px 5px 0 #090d16, 0 18px 48px rgba(14, 116, 144, 0.14);
+  }
+
+  .qc-page-home-light .qc-auth-title {
+    font-size: 2.65rem;
+  }
+
+  .qc-page-home-light .qc-auth-lede {
+    font-size: 0.98rem;
+    line-height: 1.65;
   }
 }

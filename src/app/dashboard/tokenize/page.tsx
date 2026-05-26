@@ -156,7 +156,7 @@ function BatchTokenResult({ results, dataType, entropySource, onSave }: {
           </thead>
           <tbody>
             {results.map((r, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid var(--qg-border-dim, rgba(255,255,255,0.04))' }}>
+              <tr key={i} style={{ borderBottom: '1px solid var(--qg-border)' }}>
                 <td style={{ padding: '8px 10px', color: 'var(--qg-text-muted)' }}>{i + 1}</td>
                 <td style={{ padding: '8px 10px', color: 'var(--qg-cyan)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(r.token_id || '-')}</td>
                 <td style={{ padding: '8px 10px', color: 'var(--qg-text)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(r.token_value || '-')}</td>
@@ -460,22 +460,22 @@ export default function TokenizePage() {
                   <thead>
                     <tr>
                       {['Token ID', 'Original', 'Token Value', 'Type', 'FP', 'Status', 'Time'].map(h => (
-                        <th key={h} style={{ padding: '12px', textAlign: 'left', color: '#D4AF37', fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
+                        <th key={h} style={{ padding: '12px', textAlign: 'left', color: 'var(--qg-module-label)', fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {sessionVault.map(v => (
-                      <tr key={v.id} style={{ background: 'rgba(255,255,255,0.02)', transition: 'background 0.2s' }} className="hover:bg-white/[0.05]">
-                        <td style={{ padding: '12px', color: '#00d4ff', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.token_id}</td>
-                        <td style={{ padding: '12px', color: 'rgba(255,255,255,0.4)' }}>{v.original_hint}</td>
-                        <td style={{ padding: '12px', color: '#fff', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.token_value}</td>
-                        <td style={{ padding: '12px', color: 'rgba(255,255,255,0.6)' }}>{v.data_type}</td>
-                        <td style={{ padding: '12px', color: v.format_preserving ? '#22c55e' : 'rgba(255,255,255,0.3)' }}>{v.format_preserving ? 'Yes' : 'No'}</td>
+                      <tr key={v.id} style={{ background: 'var(--qg-surface-inset)', transition: 'background 0.2s' }} className="hover:bg-white/[0.05]">
+                        <td style={{ padding: '12px', color: 'var(--qg-cyan)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.token_id}</td>
+                        <td style={{ padding: '12px', color: 'var(--qg-text-muted)' }}>{v.original_hint}</td>
+                        <td style={{ padding: '12px', color: 'var(--qg-text-primary)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.token_value}</td>
+                        <td style={{ padding: '12px', color: 'var(--qg-text-secondary)' }}>{v.data_type}</td>
+                        <td style={{ padding: '12px', color: v.format_preserving ? 'var(--qg-green)' : 'var(--qg-text-muted)' }}>{v.format_preserving ? 'Yes' : 'No'}</td>
                         <td style={{ padding: '12px' }}>
-                          <span style={{ fontSize: 9, padding: '2px 8px', borderRadius: 4, background: 'rgba(34,197,94,0.1)', color: '#22c55e', fontWeight: 800, textTransform: 'uppercase', border: '1px solid currentColor', opacity: 0.8 }}>active</span>
+                          <span style={{ fontSize: 9, padding: '2px 8px', borderRadius: 4, background: 'var(--qg-green-soft)', color: 'var(--qg-green)', fontWeight: 800, textTransform: 'uppercase', border: '1px solid currentColor', opacity: 0.8 }}>active</span>
                         </td>
-                        <td style={{ padding: '12px', color: 'rgba(255,255,255,0.3)', whiteSpace: 'nowrap', fontSize: 10 }}>{new Date(v.created_at).toLocaleTimeString()}</td>
+                        <td style={{ padding: '12px', color: 'var(--qg-text-muted)', whiteSpace: 'nowrap', fontSize: 10 }}>{new Date(v.created_at).toLocaleTimeString()}</td>
                       </tr>
                     ))}
                   </tbody>

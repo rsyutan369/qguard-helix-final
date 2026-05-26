@@ -727,7 +727,7 @@ function CryptoHealthPanel({ health }: { health: CryptoHealth }) {
 function ThreatPanel({ rows }: { rows: CountRow[] }) {
   return (
     <GlassPanel className="p-4">
-      <SectionTitle icon={ShieldAlert} suffix={<a href="/dashboard/threat-intel" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View All Threats <ChevronRight className="inline h-3 w-3" /></a>}>
+      <SectionTitle icon={ShieldAlert} suffix={<a href="/dashboard/vulnerabilities" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View All Threats <ChevronRight className="inline h-3 w-3" /></a>}>
         Threat Hunting
       </SectionTitle>
       <div className="mb-3 text-xs font-bold text-white/45">AI Risk Score: {integerFmt(rows.reduce((sum, row) => sum + row.count, 0))}</div>
@@ -896,7 +896,7 @@ function KeyLifecyclePanel({ lifecycle }: { lifecycle: KeyLifecycle }) {
 function QuantumTelemetry({ rows }: { rows: QuantumTelemetryRow[] }) {
   return (
     <GlassPanel className="p-4">
-      <SectionTitle icon={Radio} suffix={<a href="/dashboard/quantum-risk" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View All <ChevronRight className="inline h-3 w-3" /></a>}>
+      <SectionTitle icon={Radio} suffix={<a href="/dashboard/quantum-risk-scoring" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View All <ChevronRight className="inline h-3 w-3" /></a>}>
         Quantum Telemetry
       </SectionTitle>
       <div className="space-y-3">

@@ -838,7 +838,7 @@ function PreferencesTab({
               <span className={labelClass}>Default dashboard view</span>
               <select className={inputClass} value={draft.defaultDashboardView} onChange={(event) => updateDraft({ defaultDashboardView: event.target.value })}>
                 <option value="overview">Overview</option>
-                <option value="quantum-risk">Quantum Risk</option>
+                <option value="quantum-risk-scoring">Quantum Risk Scoring</option>
                 <option value="scanner">PQC Scanner</option>
               </select>
             </label>

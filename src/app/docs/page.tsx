@@ -55,6 +55,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import ThemeToggle from '@/components/theme/ThemeToggle'
 import { cn } from '@/lib/utils'
 
 type Topic = {
@@ -136,7 +137,7 @@ const DEFENSE_ACTIONS = [
     when: 'Use when an asset shows active compromise, HNDL exposure, downgrade attempts, or suspicious lateral movement.',
     impact: 'Network access is restricted. Business traffic may pause until the asset is cleared.',
     workflow: ['Confirm alert evidence', 'Notify asset owner', 'Apply isolation policy', 'Monitor telemetry for containment', 'Document evidence in audit trail'],
-    href: '/dashboard/asset-intelligence',
+    href: '/dashboard/assets',
   },
   {
     title: 'Kill Process',
@@ -347,7 +348,7 @@ const SECTIONS: DocSection[] = [
     tags: ['hndl', 'harvest now decrypt later', 'critical alerts', 'threat intelligence', 'defense actions', 'incident response'],
     quickLinks: [
       { label: 'Open HNDL', href: '/dashboard/harvest-now', icon: EyeOff },
-      { label: 'Threat Intel', href: '/dashboard/threat-intel', icon: Radio },
+      { label: 'Vulnerabilities', href: '/dashboard/vulnerabilities', icon: Radio },
       { label: 'Runtime Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity },
     ],
     topics: [
@@ -623,7 +624,7 @@ const SECTIONS: DocSection[] = [
     quickLinks: [
       { label: 'Telemetry Correlation', href: '/dashboard/telemetry-correlation', icon: Network },
       { label: 'Runtime Telemetry', href: '/dashboard/runtime-telemetry', icon: Radio },
-      { label: 'Threat Intel', href: '/dashboard/threat-intel', icon: Bell },
+      { label: 'Vulnerabilities', href: '/dashboard/vulnerabilities', icon: Bell },
     ],
     topics: [
       {
@@ -822,7 +823,7 @@ const WIZARD_STEPS = [
   { id: 'wizard-profile', label: 'Set up account', href: '/dashboard/settings' },
   { id: 'wizard-agent', label: 'Deploy agent', href: '/dashboard/scanner' },
   { id: 'wizard-scan', label: 'Run first scan', href: '/dashboard/scanner' },
-  { id: 'wizard-risk', label: 'Review risk', href: '/dashboard/quantum-risk' },
+  { id: 'wizard-risk', label: 'Review risk', href: '/dashboard/quantum-risk-scoring' },
   { id: 'wizard-migrate', label: 'Execute migration', href: '/dashboard/pqc-orchestration' },
   { id: 'wizard-monitor', label: 'Validate monitoring', href: '/dashboard/runtime-telemetry' },
 ]
@@ -1595,7 +1596,7 @@ export default function DocsPage() {
   } as CSSProperties
 
   return (
-    <main className="min-h-screen bg-[#02060d] text-white" style={pageStyle}>
+    <main className="qg-docs-shell min-h-screen bg-[#02060d] text-white" style={pageStyle}>
       <div className="pointer-events-none fixed inset-0 opacity-70" aria-hidden="true">
         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,211,107,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(56,189,248,0.025)_1px,transparent_1px)] bg-[size:44px_44px]" />
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(255,211,107,0.08),transparent_34%,rgba(56,189,248,0.05)_100%)]" />
@@ -1622,6 +1623,7 @@ export default function DocsPage() {
               </div>
               <SearchBox value={query} onChange={setQuery} />
               <div className="flex items-center gap-2">
+                <ThemeToggle compact showSystem={false} />
                 <Link to="/dashboard" className="inline-flex h-10 items-center gap-2 rounded-md border border-gold/30 bg-gold/10 px-4 text-xs font-black text-gold no-underline hover:bg-gold/20">
                   Open Platform <ArrowRight className="h-4 w-4" />
                 </Link>

@@ -223,8 +223,8 @@ function ComplianceBadges({ compliance }: { compliance: Record<string, unknown> 
       {badges.map(({ label, active }) => (
         <span key={label} style={{
           fontSize: 9, padding: '2px 8px', borderRadius: 3,
-          background: active ? 'rgba(212,175,55,0.08)' : 'rgba(255,255,255,0.03)',
-          border: `1px solid ${active ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.08)'}`,
+          background: active ? 'var(--qg-accent-soft)' : 'var(--qg-disabled-bg)',
+          border: `1px solid ${active ? 'var(--qg-muted-panel-border)' : 'var(--qg-disabled-border)'}`,
           color: active ? 'var(--qg-cyan)' : 'var(--qg-text-muted)',
           fontFamily: 'var(--font-mono)', opacity: active ? 1 : 0.5,
         }}>
@@ -889,7 +889,7 @@ function HistoryTab({
               <thead>
                 <tr>
                   {['OTP Preview', 'Format', 'Len', 'Purpose', 'Source', 'Quality', 'Status', 'Expires', 'Actions'].map(h => (
-                    <th key={h} style={{ padding: '12px', textAlign: 'left', color: '#D4AF37', fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
+                    <th key={h} style={{ padding: '12px', textAlign: 'left', color: 'var(--qg-module-label)', fontWeight: 800, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -898,35 +898,35 @@ function HistoryTab({
                   const isExpiredTime = r.expires_at ? new Date(r.expires_at).getTime() < Date.now() : false
                   return (
                   <tr key={r.id} style={{ 
-                    background: 'rgba(255,255,255,0.02)', 
+                    background: 'var(--qg-surface-inset)',
                     transition: 'background 0.2s',
                     opacity: r.status === 'expired' || isExpiredTime ? 0.6 : 1,
                   }} className="hover:bg-white/[0.05]">
                     <td style={{ padding: '12px' }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.2em', color: r.status === 'active' && !isExpiredTime ? '#fff' : 'rgba(255,255,255,0.4)' }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.2em', color: r.status === 'active' && !isExpiredTime ? 'var(--qg-text-primary)' : 'var(--qg-text-muted)' }}>
                         {r.otp_preview}
                       </div>
-                      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>
+                      <div style={{ fontSize: 9, color: 'var(--qg-text-muted)', marginTop: 4 }}>
                         {new Date(r.created_at).toLocaleString()}
                       </div>
                     </td>
-                    <td style={{ padding: '12px', color: 'rgba(255,255,255,0.6)' }}>{r.format}</td>
-                    <td style={{ padding: '12px', color: 'rgba(255,255,255,0.6)' }}>{r.length}</td>
+                    <td style={{ padding: '12px', color: 'var(--qg-text-secondary)' }}>{r.format}</td>
+                    <td style={{ padding: '12px', color: 'var(--qg-text-secondary)' }}>{r.length}</td>
                     <td style={{ padding: '12px' }}>{r.purpose}</td>
-                    <td style={{ padding: '12px', color: r.entropy_source === 'QRNG' ? '#22c55e' : '#f59e0b' }}>{r.entropy_source}</td>
-                    <td style={{ padding: '12px', color: '#00d4ff' }}>{(r.quality_score * 100).toFixed(1)}%</td>
+                    <td style={{ padding: '12px', color: r.entropy_source === 'QRNG' ? 'var(--qg-green)' : 'var(--qg-amber)' }}>{r.entropy_source}</td>
+                    <td style={{ padding: '12px', color: 'var(--qg-cyan)' }}>{(r.quality_score * 100).toFixed(1)}%</td>
                     <td style={{ padding: '12px' }}>
                       <span style={{ fontSize: 9, padding: '2px 8px', borderRadius: 4, background: `${statusColor(isExpiredTime ? 'expired' : r.status)}15`, color: statusColor(isExpiredTime ? 'expired' : r.status), fontWeight: 700, textTransform: 'uppercase', border: '1px solid currentColor', opacity: 0.8 }}>
                         {isExpiredTime ? 'expired' : r.status}
                       </span>
                     </td>
-                    <td style={{ padding: '12px', color: 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '12px', color: 'var(--qg-text-muted)', whiteSpace: 'nowrap' }}>
                       {r.expires_at ? new Date(r.expires_at).toLocaleTimeString() : '—'}
                     </td>
                     <td style={{ padding: '12px', textAlign: 'right' }}>
                       <button type="button"
                         className="hover:text-red-400 transition-colors"
-                        style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.2)', cursor: 'pointer' }}
+                        style={{ background: 'none', border: 'none', color: 'var(--qg-text-muted)', cursor: 'pointer' }}
                         onClick={() => onDelete(r.id)}>
                         <X size={14} />
                       </button>
@@ -1080,8 +1080,8 @@ function SettingsTab({ settings, onSave }: { settings: OTPSettings; onSave: (s: 
             ] as const).map(({ badge, active }) => (
               <span key={badge} style={{
                 fontSize: 10, padding: '4px 10px', borderRadius: 4,
-                background: active ? 'rgba(212,175,55,0.08)' : 'rgba(255,255,255,0.03)',
-                border: `1px solid ${active ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.08)'}`,
+                background: active ? 'var(--qg-accent-soft)' : 'var(--qg-disabled-bg)',
+                border: `1px solid ${active ? 'var(--qg-muted-panel-border)' : 'var(--qg-disabled-border)'}`,
                 color: active ? 'var(--qg-cyan)' : 'var(--qg-text-muted)',
                 fontFamily: 'var(--font-mono)', opacity: active ? 1 : 0.5,
                 transition: 'all 0.2s ease',

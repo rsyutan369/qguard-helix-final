@@ -828,12 +828,12 @@ export default function PqcOnboarding() {
               <ProcessRail steps={steps} />
             </div>
 
+            <CurrentStepPanel snapshot={data} live={live} onRefresh={refresh} />
+
             <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
               <ClientPanel client={data.client} metrics={data.metrics} />
               <BenefitsPanel benefits={data.benefits} />
             </div>
-
-            <CurrentStepPanel snapshot={data} live={live} onRefresh={refresh} />
 
             <div className="grid gap-4 xl:grid-cols-2">
               <TaskPanel tasks={data.tasks} />

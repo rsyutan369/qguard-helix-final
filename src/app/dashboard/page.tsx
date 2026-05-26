@@ -1,10 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { useState } from 'react'
 import { 
   Shield, AlertTriangle, Zap, Search, Activity, 
-  RefreshCw, Lock, Radio, Database, ShieldCheck, Globe, Bell, Eye
+  RefreshCw, Radio, Database, ShieldCheck, Globe, Bell, Eye
 } from 'lucide-react'
 import { useDashboard, type ExposureNode } from '@/hooks/use-dashboard'
 import MetricCard from './metric_card/MetricCard'
@@ -124,6 +123,7 @@ export default function Dashboard() {
           trend={riskTrendText}
           loading={loading && !summary}
           delay={0.1}
+          href="/dashboard/quantum-risk-scoring"
         />
         <MetricCard 
           label="Vulnerable Assets"
@@ -133,6 +133,7 @@ export default function Dashboard() {
           trend={`${summary?.newVulnerableAssets || 0} discovered since last scan`}
           loading={loading && !summary}
           delay={0.2}
+          href="/dashboard/vulnerabilities"
         />
         <MetricCard 
           label="Total CBOM Items"
@@ -142,6 +143,7 @@ export default function Dashboard() {
           trend={`${summary?.totalAssets || 0} assets in authenticated scope`}
           loading={loading && !summary}
           delay={0.3}
+          href="/dashboard/cbom"
         />
         <MetricCard 
           label="Active Migrations"
@@ -151,6 +153,7 @@ export default function Dashboard() {
           trend={`${summary?.completedMigrations || 0} completed, ${summary?.failedMigrations || 0} need attention`}
           loading={loading && !summary}
           delay={0.4}
+          href="/dashboard/live-migration"
         />
       </div>
 
@@ -158,10 +161,10 @@ export default function Dashboard() {
         {/* Row 1 Headers */}
         <div className="lg:col-span-2">
           <div className="flex justify-between items-center px-1">
-            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
+            <a href="/dashboard/crypto-exposure" className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2 no-underline hover:text-gold transition-colors">
               <Globe className="h-4 w-4 text-gold" />
               Quantum Exposure Map
-            </h2>
+            </a>
             {summary?.lastScanAt && (
               <div className="text-[10px] font-mono text-white/30 uppercase">
                 Last Global Scan: {new Date(summary.lastScanAt).toLocaleString()}
@@ -171,10 +174,10 @@ export default function Dashboard() {
         </div>
         <div className="lg:col-span-1">
           <div className="flex justify-between items-center px-1">
-            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2">
+            <a href={selectedNode?.id ? `/dashboard/assets?asset=${encodeURIComponent(selectedNode.id)}` : '/dashboard/assets'} className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2 no-underline hover:text-gold transition-colors">
               <Eye className="h-4 w-4 text-gold" />
               Node Inspector
-            </h2>
+            </a>
             <div className="text-[10px] font-mono text-white/30 uppercase">
               Telemetry Analysis
             </div>
@@ -242,9 +245,20 @@ export default function Dashboard() {
                   </span>
                 </div>
                 <div className="pt-4 mt-4 border-t border-white/5">
-                  <a href="/dashboard/compliance" className="block w-full py-2 bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest text-white/60 rounded hover:bg-white/10 transition-colors text-center">
-                    Open Compliance Dashboard
-                  </a>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a href="/dashboard/compliance" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
+                      <ShieldCheck className="h-3 w-3" /> Compliance
+                    </a>
+                    <a href="/dashboard/scanner" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
+                      <Radio className="h-3 w-3" /> Scanner
+                    </a>
+                    <a href="/dashboard/runtime-telemetry" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
+                      <Bell className="h-3 w-3" /> Telemetry
+                    </a>
+                    <a href="/dashboard/audit-vault" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
+                      <Database className="h-3 w-3" /> Audit
+                    </a>
+                  </div>
                   <div className="mt-2 text-center text-[9px] font-mono text-white/25">
                     Last sync: {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString() : 'waiting for telemetry'}
                   </div>

@@ -689,7 +689,7 @@ export default function PqcOrchestration() {
                               <a href="/dashboard/live-migration" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Open ${workflow.name}`}>
                                 {workflow.status === 'running' ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                               </a>
-                              <a href="/dashboard/migration_terminal" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-gold hover:border-gold/40" aria-label={`Inspect ${workflow.name}`}>
+                              <a href="/dashboard/live-migration" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-gold hover:border-gold/40" aria-label={`Inspect ${workflow.name}`}>
                                 <MoreHorizontal className="h-3.5 w-3.5" />
                               </a>
                             </>

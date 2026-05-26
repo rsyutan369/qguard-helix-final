@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
 import { Hero195 } from "@/components/ui/hero-195";
 import { StickyFeatureSection } from "@/components/ui/sticky-scroll-cards-section";
 import { QuantumFeaturesMarquee } from "@/components/ui/QuantumFeaturesMarquee";
 import {
   Activity,
+  BookOpen,
   Calendar,
   Shield,
   Check,
@@ -44,6 +44,10 @@ import {
   Sparkles,
   Terminal,
   Info,
+  X,
+  ShieldCheck,
+  ArrowRight,
+  Loader,
   type LucideIcon
 } from 'lucide-react';
 import { CyberBackground } from '../components/CyberBackground';
@@ -1728,8 +1732,314 @@ function triggerPricingConfetti() {
   requestAnimationFrame(draw);
 }
 
-function PricingSection() {
-  const navigate = useNavigate();
+type RequestDemoModalProps = {
+  isOpen: boolean;
+  onClose: () => void;
+};
+
+function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    org: '',
+    stage: 'researching',
+    whitepaper: true,
+  });
+  const [step, setStep] = useState<'form' | 'submitting' | 'success'>('form');
+  const [submittingProgress, setSubmittingProgress] = useState<string[]>([]);
+  const [currentProgressIndex, setCurrentProgressIndex] = useState(0);
+
+  const submissionSteps = useMemo(
+    () => [
+      'Establishing quantum-safe tunnel... [ML-KEM-1024 active]',
+      'Signing payload credentials via post-quantum ML-DSA-87 signature...',
+      'Analyzing cryptographic posture of domain for migration fit...',
+      'Demultiplexing request to secure operations registry...',
+      'Quantum-secure handshake validated. Request approved!'
+    ],
+    []
+  );
+
+  useEffect(() => {
+    if (!isOpen || step !== 'submitting') {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (currentProgressIndex < submissionSteps.length) {
+        setSubmittingProgress((prev) => [...prev, submissionSteps[currentProgressIndex]]);
+        setCurrentProgressIndex((prev) => prev + 1);
+        return;
+      }
+
+      window.clearInterval(interval);
+      setStep('success');
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [currentProgressIndex, isOpen, step, submissionSteps]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isOpen]);
+
+  const resetModal = () => {
+    setFormData({
+      name: '',
+      email: '',
+      org: '',
+      stage: 'researching',
+      whitepaper: true,
+    });
+    setStep('form');
+    setSubmittingProgress([]);
+    setCurrentProgressIndex(0);
+  };
+
+  const handleClose = () => {
+    resetModal();
+    onClose();
+  };
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!formData.name || !formData.email || !formData.org) {
+      return;
+    }
+
+    setSubmittingProgress([]);
+    setCurrentProgressIndex(0);
+    setStep('submitting');
+  };
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center overflow-y-auto p-4">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={handleClose}
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-md"
+          />
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: 15 }}
+            transition={{ duration: 0.15 }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="request-demo-modal-title"
+            className="relative w-full max-w-xl overflow-hidden rounded-sm border-4 border-slate-950 bg-white p-8 text-left shadow-2xl"
+          >
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-cyan-400 via-yellow-300 to-cyan-400" />
+
+            <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="rounded-sm border border-slate-950 bg-cyan-100 p-2 text-slate-950">
+                  <ShieldCheck className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 id="request-demo-modal-title" className="font-sans text-base font-black uppercase tracking-tight text-slate-950 sm:text-lg">
+                    Request Cryptographic Demo
+                  </h3>
+                  <p className="font-mono text-[9px] uppercase tracking-widest text-slate-500">
+                    // Secure PQC Handshake Link
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="cursor-pointer rounded-sm border border-transparent p-1 text-slate-400 transition-colors hover:border-slate-200 hover:bg-slate-100 hover:text-slate-950"
+                id="btn-close-modal"
+                aria-label="Close request demo modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {step === 'form' && (
+              <form onSubmit={handleSubmit} className="mt-6 space-y-5" id="demo-request-form">
+                <div>
+                  <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    Your Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.name}
+                    onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+                    className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
+                    placeholder="Enter full name"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                      Work Email
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={formData.email}
+                      onChange={(event) => setFormData({ ...formData, email: event.target.value })}
+                      className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
+                      placeholder="name@organization.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                      Organization
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.org}
+                      onChange={(event) => setFormData({ ...formData, org: event.target.value })}
+                      className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
+                      placeholder="Agency / Corp"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    PQC Migration Status
+                  </label>
+                  <select
+                    value={formData.stage}
+                    onChange={(event) => setFormData({ ...formData, stage: event.target.value })}
+                    className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all focus:border-cyan-400 focus:outline-none focus:ring-0"
+                  >
+                    <option value="researching">Just researching / Educating self</option>
+                    <option value="planning">Actively mapping cryptographic footprint</option>
+                    <option value="piloting">Piloting Post-Quantum Algorithms (Kyber/Dilithium)</option>
+                    <option value="deployed">Fully migrated or in active production transition</option>
+                  </select>
+                </div>
+
+                <label className="flex cursor-pointer select-none items-start gap-3 pt-1">
+                  <input
+                    type="checkbox"
+                    checked={formData.whitepaper}
+                    onChange={(event) => setFormData({ ...formData, whitepaper: event.target.checked })}
+                    className="mt-1 h-4 w-4 cursor-pointer rounded-sm border-2 border-slate-950 accent-cyan-400 focus:ring-0 focus:ring-offset-0"
+                  />
+                  <span className="font-mono text-[11px] uppercase leading-relaxed tracking-wide text-slate-500">
+                    Check to receive: <strong className="font-bold text-slate-900">"Post-Quantum Readiness Playbook (.pdf)"</strong> compiled by our standards board.
+                  </span>
+                </label>
+
+                <div className="mt-6 flex justify-end gap-3 border-t border-slate-200 pt-4">
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="cursor-pointer rounded-sm border border-transparent px-5 py-2.5 font-mono text-xs font-bold uppercase tracking-widest text-slate-600 transition-colors hover:border-slate-200 hover:bg-slate-50 hover:text-slate-950"
+                    id="btn-cancel-demo"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex cursor-pointer items-center gap-1.5 rounded-sm border-2 border-cyan-400 bg-cyan-400 px-6 py-2.5 font-mono text-xs font-black uppercase tracking-widest text-slate-950 transition-all hover:bg-cyan-500 active:scale-95"
+                    id="btn-submit-demo-form"
+                  >
+                    Secure Booking
+                    <ArrowRight className="h-4 w-4 text-slate-950" />
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {step === 'submitting' && (
+              <div className="mt-8 flex flex-col items-center justify-center py-8">
+                <Loader className="mb-4 h-10 w-10 animate-spin text-cyan-500" />
+                <h4 className="font-mono text-sm font-bold uppercase tracking-wider text-slate-950">
+                  Processing Secure Payload...
+                </h4>
+                <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-cyan-600">
+                  Encrypting over post-quantum protocol
+                </p>
+
+                <div className="mt-6 max-h-40 w-full space-y-1.5 overflow-y-auto rounded-sm border-2 border-slate-950 bg-slate-900 p-4 font-mono text-[10px] text-cyan-400">
+                  {submittingProgress.map((progress, index) => (
+                    <motion.div
+                      key={`${progress}-${index}`}
+                      initial={{ opacity: 0, x: -5 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className="flex items-center gap-1.5"
+                    >
+                      <span className="text-slate-500">[{index + 1}]</span>
+                      <span>{progress}</span>
+                    </motion.div>
+                  ))}
+                  <div className="py-0.5 font-bold uppercase tracking-wider text-slate-500 animate-pulse">
+                    * Active link channel
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {step === 'success' && (
+              <div className="mt-8 py-4 text-center">
+                <div className="mb-4 inline-flex animate-bounce rounded-sm border-2 border-slate-950 bg-cyan-100 p-3 text-slate-950">
+                  <ShieldCheck className="h-8 w-8" />
+                </div>
+                <h4 className="font-sans text-lg font-black uppercase tracking-tight text-slate-950">
+                  Post-Quantum Handshake Achieved!
+                </h4>
+                <p className="mx-auto mt-2 max-w-sm font-mono text-[11px] uppercase tracking-wide text-slate-500">
+                  Hello, <strong>{formData.name}</strong>. Workspace registration completed for <strong>{formData.org}</strong>.
+                </p>
+                <div className="my-5 rounded-sm border-2 border-slate-950 bg-slate-50 p-4 text-left">
+                  <div className="grid grid-cols-2 gap-y-2 font-mono text-[10px]">
+                    <span className="text-slate-500">DECRYPTOR SLOT:</span>
+                    <span className="font-bold text-slate-900">{formData.email}</span>
+                    <span className="text-slate-500">NIST PQC STAGE:</span>
+                    <span className="font-bold uppercase text-slate-900">{formData.stage}</span>
+                    <span className="text-slate-500">MIGRATION GUIDE:</span>
+                    <span className="font-bold text-slate-900">{formData.whitepaper ? 'PENDING DISPATCH (.pdf)' : 'NOT REQUESTED'}</span>
+                  </div>
+                </div>
+
+                <div className="flex justify-center border-t border-slate-200 pt-4">
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="cursor-pointer rounded-sm border-2 border-slate-950 bg-slate-950 px-6 py-2.5 font-mono text-xs font-extrabold uppercase tracking-widest text-white shadow-md transition-all hover:bg-slate-900 active:scale-95"
+                    id="btn-close-demo-success"
+                  >
+                    Return to Homepage
+                  </button>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+type PricingSectionProps = {
+  onRequestDemo: () => void;
+};
+
+function PricingSection({ onRequestDemo }: PricingSectionProps) {
   const [billingPeriod, setBillingPeriod] = useState<"monthly" | "yearly">("yearly");
 
   const handleToggle = (period: "monthly" | "yearly") => {
@@ -1739,8 +2049,6 @@ function PricingSection() {
 
     setBillingPeriod(period);
   };
-
-  const onRequestDemo = () => navigate('/auth');
 
   return (
     <motion.section
@@ -2377,13 +2685,16 @@ function QuantumThreatSlideshow() {
 
 
 export default function App() {
-  const navigate = useNavigate();
   const [now, setNow] = useState(() => new Date());
   const [expandedNistPhase, setExpandedNistPhase] = useState<number | null>(null);
   const [heroTypedLength, setHeroTypedLength] = useState(0);
   const [navScrolled, setNavScrolled] = useState(false);
   const [isPlatformMenuOpen, setIsPlatformMenuOpen] = useState(false);
   const [isSolutionsMenuOpen, setIsSolutionsMenuOpen] = useState(false);
+  const [isResourcesMenuOpen, setIsResourcesMenuOpen] = useState(false);
+  const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
+  const homepageNavRef = useRef<HTMLElement | null>(null);
+  const isHomepageMenuOpen = isPlatformMenuOpen || isSolutionsMenuOpen || isResourcesMenuOpen;
   const countdownUnits = useMemo(() => getQuantumCountdown(now), [now]);
   const typedLineOne = HERO_LINE_ONE.slice(0, heroTypedLength);
   const typedLineTwoLength = Math.max(0, heroTypedLength - HERO_LINE_ONE.length);
@@ -2394,6 +2705,11 @@ export default function App() {
   );
   const isTypingSecondLine = heroTypedLength > HERO_LINE_ONE.length;
   const isHeroTypewriterComplete = heroTypedLength >= HERO_CHARACTER_COUNT;
+  const closeHomepageMenus = () => {
+    setIsPlatformMenuOpen(false);
+    setIsSolutionsMenuOpen(false);
+    setIsResourcesMenuOpen(false);
+  };
 
   useEffect(() => {
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2425,12 +2741,52 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const handleScroll = () => setNavScrolled(window.scrollY > 24);
+    const handleScroll = () => {
+      setNavScrolled(window.scrollY > 24);
 
-    handleScroll();
+      if (isHomepageMenuOpen) {
+        closeHomepageMenus();
+      }
+    };
+
+    setNavScrolled(window.scrollY > 24);
     window.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => window.removeEventListener('scroll', handleScroll);
+  }, [isHomepageMenuOpen]);
+
+  useEffect(() => {
+    if (!isHomepageMenuOpen) {
+      return;
+    }
+
+    const handleOutsidePointer = (event: MouseEvent | TouchEvent) => {
+      const target = event.target;
+
+      if (target instanceof Node && !homepageNavRef.current?.contains(target)) {
+        closeHomepageMenus();
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsidePointer);
+    document.addEventListener('touchstart', handleOutsidePointer, { passive: true });
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      document.removeEventListener('touchstart', handleOutsidePointer);
+    };
+  }, [isHomepageMenuOpen]);
+
+  useEffect(() => {
+    const handleHomepageNavigation = () => closeHomepageMenus();
+
+    window.addEventListener('hashchange', handleHomepageNavigation);
+    window.addEventListener('popstate', handleHomepageNavigation);
+
+    return () => {
+      window.removeEventListener('hashchange', handleHomepageNavigation);
+      window.removeEventListener('popstate', handleHomepageNavigation);
+    };
   }, []);
 
   return (
@@ -2439,7 +2795,7 @@ export default function App() {
         <CyberBackground variant="light" />
 
         {/* Navigation Bar */}
-        <header className={`homepage-nav fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-2xl transition-all duration-300 ${navScrolled ? 'homepage-nav--scrolled' : ''}`}>
+        <header ref={homepageNavRef} className={`homepage-nav fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-2xl transition-all duration-300 ${navScrolled ? 'homepage-nav--scrolled' : ''}`}>
           <div className="mx-auto flex h-16 max-w-[96rem] items-center justify-between px-4 sm:px-6">
             <a href="#hero" className="homepage-nav__brand group flex min-w-0 items-center gap-3 no-underline">
               <img
@@ -2475,6 +2831,7 @@ export default function App() {
                       onClick={() => {
                         setIsPlatformMenuOpen((open) => !open);
                         setIsSolutionsMenuOpen(false);
+                        setIsResourcesMenuOpen(false);
                       }}
                       className={`homepage-nav__link homepage-nav__link--button ${isPlatformMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
                     >
@@ -2494,11 +2851,32 @@ export default function App() {
                       onClick={() => {
                         setIsSolutionsMenuOpen((open) => !open);
                         setIsPlatformMenuOpen(false);
+                        setIsResourcesMenuOpen(false);
                       }}
                       className={`homepage-nav__link homepage-nav__link--button ${isSolutionsMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
                     >
                       {item.label}
                       <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isSolutionsMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                  );
+                }
+
+                if (item.label === 'Resources') {
+                  return (
+                    <button
+                      key={item.label}
+                      type="button"
+                      aria-expanded={isResourcesMenuOpen}
+                      aria-controls="homepage-resources-menu"
+                      onClick={() => {
+                        setIsResourcesMenuOpen((open) => !open);
+                        setIsPlatformMenuOpen(false);
+                        setIsSolutionsMenuOpen(false);
+                      }}
+                      className={`homepage-nav__link homepage-nav__link--button ${isResourcesMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
+                    >
+                      {item.label}
+                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isResourcesMenuOpen ? 'rotate-180' : ''}`} />
                     </button>
                   );
                 }
@@ -2510,6 +2888,7 @@ export default function App() {
                     onClick={() => {
                       setIsPlatformMenuOpen(false);
                       setIsSolutionsMenuOpen(false);
+                      setIsResourcesMenuOpen(false);
                     }}
                     className="homepage-nav__link text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold"
                   >
@@ -2574,6 +2953,7 @@ export default function App() {
                     onClick={() => {
                       setIsPlatformMenuOpen(false);
                       setIsSolutionsMenuOpen(false);
+                      setIsResourcesMenuOpen(false);
                     }}
                   >
                     <span className="homepage-nav__menu-icon">
@@ -2636,6 +3016,46 @@ export default function App() {
                     onClick={() => {
                       setIsPlatformMenuOpen(false);
                       setIsSolutionsMenuOpen(false);
+                      setIsResourcesMenuOpen(false);
+                    }}
+                  >
+                    <span className="homepage-nav__menu-icon">
+                      <entry.icon className="h-4 w-4" />
+                    </span>
+                    <span>
+                      <strong>{entry.title}</strong>
+                      <small>{entry.description}</small>
+                    </span>
+                  </a>
+                ))}
+              </div>
+              <div
+                id="homepage-resources-menu"
+                className={`homepage-nav__platform-menu homepage-nav__resources-menu ${isResourcesMenuOpen ? 'homepage-nav__platform-menu--open' : ''}`}
+              >
+                <span className="homepage-nav__menu-kicker">Resource Library</span>
+                {[
+                  {
+                    title: 'Qguard Helix PQC Checklist',
+                    description: 'Download the CPM readiness checklist for cryptographic visibility, governance, and post-quantum migration planning.',
+                    href: '/resources/pqc-checklist',
+                    icon: FileCheck
+                  },
+                  {
+                    title: 'Documentation Center',
+                    description: 'Review platform guides, module walkthroughs, API references, and operational workflows.',
+                    href: '/docs',
+                    icon: BookOpen
+                  }
+                ].map((entry) => (
+                  <a
+                    href={entry.href}
+                    className="homepage-nav__menu-item no-underline"
+                    key={entry.title}
+                    onClick={() => {
+                      setIsPlatformMenuOpen(false);
+                      setIsSolutionsMenuOpen(false);
+                      setIsResourcesMenuOpen(false);
                     }}
                   >
                     <span className="homepage-nav__menu-icon">
@@ -2688,7 +3108,7 @@ export default function App() {
               className="relative z-10"
             >
               <Badge className="hero-alert-badge bg-quantum-blue/10 text-quantum-blue border-quantum-blue/20 px-3 py-1 mb-6 uppercase tracking-[0.3em] font-mono animate-pulse">
-                Critical Threat Warning: Y2Q Approaching
+                Post-Quantum Threat Advisory: Prepare Before Q-Day
               </Badge>
               <h1 className="hero-title text-6xl md:text-8xl font-bold leading-[0.9] tracking-normal mb-8 uppercase" aria-label={HERO_ACCESSIBLE_TITLE}>
                 <span className="hero-title__ghost" aria-hidden="true">
@@ -3152,7 +3572,7 @@ export default function App() {
               className="text-center mb-16"
             >
               <h2 className="text-3xl md:text-5xl font-black uppercase tracking-[0.08em] text-white">
-                QGuard Helix — <span className="text-gold gold-glow">Quantum Threat Intelligence</span>
+                QGuard Helix — <span className="text-gold gold-glow">Threat Intelligence</span>
               </h2>
               <p className="mt-4 text-sm md:text-base text-muted-foreground tracking-widest font-mono uppercase">
                 Preparing Enterprises for the Post-Quantum Era
@@ -3247,7 +3667,7 @@ export default function App() {
             <div className="h-32 w-full" />
             <QuantumSecurityUseCasesSection />
             <TestimonialsSection />
-            <PricingSection />
+            <PricingSection onRequestDemo={() => setIsDemoModalOpen(true)} />
             <FaqAndCtaSection />
           </div>
         </section>
@@ -3319,6 +3739,7 @@ export default function App() {
                 {
                   title: "Resources",
                   links: [
+                    { label: "PQC Checklist", href: "/resources/pqc-checklist" },
                     { label: "Documentation", href: "/docs" },
                     { label: "Whitepapers", href: "/docs" },
                     { label: "Blog", href: "/docs" },
@@ -3354,10 +3775,14 @@ export default function App() {
                 Schedule an active demo with our enterprise cryptographers to see
                 lattice encryption in effect.
               </p>
-              <a href="/login" className="homepage-footer__cta-button">
+              <button
+                type="button"
+                onClick={() => setIsDemoModalOpen(true)}
+                className="homepage-footer__cta-button cursor-pointer"
+              >
                 Request Demo
                 <MoveRight className="h-4 w-4" />
-              </a>
+              </button>
             </aside>
           </div>
 
@@ -3377,12 +3802,11 @@ export default function App() {
             </div>
           </div>
         </footer>
+
+        <RequestDemoModal isOpen={isDemoModalOpen} onClose={() => setIsDemoModalOpen(false)} />
       </div>
     </TooltipProvider>
   );
 }
 
 // Custom Cursor or other small details can be added here
-
-
-

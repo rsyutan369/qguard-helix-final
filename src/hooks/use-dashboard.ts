@@ -106,7 +106,9 @@ export function useDashboard() {
   const [recommendationsState, setRecommendationsState] = useState<LoadingState>('loading')
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const eventSourcesRef = useRef<EventSource[]>([])
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const token = session?.access_token
 
@@ -213,6 +215,14 @@ export function useDashboard() {
     fetchHealth()
   }, [fetchSummary, fetchEvents, fetchExposureMap, fetchActivity, fetchRecommendations, fetchHealth])
 
+  const queueRefreshAll = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null
+      refreshAll()
+    }, 250)
+  }, [refreshAll])
+
   // Initial data load
   useEffect(() => {
     if (!token || !user) return
@@ -237,24 +247,41 @@ export function useDashboard() {
     const channels: ReturnType<typeof supabase.channel>[] = []
 
     const tables = [
-      { name: 'assets', callback: () => { fetchSummary(); fetchExposureMap(); fetchRecommendations(); } },
-      { name: 'crypto_exposures', callback: () => { fetchSummary(); fetchExposureMap(); fetchRecommendations(); } },
-      { name: 'migration_jobs', callback: () => { fetchSummary(); fetchActivity(); fetchRecommendations(); fetchHealth(); } },
-      { name: 'security_events', callback: fetchEvents },
-      { name: 'pqc_scan_sessions', callback: () => { fetchSummary(); fetchActivity(); fetchExposureMap(); fetchEvents(); fetchRecommendations(); } },
-      { name: 'pqc_scan_results', callback: () => { fetchSummary(); fetchExposureMap(); fetchRecommendations(); } },
-      { name: 'asset_relationships', callback: fetchExposureMap },
+      'assets',
+      'asset_relationships',
+      'crypto_inventory',
+      'crypto_exposures',
+      'vulnerabilities',
+      'pqc_scan_sessions',
+      'pqc_scan_results',
+      'scanner_evidence',
+      'scanner_alerts',
+      'scanner_agents',
+      'scanner_agent_policies',
+      'runtime_crypto_events',
+      'certificates',
+      'generated_keys',
+      'migration_jobs',
+      'migration_events',
+      'security_events',
+      'user_security_events',
+      'auth_events',
+      'audit_logs',
+      'vault_files',
+      'vault_audit_logs',
+      'compliance_evidence',
+      'connector_accounts',
+      'agent_heartbeats',
+      'qrng_events',
     ]
 
-    for (const table of tables) {
+    for (const tableName of tables) {
       const channel = supabase
-        .channel(`dashboard-${table.name}`)
+        .channel(`dashboard-${tableName}`)
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: table.name, filter: `user_id=eq.${user.id}` },
-          () => {
-            table.callback()
-          }
+          { event: '*', schema: 'public', table: tableName, filter: `user_id=eq.${user.id}` },
+          queueRefreshAll,
         )
         .subscribe()
       channels.push(channel)
@@ -265,41 +292,61 @@ export function useDashboard() {
         supabase.removeChannel(channel)
       }
     }
-  }, [user, fetchSummary, fetchEvents, fetchExposureMap, fetchActivity, fetchRecommendations, fetchHealth])
+  }, [user, queueRefreshAll])
 
   // SSE connection for real-time metric pushes (fallback for complex updates)
   useEffect(() => {
     if (!token) return
 
+    const closeStreams = () => {
+      for (const stream of eventSourcesRef.current) stream.close()
+      eventSourcesRef.current = []
+      setSseConnected(false)
+    }
+
     const connectSSE = () => {
-      const es = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
-      eventSourceRef.current = es
-      es.onopen = () => setSseConnected(true)
-      es.onerror = () => {
+      closeStreams()
+      const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
+      const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`)
+      const vaultStream = new EventSource(`/api/v1/vault/share/events?token=${encodeURIComponent(token)}`)
+      eventSourcesRef.current = [metricsStream, scannerStream, vaultStream]
+
+      const markOpen = () => setSseConnected(true)
+      const reconnect = () => {
         setSseConnected(false)
-        es.close()
-        setTimeout(() => connectSSE(), 10000)
+        closeStreams()
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = setTimeout(connectSSE, 10000)
       }
-      es.addEventListener('metrics-update', () => {
-        fetchSummary()
-        fetchActivity()
-        fetchRecommendations()
-      })
-      es.addEventListener('scan-complete', () => {
-        fetchSummary()
-        fetchExposureMap()
-        fetchEvents()
-        fetchRecommendations()
-      })
+
+      metricsStream.onopen = markOpen
+      scannerStream.onopen = markOpen
+      vaultStream.onopen = markOpen
+      metricsStream.onerror = reconnect
+      scannerStream.onerror = reconnect
+      vaultStream.onerror = reconnect
+
+      metricsStream.addEventListener('metrics-update', queueRefreshAll)
+      metricsStream.addEventListener('runtime-crypto-update', queueRefreshAll)
+      metricsStream.addEventListener('scan-complete', queueRefreshAll)
+      scannerStream.addEventListener('scanner-intelligence', queueRefreshAll)
+      scannerStream.addEventListener('scanner-error', queueRefreshAll)
+      vaultStream.addEventListener('failed_attempt', queueRefreshAll)
+      vaultStream.addEventListener('link_destroyed', queueRefreshAll)
     }
 
     connectSSE()
     return () => {
-      eventSourceRef.current?.close()
-      eventSourceRef.current = null
-      setSseConnected(false)
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      closeStreams()
     }
-  }, [token, fetchSummary, fetchExposureMap, fetchEvents, fetchActivity, fetchRecommendations])
+  }, [token, queueRefreshAll])
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+    for (const stream of eventSourcesRef.current) stream.close()
+  }, [])
 
   return {
     summary,

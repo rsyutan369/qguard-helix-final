@@ -319,37 +319,51 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
     runtimeEvents,
     scannerEvidence,
     scannerAlerts,
+    scanSessions,
     scanResults,
+    vulnerabilities,
     cryptoInventory,
     cryptoExposures,
     certificates,
     generatedKeys,
     scannerAgents,
+    scannerPolicies,
     connectorAccounts,
     agentHeartbeats,
+    vaultFiles,
     qrngEvents,
     vaultAuditLogs,
+    auditLogs,
     complianceEvidence,
     migrationJobs,
     securityEvents,
+    userSecurityEvents,
+    authEvents,
   ] = await Promise.all([
     safeRows(client, 'assets', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(6000)),
     safeRows(client, 'scanner_evidence', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000)),
     safeRows(client, 'scanner_alerts', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1800)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(2600)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(2600)),
     safeRows(client, 'crypto_exposures', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2200)),
     safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2200)),
     safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2200)),
     safeRows(client, 'scanner_agents', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(800)),
+    safeRows(client, 'scanner_agent_policies', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(800)),
     safeRows(client, 'connector_accounts', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(800)),
     safeRows(client, 'agent_heartbeats', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(1800)),
+    safeRows(client, 'vault_files', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
     safeRows(client, 'qrng_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1200)),
     safeRows(client, 'vault_audit_logs', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'audit_logs', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'compliance_evidence', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
     safeRows(client, 'migration_jobs', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(900)),
     safeRows(client, 'security_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'user_security_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'auth_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
   ])
 
   const now = Date.now()
@@ -573,6 +587,38 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
     })
   }
 
+  for (const session of scanSessions || []) {
+    const metadata = recordOf(session.metadata)
+    const status = String(session.status || 'pending').toLowerCase()
+    const failed = /fail|error|cancel|blocked/.test(status)
+    const running = /run|scan|progress|pending|queued/.test(status)
+    const findings = numberValue(session.findings_count)
+    const text = `${session.target_scope || ''} ${status} ${JSON.stringify(metadata)}`
+    addSignal({
+      id: `scan-session-${session.id}`,
+      sourceTable: 'pqc_scan_sessions',
+      pillar: isApiText(text) ? 'API Scan Runtime' : inferProvider(text) !== 'Private / Hybrid' ? 'Cloud Scan Runtime' : 'Runtime Scan',
+      title: failed ? 'Scan failed' : running ? 'Scan in progress' : 'Scan completed',
+      subject: textValue(session.target_scope, firstString(metadata, ['target', 'targetScope', 'scope']) || 'PQC scan'),
+      subjectType: 'Scan Session',
+      provider: inferProvider(text),
+      region: inferRegion(text),
+      status: textValue(session.status, running ? 'running' : 'completed'),
+      severity: failed ? 'high' : findings > 0 ? 'medium' : 'low',
+      riskScore: failed ? 82 : findings > 0 ? 52 : 12,
+      encrypted: true,
+      pqcReady: !failed && findings === 0,
+      weak: failed || findings > 0,
+      runtime: true,
+      api: isApiText(text),
+      certificate: isCertificateText(text),
+      key: isKeyText(text),
+      cloud: inferProvider(text) !== 'Private / Hybrid',
+      timestamp: session.completed_at || session.updated_at || session.started_at || session.created_at,
+      detail: `${numberValue(session.progress)}% complete - ${findings} finding${findings === 1 ? '' : 's'} - ${numberValue(session.scanned_assets)}/${numberValue(session.total_assets)} assets`,
+    })
+  }
+
   for (const result of scanResults || []) {
     const text = `${result.finding_type || ''} ${result.algorithm || ''} ${result.description || ''} ${result.remediation || ''}`
     addSignal({
@@ -595,6 +641,37 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
       key: isKeyText(text),
       timestamp: result.created_at,
       detail: `${result.description || ''} ${result.remediation || ''}`,
+    })
+  }
+
+  for (const vulnerability of vulnerabilities || []) {
+    const metadata = recordOf(vulnerability.metadata)
+    const status = String(vulnerability.status || 'open').toLowerCase()
+    const resolved = /resolved|closed|fixed|false_positive|accepted/.test(status)
+    const text = `${vulnerability.title || ''} ${vulnerability.description || ''} ${vulnerability.source || ''} ${JSON.stringify(metadata)}`
+    addSignal({
+      id: `vulnerability-${vulnerability.id}`,
+      sourceTable: 'vulnerabilities',
+      pillar: isApiText(text) ? 'API Vulnerability' : isCertificateText(text) ? 'Certificate Vulnerability' : isKeyText(text) ? 'Key Vulnerability' : inferProvider(text) !== 'Private / Hybrid' ? 'Cloud Vulnerability' : 'Runtime Vulnerability',
+      title: vulnerability.title || 'Vulnerability finding',
+      subject: assetName(vulnerability.asset_id, firstString(metadata, ['assetName', 'hostname', 'resourceName']) || 'Vulnerability'),
+      subjectType: firstString(metadata, ['assetType', 'resourceType']) || 'Vulnerability',
+      assetId: vulnerability.asset_id,
+      provider: inferProvider(text),
+      region: inferRegion(text),
+      status: textValue(vulnerability.status, resolved ? 'resolved' : 'open'),
+      severity: vulnerability.severity,
+      riskScore: numberValue(vulnerability.cvss_score) * 10,
+      encrypted: true,
+      pqcReady: Boolean(metadata.pqc_ready || metadata.quantum_safe || metadata.is_quantum_safe),
+      weak: !resolved,
+      runtime: true,
+      api: isApiText(text),
+      certificate: isCertificateText(text),
+      key: isKeyText(text),
+      cloud: inferProvider(text) !== 'Private / Hybrid',
+      timestamp: vulnerability.updated_at || vulnerability.created_at,
+      detail: `${vulnerability.source || ''} ${vulnerability.description || ''}`,
     })
   }
 
@@ -722,6 +799,63 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
     })
   }
 
+  for (const file of vaultFiles || []) {
+    const metadata = recordOf(file.metadata)
+    const text = `${file.original_filename || ''} ${file.mime_type || ''} ${file.encryption_status || ''} ${file.encryption_algorithm || ''} ${file.signature_status || ''} ${JSON.stringify(metadata)}`
+    const encrypted = /encrypted|complete|processed|sealed|success/i.test(`${file.encryption_status || ''} ${file.processing_status || ''}`)
+    const deleted = Boolean(file.is_deleted)
+    addSignal({
+      id: `vault-file-${file.id}`,
+      sourceTable: 'vault_files',
+      pillar: isCertificateText(text) ? 'Certificate Vault Object' : isApiText(text) ? 'API Evidence Vault' : 'Key Vault Object',
+      title: encrypted ? 'Vault object protected' : 'Vault object pending',
+      subject: textValue(file.original_filename, 'Vault file'),
+      subjectType: textValue(file.mime_type, 'Vault Object'),
+      provider: inferProvider(text),
+      region: inferRegion(text),
+      algorithm: file.encryption_algorithm,
+      status: deleted ? 'deleted' : encrypted ? 'protected' : textValue(file.encryption_status, 'pending'),
+      severity: encrypted && !deleted ? 'low' : 'medium',
+      encrypted,
+      pqcReady: isPqcAlgorithm(`${file.encryption_algorithm || ''} ${file.algorithm_version || ''}`),
+      weak: !encrypted || deleted,
+      certificate: isCertificateText(text),
+      key: true,
+      api: isApiText(text),
+      cloud: inferProvider(text) !== 'Private / Hybrid',
+      timestamp: file.updated_at || file.processed_at || file.encrypted_at || file.uploaded_at || file.created_at,
+      detail: `${file.encryption_algorithm || ''} ${file.algorithm_version || ''} ${file.key_rotation_status || ''}`,
+    })
+  }
+
+  for (const policy of scannerPolicies || []) {
+    const scanTypes = Array.isArray(policy.scan_types) ? policy.scan_types.join(' ') : ''
+    const enabled = Boolean(policy.enabled)
+    const text = `${policy.name || ''} ${scanTypes} ${policy.alert_threshold || ''} ${JSON.stringify(recordOf(policy.metadata))}`
+    addSignal({
+      id: `scanner-policy-${policy.id}`,
+      sourceTable: 'scanner_agent_policies',
+      pillar: inferProvider(text) !== 'Private / Hybrid' ? 'Cloud Collector Policy' : 'Runtime Collector Policy',
+      title: policy.name || 'Collector policy',
+      subject: textValue(policy.agent_id, 'Collector policy'),
+      subjectType: 'Scanner Policy',
+      provider: inferProvider(text),
+      region: inferRegion(text),
+      status: enabled ? 'enforced' : 'disabled',
+      severity: enabled ? 'low' : 'high',
+      encrypted: true,
+      pqcReady: /pqc|quantum|ml-kem|ml-dsa|kyber|dilithium/i.test(text),
+      weak: !enabled,
+      runtime: true,
+      api: isApiText(text),
+      certificate: isCertificateText(text),
+      key: isKeyText(text),
+      cloud: inferProvider(text) !== 'Private / Hybrid',
+      timestamp: policy.updated_at || policy.created_at,
+      detail: `${scanTypes} targets:${Array.isArray(policy.allowed_targets) ? policy.allowed_targets.length : 0} paths:${Array.isArray(policy.allowed_paths) ? policy.allowed_paths.length : 0}`,
+    })
+  }
+
   for (const connector of connectorAccounts || []) {
     const metadata = recordOf(connector.metadata)
     const policy = recordOf(connector.policy)
@@ -835,6 +969,34 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
     })
   }
 
+  for (const log of auditLogs || []) {
+    const details = recordOf(log.details)
+    const text = `${log.action || ''} ${log.entity_type || ''} ${log.entity_id || ''} ${log.ip_address || ''} ${JSON.stringify(details)}`
+    const ok = !/fail|error|denied|destroyed|revoked|blocked/i.test(text)
+    addSignal({
+      id: `audit-${log.id}`,
+      sourceTable: 'audit_logs',
+      pillar: isApiText(text) ? 'API Audit' : isKeyText(text) ? 'Key Audit' : inferProvider(text) !== 'Private / Hybrid' ? 'Cloud Audit' : 'Audit Event',
+      title: log.action || 'Audit event',
+      subject: textValue(log.entity_type, 'Audit record'),
+      subjectType: textValue(log.entity_type, 'Audit'),
+      provider: inferProvider(text),
+      region: inferRegion(text),
+      status: ok ? 'recorded' : 'review',
+      severity: ok ? 'low' : 'medium',
+      encrypted: true,
+      pqcReady: /pqc|quantum|ml-kem|ml-dsa/i.test(text),
+      weak: !ok,
+      runtime: true,
+      api: isApiText(text),
+      certificate: isCertificateText(text),
+      key: isKeyText(text),
+      cloud: inferProvider(text) !== 'Private / Hybrid',
+      timestamp: log.created_at,
+      detail: `${log.entity_id || ''} ${log.ip_address || ''} ${log.user_agent || ''}`,
+    })
+  }
+
   for (const item of complianceEvidence || []) {
     const passed = /pass|met|compliant|approved|complete/i.test(String(item.status || ''))
     addSignal({
@@ -901,6 +1063,35 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
       detail: `${event.message || ''} ${event.user_agent || ''}`,
     })
   }
+
+  const addAccountEvent = (event: any, sourceTable: string, idPrefix: string) => {
+    const metadata = recordOf(event.metadata)
+    const text = `${event.event_type || ''} ${event.action || ''} ${event.message || ''} ${event.ip_address || ''} ${event.user_agent || ''} ${JSON.stringify(metadata)}`
+    const ok = /success|enabled|trusted|updated|login|mfa/i.test(text) && !/fail|error|denied|suspicious|blocked/i.test(text)
+    addSignal({
+      id: `${idPrefix}-${event.id}`,
+      sourceTable,
+      pillar: isApiText(text) ? 'API Identity Event' : 'Identity Telemetry',
+      title: event.event_type || event.action || 'Identity event',
+      subject: textValue(event.ip_address, 'Account activity'),
+      subjectType: 'Identity Event',
+      provider: inferProvider(text),
+      region: inferRegion(text),
+      status: ok ? 'trusted' : 'review',
+      severity: event.severity || (ok ? 'low' : 'medium'),
+      encrypted: true,
+      pqcReady: /pqc|quantum|ml-kem|ml-dsa/i.test(text),
+      weak: !ok,
+      runtime: true,
+      api: isApiText(text),
+      cloud: inferProvider(text) !== 'Private / Hybrid',
+      timestamp: event.created_at,
+      detail: `${event.message || ''} ${event.user_agent || ''}`,
+    })
+  }
+
+  for (const event of userSecurityEvents || []) addAccountEvent(event, 'user_security_events', 'user-security')
+  for (const event of authEvents || []) addAccountEvent(event, 'auth_events', 'auth')
 
   signals.sort((a, b) => b.ms - a.ms)
   const current = signals.filter((signal) => signal.ms >= recentStart)
@@ -1070,7 +1261,7 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
       cloudAssets: cloudSignals.length,
       cloudTrustScore: percentOf(cloudSignals.filter((signal) => signal.encrypted && !signal.weak).length, cloudSignals.length),
       highRiskFindings: highRisk.length,
-      activeSources: scannerAgents.length + connectorAccounts.length,
+      activeSources: scannerAgents.length + connectorAccounts.length + scannerPolicies.filter((policy: any) => policy.enabled).length,
       pqcReadiness: percentOf(pqcReady.length, total),
       staleSignals: stale.length,
     },
@@ -1103,19 +1294,24 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
       runtimeEvents: runtimeEvents.length,
       scannerEvidence: scannerEvidence.length,
       scannerAlerts: scannerAlerts.length,
+      scanSessions: scanSessions.length,
       scanResults: scanResults.length,
+      vulnerabilities: vulnerabilities.length,
       cryptoInventory: cryptoInventory.length,
       cryptoExposures: cryptoExposures.length,
       certificates: certificates.length,
       generatedKeys: generatedKeys.length,
       scannerAgents: scannerAgents.length,
+      scannerPolicies: scannerPolicies.length,
       connectors: connectorAccounts.length,
       agentHeartbeats: agentHeartbeats.length,
+      vaultFiles: vaultFiles.length,
       qrngEvents: qrngEvents.length,
       vaultAuditLogs: vaultAuditLogs.length,
+      auditLogs: auditLogs.length,
       complianceEvidence: complianceEvidence.length,
       migrationJobs: migrationJobs.length,
-      securityEvents: securityEvents.length,
+      securityEvents: securityEvents.length + userSecurityEvents.length + authEvents.length,
       eventPipelineStatus,
       latestRuntimeEventAt: latestDate(...runtimeEvents.map((event: any) => event.observed_at || event.created_at)),
     },

@@ -202,7 +202,130 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 const PANEL_CLASSES =
-  'group relative overflow-hidden rounded-lg border border-blue-400/12 bg-[#07101D]/72 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(36,120,255,0.035),0_0_34px_rgba(0,0,0,0.34)] transition duration-500 hover:-translate-y-0.5 hover:border-gold/65 hover:bg-[#0A1728]/84 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-24px_60px_rgba(251,191,36,0.12),0_16px_46px_rgba(0,0,0,0.48),0_0_58px_rgba(251,191,36,0.28)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/55 before:to-transparent after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-52 after:w-52 after:rounded-full after:bg-gold/8 after:blur-3xl after:opacity-0 after:transition group-hover:after:opacity-100';
+  'tls-telemetry-card group relative overflow-hidden rounded-lg border border-blue-400/12 bg-[#07101D]/72 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(36,120,255,0.035),0_0_34px_rgba(0,0,0,0.34)] transition duration-500 hover:-translate-y-0.5 hover:border-gold/65 hover:bg-[#0A1728]/84 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-24px_60px_rgba(251,191,36,0.12),0_16px_46px_rgba(0,0,0,0.48),0_0_58px_rgba(251,191,36,0.28)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/55 before:to-transparent after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-52 after:w-52 after:rounded-full after:bg-gold/8 after:blur-3xl after:opacity-0 after:transition group-hover:after:opacity-100';
+
+const TLS_TELEMETRY_THEME_CSS = `
+  .tls-telemetry {
+    --tls-telemetry-text: #f8fbff;
+    --tls-telemetry-muted: rgba(226, 232, 240, 0.66);
+    --tls-telemetry-soft: rgba(226, 232, 240, 0.42);
+    --tls-telemetry-border: rgba(255, 255, 255, 0.1);
+    --tls-telemetry-panel: rgba(7, 16, 29, 0.72);
+    --tls-telemetry-track: rgba(255, 255, 255, 0.08);
+    --tls-telemetry-gold: #fbbf24;
+    --tls-telemetry-link: #93c5fd;
+  }
+
+  .tls-telemetry-card {
+    backdrop-filter: blur(18px);
+  }
+
+  .qg-theme-light .tls-telemetry {
+    --tls-telemetry-text: #0f172a;
+    --tls-telemetry-muted: #536192;
+    --tls-telemetry-soft: #7a849f;
+    --tls-telemetry-border: rgba(148, 163, 184, 0.28);
+    --tls-telemetry-panel: rgba(255, 255, 255, 0.9);
+    --tls-telemetry-track: rgba(15, 23, 42, 0.08);
+    --tls-telemetry-gold: #b88700;
+    --tls-telemetry-link: #2563eb;
+    background:
+      radial-gradient(circle at 16% 0%, rgba(37, 99, 235, 0.12), transparent 31%),
+      radial-gradient(circle at 86% 14%, rgba(251, 191, 36, 0.13), transparent 30%),
+      linear-gradient(180deg, #f7f9ff 0%, #eef3ff 48%, #f8fafc 100%) !important;
+    color: var(--tls-telemetry-text) !important;
+  }
+
+  .qg-theme-light .tls-telemetry-card,
+  .qg-theme-light .tls-telemetry [class*="bg-[#07101D]"],
+  .qg-theme-light .tls-telemetry [class*="bg-[#0A1728]"] {
+    background-color: var(--tls-telemetry-panel) !important;
+    border-color: var(--tls-telemetry-border) !important;
+    box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+  }
+
+  .qg-theme-light .tls-telemetry-card:hover {
+    border-color: rgba(251, 191, 36, 0.58) !important;
+    background-color: rgba(255, 255, 255, 0.96) !important;
+    box-shadow: 0 20px 54px rgba(37, 99, 235, 0.14), 0 0 32px rgba(251, 191, 36, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.95) !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="text-white"] {
+    color: var(--tls-telemetry-text) !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="text-white\\/35"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/38"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/42"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/45"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/48"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/55"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/65"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/70"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/72"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/75"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/76"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/78"],
+  .qg-theme-light .tls-telemetry [class*="text-white\\/84"] {
+    color: var(--tls-telemetry-muted) !important;
+  }
+
+  .qg-theme-light .tls-telemetry h1,
+  .qg-theme-light .tls-telemetry .text-gold,
+  .qg-theme-light .tls-telemetry [class*="text-gold"] {
+    color: var(--tls-telemetry-gold) !important;
+    text-shadow: none !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="text-blue-300"] {
+    color: var(--tls-telemetry-link) !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="border-white"],
+  .qg-theme-light .tls-telemetry [class*="border-gold"],
+  .qg-theme-light .tls-telemetry [class*="border-blue"] {
+    border-color: var(--tls-telemetry-border) !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="border-b"] {
+    border-color: var(--tls-telemetry-border) !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="bg-black"],
+  .qg-theme-light .tls-telemetry [class*="bg-white\\/"],
+  .qg-theme-light .tls-telemetry [class*="bg-white\\["] {
+    background-color: rgba(255, 255, 255, 0.68) !important;
+  }
+
+  .qg-theme-light .tls-telemetry [class*="bg-white\\/5"],
+  .qg-theme-light .tls-telemetry [class*="bg-white\\/8"] {
+    background-color: var(--tls-telemetry-track) !important;
+  }
+
+  .qg-theme-light .tls-telemetry button[class*="bg-blue-500"] {
+    color: #ffffff !important;
+    border-color: rgba(37, 99, 235, 0.56) !important;
+  }
+
+  .qg-theme-light .tls-telemetry button:hover,
+  .qg-theme-light .tls-telemetry a:hover {
+    color: var(--tls-telemetry-gold) !important;
+  }
+
+  .qg-theme-light .tls-telemetry button[class*="hover:bg-gold"]:hover {
+    background-color: #fbbf24 !important;
+    color: #111827 !important;
+  }
+
+  .qg-theme-light .tls-telemetry svg circle[stroke="rgba(255,255,255,0.08)"],
+  .qg-theme-light .tls-telemetry svg line[stroke="rgba(255,255,255,0.06)"] {
+    stroke: var(--tls-telemetry-track) !important;
+  }
+
+  .qg-theme-light .tls-telemetry svg text[fill^="rgba(255,255,255"] {
+    fill: rgba(83, 97, 146, 0.72) !important;
+  }
+`;
 
 function integerFmt(value: number) {
   return new Intl.NumberFormat('en-US').format(Math.max(0, Math.round(Number(value) || 0)));
@@ -818,7 +941,8 @@ export default function TlsTelemetryPage() {
   }, [snapshot]);
 
   return (
-    <div className="min-h-screen bg-[#030711] px-4 py-4 text-white sm:px-5 lg:px-6">
+    <div className="tls-telemetry min-h-screen bg-[#030711] px-4 py-4 text-white sm:px-5 lg:px-6">
+      <style>{TLS_TELEMETRY_THEME_CSS}</style>
       <div className="mx-auto max-w-[1540px] space-y-4">
         <header className="flex flex-col gap-4 border-b border-gold/10 pb-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
@@ -933,14 +1057,14 @@ export default function TlsTelemetryPage() {
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
           <Panel className="p-5 xl:col-span-4">
-            <SectionTitle suffix={<a href="/dashboard/asset-intelligence" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
+            <SectionTitle suffix={<a href="/dashboard/assets" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
               Top Clients
             </SectionTitle>
             <TopClients rows={snapshot.topClients} />
           </Panel>
 
           <Panel className="p-5 xl:col-span-4">
-            <SectionTitle suffix={<a href="/dashboard/asset-intelligence" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
+            <SectionTitle suffix={<a href="/dashboard/assets" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
               Top Servers
             </SectionTitle>
             <TopServers rows={snapshot.topServers} />

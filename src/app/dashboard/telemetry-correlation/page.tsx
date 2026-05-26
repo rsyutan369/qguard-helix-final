@@ -1098,7 +1098,7 @@ export default function TelemetryCorrelationPage() {
             <SectionTitle>Correlation By Category</SectionTitle>
             <DonutChart rows={snapshot.categoryDistribution} />
             <div className="mt-4 flex justify-end">
-              <a href="/dashboard/threat-intel" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
+              <a href="/dashboard/vulnerabilities" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
                 View All Categories <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>
@@ -1115,7 +1115,7 @@ export default function TelemetryCorrelationPage() {
 
           <GlassPanel className="p-5">
             <SectionTitle
-              suffix={<a href="/dashboard/runtime-discovery" className="text-xs font-bold text-blue-300 transition hover:text-gold">View All Sources</a>}
+              suffix={<a href="/dashboard/runtime-telemetry" className="text-xs font-bold text-blue-300 transition hover:text-gold">View All Sources</a>}
             >
               Data Sources Health
             </SectionTitle>

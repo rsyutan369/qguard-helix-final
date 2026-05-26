@@ -39,11 +39,11 @@ export interface ServiceSettings {
 export const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: '12px 16px',
-  background: 'rgba(15, 15, 42, 0.4)',
+  background: 'var(--qg-input-bg)',
   backdropFilter: 'blur(12px)',
-  border: '1px solid rgba(212, 175, 55, 0.15)',
+  border: '1px solid var(--qg-input-border)',
   borderRadius: 10,
-  color: '#f8fafc',
+  color: 'var(--qg-input-text)',
   fontFamily: 'var(--font-mono)',
   fontSize: 13,
   outline: 'none',
@@ -55,7 +55,7 @@ export const labelStyle: React.CSSProperties = {
   display: 'block',
   fontSize: 11,
   fontFamily: 'var(--font-mono)',
-  color: 'rgba(212, 175, 55, 0.7)',
+  color: 'var(--qg-module-label)',
   textTransform: 'uppercase',
   letterSpacing: '0.15em',
   marginBottom: 8,
@@ -66,13 +66,13 @@ export const sectionTitle: React.CSSProperties = {
   fontSize: 15,
   fontFamily: 'var(--font-display)',
   fontWeight: 800,
-  color: '#D4AF37',
+  color: 'var(--qg-amber)',
   marginBottom: 20,
   display: 'flex',
   alignItems: 'center',
   gap: 10,
   letterSpacing: '0.04em',
-  textShadow: '0 0 15px rgba(212, 175, 55, 0.3)',
+  textShadow: '0 0 15px color-mix(in srgb, var(--qg-amber) 30%, transparent)',
 }
 
 export const resultMetaStyle: React.CSSProperties = {
@@ -80,10 +80,10 @@ export const resultMetaStyle: React.CSSProperties = {
   gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
   gap: '16px 24px',
   padding: '20px',
-  background: 'linear-gradient(135deg, rgba(212, 175, 55, 0.08) 0%, rgba(212, 175, 55, 0.02) 100%)',
+  background: 'var(--qg-muted-panel)',
   borderRadius: 12,
-  border: '1px solid rgba(212, 175, 55, 0.2)',
-  boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+  border: '1px solid var(--qg-muted-panel-border)',
+  boxShadow: 'var(--qg-panel-shadow)',
 }
 
 export const resultMetaItem: React.CSSProperties = {
@@ -95,7 +95,7 @@ export const resultMetaItem: React.CSSProperties = {
 export const resultMetaLabel: React.CSSProperties = {
   fontSize: 10,
   fontFamily: 'var(--font-mono)',
-  color: 'rgba(255, 255, 255, 0.4)',
+  color: 'var(--qg-module-label)',
   textTransform: 'uppercase',
   letterSpacing: '0.08em',
   fontWeight: 600,
@@ -104,14 +104,14 @@ export const resultMetaLabel: React.CSSProperties = {
 export const resultMetaValue: React.CSSProperties = {
   fontSize: 12,
   fontFamily: 'var(--font-mono)',
-  color: '#f8fafc',
+  color: 'var(--qg-text-primary)',
   fontWeight: 600,
   letterSpacing: '0.02em',
 }
 
 export const hexBoxStyle: React.CSSProperties = {
-  background: 'rgba(5, 5, 16, 0.6)',
-  border: '1px solid rgba(212, 175, 55, 0.2)',
+  background: 'var(--qg-code-bg)',
+  border: '1px solid var(--qg-input-border)',
   borderRadius: 8,
   padding: '12px 16px',
   fontFamily: 'var(--font-mono)',
@@ -226,29 +226,29 @@ export const QRNGPageHeader = ({ title, subtitle, qrngStatus, onRefresh }: { tit
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
       <div>
         <h1 style={{
-          fontSize: 32, fontWeight: 900, color: '#D4AF37', margin: 0,
+          fontSize: 32, fontWeight: 900, color: 'var(--qg-amber)', margin: 0,
           letterSpacing: '-0.02em', textTransform: 'uppercase',
-          textShadow: '0 0 30px rgba(212, 175, 55, 0.25)'
+          textShadow: '0 0 30px color-mix(in srgb, var(--qg-amber) 25%, transparent)'
         }}>
           {title}
         </h1>
-        <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.5)', marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 14, color: 'var(--qg-module-subtitle)', marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
           {subtitle}
         </p>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
         <div style={{
-          background: 'rgba(212, 175, 55, 0.06)', border: '1px solid rgba(212, 175, 55, 0.2)',
+          background: 'var(--qg-card-bg)', border: '1px solid var(--qg-card-border)',
           borderRadius: 8, padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 12,
-          boxShadow: '0 4px 15px rgba(0,0,0,0.3)'
+          boxShadow: 'var(--qg-panel-shadow)'
         }}>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 9, color: 'rgba(212, 175, 55, 0.6)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>QRNG_SOURCE</div>
-            <div style={{ fontSize: 11, color: '#fff', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{qrngStatus?.backend || 'Qiskit AerSimulator'}</div>
+            <div style={{ fontSize: 9, color: 'var(--qg-module-label)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>QRNG_SOURCE</div>
+            <div style={{ fontSize: 11, color: 'var(--qg-text-primary)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{qrngStatus?.backend || 'Qiskit AerSimulator'}</div>
           </div>
           <button onClick={onRefresh} style={{
-            background: 'rgba(212, 175, 55, 0.1)', border: '1px solid rgba(212, 175, 55, 0.2)',
-            color: '#D4AF37', borderRadius: '50%', width: 28, height: 28,
+            background: 'var(--qg-accent-soft)', border: '1px solid var(--qg-card-border)',
+            color: 'var(--qg-amber)', borderRadius: '50%', width: 28, height: 28,
             display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
             transition: 'all 0.2s'
           }} className="hover:scale-110 active:rotate-180">
@@ -263,46 +263,46 @@ export const QRNGPageHeader = ({ title, subtitle, qrngStatus, onRefresh }: { tit
 export const QRNGStatusBanner = ({ qrngStatus, liveTelemetry }: { qrngStatus: any; liveTelemetry: any }) => (
   <div style={{
     marginBottom: 32, padding: '12px 24px',
-    background: 'linear-gradient(90deg, rgba(212, 175, 55, 0.08) 0%, rgba(212, 175, 55, 0.02) 100%)',
-    border: '1px solid rgba(212, 175, 55, 0.2)', borderRadius: 12, display: 'flex',
+    background: 'var(--qg-card-bg)',
+    border: '1px solid var(--qg-card-border)', borderRadius: 12, display: 'flex',
     justifyContent: 'space-between', alignItems: 'center',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+    boxShadow: 'var(--qg-panel-shadow)',
     backdropFilter: 'blur(10px)'
   }}>
     <div style={{ display: 'flex', gap: 32 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <div style={{
-          width: 24, height: 24, borderRadius: 6, background: 'rgba(212, 175, 55, 0.1)',
+          width: 24, height: 24, borderRadius: 6, background: 'var(--qg-accent-soft)',
           display: 'flex', alignItems: 'center', justifyContent: 'center'
         }}>
-          <Zap size={14} color="#D4AF37" />
+          <Zap size={14} color="var(--qg-amber)" />
         </div>
         <div>
-          <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'rgba(212, 175, 55, 0.6)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.1em' }}>ENTROPY_QUALITY</span>
-          <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: '#D4AF37', fontWeight: 700 }}>{((qrngStatus?.qualityScore || 0.9948) * 100).toFixed(2)}%</span>
+          <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--qg-module-label)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.1em' }}>ENTROPY_QUALITY</span>
+          <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--qg-amber)', fontWeight: 700 }}>{((qrngStatus?.qualityScore || 0.9948) * 100).toFixed(2)}%</span>
         </div>
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <div style={{
-          width: 24, height: 24, borderRadius: 6, background: 'rgba(34, 197, 94, 0.1)',
+          width: 24, height: 24, borderRadius: 6, background: 'var(--qg-green-soft)',
           display: 'flex', alignItems: 'center', justifyContent: 'center'
         }}>
-          <Activity size={14} color="#22c55e" />
+          <Activity size={14} color="var(--qg-green)" />
         </div>
         <div>
-          <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'rgba(34, 197, 94, 0.6)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.1em' }}>LIVE_THROUGHPUT</span>
-          <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: '#22c55e', fontWeight: 700 }}>{liveTelemetry?.throughput || '1.24'} MB/s</span>
+          <span style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--qg-green)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.1em' }}>LIVE_THROUGHPUT</span>
+          <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--qg-green)', fontWeight: 700 }}>{liveTelemetry?.throughput || '1.24'} MB/s</span>
         </div>
       </div>
     </div>
     <div style={{
-      fontSize: 10, fontFamily: 'var(--font-mono)', color: 'rgba(212, 175, 55, 0.7)',
-      display: 'flex', gap: 10, alignItems: 'center', background: 'rgba(212, 175, 55, 0.05)',
-      padding: '4px 12px', borderRadius: 100, border: '1px solid rgba(212, 175, 55, 0.15)'
+      fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--qg-module-label)',
+      display: 'flex', gap: 10, alignItems: 'center', background: 'var(--qg-muted-panel)',
+      padding: '4px 12px', borderRadius: 100, border: '1px solid var(--qg-muted-panel-border)'
     }}>
       <span style={{
-        width: 6, height: 6, borderRadius: '50%', background: '#D4AF37',
-        boxShadow: '0 0 10px #D4AF37'
+        width: 6, height: 6, borderRadius: '50%', background: 'var(--qg-amber)',
+        boxShadow: '0 0 10px var(--qg-amber)'
       }} className="animate-pulse" />
       <span style={{ letterSpacing: '0.05em', fontWeight: 600 }}>REAL-TIME QUANTUM TELEMETRY ACTIVE</span>
     </div>
@@ -312,8 +312,8 @@ export const QRNGStatusBanner = ({ qrngStatus, liveTelemetry }: { qrngStatus: an
 export const TabNav = <T extends string>({ tabs, active, onChange, counts }: { tabs: any[]; active: T; onChange: (id: T) => void; counts?: Record<string, number> }) => (
   <div style={{
     display: 'flex', gap: 4, marginBottom: 32,
-    background: 'rgba(255,255,255,0.02)', padding: 4, borderRadius: 10,
-    border: '1px solid rgba(255,255,255,0.05)', width: 'fit-content'
+    background: 'var(--qg-card-bg)', padding: 4, borderRadius: 10,
+    border: '1px solid var(--qg-card-border)', width: 'fit-content'
   }}>
     {tabs.map(t => (
       <button
@@ -325,10 +325,10 @@ export const TabNav = <T extends string>({ tabs, active, onChange, counts }: { t
           fontSize: 12,
           fontFamily: 'var(--font-mono)',
           fontWeight: 700,
-          color: active === t.id ? '#D4AF37' : 'rgba(255,255,255,0.4)',
-          background: active === t.id ? 'rgba(212, 175, 55, 0.1)' : 'transparent',
+          color: active === t.id ? 'var(--qg-amber)' : 'var(--qg-text-muted)',
+          background: active === t.id ? 'var(--qg-accent-soft)' : 'transparent',
           border: '1px solid',
-          borderColor: active === t.id ? 'rgba(212, 175, 55, 0.3)' : 'transparent',
+          borderColor: active === t.id ? 'var(--qg-card-border)' : 'transparent',
           borderRadius: 8,
           cursor: 'pointer',
           transition: 'all 0.2s',
@@ -344,8 +344,8 @@ export const TabNav = <T extends string>({ tabs, active, onChange, counts }: { t
         {counts?.[t.id] ? (
           <span style={{
             marginLeft: 4, fontSize: 9, padding: '1px 6px',
-            background: active === t.id ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.05)',
-            borderRadius: 4, color: active === t.id ? '#D4AF37' : 'rgba(255,255,255,0.3)'
+            background: active === t.id ? 'var(--qg-accent-soft)' : 'var(--qg-chip-bg)',
+            borderRadius: 4, color: active === t.id ? 'var(--qg-amber)' : 'var(--qg-text-muted)'
           }}>{counts[t.id]}</span>
         ) : null}
       </button>
@@ -363,7 +363,7 @@ export const QuantumTerminal = ({ logs, isRunning, onClear }: { logs: string[]; 
     <div style={{
       background: 'rgba(2, 2, 8, 0.8)',
       backdropFilter: 'blur(20px)',
-      border: '1px solid rgba(212, 175, 55, 0.2)',
+      border: '1px solid var(--qg-muted-panel-border)',
       padding: 0,
       borderRadius: 14,
       boxShadow: '0 8px 32px rgba(0,0,0,0.4), inset 0 0 40px rgba(212, 175, 55, 0.05)',
@@ -376,13 +376,13 @@ export const QuantumTerminal = ({ logs, isRunning, onClear }: { logs: string[]; 
       }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
           <div style={{
-            width: 8, height: 8, borderRadius: '50%', background: isRunning ? '#22c55e' : '#D4AF37',
-            boxShadow: isRunning ? '0 0 10px #22c55e' : '0 0 10px #D4AF37'
+            width: 8, height: 8, borderRadius: '50%', background: isRunning ? 'var(--qg-green)' : 'var(--qg-amber)',
+            boxShadow: isRunning ? '0 0 10px var(--qg-green)' : '0 0 10px var(--qg-amber)'
           }} className={isRunning ? 'animate-pulse' : ''} />
-          <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: '#D4AF37', fontWeight: 800, letterSpacing: '0.15em' }}>QUANTUM_SERIAL_CONSOLE</span>
+          <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--qg-amber)', fontWeight: 800, letterSpacing: '0.15em' }}>QUANTUM_SERIAL_CONSOLE</span>
         </div>
         <button onClick={onClear} style={{
-          background: 'none', border: 'none', color: 'rgba(212, 175, 55, 0.5)',
+          background: 'none', border: 'none', color: 'var(--qg-module-label)',
           fontSize: 9, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.1em'
         }} className="hover:text-gold transition-colors">WIPE_LOGS</button>
       </div>
@@ -390,13 +390,13 @@ export const QuantumTerminal = ({ logs, isRunning, onClear }: { logs: string[]; 
         ref={scrollRef}
         style={{
           height: 220, overflowY: 'auto', padding: '16px 20px',
-          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'rgba(255,255,255,0.7)',
+          fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--qg-code-muted)',
           lineHeight: 1.8, scrollBehavior: 'smooth'
         }}
         className="terminal-scroll"
       >
         {logs.length === 0 && (
-          <div style={{ color: 'rgba(255,255,255,0.2)', fontStyle: 'italic' }}>Initializing quantum communication interface...</div>
+          <div style={{ color: 'rgba(226,232,240,0.38)', fontStyle: 'italic' }}>Initializing quantum communication interface...</div>
         )}
         {logs.map((log, i) => (
           <div key={i}>
@@ -412,7 +412,7 @@ export const QuantumTerminal = ({ logs, isRunning, onClear }: { logs: string[]; 
 export const ServiceHistoryPanel = ({ records, onDelete, onClear, emptyMessage }: { records: HistoryRecord[]; onDelete: (id: string) => void; onClear: () => void; emptyMessage: string }) => (
   <div className="animate-fade-in-up">
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-      <div style={sectionTitle}><History size={18} style={{ color: '#D4AF37' }} /> <span className="gold-glow">Service History</span></div>
+      <div style={sectionTitle}><History size={18} style={{ color: 'var(--qg-amber)' }} /> <span className="gold-glow">Service History</span></div>
       {records.length > 0 && <button onClick={onClear} className="q-btn q-btn-ghost" style={{ fontSize: 11 }}>Clear Audit Trail</button>}
     </div>
     {records.length === 0 ? (
@@ -427,30 +427,30 @@ export const ServiceHistoryPanel = ({ records, onDelete, onClear, emptyMessage }
             <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
               <div style={{
                 width: 48, height: 48, borderRadius: 12,
-                background: 'linear-gradient(135deg, rgba(212,175,55,0.1), rgba(184,134,11,0.05))',
-                border: '1px solid rgba(212,175,55,0.15)',
+                background: 'var(--qg-accent-soft)',
+                border: '1px solid var(--qg-muted-panel-border)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22
               }}>
                 {r.badge === 'session' ? '🌐' : r.badge === 'vpn' ? '🛡️' : r.badge === 'email' ? '✉️' : '🔑'}
               </div>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: '#fff', marginBottom: 4 }}>{r.label}</div>
-                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', fontFamily: 'var(--font-mono)', letterSpacing: '0.02em' }}>{r.sublabel}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--qg-text-primary)', marginBottom: 4 }}>{r.label}</div>
+                <div style={{ fontSize: 11, color: 'var(--qg-text-muted)', fontFamily: 'var(--font-mono)', letterSpacing: '0.02em' }}>{r.sublabel}</div>
               </div>
             </div>
             <div style={{ display: 'flex', gap: 32, alignItems: 'center' }}>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 9, color: 'rgba(212,175,55,0.5)', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 4 }}>Entropy Quality</div>
-                <div style={{ fontSize: 14, fontFamily: 'var(--font-mono)', fontWeight: 700, color: (r.quality_score || 0) > 0.9 ? '#22c55e' : '#f59e0b' }}>
+                <div style={{ fontSize: 9, color: 'var(--qg-module-label)', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 4 }}>Entropy Quality</div>
+                <div style={{ fontSize: 14, fontFamily: 'var(--font-mono)', fontWeight: 700, color: (r.quality_score || 0) > 0.9 ? 'var(--qg-green)' : 'var(--qg-amber)' }}>
                   {((r.quality_score || 0) * 100).toFixed(1)}%
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 9, color: 'rgba(212,175,55,0.5)', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 4 }}>Timestamp</div>
-                <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'rgba(255,255,255,0.7)' }}>{new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+                <div style={{ fontSize: 9, color: 'var(--qg-module-label)', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 4 }}>Timestamp</div>
+                <div style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--qg-text-secondary)' }}>{new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
               </div>
               <button onClick={() => onDelete(r.id)} style={{
-                color: 'rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)',
+                color: 'var(--qg-text-muted)', background: 'var(--qg-disabled-bg)', border: '1px solid var(--qg-disabled-border)',
                 padding: 8, borderRadius: 8, cursor: 'pointer', transition: 'all 0.2s'
               }} className="hover:bg-red-950/30 hover:border-red-900/50 hover:text-red-400">
                 <X size={16} />
@@ -467,36 +467,36 @@ export const ServiceAPIPanel = ({ serviceName, sdkPackage, endpoints, jsExample,
   const [lang, setLang] = useState<'js' | 'py' | 'curl'>('js')
   return (
     <div className="animate-fade-in-up">
-      <div style={sectionTitle}><Code size={18} style={{ color: '#D4AF37' }} /> <span className="gold-glow">Developer Integration</span></div>
+      <div style={sectionTitle}><Code size={18} style={{ color: 'var(--qg-amber)' }} /> <span className="gold-glow">Developer Integration</span></div>
       <div className="q-card" style={{ marginBottom: 32, padding: '24px 32px' }}>
-        <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.7)', marginBottom: 20, lineHeight: 1.6 }}>
+        <div style={{ fontSize: 14, color: 'var(--qg-text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>
           Integrate quantum-hardened security directly into your stack. Use our native SDKs for the best performance or the raw REST API for custom implementations.
         </div>
         <div style={{ display: 'flex', gap: 24 }}>
-          <div style={{ background: 'rgba(212,175,55,0.03)', padding: '16px 20px', borderRadius: 12, border: '1px solid rgba(212,175,55,0.1)', flex: 1 }}>
-            <div style={{ ...resultMetaLabel, color: 'rgba(212,175,55,0.6)', fontWeight: 800 }}>NPM_PACKAGE</div>
-            <div style={{ ...resultMetaValue, color: '#D4AF37', marginTop: 8, fontSize: 16 }}>{sdkPackage}</div>
+          <div style={{ background: 'var(--qg-muted-panel)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--qg-muted-panel-border)', flex: 1 }}>
+            <div style={{ ...resultMetaLabel, color: 'var(--qg-module-label)', fontWeight: 800 }}>NPM_PACKAGE</div>
+            <div style={{ ...resultMetaValue, color: 'var(--qg-amber)', marginTop: 8, fontSize: 16 }}>{sdkPackage}</div>
           </div>
-          <div style={{ background: 'rgba(212,175,55,0.03)', padding: '16px 20px', borderRadius: 12, border: '1px solid rgba(212,175,55,0.1)', flex: 1 }}>
-            <div style={{ ...resultMetaLabel, color: 'rgba(212,175,55,0.6)', fontWeight: 800 }}>PROTOCOL</div>
-            <div style={{ ...resultMetaValue, color: '#D4AF37', marginTop: 8, fontSize: 16 }}>{basePathNote}</div>
+          <div style={{ background: 'var(--qg-muted-panel)', padding: '16px 20px', borderRadius: 12, border: '1px solid var(--qg-muted-panel-border)', flex: 1 }}>
+            <div style={{ ...resultMetaLabel, color: 'var(--qg-module-label)', fontWeight: 800 }}>PROTOCOL</div>
+            <div style={{ ...resultMetaValue, color: 'var(--qg-amber)', marginTop: 8, fontSize: 16 }}>{basePathNote}</div>
           </div>
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 32 }}>
         <div>
-          <div style={{ fontSize: 10, color: 'rgba(212,175,55,0.5)', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 16, textTransform: 'uppercase' }}>Available Endpoints</div>
+          <div style={{ fontSize: 10, color: 'var(--qg-module-label)', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 16, textTransform: 'uppercase' }}>Available Endpoints</div>
           <div style={{ display: 'grid', gap: 16 }}>
             {endpoints.map(e => (
-              <div key={e.path} className="q-card" style={{ padding: '20px', background: 'rgba(2,2,8,0.3)' }}>
+              <div key={e.path} className="q-card" style={{ padding: '20px', background: 'var(--qg-surface-inset)' }}>
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-                  <span style={{ fontSize: 10, padding: '4px 10px', background: e.method === 'POST' ? 'rgba(0, 212, 255, 0.1)' : 'rgba(34, 197, 94, 0.1)', color: e.method === 'POST' ? '#00d4ff' : '#22c55e', borderRadius: 6, fontWeight: 800, border: '1px solid currentColor', opacity: 0.8 }}>{e.method}</span>
-                  <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', fontWeight: 700, color: '#fff' }}>{e.path}</span>
+                  <span style={{ fontSize: 10, padding: '4px 10px', background: e.method === 'POST' ? 'var(--qg-cyan-soft)' : 'var(--qg-green-soft)', color: e.method === 'POST' ? 'var(--qg-cyan)' : 'var(--qg-green)', borderRadius: 6, fontWeight: 800, border: '1px solid currentColor', opacity: 0.8 }}>{e.method}</span>
+                  <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--qg-text-primary)' }}>{e.path}</span>
                 </div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6 }}>{e.description}</div>
+                <div style={{ fontSize: 12, color: 'var(--qg-text-secondary)', lineHeight: 1.6 }}>{e.description}</div>
                 {e.rateLimit && (
-                  <div style={{ marginTop: 12, fontSize: 10, color: 'rgba(212,175,55,0.4)', fontFamily: 'var(--font-mono)' }}>
+                  <div style={{ marginTop: 12, fontSize: 10, color: 'var(--qg-module-label)', fontFamily: 'var(--font-mono)' }}>
                     RATE_LIMIT: {e.rateLimit}
                   </div>
                 )}
@@ -506,24 +506,24 @@ export const ServiceAPIPanel = ({ serviceName, sdkPackage, endpoints, jsExample,
         </div>
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: 'rgba(212,175,55,0.5)', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Code Implementation</div>
-            <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2, border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ fontSize: 10, color: 'var(--qg-module-label)', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Code Implementation</div>
+            <div style={{ display: 'flex', background: 'var(--qg-chip-bg)', borderRadius: 8, padding: 2, border: '1px solid var(--qg-card-border)' }}>
               {(['js', 'py', 'curl'] as const).map(l => (
                 <button key={l} onClick={() => setLang(l)} style={{
                   padding: '6px 14px', fontSize: 10, borderRadius: 6,
-                  background: lang === l ? '#D4AF37' : 'transparent',
-                  color: lang === l ? '#000' : 'rgba(255,255,255,0.4)', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontWeight: 700,
+                  background: lang === l ? 'var(--qg-amber)' : 'transparent',
+                  color: lang === l ? 'var(--qg-on-accent)' : 'var(--qg-text-muted)', border: 'none', cursor: 'pointer', fontFamily: 'var(--font-mono)', fontWeight: 700,
                   transition: 'all 0.2s'
                 }}>{l.toUpperCase()}</button>
               ))}
             </div>
           </div>
           <div style={{
-            background: 'rgba(2,2,8,0.5)', border: '1px solid rgba(212,175,55,0.15)', borderRadius: 14, padding: 24,
+            background: 'var(--qg-code-bg)', border: '1px solid var(--qg-muted-panel-border)', borderRadius: 14, padding: 24,
             fontFamily: 'var(--font-mono)', fontSize: 12, height: 500, overflowY: 'auto',
             boxShadow: 'inset 0 0 40px rgba(0,0,0,0.5)'
           }} className="terminal-scroll">
-            <pre style={{ color: 'rgba(212,175,55,0.8)', whiteSpace: 'pre-wrap' }}>{lang === 'js' ? jsExample : lang === 'py' ? pyExample : curlExample}</pre>
+            <pre style={{ color: 'var(--qg-code-text)', whiteSpace: 'pre-wrap' }}>{lang === 'js' ? jsExample : lang === 'py' ? pyExample : curlExample}</pre>
           </div>
         </div>
       </div>
@@ -537,12 +537,12 @@ export const ServiceSettingsPanel = ({ serviceKey, settings, onSave, complianceB
 
   return (
     <div className="animate-fade-in-up">
-      <div style={sectionTitle}><Settings size={18} style={{ color: '#D4AF37' }} /> <span className="gold-glow">Node Configuration</span></div>
+      <div style={sectionTitle}><Settings size={18} style={{ color: 'var(--qg-amber)' }} /> <span className="gold-glow">Node Configuration</span></div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32 }}>
         <div className="q-card">
-          <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid rgba(212,175,55,0.1)' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: '#D4AF37', marginBottom: 4, letterSpacing: '0.05em' }}>CORE PARAMETERS</div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>Real-time connection and entropy resilience</div>
+          <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid var(--qg-muted-panel-border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--qg-amber)', marginBottom: 4, letterSpacing: '0.05em' }}>CORE PARAMETERS</div>
+            <div style={{ fontSize: 11, color: 'var(--qg-text-muted)' }}>Real-time connection and entropy resilience</div>
           </div>
           <div style={{ display: 'grid', gap: 20 }}>
             <div>
@@ -555,12 +555,12 @@ export const ServiceSettingsPanel = ({ serviceKey, settings, onSave, complianceB
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>Automatic Fallback</div>
-                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>Use CSPRNG if QRNG is unavailable</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--qg-text-primary)' }}>Automatic Fallback</div>
+                <div style={{ fontSize: 10, color: 'var(--qg-text-muted)' }}>Use CSPRNG if QRNG is unavailable</div>
               </div>
               <button type="button" onClick={() => handleChange('autoFallback', !local.autoFallback)} style={{
                 width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
-                background: local.autoFallback ? '#D4AF37' : 'rgba(255,255,255,0.1)',
+                background: local.autoFallback ? 'var(--qg-amber)' : 'var(--qg-chip-bg)',
                 position: 'relative', transition: 'background 0.3s'
               }}>
                 <span style={{
@@ -578,9 +578,9 @@ export const ServiceSettingsPanel = ({ serviceKey, settings, onSave, complianceB
         </div>
 
         <div className="q-card">
-          <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid rgba(212,175,55,0.1)' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: '#D4AF37', marginBottom: 4, letterSpacing: '0.05em' }}>COMPLIANCE & AUDIT</div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>Security certification and logging protocols</div>
+          <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid var(--qg-muted-panel-border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--qg-amber)', marginBottom: 4, letterSpacing: '0.05em' }}>COMPLIANCE & AUDIT</div>
+            <div style={{ fontSize: 11, color: 'var(--qg-text-muted)' }}>Security certification and logging protocols</div>
           </div>
           <div style={{ display: 'grid', gap: 12 }}>
             {[
@@ -589,14 +589,14 @@ export const ServiceSettingsPanel = ({ serviceKey, settings, onSave, complianceB
               { key: 'fips140Mode', label: 'FIPS 140-2 Mode', desc: 'Enforce NIST-certified algorithms' },
               { key: 'quantumCertification', label: 'Quantum Certification', desc: 'Attach proof of quantum source' },
             ].map(item => (
-              <div key={item.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+              <div key={item.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--qg-card-border)' }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{item.label}</div>
-                  <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{item.desc}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--qg-text-primary)' }}>{item.label}</div>
+                  <div style={{ fontSize: 10, color: 'var(--qg-text-muted)' }}>{item.desc}</div>
                 </div>
                 <button type="button" onClick={() => handleChange(item.key as any, !(local as any)[item.key])} style={{
                   width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
-                  background: (local as any)[item.key] ? '#D4AF37' : 'rgba(255,255,255,0.1)',
+                  background: (local as any)[item.key] ? 'var(--qg-amber)' : 'var(--qg-chip-bg)',
                   position: 'relative', transition: 'background 0.3s'
                 }}>
                   <span style={{
@@ -610,14 +610,14 @@ export const ServiceSettingsPanel = ({ serviceKey, settings, onSave, complianceB
             ))}
           </div>
           <div style={{ marginTop: 24 }}>
-            <div style={{ fontSize: 10, color: 'rgba(212,175,55,0.6)', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 12, textTransform: 'uppercase' }}>Active Standards</div>
+            <div style={{ fontSize: 10, color: 'var(--qg-module-label)', fontWeight: 800, letterSpacing: '0.1em', marginBottom: 12, textTransform: 'uppercase' }}>Active Standards</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {complianceBadges(local).map(b => (
                 <span key={b.badge} style={{
                   fontSize: 9, padding: '4px 12px', borderRadius: 6, border: '1px solid',
-                  borderColor: b.active ? 'rgba(212,175,55,0.4)' : 'rgba(255,255,255,0.05)',
-                  color: b.active ? '#D4AF37' : 'rgba(255,255,255,0.2)',
-                  background: b.active ? 'rgba(212,175,55,0.1)' : 'rgba(255,255,255,0.02)',
+                  borderColor: b.active ? 'var(--qg-muted-panel-border)' : 'var(--qg-disabled-border)',
+                  color: b.active ? 'var(--qg-amber)' : 'var(--qg-disabled-text)',
+                  background: b.active ? 'var(--qg-accent-soft)' : 'var(--qg-disabled-bg)',
                   textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-mono)'
                 }}>
                   {b.badge}

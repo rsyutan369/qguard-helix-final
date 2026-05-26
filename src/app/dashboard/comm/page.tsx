@@ -403,14 +403,14 @@ export default function CommPage() {
 
       {pageTab === 'generate' && (<>
       {/* Comm Type Tabs */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 24, padding: 4, background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.05)', width: 'fit-content' }} className="animate-fade-in-up">
+      <div style={{ display: 'flex', gap: 12, marginBottom: 24, padding: 4, background: 'var(--qg-card-bg)', borderRadius: 12, border: '1px solid var(--qg-card-border)', width: 'fit-content' }} className="animate-fade-in-up">
         {TABS.map(t => (
           <button key={t.key} type="button"
             onClick={() => setActiveTab(t.key)}
             style={{
               padding: '8px 20px', borderRadius: 8, fontSize: 12, fontWeight: 700, border: 'none', cursor: 'pointer', transition: 'all 0.2s',
-              background: activeTab === t.key ? '#D4AF37' : 'transparent',
-              color: activeTab === t.key ? '#000' : 'rgba(255,255,255,0.4)',
+              background: activeTab === t.key ? 'var(--qg-amber)' : 'transparent',
+              color: activeTab === t.key ? 'var(--qg-on-accent)' : 'var(--qg-text-muted)',
               boxShadow: activeTab === t.key ? '0 4px 12px rgba(212,175,55,0.3)' : 'none'
             }}>
             {t.label}

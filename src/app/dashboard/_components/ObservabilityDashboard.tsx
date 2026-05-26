@@ -171,16 +171,21 @@ type ObservabilitySnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
+    vulnerabilities: number;
     cryptoInventory: number;
     cryptoExposures: number;
     certificates: number;
     generatedKeys: number;
     scannerAgents: number;
+    scannerPolicies: number;
     connectors: number;
     agentHeartbeats: number;
+    vaultFiles: number;
     qrngEvents: number;
     vaultAuditLogs: number;
+    auditLogs: number;
     complianceEvidence: number;
     migrationJobs: number;
     securityEvents: number;
@@ -243,16 +248,21 @@ const EMPTY_SNAPSHOT: ObservabilitySnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
+    vulnerabilities: 0,
     cryptoInventory: 0,
     cryptoExposures: 0,
     certificates: 0,
     generatedKeys: 0,
     scannerAgents: 0,
+    scannerPolicies: 0,
     connectors: 0,
     agentHeartbeats: 0,
+    vaultFiles: 0,
     qrngEvents: 0,
     vaultAuditLogs: 0,
+    auditLogs: 0,
     complianceEvidence: 0,
     migrationJobs: 0,
     securityEvents: 0,
@@ -465,19 +475,26 @@ function useObservabilityDashboard(mode: ObservabilityMode) {
       'runtime_crypto_events',
       'scanner_evidence',
       'scanner_alerts',
+      'pqc_scan_sessions',
       'pqc_scan_results',
+      'vulnerabilities',
       'crypto_inventory',
       'crypto_exposures',
       'certificates',
       'generated_keys',
       'scanner_agents',
+      'scanner_agent_policies',
       'connector_accounts',
       'agent_heartbeats',
+      'vault_files',
       'qrng_events',
       'vault_audit_logs',
+      'audit_logs',
       'compliance_evidence',
       'migration_jobs',
       'security_events',
+      'user_security_events',
+      'auth_events',
     ];
 
     const channels = tables.map((table) => supabase
@@ -507,7 +524,8 @@ function useObservabilityDashboard(mode: ObservabilityMode) {
       const dashboardStream = new EventSource(`/api/v1/dashboard/${config.segment}/stream?token=${encodeURIComponent(token)}`);
       const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`);
       const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`);
-      streamsRef.current = [dashboardStream, metricsStream, scannerStream];
+      const vaultStream = new EventSource(`/api/v1/vault/share/events?token=${encodeURIComponent(token)}`);
+      streamsRef.current = [dashboardStream, metricsStream, scannerStream, vaultStream];
 
       const markOpen = () => setSseConnected(true);
       const scheduleReconnect = () => {
@@ -521,9 +539,11 @@ function useObservabilityDashboard(mode: ObservabilityMode) {
       dashboardStream.onopen = markOpen;
       metricsStream.onopen = markOpen;
       scannerStream.onopen = markOpen;
+      vaultStream.onopen = markOpen;
       dashboardStream.onerror = scheduleReconnect;
       metricsStream.onerror = scheduleReconnect;
       scannerStream.onerror = scheduleReconnect;
+      vaultStream.onerror = scheduleReconnect;
       dashboardStream.addEventListener(`${config.streamPrefix}-connected`, refreshFromStream);
       dashboardStream.addEventListener(`${config.streamPrefix}-update`, refreshFromStream);
       metricsStream.addEventListener('metrics-update', refreshFromStream);
@@ -531,6 +551,8 @@ function useObservabilityDashboard(mode: ObservabilityMode) {
       metricsStream.addEventListener('scan-complete', refreshFromStream);
       scannerStream.addEventListener('scanner-intelligence', refreshFromStream);
       scannerStream.addEventListener('scanner-error', refreshFromStream);
+      vaultStream.addEventListener('failed_attempt', refreshFromStream);
+      vaultStream.addEventListener('link_destroyed', refreshFromStream);
     };
 
     connect();
@@ -1154,9 +1176,9 @@ export default function ObservabilityDashboard({ mode }: { mode: ObservabilityMo
 
   const telemetrySummary = useMemo(() => [
     ['Runtime', snapshot.telemetry.runtimeEvents],
-    ['Scanner', snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts],
+    ['Scanner', snapshot.telemetry.scanSessions + snapshot.telemetry.scanResults + snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts + snapshot.telemetry.vulnerabilities],
     ['Crypto', snapshot.telemetry.cryptoInventory + snapshot.telemetry.cryptoExposures],
-    ['PKI/Keys', snapshot.telemetry.certificates + snapshot.telemetry.generatedKeys],
+    ['PKI/Keys', snapshot.telemetry.certificates + snapshot.telemetry.generatedKeys + snapshot.telemetry.vaultFiles],
     ['Cloud', snapshot.telemetry.connectors],
   ], [snapshot.telemetry]);
 

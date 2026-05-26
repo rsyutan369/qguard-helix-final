@@ -353,6 +353,20 @@ async function safeCount(client: any, table: string, userId: string, apply?: (qu
   }
 }
 
+async function safeRows(client: any, table: string, userId: string, apply: (query: any) => any) {
+  try {
+    const { data, error } = await apply(client.from(table)).eq('user_id', userId)
+    if (error) {
+      if (!isMissingTable(error)) console.warn(`[migration-planner] Query failed for ${table}:`, error.message)
+      return []
+    }
+    return data || []
+  } catch (error) {
+    console.warn(`[migration-planner] Query crashed for ${table}:`, error instanceof Error ? error.message : error)
+    return []
+  }
+}
+
 async function fetchJobs(client: any, userId: string) {
   const baseSelect = 'id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at'
   const withAsset = `${baseSelect}, assets(id, name, type, environment, criticality, service_owner, status)`
@@ -551,6 +565,406 @@ async function buildLiveMigrationSnapshot(client: any, userId: string) {
   }
 }
 
+type PlannerRangeKey = '7d' | '30d' | '90d' | 'all'
+
+function plannerRange(raw: unknown): { key: PlannerRangeKey; label: string; days: number | null } {
+  const value = String(raw || '7d').toLowerCase()
+  if (value === '30d') return { key: '30d', label: 'Last 30 Days', days: 30 }
+  if (value === '90d') return { key: '90d', label: 'Last 90 Days', days: 90 }
+  if (value === 'all') return { key: 'all', label: 'All Time', days: null }
+  return { key: '7d', label: 'Last 7 Days', days: 7 }
+}
+
+function plannerDateMs(value: unknown) {
+  if (!value) return 0
+  const time = new Date(String(value)).getTime()
+  return Number.isFinite(time) ? time : 0
+}
+
+function plannerWindow(range: { days: number | null }) {
+  const now = Date.now()
+  const days = range.days || 3650
+  const start = now - days * 86400000
+  const previousStart = now - days * 2 * 86400000
+  return { now, start, previousStart, days }
+}
+
+function plannerSeverityRank(value: unknown) {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized.includes('critical')) return 4
+  if (normalized.includes('high')) return 3
+  if (normalized.includes('medium') || normalized.includes('warning')) return 2
+  if (normalized.includes('low') || normalized.includes('info')) return 1
+  return 0
+}
+
+function plannerIsPqcAlgorithm(value: unknown) {
+  return /ml-kem|kyber|ml-dsa|dilithium|slh-dsa|sphincs|falcon|post-quantum|pqc|quantum-safe/i.test(String(value || ''))
+}
+
+function plannerIsLegacyAlgorithm(value: unknown) {
+  return /rsa|ecdsa|ecdh|diffie|dh\b|dsa|sha-1|sha1|md5|3des|rc4|tls\s*1\.[01]/i.test(String(value || ''))
+}
+
+function plannerReplacement(algorithm: unknown, context = '') {
+  const value = `${algorithm || ''} ${context || ''}`.toLowerCase()
+  if (/sign|ecdsa|dsa|jwt|certificate|cert|pki/.test(value)) return 'ML-DSA-65 hybrid'
+  if (/hash|sha|integrity/.test(value)) return 'SHA-384 / SLH-DSA control'
+  if (/database|storage|vault|aes|encrypt|data/.test(value)) return 'AES-256 + ML-KEM envelope'
+  if (/vpn|tls|api|gateway|ssh|key exchange|rsa|ecdh|dh|kem/.test(value)) return 'ML-KEM-768 hybrid'
+  return 'ML-KEM-768 + ML-DSA-65'
+}
+
+function plannerJobType(row: any) {
+  const value = `${row?.type || ''} ${row?.currentAlgorithm || ''} ${row?.targetSolution || ''}`.toLowerCase()
+  if (/cert|pki|issuer|ca/.test(value)) return 'cert_transition'
+  if (/sign|dsa|jwt|identity/.test(value)) return 'signature_transition'
+  if (/tls|vpn|ssh|gateway|api|protocol/.test(value)) return 'protocol_upgrade'
+  if (/database|storage|vault|encrypt|aes/.test(value)) return 'encryption_upgrade'
+  if (/key/.test(value)) return 'key_rotation'
+  return 'pqc_migration'
+}
+
+function plannerPriority(score: number): 'Critical' | 'High' | 'Medium' | 'Low' {
+  if (score >= 85) return 'Critical'
+  if (score >= 70) return 'High'
+  if (score >= 45) return 'Medium'
+  return 'Low'
+}
+
+function plannerStatus(status: LiveMigrationStatus | null, progress: number, risk: number) {
+  if (status === 'completed') return 'Completed'
+  if (status === 'running') return 'In Progress'
+  if (status === 'failed') return 'Blocked'
+  if (status === 'paused') return 'Paused'
+  if (status === 'queued') return 'Planned'
+  if (progress >= 100) return 'Completed'
+  return risk >= 70 ? 'Planned' : 'Ready'
+}
+
+function plannerStatusClass(status: string) {
+  if (status === 'Completed' || status === 'Ready') return 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+  if (status === 'In Progress') return 'bg-sky-500/10 border-sky-500/30 text-sky-300'
+  if (status === 'Blocked') return 'bg-red-500/10 border-red-500/30 text-red-300'
+  if (status === 'Paused') return 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+  return 'bg-[#FFD36B]/10 border-[#FFD36B]/30 text-[#FFD36B]'
+}
+
+function plannerPriorityClass(priority: string) {
+  if (priority === 'Critical') return 'text-red-400 bg-red-500/10 border-red-500/30'
+  if (priority === 'High') return 'text-orange-300 bg-orange-500/10 border-orange-500/30'
+  if (priority === 'Medium') return 'text-yellow-300 bg-yellow-500/10 border-yellow-500/30'
+  return 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+}
+
+function plannerDelta(current: number, previous: number, suffix = '') {
+  if (!previous && !current) return { label: `0${suffix}`, positive: true }
+  if (!previous) return { label: `+${current}${suffix}`, positive: true }
+  const diff = current - previous
+  const percent = Math.round((diff / Math.max(1, previous)) * 100)
+  return { label: `${percent >= 0 ? '+' : ''}${percent}%${suffix ? ` ${suffix}` : ''}`, positive: percent >= 0 }
+}
+
+function plannerFormatDate(value: unknown) {
+  const ms = plannerDateMs(value)
+  if (!ms) return 'Not scheduled'
+  return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })
+}
+
+function plannerRiskTrend(candidates: any[], jobs: any[], range: { days: number | null }) {
+  const { now, days } = plannerWindow(range)
+  const bucketCount = Math.min(Math.max(days || 30, 7), 14)
+  return Array.from({ length: bucketCount }, (_, index) => {
+    const start = now - (bucketCount - index) * 86400000
+    const end = start + 86400000
+    const completed = jobs.filter((job: any) => normalizeStatus(job.status) === 'completed' && plannerDateMs(job.completed_at || job.updated_at) >= start && plannerDateMs(job.completed_at || job.updated_at) < end).length
+    const newRisk = candidates.filter((row) => plannerDateMs(row.detectedAt) >= start && plannerDateMs(row.detectedAt) < end && row.risk >= 70).length
+    const base = candidates.length ? Math.round((completed / Math.max(1, candidates.length)) * 100) : 0
+    return {
+      day: new Date(start).toLocaleDateString('en-US', { month: 'short', day: '2-digit' }),
+      value: Math.max(0, Math.min(100, base + Math.max(0, index - newRisk) * 4)),
+      completed,
+      newRisk,
+    }
+  })
+}
+
+function plannerPhases(now = Date.now()) {
+  const base = new Date(now)
+  base.setHours(0, 0, 0, 0)
+  const addDays = (days: number) => {
+    const next = new Date(base)
+    next.setDate(next.getDate() + days)
+    return next.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
+  }
+  return [
+    { name: 'Discover & Assess', dates: `${addDays(-14)} - ${addDays(0)}`, start: 0, width: 18, color: 'bg-sky-500 shadow-[0_0_12px_rgba(14,165,233,0.5)]', state: 'completed' },
+    { name: 'Plan & Prioritize', dates: `${addDays(0)} - ${addDays(14)}`, start: 13, width: 22, color: 'bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.45)]', state: 'active' },
+    { name: 'Pilot Migration', dates: `${addDays(14)} - ${addDays(30)}`, start: 30, width: 21, color: 'bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.45)]', state: 'pending' },
+    { name: 'Core Migration', dates: `${addDays(30)} - ${addDays(62)}`, start: 48, width: 30, color: 'bg-yellow-500 shadow-[0_0_12px_rgba(234,179,8,0.45)]', state: 'pending' },
+    { name: 'Validation', dates: `${addDays(62)} - ${addDays(78)}`, start: 76, width: 16, color: 'bg-violet-500 shadow-[0_0_12px_rgba(139,92,246,0.45)]', state: 'pending' },
+    { name: 'Optimization', dates: `${addDays(78)} - ${addDays(90)}`, start: 90, width: 10, color: 'bg-slate-500 shadow-[0_0_12px_rgba(100,116,139,0.45)]', state: 'pending' },
+  ]
+}
+
+function plannerCandidates(assets: any[], inventory: any[], exposures: any[], jobs: any[], scanResults: any[], runtimeEvents: any[]) {
+  const assetMap = new Map<string, any>((assets || []).map((asset) => [asset.id, asset]))
+  const byAsset = new Map<string, { inventory: any[]; exposures: any[]; scans: any[]; runtime: any[]; jobs: any[] }>()
+  const ensure = (assetId: string | null) => {
+    const key = assetId || 'unassigned'
+    if (!byAsset.has(key)) byAsset.set(key, { inventory: [], exposures: [], scans: [], runtime: [], jobs: [] })
+    return byAsset.get(key)!
+  }
+
+  for (const item of inventory || []) ensure(item.asset_id || null).inventory.push(item)
+  for (const item of exposures || []) ensure(item.asset_id || null).exposures.push(item)
+  for (const item of scanResults || []) ensure(item.asset_id || null).scans.push(item)
+  for (const item of runtimeEvents || []) ensure(item.asset_id || null).runtime.push(item)
+  for (const item of jobs || []) ensure(item.asset_id || null).jobs.push(item)
+  for (const asset of assets || []) ensure(asset.id)
+
+  return Array.from(byAsset.entries()).map(([key, group]) => {
+    const asset = assetMap.get(key) || {}
+    const allAlgorithms = [
+      ...group.inventory.map((item) => item.algorithm || item.protocol || item.name),
+      ...group.exposures.map((item) => item.detected_value || item.exposure_type),
+      ...group.scans.map((item) => item.algorithm || item.finding_type),
+      ...group.runtime.map((item) => item.algorithm || item.key_exchange_algorithm || item.cipher_suite),
+    ].filter(Boolean)
+    const currentAlgorithm = String(allAlgorithms.find((item) => plannerIsLegacyAlgorithm(item)) || allAlgorithms[0] || 'Classical crypto')
+    const severity = Math.max(
+      ...group.exposures.map((item) => plannerSeverityRank(item.severity)),
+      ...group.scans.map((item) => plannerSeverityRank(item.threat_level)),
+      ...group.runtime.map((item) => plannerSeverityRank(item.severity)),
+      plannerSeverityRank(asset.criticality),
+      0,
+    )
+    const legacyCount = group.inventory.filter((item) => item.is_vulnerable || plannerIsLegacyAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`)).length +
+      group.runtime.filter((item) => item.is_legacy || item.downgrade_detected || item.shadow_crypto || item.hndl_risk).length
+    const pqcCount = group.inventory.filter((item) => item.is_quantum_safe || plannerIsPqcAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`)).length
+    const latestJob = group.jobs.sort((a, b) => plannerDateMs(b.updated_at || b.created_at) - plannerDateMs(a.updated_at || a.created_at))[0]
+    const status = latestJob ? normalizeStatus(latestJob.status) : null
+    const jobProgress = latestJob ? clampProgress(latestJob.progress, status || 'queued') : 0
+    const risk = Math.min(100, severity * 18 + legacyCount * 9 + Math.max(0, group.exposures.length - pqcCount) * 4 + (status === 'failed' ? 18 : 0))
+    const priority = plannerPriority(risk)
+    const plannedStatus = plannerStatus(status, jobProgress, risk)
+    const targetSolution = String(latestJob?.target_algorithm || plannerReplacement(currentAlgorithm, `${asset.type || ''} ${group.exposures[0]?.exposure_type || ''} ${group.scans[0]?.finding_type || ''}`))
+    return {
+      id: key,
+      assetId: key === 'unassigned' ? null : key,
+      name: String(asset.name || group.inventory[0]?.name || group.exposures[0]?.resource_name || group.runtime[0]?.asset_name || 'Unassigned cryptographic scope'),
+      type: String(asset.type || group.inventory[0]?.item_type || group.runtime[0]?.asset_type || 'Service'),
+      environment: String(asset.environment || group.runtime[0]?.environment || 'tenant scope'),
+      owner: String(asset.service_owner || 'Unassigned'),
+      currentAlgorithm,
+      risk,
+      priority,
+      priorityColor: plannerPriorityClass(priority),
+      targetSolution,
+      status: plannedStatus,
+      statusColor: plannerStatusClass(plannedStatus),
+      progress: status === 'completed' ? 100 : jobProgress,
+      detectedAt: group.exposures[0]?.updated_at || group.scans[0]?.created_at || group.runtime[0]?.observed_at || group.inventory[0]?.discovered_at || asset.updated_at || asset.created_at || latestJob?.updated_at || null,
+      hasActiveJob: Boolean(latestJob && !['completed', 'failed'].includes(status || '')),
+      jobId: latestJob?.id || null,
+    }
+  }).sort((a, b) => b.risk - a.risk)
+}
+
+async function buildMigrationPlannerSnapshot(client: any, userId: string, rawRange: unknown) {
+  const range = plannerRange(rawRange)
+  const window = plannerWindow(range)
+  const [
+    assets,
+    inventory,
+    exposures,
+    jobs,
+    migrationEvents,
+    scanSessions,
+    scanResults,
+    runtimeEvents,
+    certificates,
+    complianceEvidence,
+  ] = await Promise.all([
+    safeRows(client, 'assets', userId, (q) => q.select('id, name, type, environment, service_owner, criticality, status, metadata, created_at, updated_at').order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'crypto_inventory', userId, (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').order('discovered_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'crypto_exposures', userId, (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').order('updated_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'migration_jobs', userId, (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'migration_events', userId, (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'pqc_scan_sessions', userId, (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').order('created_at', { ascending: false }).limit(160)),
+    safeRows(client, 'pqc_scan_results', userId, (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').order('created_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'runtime_crypto_events', userId, (q) => q.select('id, asset_id, asset_name, asset_type, algorithm, key_exchange_algorithm, cipher_suite, severity, risk_score, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').order('observed_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'certificates', userId, (q) => q.select('id, asset_id, name, status, algorithm, key_size, issuer, subject, not_after, is_quantum_safe, is_expiring_soon, metadata, created_at, updated_at').order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'compliance_evidence', userId, (q) => q.select('id, asset_id, framework, control_id, status, evidence_type, description, metadata, created_at, updated_at').order('updated_at', { ascending: false }).limit(800)),
+  ])
+
+  const candidates = plannerCandidates(assets, inventory, exposures, jobs, scanResults, runtimeEvents)
+  const scopedCandidates = range.days
+    ? candidates.filter((candidate) => !candidate.detectedAt || plannerDateMs(candidate.detectedAt) >= window.start || candidate.hasActiveJob)
+    : candidates
+  const activeAssets = (assets || []).filter((asset: any) => String(asset.status || 'active').toLowerCase() !== 'archived')
+  const activeJobs = (jobs || []).filter((job: any) => !['completed', 'cancelled', 'canceled'].includes(String(job.status || '').toLowerCase()))
+  const completedJobs = (jobs || []).filter((job: any) => normalizeStatus(job.status) === 'completed')
+  const failedJobs = (jobs || []).filter((job: any) => normalizeStatus(job.status) === 'failed')
+  const runningJobs = (jobs || []).filter((job: any) => normalizeStatus(job.status) === 'running')
+  const pqcReadyAssets = new Set<string>()
+  for (const item of inventory || []) if (item.asset_id && (item.is_quantum_safe || plannerIsPqcAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`))) pqcReadyAssets.add(item.asset_id)
+  for (const cert of certificates || []) if (cert.asset_id && (cert.is_quantum_safe || plannerIsPqcAlgorithm(cert.algorithm))) pqcReadyAssets.add(cert.asset_id)
+  for (const job of completedJobs || []) if (job.asset_id) pqcReadyAssets.add(job.asset_id)
+
+  const currentAssets = scopedCandidates.length
+  const previousCandidates = candidates.filter((candidate) => {
+    const time = plannerDateMs(candidate.detectedAt)
+    return time >= window.previousStart && time < window.start
+  })
+  const migratedCurrent = completedJobs.filter((job: any) => !range.days || plannerDateMs(job.completed_at || job.updated_at) >= window.start).length + pqcReadyAssets.size
+  const migratedPrevious = completedJobs.filter((job: any) => range.days && plannerDateMs(job.completed_at || job.updated_at) >= window.previousStart && plannerDateMs(job.completed_at || job.updated_at) < window.start).length
+  const highPriorityAssets = scopedCandidates.filter((row) => row.risk >= 70).length
+  const previousHigh = previousCandidates.filter((row) => row.risk >= 70).length
+  const riskReduced = Math.round(Math.min(100, ((completedJobs.length + pqcReadyAssets.size) / Math.max(1, candidates.length + completedJobs.length)) * 100))
+  const previousRiskReduced = Math.round(Math.min(100, (migratedPrevious / Math.max(1, previousCandidates.length + migratedPrevious)) * 100))
+  const totalJobs = Math.max(1, (jobs || []).length)
+  const overallProgress = Math.round(((jobs || []).reduce((sum: number, job: any) => sum + clampProgress(job.progress, normalizeStatus(job.status)), 0) / totalJobs) || riskReduced)
+  const remaining = Math.max(0, highPriorityAssets + scopedCandidates.length - completedJobs.length)
+  const estimate = new Date(Date.now() + Math.max(7, remaining * 2) * 86400000)
+
+  const topAssets = scopedCandidates.slice(0, 12)
+  const priorityLabels = ['Critical', 'High', 'Medium', 'Low']
+  const priorityDistribution = priorityLabels.map((label) => {
+    const value = scopedCandidates.filter((row) => row.priority === label).length
+    return {
+      name: label,
+      value,
+      percent: `${Math.round((value / Math.max(1, scopedCandidates.length)) * 100)}%`,
+      color: label === 'Critical' ? '#ef4444' : label === 'High' ? '#f97316' : label === 'Medium' ? '#eab308' : '#10b981',
+    }
+  })
+
+  const roadmapSteps = [
+    { name: 'DISCOVER', progress: activeAssets.length ? 100 : 0, status: activeAssets.length ? 'completed' : 'pending' },
+    { name: 'ASSESS', progress: activeAssets.length ? Math.round(((inventory || []).length + (exposures || []).length ? 100 : 35)) : 0, status: (inventory || []).length || (exposures || []).length ? 'completed' : activeAssets.length ? 'active' : 'pending' },
+    { name: 'PLAN', progress: Math.min(100, Math.max(0, topAssets.length ? 85 : activeJobs.length ? 70 : 20)), status: activeJobs.length || topAssets.length ? 'active' : 'pending' },
+    { name: 'EXECUTE', progress: overallProgress, status: runningJobs.length ? 'active' : completedJobs.length ? 'completed' : activeJobs.length ? 'active' : 'pending' },
+    { name: 'VALIDATE', progress: Math.round(Math.min(100, (complianceEvidence || []).length ? 80 : riskReduced / 2)), status: (complianceEvidence || []).length ? 'active' : 'pending' },
+    { name: 'COMPLETE', progress: riskReduced >= 90 && failedJobs.length === 0 ? 100 : riskReduced, status: riskReduced >= 90 && failedJobs.length === 0 ? 'completed' : 'pending' },
+  ]
+
+  const latestActivity = [
+    ...(jobs || []).map((job: any) => job.updated_at || job.completed_at || job.created_at),
+    ...(migrationEvents || []).map((event: any) => event.created_at),
+    ...(scanSessions || []).map((scan: any) => scan.completed_at || scan.started_at || scan.created_at),
+  ].map(plannerDateMs).filter(Boolean).sort((a, b) => b - a)[0] || 0
+
+  return {
+    generatedAt: new Date().toISOString(),
+    range,
+    source: {
+      latestActivityAt: latestActivity ? new Date(latestActivity).toISOString() : null,
+      latestScanAt: (scanSessions || [])[0]?.completed_at || (scanSessions || [])[0]?.started_at || (scanSessions || [])[0]?.created_at || null,
+      tables: {
+        assets: assets.length,
+        crypto_inventory: inventory.length,
+        crypto_exposures: exposures.length,
+        migration_jobs: jobs.length,
+        migration_events: migrationEvents.length,
+        pqc_scan_sessions: scanSessions.length,
+        pqc_scan_results: scanResults.length,
+        runtime_crypto_events: runtimeEvents.length,
+        certificates: certificates.length,
+        compliance_evidence: complianceEvidence.length,
+      },
+    },
+    metrics: {
+      overallProgress,
+      assetsInScope: activeAssets.length || currentAssets,
+      assetsInScopeDelta: plannerDelta(currentAssets, previousCandidates.length).label,
+      migratedAssets: migratedCurrent,
+      migratedDelta: plannerDelta(migratedCurrent, migratedPrevious).label,
+      highPriorityAssets,
+      highPriorityDelta: plannerDelta(highPriorityAssets, previousHigh).label,
+      riskReduced,
+      riskReducedDelta: plannerDelta(riskReduced, previousRiskReduced).label,
+      estimatedCompletion: plannerFormatDate(estimate.toISOString()),
+      remainingDays: Math.max(7, remaining * 2),
+      activeJobs: activeJobs.length,
+      runningJobs: runningJobs.length,
+      failedJobs: failedJobs.length,
+      completedJobs: completedJobs.length,
+    },
+    roadmapSteps,
+    priorityDistribution,
+    topAssets,
+    timelinePhases: plannerPhases(),
+    riskTrendPoints: plannerRiskTrend(scopedCandidates, jobs, range),
+    simulation: {
+      confidence: Math.min(99, 72 + Math.min(20, topAssets.length * 2) + (scanSessions.length ? 5 : 0)),
+      recommendations: topAssets.slice(0, 3).map((asset) => ({
+        title: `Migrate ${asset.name} to ${asset.targetSolution}`,
+        detail: `${asset.priority} priority, ${asset.risk}/100 crypto risk, owner ${asset.owner}.`,
+      })),
+    },
+    compliance: {
+      nistPqc: riskReduced,
+      policyEvidence: complianceEvidence.length,
+      quantumReadyAssets: pqcReadyAssets.size,
+      openBlockers: failedJobs.length + highPriorityAssets,
+    },
+  }
+}
+
+function buildPlannerCsv(snapshot: Awaited<ReturnType<typeof buildMigrationPlannerSnapshot>>) {
+  const escape = (value: unknown) => {
+    const text = String(value ?? '')
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }
+  const rows = [
+    ['asset', 'type', 'environment', 'owner', 'current_algorithm', 'target_solution', 'risk', 'priority', 'status', 'progress'],
+    ...snapshot.topAssets.map((asset: any) => [
+      asset.name,
+      asset.type,
+      asset.environment,
+      asset.owner,
+      asset.currentAlgorithm,
+      asset.targetSolution,
+      asset.risk,
+      asset.priority,
+      asset.status,
+      asset.progress,
+    ]),
+  ]
+  return rows.map((row) => row.map(escape).join(',')).join('\n')
+}
+
+function scenarioRecommendation(snapshot: Awaited<ReturnType<typeof buildMigrationPlannerSnapshot>>, targetMode: string, optimization: string) {
+  const mode = targetMode === 'pure' ? 'Pure quantum-safe' : targetMode === 'dual' ? 'Dual-key legacy bridge' : 'Hybrid classical + PQC'
+  const optimizationLabel = optimization === 'latency' ? 'minimum latency' : optimization === 'cost' ? 'cost optimized' : 'highest risk first'
+  const ordered = [...snapshot.topAssets].sort((a: any, b: any) => {
+    if (optimization === 'latency') return a.type.localeCompare(b.type) || b.risk - a.risk
+    if (optimization === 'cost') return a.progress - b.progress || b.risk - a.risk
+    return b.risk - a.risk
+  })
+  const selected = ordered.slice(0, 5)
+  const averageRisk = selected.length ? Math.round(selected.reduce((sum: number, item: any) => sum + item.risk, 0) / selected.length) : 0
+  return {
+    mode,
+    optimization: optimizationLabel,
+    confidence: snapshot.simulation.confidence,
+    estimatedDuration: selected.length ? `${Math.max(1, selected.length * 2)}-${Math.max(2, selected.length * 4)} days` : 'Awaiting assets',
+    riskMitigation: Math.min(98, Math.max(snapshot.metrics.riskReduced, averageRisk)),
+    assets: selected,
+    recommendations: selected.map((asset: any) => ({
+      title: `${asset.name}: ${asset.targetSolution}`,
+      detail: `${mode} plan using ${optimizationLabel}; current ${asset.currentAlgorithm}, risk ${asset.risk}/100.`,
+    })),
+    playbook: [
+      'Confirm owner and blast radius for selected assets.',
+      `Apply ${mode.toLowerCase()} rollout pattern with ${optimizationLabel} scheduling.`,
+      'Run migration sandbox compatibility tests before production cutover.',
+      'Export audit evidence to compliance and migration timeline after validation.',
+    ],
+  }
+}
+
 function actionUpdate(action: string, metadata: Record<string, unknown>, nextStatus?: string) {
   const now = new Date().toISOString()
   const nextMetadata = {
@@ -590,6 +1004,205 @@ async function insertActionEvents(client: any, userId: string, jobs: any[], acti
   const { error } = await client.from('migration_events').insert(rows)
   if (error && !isMissingTable(error)) console.warn('[migration-live] Action event insert failed:', error.message)
 }
+
+router.get('/planner', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const snapshot = await buildMigrationPlannerSnapshot(client, req.user!.id, req.query.range)
+  res.json({ data: snapshot })
+})
+
+router.get('/planner/export', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const snapshot = await buildMigrationPlannerSnapshot(client, req.user!.id, req.query.range)
+  const format = String(req.query.format || 'json').toLowerCase()
+  const baseName = `qguard-migration-roadmap-${snapshot.range.key}-${new Date().toISOString().slice(0, 10)}`
+
+  if (format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv')
+    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`)
+    return res.send(buildPlannerCsv(snapshot))
+  }
+
+  res.setHeader('Content-Type', 'application/json')
+  res.setHeader('Content-Disposition', `attachment; filename="${baseName}.json"`)
+  return res.send(JSON.stringify(snapshot, null, 2))
+})
+
+router.get('/planner/stream', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  sseHeaders(res)
+  writeSse(res, 'planner-connected', { timestamp: new Date().toISOString() })
+
+  const emitSnapshot = async () => {
+    const snapshot = await buildMigrationPlannerSnapshot(client, req.user!.id, req.query.range)
+    writeSse(res, 'planner-update', snapshot)
+  }
+
+  await emitSnapshot().catch((error) => console.warn('[migration-planner] Initial stream emit failed:', error?.message || error))
+  const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 15000)
+  const poll = setInterval(() => emitSnapshot().catch(() => undefined), 8000)
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    clearInterval(poll)
+    res.end()
+  })
+})
+
+router.post('/planner/scenario', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const targetMode = String(req.body?.targetMode || 'hybrid').toLowerCase()
+  const optimization = String(req.body?.optimization || 'risk').toLowerCase()
+  const snapshot = await buildMigrationPlannerSnapshot(client, req.user!.id, req.body?.range || req.query.range)
+  const scenario = scenarioRecommendation(snapshot, targetMode, optimization)
+
+  await client.from('migration_events').insert({
+    user_id: req.user!.id,
+    migration_id: null,
+    event_type: 'planner-scenario-simulated',
+    severity: 'info',
+    message: `${scenario.mode} migration scenario simulated with ${scenario.optimization} optimization.`,
+    metadata: {
+      source: 'migration-planner',
+      targetMode,
+      optimization,
+      confidence: scenario.confidence,
+      assets: scenario.assets.map((asset: any) => asset.assetId || asset.id).filter(Boolean).slice(0, 25),
+    },
+    created_at: new Date().toISOString(),
+  }).then(({ error }: any) => {
+    if (error && !isMissingTable(error)) console.warn('[migration-planner] Scenario event insert failed:', error.message)
+  })
+
+  res.json({ data: scenario })
+})
+
+router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const range = req.body?.range || req.query.range
+  const limit = Math.max(1, Math.min(25, Number(req.body?.limit || 8)))
+  const snapshot = await buildMigrationPlannerSnapshot(client, req.user!.id, range)
+  const selectedIds = Array.isArray(req.body?.assetIds) ? new Set(req.body.assetIds.map((id: unknown) => String(id))) : null
+  const now = new Date().toISOString()
+  const planId = `planner-${Date.now()}`
+
+  const existing = await safeRows(client, 'migration_jobs', req.user!.id, (q) => q.select('id, asset_id, status, metadata').order('updated_at', { ascending: false }).limit(1000))
+  const activeByAsset = new Set(
+    existing
+      .filter((job: any) => job.asset_id && !['completed', 'failed', 'cancelled', 'canceled'].includes(String(job.status || '').toLowerCase()))
+      .map((job: any) => String(job.asset_id)),
+  )
+
+  const candidates = snapshot.topAssets
+    .filter((asset: any) => asset.assetId && !activeByAsset.has(String(asset.assetId)))
+    .filter((asset: any) => !selectedIds || selectedIds.has(String(asset.assetId)) || selectedIds.has(String(asset.id)))
+    .slice(0, limit)
+
+  if (!candidates.length) {
+    return res.json({
+      data: {
+        created: 0,
+        skipped: true,
+        message: 'No new migration jobs were created because all selected priority assets already have active plans.',
+        snapshot,
+      },
+    })
+  }
+
+  const rows = candidates.map((asset: any) => ({
+    user_id: req.user!.id,
+    asset_id: asset.assetId,
+    name: `PQC Migration: ${asset.name}`,
+    job_type: plannerJobType(asset),
+    status: 'pending',
+    target_algorithm: asset.targetSolution,
+    strategy: `${asset.currentAlgorithm} -> ${asset.targetSolution}`,
+    progress: 0,
+    metadata: {
+      source: 'migration-planner',
+      workflow: 'post-quantum-migration-plan',
+      planId,
+      priority: asset.priority,
+      riskScore: asset.risk,
+      owner: asset.owner,
+      environment: asset.environment,
+      assetType: asset.type,
+      sourceAlgorithm: asset.currentAlgorithm,
+      targetAlgorithm: asset.targetSolution,
+      range: snapshot.range.key,
+      createdBy: req.user!.id,
+      createdAt: now,
+    },
+    created_at: now,
+    updated_at: now,
+  }))
+
+  const { data: inserted, error } = await client
+    .from('migration_jobs')
+    .insert(rows)
+    .select('id, name, asset_id, status, target_algorithm, created_at')
+
+  if (error) {
+    return res.status(500).json({ error: { code: 'PLAN_CREATE_FAILED', message: error.message || 'Failed to create migration plan' } })
+  }
+
+  const eventRows = (inserted || []).map((job: any) => ({
+    user_id: req.user!.id,
+    migration_id: job.id,
+    event_type: 'planner-job-created',
+    severity: 'info',
+    message: `Migration Planner created ${job.name} targeting ${job.target_algorithm}.`,
+    metadata: {
+      source: 'migration-planner',
+      planId,
+      range: snapshot.range.key,
+    },
+    created_at: now,
+  }))
+  if (eventRows.length) {
+    const { error: eventError } = await client.from('migration_events').insert(eventRows)
+    if (eventError && !isMissingTable(eventError)) console.warn('[migration-planner] Plan event insert failed:', eventError.message)
+  }
+
+  await client.from('security_events').insert({
+    user_id: req.user!.id,
+    event_type: 'migration-plan-created',
+    severity: 'info',
+    message: `${inserted?.length || 0} migration planner job(s) created from ${snapshot.range.label}.`,
+    resource_name: 'Migration Planner',
+    resource_type: 'migration_plan',
+    metadata: {
+      source: 'migration-planner',
+      planId,
+      createdJobs: inserted?.length || 0,
+      range: snapshot.range.key,
+    },
+    created_at: now,
+  }).then(({ error: securityError }: any) => {
+    if (securityError && !isMissingTable(securityError)) console.warn('[migration-planner] Security event insert failed:', securityError.message)
+  })
+
+  const refreshed = await buildMigrationPlannerSnapshot(client, req.user!.id, range)
+  res.json({
+    data: {
+      created: inserted?.length || 0,
+      jobs: inserted || [],
+      planId,
+      snapshot: refreshed,
+      message: `${inserted?.length || 0} migration job(s) created from prioritized asset posture.`,
+    },
+  })
+})
 
 router.get('/live', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)

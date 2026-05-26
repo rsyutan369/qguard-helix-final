@@ -68,7 +68,7 @@ function ContainerCard({ seed, index, prefix, format }: {
     <div style={{ background: 'var(--qg-surface)', borderRadius: 8, border: '1px solid var(--qg-border)', overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', cursor: 'pointer' }}
         onClick={() => setExpanded(v => !v)}>
-        <span style={{ width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,243,193,0.15)', color: '#fff3c1', fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
+        <span style={{ width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--qg-accent-soft)', color: 'var(--qg-amber)', fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
           {index}
         </span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--qg-text)', flex: 1 }}>{name}</span>

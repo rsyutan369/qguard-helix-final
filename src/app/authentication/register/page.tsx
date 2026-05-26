@@ -16,6 +16,8 @@ import {
   UserPlus
 } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
+import { useTheme } from "@/contexts/theme-context";
+import ThemeToggle from "@/components/theme/ThemeToggle";
 import { Link } from "react-router-dom";
 import { CyberBackground } from "@/components/CyberBackground";
 
@@ -33,6 +35,8 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const { signUp, signInWithGoogle } = useAuth();
+  const { theme } = useTheme();
+  const isLightTheme = theme === "light";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,8 +90,8 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="qguard-home qc-page qc-page-gold">
-      <CyberBackground />
+    <div className={`qguard-home qc-page qc-page-gold ${isLightTheme ? "qguard-home--light qc-page-home-light" : ""}`}>
+      <CyberBackground variant={isLightTheme ? "light" : "dark"} />
       <div className="qc-hex-grid" />
       <div className="qc-radial-glow" />
 
@@ -105,6 +109,7 @@ export default function RegisterPage() {
         </Link>
 
         <div className="qc-auth-nav-actions">
+          <ThemeToggle compact showSystem={false} />
           <Link to="/" className="qc-auth-nav-link">
             <Home size={15} />
             Home

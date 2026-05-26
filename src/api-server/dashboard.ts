@@ -103,32 +103,101 @@ async function getMigrationProgress(client: any, userId: string) {
 }
 
 async function buildDashboardSummaryFallback(client: any, userId: string) {
+  const now = Date.now()
+  const sevenDays = 7 * 86400000
+  const recentStart = now - sevenDays
+  const previousStart = now - sevenDays * 2
   const [
-    totalAssets,
-    vulnerableAssetsCount,
-    totalCbomItems,
-    criticalExposures,
-    highExposures,
-    unresolvedVulns,
-    expiringCerts,
-    migrationProgress,
-    lastScanAt,
+    assets,
+    inventory,
+    exposures,
+    vulnerabilities,
+    scanSessions,
+    scanResults,
+    scannerAlerts,
+    runtimeEvents,
+    certificates,
+    generatedKeys,
+    jobs,
   ] = await Promise.all([
-    safeCount(client, 'assets', userId, (q) => q.eq('status', 'active')),
-    safeCount(client, 'crypto_exposures', userId, (q) => q.in('severity', ['critical', 'high'])),
-    safeCount(client, 'crypto_inventory', userId),
-    safeCount(client, 'crypto_exposures', userId, (q) => q.eq('severity', 'critical')),
-    safeCount(client, 'crypto_exposures', userId, (q) => q.eq('severity', 'high')),
-    safeCount(client, 'vulnerabilities', userId, (q) => q.in('status', ['open', 'in_progress'])),
-    safeCount(client, 'certificates', userId, (q) => q.eq('status', 'active').lt('not_after', new Date(Date.now() + 30 * 86400000).toISOString())),
-    getMigrationProgress(client, userId),
-    safeLatestScanAt(client, userId),
+    safeRows(client, 'assets', (q) => q.select('id, name, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(3000)),
+    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at, created_at, updated_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(4000)),
+    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(3000)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, severity, status, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2500)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, findings_count, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, threat_level, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(3000)),
+    safeRows(client, 'scanner_alerts', (q) => q.select('id, severity, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, host, severity, risk_score, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(4000)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, status, algorithm, not_after, is_quantum_safe, is_expiring_soon, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2500)),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, status, expires_at, revoked_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2500)),
+    safeRows(client, 'migration_jobs', (q) => q.select('id, status, progress, created_at, updated_at, completed_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
   ])
 
-  const { activeMigrations, failedMigrations, completedMigrations, migrationCompletionRate } = migrationProgress
-  const penalty = criticalExposures * 80 + highExposures * 35 + unresolvedVulns * 20 + expiringCerts * 10 + failedMigrations * 25
-  const quantumRiskScore = Math.max(0, Math.min(1000, 1000 - penalty))
-  const riskBand = quantumRiskScore >= 850
+  const activeAssets = (assets || []).filter((asset: any) => !['archived', 'deleted', 'retired'].includes(String(asset.status || 'active').toLowerCase()))
+  const completedJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'completed')
+  const activeJobs = (jobs || []).filter((job: any) => ['pending', 'running'].includes(normalizeJobStatus(job.status)))
+  const failedJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'failed')
+  const openVulnerabilities = (vulnerabilities || []).filter((row: any) => !['resolved', 'remediated', 'false_positive', 'accepted', 'closed'].includes(String(row.status || 'open').toLowerCase()))
+  const openAlerts = (scannerAlerts || []).filter((row: any) => !['resolved', 'suppressed', 'closed'].includes(String(row.status || 'open').toLowerCase()))
+  const vulnerableInventory = (inventory || []).filter((row: any) => row.is_vulnerable && !row.is_quantum_safe)
+  const riskyRuntime = (runtimeEvents || []).filter((row: any) => row.is_legacy || row.downgrade_detected || row.shadow_crypto || row.hndl_risk || severityRank(String(row.severity || '')) >= 3 || Number(row.risk_score || 0) >= 68)
+  const expiringCertRows = (certificates || []).filter((cert: any) => {
+    const expiresAt = dateMs(cert.not_after)
+    return cert.is_expiring_soon || (expiresAt && expiresAt < now + 30 * 86400000 && !['revoked', 'deleted'].includes(String(cert.status || '').toLowerCase()))
+  })
+  const weakCertRows = (certificates || []).filter((cert: any) => !cert.is_quantum_safe && !isPqcReadyAlgorithm(`${cert.algorithm || ''}`))
+
+  const addRiskSubject = (set: Set<string>, value: unknown, fallback?: unknown) => {
+    const key = textValue(value, textValue(fallback))
+    if (key) set.add(key)
+  }
+  const vulnerableSubjects = new Set<string>()
+  for (const row of exposures || []) if (severityRank(String(row.severity || '')) >= 2) addRiskSubject(vulnerableSubjects, row.asset_id, row.id)
+  for (const row of openVulnerabilities) addRiskSubject(vulnerableSubjects, row.asset_id, row.id)
+  for (const row of scanResults || []) addRiskSubject(vulnerableSubjects, row.asset_id, row.id)
+  for (const row of vulnerableInventory) addRiskSubject(vulnerableSubjects, row.asset_id, row.id)
+  for (const row of riskyRuntime) addRiskSubject(vulnerableSubjects, row.asset_id, row.host || row.id)
+  for (const row of [...expiringCertRows, ...weakCertRows]) addRiskSubject(vulnerableSubjects, row.asset_id, row.name || row.id)
+
+  const riskSignals = [
+    ...(exposures || []).map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at })),
+    ...openVulnerabilities.map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at })),
+    ...(scanResults || []).map((row: any) => ({ severity: row.threat_level, timestamp: row.created_at })),
+    ...openAlerts.map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at })),
+    ...riskyRuntime.map((row: any) => ({ severity: row.severity || (Number(row.risk_score || 0) >= 86 ? 'critical' : 'high'), timestamp: row.observed_at || row.created_at })),
+    ...expiringCertRows.map((row: any) => ({ severity: 'medium', timestamp: row.updated_at || row.created_at })),
+  ]
+  const criticalExposures = riskSignals.filter((signal) => severityRank(String(signal.severity || '')) >= 4).length
+  const highExposures = riskSignals.filter((signal) => severityRank(String(signal.severity || '')) >= 3).length
+  const mediumFindings = riskSignals.filter((signal) => severityRank(String(signal.severity || '')) === 2).length
+  const currentFindings = riskSignals.filter((signal) => dateMs(signal.timestamp) >= recentStart).length
+  const previousFindings = riskSignals.filter((signal) => {
+    const ms = dateMs(signal.timestamp)
+    return ms >= previousStart && ms < recentStart
+  }).length
+
+  const assessedAssets = new Set([
+    ...(inventory || []).map((row: any) => row.asset_id).filter(Boolean),
+    ...(scanResults || []).map((row: any) => row.asset_id).filter(Boolean),
+    ...(runtimeEvents || []).map((row: any) => row.asset_id).filter(Boolean),
+    ...(certificates || []).map((row: any) => row.asset_id).filter(Boolean),
+  ])
+  const pqcReadyCrypto = [
+    ...(inventory || []).filter((row: any) => row.is_quantum_safe || isPqcReadyAlgorithm(`${row.algorithm || ''} ${row.protocol || ''}`)),
+    ...(certificates || []).filter((row: any) => row.is_quantum_safe || isPqcReadyAlgorithm(`${row.algorithm || ''}`)),
+    ...(generatedKeys || []).filter((row: any) => isPqcReadyAlgorithm(`${row.algorithm || ''}`)),
+  ].length
+  const totalCryptoItems = (inventory || []).length + (certificates || []).length + (generatedKeys || []).length
+  const readinessScore = percentOf(pqcReadyCrypto + completedJobs.length, Math.max(1, totalCryptoItems + (jobs || []).length))
+  const coverageScore = percentOf(assessedAssets.size, Math.max(1, activeAssets.length))
+  const riskPressure = clampPercent(criticalExposures * 12 + Math.max(0, highExposures - criticalExposures) * 7 + mediumFindings * 3 + failedJobs.length * 8 + expiringCertRows.length * 2)
+  const hasTelemetry = activeAssets.length || totalCryptoItems || scanSessions.length || runtimeEvents.length || riskSignals.length
+  const quantumRiskScore = hasTelemetry
+    ? Math.max(0, Math.min(1000, Math.round(((readinessScore * 0.45) + (coverageScore * 0.2) + ((100 - riskPressure) * 0.35)) * 10)))
+    : 0
+  const riskBand = !hasTelemetry
+    ? 'No Baseline'
+    : quantumRiskScore >= 850
     ? 'Quantum Ready'
     : quantumRiskScore >= 650
       ? 'Moderate'
@@ -139,91 +208,200 @@ async function buildDashboardSummaryFallback(client: any, userId: string) {
   return {
     quantumRiskScore,
     riskBand,
-    riskTrend: 0,
-    vulnerableAssetsCount,
-    newVulnerableAssets: 0,
-    totalCbomItems,
-    activeMigrations,
-    failedMigrations,
-    completedMigrations,
-    migrationCompletionRate,
+    riskTrend: previousFindings - currentFindings,
+    vulnerableAssetsCount: vulnerableSubjects.size,
+    newVulnerableAssets: currentFindings,
+    totalCbomItems: totalCryptoItems,
+    activeMigrations: activeJobs.length,
+    failedMigrations: failedJobs.length,
+    completedMigrations: completedJobs.length,
+    migrationCompletionRate: (jobs || []).length ? Math.round((completedJobs.length / (jobs || []).length) * 100) : 0,
     criticalExposures,
     highExposures,
-    unresolvedVulns,
-    expiringCerts,
-    totalAssets,
-    lastScanAt,
-    monitoringStatus: totalAssets > 0 ? 'active' : 'standby',
+    unresolvedVulns: openVulnerabilities.length + (scanResults || []).length + openAlerts.length,
+    expiringCerts: expiringCertRows.length,
+    totalAssets: activeAssets.length,
+    lastScanAt: latestDate(...(scanSessions || []).map((scan: any) => scan.completed_at || scan.updated_at || scan.started_at || scan.created_at)),
+    monitoringStatus: (scanSessions || []).some((scan: any) => ['pending', 'queued', 'running', 'analyzing'].includes(String(scan.status || '').toLowerCase()))
+      ? 'scanning'
+      : runtimeEvents.length || scannerAlerts.length
+        ? 'active'
+        : hasTelemetry
+          ? 'standby'
+          : 'no_baseline',
   }
+}
+
+function dashboardEventSeverity(value: unknown): 'critical' | 'warning' | 'info' | 'success' {
+  const text = String(value || '').toLowerCase()
+  if (text.includes('critical') || text.includes('high') || text.includes('fail') || text.includes('error')) return 'critical'
+  if (text.includes('warning') || text.includes('medium') || text.includes('moderate') || text.includes('open')) return 'warning'
+  if (text.includes('success') || text.includes('complete') || text.includes('resolved') || text.includes('trusted')) return 'success'
+  return 'info'
 }
 
 async function buildEventsFallback(client: any, userId: string, limit: number) {
-  try {
-    const { data, error } = await client
-      .from('security_events')
-      .select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(limit)
-    if (error) return []
+  const [securityEvents, scannerAlerts, scanSessions, scanResults, runtimeEvents, vulnerabilities, auditLogs] = await Promise.all([
+    safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'scanner_alerts', (q) => q.select('id, severity, category, title, message, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, findings_count, target_scope, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, finding_type, algorithm, threat_level, description, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, algorithm, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status, source, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'audit_logs', (q) => q.select('id, action, entity_type, entity_id, details, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
+  ])
 
-    return (data || []).map((ev: any) => ({
-      id: ev.id,
+  const events = [
+    ...(securityEvents || []).map((ev: any) => ({
+      id: `security-${ev.id}`,
       timestamp: ev.created_at,
-      severity: ev.severity,
-      eventType: ev.event_type,
-      message: ev.message,
+      severity: dashboardEventSeverity(ev.severity),
+      eventType: ev.event_type || 'security_event',
+      message: ev.message || titleCase(String(ev.event_type || 'Security event')),
       assetId: ev.asset_id,
       resourceName: ev.resource_name,
       resourceType: ev.resource_type,
-      metadata: ev.metadata,
-      isRead: ev.is_read,
-    }))
-  } catch {
-    return []
-  }
+      metadata: recordOf(ev.metadata),
+      isRead: Boolean(ev.is_read),
+    })),
+    ...(scannerAlerts || []).map((alert: any) => ({
+      id: `scanner-alert-${alert.id}`,
+      timestamp: alert.updated_at || alert.created_at,
+      severity: dashboardEventSeverity(`${alert.severity || ''} ${alert.status || ''}`),
+      eventType: alert.category || 'scanner_alert',
+      message: alert.title || alert.message || 'Scanner alert captured',
+      assetId: null,
+      resourceName: textValue(recordOf(alert.metadata).assetName || recordOf(alert.metadata).hostname || recordOf(alert.metadata).target, 'Scanner finding'),
+      resourceType: 'scanner_alert',
+      metadata: recordOf(alert.metadata),
+      isRead: ['resolved', 'closed', 'suppressed'].includes(String(alert.status || '').toLowerCase()),
+    })),
+    ...(scanSessions || []).map((scan: any) => ({
+      id: `scan-${scan.id}`,
+      timestamp: scan.completed_at || scan.updated_at || scan.started_at || scan.created_at,
+      severity: dashboardEventSeverity(Number(scan.findings_count || 0) > 0 ? 'warning' : scan.status),
+      eventType: 'pqc_scan_session',
+      message: `PQC scan ${String(scan.status || 'recorded').replace(/_/g, ' ')} with ${Number(scan.findings_count || 0)} finding${Number(scan.findings_count || 0) === 1 ? '' : 's'}`,
+      assetId: null,
+      resourceName: textValue(scan.target_scope, 'PQC scan'),
+      resourceType: 'scan_session',
+      metadata: recordOf(scan.metadata),
+      isRead: false,
+    })),
+    ...(scanResults || []).map((result: any) => ({
+      id: `scan-result-${result.id}`,
+      timestamp: result.created_at,
+      severity: dashboardEventSeverity(result.threat_level),
+      eventType: result.finding_type || 'scan_finding',
+      message: result.description || `${result.algorithm || 'Crypto'} scan finding`,
+      assetId: result.asset_id,
+      resourceName: result.algorithm || 'PQC finding',
+      resourceType: 'scan_result',
+      metadata: recordOf(result.metadata),
+      isRead: false,
+    })),
+    ...(runtimeEvents || []).map((event: any) => ({
+      id: `runtime-${event.id}`,
+      timestamp: event.observed_at || event.created_at,
+      severity: dashboardEventSeverity(event.severity || (Number(event.risk_score || 0) >= 68 ? 'high' : 'info')),
+      eventType: event.event_type || event.operation_type || 'runtime_crypto_event',
+      message: `${event.asset_name || event.host || 'Runtime'} observed ${event.algorithm || event.operation_type || 'cryptographic activity'}`,
+      assetId: event.asset_id,
+      resourceName: event.asset_name || event.host,
+      resourceType: event.asset_type || 'runtime',
+      metadata: {},
+      isRead: false,
+    })),
+    ...(vulnerabilities || []).map((vuln: any) => ({
+      id: `vulnerability-${vuln.id}`,
+      timestamp: vuln.updated_at || vuln.created_at,
+      severity: dashboardEventSeverity(`${vuln.severity || ''} ${vuln.status || ''}`),
+      eventType: 'vulnerability',
+      message: vuln.title || 'Vulnerability finding',
+      assetId: vuln.asset_id,
+      resourceName: vuln.source || 'Vulnerability',
+      resourceType: 'vulnerability',
+      metadata: recordOf(vuln.metadata),
+      isRead: ['resolved', 'closed', 'false_positive'].includes(String(vuln.status || '').toLowerCase()),
+    })),
+    ...(auditLogs || []).map((log: any) => ({
+      id: `audit-${log.id}`,
+      timestamp: log.created_at,
+      severity: dashboardEventSeverity(log.action),
+      eventType: log.action || 'audit_event',
+      message: `${log.action || 'Audit event'} ${log.entity_type || ''}`.trim(),
+      assetId: null,
+      resourceName: log.entity_id || log.entity_type,
+      resourceType: log.entity_type || 'audit',
+      metadata: recordOf(log.details),
+      isRead: true,
+    })),
+  ].filter((event) => event.timestamp)
+
+  return events
+    .sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp))
+    .slice(0, limit)
 }
 
 async function buildExposureMapFallback(client: any, userId: string) {
-  try {
-    const [{ data: assets }, { data: relationships }] = await Promise.all([
-      client
-        .from('assets')
-        .select('id, name, type, environment, criticality, status')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(100),
-      client
-        .from('asset_relationships')
-        .select('source_asset_id, target_asset_id, relationship_type')
-        .eq('user_id', userId)
-        .limit(200),
-    ])
+  const [assets, relationships, exposures, vulnerabilities, scanResults, runtimeEvents, inventory, certificates] = await Promise.all([
+    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, criticality, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
+    safeRows(client, 'asset_relationships', (q) => q.select('source_asset_id, target_asset_id, relationship_type').eq('user_id', userId).limit(600)),
+    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, severity, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, severity, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, threat_level, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, severity, risk_score, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2400)),
+    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, is_vulnerable, is_quantum_safe, exposure_level, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, status, algorithm, not_after, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
+  ])
 
-    const nodes = await Promise.all((assets || []).map(async (asset: any) => {
-      const riskScore = await safeCount(client, 'crypto_exposures', userId, (q) => q.eq('asset_id', asset.id).eq('severity', 'critical'))
-      return {
-        id: asset.id,
-        name: asset.name,
-        type: asset.type,
-        environment: asset.environment || 'unknown',
-        criticality: asset.criticality || 'medium',
-        status: asset.status || 'active',
-        riskScore,
-        color: getRiskColor(riskScore, asset.status || 'active'),
-      }
-    }))
-
-    const edges = (relationships || []).map((edge: any) => ({
-      source: edge.source_asset_id,
-      target: edge.target_asset_id,
-      type: edge.relationship_type,
-    }))
-
-    return { nodes, edges }
-  } catch {
-    return { nodes: [], edges: [] }
+  const riskByAsset = new Map<string, number>()
+  const addRisk = (assetId: unknown, score: number) => {
+    const id = textValue(assetId)
+    if (!id) return
+    riskByAsset.set(id, (riskByAsset.get(id) || 0) + score)
   }
+
+  for (const exposure of exposures || []) addRisk(exposure.asset_id, severityRank(String(exposure.severity || '')) * 3 || 2)
+  for (const vuln of vulnerabilities || []) {
+    if (['resolved', 'closed', 'false_positive', 'accepted'].includes(String(vuln.status || '').toLowerCase())) continue
+    addRisk(vuln.asset_id, severityRank(String(vuln.severity || '')) * 3 || 2)
+  }
+  for (const result of scanResults || []) addRisk(result.asset_id, severityRank(String(result.threat_level || '')) * 3 || 2)
+  for (const event of runtimeEvents || []) {
+    const risky = event.is_legacy || event.downgrade_detected || event.shadow_crypto || event.hndl_risk || severityRank(String(event.severity || '')) >= 3 || Number(event.risk_score || 0) >= 68
+    if (risky) addRisk(event.asset_id, Math.max(2, Math.ceil(Number(event.risk_score || 0) / 20)))
+  }
+  for (const item of inventory || []) {
+    if (item.is_vulnerable && !item.is_quantum_safe) addRisk(item.asset_id, severityRank(String(item.exposure_level || 'medium')) * 2 || 2)
+  }
+  for (const cert of certificates || []) {
+    const expiresAt = dateMs(cert.not_after)
+    const expiring = cert.is_expiring_soon || (expiresAt && expiresAt < Date.now() + 30 * 86400000)
+    if (expiring || (!cert.is_quantum_safe && !isPqcReadyAlgorithm(`${cert.algorithm || ''}`))) addRisk(cert.asset_id, expiring ? 2 : 3)
+  }
+
+  const nodes = (assets || []).map((asset: any) => {
+    const riskScore = riskByAsset.get(asset.id) || 0
+    return {
+      id: asset.id,
+      name: asset.name,
+      type: asset.type,
+      environment: asset.environment || 'unknown',
+      criticality: asset.criticality || 'medium',
+      status: asset.status || 'active',
+      riskScore,
+      color: getRiskColor(riskScore, asset.status || 'active'),
+    }
+  })
+
+  const edges = (relationships || []).map((edge: any) => ({
+    source: edge.source_asset_id,
+    target: edge.target_asset_id,
+    type: edge.relationship_type,
+  }))
+
+  return { nodes, edges }
 }
 
 /**
@@ -240,71 +418,8 @@ router.get('/summary', async (req: Request, res: Response) => {
       return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
     }
 
-    // Use RPC function for atomic summary calculation
-    const { data: summaryData, error: rpcError } = await client.rpc('get_dashboard_summary', {
-      p_user_id: user.id
-    })
-
-    if (rpcError) {
-      if (!isMissingRpc(rpcError)) {
-        console.warn('Dashboard summary RPC error, using SQL fallback:', rpcError)
-      }
-      const summary = await buildDashboardSummaryFallback(client, user.id)
-      return res.json({ data: summary })
-    }
-
-    // Fetch previous scan for trend comparison
-    const { data: previousScans } = await client
-      .from('pqc_scan_sessions')
-      .select('completed_at, findings_count')
-      .eq('user_id', user.id)
-      .eq('status', 'completed')
-      .order('completed_at', { ascending: false })
-      .limit(2)
-
-    let riskTrend = 0
-    if (previousScans && previousScans.length >= 2) {
-      const current = previousScans[0].findings_count || 0
-      const previous = previousScans[1].findings_count || 0
-      riskTrend = previous - current // positive = fewer findings = improving
-    }
-
-    // Count new vulnerable assets since last scan
-    let newVulnerableAssets = 0
-    if (previousScans && previousScans.length > 0) {
-      const lastScanDate = previousScans[0].completed_at
-      const { count } = await client
-        .from('crypto_exposures')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .gt('created_at', lastScanDate)
-      newVulnerableAssets = count || 0
-    }
-
-    const summary = summaryData || {}
-    const migrationProgress = await getMigrationProgress(client, user.id)
-
-    return res.json({
-      data: {
-        quantumRiskScore: summary.quantumRiskScore || 1000,
-        riskBand: summary.riskBand || 'Quantum Ready',
-        riskTrend,
-        vulnerableAssetsCount: summary.vulnerableAssetsCount || 0,
-        newVulnerableAssets,
-        totalCbomItems: summary.totalCbomItems || 0,
-        activeMigrations: migrationProgress.activeMigrations,
-        failedMigrations: migrationProgress.failedMigrations,
-        completedMigrations: migrationProgress.completedMigrations,
-        migrationCompletionRate: migrationProgress.migrationCompletionRate,
-        criticalExposures: summary.criticalExposures || 0,
-        highExposures: summary.highExposures || 0,
-        unresolvedVulns: summary.unresolvedVulns || 0,
-        expiringCerts: summary.expiringCerts || 0,
-        totalAssets: summary.totalAssets || 0,
-        lastScanAt: summary.lastScanAt || null,
-        monitoringStatus: summary.monitoringStatus || 'active',
-      }
-    })
+    const summary = await buildDashboardSummaryFallback(client, user.id)
+    return res.json({ data: summary })
   } catch (err) {
     console.error('Dashboard summary error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch dashboard summary' } })
@@ -326,32 +441,7 @@ router.get('/events', async (req: Request, res: Response) => {
       return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
     }
 
-    const { data: eventsData, error: rpcError } = await client.rpc('get_recent_security_events', {
-      p_user_id: user.id,
-      p_limit: limit
-    })
-
-    if (rpcError) {
-      if (!isMissingRpc(rpcError)) {
-        console.warn('Security events RPC error, using SQL fallback:', rpcError)
-      }
-      const events = await buildEventsFallback(client, user.id, limit)
-      return res.json({ data: { events } })
-    }
-
-    const events = (eventsData || []).map((ev: any) => ({
-      id: ev.id,
-      timestamp: ev.createdAt,
-      severity: ev.severity,
-      eventType: ev.eventType,
-      message: ev.message,
-      assetId: ev.assetId,
-      resourceName: ev.resourceName,
-      resourceType: ev.resourceType,
-      metadata: ev.metadata,
-      isRead: ev.isRead,
-    }))
-
+    const events = await buildEventsFallback(client, user.id, limit)
     return res.json({ data: { events } })
   } catch (err) {
     console.error('Dashboard events error:', err)
@@ -373,30 +463,8 @@ router.get('/exposure-map', async (req: Request, res: Response) => {
       return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
     }
 
-    const { data: mapData, error: rpcError } = await client.rpc('get_exposure_map', {
-      p_user_id: user.id
-    })
-
-    if (rpcError) {
-      if (!isMissingRpc(rpcError)) {
-        console.warn('Exposure map RPC error, using SQL fallback:', rpcError)
-      }
-      const mapData = await buildExposureMapFallback(client, user.id)
-      return res.json({ data: mapData })
-    }
-
-    // Enrich nodes with latest crypto inventory and vulnerabilities
-    const nodes = (mapData?.nodes || []).map((node: any) => ({
-      ...node,
-      color: getRiskColor(node.riskScore, node.status),
-    }))
-
-    return res.json({
-      data: {
-        nodes,
-        edges: mapData?.edges || []
-      }
-    })
+    const mapData = await buildExposureMapFallback(client, user.id)
+    return res.json({ data: mapData })
   } catch (err) {
     console.error('Exposure map error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch exposure map' } })
@@ -1192,11 +1260,11 @@ function resourceForStep(step: number) {
     [
       { title: 'Discovery Scanner Console', type: 'Live scanner telemetry', href: '/dashboard/scanner' },
       { title: 'CBOM Explorer', type: 'Cryptographic inventory', href: '/dashboard/cbom' },
-      { title: 'Runtime Discovery', type: 'Agent and runtime coverage', href: '/dashboard/runtime-discovery' },
-      { title: 'Asset Intelligence Map', type: 'Tenant-scoped asset graph', href: '/dashboard/asset-intelligence' },
+      { title: 'Runtime Telemetry', type: 'Agent and runtime coverage', href: '/dashboard/runtime-telemetry' },
+      { title: 'Assets & CBOM', type: 'Tenant-scoped asset graph', href: '/dashboard/assets' },
     ],
     [
-      { title: 'Quantum Risk Dashboard', type: 'Risk and exposure scoring', href: '/dashboard/quantum-risk' },
+      { title: 'Quantum Risk Scoring', type: 'Risk and exposure scoring', href: '/dashboard/quantum-risk-scoring' },
       { title: 'Vulnerability Review', type: 'Open finding triage', href: '/dashboard/vulnerabilities' },
       { title: 'Harvest Now Risk Review', type: 'HNDL exposure workflow', href: '/dashboard/harvest-now' },
       { title: 'Telemetry Correlation', type: 'Cross-source event analysis', href: '/dashboard/telemetry-correlation' },
@@ -1204,7 +1272,7 @@ function resourceForStep(step: number) {
     [
       { title: 'Migration Execution Guide', type: 'Live orchestration workflow', href: '/dashboard/pqc-orchestration' },
       { title: 'PQC Implementation Best Practices', type: 'Crypto-agility policy packs', href: '/dashboard/crypto-agility' },
-      { title: 'Migration Tools and Scripts', type: 'Migration terminal and logs', href: '/dashboard/migration-terminal' },
+      { title: 'Live Migration Operations', type: 'Migration operations and logs', href: '/dashboard/live-migration' },
       { title: 'Rollback Procedures', type: 'Sandbox and rollback validation', href: '/dashboard/migration-sandbox' },
     ],
     [
@@ -1287,7 +1355,7 @@ async function buildPqcOnboardingSnapshot(client: any, user: any) {
     1: [
       { label: 'Confirm Tenant Profile', detail: 'Company, owner, and role profile are configured.', href: '/dashboard/settings', status: onboardingTaskStatus(Boolean(profile.company || profile.full_name || user.email), false), count: profile.company ? 1 : 0, source: 'profiles' },
       { label: 'Register Business Assets', detail: 'Tenant assets are present for migration scoping.', href: '/dashboard/assets', status: onboardingTaskStatus(activeAssets.length > 0, activeAssets.length === 0), count: activeAssets.length, source: 'assets' },
-      { label: 'Assign Service Owners', detail: 'Assets include service ownership metadata.', href: '/dashboard/asset-intelligence', status: onboardingTaskStatus(activeAssets.some((asset: any) => asset.service_owner), activeAssets.length > 0), count: activeAssets.filter((asset: any) => asset.service_owner).length, source: 'assets.service_owner' },
+      { label: 'Assign Service Owners', detail: 'Assets include service ownership metadata.', href: '/dashboard/assets', status: onboardingTaskStatus(activeAssets.some((asset: any) => asset.service_owner), activeAssets.length > 0), count: activeAssets.filter((asset: any) => asset.service_owner).length, source: 'assets.service_owner' },
       { label: 'Prepare Audit Evidence', detail: 'Compliance and audit evidence collection has started.', href: '/dashboard/audit-vault', status: onboardingTaskStatus((complianceEvidence || []).length > 0, activeAssets.length > 0), count: (complianceEvidence || []).length, source: 'compliance_evidence' },
     ],
     2: [
@@ -1298,14 +1366,14 @@ async function buildPqcOnboardingSnapshot(client: any, user: any) {
     ],
     3: [
       { label: 'Tally Quantum Findings', detail: 'Scan findings and exposure rows are available for scoring.', href: '/dashboard/vulnerabilities', status: onboardingTaskStatus(openFindings > 0, scanSessions.length > 0), count: openFindings, source: 'pqc_scan_results + crypto_exposures + scanner_alerts' },
-      { label: 'Rank Critical Exposures', detail: 'Critical and high crypto risks are prioritized.', href: '/dashboard/quantum-risk', status: onboardingTaskStatus(highExposures > 0 || riskScore >= 90, openFindings > 0), count: criticalExposures + highExposures, source: 'crypto_exposures' },
+      { label: 'Rank Critical Exposures', detail: 'Critical and high crypto risks are prioritized.', href: '/dashboard/quantum-risk-scoring', status: onboardingTaskStatus(highExposures > 0 || riskScore >= 90, openFindings > 0), count: criticalExposures + highExposures, source: 'crypto_exposures' },
       { label: 'Correlate Runtime Detections', detail: 'Runtime risk events are included in the risk posture.', href: '/dashboard/telemetry-correlation', status: onboardingTaskStatus(runtimeRisks.length > 0, runtimeEvents.length > 0), count: runtimeRisks.length, source: 'runtime_crypto_events' },
       { label: 'Build Migration Backlog', detail: 'Findings have a migration or remediation plan.', href: '/dashboard/migration-planner', status: onboardingTaskStatus(jobs.length > 0, openFindings > 0), count: jobs.length, source: 'migration_jobs' },
     ],
     4: [
       { label: 'Implement PQC Algorithms', detail: 'Completed jobs or PQC-ready crypto items have been observed.', href: '/dashboard/pqc-orchestration', status: onboardingTaskStatus(completedJobs.length > 0 || safeInventory.length > 0, runningJobs.length > 0), count: completedJobs.length + safeInventory.length, source: 'migration_jobs + crypto_inventory' },
       { label: 'Migrate Infrastructure Components', detail: 'Migration jobs are running across tenant assets.', href: '/dashboard/live-migration', status: onboardingTaskStatus(averageJobProgress >= 80 && jobs.length > 0, runningJobs.length > 0 || pendingJobs.length > 0, failedJobs.length > 0), count: jobs.length, source: 'migration_jobs' },
-      { label: 'Update Applications and Services', detail: 'Application and service assets are being moved to PQC targets.', href: '/dashboard/migration-terminal', status: onboardingTaskStatus(completedJobs.length >= Math.max(1, Math.ceil(jobs.length * 0.6)) && jobs.length > 0, jobs.length > 0), count: completedJobs.length, source: 'migration_jobs' },
+      { label: 'Update Applications and Services', detail: 'Application and service assets are being moved to PQC targets.', href: '/dashboard/live-migration', status: onboardingTaskStatus(completedJobs.length >= Math.max(1, Math.ceil(jobs.length * 0.6)) && jobs.length > 0, jobs.length > 0), count: completedJobs.length, source: 'migration_jobs' },
       { label: 'Data Migration and Encryption', detail: 'Keys, certificates, and encryption services are being updated.', href: '/dashboard/keys', status: onboardingTaskStatus((generatedKeys || []).length > 0 && readinessScore >= 60, (generatedKeys || []).length > 0 || runningJobs.length > 0), count: (generatedKeys || []).length, source: 'generated_keys' },
       { label: 'Configure Security Controls', detail: 'Compliance evidence and security policies are being recorded.', href: '/dashboard/crypto-policies', status: onboardingTaskStatus((complianceEvidence || []).length > 0, jobs.length > 0), count: (complianceEvidence || []).length, source: 'compliance_evidence' },
       { label: 'Validate Migration Integrity', detail: 'Failed jobs, alerts, and runtime risks are reconciled.', href: '/dashboard/migration-sandbox', status: onboardingTaskStatus(completedJobs.length > 0 && failedJobs.length === 0 && criticalExposures === 0, completedJobs.length > 0, failedJobs.length > 0), count: failedJobs.length, source: 'migration_jobs + crypto_exposures' },
@@ -1335,7 +1403,7 @@ async function buildPqcOnboardingSnapshot(client: any, user: any) {
   const stepNames = [
     { id: 1, title: 'Awareness & Preparation', href: '/dashboard/settings' },
     { id: 2, title: 'Discovery & Inventory', href: '/dashboard/scanner' },
-    { id: 3, title: 'Risk Assessment & Planning', href: '/dashboard/quantum-risk' },
+    { id: 3, title: 'Risk Assessment & Planning', href: '/dashboard/quantum-risk-scoring' },
     { id: 4, title: 'Migration Execution', href: '/dashboard/pqc-orchestration' },
     { id: 5, title: 'Migration Testing', href: '/dashboard/migration-sandbox' },
     { id: 6, title: 'Validation & Monitoring', href: '/dashboard/audit-vault' },
@@ -1566,6 +1634,471 @@ router.get('/pqc-onboarding/stream', async (req: Request, res: Response) => {
   }
 
   await emitSnapshot().catch((error) => console.warn('PQC onboarding stream initial emit failed:', error?.message || error))
+  const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 15_000)
+  const poll = setInterval(() => emitSnapshot().catch(() => undefined), 8_000)
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    clearInterval(poll)
+    res.end()
+  })
+})
+
+function complianceControlScore(status: unknown) {
+  const value = String(status || '').toLowerCase().replace(/[_-]+/g, ' ')
+  if (/(compliant|passed|approved|complete|completed|validated|verified|enforced|ready|active)/.test(value) && !/(non compliant|failed|fail|risk)/.test(value)) return 100
+  if (/(partial|in progress|pending|review|at risk|warning)/.test(value)) return 55
+  if (/(non compliant|failed|fail|critical|blocked|expired)/.test(value)) return 0
+  return 40
+}
+
+function compliancePolicyStatus(score: number) {
+  return score >= 75 ? 'Compliant' : 'Review'
+}
+
+function complianceGovernanceStatus(score: number) {
+  return score >= 75 ? 'Enforced' : 'Draft'
+}
+
+function certificateStatus(cert: any): 'Active' | 'Expired' | 'Expiring Soon' {
+  const status = String(cert?.status || '').toLowerCase()
+  const expiresAt = dateMs(cert?.not_after)
+  if (status.includes('expired') || (expiresAt && expiresAt < Date.now())) return 'Expired'
+  if (cert?.is_expiring_soon || (expiresAt && expiresAt < Date.now() + 30 * 86400000)) return 'Expiring Soon'
+  return 'Active'
+}
+
+function complianceSeverityLabel(value: unknown): 'High' | 'Medium' | 'Low' {
+  const rank = severityRank(String(value || ''))
+  if (rank >= 3) return 'High'
+  if (rank >= 2) return 'Medium'
+  return 'Low'
+}
+
+function timeAgoLabel(value: unknown) {
+  const ms = dateMs(value)
+  if (!ms) return 'unsynced'
+  const diff = Math.max(0, Date.now() - ms)
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
+function controlMatcher(label: string, evidence: any[]) {
+  const lowerLabel = label.toLowerCase()
+  const primary = lowerLabel.split(/[ /()]+/).filter(Boolean)[0] || lowerLabel
+  return evidence.filter((item) => {
+    const text = `${item.framework || ''} ${item.control_id || ''} ${item.evidence_type || ''} ${item.description || ''}`.toLowerCase()
+    return text.includes(lowerLabel) || text.includes(primary)
+  })
+}
+
+function averageScore(scores: number[]) {
+  if (!scores.length) return 0
+  return clampPercent(scores.reduce((sum, score) => sum + score, 0) / scores.length)
+}
+
+function complianceFrameworkScore(label: string, evidence: any[], fallbackScore: number) {
+  const matched = controlMatcher(label, evidence)
+  if (!matched.length) return fallbackScore
+  return averageScore(matched.map((item) => complianceControlScore(item.status)))
+}
+
+async function buildComplianceDashboardSnapshot(client: any, user: any) {
+  const [
+    assets,
+    inventory,
+    exposures,
+    jobs,
+    migrationEvents,
+    scanSessions,
+    scanResults,
+    securityEvents,
+    complianceEvidence,
+    runtimeEvents,
+    certificates,
+    generatedKeys,
+    vulnerabilities,
+    scannerAlerts,
+    scannerAgents,
+    vaultAuditLogs,
+    relationships,
+  ] = await Promise.all([
+    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', user.id).order('discovered_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(160)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1800)),
+    safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'compliance_evidence', (q) => q.select('id, asset_id, framework, control_id, status, evidence_type, description, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, package_name, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(2800)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, status, algorithm, key_size, issuer, subject, not_after, is_quantum_safe, is_expiring_soon, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, label, purpose, status, entropy_source, quality_score, bit_length, expires_at, revoked_at, rotated_from, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, description, severity, status, source, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'scanner_agents', (q) => q.select('id, name, status, hostname, platform, capabilities, last_seen_at, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
+    safeRows(client, 'vault_audit_logs', (q) => q.select('id, event_type, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'asset_relationships', (q) => q.select('id, source_asset_id, target_asset_id, relationship_type, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+  ])
+
+  const now = Date.now()
+  const oneDay = 86400000
+  const activeAssets = (assets || []).filter((asset: any) => String(asset.status || 'active').toLowerCase() !== 'archived')
+  const assetMap = new Map<string, any>((activeAssets || []).map((asset: any) => [asset.id, asset]))
+  const completedJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'completed')
+  const runningJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'running')
+  const pendingJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'pending')
+  const failedJobs = (jobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'failed')
+  const activeScans = (scanSessions || []).filter((scan: any) => ['pending', 'queued', 'running', 'analyzing'].includes(String(scan.status || '').toLowerCase()))
+  const completedScans = (scanSessions || []).filter((scan: any) => String(scan.status || '').toLowerCase() === 'completed')
+  const openAlerts = (scannerAlerts || []).filter((alert: any) => !['resolved', 'suppressed', 'closed'].includes(String(alert.status || '').toLowerCase()))
+  const openVulnerabilities = (vulnerabilities || []).filter((vuln: any) => !['resolved', 'remediated', 'false_positive', 'closed'].includes(String(vuln.status || '').toLowerCase()))
+
+  const safeInventory = (inventory || []).filter((item: any) => item.is_quantum_safe || isPqcReadyAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`))
+  const vulnerableInventory = (inventory || []).filter((item: any) => (item.is_vulnerable && !item.is_quantum_safe) || isLegacyAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`))
+  const pqcCertificates = (certificates || []).filter((cert: any) => cert.is_quantum_safe || isPqcReadyAlgorithm(`${cert.algorithm || ''}`))
+  const expiredCertificates = (certificates || []).filter((cert: any) => certificateStatus(cert) === 'Expired')
+  const expiringCertificates = (certificates || []).filter((cert: any) => certificateStatus(cert) === 'Expiring Soon')
+  const activeCertificates = (certificates || []).filter((cert: any) => certificateStatus(cert) === 'Active')
+  const secureKeys = (generatedKeys || []).filter((key: any) => {
+    const status = String(key.status || 'active').toLowerCase()
+    return !['revoked', 'expired', 'compromised'].includes(status) && isPqcReadyAlgorithm(`${key.algorithm || ''} ${key.bit_length || ''}`)
+  })
+
+  const vulnerableAssetIds = new Set<string>()
+  for (const item of vulnerableInventory || []) if (item.asset_id) vulnerableAssetIds.add(item.asset_id)
+  for (const exposure of exposures || []) if (severityRank(String(exposure.severity || '')) >= 3 && exposure.asset_id) vulnerableAssetIds.add(exposure.asset_id)
+  for (const result of scanResults || []) if (severityRank(String(result.threat_level || '')) >= 3 && result.asset_id) vulnerableAssetIds.add(result.asset_id)
+  for (const vuln of openVulnerabilities || []) if (vuln.asset_id) vulnerableAssetIds.add(vuln.asset_id)
+
+  const quantumSafeAssetIds = new Set<string>()
+  for (const item of safeInventory || []) if (item.asset_id) quantumSafeAssetIds.add(item.asset_id)
+  for (const cert of pqcCertificates || []) if (cert.asset_id) quantumSafeAssetIds.add(cert.asset_id)
+  for (const job of completedJobs || []) if (job.asset_id) quantumSafeAssetIds.add(job.asset_id)
+
+  const criticalFindings =
+    (exposures || []).filter((row: any) => severityRank(String(row.severity || '')) >= 4).length +
+    (scanResults || []).filter((row: any) => severityRank(String(row.threat_level || '')) >= 4).length +
+    openVulnerabilities.filter((row: any) => severityRank(String(row.severity || '')) >= 4).length +
+    openAlerts.filter((row: any) => severityRank(String(row.severity || '')) >= 4).length
+  const highFindings =
+    (exposures || []).filter((row: any) => severityRank(String(row.severity || '')) >= 3).length +
+    (scanResults || []).filter((row: any) => severityRank(String(row.threat_level || '')) >= 3).length +
+    openVulnerabilities.filter((row: any) => severityRank(String(row.severity || '')) >= 3).length +
+    openAlerts.filter((row: any) => severityRank(String(row.severity || '')) >= 3).length
+
+  const hndlFindings = [
+    ...(scanResults || []).filter((row: any) => isHndlScanFinding(row)),
+    ...(runtimeEvents || []).filter((row: any) => row.hndl_risk),
+    ...(securityEvents || []).filter((row: any) => /harvest now|decrypt later|hndl/i.test(`${row.event_type || ''} ${row.message || ''}`)),
+  ]
+  const runtimeRisks = (runtimeEvents || []).filter((event: any) => event.is_legacy || event.downgrade_detected || event.shadow_crypto || event.hndl_risk || severityRank(String(event.severity || '')) >= 3)
+  const runtimeEvents24h = (runtimeEvents || []).filter((event: any) => dateMs(event.observed_at || event.created_at) >= now - oneDay).length
+  const hybridDeployments = (inventory || []).filter((item: any) => /hybrid/i.test(`${item.algorithm || ''} ${item.protocol || ''} ${JSON.stringify(item.metadata || {})}`)).length
+  const mlKemDeployments = (inventory || []).filter((item: any) => /ml-kem|kyber/i.test(`${item.algorithm || ''} ${item.protocol || ''}`)).length + (jobs || []).filter((job: any) => /ml-kem|kyber/i.test(`${job.target_algorithm || ''}`)).length
+  const mlDsaDeployments = (inventory || []).filter((item: any) => /ml-dsa|dilithium/i.test(`${item.algorithm || ''} ${item.protocol || ''}`)).length + (jobs || []).filter((job: any) => /ml-dsa|dilithium/i.test(`${job.target_algorithm || ''}`)).length
+
+  const totalAssets = activeAssets.length
+  const totalCryptoItems = (inventory || []).length + (certificates || []).length + (generatedKeys || []).length
+  const pqcComponentScore = percentOf(safeInventory.length + pqcCertificates.length + secureKeys.length, Math.max(1, totalCryptoItems))
+  const pqcAssetScore = percentOf(quantumSafeAssetIds.size, Math.max(1, totalAssets))
+  const migrationCompletionRate = percentOf(completedJobs.length, Math.max(1, (jobs || []).length))
+  const qScore = clampPercent(100 - Math.min(100, criticalFindings * 8 + highFindings * 3 + failedJobs.length * 5 + expiredCertificates.length * 3 + hndlFindings.length * 4))
+  const readinessScore = clampPercent(pqcAssetScore * 0.42 + pqcComponentScore * 0.38 + migrationCompletionRate * 0.2)
+  const evidenceScore = complianceEvidence.length ? averageScore((complianceEvidence || []).map((item: any) => complianceControlScore(item.status))) : 0
+  const validationScore = clampPercent(readinessScore * 0.35 + qScore * 0.25 + evidenceScore * 0.25 + percentOf(completedScans.length, Math.max(1, (scanSessions || []).length)) * 0.15)
+  const complianceScore = clampPercent(readinessScore * 0.34 + qScore * 0.24 + evidenceScore * 0.27 + validationScore * 0.15)
+  const policyAdherence = complianceScore
+  const remediatedItems = completedJobs.length + (migrationEvents || []).filter((event: any) => /remediat|resolved|rotated|completed|mitigated/i.test(`${event.event_type || ''} ${event.message || ''}`)).length
+
+  const frameworkLabels = ['NIST SP 800-208', 'NIST SP 800-57', 'NIST SP 800-131A', 'CNSA 2.0', 'FIPS 203 (ML-KEM)', 'FIPS 204 (ML-DSA)', 'FIPS 205 (SLH-DSA)', 'ISO/IEC 27001']
+  const frameworkAlignment = frameworkLabels.map((label) => ({
+    name: label,
+    score: complianceFrameworkScore(label, complianceEvidence || [], label.includes('FIPS 203') ? Math.max(readinessScore, mlKemDeployments ? 75 : 0) : label.includes('FIPS 204') ? Math.max(readinessScore, mlDsaDeployments ? 75 : 0) : complianceScore),
+  }))
+
+  const controlGroups = [
+    { name: 'Cryptographic Inventory Coverage', category: 'Discovery', score: percentOf((inventory || []).length, Math.max(1, totalAssets)), updated: latestDate(...(inventory || []).map((row: any) => row.discovered_at || row.created_at)) },
+    { name: 'Quantum Risk Classification', category: 'Risk', score: qScore, updated: latestDate(...(exposures || []).map((row: any) => row.updated_at || row.created_at), ...(scanResults || []).map((row: any) => row.created_at)) },
+    { name: 'PQC Migration Execution', category: 'Migration', score: migrationCompletionRate, updated: latestDate(...(jobs || []).map((row: any) => row.updated_at || row.completed_at || row.created_at)) },
+    { name: 'Runtime Crypto Monitoring', category: 'Monitoring', score: runtimeEvents.length ? qScore : 0, updated: latestDate(...(runtimeEvents || []).map((row: any) => row.observed_at || row.created_at)) },
+    { name: 'Certificate Lifecycle Control', category: 'Certificates', score: percentOf(activeCertificates.length + pqcCertificates.length, Math.max(1, (certificates || []).length * 2)), updated: latestDate(...(certificates || []).map((row: any) => row.updated_at || row.created_at)) },
+    { name: 'Audit Evidence Retention', category: 'Audit', score: evidenceScore || percentOf((vaultAuditLogs || []).length, Math.max(1, totalAssets)), updated: latestDate(...(complianceEvidence || []).map((row: any) => row.updated_at || row.created_at), ...(vaultAuditLogs || []).map((row: any) => row.created_at)) },
+    { name: 'HNDL Mitigation Control', category: 'Remediation', score: hndlFindings.length ? percentOf(remediatedItems, remediatedItems + hndlFindings.length) : qScore, updated: latestDate(...hndlFindings.map((row: any) => row.observed_at || row.created_at || row.updated_at)) },
+    { name: 'Vendor Trust Dependency Tracking', category: 'Third Party', score: relationships.length ? complianceScore : 0, updated: latestDate(...(relationships || []).map((row: any) => row.created_at)) },
+  ]
+
+  const evidencePolicies = (complianceEvidence || []).slice(0, 10).map((item: any) => {
+    const score = complianceControlScore(item.status)
+    return {
+      name: textValue(item.control_id, textValue(item.framework, 'Compliance Control')),
+      category: textValue(item.framework, textValue(item.evidence_type, 'Compliance')),
+      status: compliancePolicyStatus(score),
+      lastReviewed: new Date(dateMs(item.updated_at || item.created_at) || now).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
+    }
+  })
+  const policies = (evidencePolicies.length ? evidencePolicies : controlGroups.map((control) => ({
+    name: control.name,
+    category: control.category,
+    status: compliancePolicyStatus(control.score),
+    lastReviewed: control.updated ? new Date(control.updated).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'No evidence',
+  }))).slice(0, 8)
+
+  const governancePolicyMatrix = controlGroups.map((control) => ({
+    name: control.name,
+    category: control.category,
+    status: complianceGovernanceStatus(control.score),
+    coverage: control.score,
+    updated: control.updated ? new Date(control.updated).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'Awaiting evidence',
+  }))
+
+  const certificatesRows = (certificates || []).slice(0, 8).map((cert: any) => ({
+    algorithm: textValue(cert.algorithm, 'Unknown'),
+    issuedTo: textValue(cert.subject || cert.name, textValue(assetMap.get(cert.asset_id)?.name, 'Unassigned asset')),
+    issuedOn: new Date(dateMs(cert.created_at) || now).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
+    expiresOn: cert.not_after ? new Date(dateMs(cert.not_after)).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'Not recorded',
+    status: certificateStatus(cert),
+  }))
+
+  const policyViolations: any[] = []
+  const addViolation = (input: any) => {
+    if (!input.title || policyViolations.some((row) => row.id === input.id)) return
+    policyViolations.push(input)
+  }
+  for (const exposure of (exposures || []).filter((row: any) => severityRank(String(row.severity || '')) >= 2).slice(0, 8)) {
+    addViolation({
+      id: `exposure-${exposure.id}`,
+      title: titleCase(textValue(exposure.exposure_type || exposure.description, 'Crypto exposure')),
+      detail: textValue(exposure.description, textValue(exposure.detected_value, 'Cryptographic exposure requires review')),
+      severity: complianceSeverityLabel(exposure.severity),
+      time: timeAgoLabel(exposure.updated_at || exposure.created_at),
+      type: severityRank(String(exposure.severity || '')) >= 3 ? 'warning' : 'info',
+    })
+  }
+  for (const evidence of (complianceEvidence || []).filter((row: any) => complianceControlScore(row.status) < 75).slice(0, 8)) {
+    addViolation({
+      id: `evidence-${evidence.id}`,
+      title: textValue(evidence.control_id, textValue(evidence.framework, 'Compliance evidence review')),
+      detail: textValue(evidence.description, `Control status: ${textValue(evidence.status, 'review')}`),
+      severity: complianceControlScore(evidence.status) <= 0 ? 'High' : 'Medium',
+      time: timeAgoLabel(evidence.updated_at || evidence.created_at),
+      type: 'warning',
+    })
+  }
+  for (const vuln of openVulnerabilities.slice(0, 8)) {
+    addViolation({
+      id: `vuln-${vuln.id}`,
+      title: textValue(vuln.title, 'Open vulnerability'),
+      detail: textValue(vuln.description, textValue(vuln.source, 'Vulnerability needs remediation')),
+      severity: complianceSeverityLabel(vuln.severity),
+      time: timeAgoLabel(vuln.updated_at || vuln.created_at),
+      type: 'warning',
+    })
+  }
+  policyViolations.sort((a, b) => severityRank(a.severity) - severityRank(b.severity)).reverse()
+
+  const trend = Array.from({ length: 7 }, (_, index) => {
+    const start = startOfDayMs(6 - index)
+    const end = start + oneDay
+    const evidenceBucket = (complianceEvidence || []).filter((row: any) => {
+      const time = dateMs(row.updated_at || row.created_at)
+      return time >= start && time < end
+    })
+    const riskBucket =
+      (exposures || []).filter((row: any) => dateMs(row.updated_at || row.created_at) >= start && dateMs(row.updated_at || row.created_at) < end).length +
+      (scanResults || []).filter((row: any) => dateMs(row.created_at) >= start && dateMs(row.created_at) < end).length +
+      (securityEvents || []).filter((row: any) => dateMs(row.created_at) >= start && dateMs(row.created_at) < end && severityRank(String(row.severity || '')) >= 2).length
+    const migrationBucket = (jobs || []).filter((row: any) => dateMs(row.completed_at || row.updated_at) >= start && dateMs(row.completed_at || row.updated_at) < end && normalizeJobStatus(row.status) === 'completed').length
+    const bucketScore = evidenceBucket.length
+      ? averageScore(evidenceBucket.map((row: any) => complianceControlScore(row.status)))
+      : clampPercent(complianceScore - Math.max(0, 6 - index) * Math.max(1, Math.round((riskBucket - migrationBucket) / 2)))
+    return {
+      label: dateLabel(start),
+      value: bucketScore,
+    }
+  })
+
+  const compliantRequirements = frameworkAlignment.filter((row) => row.score >= 75).length + safeInventory.length + pqcCertificates.length + completedJobs.length
+  const partialRequirements = frameworkAlignment.filter((row) => row.score > 0 && row.score < 75).length + runningJobs.length + pendingJobs.length
+  const nonCompliantRequirements = criticalFindings + highFindings + failedJobs.length + expiredCertificates.length
+  const notApplicableRequirements = Math.max(0, totalAssets - new Set((inventory || []).map((row: any) => row.asset_id).filter(Boolean)).size)
+
+  const requirementBreakdown = [
+    { label: 'Compliant', value: compliantRequirements, color: '#42D95B' },
+    { label: 'Partially Compliant', value: partialRequirements, color: '#FFCF33' },
+    { label: 'Non-Compliant', value: nonCompliantRequirements, color: '#FF5D52' },
+    { label: 'Not Applicable', value: notApplicableRequirements, color: '#B8B8B8' },
+  ]
+
+  const maturityLevels = [
+    { label: 'Level 5 - Optimized', value: complianceScore >= 90 ? Math.max(5, complianceScore - 82) : 0, color: '#FFD36B' },
+    { label: 'Level 4 - Managed', value: complianceScore >= 70 ? Math.min(55, Math.max(8, complianceScore - 42)) : 0, color: '#D49B18' },
+    { label: 'Level 3 - Defined', value: complianceScore >= 45 ? Math.min(60, Math.max(10, complianceScore - 30)) : 0, color: '#8F6B19' },
+    { label: 'Level 2 - Repeatable', value: complianceScore >= 20 ? Math.min(50, Math.max(8, complianceScore - 12)) : 0, color: '#4D3910' },
+    { label: 'Level 1 - Initial', value: complianceScore < 20 ? Math.max(5, complianceScore) : Math.max(0, 100 - complianceScore), color: '#2B210B' },
+  ]
+
+  const latestActivityAt = latestDate(
+    ...(securityEvents || []).map((row: any) => row.created_at),
+    ...(migrationEvents || []).map((row: any) => row.created_at),
+    ...(runtimeEvents || []).map((row: any) => row.observed_at || row.created_at),
+    ...(complianceEvidence || []).map((row: any) => row.updated_at || row.created_at),
+    ...(scanSessions || []).map((row: any) => row.updated_at || row.completed_at || row.started_at || row.created_at),
+  )
+
+  return {
+    generatedAt: new Date().toISOString(),
+    source: {
+      mode: 'authenticated-live-aggregate',
+      latestActivityAt,
+      latestScanAt: latestDate(...(scanSessions || []).map((row: any) => row.completed_at || row.updated_at || row.started_at || row.created_at)),
+      tables: {
+        assets: activeAssets.length,
+        cryptoInventory: (inventory || []).length,
+        cryptoExposures: (exposures || []).length,
+        scanResults: (scanResults || []).length,
+        migrationJobs: (jobs || []).length,
+        runtimeEvents: (runtimeEvents || []).length,
+        complianceEvidence: (complianceEvidence || []).length,
+        certificates: (certificates || []).length,
+        generatedKeys: (generatedKeys || []).length,
+        scannerAlerts: openAlerts.length,
+      },
+    },
+    metrics: {
+      complianceScore,
+      qScore,
+      readinessScore,
+      validationScore,
+      policyAdherence,
+      totalAssets,
+      totalComponents: totalCryptoItems,
+      vulnerableAssets: vulnerableAssetIds.size,
+      vulnerableComponents: vulnerableInventory.length,
+      quantumSecuredAssets: quantumSafeAssetIds.size,
+      pqcReadyComponents: safeInventory.length + pqcCertificates.length + secureKeys.length,
+      criticalFindings,
+      highFindings,
+      openFindings: policyViolations.length + openAlerts.length,
+      totalCertificates: (certificates || []).length,
+      activeCertificates: activeCertificates.length,
+      expiredCertificates: expiredCertificates.length,
+      expiringCertificates: expiringCertificates.length,
+      totalPolicies: Math.max(controlGroups.length, policies.length, frameworkAlignment.length),
+      enforcedPolicies: governancePolicyMatrix.filter((row) => row.status === 'Enforced').length,
+      activeScans: activeScans.length,
+      completedScans: completedScans.length,
+      activeMigrationJobs: runningJobs.length + pendingJobs.length,
+      completedMigrationJobs: completedJobs.length,
+      failedMigrationJobs: failedJobs.length,
+      migrationCompletionRate,
+      hybridDeployments,
+      mlKemDeployments,
+      mlDsaDeployments,
+      keyCount: (generatedKeys || []).length,
+      secureKeys: secureKeys.length,
+      auditEvents: (vaultAuditLogs || []).length + (complianceEvidence || []).length,
+      runtimeEvents24h,
+      hndlExposures: hndlFindings.length,
+      remediatedItems,
+      scannerAgents: (scannerAgents || []).length,
+      trustDependencies: (relationships || []).length,
+    },
+    checklist: [
+      { label: 'Asset discovery status synchronized', complete: activeAssets.length > 0, detail: `${activeAssets.length} active assets` },
+      { label: 'Crypto inventory / CBOM evidence available', complete: (inventory || []).length > 0, detail: `${(inventory || []).length} crypto inventory rows` },
+      { label: 'Quantum risk scoring calculated', complete: totalCryptoItems > 0 || criticalFindings > 0 || highFindings > 0, detail: `Q-Score ${qScore}` },
+      { label: 'PQC migration execution tracked', complete: (jobs || []).length > 0, detail: `${completedJobs.length}/${(jobs || []).length} jobs completed` },
+      { label: 'Runtime telemetry and drift monitored', complete: runtimeEvents.length > 0 || securityEvents.length > 0, detail: `${runtimeEvents24h} runtime events in 24h` },
+      { label: 'Audit and compliance evidence retained', complete: (complianceEvidence || []).length > 0 || (vaultAuditLogs || []).length > 0, detail: `${(complianceEvidence || []).length} evidence rows` },
+      { label: 'Post-quantum readiness validated', complete: complianceScore >= 80, detail: `${complianceScore}% compliance score` },
+    ],
+    certificates: certificatesRows,
+    policies,
+    frameworkAlignment,
+    maturityLevels,
+    policyTrend: trend,
+    governancePolicyMatrix,
+    policyViolations: policyViolations.slice(0, 8),
+    requirementBreakdown,
+    capabilityHighlights: [
+      { label: 'Policy Enforcement', detail: `${governancePolicyMatrix.filter((row) => row.status === 'Enforced').length} controls enforced`, iconKey: 'shield' },
+      { label: 'Audit Trail', detail: `${(vaultAuditLogs || []).length + (complianceEvidence || []).length} evidence events`, iconKey: 'audit' },
+      { label: 'Automated Compliance', detail: `${activeScans.length} active scans, ${runtimeEvents24h} runtime events`, iconKey: 'check' },
+      { label: 'Risk Based Approach', detail: `${criticalFindings + highFindings} prioritized findings`, iconKey: 'target' },
+      { label: 'Migration Readiness', detail: `${migrationCompletionRate}% migration completion`, iconKey: 'clipboard' },
+      { label: 'Trust Dependencies', detail: `${(relationships || []).length} dependency links tracked`, iconKey: 'building' },
+    ],
+    telemetry: [
+      ...(runtimeEvents || []).slice(0, 8).map((event: any) => ({
+        id: `runtime-${event.id}`,
+        source: 'runtime_crypto_events',
+        title: titleCase(textValue(event.event_type, 'Runtime crypto event')),
+        detail: textValue(event.asset_name || event.host || event.algorithm || event.cipher_suite, 'Runtime telemetry observed'),
+        severity: String(event.severity || 'low'),
+        timestamp: event.observed_at || event.created_at,
+      })),
+      ...(securityEvents || []).slice(0, 8).map((event: any) => ({
+        id: `security-${event.id}`,
+        source: 'security_events',
+        title: titleCase(textValue(event.event_type, 'Security event')),
+        detail: textValue(event.message || event.resource_name, 'Security telemetry observed'),
+        severity: String(event.severity || 'low'),
+        timestamp: event.created_at,
+      })),
+      ...(migrationEvents || []).slice(0, 8).map((event: any) => ({
+        id: `migration-${event.id}`,
+        source: 'migration_events',
+        title: titleCase(textValue(event.event_type, 'Migration event')),
+        detail: textValue(event.message, 'Migration telemetry observed'),
+        severity: String(event.severity || 'low'),
+        timestamp: event.created_at,
+      })),
+    ].sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp)).slice(0, 16),
+  }
+}
+
+router.get('/compliance', async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user
+    const token = (req as any).token
+    const client = createAuthClient(token)
+
+    if (!client) {
+      return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+    }
+
+    return res.json({ data: await buildComplianceDashboardSnapshot(client, user) })
+  } catch (err) {
+    console.error('Compliance dashboard error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch compliance telemetry' } })
+  }
+})
+
+router.get('/compliance/stream', async (req: Request, res: Response) => {
+  const user = (req as any).user
+  const token = (req as any).token
+  const client = createAuthClient(token)
+
+  if (!client) {
+    return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+  }
+
+  setSseHeaders(res)
+  writeSse(res, 'compliance-connected', { timestamp: new Date().toISOString(), userId: user.id })
+
+  const emitSnapshot = async () => {
+    const snapshot = await buildComplianceDashboardSnapshot(client, user)
+    writeSse(res, 'compliance-update', snapshot)
+  }
+
+  await emitSnapshot().catch((error) => console.warn('Compliance stream initial emit failed:', error?.message || error))
   const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 15_000)
   const poll = setInterval(() => emitSnapshot().catch(() => undefined), 8_000)
 
@@ -1852,7 +2385,7 @@ const HNDL_DEFENSE_ACTIONS: Record<string, {
     eventType: 'hndl-defense-isolate-asset',
     assetClass: 'network_protocol',
     optionLabel: 'Isolate affected asset',
-    redirectPath: '/dashboard/asset-intelligence',
+    redirectPath: '/dashboard/assets',
     severity: 'critical',
     playbook: ['Confirm owner and blast radius', 'Apply approved containment policy', 'Validate asset isolation with fresh telemetry'],
   },

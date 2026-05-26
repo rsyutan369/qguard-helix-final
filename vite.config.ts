@@ -1,10 +1,14 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import {tsImport} from 'tsx/esm/api';
 import {defineConfig, loadEnv} from 'vite';
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const apiServerEntry = path.join(rootDir, 'src/api-server/index.ts');
+const viteConfigUrl = pathToFileURL(path.join(rootDir, 'vite.config.ts')).href;
+const tsconfigPath = path.join(rootDir, 'tsconfig.json');
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, rootDir, '');
@@ -35,8 +39,22 @@ export default defineConfig(({mode}) => {
             apiAppPromise = null
           }
 
+          const resetSsrLoader = () => {
+            const viteServer = server as any
+            viteServer._ssrCompatModuleRunner?.close?.()
+            viteServer._ssrCompatModuleRunner = undefined
+            viteServer.environments?.ssr?.moduleGraph?.invalidateAll?.()
+            server.moduleGraph.invalidateAll()
+          }
+
+          const isViteTransportTimeout = (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err || '')
+            return message.includes('transport invoke timed out') || message.includes('fetchModule')
+          }
+
           const invalidateApiServer = (file: string) => {
             resetApiServer()
+            resetSsrLoader()
             const normalizedFile = file.replace(/\\/g, '/')
             void server.moduleGraph.getModuleByUrl(normalizedFile).then((moduleNode) => {
               if (moduleNode) server.moduleGraph.invalidateModule(moduleNode)
@@ -46,13 +64,26 @@ export default defineConfig(({mode}) => {
             })
           }
 
+          const loadApiServerOnce = () => {
+            const entryUrl = `${pathToFileURL(apiServerEntry).href}?t=${Date.now()}`
+            return tsImport(entryUrl, { parentURL: viteConfigUrl, tsconfig: tsconfigPath })
+              .then((mod) => {
+                apiApp = mod.createApiServer()
+                return apiApp
+              })
+          }
+
           const loadApiServer = () => {
             if (apiApp) return Promise.resolve(apiApp)
             if (!apiAppPromise) {
-              apiAppPromise = server.ssrLoadModule('/src/api-server/index.ts')
-                .then((mod) => {
-                  apiApp = mod.createApiServer()
-                  return apiApp
+              apiAppPromise = loadApiServerOnce()
+                .catch((err) => {
+                  if (!isViteTransportTimeout(err)) throw err
+
+                  console.warn('Vite API loader timed out; resetting SSR module cache and retrying once.')
+                  resetApiServer()
+                  resetSsrLoader()
+                  return loadApiServerOnce()
                 })
                 .catch((err) => {
                   apiAppPromise = null
@@ -70,6 +101,14 @@ export default defineConfig(({mode}) => {
               }
             })
           }
+
+          server.httpServer?.once('listening', () => {
+            setTimeout(() => {
+              void loadApiServer().catch(() => {
+                // The request path reports the concrete API load error if prewarm fails.
+              })
+            }, 1000)
+          })
 
           server.middlewares.use((req: any, res: any, next: any) => {
             if (req.url?.startsWith('/api/')) {

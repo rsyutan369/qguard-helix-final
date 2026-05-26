@@ -31,7 +31,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 
-type GovernanceMode = 'policies' | 'audit' | 'regulatory';
+type GovernanceMode = 'quantum' | 'policies' | 'audit' | 'regulatory';
 type LoadState = 'loading' | 'success' | 'error';
 
 type TimelinePoint = {
@@ -196,7 +196,9 @@ type GovernanceSnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
+    vulnerabilities: number;
     cryptoInventory: number;
     cryptoExposures: number;
     certificates: number;
@@ -262,7 +264,9 @@ const EMPTY_SNAPSHOT: GovernanceSnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
+    vulnerabilities: 0,
     cryptoInventory: 0,
     cryptoExposures: 0,
     certificates: 0,
@@ -296,6 +300,16 @@ const PANEL_CLASSES =
   'group relative overflow-hidden rounded-lg border border-blue-400/12 bg-[#07101D]/76 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-20px_48px_rgba(36,120,255,0.035),0_14px_36px_rgba(0,0,0,0.34)] transition duration-500 hover:-translate-y-0.5 hover:border-gold/65 hover:bg-[#0A1728]/86 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-20px_52px_rgba(251,191,36,0.11),0_18px_48px_rgba(0,0,0,0.48),0_0_46px_rgba(251,191,36,0.22)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/55 before:to-transparent';
 
 const MODE_COPY = {
+  quantum: {
+    segment: 'quantum-governance',
+    streamPrefix: 'quantum-governance',
+    title: 'Quantum Governance',
+    subtitle: 'Enterprise crypto governance, PQC readiness, audit evidence, policy control, and runtime risk synchronized from tenant telemetry.',
+    Icon: ShieldCheck,
+    primaryHref: '/dashboard/regulatory-mapping',
+    primaryLabel: 'Control Map',
+    accent: GOLD,
+  },
   policies: {
     segment: 'crypto-policies',
     streamPrefix: 'crypto-policies',
@@ -467,7 +481,9 @@ function useGovernanceDashboard(mode: GovernanceMode) {
       'runtime_crypto_events',
       'scanner_evidence',
       'scanner_alerts',
+      'pqc_scan_sessions',
       'pqc_scan_results',
+      'vulnerabilities',
       'crypto_inventory',
       'crypto_exposures',
       'certificates',
@@ -1056,6 +1072,70 @@ function Header({ mode, snapshot, state, sseConnected, refresh }: { mode: Govern
   );
 }
 
+function QuantumLayout({ snapshot }: { snapshot: GovernanceSnapshot }) {
+  const spark = snapshot.timeline.map((point) => point.evidence);
+  const auditReadiness = Math.min(
+    snapshot.metrics.complianceScore || snapshot.metrics.policyScore,
+    snapshot.metrics.vaultIntegrityScore || snapshot.metrics.policyScore,
+  );
+  const governanceScore = Math.round((
+    snapshot.metrics.policyScore +
+    snapshot.metrics.policyCoverage +
+    snapshot.metrics.complianceScore +
+    snapshot.metrics.vaultIntegrityScore +
+    snapshot.metrics.pqcReadiness +
+    snapshot.metrics.encryptedCoverage
+  ) / 6);
+
+  return (
+    <>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <MetricTile icon={ShieldCheck} label="Governance Score" value={percentFmt(governanceScore)} trend={signedPercent(snapshot.metrics.evidenceDelta)} detail="policy, audit, and compliance" color={GOLD} spark={spark} />
+        <MetricTile icon={Database} label="Evidence" value={compactFmt(snapshot.metrics.totalEvidence)} trend={snapshot.telemetry.eventPipelineStatus.replace(/_/g, ' ')} detail="deduplicated tenant signals" color={BLUE} spark={spark} />
+        <MetricTile icon={Zap} label="PQC Readiness" value={percentFmt(snapshot.metrics.pqcReadiness)} trend={percentFmt(snapshot.metrics.encryptedCoverage)} detail="quantum-safe evidence" color={GREEN} spark={snapshot.timeline.map((point) => point.compliant)} />
+        <MetricTile icon={ShieldAlert} label="Risk Findings" value={integerFmt(snapshot.metrics.highRiskFindings)} trend={`${integerFmt(snapshot.metrics.policyViolations)} violations`} detail="scan and runtime review" color={ORANGE} spark={snapshot.timeline.map((point) => point.violations)} />
+        <MetricTile icon={Scale} label="Controls" value={integerFmt(snapshot.metrics.controlsMapped)} trend={`${integerFmt(snapshot.metrics.frameworksMapped)} frameworks`} detail="mapped regulatory scope" color={PURPLE} spark={snapshot.timeline.map((point) => point.compliant)} />
+        <MetricTile icon={Archive} label="Audit Ready" value={percentFmt(auditReadiness)} trend={`${integerFmt(snapshot.metrics.immutableEvents)} sealed`} detail="vault and custody integrity" color={CYAN} spark={snapshot.timeline.map((point) => point.audit)} />
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-8">
+          <SectionTitle suffix={<a href="/dashboard/crypto-policies" className="text-[10px] font-black uppercase tracking-[0.06em] text-gold hover:text-[#FFE8A8]">Crypto Policies</a>}>Governance Control Matrix</SectionTitle>
+          <PolicyMatrix rows={snapshot.policyRows} />
+        </Panel>
+        <Panel className="p-5 xl:col-span-4">
+          <SectionTitle>Readiness Command State</SectionTitle>
+          <ScoreDial value={governanceScore} label="Governance" color={GOLD} />
+          <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+            <div className="border-t border-white/8 pt-3"><div className="text-white/42">Scan Signals</div><div className="mt-1 font-mono text-lg text-white">{compactFmt(snapshot.telemetry.scanSessions + snapshot.telemetry.scanResults + snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts)}</div></div>
+            <div className="border-t border-white/8 pt-3"><div className="text-white/42">Vulnerabilities</div><div className="mt-1 font-mono text-lg text-white">{compactFmt(snapshot.telemetry.vulnerabilities)}</div></div>
+            <div className="border-t border-white/8 pt-3"><div className="text-white/42">Crypto Objects</div><div className="mt-1 font-mono text-lg text-white">{compactFmt(snapshot.telemetry.cryptoInventory + snapshot.telemetry.certificates + snapshot.telemetry.generatedKeys)}</div></div>
+            <div className="border-t border-white/8 pt-3"><div className="text-white/42">Evidence Gaps</div><div className="mt-1 font-mono text-lg text-white">{integerFmt(snapshot.metrics.evidenceGaps)}</div></div>
+          </div>
+        </Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-7"><SectionTitle>Governance Evidence Timeline</SectionTitle><TimelineChart points={snapshot.timeline} /></Panel>
+        <Panel className="p-5 xl:col-span-5"><SectionTitle>Framework Coverage</SectionTitle><Bars rows={snapshot.frameworkDistribution.slice(0, 8)} empty="No framework mapping is available yet." /></Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-5"><SectionTitle>Priority Findings</SectionTitle><AlertList rows={snapshot.alerts} /></Panel>
+        <Panel className="p-5 xl:col-span-4"><SectionTitle>Recommended Actions</SectionTitle><Recommendations rows={snapshot.recommendations} /></Panel>
+        <Panel className="p-5 xl:col-span-3"><SectionTitle>Live Source Sync</SectionTitle><Bars rows={snapshot.sourceDistribution.slice(0, 8)} empty="No source telemetry is available yet." /></Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-7"><SectionTitle>Regulatory Control Mapping</SectionTitle><RegulatoryMatrix rows={snapshot.regulatoryRows} /></Panel>
+        <Panel className="p-5 xl:col-span-5"><SectionTitle>Immutable Audit Ledger</SectionTitle><AuditLedger rows={snapshot.auditRows} /></Panel>
+      </section>
+
+      <Panel className="p-5"><SectionTitle>Governance Evidence Inventory</SectionTitle><InventoryTable rows={snapshot.inventory} /></Panel>
+    </>
+  );
+}
+
 function PolicyLayout({ snapshot }: { snapshot: GovernanceSnapshot }) {
   const spark = snapshot.timeline.map((point) => point.evidence);
   return (
@@ -1087,7 +1167,7 @@ function PolicyLayout({ snapshot }: { snapshot: GovernanceSnapshot }) {
         <Panel className="p-5 xl:col-span-5"><SectionTitle>Policy Domains</SectionTitle><Bars rows={snapshot.domainRows.slice(0, 8)} empty="No policy domains are available yet." /></Panel>
       </section>
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        <Panel className="p-5 xl:col-span-5"><SectionTitle>Open Policy Findings</SectionTitle><AlertList rows={snapshot.alerts.filter((row) => /policy|runtime|algorithm|certificate|key|scanner/i.test(`${row.domain} ${row.source}`))} /></Panel>
+        <Panel className="p-5 xl:col-span-5"><SectionTitle>Open Policy Findings</SectionTitle><AlertList rows={snapshot.alerts.filter((row) => /policy|runtime|algorithm|certificate|key|scanner|scan|vulnerability/i.test(`${row.domain} ${row.source}`))} /></Panel>
         <Panel className="p-5 xl:col-span-4"><SectionTitle>Recommended Actions</SectionTitle><Recommendations rows={snapshot.recommendations} /></Panel>
         <Panel className="p-5 xl:col-span-3"><SectionTitle>Source Synchronization</SectionTitle><Bars rows={snapshot.sourceDistribution.slice(0, 7)} empty="No source telemetry is available yet." /></Panel>
       </section>
@@ -1180,6 +1260,7 @@ function RegulatoryLayout({ snapshot }: { snapshot: GovernanceSnapshot }) {
 }
 
 function Body({ mode, snapshot }: { mode: GovernanceMode; snapshot: GovernanceSnapshot }) {
+  if (mode === 'quantum') return <QuantumLayout snapshot={snapshot} />;
   if (mode === 'policies') return <PolicyLayout snapshot={snapshot} />;
   if (mode === 'audit') return <AuditLayout snapshot={snapshot} />;
   return <RegulatoryLayout snapshot={snapshot} />;
@@ -1191,7 +1272,7 @@ export default function GovernanceDashboard({ mode }: { mode: GovernanceMode }) 
   const telemetrySummary = useMemo(() => [
     ['Assets', snapshot.telemetry.assets],
     ['Runtime', snapshot.telemetry.runtimeEvents],
-    ['Scanner', snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts],
+    ['Scanner', snapshot.telemetry.scanSessions + snapshot.telemetry.scanResults + snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts + snapshot.telemetry.vulnerabilities],
     ['Vault', snapshot.telemetry.vaultFiles + snapshot.telemetry.vaultAuditLogs],
     ['Compliance', snapshot.telemetry.complianceEvidence],
   ], [snapshot.telemetry]);

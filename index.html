@@ -5,6 +5,24 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Qguard Helix Quantum Cyber Defense</title>
+  <script>
+    (function () {
+      try {
+        var key = 'qguard-theme-mode-v1';
+        var stored = localStorage.getItem(key);
+        var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark';
+        var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        var theme = mode === 'system' ? (prefersLight ? 'light' : 'dark') : mode;
+        var root = document.documentElement;
+        root.dataset.theme = theme;
+        root.dataset.themeMode = mode;
+        root.style.colorScheme = theme;
+        root.classList.add(theme, 'qg-theme-' + theme, 'qg-theme-ready');
+      } catch (error) {
+        document.documentElement.classList.add('dark', 'qg-theme-dark');
+      }
+    })();
+  </script>
 </head>
 
 <body>

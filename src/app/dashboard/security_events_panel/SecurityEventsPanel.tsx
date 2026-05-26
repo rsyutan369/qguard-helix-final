@@ -27,6 +27,18 @@ const SEVERITY_ICONS = {
 
 const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
 
+function eventHref(event: SecurityEvent) {
+  const type = `${event.eventType || ''} ${event.resourceType || ''}`.toLowerCase();
+  if (event.assetId) return `/dashboard/assets?asset=${encodeURIComponent(event.assetId)}`;
+  if (type.includes('scan') || type.includes('scanner')) return '/dashboard/scanner';
+  if (type.includes('runtime') || type.includes('crypto')) return '/dashboard/runtime-telemetry';
+  if (type.includes('vulnerab') || type.includes('finding')) return '/dashboard/vulnerabilities';
+  if (type.includes('migration')) return '/dashboard/live-migration';
+  if (type.includes('cert')) return '/dashboard/certificate-telemetry';
+  if (type.includes('audit') || type.includes('auth') || type.includes('vault')) return '/dashboard/audit-vault';
+  return '/dashboard/telemetry-correlation';
+}
+
 export default function SecurityEventsPanel({ events, loading }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -67,17 +79,19 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
               const colorClass = SEVERITY_COLORS[event.severity];
               
               return (
-                <motion.div
+                <motion.a
                   key={event.id}
+                  href={eventHref(event)}
+                  aria-label={`Open ${event.eventType.replace(/_/g, ' ')}`}
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, scale: 0.95 }}
-                  className={`p-3 rounded-lg border flex gap-3 relative group overflow-hidden ${colorClass}`}
+                  className={`p-3 rounded-lg border flex gap-3 relative group/event overflow-hidden no-underline outline-none focus-visible:ring-2 focus-visible:ring-gold/70 hover:border-gold/40 ${colorClass}`}
                 >
-                  <div className="absolute top-0 right-0 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button className="p-1 hover:bg-white/10 rounded" title="View Details">
+                  <div className="absolute top-0 right-0 p-1 opacity-0 group-hover/event:opacity-100 transition-opacity">
+                    <div className="p-1 rounded bg-white/5" title="View Details">
                         <ExternalLink className="w-3 h-3 text-white/40" />
-                    </button>
+                    </div>
                   </div>
 
                   <div className="mt-0.5 shrink-0">
@@ -99,9 +113,9 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
                             <FileSearch className="w-2.5 h-2.5" />
                             {event.resourceType}: <span className="text-white/50">{event.resourceName}</span>
                         </div>
-                    )}
+                      )}
                   </div>
-                </motion.div>
+                </motion.a>
               );
             })
           )}
@@ -109,9 +123,9 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
       </div>
 
       <div className="p-3 border-t border-gold/10 text-center relative z-20">
-        <button className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 hover:text-gold transition-colors">
+        <a href="/dashboard/audit-vault" className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 hover:text-gold transition-colors no-underline">
             View All Audit Logs
-        </button>
+        </a>
       </div>
     </div>
   );

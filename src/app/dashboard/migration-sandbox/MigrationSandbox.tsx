@@ -56,7 +56,7 @@ import { cn } from '@/lib/utils'
    TYPES
    ═══════════════════════════════════════════════════════════════════════════ */
 
-type SimulationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused'
+type SimulationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused' | 'rollback_requested' | 'rolled_back' | 'stopped'
 
 type SimEvent = {
   id: string
@@ -78,10 +78,20 @@ type Simulation = {
   fromAlgo: string
   toAlgo: string
   migrationType: string
+  runMode: string
+  runModeLabel: string
+  isSandbox: boolean
+  isActualMigration: boolean
+  executionScope: string
+  engineStatus: string
+  queuedReason: string | null
+  eta: string
   status: SimulationStatus
   progress: number
   riskLevel: string
   phase: string
+  phaseId: string
+  phaseDetail: string
   startedAt: string | null
   completedAt: string | null
   updatedAt: string
@@ -125,6 +135,12 @@ type WorkflowPhase = {
   complete: boolean
   active: boolean
   progress: number
+  count?: number
+  running?: number
+  queued?: number
+  blocked?: number
+  source?: string
+  updatedAt?: string | null
 }
 
 type PqcStackItem = {
@@ -150,6 +166,18 @@ type SandboxSummary = {
   failed: number
   queued: number
   paused: number
+  totalWorkflows: number
+  actualMigrations: number
+  remediationWorkflows: number
+  runningWorkflows: number
+  completedWorkflows: number
+  failedWorkflows: number
+  queuedWorkflows: number
+  pausedWorkflows: number
+  blockedWorkflows: number
+  averageWorkflowProgress: number
+  backgroundEngine: string
+  lastMigrationEventAt: string | null
   totalAssets: number
   vulnerableAssets: number
   criticalExposures: number
@@ -161,12 +189,14 @@ type SandboxSummary = {
   expiringCerts: number
   lastScanAt: string | null
   completionRate: number
+  workflowCompletionRate: number
 }
 
 type SandboxSnapshot = {
   generatedAt: string
   summary: SandboxSummary
   simulations: Simulation[]
+  workflows: Simulation[]
   riskFactors: RiskFactor[]
   recommendations: Recommendation[]
   complianceItems: ComplianceItem[]
@@ -176,12 +206,18 @@ type SandboxSnapshot = {
   recentLogs: LogEntry[]
 }
 
+type OperatorNotice = {
+  kind: 'success' | 'error' | 'info'
+  message: string
+}
+
 type ActiveTab = 'overview' | 'simulations' | 'risk' | 'rollback' | 'compliance' | 'logs' | 'recommendations' | 'pqc-stack'
 
 const EMPTY: SandboxSnapshot = {
   generatedAt: new Date().toISOString(),
-  summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, openVulnerabilities: 0, pqcReadiness: 0, riskScore: 100, complianceScore: 0, expiringCerts: 0, lastScanAt: null, completionRate: 0 },
+  summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalWorkflows: 0, actualMigrations: 0, remediationWorkflows: 0, runningWorkflows: 0, completedWorkflows: 0, failedWorkflows: 0, queuedWorkflows: 0, pausedWorkflows: 0, blockedWorkflows: 0, averageWorkflowProgress: 0, backgroundEngine: 'idle', lastMigrationEventAt: null, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, openVulnerabilities: 0, pqcReadiness: 0, riskScore: 100, complianceScore: 0, expiringCerts: 0, lastScanAt: null, completionRate: 0, workflowCompletionRate: 0 },
   simulations: [],
+  workflows: [],
   riskFactors: [],
   recommendations: [],
   complianceItems: [],
@@ -204,7 +240,7 @@ const CYAN = '#22D3EE'
 const ORANGE = '#F97316'
 
 const GLASS =
-  'group relative overflow-hidden rounded-xl border border-gold/15 bg-[#060F1C]/80 backdrop-blur-2xl shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_30px_rgba(0,0,0,0.3)] transition-all duration-500 hover:border-gold/40 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_32px_rgba(0,0,0,0.4),0_0_48px_rgba(251,191,36,0.08)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/50 before:to-transparent'
+  'migration-sandbox-panel group relative overflow-hidden rounded-xl border border-gold/15 bg-[#060F1C]/80 backdrop-blur-2xl shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_30px_rgba(0,0,0,0.3)] transition-all duration-500 hover:border-gold/40 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_32px_rgba(0,0,0,0.4),0_0_48px_rgba(251,191,36,0.08)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/50 before:to-transparent'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    UTILS
@@ -235,8 +271,23 @@ function statusColor(s: string) {
   if (s === 'running') return { bg: 'bg-emerald-500/12', border: 'border-emerald-500/30', text: 'text-emerald-300', dot: 'bg-emerald-400' }
   if (s === 'completed') return { bg: 'bg-emerald-500/12', border: 'border-emerald-500/30', text: 'text-emerald-300', dot: 'bg-emerald-400' }
   if (s === 'failed') return { bg: 'bg-red-500/12', border: 'border-red-500/30', text: 'text-red-300', dot: 'bg-red-400' }
+  if (s === 'rollback_requested') return { bg: 'bg-orange-500/12', border: 'border-orange-500/30', text: 'text-orange-300', dot: 'bg-orange-400' }
+  if (s === 'rolled_back') return { bg: 'bg-purple-500/12', border: 'border-purple-500/30', text: 'text-purple-300', dot: 'bg-purple-400' }
+  if (s === 'stopped') return { bg: 'bg-slate-500/12', border: 'border-slate-500/30', text: 'text-slate-300', dot: 'bg-slate-400' }
   if (s === 'paused') return { bg: 'bg-amber-500/12', border: 'border-amber-500/30', text: 'text-amber-300', dot: 'bg-amber-400' }
   return { bg: 'bg-sky-500/10', border: 'border-sky-500/25', text: 'text-sky-300', dot: 'bg-sky-400' }
+}
+
+function modeBadge(mode: string) {
+  if (mode === 'dry_run') return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
+  if (mode === 'simulation') return 'border-purple-500/30 bg-purple-500/10 text-purple-300'
+  if (mode === 'remediation') return 'border-red-500/25 bg-red-500/10 text-red-300'
+  if (mode === 'actual_migration') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+  return 'border-white/10 bg-white/5 text-white/45'
+}
+
+function modeLabel(sim: Simulation) {
+  return sim.runModeLabel || sim.runMode?.replace(/_/g, ' ') || 'Workflow'
 }
 
 function riskBadge(level: string) {
@@ -278,23 +329,47 @@ function useSandbox() {
   const [data, setData] = useState<SandboxSnapshot>(EMPTY)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<OperatorNotice | null>(null)
+  const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [sseActive, setSseActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
 
+  const applySnapshot = useCallback((snapshot?: SandboxSnapshot | null) => {
+    if (snapshot) {
+      setData({
+        ...snapshot,
+        workflows: Array.isArray(snapshot.workflows) ? snapshot.workflows : snapshot.simulations || [],
+      })
+    }
+  }, [])
+
+  const showNotice = useCallback((kind: OperatorNotice['kind'], message: string) => {
+    setNotice({ kind, message })
+  }, [])
+
   const fetchSnapshot = useCallback(async () => {
-    if (!token) return
+    if (!token) {
+      setLoading(false)
+      return
+    }
     try {
       const r = await fetch('/api/v1/sandbox/snapshot', { headers: { Authorization: `Bearer ${token}` } })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`)
-      setData(j.data || EMPTY)
+      applySnapshot(j.data || EMPTY)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed')
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [token, applySnapshot])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 5500)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   // Initial fetch
   useEffect(() => { if (token && user) fetchSnapshot() }, [token, user, fetchSnapshot])
@@ -311,18 +386,32 @@ function useSandbox() {
       es.addEventListener('sandbox-update', (e) => {
         try {
           const d = JSON.parse(e.data)
-          if (d) setData(d)
+          applySnapshot(d)
         } catch { /* skip */ }
       })
     }
     connect()
     return () => { if (retry) clearTimeout(retry); esRef.current?.close(); esRef.current = null; setSseActive(false) }
-  }, [token])
+  }, [token, applySnapshot])
 
   // Supabase realtime
   useEffect(() => {
     if (!user) return
-    const tables = ['migration_jobs', 'migration_events', 'assets', 'crypto_exposures', 'crypto_inventory', 'certificates', 'pqc_scan_sessions']
+    const tables = [
+      'migration_jobs',
+      'migration_events',
+      'assets',
+      'crypto_exposures',
+      'crypto_inventory',
+      'certificates',
+      'pqc_scan_sessions',
+      'pqc_scan_results',
+      'vulnerabilities',
+      'scanner_alerts',
+      'runtime_crypto_events',
+      'security_events',
+      'audit_logs',
+    ]
     const channels = tables.map((t) =>
       supabase.channel(`sandbox-${t}`).on('postgres_changes', { event: '*', schema: 'public', table: t, filter: `user_id=eq.${user.id}` }, () => fetchSnapshot()).subscribe()
     )
@@ -332,49 +421,106 @@ function useSandbox() {
   // Actions
   const doAction = useCallback(async (jobId: string, action: string) => {
     if (!token) return
-    await fetch(`/api/v1/sandbox/jobs/${jobId}/action`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action }),
-    })
-    fetchSnapshot()
-  }, [token, fetchSnapshot])
+    const key = `${jobId}:${action}`
+    setPendingAction(key)
+    try {
+      const response = await fetch(`/api/v1/sandbox/jobs/${jobId}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error?.message || `Failed to ${action} simulation`)
+      applySnapshot(payload?.data?.snapshot)
+      showNotice('success', `${action.replace(/_/g, ' ')} completed and synchronized.`)
+      await fetchSnapshot()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : `Unable to ${action} simulation`
+      setError(message)
+      showNotice('error', message)
+    } finally {
+      setPendingAction(null)
+    }
+  }, [token, fetchSnapshot, applySnapshot, showNotice])
 
-  const doBulkAction = useCallback(async (action: string) => {
+  const doBulkAction = useCallback(async (action: string, scope: 'sandbox' | 'all' = 'sandbox') => {
     if (!token) return
-    await fetch('/api/v1/sandbox/bulk-action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action }),
-    })
-    fetchSnapshot()
-  }, [token, fetchSnapshot])
+    const key = scope === 'all' ? `bulk:all:${action}` : `bulk:${action}`
+    setPendingAction(key)
+    try {
+      const response = await fetch('/api/v1/sandbox/bulk-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action, scope }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error?.message || `Failed to ${action} simulations`)
+      applySnapshot(payload?.data?.snapshot)
+      const affected = Number(payload?.data?.affected || 0)
+      const target = scope === 'all' ? 'workflow' : 'simulation'
+      showNotice(affected > 0 ? 'success' : 'info', affected > 0 ? `${action.replace(/_/g, ' ')} applied to ${affected} ${target}(s).` : `No ${target}s were eligible for ${action}.`)
+      await fetchSnapshot()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : `Unable to ${action} simulations`
+      setError(message)
+      showNotice('error', message)
+    } finally {
+      setPendingAction(null)
+    }
+  }, [token, fetchSnapshot, applySnapshot, showNotice])
 
   const startSimulation = useCallback(async (params: { fromAlgo: string; toAlgo?: string; migrationType?: string; dryRun?: boolean; assetId?: string }) => {
     if (!token) return null
-    const r = await fetch('/api/v1/sandbox/simulate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(params),
-    })
-    const j = await r.json().catch(() => ({}))
-    fetchSnapshot()
-    return j?.data || null
-  }, [token, fetchSnapshot])
+    setPendingAction('simulate')
+    try {
+      const r = await fetch('/api/v1/sandbox/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(params),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(j?.error?.message || 'Failed to start simulation')
+      applySnapshot(j?.data?.snapshot)
+      showNotice('success', 'New sandbox simulation started and synchronized.')
+      await fetchSnapshot()
+      return j?.data || null
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to start simulation'
+      setError(message)
+      showNotice('error', message)
+      return null
+    } finally {
+      setPendingAction(null)
+    }
+  }, [token, fetchSnapshot, applySnapshot, showNotice])
 
   const exportReport = useCallback(async (format: 'json' | 'csv' = 'json') => {
     if (!token) return
-    const r = await fetch(`/api/v1/sandbox/export?format=${format}`, { headers: { Authorization: `Bearer ${token}` } })
-    const blob = await r.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `qguard-sandbox-${new Date().toISOString().slice(0, 10)}.${format}`
-    a.click()
-    URL.revokeObjectURL(url)
-  }, [token])
+    setPendingAction(`export:${format}`)
+    try {
+      const r = await fetch(`/api/v1/sandbox/export?format=${format}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!r.ok) {
+        const payload = await r.json().catch(() => ({}))
+        throw new Error(payload?.error?.message || `Export failed (${r.status})`)
+      }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `qguard-sandbox-${new Date().toISOString().slice(0, 10)}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+      showNotice('success', `${format.toUpperCase()} sandbox export generated.`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to export sandbox report'
+      setError(message)
+      showNotice('error', message)
+    } finally {
+      setPendingAction(null)
+    }
+  }, [token, showNotice])
 
-  return { data, loading, error, sseActive, refresh: fetchSnapshot, doAction, doBulkAction, startSimulation, exportReport }
+  return { data, loading, error, notice, pendingAction, sseActive, refresh: fetchSnapshot, doAction, doBulkAction, startSimulation, exportReport }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -560,9 +706,139 @@ function NewSimulationModal({ open, onClose, onStart }: { open: boolean; onClose
    SIMULATION ROW (Expandable)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function SimulationRow({ sim, onAction }: { sim: Simulation; onAction: (id: string, action: string) => void }) {
+function SimulationDetailsModal({
+  simulation,
+  onClose,
+  onAction,
+  pendingAction,
+}: {
+  simulation: Simulation | null
+  onClose: () => void
+  onAction: (id: string, action: string) => void
+  pendingAction: string | null
+}) {
+  if (!simulation) return null
+  const sc = statusColor(simulation.status)
+  const snapshots = Array.isArray(simulation.metadata?.snapshots) ? simulation.metadata.snapshots as Array<Record<string, unknown>> : []
+  const busy = (action: string) => pendingAction === `${simulation.id}:${action}`
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-gold/25 bg-[#0A1525]/95 shadow-2xl backdrop-blur-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 p-5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="truncate text-lg font-black text-white">{simulation.name}</h3>
+              <Pill className={cn(sc.bg, sc.border, sc.text)}>{simulation.status.replace(/_/g, ' ')}</Pill>
+              <Pill className={modeBadge(simulation.runMode)}>{modeLabel(simulation)}</Pill>
+              <Pill className={riskBadge(simulation.riskLevel)}>{simulation.riskLevel}</Pill>
+            </div>
+            <p className="mt-1 text-xs text-white/45">{simulation.assetName} | {simulation.environment} | {simulation.owner}</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-white/40 hover:bg-white/10 hover:text-white">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="max-h-[calc(88vh-82px)] overflow-y-auto p-5">
+          <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              ['Source', simulation.fromAlgo],
+              ['Target', simulation.toAlgo],
+              ['Phase', simulation.phase],
+              ['ETA', simulation.eta || '--'],
+              ['Mode', modeLabel(simulation)],
+              ['Engine', simulation.engineStatus || '--'],
+              ['Progress', `${simulation.progress}%`],
+              ['Asset Type', simulation.assetType],
+              ['Criticality', simulation.criticality],
+              ['Started', simulation.startedAt ? timeStr(simulation.startedAt) : '--'],
+              ['Updated', relTime(simulation.updatedAt)],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-white/8 bg-white/[0.025] p-3">
+                <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">{label}</div>
+                <div className="mt-1 truncate text-xs font-bold text-white/75">{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mb-5">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-black uppercase tracking-wider text-white/55">Execution Progress</span>
+              <span className="font-mono text-xs font-bold text-white/55">{simulation.progress}%</span>
+            </div>
+            <ProgressBar value={simulation.progress} color={progressBarColor(simulation.progress, simulation.status)} height="h-2.5" />
+            <div className="mt-2 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px] text-white/45">
+              {simulation.phaseDetail || simulation.queuedReason || 'Workflow metadata is synchronized from migration telemetry.'}
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
+              <div className="mb-3 text-xs font-black uppercase tracking-wider text-white/55">Recent Events</div>
+              {simulation.recentEvents.length === 0 ? (
+                <EmptyBlock label="No event entries are attached to this simulation yet." />
+              ) : (
+                <div className="space-y-2">
+                  {simulation.recentEvents.map((event) => (
+                    <div key={event.id} className="grid grid-cols-[18px_1fr_auto] items-center gap-2 rounded-lg bg-white/[0.025] px-3 py-2 text-[11px]">
+                      {severityIcon(event.severity)}
+                      <span className="truncate text-white/60">{event.message}</span>
+                      <span className="font-mono text-white/25">{timeStr(event.timestamp)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
+              <div className="mb-3 text-xs font-black uppercase tracking-wider text-white/55">Recovery Snapshots</div>
+              {snapshots.length === 0 ? (
+                <EmptyBlock label="No recovery snapshots captured yet." />
+              ) : (
+                <div className="space-y-2">
+                  {snapshots.slice().reverse().slice(0, 6).map((snap, index) => (
+                    <div key={String(snap.id || index)} className="rounded-lg border border-white/6 bg-white/[0.025] px-3 py-2 text-[11px]">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-mono font-bold text-gold">{String(snap.id || `snapshot-${index + 1}`)}</span>
+                        <span className="text-white/35">{relTime(String(snap.at || ''))}</span>
+                      </div>
+                      <div className="mt-1 text-white/45">Status: {String(snap.status || '--')} | Progress: {String(snap.progress ?? '--')}%</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            {simulation.isSandbox && simulation.status === 'running' && <ActionBtn icon={Pause} label={busy('pause') ? 'Pausing' : 'Pause'} onClick={() => onAction(simulation.id, 'pause')} disabled={busy('pause')} />}
+            {simulation.isSandbox && simulation.status === 'paused' && <ActionBtn icon={Play} label={busy('resume') ? 'Resuming' : 'Resume'} onClick={() => onAction(simulation.id, 'resume')} disabled={busy('resume')} variant="success" />}
+            {simulation.isSandbox && simulation.status === 'failed' && <ActionBtn icon={RefreshCw} label={busy('retry') ? 'Retrying' : 'Retry'} onClick={() => onAction(simulation.id, 'retry')} disabled={busy('retry')} variant="gold" />}
+            {simulation.isSandbox && simulation.status === 'running' && <ActionBtn icon={Square} label={busy('stop') ? 'Stopping' : 'Stop'} onClick={() => onAction(simulation.id, 'stop')} disabled={busy('stop')} variant="danger" />}
+            {['running', 'paused', 'completed'].includes(simulation.status) && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(simulation.id, 'rollback')} disabled={busy('rollback')} variant="danger" />}
+            <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(simulation.id, 'snapshot')} disabled={busy('snapshot')} />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SimulationRow({
+  sim,
+  onAction,
+  onDetails,
+  pendingAction,
+}: {
+  sim: Simulation
+  onAction: (id: string, action: string) => void
+  onDetails: (sim: Simulation) => void
+  pendingAction: string | null
+}) {
   const [expanded, setExpanded] = useState(false)
   const sc = statusColor(sim.status)
+  const busy = (action: string) => pendingAction === `${sim.id}:${action}`
 
   return (
     <div className="rounded-lg border border-white/6 bg-white/[0.015] transition hover:border-gold/15 hover:bg-gold/[0.02]">
@@ -576,6 +852,7 @@ function SimulationRow({ sim, onAction }: { sim: Simulation; onAction: (id: stri
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-bold text-white/90">{sim.name}</span>
+            <Pill className={modeBadge(sim.runMode)}>{modeLabel(sim)}</Pill>
             <Pill className={riskBadge(sim.riskLevel)}>{sim.riskLevel}</Pill>
           </div>
           <div className="mt-0.5 text-[10px] text-white/40">
@@ -586,11 +863,12 @@ function SimulationRow({ sim, onAction }: { sim: Simulation; onAction: (id: stri
             <span>{sim.environment}</span>
             <span className="mx-2 text-white/20">|</span>
             <span>{sim.owner}</span>
+            {sim.eta && <><span className="mx-2 text-white/20">|</span><span>{sim.eta}</span></>}
           </div>
         </div>
 
         <div className="hidden items-center gap-2 sm:flex">
-          <Pill className={cn(sc.bg, sc.border, sc.text, 'uppercase tracking-wider')}>{sim.status}</Pill>
+          <Pill className={cn(sc.bg, sc.border, sc.text, 'uppercase tracking-wider')}>{sim.status.replace(/_/g, ' ')}</Pill>
         </div>
 
         <div className="flex w-28 items-center gap-2">
@@ -612,6 +890,12 @@ function SimulationRow({ sim, onAction }: { sim: Simulation; onAction: (id: stri
             <div><div className="text-[9px] font-bold uppercase text-white/30">Events</div><div className="mt-0.5 font-mono text-xs text-white/70">{fmt(sim.eventCount)}</div></div>
           </div>
 
+          {(sim.phaseDetail || sim.queuedReason) && (
+            <div className="mb-3 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px] text-white/45">
+              {sim.phaseDetail || sim.queuedReason}
+            </div>
+          )}
+
           {sim.recentEvents.length > 0 && (
             <div className="mb-3 space-y-1">
               <div className="text-[9px] font-bold uppercase text-white/30">Recent Events</div>
@@ -626,13 +910,13 @@ function SimulationRow({ sim, onAction }: { sim: Simulation; onAction: (id: stri
           )}
 
           <div className="flex flex-wrap gap-2">
-            {sim.status === 'running' && <ActionBtn icon={Pause} label="Pause" onClick={() => onAction(sim.id, 'pause')} small />}
-            {sim.status === 'paused' && <ActionBtn icon={Play} label="Resume" onClick={() => onAction(sim.id, 'resume')} variant="success" small />}
-            {sim.status === 'failed' && <ActionBtn icon={RefreshCw} label="Retry" onClick={() => onAction(sim.id, 'retry')} variant="gold" small />}
-            {sim.status === 'running' && <ActionBtn icon={Square} label="Stop" onClick={() => onAction(sim.id, 'stop')} variant="danger" small />}
-            {(sim.status === 'running' || sim.status === 'completed') && <ActionBtn icon={RotateCcw} label="Rollback" onClick={() => onAction(sim.id, 'rollback')} variant="danger" small />}
-            <ActionBtn icon={Save} label="Snapshot" onClick={() => onAction(sim.id, 'snapshot')} small />
-            <ActionBtn icon={Eye} label="Details" onClick={() => window.location.href = `/dashboard/live-ops`} small />
+            {sim.isSandbox && sim.status === 'running' && <ActionBtn icon={Pause} label={busy('pause') ? 'Pausing' : 'Pause'} onClick={() => onAction(sim.id, 'pause')} disabled={busy('pause')} small />}
+            {sim.isSandbox && sim.status === 'paused' && <ActionBtn icon={Play} label={busy('resume') ? 'Resuming' : 'Resume'} onClick={() => onAction(sim.id, 'resume')} disabled={busy('resume')} variant="success" small />}
+            {sim.isSandbox && sim.status === 'failed' && <ActionBtn icon={RefreshCw} label={busy('retry') ? 'Retrying' : 'Retry'} onClick={() => onAction(sim.id, 'retry')} disabled={busy('retry')} variant="gold" small />}
+            {sim.isSandbox && sim.status === 'running' && <ActionBtn icon={Square} label={busy('stop') ? 'Stopping' : 'Stop'} onClick={() => onAction(sim.id, 'stop')} disabled={busy('stop')} variant="danger" small />}
+            {['running', 'paused', 'completed'].includes(sim.status) && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(sim.id, 'rollback')} disabled={busy('rollback')} variant="danger" small />}
+            <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(sim.id, 'snapshot')} disabled={busy('snapshot')} small />
+            <ActionBtn icon={Eye} label="Details" onClick={() => onDetails(sim)} small />
           </div>
         </div>
       )}
@@ -643,6 +927,53 @@ function SimulationRow({ sim, onAction }: { sim: Simulation; onAction: (id: stri
 /* ═══════════════════════════════════════════════════════════════════════════
    WORKFLOW TIMELINE
    ═══════════════════════════════════════════════════════════════════════════ */
+
+function WorkflowQueueRow({
+  workflow,
+  onAction,
+  onDetails,
+  pendingAction,
+}: {
+  workflow: Simulation
+  onAction: (id: string, action: string) => void
+  onDetails: (sim: Simulation) => void
+  pendingAction: string | null
+}) {
+  const sc = statusColor(workflow.status)
+  const busy = (action: string) => pendingAction === `${workflow.id}:${action}`
+  const rollbackEligible = ['running', 'paused', 'completed'].includes(workflow.status)
+
+  return (
+    <div className="grid gap-3 rounded-lg border border-white/6 bg-white/[0.015] px-4 py-3 transition hover:border-gold/15 hover:bg-gold/[0.02] lg:grid-cols-[1fr_150px_120px_130px_auto] lg:items-center">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-bold text-white/85">{workflow.name}</span>
+          <Pill className={modeBadge(workflow.runMode)}>{modeLabel(workflow)}</Pill>
+        </div>
+        <div className="mt-1 truncate text-[11px] text-white/40">{workflow.phaseDetail || workflow.queuedReason || workflow.engineStatus}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Pill className={cn(sc.bg, sc.border, sc.text)}>{workflow.status.replace(/_/g, ' ')}</Pill>
+      </div>
+      <div>
+        <div className="mb-1 flex items-center justify-between text-[10px] font-mono text-white/40">
+          <span>{workflow.phase}</span>
+          <span>{workflow.progress}%</span>
+        </div>
+        <ProgressBar value={workflow.progress} color={progressBarColor(workflow.progress, workflow.status)} />
+      </div>
+      <div className="text-[10px] font-mono text-white/35">
+        <div>{workflow.eta || '--'}</div>
+        <div>Updated {relTime(workflow.updatedAt)}</div>
+      </div>
+      <div className="flex flex-wrap gap-2 lg:justify-end">
+        {rollbackEligible && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(workflow.id, 'rollback')} disabled={busy('rollback')} variant="danger" small />}
+        <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(workflow.id, 'snapshot')} disabled={busy('snapshot')} small />
+        <ActionBtn icon={Eye} label="Details" onClick={() => onDetails(workflow)} small />
+      </div>
+    </div>
+  )
+}
 
 function WorkflowTimeline({ phases }: { phases: WorkflowPhase[] }) {
   if (phases.length === 0) return <EmptyBlock label="No workflow phases available. Start a simulation to begin." />
@@ -668,6 +999,14 @@ function WorkflowTimeline({ phases }: { phases: WorkflowPhase[] }) {
               {p.active && !p.complete && <span className="flex items-center gap-1 text-[9px] font-bold text-gold"><Activity className="h-3 w-3 animate-pulse" />Active</span>}
             </div>
             <div className="mt-0.5 text-[11px] text-white/35">{p.description}</div>
+            <div className="mt-1 flex flex-wrap gap-2 text-[9px] font-bold uppercase tracking-wider text-white/25">
+              {p.count !== undefined && <span>{fmt(p.count)} signals</span>}
+              {p.running !== undefined && p.running > 0 && <span className="text-emerald-300">{fmt(p.running)} running</span>}
+              {p.queued !== undefined && p.queued > 0 && <span className="text-sky-300">{fmt(p.queued)} queued</span>}
+              {p.blocked !== undefined && p.blocked > 0 && <span className="text-red-300">{fmt(p.blocked)} blocked</span>}
+              {p.source && <span>{p.source}</span>}
+              {p.updatedAt && <span>updated {relTime(p.updatedAt)}</span>}
+            </div>
             {(p.active || p.complete) && (
               <div className="mt-2 flex items-center gap-2">
                 <div className="w-24"><ProgressBar value={p.progress} color={p.complete ? GREEN : GOLD} /></div>
@@ -686,13 +1025,19 @@ function WorkflowTimeline({ phases }: { phases: WorkflowPhase[] }) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function MigrationSandbox() {
-  const { data, loading, error, sseActive, refresh, doAction, doBulkAction, startSimulation, exportReport } = useSandbox()
+  const { data, loading, error, notice, pendingAction, sseActive, refresh, doAction, doBulkAction, startSimulation, exportReport } = useSandbox()
   const [tab, setTab] = useState<ActiveTab>('overview')
   const [showNewSim, setShowNewSim] = useState(false)
+  const [selectedSimulation, setSelectedSimulation] = useState<Simulation | null>(null)
   const [logFilter, setLogFilter] = useState('')
 
   const s = data.summary
   const generated = useMemo(() => new Date(data.generatedAt), [data.generatedAt])
+  const operationalWorkflows = useMemo(() => data.workflows.filter((workflow) => !workflow.isSandbox), [data.workflows])
+  const rollbackEligibleWorkflows = useMemo(
+    () => data.workflows.filter((workflow) => ['completed', 'running', 'paused'].includes(workflow.status)),
+    [data.workflows]
+  )
 
   const tabs: { key: ActiveTab; label: string; icon: LucideIcon }[] = [
     { key: 'overview', label: 'Overview', icon: Layers },
@@ -711,10 +1056,16 @@ export default function MigrationSandbox() {
     return data.recentLogs.filter((l) => l.message.toLowerCase().includes(q) || l.type.toLowerCase().includes(q) || l.severity.toLowerCase().includes(q))
   }, [data.recentLogs, logFilter])
 
+  useEffect(() => {
+    if (!selectedSimulation) return
+    const refreshed = data.simulations.find((sim) => sim.id === selectedSimulation.id)
+    if (refreshed) setSelectedSimulation(refreshed)
+  }, [data.simulations, selectedSimulation])
+
   /* ─── Loading State ──────────────────────────────────────────────────── */
   if (loading && s.totalSimulations === 0) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#02070E] p-4">
+      <main className="migration-sandbox-shell flex min-h-screen items-center justify-center bg-[var(--qg-dashboard-bg)] p-4 text-[var(--qg-dashboard-text)]">
         <div className="flex flex-col items-center gap-4">
           <div className="h-12 w-12 animate-spin rounded-full border-2 border-gold/20 border-t-gold" />
           <span className="text-sm font-bold text-white/50">Initializing Migration Sandbox…</span>
@@ -724,8 +1075,126 @@ export default function MigrationSandbox() {
   }
 
   return (
-    <main className="min-h-screen bg-[#02070E] text-white">
+    <main className="migration-sandbox-shell min-h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)]">
+      <style>{`
+        .migration-sandbox-shell {
+          background:
+            radial-gradient(circle at 18% 8%, rgba(0, 197, 235, 0.13), transparent 30%),
+            radial-gradient(circle at 82% 10%, rgba(251, 191, 36, 0.08), transparent 28%),
+            linear-gradient(180deg, #02070E 0%, #06101d 52%, #02070E 100%);
+        }
+        .qg-theme-light .migration-sandbox-shell {
+          background:
+            radial-gradient(circle at 18% 8%, rgba(0, 197, 235, 0.17), transparent 32%),
+            radial-gradient(circle at 82% 14%, rgba(124, 58, 237, 0.08), transparent 30%),
+            linear-gradient(180deg, var(--qg-dashboard-bg) 0%, var(--qg-dashboard-bg-soft) 100%);
+          color: var(--qg-dashboard-text);
+        }
+        .qg-theme-light .migration-sandbox-panel {
+          background:
+            linear-gradient(135deg, rgba(255,255,255,0.92), rgba(236,249,255,0.82)) !important;
+          border-color: var(--qg-card-border) !important;
+          color: var(--qg-dashboard-text) !important;
+          box-shadow: var(--qg-panel-shadow) !important;
+        }
+        .qg-theme-light .migration-sandbox-panel:hover {
+          border-color: var(--qg-border-bright) !important;
+          box-shadow: var(--qg-hover-shadow) !important;
+        }
+        .qg-theme-light .migration-sandbox-panel::before {
+          background: linear-gradient(90deg, transparent, rgba(0,197,235,0.48), transparent) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell header {
+          background:
+            linear-gradient(135deg, rgba(255,255,255,0.92), rgba(236,249,255,0.82)) !important;
+          border-color: var(--qg-card-border) !important;
+          color: var(--qg-dashboard-text) !important;
+          box-shadow: var(--qg-panel-shadow);
+        }
+        .qg-theme-light .migration-sandbox-shell [class*="bg-[#02070E]"],
+        .qg-theme-light .migration-sandbox-shell [class*="bg-[#060F1C]"],
+        .qg-theme-light .migration-sandbox-shell [class*="bg-[#0A1525]"],
+        .qg-theme-light .migration-sandbox-shell [class*="bg-black/"] {
+          background-color: rgba(255,255,255,0.84) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell [class*="bg-white/"],
+        .qg-theme-light .migration-sandbox-shell [class*="bg-white\\["] {
+          background-color: rgba(236,249,255,0.76) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell [class*="border-white"],
+        .qg-theme-light .migration-sandbox-shell [class*="border-gold"] {
+          border-color: var(--qg-card-border) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell [class*="text-white/"] {
+          color: var(--qg-dashboard-text-soft) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-white,
+        .qg-theme-light .migration-sandbox-shell h1[class*="text-white"],
+        .qg-theme-light .migration-sandbox-shell h2[class*="text-white"],
+        .qg-theme-light .migration-sandbox-shell h3[class*="text-white"],
+        .qg-theme-light .migration-sandbox-shell p[class*="text-white"],
+        .qg-theme-light .migration-sandbox-shell span[class*="text-white"],
+        .qg-theme-light .migration-sandbox-shell [class*="font-black"][class*="text-white"],
+        .qg-theme-light .migration-sandbox-shell [class*="font-bold"][class*="text-white"] {
+          color: var(--qg-dashboard-text) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell input,
+        .qg-theme-light .migration-sandbox-shell select,
+        .qg-theme-light .migration-sandbox-shell textarea {
+          background: var(--qg-input-bg) !important;
+          border-color: var(--qg-input-border) !important;
+          color: var(--qg-input-text) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell input::placeholder,
+        .qg-theme-light .migration-sandbox-shell textarea::placeholder {
+          color: var(--qg-dashboard-text-muted) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-red-300,
+        .qg-theme-light .migration-sandbox-shell .text-red-400 {
+          color: #dc2626 !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-orange-300,
+        .qg-theme-light .migration-sandbox-shell .text-orange-400 {
+          color: #ea580c !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-emerald-300,
+        .qg-theme-light .migration-sandbox-shell .text-emerald-400 {
+          color: #047857 !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-sky-300,
+        .qg-theme-light .migration-sandbox-shell .text-sky-400 {
+          color: #0284c7 !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-purple-300 {
+          color: #7c3aed !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-gold,
+        .qg-theme-light .migration-sandbox-shell .hover\\:text-gold:hover {
+          color: var(--qg-amber) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .bg-gold,
+        .qg-theme-light .migration-sandbox-shell [class*="bg-gold"] {
+          background-color: color-mix(in srgb, var(--qg-amber) 16%, transparent) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell .text-black {
+          color: var(--qg-dashboard-text) !important;
+        }
+        .qg-theme-light .migration-sandbox-shell svg text {
+          fill: var(--qg-dashboard-text-soft) !important;
+        }
+      `}</style>
       <NewSimulationModal open={showNewSim} onClose={() => setShowNewSim(false)} onStart={startSimulation} />
+      <SimulationDetailsModal simulation={selectedSimulation} onClose={() => setSelectedSimulation(null)} onAction={doAction} pendingAction={pendingAction} />
+      {notice && (
+        <div className={cn(
+          'fixed right-4 top-4 z-[60] max-w-sm rounded-xl border px-4 py-3 text-sm font-bold shadow-2xl backdrop-blur-xl',
+          notice.kind === 'success' ? 'border-emerald-400/35 bg-emerald-500/15 text-emerald-200' :
+          notice.kind === 'error' ? 'border-red-400/35 bg-red-500/15 text-red-200' :
+          'border-sky-400/35 bg-sky-500/15 text-sky-100'
+        )}>
+          {notice.message}
+        </div>
+      )}
 
       {/* ─── Header ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 border-b border-white/5 bg-[#02070E]/90 backdrop-blur-xl">
@@ -748,9 +1217,9 @@ export default function MigrationSandbox() {
               <span className={cn('h-2 w-2 rounded-full', sseActive ? 'bg-emerald-400 shadow-[0_0_10px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-slate-500')} />
               {sseActive ? 'Live' : 'Offline'}
             </button>
-            <ActionBtn icon={Download} label="Export" onClick={() => exportReport('json')} />
-            <ActionBtn icon={Upload} label="CSV" onClick={() => exportReport('csv')} />
-            <ActionBtn icon={Plus} label="New Simulation" onClick={() => setShowNewSim(true)} variant="gold" />
+            <ActionBtn icon={Download} label={pendingAction === 'export:json' ? 'Exporting' : 'Export'} onClick={() => exportReport('json')} disabled={pendingAction === 'export:json'} />
+            <ActionBtn icon={Upload} label={pendingAction === 'export:csv' ? 'Exporting' : 'CSV'} onClick={() => exportReport('csv')} disabled={pendingAction === 'export:csv'} />
+            <ActionBtn icon={Plus} label={pendingAction === 'simulate' ? 'Starting' : 'New Simulation'} onClick={() => setShowNewSim(true)} disabled={pendingAction === 'simulate'} variant="gold" />
 
             <div className="hidden items-center gap-2 pl-2 xl:flex">
               <Clock3 className="h-4 w-4 text-gold/60" />
@@ -787,14 +1256,14 @@ export default function MigrationSandbox() {
           <>
             {/* ─── Hero Metrics ────────────────────────────────────────────── */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-8">
-              <MetricTile label="Simulations" value={fmt(s.totalSimulations)} detail={`${s.running} running`} icon={FlaskConical} color={GOLD} />
-              <MetricTile label="Running" value={fmt(s.running)} detail="Active now" icon={Activity} color={GREEN} />
-              <MetricTile label="Completed" value={fmt(s.completed)} detail={`${s.completionRate}% rate`} icon={CheckCircle2} color={GREEN} />
-              <MetricTile label="Failed" value={fmt(s.failed)} icon={X} color={RED} detail={s.failed > 0 ? 'Needs attention' : 'None'} />
+              <MetricTile label="Sandbox Runs" value={fmt(s.totalSimulations)} detail={`${s.running} running / ${s.queued} queued`} icon={FlaskConical} color={GOLD} />
+              <MetricTile label="Migration Queue" value={fmt(s.totalWorkflows)} detail={`${s.queuedWorkflows} queued`} icon={Layers} color={BLUE} />
+              <MetricTile label="Live Workflows" value={fmt(s.runningWorkflows)} detail={s.backgroundEngine === 'active' ? 'Engine active' : 'Engine idle'} icon={Activity} color={GREEN} />
+              <MetricTile label="Completed" value={fmt(s.completedWorkflows)} detail={`${s.workflowCompletionRate}% rate`} icon={CheckCircle2} color={GREEN} />
+              <MetricTile label="Blocked" value={fmt(s.blockedWorkflows + s.failedWorkflows)} icon={X} color={RED} detail={s.failedWorkflows > 0 ? 'Needs attention' : 'Queue review'} />
               <MetricTile label="PQC Readiness" value={pct(s.pqcReadiness)} icon={Shield} color={s.pqcReadiness >= 70 ? GREEN : GOLD} detail={s.pqcReadiness >= 80 ? 'Strong' : 'In Progress'} />
               <MetricTile label="Risk Score" value={`${s.riskScore}`} icon={Target} color={s.riskScore >= 70 ? GREEN : s.riskScore >= 40 ? GOLD : RED} detail={s.riskScore >= 70 ? 'Healthy' : 'At Risk'} />
               <MetricTile label="Compliance" value={pct(data.complianceScore)} icon={ShieldCheck} color={data.complianceScore >= 70 ? GREEN : GOLD} detail={data.complianceScore >= 80 ? 'Compliant' : 'Review Needed'} />
-              <MetricTile label="Total Assets" value={fmt(s.totalAssets)} detail={`${s.vulnerableAssets} vulnerable`} icon={Server} color={BLUE} />
             </div>
 
             {/* ─── Workflow + Score Gauges ──────────────────────────────────── */}
@@ -840,20 +1309,22 @@ export default function MigrationSandbox() {
               <Panel className="p-5">
                 <SectionHead icon={FlaskConical} suffix={
                   <div className="flex gap-2">
-                    {s.running > 0 && <ActionBtn icon={Pause} label="Pause All" onClick={() => doBulkAction('pause')} variant="default" small />}
-                    {s.paused > 0 && <ActionBtn icon={Play} label="Resume All" onClick={() => doBulkAction('resume')} variant="success" small />}
+                    {s.running > 0 && <ActionBtn icon={Pause} label={pendingAction === 'bulk:pause' ? 'Pausing' : 'Pause All'} onClick={() => doBulkAction('pause')} disabled={pendingAction === 'bulk:pause'} variant="default" small />}
+                    {s.paused > 0 && <ActionBtn icon={Play} label={pendingAction === 'bulk:resume' ? 'Resuming' : 'Resume All'} onClick={() => doBulkAction('resume')} disabled={pendingAction === 'bulk:resume'} variant="success" small />}
                   </div>
-                }>Active Simulations</SectionHead>
+                }>Active Sandbox Simulations</SectionHead>
                 {data.simulations.length === 0 ? (
-                  <EmptyBlock label="No simulations yet. Click 'New Simulation' to start your first PQC migration test." />
+                  <EmptyBlock label={operationalWorkflows.length > 0 ? `${fmt(operationalWorkflows.length)} operational migration workflow(s) are queued outside sandbox simulation.` : "No simulations yet. Click 'New Simulation' to start your first PQC migration test."} />
                 ) : (
                   <div className="space-y-2">
                     {data.simulations.slice(0, 5).map((sim) => (
-                      <SimulationRow key={sim.id} sim={sim} onAction={doAction} />
+                      <div key={sim.id}>
+                        <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
+                      </div>
                     ))}
                     {data.simulations.length > 5 && (
                       <button type="button" onClick={() => setTab('simulations')} className="w-full rounded-lg border border-white/8 py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/5">
-                        View all {data.simulations.length} simulations →
+                        View all {data.simulations.length} sandbox runs →
                       </button>
                     )}
                   </div>
@@ -896,6 +1367,29 @@ export default function MigrationSandbox() {
             </div>
 
             {/* ─── Recent Logs ─────────────────────────────────────────────── */}
+            {operationalWorkflows.length > 0 && (
+              <Panel className="p-5">
+                <SectionHead icon={Layers} suffix={
+                  <div className="flex flex-wrap gap-2">
+                    <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{fmt(s.queuedWorkflows)} queued</Pill>
+                    <Pill className="border-red-500/25 bg-red-500/10 text-red-300">{fmt(s.blockedWorkflows)} stale</Pill>
+                  </div>
+                }>Operational Migration Queue</SectionHead>
+                <div className="space-y-2">
+                  {operationalWorkflows.slice(0, 6).map((workflow) => (
+                    <div key={workflow.id}>
+                      <WorkflowQueueRow workflow={workflow} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
+                    </div>
+                  ))}
+                  {operationalWorkflows.length > 6 && (
+                    <button type="button" onClick={() => setTab('rollback')} className="w-full rounded-lg border border-white/8 py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/5">
+                      Review all {operationalWorkflows.length} operational workflows →
+                    </button>
+                  )}
+                </div>
+              </Panel>
+            )}
+
             <Panel className="p-5">
               <SectionHead icon={Terminal} suffix={<button type="button" onClick={() => setTab('logs')} className="text-[10px] font-bold text-gold hover:text-amber-300">View All Logs</button>}>
                 Real-Time Execution Logs
@@ -929,14 +1423,15 @@ export default function MigrationSandbox() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-black text-white">All Simulations</h2>
+                <h2 className="text-lg font-black text-white">Sandbox Simulations</h2>
                 <Pill className="border-gold/25 bg-gold/10 text-gold">{fmt(s.totalSimulations)} total</Pill>
               </div>
               <div className="flex items-center gap-2">
-                {s.running > 0 && <ActionBtn icon={Pause} label="Pause All" onClick={() => doBulkAction('pause')} small />}
-                {s.paused > 0 && <ActionBtn icon={Play} label="Resume All" onClick={() => doBulkAction('resume')} variant="success" small />}
-                {s.failed > 0 && <ActionBtn icon={RefreshCw} label="Retry Failed" onClick={() => doBulkAction('retry')} variant="gold" small />}
-                <ActionBtn icon={Plus} label="New Simulation" onClick={() => setShowNewSim(true)} variant="gold" />
+                {s.running > 0 && <ActionBtn icon={Pause} label={pendingAction === 'bulk:pause' ? 'Pausing' : 'Pause All'} onClick={() => doBulkAction('pause')} disabled={pendingAction === 'bulk:pause'} small />}
+                {s.paused > 0 && <ActionBtn icon={Play} label={pendingAction === 'bulk:resume' ? 'Resuming' : 'Resume All'} onClick={() => doBulkAction('resume')} disabled={pendingAction === 'bulk:resume'} variant="success" small />}
+                {s.failed > 0 && <ActionBtn icon={RefreshCw} label={pendingAction === 'bulk:retry' ? 'Retrying' : 'Retry Failed'} onClick={() => doBulkAction('retry')} disabled={pendingAction === 'bulk:retry'} variant="gold" small />}
+                <ActionBtn icon={Save} label={pendingAction === 'bulk:snapshot' ? 'Capturing' : 'Snapshot All'} onClick={() => doBulkAction('snapshot')} disabled={pendingAction === 'bulk:snapshot'} small />
+                <ActionBtn icon={Plus} label={pendingAction === 'simulate' ? 'Starting' : 'New Simulation'} onClick={() => setShowNewSim(true)} disabled={pendingAction === 'simulate'} variant="gold" />
               </div>
             </div>
 
@@ -948,7 +1443,9 @@ export default function MigrationSandbox() {
               <Panel className="p-5">
                 <div className="space-y-2">
                   {data.simulations.map((sim) => (
-                    <SimulationRow key={sim.id} sim={sim} onAction={doAction} />
+                    <div key={sim.id}>
+                      <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
+                    </div>
                   ))}
                 </div>
               </Panel>
@@ -1037,21 +1534,24 @@ export default function MigrationSandbox() {
               <SectionHead icon={RotateCcw}>Rollback & Recovery Control Center</SectionHead>
               <p className="mb-4 text-xs text-white/40">Safely revert cryptographic migrations, restore snapshots, and execute emergency recovery procedures.</p>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                 {[
                   { label: 'Restore Previous Keys', icon: Key, desc: 'Revert to classical key pairs', action: 'rollback' },
                   { label: 'Revert Certificates', icon: Lock, desc: 'Restore original certificate chain', action: 'rollback' },
                   { label: 'Restore TLS Config', icon: Globe2, desc: 'Reset TLS to pre-migration state', action: 'rollback' },
                   { label: 'Emergency Recovery', icon: ShieldAlert, desc: 'Full environment restore', action: 'rollback' },
+                  { label: 'Create Snapshot', icon: Save, desc: 'Capture all eligible recovery points', action: 'snapshot' },
                 ].map((item) => {
                   const Icon = item.icon
+                  const isSnapshot = item.action === 'snapshot'
                   return (
-                    <button key={item.label} type="button" onClick={() => doBulkAction(item.action)}
-                      className="flex flex-col items-center gap-3 rounded-xl border border-red-500/15 bg-red-500/[0.03] p-5 text-center transition hover:border-red-500/30 hover:bg-red-500/[0.06]">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full border border-red-500/25 bg-red-500/10">
-                        <Icon className="h-6 w-6 text-red-300" />
+                    <button key={item.label} type="button" onClick={() => doBulkAction(item.action, 'all')} disabled={pendingAction === `bulk:all:${item.action}`}
+                      className={cn('flex flex-col items-center gap-3 rounded-xl border p-5 text-center transition disabled:pointer-events-none disabled:opacity-45',
+                        isSnapshot ? 'border-gold/20 bg-gold/[0.04] hover:border-gold/35 hover:bg-gold/[0.07]' : 'border-red-500/15 bg-red-500/[0.03] hover:border-red-500/30 hover:bg-red-500/[0.06]')}>
+                      <div className={cn('flex h-12 w-12 items-center justify-center rounded-full border', isSnapshot ? 'border-gold/30 bg-gold/10' : 'border-red-500/25 bg-red-500/10')}>
+                        <Icon className={cn('h-6 w-6', isSnapshot ? 'text-gold' : 'text-red-300')} />
                       </div>
-                      <div className="text-sm font-bold text-white/80">{item.label}</div>
+                      <div className="text-sm font-bold text-white/80">{pendingAction === `bulk:all:${item.action}` ? 'Processing...' : item.label}</div>
                       <div className="text-[11px] text-white/35">{item.desc}</div>
                     </button>
                   )
@@ -1060,21 +1560,24 @@ export default function MigrationSandbox() {
             </Panel>
 
             <Panel className="p-5">
-              <SectionHead icon={History}>Rollback-Eligible Simulations</SectionHead>
-              {data.simulations.filter((s) => s.status === 'completed' || s.status === 'running' || s.status === 'paused').length === 0 ? (
-                <EmptyBlock label="No simulations are currently eligible for rollback." />
+              <SectionHead icon={History}>Rollback-Eligible Workflows</SectionHead>
+              {rollbackEligibleWorkflows.length === 0 ? (
+                <EmptyBlock label="No workflows are currently eligible for rollback." />
               ) : (
                 <div className="space-y-2">
-                  {data.simulations.filter((s) => ['completed', 'running', 'paused'].includes(s.status)).map((sim) => (
+                  {rollbackEligibleWorkflows.map((sim) => (
                     <div key={sim.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-white/[0.015] px-4 py-3">
                       <div className="min-w-0">
-                        <div className="text-sm font-bold text-white/80 truncate">{sim.name}</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-sm font-bold text-white/80">{sim.name}</div>
+                          <Pill className={modeBadge(sim.runMode)}>{modeLabel(sim)}</Pill>
+                        </div>
                         <div className="text-[11px] text-white/35">{sim.fromAlgo} → {sim.toAlgo} · {sim.environment}</div>
                       </div>
                       <div className="flex items-center gap-2">
                         <Pill className={cn(statusColor(sim.status).bg, statusColor(sim.status).border, statusColor(sim.status).text)}>{sim.status}</Pill>
-                        <ActionBtn icon={RotateCcw} label="Rollback" onClick={() => doAction(sim.id, 'rollback')} variant="danger" small />
-                        <ActionBtn icon={Save} label="Snapshot" onClick={() => doAction(sim.id, 'snapshot')} small />
+                        <ActionBtn icon={RotateCcw} label={pendingAction === `${sim.id}:rollback` ? 'Rolling Back' : 'Rollback'} onClick={() => doAction(sim.id, 'rollback')} disabled={pendingAction === `${sim.id}:rollback`} variant="danger" small />
+                        <ActionBtn icon={Save} label={pendingAction === `${sim.id}:snapshot` ? 'Capturing' : 'Snapshot'} onClick={() => doAction(sim.id, 'snapshot')} disabled={pendingAction === `${sim.id}:snapshot`} small />
                       </div>
                     </div>
                   ))}
@@ -1181,7 +1684,9 @@ export default function MigrationSandbox() {
                           <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{rec.effort} effort</Pill>
                           <Pill className="border-emerald-500/25 bg-emerald-500/10 text-emerald-300"><Clock3 className="mr-1 h-3 w-3 inline" />{rec.timeEstimate}</Pill>
                           {rec.compliance.map((c) => (
-                            <Pill key={c} className="border-white/10 bg-white/5 text-white/40">{c}</Pill>
+                            <span key={c}>
+                              <Pill className="border-white/10 bg-white/5 text-white/40">{c}</Pill>
+                            </span>
                           ))}
                         </div>
                       </div>

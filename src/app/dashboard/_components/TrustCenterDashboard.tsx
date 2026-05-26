@@ -169,7 +169,9 @@ type TrustSnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
+    vulnerabilities: number;
     cryptoInventory: number;
     cryptoExposures: number;
     certificates: number;
@@ -183,7 +185,9 @@ type TrustSnapshot = {
     userSessions: number;
     userSecurityEvents: number;
     authEvents: number;
+    securityEvents: number;
     vaultAuditLogs: number;
+    auditLogs: number;
     migrationJobs: number;
     complianceEvidence: number;
     eventPipelineStatus: string;
@@ -231,7 +235,9 @@ const EMPTY_SNAPSHOT: TrustSnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
+    vulnerabilities: 0,
     cryptoInventory: 0,
     cryptoExposures: 0,
     certificates: 0,
@@ -245,7 +251,9 @@ const EMPTY_SNAPSHOT: TrustSnapshot = {
     userSessions: 0,
     userSecurityEvents: 0,
     authEvents: 0,
+    securityEvents: 0,
     vaultAuditLogs: 0,
+    auditLogs: 0,
     migrationJobs: 0,
     complianceEvidence: 0,
     eventPipelineStatus: 'no_agents',
@@ -462,7 +470,9 @@ function useTrustDashboard(mode: TrustMode) {
       'runtime_crypto_events',
       'scanner_evidence',
       'scanner_alerts',
+      'pqc_scan_sessions',
       'pqc_scan_results',
+      'vulnerabilities',
       'crypto_inventory',
       'crypto_exposures',
       'certificates',
@@ -476,7 +486,9 @@ function useTrustDashboard(mode: TrustMode) {
       'user_sessions',
       'user_security_events',
       'auth_events',
+      'security_events',
       'vault_audit_logs',
+      'audit_logs',
       'migration_jobs',
       'compliance_evidence',
     ];
@@ -584,16 +596,16 @@ function ScoreRing({ value, label, size = 'lg' }: { value: number; label: string
   );
 }
 
-function MetricTile({ icon: Icon, label, value, detail, color = BLUE }: { icon: LucideIcon; label: string; value: string; detail: string; color?: string }) {
+function MetricTile({ icon: Icon, label, value, detail, color = BLUE, className }: { icon: LucideIcon; label: string; value: string; detail: string; color?: string; className?: string }) {
   return (
-    <Panel className="p-4">
+    <Panel className={cn('p-4', className)}>
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-[0.08em] text-white/52">{label}</div>
           <div className="mt-3 text-2xl font-semibold text-white">{value}</div>
-          <div className="mt-1 text-[10px] text-white/42">{detail}</div>
+          <div className="mt-1 text-[10px] leading-4 text-white/42">{detail}</div>
         </div>
-        <span className="grid h-9 w-9 place-items-center rounded-md border" style={{ borderColor: `${color}45`, color, backgroundColor: `${color}12` }}>
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md border" style={{ borderColor: `${color}45`, color, backgroundColor: `${color}12` }}>
           <Icon className="h-5 w-5" />
         </span>
       </div>
@@ -876,10 +888,11 @@ function ControlGrid({ rows }: { rows: ControlRow[] }) {
   );
 }
 
-function Pipeline({ snapshot, sseConnected }: { snapshot: TrustSnapshot; sseConnected: boolean }) {
+function Pipeline({ snapshot, sseConnected, compact = false }: { snapshot: TrustSnapshot; sseConnected: boolean; compact?: boolean }) {
   const rows = [
     ['Runtime', snapshot.telemetry.runtimeEvents, Activity, GREEN],
-    ['Scanner', snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts, ScanSearch, PURPLE],
+    ['Scanner', snapshot.telemetry.scanSessions + snapshot.telemetry.scanResults + snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts, ScanSearch, PURPLE],
+    ['Security', snapshot.telemetry.vulnerabilities + snapshot.telemetry.securityEvents + snapshot.telemetry.auditLogs, ShieldAlert, RED],
     ['Identity', snapshot.telemetry.userSessions + snapshot.telemetry.userSecurityEvents + snapshot.telemetry.authEvents, UserCheck, GOLD],
     ['Devices', snapshot.telemetry.userDevices + snapshot.telemetry.scannerAgents, Laptop, CYAN],
     ['Crypto', snapshot.telemetry.cryptoInventory + snapshot.telemetry.cryptoExposures, KeyRound, BLUE],
@@ -887,7 +900,7 @@ function Pipeline({ snapshot, sseConnected }: { snapshot: TrustSnapshot; sseConn
   ] as const;
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-2 gap-3">
+      <div className={cn('grid gap-3', compact ? 'grid-cols-1' : 'grid-cols-2')}>
         <div className="rounded-md border border-white/8 bg-white/[0.03] p-3">
           <div className="text-[10px] uppercase tracking-[0.1em] text-white/42">Live Sync</div>
           <div className={cn('mt-2 text-sm font-bold', sseConnected ? 'text-emerald-300' : 'text-amber-300')}>{sseConnected ? 'SSE Active' : 'SSE Connecting'}</div>
@@ -897,7 +910,7 @@ function Pipeline({ snapshot, sseConnected }: { snapshot: TrustSnapshot; sseConn
           <div className="mt-2 truncate text-sm font-bold text-white/78">{snapshot.telemetry.eventPipelineStatus.replace(/_/g, ' ')}</div>
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className={cn('grid grid-cols-1 gap-2', compact ? '' : 'sm:grid-cols-2')}>
         {rows.map(([label, value, Icon, color]) => (
           <div key={label} className="flex items-center justify-between gap-3 rounded-md border border-white/6 bg-white/[0.025] px-3 py-2">
             <span className="flex min-w-0 items-center gap-2">
@@ -1011,12 +1024,12 @@ function IdentityLayout({ snapshot, sseConnected }: { snapshot: TrustSnapshot; s
             </div>
           </div>
         </Panel>
-        <MetricTile icon={Fingerprint} label="Trusted Signals" value={compactFmt(snapshot.metrics.trustedSignals)} detail="identity and access evidence" color={GREEN} />
-        <MetricTile icon={Laptop} label="Trusted Devices" value={compactFmt(snapshot.metrics.trustedDevices)} detail="account device posture" color={CYAN} />
-        <MetricTile icon={ShieldAlert} label="Review Queue" value={compactFmt(snapshot.metrics.reviewSignals)} detail="identity findings to inspect" color={GOLD} />
+        <MetricTile className="xl:col-span-2" icon={Fingerprint} label="Trusted Signals" value={compactFmt(snapshot.metrics.trustedSignals)} detail="identity and access evidence" color={GREEN} />
+        <MetricTile className="xl:col-span-2" icon={Laptop} label="Trusted Devices" value={compactFmt(snapshot.metrics.trustedDevices)} detail="account device posture" color={CYAN} />
+        <MetricTile className="xl:col-span-2" icon={ShieldAlert} label="Review Queue" value={compactFmt(snapshot.metrics.reviewSignals)} detail="identity findings to inspect" color={GOLD} />
         <Panel className="p-5 xl:col-span-2">
           <SectionTitle>Sync</SectionTitle>
-          <Pipeline snapshot={snapshot} sseConnected={sseConnected} />
+          <Pipeline snapshot={snapshot} sseConnected={sseConnected} compact />
         </Panel>
       </section>
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">

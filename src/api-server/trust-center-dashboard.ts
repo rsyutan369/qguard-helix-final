@@ -271,9 +271,11 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
     runtimeEvents,
     scannerEvidence,
     scannerAlerts,
+    scanSessions,
     scanResults,
     cryptoInventory,
     cryptoExposures,
+    vulnerabilities,
     certificates,
     generatedKeys,
     scannerAgents,
@@ -285,7 +287,9 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
     userSessions,
     userSecurityEvents,
     authEvents,
+    securityEvents,
     vaultAuditLogs,
+    auditLogs,
     migrationJobs,
     complianceEvidence,
   ] = await Promise.all([
@@ -293,21 +297,25 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, connector_account_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(5000)),
     safeRows(client, 'scanner_evidence', (q) => q.select('id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, protocol, observed_algorithm, key_size, confidence, raw_evidence, processed_at, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2500)),
     safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, connector_account_id, evidence_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(220)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, description, severity, cvss_score, status, source, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, subject, not_after, is_quantum_safe, is_expiring_soon, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
     safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'scanner_agents', (q) => q.select('id, name, status, hostname, platform, capabilities, last_seen_at, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(600)),
     safeRows(client, 'connector_accounts', (q) => q.select('id, provider, display_name, status, last_sync_at, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(500)),
     safeRows(client, 'agent_heartbeats', (q) => q.select('id, agent_id, status, telemetry, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(1500)),
-    safeRows(client, 'profiles', (q) => q.select('id, email, full_name, role, company, tier, q_score, created_at, updated_at').eq('id', userId).limit(1)),
-    safeRows(client, 'user_security_settings', (q) => q.select('user_id, mfa_enforced, suspicious_login_alerts, security_email_notifications, trusted_device_expiry_days, password_changed_at, recovery_codes_generated_at, updated_at').eq('user_id', userId).limit(1)),
-    safeRows(client, 'user_devices', (q) => q.select('id, device_name, device_type, trusted, current, fingerprint, ip_address, user_agent, last_active, created_at, updated_at, revoked_at').eq('user_id', userId).order('last_active', { ascending: false }).limit(500)),
-    safeRows(client, 'user_sessions', (q) => q.select('id, device_id, device_name, trusted, ip_address, user_agent, last_seen_at, created_at, expires_at, revoked_at').eq('user_id', userId).order('last_seen_at', { ascending: false }).limit(500)),
-    safeRows(client, 'user_security_events', (q) => q.select('id, event_type, severity, message, ip_address, user_agent, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
-    safeRows(client, 'auth_events', (q) => q.select('id, event_type, severity, message, ip_address, user_agent, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'profiles', (q) => q.select('*').eq('id', userId).limit(1)),
+    safeRows(client, 'user_security_settings', (q) => q.select('*').eq('user_id', userId).limit(1)),
+    safeRows(client, 'user_devices', (q) => q.select('*').eq('user_id', userId).order('last_active', { ascending: false }).limit(500)),
+    safeRows(client, 'user_sessions', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
+    safeRows(client, 'user_security_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'auth_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1400)),
     safeRows(client, 'vault_audit_logs', (q) => q.select('id, event_type, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(900)),
+    safeRows(client, 'audit_logs', (q) => q.select('id, action, entity_type, entity_id, details, ip_address, user_agent, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(900)),
     safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, status, priority, algorithm_from, algorithm_to, metadata, created_at, updated_at, completed_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(600)),
     safeRows(client, 'compliance_evidence', (q) => q.select('id, asset_id, framework, control_id, status, evidence_type, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(900)),
   ])
@@ -493,6 +501,29 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
     })
   }
 
+  for (const session of scanSessions || []) {
+    const metadata = recordOf(session.metadata)
+    const status = String(session.status || 'pending').toLowerCase()
+    const failed = /fail|error|cancel|blocked/.test(status)
+    const running = /run|scan|progress|pending|queued/.test(status)
+    const findings = numberValue(session.findings_count)
+    addSignal({
+      id: `scan-session-${session.id}`,
+      sourceTable: 'pqc_scan_sessions',
+      domain: 'Scan Lifecycle',
+      title: failed ? 'Scan requires attention' : running ? 'Scan in progress' : 'Scan completed',
+      subject: textValue(session.target_scope, firstString(metadata, ['target', 'targetScope', 'scope']) || 'PQC scan'),
+      subjectType: 'Scan Session',
+      status: textValue(session.status, running ? 'running' : 'completed'),
+      severity: failed ? 'high' : findings > 0 ? 'medium' : 'low',
+      trusted: !failed,
+      pqcReady: !failed && findings === 0,
+      encrypted: true,
+      timestamp: session.completed_at || session.updated_at || session.started_at || session.created_at,
+      detail: `${numberValue(session.progress)}% complete - ${findings} finding${findings === 1 ? '' : 's'} - ${numberValue(session.scanned_assets)}/${numberValue(session.total_assets)} assets`,
+    })
+  }
+
   for (const evidence of scannerEvidence || []) {
     const raw = recordOf(evidence.raw_evidence)
     const algorithm = textValue(evidence.observed_algorithm, firstString(raw, ['algorithm', 'cipher', 'cipher_suite']))
@@ -530,6 +561,29 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       encrypted: true,
       timestamp: result.created_at,
       detail: `${result.algorithm || ''} ${result.description || ''} ${result.remediation || ''}`,
+    })
+  }
+
+  for (const vulnerability of vulnerabilities || []) {
+    const metadata = recordOf(vulnerability.metadata)
+    const status = String(vulnerability.status || 'open').toLowerCase()
+    const resolved = /resolved|closed|fixed|false_positive|accepted/.test(status)
+    addSignal({
+      id: `vulnerability-${vulnerability.id}`,
+      sourceTable: 'vulnerabilities',
+      domain: 'Vulnerability Trust',
+      title: vulnerability.title || 'Vulnerability finding',
+      subject: assetName(vulnerability.asset_id, 'Vulnerability'),
+      subjectType: assetType(vulnerability.asset_id, 'Vulnerability'),
+      assetId: vulnerability.asset_id,
+      status: textValue(vulnerability.status, resolved ? 'resolved' : 'open'),
+      severity: vulnerability.severity,
+      score: numberValue(vulnerability.cvss_score) * 10,
+      trusted: resolved,
+      pqcReady: Boolean(metadata.pqc_ready || metadata.quantum_safe || metadata.is_quantum_safe),
+      encrypted: true,
+      timestamp: vulnerability.updated_at || vulnerability.created_at,
+      detail: `${vulnerability.source || ''} ${vulnerability.description || ''}`,
     })
   }
 
@@ -633,6 +687,9 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
   }
 
   for (const event of authEvents || []) {
+    const metadata = recordOf(event.metadata)
+    const ok = Boolean(event.success) || /success|enabled|trusted|updated|login/i.test(`${event.severity || ''} ${event.event_type || ''}`)
+    const denied = /fail|error|denied|suspicious|blocked/i.test(`${event.severity || ''} ${event.event_type || ''} ${JSON.stringify(metadata)}`)
     addSignal({
       id: `auth-${event.event_type || 'security'}-${event.id}`,
       sourceTable: 'auth_events',
@@ -640,12 +697,34 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       title: event.event_type || 'Authentication event',
       subject: textValue(event.ip_address, 'Authentication activity'),
       subjectType: 'Auth Event',
-      status: /success|enabled|trusted|updated/i.test(`${event.severity || ''} ${event.event_type || ''}`) ? 'trusted' : 'review',
-      severity: event.severity,
-      trusted: /success|enabled|trusted|updated/i.test(`${event.severity || ''} ${event.event_type || ''}`),
+      status: ok && !denied ? 'trusted' : 'review',
+      severity: event.severity || (ok && !denied ? 'low' : 'medium'),
+      trusted: ok && !denied,
       encrypted: true,
       timestamp: event.created_at,
-      detail: `${event.message || ''} ${event.user_agent || ''}`,
+      detail: `${event.message || firstString(metadata, ['message', 'detail']) || ''} ${event.user_agent || ''}`,
+    })
+  }
+
+  for (const event of securityEvents || []) {
+    const metadata = recordOf(event.metadata)
+    const severity = normalizeSeverity(event.severity)
+    const trusted = severityRank(severity) <= 1 && !/fail|error|denied|suspicious|blocked/i.test(`${event.event_type || ''} ${event.message || ''}`)
+    addSignal({
+      id: `security-event-${event.id}`,
+      sourceTable: 'security_events',
+      domain: 'Security Events',
+      title: event.event_type || 'Security event',
+      subject: textValue(event.resource_name, assetName(event.asset_id, 'Security event')),
+      subjectType: textValue(event.resource_type, assetType(event.asset_id, 'Security')),
+      assetId: event.asset_id,
+      status: event.is_read ? 'reviewed' : trusted ? 'observed' : 'unread',
+      severity,
+      trusted,
+      pqcReady: /pqc|quantum|ml-kem|ml-dsa/i.test(`${event.message || ''} ${JSON.stringify(metadata)}`),
+      encrypted: true,
+      timestamp: event.created_at,
+      detail: `${event.message || ''} ${Object.values(metadata).filter((value) => typeof value === 'string').join(' ')}`,
     })
   }
 
@@ -665,6 +744,25 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       encrypted: true,
       timestamp: log.created_at,
       detail: Object.values(metadata).filter((value) => typeof value === 'string').join(' '),
+    })
+  }
+
+  for (const log of auditLogs || []) {
+    const details = recordOf(log.details)
+    const ok = !/fail|error|denied|revoked|blocked/i.test(`${log.action || ''} ${log.entity_type || ''} ${JSON.stringify(details)}`)
+    addSignal({
+      id: `audit-${log.id}`,
+      sourceTable: 'audit_logs',
+      domain: 'Audit Trail',
+      title: log.action || 'Audit event',
+      subject: textValue(log.entity_type, 'Audit record'),
+      subjectType: 'Audit Log',
+      status: ok ? 'recorded' : 'review',
+      severity: ok ? 'low' : 'medium',
+      trusted: ok,
+      encrypted: true,
+      timestamp: log.created_at,
+      detail: `${log.ip_address || ''} ${log.user_agent || ''} ${Object.values(details).filter((value) => typeof value === 'string').join(' ')}`,
     })
   }
 
@@ -992,7 +1090,9 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       runtimeEvents: runtimeEvents.length,
       scannerEvidence: scannerEvidence.length,
       scannerAlerts: scannerAlerts.length,
+      scanSessions: scanSessions.length,
       scanResults: scanResults.length,
+      vulnerabilities: vulnerabilities.length,
       cryptoInventory: cryptoInventory.length,
       cryptoExposures: cryptoExposures.length,
       certificates: certificates.length,
@@ -1006,7 +1106,9 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       userSessions: userSessions.length,
       userSecurityEvents: userSecurityEvents.length,
       authEvents: authEvents.length,
+      securityEvents: securityEvents.length,
       vaultAuditLogs: vaultAuditLogs.length,
+      auditLogs: auditLogs.length,
       migrationJobs: migrationJobs.length,
       complianceEvidence: complianceEvidence.length,
       eventPipelineStatus,

@@ -13,7 +13,6 @@ const NAV_SECTIONS = [
     label: 'Command Center',
     items: [
       { label: 'Overview', href: '/dashboard', icon: '📊' },
-      { label: 'Quantum Risk', href: '/dashboard/quantum_risk_overview', icon: '🛡️' },
       { label: 'Migration Planner', href: '/dashboard/migration_planner', icon: '📅' },
       { label: 'Quantum QRNG', href: '/dashboard/qrng', icon: '🎲' },
     ],
@@ -45,7 +44,6 @@ const NAV_SECTIONS = [
       { label: 'Migration Timeline', href: '/dashboard/migration_timeline', icon: '⏱️' },
       { label: 'Migration Phases', href: '/dashboard/migration_phases', icon: '🔄' },
       { label: 'Live Migration Ops', href: '/dashboard/live_migration', icon: '⚡' },
-      { label: 'Migration Terminal', href: '/dashboard/migration_terminal', icon: '💻' },
     ],
   },
   {

@@ -1059,7 +1059,7 @@ export default function QuantumRiskScoringPage() {
             <SectionTitle>Risk Distribution</SectionTitle>
             <DistributionBars rows={snapshot.distribution} />
             <div className="mt-5 flex justify-end">
-              <a href="/dashboard/asset-intelligence" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
+              <a href="/dashboard/assets" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
                 View All Assets <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>
@@ -1071,7 +1071,7 @@ export default function QuantumRiskScoringPage() {
             <SectionTitle>Top Risky Assets</SectionTitle>
             <TopRiskyAssets rows={snapshot.topAssets} />
             <div className="mt-4 flex justify-end">
-              <a href="/dashboard/asset-intelligence" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
+              <a href="/dashboard/assets" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
                 View All Risky Assets <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>
@@ -1081,7 +1081,7 @@ export default function QuantumRiskScoringPage() {
             <SectionTitle suffix={<Info className="h-3.5 w-3.5 text-white/38" />}>Quantum Risk Heatmap</SectionTitle>
             <QuantumRiskMap regions={snapshot.heatmap} />
             <div className="mt-3 flex justify-end">
-              <a href="/dashboard/runtime-discovery" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
+              <a href="/dashboard/runtime-telemetry" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
                 View Full Map <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>

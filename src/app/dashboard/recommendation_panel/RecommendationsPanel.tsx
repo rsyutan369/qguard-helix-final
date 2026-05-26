@@ -24,6 +24,24 @@ function priorityLabel(priority: number) {
   return { label: 'Medium', color: 'text-yellow-500 bg-yellow-500/10 border-yellow-500/30' }
 }
 
+function recommendationHref(rec: Recommendation) {
+  const action = String(rec.action || '').toLowerCase()
+  const category = String(rec.category || '').toLowerCase()
+  let href = '/dashboard/quantum-risk-scoring'
+
+  if (action.includes('scan') || category.includes('discover')) href = '/dashboard/scanner'
+  else if (action.includes('migrat') || category.includes('migration')) href = '/dashboard/live-migration'
+  else if (action.includes('cert') || category.includes('certificate')) href = '/dashboard/certificate-telemetry'
+  else if (action.includes('tls') || action.includes('protocol') || category.includes('protocol')) href = '/dashboard/api-encryption'
+  else if (category.includes('crypto') || action.includes('key') || action.includes('algorithm')) href = '/dashboard/crypto-agility'
+
+  if (rec.assetId && (href === '/dashboard/quantum-risk-scoring' || href === '/dashboard/crypto-agility')) {
+    return `/dashboard/assets?asset=${encodeURIComponent(rec.assetId)}`
+  }
+
+  return href
+}
+
 export default function RecommendationsPanel({ recommendations, loading }: Props) {
   if (loading) {
     return (
@@ -62,12 +80,14 @@ export default function RecommendationsPanel({ recommendations, loading }: Props
             const priority = priorityLabel(rec.priority)
 
             return (
-              <motion.div
+              <motion.a
                 key={rec.id}
+                href={recommendationHref(rec)}
+                aria-label={`Open action ${rec.title}`}
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.05 }}
-                className="p-4 rounded-xl bg-white/[0.02] border border-white/5 hover:border-gold/20 transition-all group"
+                className="block p-4 rounded-xl bg-white/[0.02] border border-white/5 hover:border-gold/30 hover:bg-gold/[0.04] transition-all group no-underline outline-none focus-visible:ring-2 focus-visible:ring-gold/70"
               >
                 <div className="flex gap-4">
                   <div className={`mt-1 shrink-0 ${config.color}`}>
@@ -92,7 +112,7 @@ export default function RecommendationsPanel({ recommendations, loading }: Props
                     </div>
                   </div>
                 </div>
-              </motion.div>
+              </motion.a>
             )
           })}
         </div>

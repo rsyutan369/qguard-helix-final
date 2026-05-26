@@ -61,12 +61,23 @@ function riskTo100(score: number) {
   return clamp(score > 100 ? score / 10 : score)
 }
 
-function GlassPanel({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={cx('p-4 min-h-[210px]', GLASS_PANEL_CLASSES, className)}>
-      <div className="relative z-10 flex h-full flex-col">{children}</div>
-    </div>
+function GlassPanel({ children, className, href, label }: { children: ReactNode; className?: string; href?: string; label?: string }) {
+  const classes = cx(
+    'p-4 min-h-[210px] no-underline outline-none focus-visible:ring-2 focus-visible:ring-[#FFD36B]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#050914]',
+    GLASS_PANEL_CLASSES,
+    className,
   )
+  const content = <div className="relative z-10 flex h-full flex-col">{children}</div>
+
+  if (href) {
+    return (
+      <a href={href} aria-label={label || 'Open telemetry panel'} className={classes}>
+        {content}
+      </a>
+    )
+  }
+
+  return <div className={classes}>{content}</div>
 }
 
 function PanelTitle({ title, live = true }: { title: string; live?: boolean }) {
@@ -219,7 +230,7 @@ export default function TelemetryFeatures({
 
   return (
     <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-      <GlassPanel>
+      <GlassPanel href="/dashboard/quantum-risk-scoring" label="Open quantum risk scoring">
         <PanelTitle title="Quantum Security Posture" live={sseConnected} />
         <div className="mt-2 flex flex-1 items-center gap-4">
           <div className="relative flex h-28 w-28 shrink-0 items-center justify-center">
@@ -245,7 +256,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/runtime-telemetry" label="Open runtime telemetry">
         <PanelTitle title="System Health" live={sseConnected} />
         <div className="mt-2 flex flex-1 flex-col justify-center">
           <ProgressBarItem icon={Target} label="Assets Monitored" value={fmt(totalAssets)} percentValue={totalAssets > 0 ? 100 : 0} />
@@ -256,7 +267,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/assets" label="Open asset scope">
         <PanelTitle title="Asset Scope" live={!loading} />
         <div className="mb-4 grid grid-cols-2 gap-2">
           <div className="rounded-md border border-white/10 bg-white/5 p-2">
@@ -289,7 +300,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/live-migration" label="Open live migration">
         <PanelTitle title="Migration Progress" live={activeMigrations > 0} />
         <div className="mt-4 flex flex-1 items-center gap-6">
           <div className="relative flex w-20 shrink-0 flex-col items-center justify-center">
@@ -308,7 +319,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/cbom" label="Open CBOM explorer">
         <PanelTitle title="Cryptographic Intelligence" live={sseConnected} />
         <div className="mb-4 mt-2 grid grid-cols-4 gap-2">
           <div><div className="text-[8px] uppercase text-white/50">CBOM</div><div className="mt-1 text-[13px] font-black">{fmt(totalCbomItems)}</div></div>
@@ -321,7 +332,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/audit-vault" label="Open audit vault">
         <PanelTitle title="Threat Intelligence" live={events.length > 0} />
         <div className="mt-2 flex flex-1 items-center gap-6">
           <div className="relative flex h-24 w-24 shrink-0 items-center justify-center">
@@ -349,7 +360,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/runtime-telemetry" label="Open runtime telemetry">
         <PanelTitle title="Runtime Telemetry" live={sseConnected} />
         <MiniLineChart values={eventTrend} />
         <div className="mt-auto flex items-end justify-between">
@@ -364,7 +375,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/vulnerabilities" label="Open vulnerabilities">
         <PanelTitle title="Exposure Severity" live={!loading} />
         <div className="mt-2 flex flex-1 items-center gap-4">
           <DonutRing percentage={percent(safeAssets, totalAssets)} color="#3b82f6" label={`${percent(safeAssets, totalAssets)}%`} />
@@ -376,7 +387,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/certificate-telemetry" label="Open certificate telemetry">
         <PanelTitle title="Certificate Telemetry" live={!loading} />
         <div className="mt-2 flex flex-1 items-center justify-between">
           <div>
@@ -389,7 +400,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/encryption-monitoring" label="Open encryption monitoring">
         <PanelTitle title="Encryption Monitoring" live={!loading} />
         <div className="mt-2 flex flex-1 items-center gap-4">
           <div className="flex-1 space-y-2">
@@ -404,7 +415,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/quantum-risk-scoring" label="Open quantum risk scoring">
         <PanelTitle title="Quantum Risk Scoring" live={sseConnected} />
         <div className="mt-2 flex flex-1 flex-col items-center justify-center">
           <div className="mt-2 flex items-baseline gap-1">
@@ -417,7 +428,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/zero-trust" label="Open zero trust">
         <PanelTitle title="Trust Validation" live={sseConnected} />
         <div className="mt-4 flex flex-1 items-center gap-6">
           <div className="relative flex h-20 w-16 items-center justify-center">
@@ -433,7 +444,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/regulatory-mapping" label="Open regulatory mapping">
         <PanelTitle title="Policy Compliance" live={!loading} />
         <div className="mt-4 flex flex-1 items-center gap-6">
           <DonutRing percentage={riskScore} color="#4DFF88" label={`${riskScore}%`} />
@@ -445,7 +456,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/telemetry-correlation" label="Open telemetry correlation">
         <PanelTitle title="Telemetry Overview" live={sseConnected} />
         <div className="mt-2 flex flex-1 flex-col justify-between space-y-4">
           <div className="flex items-start justify-between gap-4">
@@ -470,7 +481,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel>
+      <GlassPanel href="/dashboard/multi-cloud-telemetry" label="Open multi-cloud telemetry">
         <PanelTitle title="Environment Telemetry" live={!loading} />
         <div className="mt-4 flex flex-1 items-center gap-4">
           <div className="flex-1 space-y-3">

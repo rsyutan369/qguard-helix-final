@@ -1,5 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
-import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 
 type AuthenticatedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -7,6 +7,18 @@ type AuthenticatedRequest = Request & {
 }
 
 const router = Router()
+let sandboxSchedulerStarted = false
+
+const ENGINE_NAME = 'qguard-sandbox-orchestrator'
+const ACTIVE_JOB_STATUSES = ['pending', 'queued', 'running', 'in_progress', 'executing', 'rollback_requested']
+
+const ENGINE_PHASES = [
+  { id: 'preparation', label: 'Preparation', detail: 'Environment snapshot, dependency inventory, and rollback checkpoint.', at: 0 },
+  { id: 'assessment', label: 'Risk Assessment', detail: 'Crypto exposure scoring, compatibility checks, and policy validation.', at: 22 },
+  { id: 'execution', label: 'Sandbox Execution', detail: 'PQC replacement plan is exercised against sandbox controls.', at: 48 },
+  { id: 'verification', label: 'Verification', detail: 'Handshake, key material, certificate, and application behavior validation.', at: 74 },
+  { id: 'finalization', label: 'Finalization', detail: 'Evidence collection, readiness scoring, and report finalization.', at: 94 },
+]
 
 function tokenFromRequest(req: Request): string | null {
   const header = getToken(req)
@@ -66,7 +78,10 @@ function normalizeStatus(s: unknown): string {
   if (['completed', 'complete', 'done', 'success'].includes(v)) return 'completed'
   if (['failed', 'error', 'errored'].includes(v)) return 'failed'
   if (['running', 'in_progress', 'executing', 'migrating'].includes(v)) return 'running'
-  if (['paused', 'cancelled', 'canceled', 'rollback_requested', 'rolled_back'].includes(v)) return 'paused'
+  if (['rollback_requested', 'rollback', 'rolling_back'].includes(v)) return 'rollback_requested'
+  if (['rolled_back', 'rollback_complete'].includes(v)) return 'rolled_back'
+  if (['stopped', 'stop', 'cancelled', 'canceled'].includes(v)) return 'stopped'
+  if (['paused'].includes(v)) return 'paused'
   return 'queued'
 }
 
@@ -100,6 +115,402 @@ function quantumRisk(algo: string): 'critical' | 'high' | 'medium' | 'low' {
   return 'low'
 }
 
+function boolMeta(value: unknown) {
+  return value === true || value === 'true' || value === 1 || value === '1'
+}
+
+function textMeta(rec: Record<string, unknown>, keys: string[], fallback = '') {
+  const value = pickStr(rec, keys)
+  return value || fallback
+}
+
+function dateMs(value: unknown) {
+  if (typeof value !== 'string' || !value) return 0
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function phaseForProgress(progress: number, status: string, meta: Record<string, unknown>) {
+  const explicit = textMeta(meta, ['phase', 'enginePhase', 'currentPhase'])
+  if (status === 'rollback_requested' || status === 'rolled_back') {
+    return { id: 'rollback', label: 'Rollback', detail: 'Recovery workflow is restoring the previous cryptographic posture.' }
+  }
+  if (status === 'queued') {
+    return { id: 'queued', label: 'Queued', detail: textMeta(meta, ['queueReason'], 'Awaiting sandbox executor capacity.') }
+  }
+  if (status === 'paused') {
+    return { id: 'paused', label: 'Paused', detail: 'Operator paused this workflow.' }
+  }
+  if (status === 'stopped') {
+    return { id: 'stopped', label: 'Stopped', detail: 'Operator stopped this workflow.' }
+  }
+  if (status === 'failed') {
+    return { id: 'failed', label: 'Failed', detail: textMeta(meta, ['failureReason', 'error'], 'Workflow requires operator review.') }
+  }
+  if (status === 'completed') {
+    return ENGINE_PHASES[ENGINE_PHASES.length - 1]
+  }
+  const selected = [...ENGINE_PHASES].reverse().find((phase) => progress >= phase.at) || ENGINE_PHASES[0]
+  if (explicit) return { ...selected, id: explicit.toLowerCase().replace(/\s+/g, '_'), label: explicit }
+  return selected
+}
+
+function isSandboxSimulationJob(job: any) {
+  const meta = asRecord(job?.metadata)
+  const executionMode = textMeta(meta, ['executionMode', 'runMode', 'mode']).toLowerCase()
+  const jobType = String(job?.job_type || '').toLowerCase()
+  const name = String(job?.name || '')
+  return boolMeta(meta.sandboxMode)
+    || boolMeta(meta.dryRun)
+    || ['sandbox_simulation', 'dry_run', 'simulation'].includes(executionMode)
+    || /sandbox|simulation|dry_run|dry-run/.test(jobType)
+    || /^\[dry run\]|^sandbox:/i.test(name)
+}
+
+function classifyJobMode(job: any): 'dry_run' | 'simulation' | 'remediation' | 'actual_migration' | 'migration_workflow' {
+  const meta = asRecord(job?.metadata)
+  if (isSandboxSimulationJob(job)) return boolMeta(meta.dryRun) ? 'dry_run' : 'simulation'
+  const source = textMeta(meta, ['source']).toLowerCase()
+  const workflow = textMeta(meta, ['workflow']).toLowerCase()
+  const jobType = String(job?.job_type || '').toLowerCase()
+  if (source === 'harvest-now' || workflow.includes('hndl') || jobType.includes('remediation')) return 'remediation'
+  if (boolMeta(meta.productionMigration) || textMeta(meta, ['executionMode', 'runMode']).toLowerCase().includes('production')) return 'actual_migration'
+  return 'migration_workflow'
+}
+
+function modeLabel(mode: string) {
+  if (mode === 'dry_run') return 'Dry Run'
+  if (mode === 'simulation') return 'Sandbox Simulation'
+  if (mode === 'remediation') return 'Remediation Workflow'
+  if (mode === 'actual_migration') return 'Actual Migration'
+  return 'Migration Workflow'
+}
+
+function jobNoun(job: any) {
+  return modeLabel(classifyJobMode(job)).toLowerCase()
+}
+
+function estimateSandboxDurationMs(job: any) {
+  const meta = asRecord(job?.metadata)
+  const explicit = Number(meta.simulatedDurationMs || meta.estimatedDurationMs)
+  if (Number.isFinite(explicit) && explicit >= 30000) return explicit
+  const base = boolMeta(meta.dryRun) ? 110_000 : 220_000
+  const jobText = `${job?.job_type || ''} ${job?.name || ''} ${JSON.stringify(meta)}`.toLowerCase()
+  const complexity = /hsm|database|certificate|vpn|tls/.test(jobText) ? 70_000 : 0
+  const criticality = /critical|high/.test(jobText) ? 45_000 : 0
+  return base + complexity + criticality
+}
+
+function engineEta(job: any, status: string, progress: number, meta: Record<string, unknown>) {
+  const explicit = textMeta(meta, ['eta', 'estimatedEta', 'estimated_eta', 'remaining'])
+  if (explicit) return explicit
+  if (status === 'completed') return 'Finished'
+  if (status === 'failed') return 'Review required'
+  if (status === 'paused') return 'Paused'
+  if (status === 'stopped') return 'Stopped'
+  if (status === 'rolled_back') return 'Rolled back'
+  if (status === 'queued') return textMeta(meta, ['queueReason'], 'Awaiting executor')
+  const started = dateMs(String(job?.started_at || meta.engineStartedAt || job?.updated_at || job?.created_at || ''))
+  if (!started || progress <= 0) return 'Calculating'
+  const duration = estimateSandboxDurationMs(job)
+  const remainingMs = Math.max(0, duration - (Date.now() - started))
+  const minutes = Math.max(1, Math.ceil(remainingMs / 60000))
+  return minutes >= 60 ? `~${Math.ceil(minutes / 60)}h remaining` : `~${minutes}m remaining`
+}
+
+async function insertEngineEvent(client: any, job: any, type: string, message: string, severity = 'info', metadata: Record<string, unknown> = {}) {
+  const userId = job.user_id
+  if (!userId || !job.id) return
+  const { error } = await client.from('migration_events').insert({
+    user_id: userId,
+    migration_id: job.id,
+    event_type: type,
+    severity,
+    message,
+    metadata: { source: ENGINE_NAME, ...metadata },
+    created_at: new Date().toISOString(),
+  })
+  if (error && !isMissingTable(error)) console.warn('[sandbox] engine event insert failed:', error.message)
+}
+
+async function advanceSandboxJobs(client: any, userId?: string) {
+  let query = client
+    .from('migration_jobs')
+    .select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at')
+    .in('status', ACTIVE_JOB_STATUSES)
+    .order('updated_at', { ascending: true })
+    .limit(300)
+
+  if (userId) query = query.eq('user_id', userId)
+
+  const { data: rows, error } = await query
+  if (error) {
+    if (!isMissingTable(error)) console.warn('[sandbox] advance jobs:', error.message)
+    return { advanced: 0 }
+  }
+
+  const now = new Date()
+  const nowIso = now.toISOString()
+  let advanced = 0
+  const sandboxRows = (rows || []).filter(isSandboxSimulationJob)
+
+  for (const [index, job] of sandboxRows.entries()) {
+    const status = normalizeStatus(job.status)
+    const meta = asRecord(job.metadata)
+    const progress = clamp(Number(job.progress || 0))
+    const updateMeta = {
+      ...meta,
+      sandboxMode: true,
+      engine: ENGINE_NAME,
+      lastEngineTickAt: nowIso,
+      queuePosition: status === 'queued' ? index + 1 : meta.queuePosition,
+    }
+
+    let update: any | null = null
+    let event: { type: string; message: string; severity?: string; metadata?: Record<string, unknown> } | null = null
+
+    if (status === 'queued') {
+      const queuedAt = dateMs(String(meta.queuedAt || job.created_at || job.updated_at || ''))
+      const queueDelay = Math.min(45_000, 8_000 + index * 1500)
+      if (queuedAt && now.getTime() - queuedAt < queueDelay) {
+        update = {
+          status: 'queued',
+          progress: 0,
+          updated_at: nowIso,
+          metadata: {
+            ...updateMeta,
+            phase: 'queued',
+            queueReason: `Executor slot ${index + 1} of ${sandboxRows.length}`,
+          },
+        }
+      } else {
+        update = {
+          status: 'running',
+          progress: Math.max(progress, 4),
+          started_at: job.started_at || nowIso,
+          updated_at: nowIso,
+          metadata: {
+            ...updateMeta,
+            engineStartedAt: job.started_at || nowIso,
+            phase: 'preparation',
+            phaseDetail: ENGINE_PHASES[0].detail,
+            queueReason: null,
+            simulatedDurationMs: estimateSandboxDurationMs(job),
+          },
+        }
+        event = {
+          type: 'sandbox-simulation-running',
+          message: `${modeLabel(classifyJobMode(job))} started by ${ENGINE_NAME}: ${job.name || job.id}.`,
+          metadata: { phase: 'preparation' },
+        }
+      }
+    } else if (status === 'running') {
+      const startedAt = dateMs(String(job.started_at || meta.engineStartedAt || job.created_at || job.updated_at || '')) || now.getTime()
+      const duration = estimateSandboxDurationMs(job)
+      const elapsed = Math.max(0, now.getTime() - startedAt)
+      const nextProgress = clamp((elapsed / duration) * 100)
+      const phase = phaseForProgress(nextProgress, 'running', meta)
+      const previousPhase = textMeta(meta, ['lastEnginePhase', 'phase'])
+
+      if (nextProgress >= 100) {
+        update = {
+          status: 'completed',
+          progress: 100,
+          completed_at: job.completed_at || nowIso,
+          updated_at: nowIso,
+          metadata: {
+            ...updateMeta,
+            phase: 'finalization',
+            phaseDetail: ENGINE_PHASES[ENGINE_PHASES.length - 1].detail,
+            lastEnginePhase: 'finalization',
+            engineCompletedAt: nowIso,
+          },
+        }
+        event = {
+          type: 'sandbox-simulation-completed',
+          severity: 'success',
+          message: `${modeLabel(classifyJobMode(job))} completed validation: ${job.name || job.id}.`,
+          metadata: { phase: 'finalization', progress: 100 },
+        }
+      } else if (nextProgress > progress || phase.id !== previousPhase) {
+        update = {
+          status: 'running',
+          progress: Math.max(progress, nextProgress),
+          updated_at: nowIso,
+          metadata: {
+            ...updateMeta,
+            phase: phase.id,
+            phaseDetail: phase.detail,
+            lastEnginePhase: phase.id,
+            simulatedDurationMs: duration,
+          },
+        }
+        if (phase.id !== previousPhase) {
+          event = {
+            type: 'sandbox-phase-transition',
+            message: `${modeLabel(classifyJobMode(job))} entered ${phase.label}: ${job.name || job.id}.`,
+            metadata: { phase: phase.id, progress: nextProgress },
+          }
+        }
+      }
+    } else if (status === 'rollback_requested') {
+      const rollbackAt = dateMs(String(meta.rollbackRequestedAt || job.updated_at || nowIso)) || now.getTime()
+      const rollbackProgress = clamp(((now.getTime() - rollbackAt) / 45_000) * 100)
+      if (rollbackProgress >= 100) {
+        const { snapshotId, snapshots } = snapshotEntry(job, 'rollback-complete', nowIso, meta)
+        update = {
+          status: 'rolled_back',
+          progress: 100,
+          completed_at: nowIso,
+          updated_at: nowIso,
+          metadata: {
+            ...updateMeta,
+            phase: 'rollback',
+            phaseDetail: 'Rollback completed and previous cryptographic posture restored.',
+            lastRollbackSnapshotId: snapshotId,
+            snapshots,
+          },
+        }
+        event = {
+          type: 'sandbox-rollback-completed',
+          severity: 'warning',
+          message: `${modeLabel(classifyJobMode(job))} rollback completed: ${job.name || job.id}.`,
+          metadata: { phase: 'rollback', progress: 100, snapshotId },
+        }
+      } else {
+        update = {
+          status: 'rollback_requested',
+          progress: rollbackProgress,
+          updated_at: nowIso,
+          metadata: {
+            ...updateMeta,
+            phase: 'rollback',
+            phaseDetail: 'Rollback validation is restoring the previous cryptographic control set.',
+            rollbackProgress,
+          },
+        }
+      }
+    }
+
+    if (!update) continue
+    const { error: updateError } = await client
+      .from('migration_jobs')
+      .update(update)
+      .eq('id', job.id)
+      .eq('user_id', job.user_id)
+    if (updateError) {
+      if (!isMissingTable(updateError)) console.warn('[sandbox] engine update failed:', updateError.message)
+      continue
+    }
+    advanced++
+    if (event) await insertEngineEvent(client, job, event.type, event.message, event.severity || 'info', event.metadata || {})
+  }
+
+  return { advanced }
+}
+
+function snapshotEntry(job: any, action: string, now: string, meta: Record<string, unknown>) {
+  const snapshots = Array.isArray(meta.snapshots) ? [...(meta.snapshots as any[])] : []
+  const snapshotId = `snap_${now.replace(/[-:.TZ]/g, '').slice(0, 14)}_${String(job.id || '').slice(0, 8)}`
+  snapshots.push({
+    id: snapshotId,
+    at: now,
+    action,
+    progress: Number(job.progress || 0),
+    status: job.status || 'unknown',
+    name: job.name || job.id,
+  })
+  return { snapshotId, snapshots }
+}
+
+function actionUpdate(job: any, action: string, now: string) {
+  const meta = asRecord(job.metadata)
+  const nextMeta = { ...meta, lastOperatorAction: action, lastOperatorActionAt: now }
+  let update: any = { updated_at: now, metadata: nextMeta }
+
+  if (action === 'pause') update = { ...update, status: 'paused', metadata: { ...nextMeta, pausedAt: now, phase: 'paused' } }
+  else if (action === 'resume') update = { ...update, status: 'running', started_at: now, metadata: { ...nextMeta, engineStartedAt: now, phase: 'preparation', queueReason: null } }
+  else if (action === 'retry') update = { ...update, status: 'running', progress: 0, started_at: now, completed_at: null, metadata: { ...nextMeta, engineStartedAt: now, phase: 'preparation', retryAt: now, queueReason: null } }
+  else if (action === 'rollback') update = { ...update, status: 'rollback_requested', progress: 0, metadata: { ...nextMeta, rollbackRequestedAt: now, phase: 'rollback' } }
+  else if (action === 'stop') update = { ...update, status: 'stopped', completed_at: now, metadata: { ...nextMeta, stoppedAt: now, phase: 'stopped' } }
+  else if (action === 'snapshot') {
+    const { snapshotId, snapshots } = snapshotEntry(job, action, now, meta)
+    update = { ...update, metadata: { ...nextMeta, snapshots, lastSnapshotId: snapshotId, lastSnapshotAt: now } }
+  }
+
+  return update
+}
+
+function actionMessage(action: string, jobName: string, noun = 'sandbox simulation') {
+  if (action === 'pause') return `Operator paused ${noun} "${jobName}".`
+  if (action === 'resume') return `Operator resumed ${noun} "${jobName}".`
+  if (action === 'retry') return `Operator retried ${noun} "${jobName}".`
+  if (action === 'rollback') return `Operator requested rollback for ${noun} "${jobName}".`
+  if (action === 'stop') return `Operator stopped ${noun} "${jobName}".`
+  if (action === 'snapshot') return `Operator captured recovery snapshot for ${noun} "${jobName}".`
+  return `Operator ${action} action recorded for ${noun} "${jobName}".`
+}
+
+function actionSeverity(action: string) {
+  return action === 'rollback' || action === 'stop' ? 'warning' : 'info'
+}
+
+async function recordOperatorTelemetry(client: any, req: AuthenticatedRequest, jobs: any[], action: string, now: string, mode: 'single' | 'bulk') {
+  if (!jobs.length) return
+  const userId = req.user!.id
+  const eventRows = jobs.map((job) => ({
+    user_id: userId,
+    migration_id: job.id,
+    event_type: `operator-${action}`,
+    severity: actionSeverity(action),
+    message: actionMessage(action, job.name || job.id, jobNoun(job)),
+    metadata: { action, mode, operator: req.user!.email || null, executionMode: classifyJobMode(job) },
+    created_at: now,
+  }))
+  const { error: eventError } = await client.from('migration_events').insert(eventRows)
+  if (eventError && !isMissingTable(eventError)) console.warn('[sandbox] operator event insert failed:', eventError.message)
+
+  const securityMessage = mode === 'bulk'
+    ? `Sandbox ${action} requested for ${jobs.length} migration job(s).`
+    : actionMessage(action, jobs[0]?.name || jobs[0]?.id || 'simulation', jobNoun(jobs[0]))
+  const { error: securityError } = await client.from('security_events').insert({
+    user_id: userId,
+    event_type: `sandbox-${action}`,
+    severity: actionSeverity(action),
+    message: securityMessage,
+    asset_id: null,
+    resource_name: mode === 'bulk' ? 'Migration Sandbox' : jobs[0]?.name || jobs[0]?.id || 'Migration Sandbox',
+    resource_type: 'migration-sandbox',
+    metadata: {
+      action,
+      mode,
+      executionModes: Array.from(new Set(jobs.map((job) => classifyJobMode(job)))),
+      jobIds: jobs.map((job) => job.id).filter(Boolean).slice(0, 100),
+      affected: jobs.length,
+    },
+    created_at: now,
+  })
+  if (securityError && !isMissingTable(securityError)) console.warn('[sandbox] security event insert failed:', securityError.message)
+
+  const { error: auditError } = await client.from('audit_logs').insert({
+    user_id: userId,
+    action: `sandbox_${action}`,
+    entity_type: mode === 'bulk' ? 'migration_jobs' : 'migration_job',
+    entity_id: mode === 'single' ? jobs[0]?.id || null : null,
+    details: {
+      action,
+      mode,
+      executionModes: Array.from(new Set(jobs.map((job) => classifyJobMode(job)))),
+      jobIds: jobs.map((job) => job.id).filter(Boolean).slice(0, 100),
+      affected: jobs.length,
+    },
+    ip_address: req.ip?.replace('::ffff:', '') || null,
+    user_agent: String(req.headers['user-agent'] || '').slice(0, 500),
+    created_at: now,
+  })
+  if (auditError && !isMissingTable(auditError)) console.warn('[sandbox] audit log insert failed:', auditError.message)
+}
+
 async function safeRows(client: any, table: string, build: (q: any) => any) {
   try {
     const { data, error } = await build(client.from(table))
@@ -124,8 +535,10 @@ async function safeCount(client: any, table: string, userId: string, apply?: (q:
 }
 
 async function buildSandboxPayload(client: any, userId: string) {
-  const [jobs, assets, inventory, exposures, events, scanSessions, certificates, vulns] = await Promise.all([
-    safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(200)),
+  await advanceSandboxJobs(client, userId)
+
+  const [jobs, assets, inventory, exposures, events, scanSessions, certificates, vulns, scanResults, scannerAlerts, runtimeEvents, securityEvents, auditLogs] = await Promise.all([
+    safeRows(client, 'migration_jobs', (q) => q.select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(500)),
     safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(500)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
@@ -133,6 +546,11 @@ async function buildSandboxPayload(client: any, userId: string) {
     safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, completed_at, started_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(30)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, not_after, is_quantum_safe, is_expiring_soon, status').eq('user_id', userId).limit(200)),
     safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status').eq('user_id', userId).not('status', 'eq', 'resolved').limit(200)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
+    safeRows(client, 'scanner_alerts', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(300)),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
+    safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(300)),
+    safeRows(client, 'audit_logs', (q) => q.select('id, action, entity_type, entity_id, details, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(200)),
   ])
 
   const assetMap = new Map<string, any>((assets || []).map((a: any) => [a.id, a]))
@@ -158,8 +576,10 @@ async function buildSandboxPayload(client: any, userId: string) {
     eventsByJob.set(ev.migration_id, list)
   }
 
-  // ── Active Simulations ──────────────────────────────────────────────────────
-  const simulations = (jobs || []).map((job: any) => {
+  // Active workflows are tenant migration records. Sandbox simulations are a
+  // safe subset; remediation and production migration rows remain operational
+  // queue records and are not auto-completed by the sandbox engine.
+  const workflows = (jobs || []).map((job: any) => {
     const asset = assetMap.get(job.asset_id) || {}
     const meta = asRecord(job.metadata)
     const invItems = inventoryByAsset.get(job.asset_id) || []
@@ -167,16 +587,16 @@ async function buildSandboxPayload(client: any, userId: string) {
     const jobEvents = eventsByJob.get(job.id) || []
     const status = normalizeStatus(job.status)
     const progress = status === 'completed' ? 100 : clamp(Number(job.progress || 0))
+    const phase = phaseForProgress(progress, status, meta)
+    const runMode = classifyJobMode(job)
+    const isSandbox = runMode === 'dry_run' || runMode === 'simulation'
     const fromAlgo = pickStr(meta, ['sourceAlgorithm', 'source_algorithm', 'fromAlgorithm', 'from_algorithm', 'fromAlgo'])
       || (invItems[0]?.algorithm || '')
       || (expItems[0]?.detected_value || '')
+      || String(meta.algorithm || '')
       || 'Classical'
     const toAlgo = job.target_algorithm || pickStr(meta, ['targetAlgorithm', 'target_algorithm', 'toAlgo']) || pqcAlgoRec(fromAlgo, job.job_type || '')
     const riskLevel = quantumRisk(fromAlgo)
-    const phase = status === 'completed' ? 'finalization'
-      : status === 'failed' ? 'assessment'
-        : status === 'running' ? (progress < 25 ? 'preparation' : progress < 50 ? 'assessment' : progress < 75 ? 'execution' : 'verification')
-          : 'preparation'
 
     return {
       id: job.id,
@@ -190,10 +610,22 @@ async function buildSandboxPayload(client: any, userId: string) {
       fromAlgo,
       toAlgo,
       migrationType: pickStr(meta, ['migrationType', 'migration_type']) || job.job_type || 'PQC Migration',
+      runMode,
+      runModeLabel: modeLabel(runMode),
+      isSandbox,
+      isActualMigration: !isSandbox,
+      executionScope: isSandbox ? 'sandbox' : textMeta(meta, ['executionScope', 'environment'], asset.environment || 'tenant'),
+      engineStatus: isSandbox ? textMeta(meta, ['engine'], ENGINE_NAME) : textMeta(meta, ['executor', 'connector', 'approval_mode'], 'awaiting approved executor'),
+      queuedReason: status === 'queued'
+        ? textMeta(meta, ['queueReason', 'eta'], isSandbox ? 'Awaiting sandbox executor' : 'Awaiting operator approval or connector execution')
+        : null,
+      eta: engineEta(job, status, progress, meta),
       status,
       progress,
       riskLevel,
-      phase,
+      phase: phase.label,
+      phaseId: phase.id,
+      phaseDetail: textMeta(meta, ['phaseDetail'], phase.detail),
       startedAt: job.started_at || null,
       completedAt: job.completed_at || null,
       updatedAt: job.updated_at || job.created_at,
@@ -209,21 +641,42 @@ async function buildSandboxPayload(client: any, userId: string) {
       metadata: meta,
     }
   })
+  const simulations = workflows.filter((job) => job.isSandbox)
+  const operationalWorkflows = workflows.filter((job) => !job.isSandbox)
 
   // ── Risk Analysis ───────────────────────────────────────────────────────────
-  const criticalExposures = (exposures || []).filter((e: any) => e.severity === 'critical').length
-  const highExposures = (exposures || []).filter((e: any) => e.severity === 'high').length
+  const scannerCritical = (scanResults || []).filter((r: any) => String(r.threat_level || '').toLowerCase() === 'critical').length
+    + (scannerAlerts || []).filter((r: any) => String(r.severity || r.threat_level || '').toLowerCase() === 'critical').length
+  const scannerHigh = (scanResults || []).filter((r: any) => String(r.threat_level || '').toLowerCase() === 'high').length
+    + (scannerAlerts || []).filter((r: any) => String(r.severity || r.threat_level || '').toLowerCase() === 'high').length
+  const runtimeRiskEvents = (runtimeEvents || []).filter((event: any) => {
+    const text = JSON.stringify(event || {}).toLowerCase()
+    return /rsa|ecdsa|ecdh|diffie|dh-|tlsv1\.0|tlsv1\.1|ssl|3des|rc4|sha1|md5|fallback|downgrade/.test(text)
+  }).length
+  const criticalExposures = (exposures || []).filter((e: any) => e.severity === 'critical').length + scannerCritical
+  const highExposures = (exposures || []).filter((e: any) => e.severity === 'high').length + scannerHigh
   const vulnerableInventory = (inventory || []).filter((i: any) => i.is_vulnerable || i.is_quantum_safe === false).length
   const totalInventory = (inventory || []).length
   const expiringCerts = (certificates || []).filter((c: any) => c.is_expiring_soon || !c.is_quantum_safe).length
-  const openVulns = (vulns || []).length
-  const failedJobs = simulations.filter((s) => s.status === 'failed').length
-  const completedJobs = simulations.filter((s) => s.status === 'completed').length
-  const runningJobs = simulations.filter((s) => s.status === 'running').length
-  const totalJobs = simulations.length
+  const openVulns = (vulns || []).length + (scannerAlerts || []).length
+  const failedJobs = workflows.filter((s) => s.status === 'failed').length
+  const completedJobs = workflows.filter((s) => s.status === 'completed').length
+  const runningJobs = workflows.filter((s) => s.status === 'running').length
+  const queuedJobs = workflows.filter((s) => s.status === 'queued').length
+  const pausedJobs = workflows.filter((s) => s.status === 'paused').length
+  const totalJobs = workflows.length
+  const sandboxRunning = simulations.filter((s) => s.status === 'running').length
+  const sandboxCompleted = simulations.filter((s) => s.status === 'completed').length
+  const sandboxFailed = simulations.filter((s) => s.status === 'failed').length
+  const sandboxQueued = simulations.filter((s) => s.status === 'queued').length
+  const sandboxPaused = simulations.filter((s) => s.status === 'paused').length
+  const remediationWorkflows = operationalWorkflows.filter((s) => s.runMode === 'remediation').length
+  const actualMigrations = operationalWorkflows.filter((s) => s.runMode === 'actual_migration' || s.runMode === 'migration_workflow').length
+  const staleQueuedWorkflows = operationalWorkflows.filter((s) => s.status === 'queued' && dateMs(s.updatedAt) < Date.now() - 60 * 60 * 1000).length
+  const averageWorkflowProgress = totalJobs > 0 ? Math.round(workflows.reduce((sum, job) => sum + Number(job.progress || 0), 0) / totalJobs) : 0
 
   const riskScore = Math.max(0, Math.min(100, Math.round(
-    100 - (criticalExposures * 15 + highExposures * 8 + expiringCerts * 5 + openVulns * 3 + failedJobs * 10)
+    100 - (criticalExposures * 15 + highExposures * 8 + expiringCerts * 5 + openVulns * 3 + failedJobs * 10 + runtimeRiskEvents * 2)
   )))
   const pqcReadiness = totalInventory > 0
     ? Math.round(((totalInventory - vulnerableInventory) / totalInventory) * 100)
@@ -236,6 +689,7 @@ async function buildSandboxPayload(client: any, userId: string) {
     { label: 'Expiring/Non-PQC Certs', count: expiringCerts, severity: 'medium' as const, impact: 'medium' as const },
     { label: 'Open Vulnerabilities', count: openVulns, severity: 'medium' as const, impact: 'medium' as const },
     { label: 'Failed Migration Jobs', count: failedJobs, severity: 'high' as const, impact: 'high' as const },
+    { label: 'Runtime Crypto Risk Signals', count: runtimeRiskEvents, severity: 'medium' as const, impact: 'medium' as const },
   ].filter((f) => f.count > 0)
 
   // ── AI Recommendations ──────────────────────────────────────────────────────
@@ -259,10 +713,44 @@ async function buildSandboxPayload(client: any, userId: string) {
         compliance: ['NIST SP 800-208', 'CNSA 2.0'],
       })
     }
+    if (critExps.length === 0) {
+      const scannerFinding = [...(scanResults || []), ...(scannerAlerts || [])].find((row: any) => String(row.threat_level || row.severity || '').toLowerCase() === 'critical')
+      if (scannerFinding) {
+        const asset = assetMap.get(scannerFinding.asset_id) || {}
+        const from = scannerFinding.algorithm || scannerFinding.detected_value || scannerFinding.title || scannerFinding.finding_type || 'critical finding'
+        recommendations.push({
+          id: `rec-critical-scanner-${scannerFinding.id || 'latest'}`,
+          priority: 1,
+          type: 'scanner_remediation',
+          title: `Remediate critical scanner finding on ${asset.name || 'asset'}`,
+          description: scannerFinding.description || scannerFinding.message || 'Critical scanner telemetry is blocking safe PQC migration validation.',
+          algorithm: pqcAlgoRec(from),
+          asset: asset.name || scannerFinding.asset_name || 'Unknown',
+          effort: 'high',
+          timeEstimate: '2-4 weeks',
+          compliance: ['NIST SP 800-208', 'CNSA 2.0'],
+        })
+      }
+    }
+  }
+
+  if (runtimeRiskEvents > 0 && recommendations.length < 6) {
+    recommendations.push({
+      id: 'rec-runtime-risk',
+      priority: 2,
+      type: 'runtime_crypto_validation',
+      title: `Validate ${runtimeRiskEvents} runtime crypto risk signal(s) before cutover`,
+      description: 'Runtime telemetry detected classical or downgrade-prone cryptographic behavior that should be resolved before production migration.',
+      algorithm: 'Hybrid TLS / ML-KEM validation',
+      asset: 'Runtime telemetry',
+      effort: 'medium',
+      timeEstimate: '1-2 weeks',
+      compliance: ['NIST SP 800-208', 'Crypto Agility'],
+    })
   }
 
   if (failedJobs > 0) {
-    const failed = simulations.filter((s) => s.status === 'failed').slice(0, 3)
+    const failed = workflows.filter((s) => s.status === 'failed').slice(0, 3)
     for (const job of failed) {
       recommendations.push({
         id: `rec-failed-${job.id}`,
@@ -327,7 +815,7 @@ async function buildSandboxPayload(client: any, userId: string) {
   // ── Compliance Validation ───────────────────────────────────────────────────
   const nistReady = pqcReadiness >= 80 && criticalExposures === 0
   const agileReady = totalInventory > 0
-  const auditAvailable = (events || []).length > 0
+  const auditAvailable = (events || []).length > 0 || (securityEvents || []).length > 0 || (auditLogs || []).length > 0
   const complianceItems = [
     { framework: 'NIST SP 800-208', control: 'PQC Algorithm Adoption', status: nistReady ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: pqcReadiness },
     { framework: 'NIST SP 800-57 Rev.5', control: 'Key Management Practices', status: expiringCerts === 0 && failedJobs === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 15 - failedJobs * 20) },
@@ -338,14 +826,100 @@ async function buildSandboxPayload(client: any, userId: string) {
   ]
   const complianceScore = Math.round(complianceItems.reduce((sum, c) => sum + c.score, 0) / complianceItems.length)
 
-  // ── Workflow Phases ─────────────────────────────────────────────────────────
+  // Workflow phases summarize the live tenant migration pipeline, not just
+  // sandbox runs. This keeps queue size, execution, and blockers honest.
+  const latestEventAt = (events || [])[0]?.created_at || (securityEvents || [])[0]?.created_at || null
+  const runningScans = (scanSessions || []).filter((s: any) => ['running', 'queued', 'analyzing'].includes(String(s.status || '').toLowerCase())).length
+  const latestScanProgress = Math.max(0, ...(scanSessions || []).map((s: any) => Number(s.progress || 0)).filter(Number.isFinite))
+  const discoveryProgress = (assets || []).length > 0 || totalInventory > 0 ? 100 : latestScanProgress
+  const assessmentSignals = criticalExposures + highExposures + openVulns + runtimeRiskEvents
+  const planningProgress = totalJobs > 0 ? 100 : assessmentSignals > 0 ? 65 : 0
+  const verificationProgress = completedJobs > 0 ? Math.max(35, pqcReadiness) : averageWorkflowProgress >= 70 ? 50 : 0
   const workflowPhases = [
-    { id: 'preparation', label: 'Preparation', description: 'Asset discovery, CBOM validation, dependency mapping', complete: totalJobs > 0, active: runningJobs === 0 && totalJobs === 0, progress: totalJobs > 0 ? 100 : 0 },
-    { id: 'assessment', label: 'Risk Assessment', description: 'Quantum vulnerability scoring, HNDL exposure analysis', complete: (exposures || []).length > 0, active: (exposures || []).length > 0 && completedJobs === 0, progress: (exposures || []).length > 0 ? 100 : 0 },
-    { id: 'planning', label: 'Migration Planning', description: 'Algorithm selection, hybrid deployment planning', complete: totalJobs > 0, active: totalJobs > 0 && runningJobs === 0, progress: totalJobs > 0 ? 100 : 0 },
-    { id: 'execution', label: 'Sandbox Execution', description: 'Controlled simulation, automated validation', complete: completedJobs > 0, active: runningJobs > 0, progress: totalJobs > 0 ? Math.round((runningJobs + completedJobs) / totalJobs * 100) : 0 },
-    { id: 'verification', label: 'Verification', description: 'Integrity check, compatibility testing, benchmarks', complete: completedJobs > 0 && criticalExposures === 0, active: completedJobs > 0, progress: completedJobs > 0 ? pqcReadiness : 0 },
-    { id: 'finalization', label: 'Finalization', description: 'Readiness scoring, compliance validation, report export', complete: pqcReadiness >= 90, active: pqcReadiness >= 70, progress: pqcReadiness },
+    {
+      id: 'preparation',
+      label: 'Discovery & Inventory',
+      description: 'Assets, CBOM, scanner sessions, and crypto inventory normalized.',
+      complete: discoveryProgress >= 100,
+      active: runningScans > 0 || discoveryProgress > 0,
+      progress: clamp(discoveryProgress),
+      count: (assets || []).length + totalInventory,
+      running: runningScans,
+      queued: 0,
+      blocked: 0,
+      source: 'assets + crypto_inventory + pqc_scan_sessions',
+      updatedAt: (assets || [])[0]?.updated_at || (scanSessions || [])[0]?.updated_at || null,
+    },
+    {
+      id: 'assessment',
+      label: 'Risk Assessment',
+      description: 'Quantum vulnerability scoring, HNDL exposure, and runtime crypto risk.',
+      complete: assessmentSignals > 0 || totalInventory > 0,
+      active: runningScans > 0 || assessmentSignals > 0,
+      progress: assessmentSignals > 0 ? 100 : totalInventory > 0 ? 70 : 0,
+      count: assessmentSignals,
+      running: runningScans,
+      queued: 0,
+      blocked: criticalExposures,
+      source: 'crypto_exposures + pqc_scan_results + runtime_crypto_events',
+      updatedAt: (scanResults || [])[0]?.created_at || (runtimeEvents || [])[0]?.created_at || null,
+    },
+    {
+      id: 'planning',
+      label: 'Migration Planning',
+      description: 'Target algorithms, remediation ownership, and rollback strategy assigned.',
+      complete: totalJobs > 0,
+      active: totalJobs > 0 || assessmentSignals > 0,
+      progress: clamp(planningProgress),
+      count: totalJobs,
+      running: runningJobs,
+      queued: queuedJobs,
+      blocked: staleQueuedWorkflows,
+      source: 'migration_jobs',
+      updatedAt: (jobs || [])[0]?.updated_at || null,
+    },
+    {
+      id: 'execution',
+      label: 'Execution & Sandbox Validation',
+      description: 'Sandbox simulations progress automatically; actual migrations wait for approved executors.',
+      complete: totalJobs > 0 && completedJobs === totalJobs,
+      active: runningJobs > 0 || sandboxRunning > 0,
+      progress: clamp(averageWorkflowProgress),
+      count: totalJobs,
+      running: runningJobs,
+      queued: queuedJobs,
+      blocked: staleQueuedWorkflows,
+      source: 'migration_jobs + migration_events',
+      updatedAt: latestEventAt || (jobs || [])[0]?.updated_at || null,
+    },
+    {
+      id: 'verification',
+      label: 'Verification',
+      description: 'Compatibility, rollback, compliance evidence, and runtime drift validation.',
+      complete: completedJobs > 0 && criticalExposures === 0 && failedJobs === 0,
+      active: completedJobs > 0 || runningJobs > 0,
+      progress: clamp(verificationProgress),
+      count: completedJobs,
+      running: runningJobs,
+      queued: queuedJobs,
+      blocked: failedJobs + criticalExposures,
+      source: 'migration_events + security_events + audit_logs',
+      updatedAt: latestEventAt,
+    },
+    {
+      id: 'finalization',
+      label: 'Finalization',
+      description: 'Readiness score, compliance posture, audit report, and executive export.',
+      complete: pqcReadiness >= 90 && complianceScore >= 80,
+      active: pqcReadiness >= 70 || complianceScore >= 60,
+      progress: clamp(Math.round((pqcReadiness + complianceScore) / 2)),
+      count: (auditLogs || []).length + (securityEvents || []).length,
+      running: 0,
+      queued: 0,
+      blocked: complianceScore < 70 ? 1 : 0,
+      source: 'compliance + audit_logs + security_events',
+      updatedAt: (auditLogs || [])[0]?.created_at || latestEventAt,
+    },
   ]
 
   // ── PQC Stack Status ────────────────────────────────────────────────────────
@@ -362,11 +936,23 @@ async function buildSandboxPayload(client: any, userId: string) {
   const lastScan = (scanSessions || []).find((s: any) => s.status === 'completed')
   const summary = {
     totalSimulations: simulations.length,
-    running: runningJobs,
-    completed: completedJobs,
-    failed: failedJobs,
-    queued: simulations.filter((s) => s.status === 'queued').length,
-    paused: simulations.filter((s) => s.status === 'paused').length,
+    running: sandboxRunning,
+    completed: sandboxCompleted,
+    failed: sandboxFailed,
+    queued: sandboxQueued,
+    paused: sandboxPaused,
+    totalWorkflows: workflows.length,
+    actualMigrations,
+    remediationWorkflows,
+    runningWorkflows: runningJobs,
+    completedWorkflows: completedJobs,
+    failedWorkflows: failedJobs,
+    queuedWorkflows: queuedJobs,
+    pausedWorkflows: pausedJobs,
+    blockedWorkflows: staleQueuedWorkflows,
+    averageWorkflowProgress,
+    backgroundEngine: sandboxRunning > 0 || sandboxQueued > 0 ? 'active' : 'idle',
+    lastMigrationEventAt: latestEventAt,
     totalAssets: (assets || []).length,
     vulnerableAssets: new Set((exposures || []).map((e: any) => e.asset_id).filter(Boolean)).size,
     criticalExposures,
@@ -377,27 +963,50 @@ async function buildSandboxPayload(client: any, userId: string) {
     complianceScore,
     expiringCerts,
     lastScanAt: lastScan?.completed_at || lastScan?.created_at || null,
-    completionRate: totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0,
+    completionRate: simulations.length > 0 ? Math.round((sandboxCompleted / simulations.length) * 100) : 0,
+    workflowCompletionRate: totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0,
   }
+
+  const eventLogs = (events || []).map((ev: any) => ({
+    id: ev.id,
+    jobId: ev.migration_id,
+    type: ev.event_type || 'migration-event',
+    message: ev.message || '',
+    severity: ev.severity || 'info',
+    timestamp: ev.created_at,
+  }))
+  const securityLogs = (securityEvents || []).map((ev: any) => ({
+    id: `security-${ev.id}`,
+    jobId: ev.metadata?.jobId || ev.metadata?.migrationId || '',
+    type: ev.event_type || 'security-event',
+    message: ev.message || '',
+    severity: ev.severity || 'info',
+    timestamp: ev.created_at,
+  }))
+  const runtimeLogs = (runtimeEvents || []).slice(0, 80).map((ev: any, index: number) => ({
+    id: `runtime-${ev.id || index}`,
+    jobId: '',
+    type: ev.event_type || ev.operation || ev.algorithm || 'runtime-crypto',
+    message: ev.message || ev.description || `Runtime crypto signal observed${ev.algorithm ? `: ${ev.algorithm}` : ''}`,
+    severity: JSON.stringify(ev || {}).match(/rsa|ecdsa|tlsv1\.0|tlsv1\.1|ssl|3des|rc4|sha1|md5/i) ? 'warning' : 'info',
+    timestamp: ev.created_at || ev.timestamp || ev.observed_at || new Date().toISOString(),
+  }))
+  const recentLogs = [...eventLogs, ...securityLogs, ...runtimeLogs]
+    .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
+    .slice(0, 80)
 
   return {
     generatedAt: new Date().toISOString(),
     summary,
     simulations,
+    workflows,
     riskFactors,
     recommendations: recommendations.slice(0, 8),
     complianceItems,
     complianceScore,
     workflowPhases,
     pqcStack,
-    recentLogs: (events || []).slice(0, 50).map((ev: any) => ({
-      id: ev.id,
-      jobId: ev.migration_id,
-      type: ev.event_type || 'event',
-      message: ev.message || '',
-      severity: ev.severity || 'info',
-      timestamp: ev.created_at,
-    })),
+    recentLogs,
   }
 }
 
@@ -453,7 +1062,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
 
   const { data: job, error: readError } = await client
     .from('migration_jobs')
-    .select('id, name, status, metadata, progress')
+    .select('id, user_id, name, job_type, status, metadata, progress')
     .eq('id', req.params.id)
     .eq('user_id', req.user!.id)
     .single()
@@ -463,21 +1072,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   }
 
   const now = new Date().toISOString()
-  const meta = asRecord(job.metadata)
-  const nextMeta = { ...meta, lastOperatorAction: action, lastOperatorActionAt: now }
-
-  let update: any = { updated_at: now, metadata: nextMeta }
-  if (action === 'pause') update = { ...update, status: 'paused' }
-  else if (action === 'resume') update = { ...update, status: 'running', started_at: now }
-  else if (action === 'retry') update = { ...update, status: 'running', progress: 0, started_at: now }
-  else if (action === 'rollback') update = { ...update, status: 'rollback_requested' }
-  else if (action === 'stop') update = { ...update, status: 'paused' }
-  else if (action === 'snapshot') {
-    // Record snapshot in metadata
-    const snapshots = (meta.snapshots as any[]) || []
-    snapshots.push({ at: now, progress: job.progress, status: job.status })
-    update = { ...update, metadata: { ...nextMeta, snapshots } }
-  }
+  const update = actionUpdate(job, action, now)
 
   const { error: updateError } = await client
     .from('migration_jobs')
@@ -489,18 +1084,10 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     return res.status(500).json({ error: { code: 'UPDATE_FAILED', message: 'Failed to execute action' } })
   }
 
-  // Log the action as a migration event
-  await client.from('migration_events').insert({
-    user_id: req.user!.id,
-    migration_id: job.id,
-    event_type: `operator-${action}`,
-    severity: action === 'rollback' || action === 'stop' ? 'warning' : 'info',
-    message: `Operator ${action} action on sandbox job "${job.name || job.id}"`,
-    metadata: { action, operator: req.user!.email },
-    created_at: now,
-  }).catch(() => undefined)
+  await recordOperatorTelemetry(client, req, [job], action, now, 'single')
 
-  return res.json({ data: { success: true, action, jobId: job.id } })
+  const payload = await buildSandboxPayload(client, req.user!.id)
+  return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
 })
 
 // ── POST /api/v1/sandbox/simulate ────────────────────────────────────────────
@@ -518,6 +1105,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
   const jobName = dryRun
     ? `[DRY RUN] ${fromAlgo || 'Crypto'} → ${targetAlgo}`
     : `Sandbox: ${fromAlgo || 'Crypto'} → ${targetAlgo}`
+  const simulatedDurationMs = dryRun ? 110_000 : 240_000
 
   const { data: newJob, error: insertError } = await client
     .from('migration_jobs')
@@ -525,12 +1113,12 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
       user_id: req.user!.id,
       asset_id: assetId || null,
       name: jobName,
-      job_type: migrationType || 'pqc_migration',
-      status: 'running',
+      job_type: `sandbox_${migrationType || 'pqc_migration'}`,
+      status: 'queued',
       target_algorithm: targetAlgo,
       strategy: `${fromAlgo || 'Classical'} → ${targetAlgo}`,
       progress: 0,
-      started_at: now,
+      started_at: null,
       created_at: now,
       updated_at: now,
       metadata: {
@@ -539,6 +1127,12 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
         environment: environment || 'sandbox',
         dryRun: !!dryRun,
         sandboxMode: true,
+        executionMode: dryRun ? 'dry_run' : 'sandbox_simulation',
+        engine: ENGINE_NAME,
+        phase: 'queued',
+        queueReason: 'Awaiting sandbox executor slot',
+        queuedAt: now,
+        simulatedDurationMs,
         initiatedBy: req.user!.email,
         initiatedAt: now,
       },
@@ -552,17 +1146,44 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
   }
 
   // Emit initial event
-  await client.from('migration_events').insert({
+  const migrationEventInsert = await client.from('migration_events').insert({
     user_id: req.user!.id,
     migration_id: newJob.id,
     event_type: 'simulation-started',
     severity: 'info',
-    message: `Sandbox simulation started: ${fromAlgo || 'Classical'} → ${targetAlgo}${dryRun ? ' (Dry Run)' : ''}`,
-    metadata: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, dryRun: !!dryRun },
+    message: `Sandbox simulation queued: ${fromAlgo || 'Classical'} → ${targetAlgo}${dryRun ? ' (Dry Run)' : ''}`,
+    metadata: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, dryRun: !!dryRun, engine: ENGINE_NAME, status: 'queued' },
     created_at: now,
-  }).catch(() => undefined)
+  })
+  if (migrationEventInsert.error && !isMissingTable(migrationEventInsert.error)) console.warn('[sandbox] simulation event insert failed:', migrationEventInsert.error.message)
 
-  return res.json({ data: { success: true, jobId: newJob.id, jobName, status: 'running' } })
+  const securityEventInsert = await client.from('security_events').insert({
+    user_id: req.user!.id,
+    event_type: 'sandbox-simulation-started',
+    severity: 'info',
+    message: `Migration sandbox simulation started: ${jobName}`,
+    asset_id: assetId || null,
+    resource_name: jobName,
+    resource_type: 'migration-sandbox',
+    metadata: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, migrationType, dryRun: !!dryRun, jobId: newJob.id },
+    created_at: now,
+  })
+  if (securityEventInsert.error && !isMissingTable(securityEventInsert.error)) console.warn('[sandbox] simulation security event insert failed:', securityEventInsert.error.message)
+
+  const auditLogInsert = await client.from('audit_logs').insert({
+    user_id: req.user!.id,
+    action: 'sandbox_simulation_started',
+    entity_type: 'migration_job',
+    entity_id: newJob.id,
+    details: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, migrationType, dryRun: !!dryRun },
+    ip_address: req.ip?.replace('::ffff:', '') || null,
+    user_agent: String(req.headers['user-agent'] || '').slice(0, 500),
+    created_at: now,
+  })
+  if (auditLogInsert.error && !isMissingTable(auditLogInsert.error)) console.warn('[sandbox] simulation audit log insert failed:', auditLogInsert.error.message)
+
+  const payload = await buildSandboxPayload(client, req.user!.id)
+  return res.json({ data: { success: true, jobId: newJob.id, jobName, status: 'queued', snapshot: payload } })
 })
 
 // ── POST /api/v1/sandbox/bulk-action ─────────────────────────────────────────
@@ -571,11 +1192,14 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const action = String(req.body?.action || '').toLowerCase()
+  const scope = String(req.body?.scope || 'sandbox').toLowerCase() === 'all' ? 'all' : 'sandbox'
   const scopes: Record<string, string[]> = {
     pause: ['running', 'in_progress'],
     resume: ['paused', 'queued'],
     retry: ['failed'],
-    rollback: ['running', 'paused', 'completed'],
+    rollback: ['running', 'paused', 'completed', 'rollback_requested'],
+    stop: ['running', 'in_progress', 'paused', 'queued'],
+    snapshot: ['running', 'in_progress', 'paused', 'queued', 'completed', 'failed', 'rollback_requested', 'rolled_back', 'stopped'],
   }
 
   if (!scopes[action]) {
@@ -584,7 +1208,7 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
 
   const { data: jobs, error: readError } = await client
     .from('migration_jobs')
-    .select('id, name, status, metadata')
+    .select('id, user_id, name, job_type, status, metadata, progress')
     .eq('user_id', req.user!.id)
     .in('status', scopes[action])
 
@@ -594,14 +1218,10 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
 
   const now = new Date().toISOString()
   let affected = 0
-  for (const job of jobs || []) {
-    const meta = asRecord(job.metadata)
-    const nextMeta = { ...meta, lastOperatorAction: action, lastOperatorActionAt: now }
-    let update: any = { updated_at: now, metadata: nextMeta }
-    if (action === 'pause') update.status = 'paused'
-    else if (action === 'resume') { update.status = 'running'; update.started_at = now }
-    else if (action === 'retry') { update.status = 'running'; update.progress = 0; update.started_at = now }
-    else if (action === 'rollback') update.status = 'rollback_requested'
+  const affectedJobs: any[] = []
+  const eligibleJobs = (jobs || []).filter((job: any) => scope === 'all' || isSandboxSimulationJob(job))
+  for (const job of eligibleJobs) {
+    const update = actionUpdate(job, action, now)
 
     const { error } = await client
       .from('migration_jobs')
@@ -609,10 +1229,15 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
       .eq('id', job.id)
       .eq('user_id', req.user!.id)
 
-    if (!error) affected++
+    if (!error) {
+      affected++
+      affectedJobs.push(job)
+    }
   }
 
-  return res.json({ data: { success: true, action, affected } })
+  await recordOperatorTelemetry(client, req, affectedJobs, action, now, 'bulk')
+  const payload = await buildSandboxPayload(client, req.user!.id)
+  return res.json({ data: { success: true, action, scope, affected, snapshot: payload } })
 })
 
 // ── GET /api/v1/sandbox/risk ──────────────────────────────────────────────────
@@ -669,8 +1294,8 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
         return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
       }
       const rows = [
-        ['id', 'name', 'asset', 'status', 'fromAlgo', 'toAlgo', 'progress', 'riskLevel', 'phase', 'owner', 'environment'],
-        ...payload.simulations.map((s) => [s.id, s.name, s.assetName, s.status, s.fromAlgo, s.toAlgo, s.progress, s.riskLevel, s.phase, s.owner, s.environment]),
+        ['id', 'name', 'runMode', 'asset', 'status', 'fromAlgo', 'toAlgo', 'progress', 'riskLevel', 'phase', 'eta', 'owner', 'environment'],
+        ...(payload.workflows || payload.simulations).map((s: any) => [s.id, s.name, s.runModeLabel || s.runMode || 'workflow', s.assetName, s.status, s.fromAlgo, s.toAlgo, s.progress, s.riskLevel, s.phase, s.eta, s.owner, s.environment]),
       ]
       res.setHeader('Content-Type', 'text/csv')
       res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`)
@@ -684,5 +1309,28 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
     return res.status(500).json({ error: { code: 'EXPORT_FAILED', message: 'Export failed' } })
   }
 })
+
+export function startSandboxScheduler() {
+  if (sandboxSchedulerStarted) return
+  sandboxSchedulerStarted = true
+
+  const client = getServiceClient()
+  if (!client) {
+    console.warn('[sandbox] background scheduler disabled: service client is not configured')
+    return
+  }
+
+  const tick = async () => {
+    try {
+      await advanceSandboxJobs(client)
+    } catch (err) {
+      console.warn('[sandbox] background scheduler tick failed:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  void tick()
+  const timer = setInterval(tick, 15_000)
+  if (typeof (timer as any).unref === 'function') (timer as any).unref()
+}
 
 export default router

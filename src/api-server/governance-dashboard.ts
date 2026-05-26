@@ -3,7 +3,7 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
-type GovernanceKind = 'policies' | 'audit' | 'regulatory'
+type GovernanceKind = 'quantum' | 'policies' | 'audit' | 'regulatory'
 type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 type AuthedRequest = Request & {
@@ -35,6 +35,7 @@ type GovernanceSignal = {
 }
 
 const ROUTE_META: Record<GovernanceKind, { eventPrefix: string; routeLabel: string }> = {
+  quantum: { eventPrefix: 'quantum-governance', routeLabel: 'Quantum governance' },
   policies: { eventPrefix: 'crypto-policies', routeLabel: 'Crypto policies' },
   audit: { eventPrefix: 'audit-vault', routeLabel: 'Audit vault' },
   regulatory: { eventPrefix: 'regulatory-mapping', routeLabel: 'Regulatory mapping' },
@@ -280,9 +281,11 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
     runtimeEvents,
     scannerEvidence,
     scannerAlerts,
+    scanSessions,
     scanResults,
     cryptoInventory,
     cryptoExposures,
+    vulnerabilities,
     certificates,
     generatedKeys,
     scannerAgents,
@@ -303,9 +306,11 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
     safeRows(client, 'runtime_crypto_events', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(4500)),
     safeRows(client, 'scanner_evidence', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2200)),
     safeRows(client, 'scanner_alerts', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_exposures', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
     safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
     safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'scanner_agents', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(700)),
@@ -581,6 +586,34 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
     })
   }
 
+  for (const session of scanSessions || []) {
+    const metadata = recordOf(session.metadata)
+    const status = String(session.status || 'pending').toLowerCase()
+    const failed = /fail|error|cancel|blocked/.test(status)
+    const running = /run|scan|progress|pending|queued/.test(status)
+    const findings = numberValue(session.findings_count)
+    const scannedAssets = numberValue(session.scanned_assets)
+    const totalAssets = numberValue(session.total_assets)
+    addSignal({
+      id: `scan-session-${session.id}`,
+      sourceTable: 'pqc_scan_sessions',
+      domain: 'Scan Governance',
+      title: failed ? 'Scan requires governance review' : running ? 'Scan in progress' : 'Scan completed',
+      subject: textValue(session.target_scope, firstString(metadata, ['target', 'targetScope', 'scope']) || 'PQC scan'),
+      subjectType: 'Scan Session',
+      status: textValue(session.status, running ? 'running' : 'completed'),
+      severity: failed ? 'high' : findings > 0 ? 'medium' : 'low',
+      score: failed ? 80 : findings > 0 ? 54 : 12,
+      compliant: !failed && findings === 0,
+      evidence: true,
+      policyEnforced: true,
+      encrypted: true,
+      pqcReady: !failed && findings === 0,
+      timestamp: session.completed_at || session.updated_at || session.started_at || session.created_at,
+      detail: `${numberValue(session.progress)}% complete - ${findings} finding${findings === 1 ? '' : 's'} - ${scannedAssets}/${totalAssets} assets`,
+    })
+  }
+
   for (const evidence of scannerEvidence || []) {
     const raw = recordOf(evidence.raw_evidence)
     const algorithm = textValue(evidence.observed_algorithm, firstString(raw, ['algorithm', 'cipher', 'cipher_suite']))
@@ -622,6 +655,32 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
       pqcReady: isPqcAlgorithm(`${result.algorithm || ''}`),
       timestamp: result.created_at,
       detail: `${result.algorithm || ''} ${result.description || ''} ${result.remediation || ''}`,
+    })
+  }
+
+  for (const vulnerability of vulnerabilities || []) {
+    const metadata = recordOf(vulnerability.metadata)
+    const status = String(vulnerability.status || 'open').toLowerCase()
+    const resolved = /resolved|closed|fixed|false_positive|accepted/.test(status)
+    const severity = normalizeSeverity(vulnerability.severity)
+    addSignal({
+      id: `vulnerability-${vulnerability.id}`,
+      sourceTable: 'vulnerabilities',
+      domain: 'Vulnerability Governance',
+      title: vulnerability.title || 'Vulnerability finding',
+      subject: assetName(vulnerability.asset_id, firstString(metadata, ['assetName', 'hostname', 'resourceName']) || 'Vulnerability'),
+      subjectType: firstString(metadata, ['assetType', 'resourceType']) || 'Vulnerability',
+      assetId: vulnerability.asset_id,
+      status: textValue(vulnerability.status, resolved ? 'resolved' : 'open'),
+      severity,
+      score: numberValue(vulnerability.cvss_score) * 10,
+      compliant: resolved,
+      evidence: true,
+      policyEnforced: true,
+      encrypted: true,
+      pqcReady: Boolean(metadata.pqc_ready || metadata.quantum_safe || metadata.is_quantum_safe),
+      timestamp: vulnerability.updated_at || vulnerability.created_at,
+      detail: `${vulnerability.source || ''} ${vulnerability.description || ''}`,
     })
   }
 
@@ -883,6 +942,7 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
 
   const policyRows = [
     { label: 'Runtime Crypto Allowlist', matcher: /Runtime Policy|Algorithm Policy|Policy Violation|Evidence Collection/i, scope: `${new Set(signals.filter((s) => /Runtime Policy|Algorithm Policy|Policy Violation|Evidence Collection/i.test(s.domain)).map((s) => s.subject)).size} subjects`, actionHref: '/dashboard/runtime-crypto-intel' },
+    { label: 'Scan And Vulnerability Governance', matcher: /Scan Governance|Vulnerability Governance/i, scope: `${scanSessions.length + vulnerabilities.length + scanResults.length} findings`, actionHref: '/dashboard/vulnerabilities' },
     { label: 'Collector Evidence Scope', matcher: /Collector Governance|Connector Governance|Evidence Collection/i, scope: `${scannerAgents.length + connectorAccounts.length} sources`, actionHref: '/dashboard/scanner' },
     { label: 'Certificate And Key Controls', matcher: /Certificate Policy|Key Policy/i, scope: `${certificates.length + generatedKeys.length} objects`, actionHref: '/dashboard/keys' },
     { label: 'Audit Vault Retention', matcher: /Audit Trail|Audit Vault|Access Governance/i, scope: `${vaultFiles.length + vaultAuditLogs.length + auditLogs.length} records`, actionHref: '/dashboard/audit-vault' },
@@ -1009,7 +1069,7 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
       policyScore: percentOf(policySignals.filter((signal) => signal.compliant).length, policySignals.length),
       policyCoverage: percentOf(policySignals.filter((signal) => signal.policyEnforced).length, policySignals.length),
       activePolicies: policyRows.filter((row) => row.enforced).length + scannerPolicies.filter((policy: any) => policy.enabled).length,
-      policyViolations: violations.filter((signal) => /policy|runtime|algorithm|certificate|key|scanner/i.test(signal.domain)).length,
+      policyViolations: violations.filter((signal) => /policy|runtime|algorithm|certificate|key|scanner|scan|vulnerability/i.test(signal.domain)).length,
       auditEvents: auditSignals.length,
       immutableEvents: auditSignals.filter((signal) => signal.immutable).length,
       vaultObjects: vaultFiles.length,
@@ -1020,7 +1080,7 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
       evidenceGaps: regulatoryRows.filter((row) => row.findings > 0 || row.coverage < 70).length,
       highRiskFindings: highRisk.length,
       assetsCovered: new Set(signals.map((signal) => signal.subject).filter(Boolean)).size,
-      runtimeFindings: runtimeEvents.length + scannerEvidence.length + scannerAlerts.length,
+      runtimeFindings: runtimeEvents.length + scanSessions.length + scanResults.length + scannerEvidence.length + scannerAlerts.length + vulnerabilities.length,
       staleEvidence: stale.length,
       activeSources: scannerAgents.length + connectorAccounts.length,
       pqcReadiness: percentOf(pqcReady.length, total),
@@ -1088,7 +1148,9 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
       runtimeEvents: runtimeEvents.length,
       scannerEvidence: scannerEvidence.length,
       scannerAlerts: scannerAlerts.length,
+      scanSessions: scanSessions.length,
       scanResults: scanResults.length,
+      vulnerabilities: vulnerabilities.length,
       cryptoInventory: cryptoInventory.length,
       cryptoExposures: cryptoExposures.length,
       certificates: certificates.length,
@@ -1110,6 +1172,7 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
   }
 }
 
+export const quantumGovernanceRoutes = buildRouter('quantum')
 export const cryptoPoliciesRoutes = buildRouter('policies')
 export const auditVaultRoutes = buildRouter('audit')
 export const regulatoryMappingRoutes = buildRouter('regulatory')
