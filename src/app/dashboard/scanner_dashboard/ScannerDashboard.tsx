@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useSearchParams } from 'react-router-dom';
 import {
   Play, Pause, Shield, AlertTriangle, Activity, Terminal,
   Radio, Target, Search, ChevronRight, CheckCircle2, XCircle,
@@ -18,6 +19,21 @@ import {
 
 type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled';
 type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history' | 'agents' | 'settings';
+
+const scannerTabFromParam = (value: string | null): TabId | null => {
+  if (!value) return null;
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'agent-collector-scanners' || normalized === 'agent-collector' || normalized === 'collector') {
+    return 'agents';
+  }
+
+  if (['setup', 'overview', 'findings', 'logs', 'history', 'agents', 'settings'].includes(normalized)) {
+    return normalized as TabId;
+  }
+
+  return null;
+};
 
 type DefensiveFinding = {
   id: string;
@@ -223,6 +239,7 @@ type OperatorAction = {
 type AgentFormState = {
   name: string;
   environment: string;
+  enabled: boolean;
   allowedTargets: string;
   allowedPaths: string;
   intervalSeconds: string;
@@ -561,6 +578,8 @@ function downloadTextFile(filename: string, content: string, type: string) {
 const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
 
 export default function ScannerDashboard() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = scannerTabFromParam(searchParams.get('tab'));
   const { session, user } = useAuth();
 
   // Floating notifications
@@ -576,7 +595,24 @@ export default function ScannerDashboard() {
   }, [toast]);
 
   const [status, setStatus] = useState<ScanStatus>('idle');
-  const [activeTab, setActiveTab] = useState<TabId>('setup');
+  const [activeTab, setActiveTab] = useState<TabId>(() => requestedTab ?? 'setup');
+  useEffect(() => {
+    if (requestedTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab]);
+
+  const handleTabSelect = useCallback((tab: TabId) => {
+    setActiveTab(tab);
+
+    const nextParams = new URLSearchParams(searchParams);
+    if (tab === 'setup') {
+      nextParams.delete('tab');
+    } else {
+      nextParams.set('tab', tab);
+    }
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [searchQ, setSearchQ] = useState('');
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
@@ -602,7 +638,7 @@ export default function ScannerDashboard() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [terminalPaused, setTerminalPaused] = useState(false);
-  const [terminalPinned, setTerminalPinned] = useState(true);
+  const [terminalPinned, setTerminalPinned] = useState(false);
   const [copiedLogs, setCopiedLogs] = useState(false);
   const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
   const [agents, setAgents] = useState<CollectorAgent[]>([]);
@@ -616,21 +652,30 @@ export default function ScannerDashboard() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [oneTimeAgentToken, setOneTimeAgentToken] = useState<OneTimeAgentToken>(null);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
+  const [isAgentSetupWorkflowOpen, setIsAgentSetupWorkflowOpen] = useState(false);
+  const [isInstallationCommandsOpen, setIsInstallationCommandsOpen] = useState(false);
+  const [isSecurityNotesOpen, setIsSecurityNotesOpen] = useState(false);
+  const [isTroubleshootingOpen, setIsTroubleshootingOpen] = useState(false);
+  const [settingsApplyMode, setSettingsApplyMode] = useState<'selected' | 'all'>('selected');
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [agentSyncConnected, setAgentSyncConnected] = useState(false);
+  const [agentSyncLastEventAt, setAgentSyncLastEventAt] = useState<string | null>(null);
   const [agentForm, setAgentForm] = useState<AgentFormState>({
     name: 'Production Collector Agent',
     environment: 'production',
-    allowedTargets: 'https://api.customer.com\nssh://server.customer.com:22',
-    allowedPaths: 'C:\\Apps\\CustomerApi',
+    enabled: true,
+    allowedTargets: 'https://api.customer.com\napi.customer.com:443\nssh://server.customer.com:22',
+    allowedPaths: 'C:\\Apps\\CustomerApi\\config\nC:\\nginx\\conf\n/opt/customer-api/config\n/etc/nginx/sites-enabled',
     intervalSeconds: '300',
-    scanTypes: ['tls', 'ssh', 'packages', 'configs'],
+    scanTypes: ['tls', 'ssh', 'packages', 'configs', 'runtime'],
     alertThreshold: 'moderate',
   });
   const [connectorForm, setConnectorForm] = useState<ConnectorFormState>({
     provider: 'kubernetes',
     displayName: 'Production Kubernetes Connector',
     scopes: 'kubernetes:read\nkubernetes:patch:ingress\nkubernetes:patch:cert-manager\nkubernetes:patch:service-mesh',
-    allowedTargets: 'https://api.customer.com',
-    allowedPaths: '/etc/kubernetes/manifests',
+    allowedTargets: 'https://api.customer.com\nnamespace/default/ingress/customer-api',
+    allowedPaths: '/etc/kubernetes/manifests\n/opt/customer-api/config',
   });
   const [operatorPatchForm, setOperatorPatchForm] = useState<OperatorPatchFormState>({
     assetClass: 'kubernetes',
@@ -734,6 +779,43 @@ export default function ScannerDashboard() {
   }, [fetchAgents, fetchHistory]);
 
   useEffect(() => {
+    if (!session?.access_token || !['agents', 'settings'].includes(activeTab)) {
+      setAgentSyncConnected(false);
+      return;
+    }
+
+    const source = new EventSource(`/api/v1/agent-scanner/stream?token=${encodeURIComponent(session.access_token)}`);
+
+    source.onopen = () => setAgentSyncConnected(true);
+    source.onerror = () => setAgentSyncConnected(false);
+    source.addEventListener('agent-scanner-sync', (message) => {
+      try {
+        const snapshot = JSON.parse((message as MessageEvent).data || '{}');
+        const nextAgents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
+        setAgents(nextAgents);
+        if (Array.isArray(snapshot.evidence)) setAgentEvidence(snapshot.evidence);
+        if (Array.isArray(snapshot.alerts)) setAgentAlerts(snapshot.alerts);
+        if (Array.isArray(snapshot.connectors)) setConnectors(snapshot.connectors);
+        if (Array.isArray(snapshot.operatorActions)) setOperatorActions(snapshot.operatorActions);
+        if (Array.isArray(snapshot.patchOptions)) setPatchOptionGroups(snapshot.patchOptions);
+        setSelectedAgentId((current) => current || nextAgents[0]?.id || null);
+        setAgentSyncLastEventAt(snapshot.generatedAt || new Date().toISOString());
+        setOperatorPatchForm((current) => ({
+          ...current,
+          connectorId: current.connectorId || snapshot.connectors?.[0]?.id || '',
+        }));
+      } catch {
+        setAgentSyncConnected(false);
+      }
+    });
+
+    return () => {
+      source.close();
+      setAgentSyncConnected(false);
+    };
+  }, [activeTab, session?.access_token]);
+
+  useEffect(() => {
     const scopedHistory = filterHistoryByTimeframe(history, historyTimeframe);
     if (scopedHistory.length === 0) {
       setSelectedHistoryId(null);
@@ -792,7 +874,7 @@ export default function ScannerDashboard() {
     setJobId(null);
     setCopiedLogs(false);
     setTerminalPaused(false);
-    setTerminalPinned(true);
+    setTerminalPinned(false);
     setScanStartedAt(startedAtMs);
     setStatus('queued');
     setActiveTab('overview');
@@ -1114,7 +1196,7 @@ export default function ScannerDashboard() {
   }, []);
 
   const agentPolicyFromForm = useCallback(() => ({
-    enabled: true,
+    enabled: agentForm.enabled,
     intervalSeconds: Math.max(60, Number(agentForm.intervalSeconds || 300)),
     allowedTargets: agentForm.allowedTargets.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     allowedPaths: agentForm.allowedPaths.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
@@ -1463,6 +1545,7 @@ export default function ScannerDashboard() {
     pqcReady: summary?.pqcReady ?? findings.filter((finding) => finding.threatLevel === 'SAFE').length,
     vulnerable: summary?.vulnerable ?? findings.filter((finding) => finding.threatLevel !== 'SAFE').length,
   };
+  const showMitigationNextStep = status === 'completed' && liveCounts.vulnerable > 0;
 
   const displayedHistory = filterHistoryByTimeframe(history, historyTimeframe);
   const previousSevenDayHistory = history.filter((entry) => isHistoryEntryInLastDays(entry, 7, 7));
@@ -1587,6 +1670,109 @@ export default function ScannerDashboard() {
     active: operatorActions.filter((action) => ['planned', 'approved', 'applying', 'applied', 'validating'].includes(String(action.status))).length,
     validated: operatorActions.filter((action) => action.status === 'validated').length,
   };
+  const openAgentAlerts = agentAlerts.filter((alert) => !['resolved', 'closed', 'suppressed'].includes(String(alert.status || 'open').toLowerCase()));
+  const editableAgentPolicy = agentPolicyFromForm();
+  const policyScopeCount = editableAgentPolicy.allowedTargets.length + editableAgentPolicy.allowedPaths.length;
+  const manageableAgents = agents.filter((agent) => !agent.revoked_at && String(agent.status || '').toLowerCase() !== 'revoked');
+  const selectedAgentIsManageable = Boolean(selectedAgent && !selectedAgent.revoked_at && String(selectedAgent.status || '').toLowerCase() !== 'revoked');
+  const settingsTargetCount = settingsApplyMode === 'all' ? manageableAgents.length : selectedAgentIsManageable ? 1 : 0;
+  const settingsCanSave = settingsTargetCount > 0
+    && editableAgentPolicy.scanTypes.length > 0
+    && (!editableAgentPolicy.enabled || policyScopeCount > 0);
+
+  const handleLoadSelectedAgentPolicy = useCallback(() => {
+    if (!selectedAgent) {
+      setAgentsError('Select an agent before loading its policy.');
+      return;
+    }
+    const policy = normalizeAgentPolicy(selectedAgent.policy);
+    setAgentForm((current) => ({
+      ...current,
+      name: selectedAgent.name || current.name,
+      environment: selectedAgent.metadata?.environment || current.environment || 'production',
+      enabled: policy.enabled,
+      allowedTargets: policy.allowedTargets.join('\n'),
+      allowedPaths: policy.allowedPaths.join('\n'),
+      intervalSeconds: String(policy.intervalSeconds),
+      scanTypes: policy.scanTypes,
+      alertThreshold: policy.alertThreshold,
+    }));
+    showToast('Selected agent policy loaded into settings.');
+  }, [selectedAgent, showToast]);
+
+  const handleApplyScannerSettings = useCallback(async () => {
+    const headers = authHeaders();
+    if (!headers) return;
+    const targetAgents = settingsApplyMode === 'all'
+      ? agents.filter((agent) => !agent.revoked_at && String(agent.status || '').toLowerCase() !== 'revoked')
+      : selectedAgent && !selectedAgent.revoked_at && String(selectedAgent.status || '').toLowerCase() !== 'revoked'
+        ? [selectedAgent]
+        : [];
+    const policy = agentPolicyFromForm();
+
+    if (targetAgents.length === 0) {
+      setAgentsError('Select an active agent or switch to Apply to all active agents.');
+      return;
+    }
+    if (policy.scanTypes.length === 0 || (policy.enabled && policy.allowedTargets.length + policy.allowedPaths.length === 0)) {
+      setAgentsError('Add at least one scan type and one authorized target or path before applying policy.');
+      return;
+    }
+
+    setSettingsSaving(true);
+    setAgentsError(null);
+    try {
+      await Promise.all(targetAgents.map(async (agent) => {
+        const response = await fetch(`/api/v1/agent-scanner/agents/${agent.id}/policy`, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify(policy),
+        });
+        const json = await response.json();
+        if (!response.ok) throw new Error(json?.error?.message || `Unable to apply policy to ${agent.name || agent.id}`);
+      }));
+      await fetchAgents();
+      setAgentSyncLastEventAt(new Date().toISOString());
+      showToast(`Scanner policy applied to ${targetAgents.length} agent${targetAgents.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      setAgentsError(err instanceof Error ? err.message : 'Scanner settings update failed');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [agentPolicyFromForm, agents, authHeaders, fetchAgents, selectedAgent, settingsApplyMode, showToast]);
+
+  const handleRefreshAgentSettings = useCallback(async () => {
+    await fetchAgents();
+    setAgentSyncLastEventAt(new Date().toISOString());
+    showToast('Scanner settings synchronized.');
+  }, [fetchAgents, showToast]);
+
+  const handleAcknowledgeOpenAgentAlerts = useCallback(async () => {
+    const headers = authHeaders();
+    if (!headers) return;
+    if (openAgentAlerts.length === 0) {
+      showToast('No open scanner alerts to acknowledge.');
+      return;
+    }
+    setSettingsSaving(true);
+    setAgentsError(null);
+    try {
+      await Promise.all(openAgentAlerts.map(async (alert) => {
+        const response = await fetch(`/api/v1/agent-scanner/alerts/${alert.id}/acknowledge`, {
+          method: 'POST',
+          headers,
+        });
+        const json = await response.json();
+        if (!response.ok) throw new Error(json?.error?.message || 'Unable to acknowledge scanner alert');
+      }));
+      await fetchAgents();
+      showToast(`Acknowledged ${openAgentAlerts.length} scanner alert${openAgentAlerts.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      setAgentsError(err instanceof Error ? err.message : 'Alert acknowledgement failed');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [authHeaders, fetchAgents, openAgentAlerts, showToast]);
 
   const commandAgentId = selectedAgent?.id || oneTimeAgentToken?.agentId || 'agent_id_here';
   const dockerCommand = `docker run -d \\
@@ -1595,6 +1781,9 @@ export default function ScannerDashboard() {
   -e QGUARD_AGENT_ID="${commandAgentId}" \\
   -e QGUARD_AGENT_TOKEN="agent_token_here" \\
   -e QGUARD_API_URL="${apiUrlPlaceholder}" \\
+  -e QGUARD_NATIVE_RUNTIME_ENABLED="true" \\
+  -e QGUARD_NATIVE_CAPTURE_SECONDS="8" \\
+  -e QGUARD_SCAN_SYSTEM_CERTS="true" \\
   qguard/collector-agent:latest`;
   const composeCommand = `services:
   qguard-collector:
@@ -1604,7 +1793,10 @@ export default function ScannerDashboard() {
       QGUARD_TENANT_ID: "${tenantId}"
       QGUARD_AGENT_ID: "${commandAgentId}"
       QGUARD_AGENT_TOKEN: "agent_token_here"
-      QGUARD_API_URL: "${apiUrlPlaceholder}"`;
+      QGUARD_API_URL: "${apiUrlPlaceholder}"
+      QGUARD_NATIVE_RUNTIME_ENABLED: "true"
+      QGUARD_NATIVE_CAPTURE_SECONDS: "8"
+      QGUARD_SCAN_SYSTEM_CERTS: "true"`;
   const systemdCommand = `[Unit]
 Description=QGuard Local Scanner Agent
 After=network-online.target
@@ -1615,6 +1807,9 @@ Environment=QGUARD_TENANT_ID=${tenantId}
 Environment=QGUARD_AGENT_ID=${commandAgentId}
 Environment=QGUARD_AGENT_TOKEN=agent_token_here
 Environment=QGUARD_API_URL=${apiUrlPlaceholder}
+Environment=QGUARD_NATIVE_RUNTIME_ENABLED=true
+Environment=QGUARD_NATIVE_CAPTURE_SECONDS=8
+Environment=QGUARD_SCAN_SYSTEM_CERTS=true
 ExecStart=/usr/bin/npm run agent:watch
 Restart=always
 RestartSec=10
@@ -1625,12 +1820,18 @@ WantedBy=multi-user.target`;
 $env:QGUARD_AGENT_ID="${commandAgentId}"
 $env:QGUARD_AGENT_TOKEN="agent_token_here"
 $env:QGUARD_API_URL="${apiUrlPlaceholder}"
+$env:QGUARD_NATIVE_RUNTIME_ENABLED="true"
+$env:QGUARD_NATIVE_CAPTURE_SECONDS="8"
+$env:QGUARD_SCAN_SYSTEM_CERTS="true"
 npm run agent:watch`;
   const helmCommand = `helm install qguard-collector ./charts/qguard-collector \\
   --set tenantId="${tenantId}" \\
   --set agentId="${commandAgentId}" \\
   --set agentToken="agent_token_here" \\
-  --set apiUrl="${apiUrlPlaceholder}"`;
+  --set apiUrl="${apiUrlPlaceholder}" \\
+  --set nativeRuntime.enabled=true \\
+  --set nativeRuntime.captureSeconds=8 \\
+  --set nativeRuntime.scanSystemCerts=true`;
 
   const workflowSteps = [
     {
@@ -1945,7 +2146,7 @@ npm run agent:watch`;
         ].map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTabSelect(tab.id)}
             className={`px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.15em] border-b-2 transition-all -mb-px whitespace-nowrap ${
               activeTab === tab.id ? 'border-gold text-gold' : 'border-transparent text-white/35 hover:text-white/55'
             }`}
@@ -2342,14 +2543,20 @@ npm run agent:watch`;
                     value={agentForm.allowedTargets}
                     onChange={(e) => setAgentForm((prev) => ({ ...prev, allowedTargets: e.target.value }))}
                     className="w-full h-24 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none focus:resize-none glass-panel"
-                    placeholder={'https://api.customer.com\nssh://server.customer.com:22'}
+                    placeholder={'https://api.customer.com\napi.customer.com:443\nssh://server.customer.com:22'}
                   />
+                  <div className="rounded-lg border border-cyan-400/10 bg-cyan-400/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
+                    <span className="font-black uppercase tracking-wider text-cyan-300/80">Allowed Targets:</span> network endpoints the agent may scan, such as HTTPS APIs, TLS hosts, IP:port pairs, or SSH URLs. Enter the exact host, URL, or endpoint that belongs to this tenant.
+                  </div>
                   <textarea
                     value={agentForm.allowedPaths}
                     onChange={(e) => setAgentForm((prev) => ({ ...prev, allowedPaths: e.target.value }))}
                     className="w-full h-20 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none focus:resize-none glass-panel"
-                    placeholder={'C:\\Apps\\CustomerApi\n/opt/customer-api'}
+                    placeholder={'C:\\Apps\\CustomerApi\\config\nC:\\nginx\\conf\n/opt/customer-api/config\n/etc/nginx/sites-enabled'}
                   />
+                  <div className="rounded-lg border border-gold/10 bg-gold/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
+                    <span className="font-black uppercase tracking-wider text-gold/80">Allowed Paths:</span> local filesystem roots visible to the agent process. Use Windows, Linux, Docker mount, or Kubernetes mounted paths where TLS, OpenSSL, Nginx, app, or service config files actually live.
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <input
                       value={agentForm.intervalSeconds}
@@ -2416,57 +2623,77 @@ npm run agent:watch`;
 
             <div className="space-y-4">
               <div className={GLASS_PANEL_CLASSES + " p-5"}>
-                <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
-                  <ClipboardCheck className="h-4 w-4 text-gold" /> Agent Setup Workflow
-                </h3>
-                <div className="grid md:grid-cols-2 gap-3">
-                  {workflowSteps.map((step, index) => (
-                    <div key={step.title} className="rounded-lg border border-gold/10 bg-white/[0.02] p-4">
-                      <div className="flex items-start justify-between gap-3 mb-2">
-                        <div>
-                          <div className="text-[9px] font-black uppercase tracking-[0.18em] text-gold/60">Step {index + 1}</div>
-                          <div className="text-sm font-bold text-white/80">{step.title}</div>
+                <button
+                  type="button"
+                  onClick={() => setIsAgentSetupWorkflowOpen((current) => !current)}
+                  className="mb-1 flex w-full items-center justify-between gap-3 text-left"
+                >
+                  <span className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                    <ClipboardCheck className="h-4 w-4 text-gold" /> Agent Setup Workflow
+                  </span>
+                  <ChevronDown className={`h-4 w-4 transition-transform ${isAgentSetupWorkflowOpen ? 'rotate-180 text-gold' : 'text-white/45'}`} />
+                </button>
+                {isAgentSetupWorkflowOpen && (
+                  <div className="mt-4 grid md:grid-cols-2 gap-3">
+                    {workflowSteps.map((step, index) => (
+                      <div key={step.title} className="rounded-lg border border-gold/10 bg-white/[0.02] p-4">
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div>
+                            <div className="text-[9px] font-black uppercase tracking-[0.18em] text-gold/60">Step {index + 1}</div>
+                            <div className="text-sm font-bold text-white/80">{step.title}</div>
+                          </div>
+                          <span className={`px-2 py-1 rounded border text-[8px] font-black uppercase tracking-wider ${agentStatusClass(step.status)}`}>{step.status}</span>
                         </div>
-                        <span className={`px-2 py-1 rounded border text-[8px] font-black uppercase tracking-wider ${agentStatusClass(step.status)}`}>{step.status}</span>
+                        <p className="text-xs text-white/45 leading-relaxed mb-2">{step.description}</p>
+                        <div className="text-[10px] text-white/35 mb-3"><span className="font-black text-white/50">Action:</span> {step.action}</div>
+                        <div className="rounded-md border p-2 font-mono text-[10px] text-gold/70 break-all glass-panel">{step.snippet}</div>
+                        <div className="mt-2 text-[10px] text-white/35">{step.message}</div>
                       </div>
-                      <p className="text-xs text-white/45 leading-relaxed mb-2">{step.description}</p>
-                      <div className="text-[10px] text-white/35 mb-3"><span className="font-black text-white/50">Action:</span> {step.action}</div>
-                      <div className="rounded-md border p-2 font-mono text-[10px] text-gold/70 break-all glass-panel">{step.snippet}</div>
-                      <div className="mt-2 text-[10px] text-white/35">{step.message}</div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className={GLASS_PANEL_CLASSES + " p-5"}>
-                <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-gold" /> Installation Commands
-                </h3>
-                <div className="grid xl:grid-cols-2 gap-3">
-                  {[
-                    { key: 'docker', label: 'Docker', icon: Package, command: dockerCommand },
-                    { key: 'compose', label: 'Docker Compose', icon: HardDrive, command: composeCommand },
-                    { key: 'systemd', label: 'Linux systemd', icon: Server, command: systemdCommand },
-                    { key: 'powershell', label: 'Windows PowerShell', icon: Terminal, command: powershellCommand },
-                    { key: 'helm', label: 'Kubernetes / Helm', icon: Cloud, command: helmCommand },
-                  ].map((block) => (
-                    <div key={block.key} className="rounded-lg border border-gold/10 bg-white/[0.02] overflow-hidden">
-                      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-gold/10 bg-gold/[0.03]">
-                        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-white/55">
-                          <block.icon className="h-3.5 w-3.5 text-gold/60" /> {block.label}
+                <button
+                  type="button"
+                  onClick={() => setIsInstallationCommandsOpen((current) => !current)}
+                  className="mb-1 flex w-full items-center justify-between gap-3 text-left"
+                >
+                  <span className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                    <Terminal className="h-4 w-4 text-gold" /> Installation Commands
+                  </span>
+                  <ChevronDown className={`h-4 w-4 transition-transform ${isInstallationCommandsOpen ? 'rotate-180 text-gold' : 'text-white/45'}`} />
+                </button>
+                {isInstallationCommandsOpen && (
+                  <>
+                    <div className="mt-4 grid xl:grid-cols-2 gap-3">
+                      {[
+                        { key: 'docker', label: 'Docker', icon: Package, command: dockerCommand },
+                        { key: 'compose', label: 'Docker Compose', icon: HardDrive, command: composeCommand },
+                        { key: 'systemd', label: 'Linux systemd', icon: Server, command: systemdCommand },
+                        { key: 'powershell', label: 'Windows PowerShell', icon: Terminal, command: powershellCommand },
+                        { key: 'helm', label: 'Kubernetes / Helm', icon: Cloud, command: helmCommand },
+                      ].map((block) => (
+                        <div key={block.key} className="rounded-lg border border-gold/10 bg-white/[0.02] overflow-hidden">
+                          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-gold/10 bg-gold/[0.03]">
+                            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-white/55">
+                              <block.icon className="h-3.5 w-3.5 text-gold/60" /> {block.label}
+                            </div>
+                            <button onClick={() => copyPlainText(block.command, block.key)} className="p-1.5 rounded border border-gold/15 text-white/45 hover:text-gold hover:border-gold/40 transition-colors" title={`Copy ${block.label} command`}>
+                              <Copy className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <pre className="p-3 text-[10px] text-white/60 font-mono overflow-x-auto whitespace-pre-wrap">{block.command}</pre>
+                          {copiedCommand === block.key && <div className="px-3 pb-3 text-[10px] text-green-400">Copied {block.label} command</div>}
                         </div>
-                        <button onClick={() => copyPlainText(block.command, block.key)} className="p-1.5 rounded border border-gold/15 text-white/45 hover:text-gold hover:border-gold/40 transition-colors" title={`Copy ${block.label} command`}>
-                          <Copy className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                      <pre className="p-3 text-[10px] text-white/60 font-mono overflow-x-auto whitespace-pre-wrap">{block.command}</pre>
-                      {copiedCommand === block.key && <div className="px-3 pb-3 text-[10px] text-green-400">Copied {block.label} command</div>}
+                      ))}
                     </div>
-                  ))}
-                </div>
-                <div className="mt-3 text-[10px] text-white/35">
-                  Commands intentionally use placeholders for agent tokens. Paste the one-time token only in the customer-controlled deployment environment.
-                </div>
+                    <div className="mt-3 text-[10px] text-white/35">
+                      Commands intentionally use placeholders for agent tokens. Paste the one-time token only in the customer-controlled deployment environment.
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -2500,20 +2727,26 @@ npm run agent:watch`;
                   value={connectorForm.scopes}
                   onChange={(e) => setConnectorForm((prev) => ({ ...prev, scopes: e.target.value }))}
                   className="w-full h-24 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none resize-none glass-panel"
-                  placeholder={'kubernetes:read\nkubernetes:patch:ingress'}
+                  placeholder={'kubernetes:read\nkubernetes:patch:ingress\naws:acm:read\naws:elasticloadbalancing:modify-listener\ncloudflare:zone:edit'}
                 />
+                <div className="rounded-lg border border-gold/10 bg-gold/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
+                  <span className="font-black uppercase tracking-wider text-gold/80">Connector Credentials:</span> register least-privilege provider scopes here. Do not paste private keys into migration jobs; use the tenant connector or approved operator patch action.
+                </div>
                 <textarea
                   value={connectorForm.allowedTargets}
                   onChange={(e) => setConnectorForm((prev) => ({ ...prev, allowedTargets: e.target.value }))}
                   className="w-full h-20 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none resize-none glass-panel"
-                  placeholder={'https://api.customer.com\nlb.customer.com:443'}
+                  placeholder={'https://api.customer.com\nlb.customer.com:443\nnamespace/default/ingress/customer-api\narn:aws:elasticloadbalancing:region:acct:listener/app/app-lb/listener-id'}
                 />
                 <textarea
                   value={connectorForm.allowedPaths}
                   onChange={(e) => setConnectorForm((prev) => ({ ...prev, allowedPaths: e.target.value }))}
                   className="w-full h-20 border rounded-lg p-3 text-xs font-mono text-white focus:outline-none resize-none glass-panel"
-                  placeholder={'/etc/kubernetes/manifests\n/repos/customer-api'}
+                  placeholder={'/etc/kubernetes/manifests\n/repos/customer-api\n/opt/customer-api/config'}
                 />
+                <div className="rounded-lg border border-cyan-400/10 bg-cyan-400/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
+                  <span className="font-black uppercase tracking-wider text-cyan-300/80">Connector Targets:</span> use provider resource IDs, cluster resources, endpoint URLs, or load balancer/certificate resources. Use paths only when the connector can actually read or patch that repository or mounted configuration.
+                </div>
                 <button
                   onClick={handleCreateConnector}
                   disabled={agentsLoading || !connectorForm.provider.trim() || !connectorForm.scopes.trim()}
@@ -2586,9 +2819,12 @@ npm run agent:watch`;
                   <input
                     value={operatorPatchForm.target}
                     onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, target: e.target.value }))}
-                    placeholder="Target endpoint, cluster resource, cloud ARN, identity app, or workload"
+                    placeholder="https://api.customer.com, namespace/default/ingress/customer-api, arn:aws:..., or identity-app-id"
                     className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
                   />
+                  <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 text-[10px] leading-relaxed text-white/42">
+                    Patch Target is the exact resource to change or validate: endpoint URL for TLS, Kubernetes namespace/name/kind for ingress or cert-manager, cloud ARN/resource ID for load balancers or KMS, or identity application ID for signing policy.
+                  </div>
                   <input
                     value={operatorPatchForm.migrationJobId}
                     onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, migrationJobId: e.target.value }))}
@@ -2783,45 +3019,63 @@ npm run agent:watch`;
 
           <div className="grid lg:grid-cols-2 gap-6">
             <div className={GLASS_PANEL_CLASSES + " p-5"}>
-              <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
-                <Lock className="h-4 w-4 text-gold" /> Security Notes
-              </h3>
-              <div className="grid md:grid-cols-2 gap-3 text-xs text-white/45 leading-relaxed">
-                {[
-                  'Collectors are outbound-only and do not expose inbound ports.',
-                  'Tokens are hashed at rest and are shown only once during creation or rotation.',
-                  'Server-side policy enforcement rejects evidence outside allowed targets and paths.',
-                  'The collector skips secrets, private keys, credential stores, .env files, and unapproved directories.',
-                  'Every agent, scan, evidence record, alert, CBOM record, asset, and exposure is scoped by tenant user ID.',
-                  'Connector integrations should use read-only scopes and upload observed evidence, not inferred findings.',
-                ].map((note) => (
-                  <div key={note} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">{note}</div>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsSecurityNotesOpen((current) => !current)}
+                className="mb-1 flex w-full items-center justify-between gap-3 text-left"
+              >
+                <span className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                  <Lock className="h-4 w-4 text-gold" /> Security Notes
+                </span>
+                <ChevronDown className={`h-4 w-4 transition-transform ${isSecurityNotesOpen ? 'rotate-180 text-gold' : 'text-white/45'}`} />
+              </button>
+              {isSecurityNotesOpen && (
+                <div className="mt-4 grid md:grid-cols-2 gap-3 text-xs text-white/45 leading-relaxed">
+                  {[
+                    'Collectors are outbound-only and do not expose inbound ports.',
+                    'Tokens are hashed at rest and are shown only once during creation or rotation.',
+                    'Server-side policy enforcement rejects evidence outside allowed targets and paths.',
+                    'The collector skips secrets, private keys, credential stores, .env files, and unapproved directories.',
+                    'Every agent, scan, evidence record, alert, CBOM record, asset, and exposure is scoped by tenant user ID.',
+                    'Connector integrations should use read-only scopes and upload observed evidence, not inferred findings.',
+                  ].map((note) => (
+                    <div key={note} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">{note}</div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className={GLASS_PANEL_CLASSES + " p-5"}>
-              <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
-                <FileWarning className="h-4 w-4 text-gold" /> Troubleshooting
-              </h3>
-              <div className="space-y-2">
-                {[
-                  ['Agent not connecting', 'Verify QGUARD_API_URL, outbound HTTPS access, and that agent:watch is running.'],
-                  ['Invalid token', 'Rotate the token and update the customer deployment environment. Tokens are not recoverable.'],
-                  ['Tenant ID mismatch', 'Use the tenant ID shown in this tab and confirm the agent belongs to this account.'],
-                  ['API URL unreachable', 'Check DNS, TLS inspection, proxy configuration, and firewall egress policy.'],
-                  ['Firewall blocking outbound connection', 'Allow outbound HTTPS to the QGuard API host. No inbound access is required.'],
-                  ['Collector version outdated', 'Update the deployed collector image/package and restart the service.'],
-                  ['SSE/WebSocket disconnected', 'Refresh dashboard telemetry; agent evidence remains persisted by backend API upload.'],
-                  ['Scan job stuck', 'Check agent heartbeat, policy scope, and backend scanner_alerts for module failures.'],
-                  ['No telemetry received', 'Confirm allowedTargets or allowedPaths are configured and reachable from the customer machine.'],
-                ].map(([issue, fix]) => (
-                  <div key={issue} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
-                    <div className="text-xs font-bold text-white/75">{issue}</div>
-                    <div className="text-xs text-white/40 mt-1">{fix}</div>
-                  </div>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsTroubleshootingOpen((current) => !current)}
+                className="mb-1 flex w-full items-center justify-between gap-3 text-left"
+              >
+                <span className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                  <FileWarning className="h-4 w-4 text-gold" /> Troubleshooting
+                </span>
+                <ChevronDown className={`h-4 w-4 transition-transform ${isTroubleshootingOpen ? 'rotate-180 text-gold' : 'text-white/45'}`} />
+              </button>
+              {isTroubleshootingOpen && (
+                <div className="mt-4 space-y-2">
+                  {[
+                    ['Agent not connecting', 'Verify QGUARD_API_URL, outbound HTTPS access, and that agent:watch is running.'],
+                    ['Invalid token', 'Rotate the token and update the customer deployment environment. Tokens are not recoverable.'],
+                    ['Tenant ID mismatch', 'Use the tenant ID shown in this tab and confirm the agent belongs to this account.'],
+                    ['API URL unreachable', 'Check DNS, TLS inspection, proxy configuration, and firewall egress policy.'],
+                    ['Firewall blocking outbound connection', 'Allow outbound HTTPS to the QGuard API host. No inbound access is required.'],
+                    ['Collector version outdated', 'Update the deployed collector image/package and restart the service.'],
+                    ['SSE/WebSocket disconnected', 'Refresh dashboard telemetry; agent evidence remains persisted by backend API upload.'],
+                    ['Scan job stuck', 'Check agent heartbeat, policy scope, and backend scanner_alerts for module failures.'],
+                    ['No telemetry received', 'Confirm allowedTargets or allowedPaths are configured and reachable from the customer machine.'],
+                  ].map(([issue, fix]) => (
+                    <div key={issue} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                      <div className="text-xs font-bold text-white/75">{issue}</div>
+                      <div className="text-xs text-white/40 mt-1">{fix}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2829,22 +3083,351 @@ npm run agent:watch`;
 
       {activeTab === 'settings' && (
         <div className="space-y-6">
+          {agentsError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-100">
+              {agentsError}
+            </div>
+          )}
+
           <div className={GLASS_PANEL_CLASSES + " p-5"}>
-            <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 mb-4 flex items-center gap-2">
-              <Settings className="h-4 w-4 text-gold" /> Scanner Settings
-            </h2>
-            <div className="grid md:grid-cols-3 gap-3 text-xs text-white/45">
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-4">
-                <div className="text-[9px] font-black uppercase tracking-wider text-gold/60 mb-2">Authorization</div>
-                Only explicitly authorized targets and policy-scoped collector evidence are accepted.
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 flex items-center gap-2">
+                  <Settings className="h-4 w-4 text-gold" /> Scanner Settings
+                </h2>
+                <p className="mt-2 text-xs text-white/40">Tenant-scoped configuration, policy enforcement, and live collector state.</p>
               </div>
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-4">
-                <div className="text-[9px] font-black uppercase tracking-wider text-gold/60 mb-2">Persistence</div>
-                Results are written per tenant to scan history, CBOM, assets, crypto exposures, alerts, and audit logs.
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded border px-3 py-2 text-[9px] font-black uppercase tracking-wider ${agentSyncConnected ? 'border-green-500/30 bg-green-500/10 text-green-300' : 'border-yellow-500/25 bg-yellow-500/10 text-yellow-200'}`}>
+                  {agentSyncConnected ? 'SSE Connected' : 'Manual Sync'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRefreshAgentSettings}
+                  className="inline-flex items-center gap-2 rounded border border-gold/20 bg-gold/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-gold hover:bg-gold/15"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLoadSelectedAgentPolicy}
+                  disabled={!selectedAgent}
+                  className="inline-flex items-center gap-2 rounded border border-gold/20 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-gold disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ClipboardCheck className="h-3.5 w-3.5" /> Load Selected
+                </button>
+                <button
+                  type="button"
+                  onClick={handleApplyScannerSettings}
+                  disabled={settingsSaving || !settingsCanSave}
+                  className="inline-flex items-center gap-2 rounded border border-green-500/30 bg-green-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-green-300 hover:bg-green-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {settingsSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />} Apply Policy
+                </button>
               </div>
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-4">
-                <div className="text-[9px] font-black uppercase tracking-wider text-gold/60 mb-2">Telemetry</div>
-                Dashboard scans use SSE; collector scans upload authenticated heartbeats, telemetry, and evidence.
+            </div>
+
+            <div className="mt-5 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+              {[
+                { label: 'Registered', value: agents.length, icon: Server },
+                { label: 'Online', value: onlineAgents, icon: Radio },
+                { label: 'Revoked', value: revokedAgents, icon: PowerOff },
+                { label: 'Open Alerts', value: openAgentAlerts.length, icon: AlertTriangle },
+                { label: 'Evidence', value: agentEvidence.length, icon: Database },
+                { label: 'Actions', value: operatorActionStats.total, icon: ClipboardCheck },
+              ].map(({ label, value, icon: Icon }) => (
+                <div key={label} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[8px] font-black uppercase tracking-wider text-white/30">{label}</span>
+                    <Icon className="h-3.5 w-3.5 text-gold/50" />
+                  </div>
+                  <div className="mt-2 text-xl font-black text-white">{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] gap-6">
+            <div className={GLASS_PANEL_CLASSES + " p-5"}>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
+                <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-gold" /> Agent Policy
+                </h3>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={settingsApplyMode}
+                    onChange={(event) => setSettingsApplyMode(event.target.value as 'selected' | 'all')}
+                    className="rounded border border-gold/15 bg-black/20 px-3 py-2 text-xs text-white/70 outline-none focus:border-gold/50"
+                  >
+                    <option value="selected">Selected agent</option>
+                    <option value="all">All active agents</option>
+                  </select>
+                  <span className="rounded border border-gold/10 bg-white/[0.02] px-3 py-2 text-[9px] font-black uppercase tracking-wider text-white/35">
+                    {settingsTargetCount} target{settingsTargetCount === 1 ? '' : 's'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <label className="md:col-span-2 flex items-center justify-between gap-4 rounded-lg border border-gold/10 bg-white/[0.02] p-4">
+                  <span>
+                    <span className="block text-[9px] font-black uppercase tracking-wider text-gold/60">Policy Status</span>
+                    <span className="block text-xs text-white/40 mt-1">Server-side enforcement for collector telemetry and evidence.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={agentForm.enabled}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, enabled: event.target.checked }))}
+                    className="h-5 w-5 accent-gold"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Agent Name</span>
+                  <input
+                    value={agentForm.name}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, name: event.target.value }))}
+                    className="w-full rounded border border-gold/15 bg-black/20 px-3 py-2 text-sm text-white outline-none focus:border-gold/50"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Environment</span>
+                  <select
+                    value={agentForm.environment}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, environment: event.target.value }))}
+                    className="w-full rounded border border-gold/15 bg-black/20 px-3 py-2 text-sm text-white outline-none focus:border-gold/50"
+                  >
+                    <option value="production">Production</option>
+                    <option value="staging">Staging</option>
+                    <option value="development">Development</option>
+                    <option value="dr">DR</option>
+                  </select>
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Heartbeat Interval</span>
+                  <input
+                    type="number"
+                    min={60}
+                    step={30}
+                    value={agentForm.intervalSeconds}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, intervalSeconds: event.target.value }))}
+                    className="w-full rounded border border-gold/15 bg-black/20 px-3 py-2 text-sm text-white outline-none focus:border-gold/50"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Alert Threshold</span>
+                  <select
+                    value={agentForm.alertThreshold}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, alertThreshold: event.target.value }))}
+                    className="w-full rounded border border-gold/15 bg-black/20 px-3 py-2 text-sm text-white outline-none focus:border-gold/50"
+                  >
+                    <option value="low">Low</option>
+                    <option value="moderate">Moderate</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </label>
+
+                <div className="md:col-span-2 space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Scan Types</span>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                    {['tls', 'ssh', 'packages', 'configs', 'runtime'].map((scanType) => (
+                      <label key={scanType} className="flex items-center gap-2 rounded border border-gold/10 bg-white/[0.02] px-3 py-2 text-xs uppercase tracking-wider text-white/60">
+                        <input
+                          type="checkbox"
+                          checked={agentForm.scanTypes.includes(scanType)}
+                          onChange={(event) => setAgentForm((current) => ({
+                            ...current,
+                            scanTypes: event.target.checked
+                              ? Array.from(new Set([...current.scanTypes, scanType]))
+                              : current.scanTypes.filter((item) => item !== scanType),
+                          }))}
+                          className="accent-gold"
+                        />
+                        {scanType}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Authorized Targets</span>
+                  <textarea
+                    rows={6}
+                    value={agentForm.allowedTargets}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, allowedTargets: event.target.value }))}
+                    className="w-full resize-none rounded border border-gold/15 bg-black/20 px-3 py-2 font-mono text-xs text-white/70 outline-none focus:border-gold/50"
+                  />
+                  <span className="block text-[10px] leading-relaxed text-white/35">Network allowlist only: URLs, hostnames, IP:port pairs, SSH URLs, or provider endpoints.</span>
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Authorized Paths</span>
+                  <textarea
+                    rows={6}
+                    value={agentForm.allowedPaths}
+                    onChange={(event) => setAgentForm((current) => ({ ...current, allowedPaths: event.target.value }))}
+                    className="w-full resize-none rounded border border-gold/15 bg-black/20 px-3 py-2 font-mono text-xs text-white/70 outline-none focus:border-gold/50"
+                  />
+                  <span className="block text-[10px] leading-relaxed text-white/35">Filesystem allowlist only: local paths visible to the installed agent, service account, container mount, or sidecar.</span>
+                </label>
+              </div>
+
+              <div className="mt-5 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleApplyScannerSettings}
+                  disabled={settingsSaving || !settingsCanSave}
+                  className="inline-flex items-center gap-2 rounded border border-green-500/30 bg-green-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-green-300 hover:bg-green-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {settingsSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />} Apply Settings
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateAgent}
+                  disabled={agentsLoading}
+                  className="inline-flex items-center gap-2 rounded border border-gold/20 bg-gold/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-gold hover:bg-gold/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Create Agent
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copyPlainText(JSON.stringify(editableAgentPolicy, null, 2), 'settings-policy-json')}
+                  className="inline-flex items-center gap-2 rounded border border-gold/15 bg-white/[0.03] px-4 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-gold"
+                >
+                  <Copy className="h-3.5 w-3.5" /> Copy Policy
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 flex items-center gap-2">
+                    <Server className="h-4 w-4 text-gold" /> Selected Agent
+                  </h3>
+                  <span className={`rounded border px-2 py-1 text-[8px] font-black uppercase tracking-wider ${selectedAgent ? agentStatusClass(agentDisplayStatus(selectedAgent)) : 'border-white/10 text-white/35'}`}>
+                    {selectedAgent ? agentDisplayStatus(selectedAgent) : 'None'}
+                  </span>
+                </div>
+
+                <select
+                  value={selectedAgent?.id || ''}
+                  onChange={(event) => setSelectedAgentId(event.target.value || null)}
+                  className="mb-4 w-full rounded border border-gold/15 bg-black/20 px-3 py-2 text-sm text-white/70 outline-none focus:border-gold/50"
+                >
+                  <option value="">No agent selected</option>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>{agent.name || agent.id}</option>
+                  ))}
+                </select>
+
+                {selectedAgent ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      ['Environment', selectedAgent.metadata?.environment || 'production'],
+                      ['Last seen', formatDateTime(selectedAgent.last_seen_at)],
+                      ['Last scan', formatDateTime(selectedAgentLastScan)],
+                      ['Policy scope', `${selectedAgentPolicy.allowedTargets.length + selectedAgentPolicy.allowedPaths.length} item(s)`],
+                      ['Evidence', selectedAgentEvidence.length],
+                      ['Alerts', selectedAgentAlerts.length],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                        <div className="text-[8px] font-black uppercase tracking-wider text-white/30 mb-1">{label}</div>
+                        <div className="text-xs text-white/65 break-all">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-4 text-xs text-white/40">No collector agent is selected.</div>
+                )}
+
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleLoadSelectedAgentPolicy}
+                    disabled={!selectedAgent}
+                    className="inline-flex items-center gap-2 rounded border border-gold/15 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-gold disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ClipboardCheck className="h-3.5 w-3.5" /> Load
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => selectedAgent && handleRotateAgentToken(selectedAgent.id)}
+                    disabled={!selectedAgent || agentsLoading}
+                    className="inline-flex items-center gap-2 rounded border border-yellow-500/25 bg-yellow-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-yellow-300 hover:bg-yellow-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <KeyRound className="h-3.5 w-3.5" /> Rotate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => selectedAgent && handleRevokeAgent(selectedAgent.id)}
+                    disabled={!selectedAgent || agentsLoading}
+                    className="inline-flex items-center gap-2 rounded border border-orange-500/25 bg-orange-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-orange-300 hover:bg-orange-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <PowerOff className="h-3.5 w-3.5" /> Revoke
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => selectedAgent && handleDeleteAgent(selectedAgent.id)}
+                    disabled={!selectedAgent || agentsLoading}
+                    className="inline-flex items-center gap-2 rounded border border-red-500/25 bg-red-500/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-red-300 hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete
+                  </button>
+                </div>
+
+                {oneTimeAgentToken && (
+                  <div className="mt-4 rounded-lg border border-green-500/20 bg-green-500/10 p-3">
+                    <div className="text-[8px] font-black uppercase tracking-wider text-green-300 mb-1">One-Time Token</div>
+                    <button
+                      type="button"
+                      onClick={() => copyPlainText(oneTimeAgentToken.token, `agent-token-${oneTimeAgentToken.agentId}`)}
+                      className="font-mono text-[11px] text-green-100/80 break-all text-left hover:text-green-100"
+                    >
+                      {oneTimeAgentToken.token}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className={GLASS_PANEL_CLASSES + " p-5"}>
+                <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-gold" /> Sync and Alerts
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    ['Live stream', agentSyncConnected ? 'Connected' : 'Disconnected'],
+                    ['Last sync', formatDateTime(agentSyncLastEventAt)],
+                    ['Connectors', connectors.length],
+                    ['Open alerts', openAgentAlerts.length],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                      <div className="text-[8px] font-black uppercase tracking-wider text-white/30 mb-1">{label}</div>
+                      <div className="text-xs text-white/65 break-all">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAcknowledgeOpenAgentAlerts}
+                    disabled={settingsSaving || openAgentAlerts.length === 0}
+                    className="inline-flex items-center gap-2 rounded border border-gold/20 bg-gold/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-gold hover:bg-gold/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Acknowledge Alerts
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRefreshAgentSettings}
+                    className="inline-flex items-center gap-2 rounded border border-gold/15 bg-white/[0.03] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 hover:text-gold"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> Sync Now
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -2853,16 +3436,17 @@ npm run agent:watch`;
             <h3 className="text-xs font-black uppercase tracking-[0.18em] text-white/60 mb-4 flex items-center gap-2">
               <Code2 className="h-4 w-4 text-gold" /> Tenant API References
             </h3>
-            <div className="grid md:grid-cols-2 gap-3 font-mono text-[11px] text-white/50">
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3 font-mono text-[11px] text-white/50">
               {[
                 'POST /api/v1/agent-scanner/agents/enroll',
                 'GET /api/v1/agent-scanner/agents',
+                'GET /api/v1/agent-scanner/stream',
                 'PUT /api/v1/agent-scanner/agents/{agentId}/policy',
                 'POST /api/v1/agent-scanner/agents/{agentId}/token/rotate',
                 'POST /api/v1/agent-scanner/agent/heartbeat',
+                'POST /api/v1/agent-scanner/agent/runtime-events',
                 'POST /api/v1/agent-scanner/agent/evidence',
-                'GET /api/v1/agent-scanner/evidence',
-                'GET /api/v1/agent-scanner/alerts',
+                'POST /api/v1/agent-scanner/alerts/{alertId}/acknowledge',
               ].map((route) => (
                 <div key={route} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">{route}</div>
               ))}
@@ -3362,6 +3946,16 @@ npm run agent:watch`;
                 {severity} ({findings.filter((finding) => finding.threatLevel.toLowerCase() === severity).length})
               </button>
             ))}
+            {showMitigationNextStep && (
+              <a
+                href={`/dashboard/migration-planner?source=scanner&scanId=${encodeURIComponent(jobId || 'latest')}`}
+                className="inline-flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-gold transition-all hover:border-gold/70 hover:bg-gold/20"
+                aria-label="Go to the migration planner to mitigate scanner findings"
+              >
+                Next Step
+                <ChevronRight className="h-3.5 w-3.5" />
+              </a>
+            )}
           </div>
 
           <div className="space-y-2 max-h-[650px] overflow-y-auto pr-1">

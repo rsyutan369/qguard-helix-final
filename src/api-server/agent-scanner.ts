@@ -1079,6 +1079,24 @@ function remediationJobIsHndl(job: any) {
   )
 }
 
+function migrationJobIsAgentExecutable(job: any) {
+  if (remediationJobIsHndl(job)) return true
+  const metadata = remediationJobMetadata(job)
+  const text = [
+    job?.name,
+    job?.job_type,
+    job?.target_algorithm,
+    job?.strategy,
+    metadata.source,
+    metadata.workflow,
+    metadata.workflowType,
+    metadata.planAction,
+    metadata.migrationType,
+    metadata.assetType,
+  ].filter(Boolean).join(' ').toLowerCase()
+  return /post-quantum|pqc|migration-planner|ml-kem|ml-dsa|hybrid|certificate|cert|key_rotation|key rotation|protocol_upgrade|encryption_upgrade|signature_transition/.test(text)
+}
+
 function remediationTarget(job: any) {
   const metadata = remediationJobMetadata(job)
   return cleanString(
@@ -1175,7 +1193,12 @@ function remediationProbeEvidence(job: any, agent: any): ScannerEvidenceRecord |
 
 function remediationJobAllowedForAgent(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any) {
   const probe = remediationProbeEvidence(job, agent)
-  if (!probe) return policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0
+  if (!probe) {
+    if (!migrationJobIsAgentExecutable(job)) return policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0
+    const scanTypes = new Set(policy.scanTypes.map((item: string) => String(item).toLowerCase()))
+    const migrationAllowed = ['runtime', 'tls', 'ssh', 'packages', 'configs'].some((type) => scanTypes.has(type))
+    return migrationAllowed || (policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0)
+  }
   return evidenceAllowedByPolicy(probe, policy, true)
 }
 
@@ -1210,6 +1233,93 @@ function remediationEventSeverity(status: string) {
 
 function sanitizeAgentMetadata(value: unknown) {
   return (sanitizeRuntimeMetadata(value || {}) || {}) as Record<string, unknown>
+}
+
+function migrationMetricType(eventType: string, message: string, job: any) {
+  const text = `${eventType} ${message} ${job?.job_type || ''} ${job?.target_algorithm || ''}`.toLowerCase()
+  if (/tls|handshake|cipher|session|protocol/.test(text)) return 'tls_handshake'
+  if (/cert|certificate|issuer|chain|pki/.test(text)) return 'certificate_replacement'
+  if (/key|rotation|kem|envelope/.test(text)) return 'key_rotation'
+  if (/compatib|fallback|interoperab/.test(text)) return 'compatibility_check'
+  if (/validat|verify|evidence|pqc|quantum/.test(text)) return 'pqc_validation'
+  return 'execution_progress'
+}
+
+function validationPassed(validation: Record<string, any>) {
+  const status = String(validation.status || validation.result || '').toLowerCase()
+  return validation.passed === true || ['passed', 'success', 'successful', 'validated', 'valid'].includes(status)
+}
+
+async function persistMigrationExecution(client: SupabaseClient, agent: any, job: any, payload: {
+  status: string
+  progress: number
+  currentStep: string
+  metadata: Record<string, unknown>
+  now: string
+}) {
+  const metadata = remediationJobMetadata(job)
+  const planId = cleanString(metadata.planId || asRecord(metadata.plan).id, 255)
+  const { error } = await client.from('migration_execution').upsert({
+    user_id: agent.user_id,
+    migration_id: job.id,
+    plan_id: planId || null,
+    agent_id: agent.id,
+    status: payload.status,
+    progress: payload.status === 'completed' ? 100 : payload.progress,
+    current_step: payload.currentStep,
+    started_at: job.started_at || payload.now,
+    completed_at: payload.status === 'completed' ? payload.now : null,
+    metadata: payload.metadata,
+    created_at: job.started_at || payload.now,
+    updated_at: payload.now,
+  }, { onConflict: 'migration_id,user_id' })
+  if (error && !isMissingRuntimeTable(error)) console.warn('[agent-remediation] migration_execution upsert failed:', error.message)
+}
+
+async function persistMigrationTelemetry(client: SupabaseClient, agent: any, job: any, payload: {
+  eventType: string
+  message: string
+  progress: number
+  metadata: Record<string, unknown>
+  now: string
+}) {
+  const { error } = await client.from('migration_telemetry').insert({
+    user_id: agent.user_id,
+    migration_id: job.id,
+    agent_id: agent.id,
+    event_type: payload.eventType,
+    metric_type: migrationMetricType(payload.eventType, payload.message, job),
+    metric_value: payload.progress,
+    message: payload.message,
+    metadata: payload.metadata,
+    observed_at: payload.now,
+    created_at: payload.now,
+  })
+  if (error && !isMissingRuntimeTable(error)) console.warn('[agent-remediation] migration_telemetry insert failed:', error.message)
+}
+
+async function persistMigrationValidation(client: SupabaseClient, agent: any, job: any, payload: {
+  validation: Record<string, unknown>
+  evidence: Record<string, unknown>
+  status: string
+  type: string
+  metadata: Record<string, unknown>
+  now: string
+}) {
+  const { error } = await client.from('migration_validation_logs').insert({
+    user_id: agent.user_id,
+    migration_id: job.id,
+    agent_id: agent.id,
+    validation_type: payload.type,
+    status: payload.status,
+    evidence: payload.evidence,
+    metadata: {
+      ...payload.metadata,
+      validation: payload.validation,
+    },
+    created_at: payload.now,
+  })
+  if (error && !isMissingRuntimeTable(error)) console.warn('[agent-remediation] migration_validation_logs insert failed:', error.message)
 }
 
 const PATCH_OPTION_GROUPS = {
@@ -1378,6 +1488,129 @@ function patchOptionsForAssetClass(assetClass: string) {
 
 function allPatchOptionGroups() {
   return Object.entries(PATCH_OPTION_GROUPS).map(([assetClass, options]) => ({ assetClass, options }))
+}
+
+function publicAgent(agent: any) {
+  if (!agent) return agent
+  const { token_hash, tokenHash, ...safeAgent } = agent
+  return safeAgent
+}
+
+function rowsFromResult<T = any>(result: { data?: T[] | null; error?: any } | null | undefined, fallback: T[] = []) {
+  if (!result) return fallback
+  if (result.error) {
+    if (isMissingRuntimeTable(result.error)) return fallback
+    throw new Error(result.error.message || 'Database query failed')
+  }
+  return result.data || []
+}
+
+function summarizeAgentScannerSnapshot(agents: any[], evidence: any[], alerts: any[], connectors: any[], operatorActions: any[]) {
+  const nowMs = Date.now()
+  const onlineAgents = agents.filter((agent) => {
+    if (agent?.revoked_at || String(agent?.status || '').toLowerCase() === 'revoked') return false
+    const seenAt = Date.parse(agent?.last_seen_at || '')
+    return Number.isFinite(seenAt) && nowMs - seenAt < 10 * 60 * 1000
+  }).length
+  const openAlerts = alerts.filter((alert) => !['resolved', 'closed', 'suppressed'].includes(String(alert?.status || 'open').toLowerCase())).length
+  const activeConnectors = connectors.filter((connector) => String(connector?.status || 'active').toLowerCase() !== 'revoked').length
+  const pendingActions = operatorActions.filter((action) => ['requested', 'approved', 'applied'].includes(String(action?.status || '').toLowerCase())).length
+
+  return {
+    agents: agents.length,
+    onlineAgents,
+    evidence: evidence.length,
+    openAlerts,
+    connectors: activeConnectors,
+    operatorActions: operatorActions.length,
+    pendingActions,
+  }
+}
+
+async function buildAgentScannerSnapshot(client: SupabaseClient | null, userId: string) {
+  const generatedAt = new Date().toISOString()
+
+  if (client) {
+    const [agentsResult, evidenceResult, alertsResult, connectorsResult, operatorActionsResult] = await Promise.all([
+      client
+        .from('scanner_agents')
+        .select('id, user_id, name, status, hostname, platform, version, capabilities, policy, last_seen_at, revoked_at, metadata, created_at, updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(100),
+      client
+        .from('scanner_evidence')
+        .select('id, user_id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, port, protocol, observed_algorithm, key_size, certificate_fingerprint, file_path, package_name, package_version, confidence, raw_evidence, processed_at, observed_at, created_at')
+        .eq('user_id', userId)
+        .order('observed_at', { ascending: false })
+        .limit(200),
+      client
+        .from('scanner_alerts')
+        .select('id, user_id, agent_id, connector_account_id, evidence_id, severity, category, title, message, recommendation, status, metadata, acknowledged_at, resolved_at, created_at, updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(200),
+      client
+        .from('connector_accounts')
+        .select('id, user_id, provider, provider_account_id, display_name, status, scopes, capabilities, policy, last_sync_at, metadata, created_at, updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(100),
+      client
+        .from('remediation_operator_actions')
+        .select('id, user_id, migration_id, connector_account_id, action_type, asset_class, status, approval_mode, patch_plan, evidence, validation, metadata, requested_at, approved_at, applied_at, validated_at, created_at, updated_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(200),
+    ])
+
+    const agents = rowsFromResult(agentsResult).map(publicAgent)
+    const evidence = rowsFromResult(evidenceResult)
+    const alerts = rowsFromResult(alertsResult)
+    const connectors = rowsFromResult(connectorsResult)
+    const operatorActions = rowsFromResult(
+      operatorActionsResult,
+      memoryStore.operatorActions.filter((item) => item.user_id === userId),
+    )
+
+    return {
+      generatedAt,
+      mode: 'database',
+      agents,
+      evidence,
+      alerts,
+      connectors,
+      operatorActions,
+      patchOptions: allPatchOptionGroups(),
+      summary: summarizeAgentScannerSnapshot(agents, evidence, alerts, connectors, operatorActions),
+    }
+  }
+
+  const agents = Array.from(memoryStore.agents.values()).filter((agent) => agent.user_id === userId).map(publicAgent)
+  const evidence = memoryStore.evidence.filter((item) => item.user_id === userId).slice(0, 200)
+  const alerts = memoryStore.alerts.filter((item) => item.user_id === userId).slice(0, 200)
+  const connectors = memoryStore.connectors
+    .filter((item) => item.user_id === userId)
+    .slice(0, 100)
+    .map(({ token_ref, ...connector }) => connector)
+  const operatorActions = memoryStore.operatorActions.filter((item) => item.user_id === userId).slice(0, 200)
+
+  return {
+    generatedAt,
+    mode: 'memory',
+    agents,
+    evidence,
+    alerts,
+    connectors,
+    operatorActions,
+    patchOptions: allPatchOptionGroups(),
+    summary: summarizeAgentScannerSnapshot(agents, evidence, alerts, connectors, operatorActions),
+  }
+}
+
+function sendAgentScannerSse(res: Response, event: string, data: any) {
+  res.write(`event: ${event}\n`)
+  res.write(`data: ${JSON.stringify(data)}\n\n`)
 }
 
 function actionStatusTimestamp(status: string, now: string) {
@@ -1801,6 +2034,59 @@ router.get('/remediation/operator-actions', requireUserAuth, async (req: AuthedR
     .filter((item) => item.user_id === user.id && (!jobId || item.migration_id === jobId))
     .slice(0, 200)
   res.json({ data: { actions } })
+})
+
+router.get('/stream', async (req, res) => {
+  const queryToken = typeof req.query.token === 'string'
+    ? req.query.token
+    : Array.isArray(req.query.token)
+      ? String(req.query.token[0] || '')
+      : ''
+  const token = getToken(req) || queryToken
+
+  if (!token) {
+    return jsonError(res, 401, 'UNAUTHORIZED', 'Authentication required')
+  }
+
+  const user = await getServerUser(token)
+  if (!user) {
+    return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired token')
+  }
+
+  const client = createAuthClient(token) || getServiceClient()
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+
+  let closed = false
+  const emitSnapshot = async () => {
+    if (closed) return
+    try {
+      const snapshot = await buildAgentScannerSnapshot(client, user.id)
+      sendAgentScannerSse(res, 'agent-scanner-sync', snapshot)
+    } catch (error) {
+      sendAgentScannerSse(res, 'agent-scanner-error', {
+        generatedAt: new Date().toISOString(),
+        message: error instanceof Error ? error.message : 'Agent scanner sync failed',
+      })
+    }
+  }
+
+  await emitSnapshot()
+  const heartbeatTimer = setInterval(() => sendAgentScannerSse(res, 'heartbeat', { generatedAt: new Date().toISOString() }), 25_000)
+  const snapshotTimer = setInterval(() => {
+    void emitSnapshot()
+  }, 8_000)
+
+  req.on('close', () => {
+    closed = true
+    clearInterval(heartbeatTimer)
+    clearInterval(snapshotTimer)
+    res.end()
+  })
 })
 
 router.post('/remediation/operator-actions', requireUserAuth, async (req: AuthedRequest, res) => {
@@ -2324,7 +2610,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
     .from('migration_jobs')
     .select('*')
     .eq('user_id', agent.user_id)
-    .in('status', ['running', 'in_progress', 'executing'])
+    .in('status', ['queued', 'awaiting_agent', 'running', 'in_progress', 'executing'])
     .order('updated_at', { ascending: true })
     .limit(25)
 
@@ -2334,7 +2620,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
   }
 
   const claimable = (jobs || [])
-    .filter((job: any) => remediationJobIsHndl(job))
+    .filter((job: any) => migrationJobIsAgentExecutable(job))
     .filter((job: any) => {
       const metadata = remediationJobMetadata(job)
       const assignedAgentId = cleanString(metadata.assignedAgentId || metadata.assigned_agent_id, 120)
@@ -2357,12 +2643,20 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       executorMode: 'guarded-agent',
       executorAdapter: remediationAdapter(job),
       executorVersion: agent.version || null,
+      execution: {
+        ...asRecord(metadata.execution),
+        agentRequired: true,
+        agentDispatchStatus: 'claimed',
+        sequenceState: 'agent_executing',
+        claimedAt,
+      },
     }
 
     const { error: updateError } = await client
       .from('migration_jobs')
       .update({
         status: 'running',
+        progress: Math.max(1, Number(job.progress || 0)),
         started_at: job.started_at || now,
         updated_at: now,
         metadata: nextMetadata,
@@ -2375,12 +2669,64 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       continue
     }
 
+    await persistMigrationExecution(client, agent, job, {
+      status: 'running',
+      progress: Math.max(1, Number(job.progress || 0)),
+      currentStep: 'Agent claimed migration package',
+      metadata: {
+        source: 'agent-remediation',
+        claimedAt,
+        agentName: agent.name || null,
+        adapter: remediationAdapter(job),
+      },
+      now,
+    })
+
+    await persistMigrationTelemetry(client, agent, job, {
+      eventType: 'agent-job-claimed',
+      message: `QGuard agent ${agent.name || agent.id} claimed migration workflow.`,
+      progress: Math.max(1, Number(job.progress || 0)),
+      metadata: {
+        agentId: agent.id,
+        adapter: remediationAdapter(job),
+        target: remediationTarget(job),
+      },
+      now,
+    })
+
+    await client.from('execution_queues').update({
+      assigned_agent_id: agent.id,
+      queue_status: 'claimed',
+      claimed_at: now,
+      updated_at: now,
+      metadata: {
+        source: 'agent-remediation',
+        agentName: agent.name || null,
+        claimedAt: now,
+      },
+    }).eq('migration_job_id', job.id).eq('user_id', agent.user_id).then(({ error: queueError }: any) => {
+      if (queueError && !isMissingRuntimeTable(queueError)) console.warn('[agent-remediation] execution queue claim update failed:', queueError.message)
+    })
+
+    await client.from('orchestration_jobs').update({
+      status: 'claimed',
+      updated_at: now,
+      metadata: {
+        source: 'agent-remediation',
+        agentId: agent.id,
+        agentName: agent.name || null,
+        currentStep: 'Agent claimed migration package',
+      },
+    }).eq('migration_job_id', job.id).eq('user_id', agent.user_id).then(({ error: orchestrationError }: any) => {
+      if (orchestrationError && !isMissingRuntimeTable(orchestrationError)) console.warn('[agent-remediation] orchestration claim update failed:', orchestrationError.message)
+    })
+
     await client.from('migration_events').insert({
       user_id: agent.user_id,
       migration_id: job.id,
       event_type: 'agent-remediation-claimed',
       severity: 'info',
-      message: `QGuard agent ${agent.name || agent.id} claimed HNDL remediation workflow.`,
+      message: `QGuard agent ${agent.name || agent.id} claimed migration workflow.`,
       metadata: {
         agentId: agent.id,
         agentName: agent.name || null,
@@ -2401,6 +2747,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       availableJobs: jobs?.length || 0,
       claimedJobs: claimedJobs.length,
       hndlCandidates: (jobs || []).filter((job: any) => remediationJobIsHndl(job)).length,
+      pqcCandidates: (jobs || []).filter((job: any) => migrationJobIsAgentExecutable(job)).length,
     },
     observed_at: now,
   })
@@ -2432,8 +2779,9 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     jsonError(res, 404, 'REMEDIATION_JOB_NOT_FOUND', 'Remediation job not found for this tenant')
     return
   }
-  if (!remediationJobIsHndl(job)) {
-    jsonError(res, 400, 'NOT_HNDL_REMEDIATION', 'Only Harvest Now, Decrypt Later remediation jobs can be executed by this endpoint')
+  const isHndlJob = remediationJobIsHndl(job)
+  if (!migrationJobIsAgentExecutable(job)) {
+    jsonError(res, 400, 'NOT_AGENT_EXECUTABLE_MIGRATION', 'Only queued PQC migration or HNDL remediation jobs can be executed by this endpoint')
     return
   }
 
@@ -2452,7 +2800,7 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
   }
 
   const eventType = cleanString(req.body?.eventType || req.body?.event_type, 100) || 'agent-remediation-progress'
-  const message = cleanString(req.body?.message, 1000) || 'HNDL remediation agent event recorded.'
+  const message = cleanString(req.body?.message, 1000) || (isHndlJob ? 'HNDL remediation agent event recorded.' : 'PQC migration agent event recorded.')
   const requestedStatus = (cleanString(req.body?.status, 50) || 'running').toLowerCase()
   const requestedProgress = Number(req.body?.progress)
   const progress = Number.isFinite(requestedProgress)
@@ -2482,7 +2830,7 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
       const hndlRiskCount = Array.isArray(evidenceResult.scanner2?.hndlRisks) ? evidenceResult.scanner2.hndlRisks.length : 0
       validation = {
         ...validation,
-        passed: hndlRiskCount === 0,
+        passed: isHndlJob ? hndlRiskCount === 0 : validation.passed !== false,
         hndlRiskRemaining: hndlRiskCount > 0,
         hndlRiskCount,
         evidenceCount: evidenceResult.evidenceCount,
@@ -2498,9 +2846,10 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
   }
 
   if (requestedStatus === 'completed') {
-    const validationPassed = validation.passed === true && validation.hndlRiskRemaining === false
-    if (!validationPassed || !evidenceResult) {
-      jsonError(res, 409, 'REMEDIATION_VALIDATION_REQUIRED', 'Completion requires fresh validation evidence proving no active HNDL risk remains')
+    const hndlValidated = validation.passed === true && validation.hndlRiskRemaining === false && Boolean(evidenceResult)
+    const pqcValidated = validationPassed(validation) || Boolean(evidenceResult)
+    if ((isHndlJob && !hndlValidated) || (!isHndlJob && !pqcValidated)) {
+      jsonError(res, 409, isHndlJob ? 'REMEDIATION_VALIDATION_REQUIRED' : 'MIGRATION_VALIDATION_REQUIRED', isHndlJob ? 'Completion requires fresh validation evidence proving no active HNDL risk remains' : 'Completion requires agent validation or evidence for the PQC migration job')
       return
     }
   }
@@ -2534,6 +2883,7 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     executorState: {
       status: requestedStatus,
       progress,
+      currentStep: message,
       lastUpdatedAt: now,
       evidenceCount: evidence.length,
       rejectedEvidenceCount,
@@ -2567,6 +2917,86 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     jsonError(res, 500, 'REMEDIATION_JOB_UPDATE_FAILED', updateError.message)
     return
   }
+
+  await persistMigrationExecution(client, agent, job, {
+    status: nextStatus,
+    progress: Number(updatePayload.progress || progress),
+    currentStep: message,
+    metadata: {
+      ...eventMetadata,
+      source: 'agent-remediation',
+      agentName: agent.name || null,
+      adapter: remediationAdapter(job),
+      validation,
+      evidenceCount: evidence.length,
+      rejectedEvidenceCount,
+    },
+    now,
+  })
+
+  await persistMigrationTelemetry(client, agent, job, {
+    eventType,
+    message,
+    progress: Number(updatePayload.progress || progress),
+    metadata: {
+      ...eventMetadata,
+      status: requestedStatus,
+      validation,
+      evidenceCount: evidence.length,
+      rejectedEvidenceCount,
+    },
+    now,
+  })
+
+  if (Object.keys(validation).length > 0 || evidenceResult) {
+    await persistMigrationValidation(client, agent, job, {
+      validation,
+      evidence: {
+        evidenceCount: evidenceResult?.evidenceCount ?? evidence.length,
+        findingCount: evidenceResult?.findingCount ?? 0,
+        scanSessionId: evidenceResult?.links?.scanSessionId || null,
+      },
+      status: validationPassed(validation) ? 'passed' : requestedStatus === 'completed' ? 'blocked' : 'recorded',
+      type: isHndlJob ? 'hndl-risk-clearance' : 'pqc-migration-validation',
+      metadata: {
+        eventType,
+        agentName: agent.name || null,
+        adapter: remediationAdapter(job),
+      },
+      now,
+    })
+  }
+
+  await client.from('execution_queues').update({
+    queue_status: nextStatus === 'completed' ? 'completed' : nextStatus === 'failed' ? 'failed' : nextStatus === 'paused' ? 'paused' : 'executing',
+    assigned_agent_id: agent.id,
+    claimed_at: currentMetadata.claimedAt || now,
+    updated_at: now,
+    metadata: {
+      source: 'agent-remediation',
+      eventType,
+      status: nextStatus,
+      progress: updatePayload.progress,
+      agentName: agent.name || null,
+    },
+  }).eq('migration_job_id', job.id).eq('user_id', agent.user_id).then(({ error: queueError }: any) => {
+    if (queueError && !isMissingRuntimeTable(queueError)) console.warn('[agent-remediation] execution queue status update failed:', queueError.message)
+  })
+
+  await client.from('orchestration_jobs').update({
+    status: nextStatus,
+    updated_at: now,
+    metadata: {
+      source: 'agent-remediation',
+      eventType,
+      currentStep: message,
+      progress: updatePayload.progress,
+      agentId: agent.id,
+      agentName: agent.name || null,
+    },
+  }).eq('migration_job_id', job.id).eq('user_id', agent.user_id).then(({ error: orchestrationError }: any) => {
+    if (orchestrationError && !isMissingRuntimeTable(orchestrationError)) console.warn('[agent-remediation] orchestration status update failed:', orchestrationError.message)
+  })
 
   await client.from('migration_events').insert({
     user_id: agent.user_id,
@@ -2610,20 +3040,35 @@ export function startAgentScannerScheduler() {
   setInterval(async () => {
     const client = getServiceClient()
     if (!client) return
-    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString()
-    const { data: agents } = await client.from('scanner_agents').select('*').eq('status', 'active').lt('last_seen_at', cutoff)
+    const cutoffMs = Date.now() - 15 * 60 * 1000
+    const { data: agents } = await client.from('scanner_agents').select('*').eq('status', 'active')
     for (const agent of agents || []) {
+      const lastActivityMs = Date.parse(agent.last_seen_at || agent.created_at || agent.updated_at || '')
+      if (Number.isFinite(lastActivityMs) && lastActivityMs > cutoffMs) continue
+
+      const { data: existingAlert } = await client
+        .from('scanner_alerts')
+        .select('id')
+        .eq('user_id', agent.user_id)
+        .eq('agent_id', agent.id)
+        .eq('category', 'agent-heartbeat')
+        .eq('status', 'open')
+        .limit(1)
+        .maybeSingle()
+
       await client.from('scanner_agents').update({ status: 'offline', updated_at: new Date().toISOString() }).eq('id', agent.id).eq('user_id', agent.user_id)
+      if (existingAlert?.id) continue
+
       await client.from('scanner_alerts').insert({
         user_id: agent.user_id,
         agent_id: agent.id,
         severity: 'moderate',
         category: 'agent-heartbeat',
         title: `Scanner agent offline: ${agent.name}`,
-        message: `Agent has not sent a heartbeat since ${agent.last_seen_at || 'initial enrollment'}.`,
+        message: `Agent has not sent a heartbeat since ${agent.last_seen_at || agent.created_at || 'initial enrollment'}.`,
         recommendation: 'Verify the local scanner service is running and has outbound HTTPS access to QGuard.',
         status: 'open',
-        metadata: { lastSeenAt: agent.last_seen_at },
+        metadata: { lastSeenAt: agent.last_seen_at, enrolledAt: agent.created_at },
       })
     }
 

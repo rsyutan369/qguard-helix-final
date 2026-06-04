@@ -44,13 +44,13 @@ type AssetRecord = {
 
 const riskLevels: RiskLevel[] = ['critical', 'high', 'medium', 'low'];
 
-const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-slate-200/80 bg-white/72 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-all duration-500 hover:-translate-y-1 hover:border-cyan-300/80 hover:bg-white/88 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_22px_55px_rgba(15,23,42,0.12),0_0_42px_rgba(0,197,235,0.18)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-cyan-300/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(0,197,235,0.55)] group-hover:before:via-cyan-300 after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-cyan-300/12 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-cyan-300/20 group-hover:after:blur-[36px] dark:border-[#FFD36B]/20 dark:bg-[#0f1428]/45 dark:text-white dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] dark:hover:border-[#FFD36B]/70 dark:hover:bg-[#0f1428]/65 dark:hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] dark:before:via-[#FFF4C0]/70 dark:group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] dark:group-hover:before:via-[#FFF4C0] dark:after:bg-[#FFD36B]/10 dark:group-hover:after:bg-[#FFD36B]/25';
 
 function riskColor(score: number) {
-  if (score >= 80) return 'text-red-400';
-  if (score >= 60) return 'text-orange-400';
-  if (score >= 40) return 'text-yellow-400';
-  return 'text-green-400';
+  if (score >= 80) return 'text-red-600 dark:text-red-400';
+  if (score >= 60) return 'text-orange-600 dark:text-orange-400';
+  if (score >= 40) return 'text-amber-600 dark:text-yellow-400';
+  return 'text-emerald-600 dark:text-green-400';
 }
 
 function riskBar(score: number) {
@@ -62,10 +62,10 @@ function riskBar(score: number) {
 
 function severityClasses(value?: string | null, vulnerable?: boolean) {
   const level = String(value || '').toLowerCase();
-  if (level.includes('critical')) return 'border-red-400/45 bg-red-500/12 text-red-300';
-  if (level.includes('high')) return 'border-orange-400/45 bg-orange-500/12 text-orange-300';
-  if (level.includes('medium') || vulnerable) return 'border-yellow-400/45 bg-yellow-500/12 text-yellow-200';
-  return 'border-emerald-400/35 bg-emerald-500/10 text-emerald-300';
+  if (level.includes('critical')) return 'border-red-500/35 bg-red-500/10 text-red-600 dark:border-red-400/45 dark:bg-red-500/12 dark:text-red-300';
+  if (level.includes('high')) return 'border-orange-500/35 bg-orange-500/10 text-orange-600 dark:border-orange-400/45 dark:bg-orange-500/12 dark:text-orange-300';
+  if (level.includes('medium') || vulnerable) return 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:border-yellow-400/45 dark:bg-yellow-500/12 dark:text-yellow-200';
+  return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/35 dark:bg-emerald-500/10 dark:text-emerald-300';
 }
 
 function riskLevelFromScore(score: number): RiskLevel {
@@ -419,8 +419,8 @@ export default function AssetsMap() {
     <div className="p-6 lg:p-8 space-y-6 min-h-screen">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-white">Asset <span className="text-gold">Inventory</span></h1>
-          <p className="text-white/50 mt-1 text-sm">Authorized cryptographic assets discovered from real scanner results.</p>
+          <h1 className="text-3xl font-black uppercase tracking-tight text-slate-950 dark:text-white">Asset <span className="text-gold">Inventory</span></h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-white/50">Authorized cryptographic assets discovered from real scanner results.</p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           <div className="relative">
@@ -434,7 +434,7 @@ export default function AssetsMap() {
               Export {selectedAssets.length > 0 ? `${selectedAssets.length} selected` : `${filteredAssets.length} shown`}
             </button>
             {exportOpen && (
-              <div className="absolute right-0 top-full z-40 mt-2 w-56 overflow-hidden rounded-lg border border-gold/20 bg-[#070b18] shadow-2xl">
+              <div className="absolute right-0 top-full z-40 mt-2 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl dark:border-gold/20 dark:bg-[#070b18]">
                 {[
                   ['csv', 'CSV spreadsheet'],
                   ['json', 'JSON evidence bundle'],
@@ -444,7 +444,7 @@ export default function AssetsMap() {
                     key={format}
                     type="button"
                     onClick={() => handleExport(format as ExportFormat)}
-                    className="block w-full px-4 py-3 text-left text-[11px] font-black uppercase tracking-wider text-white/65 transition hover:bg-gold/10 hover:text-gold"
+                    className="block w-full px-4 py-3 text-left text-[11px] font-black uppercase tracking-wider text-slate-600 transition hover:bg-gold/10 hover:text-gold dark:text-white/65"
                   >
                     {label}
                   </button>
@@ -458,23 +458,23 @@ export default function AssetsMap() {
         </div>
       </header>
 
-      {error && <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>}
+      {error && <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-300">{error}</div>}
 
       <div className="flex flex-col lg:flex-row gap-4">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/30" />
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-white/30" />
           <input
             type="text"
             placeholder="Search assets, algorithms, domains, IP addresses..."
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full border border-gold/20 bg-[#0f1428]/35 rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none text-white placeholder-white/25 focus:border-gold/50"
+            className="w-full rounded-lg border border-slate-200 bg-white/78 py-2.5 pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-gold/50 dark:border-gold/20 dark:bg-[#0f1428]/35 dark:text-white dark:placeholder:text-white/25"
           />
         </div>
         <div className="flex gap-2 flex-wrap text-gold">
           {riskLevels.map((level) => (
-            <button key={level} onClick={() => setRiskFilter(riskFilter === level ? null : level)} className={`px-3 py-2 border rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 ${riskFilter === level ? 'border-gold/60 bg-gold/15 text-gold' : 'border-white/10 text-white/45 hover:text-white/70 bg-[#0f1428]/35'}`}>
-              <Filter className="h-3.5 w-3.5" /> {level} <span className="font-mono text-white/35">{riskSummary[level]}</span>
+            <button key={level} onClick={() => setRiskFilter(riskFilter === level ? null : level)} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-colors ${riskFilter === level ? 'border-gold/60 bg-gold/15 text-gold' : 'border-slate-200 bg-white/70 text-slate-600 hover:border-cyan-300 hover:text-slate-950 dark:border-white/10 dark:bg-[#0f1428]/35 dark:text-white/45 dark:hover:text-white/70'}`}>
+              <Filter className="h-3.5 w-3.5" /> {level} <span className="font-mono text-slate-400 dark:text-white/35">{riskSummary[level]}</span>
             </button>
           ))}
         </div>
@@ -482,15 +482,15 @@ export default function AssetsMap() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Authorized Assets', value: assets.length, color: 'text-white', icon: Server },
-          { label: 'Vulnerable Assets', value: assets.filter((asset) => asset.vulnerableCount > 0).length, color: 'text-red-400', icon: AlertTriangle },
+          { label: 'Authorized Assets', value: assets.length, color: 'text-slate-950 dark:text-white', icon: Server },
+          { label: 'Vulnerable Assets', value: assets.filter((asset) => asset.vulnerableCount > 0).length, color: 'text-red-600 dark:text-red-400', icon: AlertTriangle },
           { label: 'Crypto Components', value: assets.reduce((sum, asset) => sum + asset.findingsCount, 0), color: 'text-gold', icon: Shield },
-          { label: 'PQC Ready', value: assets.filter((asset) => asset.findingsCount > 0 && asset.vulnerableCount === 0).length, color: 'text-green-400', icon: Shield },
+          { label: 'PQC Ready', value: assets.filter((asset) => asset.findingsCount > 0 && asset.vulnerableCount === 0).length, color: 'text-emerald-600 dark:text-green-400', icon: Shield },
         ].map((item) => (
           <div key={item.label} className={GLASS_PANEL_CLASSES + " p-4"}>
             <div className="flex items-center gap-2 mb-2 relative z-10">
-              <item.icon className="h-3.5 w-3.5 text-gold/50" />
-              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/40">{item.label}</span>
+              <item.icon className="h-3.5 w-3.5 text-gold/60 dark:text-gold/50" />
+              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500 dark:text-white/40">{item.label}</span>
             </div>
             <div className={`text-2xl font-black relative z-10 ${item.color}`}>{item.value}</div>
           </div>
@@ -502,7 +502,7 @@ export default function AssetsMap() {
           <table className="w-full min-w-[1040px] border-separate border-spacing-y-2 text-left">
             <thead>
               <tr>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">
                   <div className="flex items-center gap-3">
                     <input
                       type="checkbox"
@@ -510,18 +510,18 @@ export default function AssetsMap() {
                       onChange={toggleVisibleSelection}
                       disabled={filteredAssets.length === 0}
                       aria-label="Select all visible assets"
-                      className="h-4 w-4 rounded border-gold/35 bg-[#050816] accent-[#FFD36B]"
+                      className="h-4 w-4 rounded border-slate-300 bg-white accent-[#FFD36B] dark:border-gold/35 dark:bg-[#050816]"
                     />
                     Asset Name
                   </div>
                 </th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Type</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Domain / URL / IP</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Findings</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Risk Score</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Compliance</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Last Scanned</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-white/50">Action</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Type</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Domain / URL / IP</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Findings</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Risk Score</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Compliance</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Last Scanned</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -534,7 +534,7 @@ export default function AssetsMap() {
               ) : assets.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-14 text-center">
-                    <div className="text-white/30 uppercase tracking-widest text-xs font-black mb-4">
+                    <div className="mb-4 text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">
                       No authorized assets scanned yet. Start a scan to build your cryptographic asset inventory.
                     </div>
                     <a href="/dashboard/scanner" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-gold/30 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider">
@@ -544,7 +544,7 @@ export default function AssetsMap() {
                 </tr>
               ) : filteredAssets.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-12 text-center text-white/30 uppercase tracking-widest">No assets match the current search or filter.</td>
+                  <td colSpan={8} className="p-12 text-center uppercase tracking-widest text-slate-500 dark:text-white/30">No assets match the current search or filter.</td>
                 </tr>
               ) : filteredAssets.map((asset) => {
                 const Icon = typeIcon(asset.type);
@@ -565,9 +565,9 @@ export default function AssetsMap() {
                       }}
                       tabIndex={0}
                       aria-expanded={isExpanded}
-                      className={`group cursor-pointer rounded-xl bg-[#080d1c]/72 outline-none transition-all hover:bg-[#111934]/86 focus-visible:ring-2 focus-visible:ring-gold/50 ${isExpanded ? 'bg-[#111934]/90 shadow-[0_0_0_1px_rgba(255,211,107,0.20),0_18px_50px_rgba(0,0,0,0.28)]' : ''}`}
+                      className={`group cursor-pointer rounded-xl bg-white/82 outline-none transition-all hover:bg-cyan-50/90 focus-visible:ring-2 focus-visible:ring-gold/50 dark:bg-[#080d1c]/72 dark:hover:bg-[#111934]/86 ${isExpanded ? 'bg-cyan-50/95 shadow-[0_0_0_1px_rgba(0,197,235,0.24),0_18px_45px_rgba(15,23,42,0.12)] dark:bg-[#111934]/90 dark:shadow-[0_0_0_1px_rgba(255,211,107,0.20),0_18px_50px_rgba(0,0,0,0.28)]' : ''}`}
                     >
-                      <td className="rounded-l-xl border-y border-l border-white/8 p-4">
+                      <td className="rounded-l-xl border-y border-l border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-3">
                           <input
                             type="checkbox"
@@ -575,68 +575,68 @@ export default function AssetsMap() {
                             onClick={(event) => event.stopPropagation()}
                             onChange={() => toggleAssetSelection(asset.id)}
                             aria-label={`Select ${asset.name} for export`}
-                            className="h-4 w-4 shrink-0 rounded border-gold/35 bg-[#050816] accent-[#FFD36B]"
+                            className="h-4 w-4 shrink-0 rounded border-slate-300 bg-white accent-[#FFD36B] dark:border-gold/35 dark:bg-[#050816]"
                           />
                           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gold/25 bg-gold/10 text-gold shadow-[0_0_20px_rgba(255,211,107,0.10)]">
                             <Icon className="h-4 w-4" />
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <div className="truncate text-sm font-black text-white transition-colors group-hover:text-gold">{asset.name}</div>
+                              <div className="truncate text-sm font-black text-slate-950 transition-colors group-hover:text-gold dark:text-white">{asset.name}</div>
                               <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-gold/70 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                             </div>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-white/32">
+                            <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-slate-500 dark:text-white/32">
                               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400/80" />
                               {asset.status || 'active'}
                             </div>
                           </div>
                         </div>
                       </td>
-                      <td className="border-y border-white/8 p-4">
-                        <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-white/62">
+                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                        <span className="rounded-md border border-slate-200 bg-slate-50/80 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/62">
                           {labelize(asset.type)}
                         </span>
                       </td>
-                      <td className="border-y border-white/8 p-4 text-xs font-mono text-white/50">
+                      <td className="border-y border-slate-200/80 p-4 text-xs font-mono text-slate-600 dark:border-white/8 dark:text-white/50">
                         <div className="max-w-[260px] truncate">{assetTarget(asset)}</div>
                       </td>
-                      <td className="border-y border-white/8 p-4">
+                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-3">
-                          <span className={`inline-flex min-w-10 justify-center rounded-md border px-2 py-1 text-[10px] font-black ${vulnerabilities.length ? 'border-red-400/35 bg-red-500/10 text-red-300' : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300'}`}>
+                          <span className={`inline-flex min-w-10 justify-center rounded-md border px-2 py-1 text-[10px] font-black ${vulnerabilities.length ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:border-red-400/35 dark:text-red-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-300'}`}>
                             {vulnerabilities.length}
                           </span>
                           <div className="min-w-0">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-white/58">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-white/58">
                               {vulnerabilities.length === 1 ? 'Vulnerability' : 'Vulnerabilities'}
                             </div>
-                            <div className="mt-1 truncate text-[10px] font-mono text-white/32">
+                            <div className="mt-1 truncate text-[10px] font-mono text-slate-500 dark:text-white/32">
                               {cryptoInventory.length} observed crypto component{cryptoInventory.length === 1 ? '' : 's'}
                             </div>
                           </div>
                         </div>
                       </td>
-                      <td className="border-y border-white/8 p-4">
+                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-2">
                           <div className={`text-xs font-black ${riskColor(asset.riskScore)}`}>{asset.riskScore}/100</div>
-                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-white/10">
+                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
                             <div className={`h-full ${riskBar(asset.riskScore)}`} style={{ width: `${asset.riskScore}%` }} />
                           </div>
                         </div>
-                        <div className="mt-1 text-[9px] text-white/25">Q-Score {asset.qScore}/100</div>
+                        <div className="mt-1 text-[9px] text-slate-400 dark:text-white/25">Q-Score {asset.qScore}/100</div>
                       </td>
-                      <td className="border-y border-white/8 p-4">
-                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${asset.vulnerableCount > 0 ? 'border-red-400/25 bg-red-500/8 text-red-300' : 'border-emerald-400/25 bg-emerald-500/8 text-emerald-300'}`}>
+                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${asset.vulnerableCount > 0 ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                           {asset.complianceStatus}
                         </span>
                       </td>
-                      <td className="border-y border-white/8 p-4 text-[10px] font-mono text-white/42">{formatDate(asset.lastScanned)}</td>
-                      <td className="rounded-r-xl border-y border-r border-white/8 p-4">
+                      <td className="border-y border-slate-200/80 p-4 text-[10px] font-mono text-slate-500 dark:border-white/8 dark:text-white/42">{formatDate(asset.lastScanned)}</td>
+                      <td className="rounded-r-xl border-y border-r border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-2">
                           <button type="button" className="inline-flex items-center gap-1 rounded-md border border-gold/25 bg-gold/10 px-2 py-1 text-[10px] font-black uppercase text-gold transition hover:border-gold/60">
                             <Eye className="h-3 w-3" /> Details
                           </button>
                           <a onClick={(event) => event.stopPropagation()} href="/dashboard/cbom" className="text-[10px] font-black uppercase text-gold hover:underline">CBOM</a>
-                          <a onClick={(event) => event.stopPropagation()} href="/dashboard/scanner" className="text-[10px] font-black uppercase text-white/40 hover:text-gold">Rescan</a>
+                          <a onClick={(event) => event.stopPropagation()} href="/dashboard/scanner" className="text-[10px] font-black uppercase text-slate-500 hover:text-gold dark:text-white/40">Rescan</a>
                         </div>
                       </td>
                     </motion.tr>
@@ -644,13 +644,13 @@ export default function AssetsMap() {
                     {isExpanded && (
                       <motion.tr initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}>
                         <td colSpan={8} className="p-0">
-                          <div className="mx-2 mb-3 rounded-xl border border-gold/18 bg-[#070b18]/92 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.32)]">
+                          <div className="mx-2 mb-3 rounded-xl border border-slate-200/80 bg-slate-50/95 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_20px_45px_rgba(15,23,42,0.10)] dark:border-gold/18 dark:bg-[#070b18]/92 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.32)]">
                             <div className="grid gap-5 xl:grid-cols-[0.9fr_2.1fr]">
-                              <div className="rounded-lg border border-white/8 bg-white/[0.025] p-4">
+                              <div className="rounded-lg border border-slate-200 bg-white/80 p-4 dark:border-white/8 dark:bg-white/[0.025]">
                                 <div className="mb-4 flex items-center justify-between gap-3">
                                   <div>
-                                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Asset Profile</div>
-                                    <div className="mt-1 text-lg font-black text-white">{asset.name}</div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">Asset Profile</div>
+                                    <div className="mt-1 text-lg font-black text-slate-950 dark:text-white">{asset.name}</div>
                                   </div>
                                   <span className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase ${severityClasses(assetRiskLevel(asset), vulnerabilities.length > 0)}`}>
                                     {labelize(assetRiskLevel(asset))}
@@ -663,9 +663,9 @@ export default function AssetsMap() {
                                     ['Status', asset.status || 'active'],
                                     ['Last scanned', formatDate(asset.lastScanned)],
                                   ].map(([label, value]) => (
-                                    <div key={label} className="flex items-start justify-between gap-4 border-t border-white/6 pt-3">
-                                      <span className="font-black uppercase tracking-widest text-white/35">{label}</span>
-                                      <span className="max-w-[220px] text-right font-mono text-white/68">{value}</span>
+                                    <div key={label} className="flex items-start justify-between gap-4 border-t border-slate-200/80 pt-3 dark:border-white/6">
+                                      <span className="font-black uppercase tracking-widest text-slate-500 dark:text-white/35">{label}</span>
+                                      <span className="max-w-[220px] text-right font-mono text-slate-700 dark:text-white/68">{value}</span>
                                     </div>
                                   ))}
                                 </div>
@@ -674,38 +674,38 @@ export default function AssetsMap() {
                               <div>
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                   <div>
-                                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Detected Vulnerabilities</h3>
-                                    <p className="mt-1 text-xs text-white/45">Expanded from tenant scanner CBOM records for this asset.</p>
+                                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-950 dark:text-white">Detected Vulnerabilities</h3>
+                                    <p className="mt-1 text-xs text-slate-500 dark:text-white/45">Expanded from tenant scanner CBOM records for this asset.</p>
                                   </div>
                                   <div className="flex gap-2">
-                                    <span className="rounded-md border border-red-400/25 bg-red-500/8 px-2 py-1 text-[10px] font-black uppercase text-red-300">{vulnerabilities.length} vulnerable</span>
-                                    <span className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[10px] font-black uppercase text-white/42">{cryptoInventory.length} total</span>
+                                    <span className="rounded-md border border-red-500/25 bg-red-500/8 px-2 py-1 text-[10px] font-black uppercase text-red-600 dark:border-red-400/25 dark:text-red-300">{vulnerabilities.length} vulnerable</span>
+                                    <span className="rounded-md border border-slate-200 bg-white/70 px-2 py-1 text-[10px] font-black uppercase text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/42">{cryptoInventory.length} total</span>
                                   </div>
                                 </div>
 
                                 {vulnerabilities.length === 0 ? (
-                                  <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/8 p-4 text-sm font-semibold text-emerald-200">
+                                  <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/8 p-4 text-sm font-semibold text-emerald-700 dark:border-emerald-400/25 dark:text-emerald-200">
                                     No vulnerable cryptographic components are currently detected for this asset. Continue monitoring and rescan after configuration changes.
                                   </div>
                                 ) : (
                                   <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
                                     {vulnerabilities.slice(0, 12).map((item, index) => (
-                                      <div key={item.id || `${asset.id}-vuln-${index}`} className="rounded-lg border border-red-400/18 bg-red-500/[0.055] p-4">
+                                      <div key={item.id || `${asset.id}-vuln-${index}`} className="rounded-lg border border-red-300/50 bg-red-50/80 p-4 dark:border-red-400/18 dark:bg-red-500/[0.055]">
                                         <div className="mb-3 flex items-start justify-between gap-3">
                                           <div className="min-w-0">
-                                            <div className="truncate text-sm font-black text-white">{cryptoLabel(item)}</div>
-                                            <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-white/35">{labelize(item.item_type || item.protocol || 'cryptography')}</div>
+                                            <div className="truncate text-sm font-black text-slate-950 dark:text-white">{cryptoLabel(item)}</div>
+                                            <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-white/35">{labelize(item.item_type || item.protocol || 'cryptography')}</div>
                                           </div>
                                           <span className={`shrink-0 rounded border px-2 py-0.5 text-[9px] font-black uppercase ${severityClasses(item.exposure_level, item.is_vulnerable)}`}>
                                             {labelize(item.exposure_level || 'vulnerable')}
                                           </span>
                                         </div>
-                                        <p className="line-clamp-2 text-xs leading-relaxed text-white/58">
+                                        <p className="line-clamp-2 text-xs leading-relaxed text-slate-600 dark:text-white/58">
                                           {metadataText(item, 'evidence', 'Scanner marked this cryptographic component as vulnerable or migration-sensitive.')}
                                         </p>
-                                        <div className="mt-3 rounded-md border border-white/8 bg-black/18 p-3">
+                                        <div className="mt-3 rounded-md border border-slate-200 bg-white/80 p-3 dark:border-white/8 dark:bg-black/18">
                                           <div className="text-[9px] font-black uppercase tracking-widest text-gold/70">Recommended action</div>
-                                          <div className="mt-1 text-xs font-semibold leading-relaxed text-white/68">
+                                          <div className="mt-1 text-xs font-semibold leading-relaxed text-slate-700 dark:text-white/68">
                                             {metadataText(item, 'recommendation', 'Review against the NIST PQC migration policy and assign remediation ownership.')}
                                           </div>
                                         </div>
@@ -715,24 +715,24 @@ export default function AssetsMap() {
                                 )}
 
                                 {vulnerabilities.length > 12 && (
-                                  <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-white/35">
+                                  <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-white/35">
                                     +{vulnerabilities.length - 12} additional vulnerable component{vulnerabilities.length - 12 === 1 ? '' : 's'} available in CBOM.
                                   </div>
                                 )}
                               </div>
                             </div>
 
-                            <div className="mt-5 border-t border-white/8 pt-4">
-                              <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Observed Cryptography</div>
+                            <div className="mt-5 border-t border-slate-200/80 pt-4 dark:border-white/8">
+                              <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">Observed Cryptography</div>
                               <div className="flex flex-wrap gap-2">
                                 {cryptoInventory.length === 0 ? (
-                                  <span className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[10px] font-bold text-white/40">Manual review required</span>
+                                  <span className="rounded-md border border-slate-200 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40">Manual review required</span>
                                 ) : cryptoInventory.slice(0, 18).map((item, index) => (
-                                  <span key={item.id || `${asset.id}-crypto-${index}`} className={`rounded-md border px-3 py-1.5 text-[10px] font-bold ${item.is_vulnerable ? 'border-red-400/25 bg-red-500/8 text-red-300' : 'border-emerald-400/25 bg-emerald-500/8 text-emerald-300'}`}>
+                                  <span key={item.id || `${asset.id}-crypto-${index}`} className={`rounded-md border px-3 py-1.5 text-[10px] font-bold ${item.is_vulnerable ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                                     {cryptoLabel(item)}
                                   </span>
                                 ))}
-                                {cryptoInventory.length > 18 && <span className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[10px] font-bold text-white/40">+{cryptoInventory.length - 18} more</span>}
+                                {cryptoInventory.length > 18 && <span className="rounded-md border border-slate-200 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40">+{cryptoInventory.length - 18} more</span>}
                               </div>
                             </div>
                           </div>

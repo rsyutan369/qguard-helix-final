@@ -165,6 +165,13 @@ function formatDelta(value: number) {
   return '0 vs last 7 days'
 }
 
+function relativeTime(value: string | null) {
+  if (!value) return 'Not scheduled'
+  const ms = new Date(value).getTime()
+  if (!Number.isFinite(ms)) return 'Not scheduled'
+  return new Date(value).toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 function dateTime(value: string | null) {
   if (!value) return { date: '--', time: '--' }
   const date = new Date(value)
@@ -173,13 +180,6 @@ function dateTime(value: string | null) {
     date: date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }),
     time: date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
   }
-}
-
-function relativeTime(value: string | null) {
-  if (!value) return 'Not scheduled'
-  const ms = new Date(value).getTime()
-  if (!Number.isFinite(ms)) return 'Not scheduled'
-  return new Date(value).toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 function severityClass(severity: Severity) {
@@ -205,7 +205,14 @@ function useVulnerabilitySnapshot() {
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const streamsRef = useRef<EventSource[]>([])
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const closeStreams = useCallback(() => {
+    for (const stream of streamsRef.current) stream.close()
+    streamsRef.current = []
+    setSseConnected(false)
+  }, [])
 
   const fetchSnapshot = useCallback(async () => {
     if (!token) return
@@ -230,8 +237,25 @@ function useVulnerabilitySnapshot() {
     }
   }, [token])
 
+  const queueRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null
+      void fetchSnapshot()
+    }, 250)
+  }, [fetchSnapshot])
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+  }, [])
+
   useEffect(() => {
-    if (!token || !user) return
+    if (!token || !user) {
+      setSnapshot(EMPTY_SNAPSHOT)
+      setState('success')
+      setError(null)
+      return
+    }
     fetchSnapshot()
   }, [token, user, fetchSnapshot])
 
@@ -239,6 +263,7 @@ function useVulnerabilitySnapshot() {
     if (!user) return
     const tables = [
       'assets',
+      'asset_relationships',
       'crypto_inventory',
       'crypto_exposures',
       'pqc_scan_sessions',
@@ -246,7 +271,18 @@ function useVulnerabilitySnapshot() {
       'vulnerabilities',
       'certificates',
       'migration_jobs',
+      'migration_events',
+      'compliance_evidence',
       'security_events',
+      'qrng_events',
+      'vault_audit_logs',
+      'generated_keys',
+      'runtime_crypto_events',
+      'scanner_agents',
+      'scanner_alerts',
+      'scanner_evidence',
+      'agent_heartbeats',
+      'connector_accounts',
     ]
 
     const channels = tables.map((table) => supabase
@@ -254,7 +290,7 @@ function useVulnerabilitySnapshot() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` },
-        () => fetchSnapshot()
+        queueRefresh
       )
       .subscribe())
 
@@ -263,33 +299,53 @@ function useVulnerabilitySnapshot() {
         supabase.removeChannel(channel)
       }
     }
-  }, [user, fetchSnapshot])
+  }, [user, queueRefresh])
 
   useEffect(() => {
-    if (!token) return
+    if (!token) {
+      closeStreams()
+      return
+    }
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const connect = () => {
-      const eventSource = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
-      eventSourceRef.current = eventSource
-      eventSource.onopen = () => setSseConnected(true)
-      eventSource.onerror = () => {
+      closeStreams()
+      const vulnerabilitiesStream = new EventSource(`/api/v1/dashboard/vulnerabilities/stream?token=${encodeURIComponent(token)}`)
+      const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
+      const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`)
+      streamsRef.current = [vulnerabilitiesStream, metricsStream, scannerStream]
+
+      const markOpen = () => setSseConnected(true)
+      const scheduleReconnect = () => {
         setSseConnected(false)
-        eventSource.close()
+        closeStreams()
+        if (retryTimer) clearTimeout(retryTimer)
         retryTimer = setTimeout(connect, 10000)
       }
-      eventSource.addEventListener('metrics-update', fetchSnapshot)
-      eventSource.addEventListener('scan-complete', fetchSnapshot)
+      const refreshFromStream = () => queueRefresh()
+
+      vulnerabilitiesStream.onopen = markOpen
+      metricsStream.onopen = markOpen
+      scannerStream.onopen = markOpen
+      vulnerabilitiesStream.onerror = scheduleReconnect
+      metricsStream.onerror = scheduleReconnect
+      scannerStream.onerror = scheduleReconnect
+      vulnerabilitiesStream.addEventListener('vulnerabilities-connected', refreshFromStream)
+      vulnerabilitiesStream.addEventListener('vulnerabilities-update', refreshFromStream)
+      vulnerabilitiesStream.addEventListener('vulnerabilities-error', refreshFromStream)
+      metricsStream.addEventListener('metrics-update', refreshFromStream)
+      metricsStream.addEventListener('runtime-crypto-update', refreshFromStream)
+      metricsStream.addEventListener('scan-complete', refreshFromStream)
+      scannerStream.addEventListener('scanner-intelligence', refreshFromStream)
+      scannerStream.addEventListener('scanner-error', refreshFromStream)
     }
 
     connect()
     return () => {
       if (retryTimer) clearTimeout(retryTimer)
-      eventSourceRef.current?.close()
-      eventSourceRef.current = null
-      setSseConnected(false)
+      closeStreams()
     }
-  }, [token, fetchSnapshot])
+  }, [token, queueRefresh, closeStreams])
 
   return { snapshot, state, error, sseConnected, refresh: fetchSnapshot }
 }

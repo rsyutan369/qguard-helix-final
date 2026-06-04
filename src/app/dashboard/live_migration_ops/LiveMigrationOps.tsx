@@ -30,6 +30,7 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { Link, useSearchParams } from 'react-router-dom'
 
 type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused'
 
@@ -62,6 +63,15 @@ type LiveMigrationJob = {
   completedAt: string | null
   createdAt: string
   updatedAt: string
+  executionStatus: string
+  executionBacked: boolean
+  agentId: string | null
+  agentName: string | null
+  agentStatus: string
+  currentStep: string
+  telemetryCount: number
+  validationCount: number
+  validationStatus: string
   logs: LiveMigrationEvent[]
   logCount: number
   metadata: Record<string, unknown>
@@ -77,6 +87,7 @@ type TimelinePoint = {
 
 type LiveMigrationSnapshot = {
   generatedAt: string
+  planId: string | null
   summary: {
     total: number
     running: number
@@ -85,6 +96,10 @@ type LiveMigrationSnapshot = {
     queued: number
     paused: number
     completionRate: number
+    waitingForAgent: number
+    agentBacked: number
+    verified: number
+    agentsOnline: number
     totalAssets: number
     findings: number
     criticalExposures: number
@@ -97,10 +112,26 @@ type LiveMigrationSnapshot = {
   timeline: TimelinePoint[]
   health: Array<{ key: string; label: string; count: number; percent: number; color: string }>
   algorithmSummary: Array<{ label: string; count: number; percent: number; color: string }>
+  telemetry: {
+    tlsHandshakeEvents: number
+    certificateReplacements: number
+    keyRotations: number
+    pqcValidationEvents: number
+    compatibilityChecks: number
+    systemHealth: string
+    activityFeed: {
+      migrationLogs: number
+      validationLogs: number
+      errorLogs: number
+      auditLogs: number
+      complianceLogs: number
+    }
+  }
 }
 
 const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
   generatedAt: new Date(0).toISOString(),
+  planId: null,
   summary: {
     total: 0,
     running: 0,
@@ -109,6 +140,10 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
     queued: 0,
     paused: 0,
     completionRate: 0,
+    waitingForAgent: 0,
+    agentBacked: 0,
+    verified: 0,
+    agentsOnline: 0,
     totalAssets: 0,
     findings: 0,
     criticalExposures: 0,
@@ -126,6 +161,21 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
     { key: 'failed', label: 'Failed', count: 0, percent: 0, color: '#ff3b30' },
   ],
   algorithmSummary: [],
+  telemetry: {
+    tlsHandshakeEvents: 0,
+    certificateReplacements: 0,
+    keyRotations: 0,
+    pqcValidationEvents: 0,
+    compatibilityChecks: 0,
+    systemHealth: 'No active migrations',
+    activityFeed: {
+      migrationLogs: 0,
+      validationLogs: 0,
+      errorLogs: 0,
+      auditLogs: 0,
+      complianceLogs: 0,
+    },
+  },
 }
 
 const GLASS =
@@ -157,6 +207,81 @@ function formatShortDate(value: string | null | undefined) {
   const date = safeDate(value)
   if (!date) return 'No scan yet'
   return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
+}
+
+function uiRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function uiText(value: unknown) {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return ''
+}
+
+function firstUiText(...values: unknown[]) {
+  for (const value of values) {
+    const text = uiText(value)
+    if (text) return text
+  }
+  return ''
+}
+
+function selectedJobConfigPath(job: LiveMigrationJob | undefined) {
+  if (!job) return ''
+  const metadata = uiRecord(job.metadata)
+  const execution = uiRecord(metadata.execution)
+  const remediation = uiRecord(metadata.remediation)
+  const target = uiRecord(metadata.target)
+  return firstUiText(
+    metadata.filePath,
+    metadata.path,
+    metadata.configPath,
+    metadata.configurationPath,
+    metadata.localConfigPath,
+    metadata.targetPath,
+    execution.filePath,
+    execution.path,
+    execution.targetPath,
+    remediation.filePath,
+    target.filePath,
+  )
+}
+
+function selectedJobConnector(job: LiveMigrationJob | undefined) {
+  if (!job) return ''
+  const metadata = uiRecord(job.metadata)
+  const execution = uiRecord(metadata.execution)
+  const connector = uiRecord(metadata.connector)
+  return firstUiText(
+    metadata.connectorId,
+    metadata.connector_id,
+    metadata.connectorName,
+    metadata.provider,
+    execution.connectorId,
+    execution.provider,
+    connector.id,
+    connector.name,
+    connector.provider,
+  )
+}
+
+function selectedJobNeedsConnector(job: LiveMigrationJob | undefined) {
+  if (!job) return false
+  const metadata = uiRecord(job.metadata)
+  const execution = uiRecord(metadata.execution)
+  const text = [
+    job.asset,
+    job.assetType,
+    job.migrationType,
+    job.currentStep,
+    metadata.assetClass,
+    metadata.provider,
+    metadata.connectorId,
+    metadata.connector_id,
+    execution.provider,
+  ].map((item) => String(item || '').toLowerCase()).join(' ')
+  return /cloud|aws|azure|gcp|kubernetes|k8s|cluster|ingress|load balancer|alb|elb|cdn|cloudfront|cloudflare|akamai|kms|key vault|iam|identity|okta|entra|auth0|oauth|oidc|saml|certificate|cert|issuer|pki/.test(text)
 }
 
 function statusConfig(status: LiveMigrationStatus) {
@@ -367,6 +492,8 @@ function SeverityDots({ criticality }: { criticality: string }) {
 }
 
 export default function LiveMigrationOperations() {
+  const [searchParams] = useSearchParams()
+  const planId = searchParams.get('planId')
   const { session, user } = useAuth()
   const token = session?.access_token
   const [snapshot, setSnapshot] = useState<LiveMigrationSnapshot>(EMPTY_SNAPSHOT)
@@ -383,11 +510,12 @@ export default function LiveMigrationOperations() {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }), [token])
+  const planQuery = planId ? `planId=${encodeURIComponent(planId)}` : ''
 
   const fetchSnapshot = useCallback(async () => {
     if (!token) return
     try {
-      const res = await fetch('/api/v1/migration/live', { headers: authHeaders })
+      const res = await fetch(`/api/v1/migration/live${planQuery ? `?${planQuery}` : ''}`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       setSnapshot(json.data || EMPTY_SNAPSHOT)
@@ -397,7 +525,7 @@ export default function LiveMigrationOperations() {
     } finally {
       setLoading(false)
     }
-  }, [authHeaders, token])
+  }, [authHeaders, planQuery, token])
 
   useEffect(() => {
     fetchSnapshot()
@@ -410,7 +538,9 @@ export default function LiveMigrationOperations() {
 
   useEffect(() => {
     if (!token) return
-    const source = new EventSource(`/api/v1/migration/live/stream?token=${encodeURIComponent(token)}`)
+    const streamParams = new URLSearchParams({ token })
+    if (planId) streamParams.set('planId', planId)
+    const source = new EventSource(`/api/v1/migration/live/stream?${streamParams.toString()}`)
     source.onopen = () => setStreamConnected(true)
     source.onerror = () => setStreamConnected(false)
     source.addEventListener('connected', () => setStreamConnected(true))
@@ -426,14 +556,19 @@ export default function LiveMigrationOperations() {
       source.close()
       setStreamConnected(false)
     }
-  }, [token])
+  }, [planId, token])
 
   useEffect(() => {
     if (!user?.id) return
     const channel = supabase
       .channel(`live-migration-ops-${user.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_jobs', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_plans', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_events', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_execution', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_telemetry', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_validation_logs', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'execution_queues', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pqc_scan_results', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'crypto_exposures', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
       .subscribe((status) => setRealtimeStatus(status))
@@ -454,6 +589,13 @@ export default function LiveMigrationOperations() {
   }, [selectedJobId, snapshot.jobs])
 
   const selectedJob = snapshot.jobs.find((job) => job.id === selectedJobId) || snapshot.jobs[0]
+  const selectedJobConfig = uiRecord(selectedJob?.metadata?.configuration)
+  const selectedJobExecution = uiRecord(selectedJob?.metadata?.execution)
+  const selectedJobControls = uiRecord(selectedJob?.metadata?.controls || selectedJobConfig.controls)
+  const selectedJobEnabledControls = Object.entries(selectedJobControls).filter(([, enabled]) => enabled !== false).length
+  const selectedConfigPath = selectedJobConfigPath(selectedJob)
+  const selectedConnector = selectedJobConnector(selectedJob)
+  const selectedNeedsConnector = selectedJobNeedsConnector(selectedJob)
   const filteredJobs = filter === 'all' ? snapshot.jobs : snapshot.jobs.filter((job) => job.status === filter)
 
   const statSparklines = useMemo(() => ({
@@ -492,7 +634,7 @@ export default function LiveMigrationOperations() {
       const res = await fetch('/api/v1/migration/jobs/actions', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...(planId ? { planId } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
@@ -503,13 +645,15 @@ export default function LiveMigrationOperations() {
     } finally {
       setActionPending('')
     }
-  }, [authHeaders, token])
+  }, [authHeaders, planId, token])
 
   const downloadExport = useCallback(async (format: 'csv' | 'json') => {
     if (!token) return
     setActionPending(`export:${format}`)
     try {
-      const res = await fetch(`/api/v1/migration/live/export?format=${format}`, { headers: authHeaders })
+      const params = new URLSearchParams({ format })
+      if (planId) params.set('planId', planId)
+      const res = await fetch(`/api/v1/migration/live/export?${params.toString()}`, { headers: authHeaders })
       if (!res.ok) throw new Error(`Export failed with HTTP ${res.status}`)
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
@@ -526,14 +670,14 @@ export default function LiveMigrationOperations() {
     } finally {
       setActionPending('')
     }
-  }, [authHeaders, token])
+  }, [authHeaders, planId, token])
 
   const metricCards = [
     {
       key: 'running',
       label: 'Running',
       value: snapshot.summary.running,
-      detail: `${snapshot.summary.total ? Math.round((snapshot.summary.running / snapshot.summary.total) * 100) : 0}% of total`,
+      detail: `${numberFmt(snapshot.summary.agentBacked)} agent-backed`,
       color: GOLD,
       icon: RefreshCcw,
       iconClass: 'animate-spin',
@@ -563,7 +707,7 @@ export default function LiveMigrationOperations() {
       key: 'total',
       label: 'Total',
       value: snapshot.summary.total,
-      detail: `${snapshot.summary.completionRate}% completion rate`,
+      detail: `${numberFmt(snapshot.summary.waitingForAgent)} waiting for agent`,
       color: GOLD,
       icon: Layers3,
       iconClass: '',
@@ -595,6 +739,10 @@ export default function LiveMigrationOperations() {
               {snapshot.summary.complianceMode}
             </div>
             <div className="mt-1 truncate text-[10px] text-white/45">{snapshot.summary.standardLabel}</div>
+            <div className="mt-1 truncate text-[10px] text-white/45">
+              {numberFmt(snapshot.summary.agentBacked)} agent-backed / {numberFmt(snapshot.summary.waitingForAgent)} waiting
+            </div>
+            {planId && <div className="mt-1 truncate font-mono text-[10px] text-[#d4af37]/70">Plan {planId}</div>}
           </div>
         </div>
 
@@ -612,7 +760,7 @@ export default function LiveMigrationOperations() {
           </div>
           <div className={cn(INNER, 'flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-[#d4af37]')}>
             <Zap className="h-3.5 w-3.5" />
-            {numberFmt(snapshot.summary.running)} Jobs Running
+            {numberFmt(snapshot.summary.agentBacked)} Agent Backed
           </div>
         </div>
       </header>
@@ -644,6 +792,56 @@ export default function LiveMigrationOperations() {
             </motion.div>
           )
         })}
+      </section>
+
+      <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.82fr)]">
+        <div className={cn(GLASS, 'flex min-h-[236px] flex-col p-4')}>
+          <div className="relative z-10 mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-[11px] font-black uppercase tracking-[0.18em] text-[#d4af37]">Real-Time Telemetry</h3>
+            <span className="rounded-full border border-[#30d158]/25 bg-[#30d158]/10 px-3 py-1 text-[9px] font-black uppercase tracking-wider text-[#30d158]">{snapshot.telemetry.systemHealth}</span>
+          </div>
+          <div className="relative z-10 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+            {[
+              ['TLS Handshakes', snapshot.telemetry.tlsHandshakeEvents],
+              ['Certificate Replacements', snapshot.telemetry.certificateReplacements],
+              ['Key Rotations', snapshot.telemetry.keyRotations],
+              ['PQC Validations', snapshot.telemetry.pqcValidationEvents],
+              ['Compatibility Checks', snapshot.telemetry.compatibilityChecks],
+            ].map(([label, value]) => (
+              <div key={String(label)} className={cn(INNER, 'min-h-[76px] px-3 py-2.5')}>
+                <div className="font-mono text-2xl font-black text-white">{numberFmt(Number(value))}</div>
+                <div className="mt-1 text-[8px] font-black uppercase tracking-wider text-white/35">{label}</div>
+              </div>
+            ))}
+          </div>
+          <div className="relative z-10 mt-auto flex justify-end pt-12">
+            <Link
+              to="/dashboard/scanner?tab=agents"
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-[#d4af37]/45 bg-[#d4af37]/10 px-3 text-[10px] font-black uppercase tracking-[0.12em] text-[#d4af37] transition hover:border-[#d4af37]/75 hover:bg-[#d4af37]/15 hover:text-[#ffe7a3]"
+            >
+              <Server className="h-3.5 w-3.5" />
+              <span>Next Step: setup an Agent</span>
+            </Link>
+          </div>
+        </div>
+
+        <div className={cn(GLASS, 'p-4')}>
+          <h3 className="relative z-10 mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-[#d4af37]">Activity Feed</h3>
+          <div className="relative z-10 grid grid-cols-2 gap-2">
+            {[
+              ['Migration Logs', snapshot.telemetry.activityFeed.migrationLogs],
+              ['Validation Logs', snapshot.telemetry.activityFeed.validationLogs],
+              ['Error Logs', snapshot.telemetry.activityFeed.errorLogs],
+              ['Audit Logs', snapshot.telemetry.activityFeed.auditLogs],
+              ['Compliance Logs', snapshot.telemetry.activityFeed.complianceLogs],
+            ].map(([label, value]) => (
+              <div key={String(label)} className={cn(INNER, 'px-3 py-2')}>
+                <div className="text-[8px] font-black uppercase tracking-wider text-white/35">{label}</div>
+                <div className="mt-1 font-mono text-lg font-black text-white">{numberFmt(Number(value))}</div>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="grid gap-3 xl:grid-cols-[440px_minmax(0,1fr)]">
@@ -722,10 +920,13 @@ export default function LiveMigrationOperations() {
                         <span className="truncate text-sm font-black text-white">{job.asset}</span>
                         <span className={cn('text-[10px] font-black uppercase', config.color)}>{config.label}</span>
                       </div>
-                      <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-white/42">
+                      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] text-white/42">
                         <span className="truncate">{job.fromAlgo}</span>
                         <ArrowRight className="h-3 w-3 shrink-0 text-[#d4af37]/55" />
                         <span className="truncate text-[#d4af37]/80">{job.toAlgo}</span>
+                        <span className={cn('rounded border px-1.5 py-0.5 text-[8px] font-black uppercase', job.executionBacked ? 'border-[#30d158]/30 text-[#30d158]' : 'border-[#d4af37]/24 text-[#d4af37]/70')}>
+                          {job.executionBacked ? 'Agent' : 'Waiting'}
+                        </span>
                       </div>
                       <div className="mt-2 grid grid-cols-[1fr_auto] items-center gap-3">
                         <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
@@ -807,10 +1008,10 @@ export default function LiveMigrationOperations() {
                 <div className="relative z-10 mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
                   {[
                     { label: 'Progress', value: `${selectedJob.progress}%`, color: '#d4af37', icon: RefreshCcw },
-                    { label: 'Started', value: formatTime(selectedJob.startedAt), color: '#ffffff', icon: Clock3 },
-                    { label: 'ETA', value: selectedJob.eta, color: '#00d9ff', icon: Activity },
-                    { label: 'Logs', value: numberFmt(selectedJob.logCount), color: '#ffffff', icon: Terminal },
-                    { label: 'Environment', value: selectedJob.environment, color: '#ffffff', icon: Server },
+                    { label: 'Execution', value: selectedJob.executionBacked ? selectedJob.executionStatus : 'Waiting', color: selectedJob.executionBacked ? '#30d158' : '#d4af37', icon: Radio },
+                    { label: 'Agent', value: selectedJob.agentName || 'Unassigned', color: '#ffffff', icon: Server },
+                    { label: 'Telemetry', value: numberFmt(selectedJob.telemetryCount), color: '#00d9ff', icon: Activity },
+                    { label: 'Validation', value: selectedJob.validationStatus, color: /pass|success|valid/.test(selectedJob.validationStatus) ? '#30d158' : '#ffffff', icon: ShieldCheck },
                   ].map((tile) => {
                     const Icon = tile.icon
                     return (
@@ -831,6 +1032,13 @@ export default function LiveMigrationOperations() {
                   {[
                     ['Target Algorithm', selectedJob.toAlgo],
                     ['Migration Type', selectedJob.migrationType],
+                    ['Strategy', String(selectedJobConfig.deploymentStrategy || selectedJobExecution.strategy || 'Staged Rollout')],
+                    ['Phase', `${Number(selectedJobExecution.phaseIndex || 1)}/${Number(selectedJobExecution.totalPhases || 1)}`],
+                    ['Controls', `${selectedJobEnabledControls || 0} enabled`],
+                    ['Agent Status', selectedJob.agentStatus || 'unassigned'],
+                    ['Current Step', selectedJob.currentStep],
+                    ['Validation Logs', numberFmt(selectedJob.validationCount)],
+                    ['Started', formatTime(selectedJob.startedAt)],
                     ['Asset Type', selectedJob.assetType],
                     ['Owner', selectedJob.owner],
                   ].map(([label, value]) => (
@@ -842,6 +1050,68 @@ export default function LiveMigrationOperations() {
                   <div className={cn(INNER, 'px-3 py-2.5')}>
                     <div className="text-[8px] font-black uppercase tracking-wider text-[#d4af37]/75">Criticality</div>
                     <div className="mt-2"><SeverityDots criticality={selectedJob.criticality} /></div>
+                  </div>
+                </div>
+
+                <div className="relative z-10 mt-3 grid gap-2 lg:grid-cols-2">
+                  <div className={cn(INNER, 'p-3')}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <FileText className="h-4 w-4 text-[#00d9ff]" />
+                      <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white">Local Config Ownership</div>
+                      <span className={cn(
+                        'ml-auto rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wider',
+                        selectedConfigPath ? 'border-[#30d158]/35 bg-[#30d158]/10 text-[#30d158]' : 'border-[#d4af37]/35 bg-[#d4af37]/10 text-[#d4af37]',
+                      )}>
+                        {selectedConfigPath ? 'Path Attached' : 'Path Needed'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[11px] font-semibold leading-relaxed text-white/58">
+                      The agent owns the path only when it runs on the asset or has a mounted config path, that path is listed in the agent policy allowedPaths, and the migration job carries the same filePath/configPath.
+                    </p>
+                    <div className="mt-3 space-y-2 text-[10px] font-bold text-white/55">
+                      <div className="flex gap-2">
+                        <span className="w-16 shrink-0 uppercase tracking-wider text-[#d4af37]/75">Path</span>
+                        <span className="min-w-0 truncate text-white/75">{selectedConfigPath || 'Attach filePath/configPath through the agent or operator patch action.'}</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <span className="w-16 shrink-0 uppercase tracking-wider text-[#d4af37]/75">Next</span>
+                        <span className="text-white/75">Enroll the collector on the host, add allowedPaths, then enable remediation/config patching after approval.</span>
+                      </div>
+                    </div>
+                    <Link to="/dashboard/scanner?tab=agents" className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#00d9ff]/25 bg-[#00d9ff]/8 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-[#00d9ff] transition hover:border-[#00d9ff]/55">
+                      <Server className="h-3.5 w-3.5" />
+                      Open Agent Setup
+                    </Link>
+                  </div>
+
+                  <div className={cn(INNER, 'p-3')}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 text-[#d4af37]" />
+                      <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white">Connector / Operator Credentials</div>
+                      <span className={cn(
+                        'ml-auto rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wider',
+                        selectedNeedsConnector ? 'border-[#d4af37]/35 bg-[#d4af37]/10 text-[#d4af37]' : 'border-white/15 bg-white/[0.04] text-white/45',
+                      )}>
+                        {selectedNeedsConnector ? (selectedConnector ? 'Connector Attached' : 'Connector Required') : 'If Required'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[11px] font-semibold leading-relaxed text-white/58">
+                      This migration card does not collect provider secrets. Cloud, Kubernetes, identity, KMS, CDN, load balancer, and certificate automation changes must be connected through a tenant-scoped connector or approved operator patch action.
+                    </p>
+                    <div className="mt-3 space-y-2 text-[10px] font-bold text-white/55">
+                      <div className="flex gap-2">
+                        <span className="w-20 shrink-0 uppercase tracking-wider text-[#d4af37]/75">Connector</span>
+                        <span className="min-w-0 truncate text-white/75">{selectedConnector || 'Register provider, scopes, allowed targets, and approval owner.'}</span>
+                      </div>
+                      <div className="flex gap-2">
+                        <span className="w-20 shrink-0 uppercase tracking-wider text-[#d4af37]/75">Next</span>
+                        <span className="text-white/75">Create the operator patch action, approve it, apply with the owning platform, then resume validation here.</span>
+                      </div>
+                    </div>
+                    <Link to="/dashboard/scanner?tab=agents" className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#d4af37]/25 bg-[#d4af37]/8 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-[#d4af37] transition hover:border-[#d4af37]/55">
+                      <ListChecks className="h-3.5 w-3.5" />
+                      Open Connector Patchers
+                    </Link>
                   </div>
                 </div>
               </>
@@ -899,7 +1169,7 @@ export default function LiveMigrationOperations() {
                   <div>
                     <Terminal className="mx-auto mb-2 h-7 w-7 text-[#d4af37]/55" />
                     <div className="font-bold">No migration events recorded for this job.</div>
-                    <div className="mt-1 text-[11px]">Events will stream here from `migration_events` for the authenticated user.</div>
+                    <div className="mt-1 text-[11px]">Awaiting authenticated agent telemetry.</div>
                   </div>
                 </div>
               )}
@@ -1009,6 +1279,8 @@ export default function LiveMigrationOperations() {
           <div className="ml-auto flex min-w-[220px] flex-wrap justify-end gap-3 text-[10px] text-white/38">
             <span className="flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 text-[#d4af37]" />SSE {streamConnected ? 'connected' : 'reconnecting'}</span>
             <span className="flex items-center gap-1.5"><Radio className="h-3.5 w-3.5 text-[#d4af37]" />Realtime {realtimeStatus}</span>
+            <span className="flex items-center gap-1.5"><Server className="h-3.5 w-3.5 text-[#d4af37]" />Agents {numberFmt(snapshot.summary.agentsOnline)}</span>
+            <span className="flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-[#d4af37]" />Verified {numberFmt(snapshot.summary.verified)}</span>
             <span className="flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5 text-[#d4af37]" />Findings {numberFmt(snapshot.summary.findings)}</span>
           </div>
         </div>

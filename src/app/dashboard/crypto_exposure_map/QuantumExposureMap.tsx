@@ -32,7 +32,7 @@ const TYPE_ICONS = {
   vault: Lock,
 };
 
-const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+const GLASS_PANEL_CLASSES = 'qg-executive-panel group relative overflow-hidden rounded-lg text-white';
 
 export default function QuantumExposureMap({ data, loading, onRefresh, selectedNode, onSelectNode }: Props) {
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
@@ -148,7 +148,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
       const alpha = 0.05 + Math.sin(t * 1.5 + i) * 0.03;
       ctx.beginPath();
       ctx.arc(x, y, 1, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(212,175,55,${alpha})`;
+      ctx.fillStyle = `rgba(6,182,212,${alpha})`;
       ctx.fill();
     }
 
@@ -231,7 +231,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
               key={`edge-${i}`}
               x1={source.x} y1={source.y}
               x2={target.x} y2={target.y}
-              stroke={isHighlighted ? 'rgba(212,175,55,0.4)' : 'rgba(255,255,255,0.05)'}
+              stroke={isHighlighted ? 'rgba(6,182,212,0.4)' : 'rgba(148,163,184,0.22)'}
               strokeWidth={isHighlighted ? 0.4 : 0.2}
               strokeDasharray={isHighlighted ? 'none' : '1 1'}
             />
@@ -269,7 +269,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
               <circle
                 cx={pos.x} cy={pos.y} r={r}
                 fill={`${color}20`}
-                stroke={isSelected ? '#D4AF37' : color}
+                stroke={isSelected ? '#06B6D4' : color}
                 strokeWidth={isSelected ? 0.6 : 0.3}
               />
               <circle
@@ -280,7 +280,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
               <text
                 x={pos.x} y={pos.y + r + 2.5}
                 textAnchor="middle"
-                fill={isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)'}
+                fill={isHovered ? 'var(--qg-dashboard-text)' : 'var(--qg-dashboard-text-muted)'}
                 fontSize="1.8"
                 fontFamily="monospace"
                 fontWeight="bold"
@@ -301,7 +301,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
               setZoom(z => Math.min(z * 1.15, 3.5));
             }}
             onMouseDown={e => e.stopPropagation()}
-            className="w-7 h-7 rounded border border-[#FFD36B]/30 bg-black/75 hover:bg-[#FFD36B]/15 text-[#FFD36B] font-bold text-xs flex items-center justify-center transition-all select-none"
+            className="w-7 h-7 rounded border border-[#06B6D4]/30 bg-black/75 hover:bg-[#06B6D4]/15 text-[#06B6D4] font-bold text-xs flex items-center justify-center transition-all select-none"
             title="Zoom In"
           >
             ＋
@@ -312,7 +312,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
               setZoom(z => Math.max(z / 1.15, 0.4));
             }}
             onMouseDown={e => e.stopPropagation()}
-            className="w-7 h-7 rounded border border-[#FFD36B]/30 bg-black/75 hover:bg-[#FFD36B]/15 text-[#FFD36B] font-bold text-xs flex items-center justify-center transition-all select-none"
+            className="w-7 h-7 rounded border border-[#06B6D4]/30 bg-black/75 hover:bg-[#06B6D4]/15 text-[#06B6D4] font-bold text-xs flex items-center justify-center transition-all select-none"
             title="Zoom Out"
           >
             －
@@ -324,7 +324,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
               setPan({ x: 0, y: 0 });
             }}
             onMouseDown={e => e.stopPropagation()}
-            className="w-7 h-7 rounded border border-[#FFD36B]/30 bg-black/75 hover:bg-[#FFD36B]/15 text-[#FFD36B] font-bold text-xs flex items-center justify-center transition-all select-none"
+            className="w-7 h-7 rounded border border-[#06B6D4]/30 bg-black/75 hover:bg-[#06B6D4]/15 text-[#06B6D4] font-bold text-xs flex items-center justify-center transition-all select-none"
             title="Reset Zoom & Pan"
           >
             ☉

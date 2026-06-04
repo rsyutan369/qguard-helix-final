@@ -22,6 +22,7 @@ import {
 import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
+import { TLS_DASHBOARD_TABLES } from '../_lib/telemetry-sync';
 
 type LoadState = 'loading' | 'success' | 'error';
 
@@ -93,6 +94,7 @@ type TlsTelemetrySnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
     certificates: number;
     securityEvents: number;
@@ -100,8 +102,19 @@ type TlsTelemetrySnapshot = {
     scannerAgents: number;
     connectors: number;
     agentHeartbeats: number;
+    activeAssets: number;
+    inactiveAssets: number;
+    onlineAgents: number;
+    offlineAgents: number;
+    freshHeartbeats: number;
+    runningScans: number;
+    completedScans: number;
+    failedScans: number;
     eventPipelineStatus: string;
     latestRuntimeEventAt: string | null;
+    latestScanAt: string | null;
+    latestAgentHeartbeatAt: string | null;
+    latestDiscoveryAt: string | null;
   };
 };
 
@@ -138,6 +151,7 @@ const EMPTY_SNAPSHOT: TlsTelemetrySnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
     certificates: 0,
     securityEvents: 0,
@@ -145,8 +159,19 @@ const EMPTY_SNAPSHOT: TlsTelemetrySnapshot = {
     scannerAgents: 0,
     connectors: 0,
     agentHeartbeats: 0,
+    activeAssets: 0,
+    inactiveAssets: 0,
+    onlineAgents: 0,
+    offlineAgents: 0,
+    freshHeartbeats: 0,
+    runningScans: 0,
+    completedScans: 0,
+    failedScans: 0,
     eventPipelineStatus: 'no_agents',
     latestRuntimeEventAt: null,
+    latestScanAt: null,
+    latestAgentHeartbeatAt: null,
+    latestDiscoveryAt: null,
   },
 };
 
@@ -401,20 +426,7 @@ function useTlsOrchestrator() {
   useEffect(() => {
     if (!user) return;
 
-    const tables = [
-      'assets',
-      'runtime_crypto_events',
-      'scanner_evidence',
-      'scanner_alerts',
-      'pqc_scan_results',
-      'certificates',
-      'security_events',
-      'scanner_agents',
-      'connector_accounts',
-      'agent_heartbeats',
-    ];
-
-    const channels = tables.map((table) => supabase
+    const channels = TLS_DASHBOARD_TABLES.map((table) => supabase
       .channel(`tls-orchestrator-${table}`)
       .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
       .subscribe());
@@ -639,7 +651,7 @@ export default function TlsOrchestratorPage() {
   const { snapshot, state, error, connected, refresh } = useTlsOrchestrator();
   const [query, setQuery] = useState('');
 
-  const totalEndpoints = snapshot.metrics.uniqueServers || snapshot.telemetry.assets;
+  const totalEndpoints = snapshot.metrics.uniqueServers || snapshot.telemetry.activeAssets || snapshot.telemetry.assets;
   const totalNegotiations = Math.max(1, snapshot.metrics.totalConnections);
   const downgradeEvents = snapshot.metrics.failedHandshakes;
   const readiness = Math.max(0, 100 - snapshot.metrics.connectionsAtRiskPercent);
@@ -695,7 +707,7 @@ export default function TlsOrchestratorPage() {
     { label: 'Enable hybrid ML-KEM', detail: `${pct(hybridPercent)} hybrid/PQC-capable negotiation coverage.`, state: hybridPercent >= 50 ? 'Completed' : hybridPercent > 0 ? 'In Progress' : 'Pending' },
     { label: 'Validate negotiation', detail: `${pct(snapshot.metrics.successfulHandshakes / totalNegotiations * 100)} successful handshake rate.`, state: snapshot.metrics.successfulHandshakes > 0 ? 'In Progress' : 'Pending' },
     { label: 'Monitor fallback behavior', detail: `${numberFmt(downgradeEvents)} downgrade or fallback events in this window.`, state: connected ? 'In Progress' : 'Pending' },
-    { label: 'Generate compliance report', detail: `${numberFmt(snapshot.telemetry.certificates + snapshot.telemetry.securityEvents)} evidence record(s) available.`, state: snapshot.telemetry.securityEvents > 0 ? 'In Progress' : 'Pending' },
+    { label: 'Generate compliance report', detail: `${numberFmt(snapshot.telemetry.certificates + snapshot.telemetry.securityEvents + snapshot.telemetry.scanSessions)} evidence record(s) available.`, state: snapshot.telemetry.securityEvents > 0 || snapshot.telemetry.scanSessions > 0 ? 'In Progress' : 'Pending' },
   ];
 
   return (
@@ -858,6 +870,8 @@ export default function TlsOrchestratorPage() {
                 ['Downgrade Attempts', numberFmt(downgradeEvents), deltaText(snapshot.metrics.failedHandshakesDelta), AlertTriangle, RED],
                 ['Successful Handshakes', pct(snapshot.metrics.successfulHandshakes / totalNegotiations * 100), deltaText(snapshot.metrics.successfulHandshakesDelta), CheckCircle2, GREEN],
                 ['Runtime Events', numberFmt(snapshot.telemetry.runtimeEvents), deltaText(snapshot.metrics.totalConnectionsDelta), Circle, PURPLE],
+                ['Scan Sessions', numberFmt(snapshot.telemetry.scanSessions), `${numberFmt(snapshot.telemetry.runningScans)} running`, Search, BLUE],
+                ['Online Agents', numberFmt(snapshot.telemetry.onlineAgents), `${numberFmt(snapshot.telemetry.freshHeartbeats)} fresh`, UserRound, GREEN],
               ].map(([label, value, delta, Icon, color]) => {
                 const MetricIcon = Icon as LucideIcon;
                 return <div key={String(label)} className="flex items-center gap-3 border-r border-[#edf1f8] last:border-r-0"><MetricIcon className="h-6 w-6" style={{ color: String(color) }} /><div><div className="text-[11px] font-bold text-[#536192]">{label}</div><div className="text-xl font-black">{value}</div><div className="text-xs font-black text-[#22c55e]">{delta}</div></div></div>;

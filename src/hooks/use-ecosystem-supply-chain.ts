@@ -178,6 +178,47 @@ function writeCache(key: string | null, snapshot: EcosystemSupplyChainSnapshot) 
   }
 }
 
+function tokenPayload(token: string | null | undefined): Record<string, unknown> | null {
+  if (!token || typeof globalThis.atob !== 'function') return null;
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(globalThis.atob(padded)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function tokenExpiresAtMs(token: string | null | undefined) {
+  const exp = tokenPayload(token)?.exp;
+  return typeof exp === 'number' ? exp * 1000 : null;
+}
+
+function tokenExpiresSoon(token: string | null | undefined, skewSeconds = 90) {
+  const expiresAt = tokenExpiresAtMs(token);
+  return typeof expiresAt === 'number' && expiresAt <= Date.now() + skewSeconds * 1000;
+}
+
+async function resolveAccessToken(fallbackToken: string | null | undefined) {
+  let accessToken = fallbackToken || null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    accessToken = data.session?.access_token || accessToken;
+    if (tokenExpiresSoon(accessToken)) {
+      const refreshed = await supabase.auth.refreshSession();
+      accessToken = refreshed.data.session?.access_token || accessToken;
+    }
+  } catch {
+    // The caller surfaces an auth failure if a usable token cannot be resolved.
+  }
+  if (!accessToken || tokenExpiresSoon(accessToken, 0)) {
+    throw new Error('Authentication expired. Please sign in again to refresh ecosystem supply-chain telemetry.');
+  }
+  return accessToken;
+}
+
 export function useEcosystemSupplyChain() {
   const { session, user } = useAuth();
   const token = session?.access_token;
@@ -222,17 +263,17 @@ export function useEcosystemSupplyChain() {
 
     try {
       setLoading((current) => current && !hasData(readCache(cacheKey) || EMPTY_ECOSYSTEM_SUPPLY_CHAIN_SNAPSHOT));
+      const accessToken = await resolveAccessToken(token);
       const response = await fetch('/api/v1/dashboard/ecosystem-supply-chain', {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${accessToken}`,
         },
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
       applySnapshot(normalizeSnapshot(payload.data));
       setError(null);
-      setConnected(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load ecosystem supply-chain telemetry');
       setConnected(false);
@@ -308,61 +349,113 @@ export function useEcosystemSupplyChain() {
       return;
     }
 
+    let disposed = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
     const close = () => {
       streamRef.current?.close();
       streamRef.current = null;
       setConnected(false);
+      if (tokenRefreshTimer) {
+        clearTimeout(tokenRefreshTimer);
+        tokenRefreshTimer = null;
+      }
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     };
 
     const startPolling = () => {
       if (pollTimer) return;
+      void refresh();
       pollTimer = setInterval(() => void refresh(), 10000);
     };
 
-    const connect = () => {
-      close();
-      const stream = new EventSource(`/api/v1/dashboard/ecosystem-supply-chain/stream?token=${encodeURIComponent(token)}`);
-      streamRef.current = stream;
-
-      stream.addEventListener('ecosystem-supply-chain-connected', () => {
-        setConnected(true);
-        setError(null);
-      });
-
-      stream.addEventListener('ecosystem-supply-chain-update', (event) => {
-        try {
-          const next = normalizeSnapshot(JSON.parse((event as MessageEvent).data));
-          applySnapshot(next);
-          setLoading(false);
-          setConnected(true);
-          setError(null);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Unable to parse ecosystem supply-chain stream');
-        }
-      });
-
-      stream.addEventListener('ecosystem-supply-chain-error', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data);
-          setError(payload?.message || 'Ecosystem supply-chain stream failed');
-        } catch {
-          setError('Ecosystem supply-chain stream failed');
-        }
-      });
-
-      stream.onerror = () => {
-        close();
-        startPolling();
-        if (retryTimer) clearTimeout(retryTimer);
-        retryTimer = setTimeout(connect, 15000);
-      };
+    const scheduleTokenRefresh = (accessToken: string) => {
+      const expiresAt = tokenExpiresAtMs(accessToken);
+      if (!expiresAt) return;
+      const delay = Math.max(5000, expiresAt - Date.now() - 60000);
+      tokenRefreshTimer = setTimeout(() => {
+        if (!disposed) void connect();
+      }, delay);
     };
 
-    connect();
+    const scheduleRetry = () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        if (!disposed) void connect();
+      }, 15000);
+    };
+
+    const handleStreamAuthError = (message: string) => {
+      if (!/jwt|token|auth|expired|unauthorized/i.test(message)) return false;
+      close();
+      startPolling();
+      scheduleRetry();
+      return true;
+    };
+
+    const connect = async () => {
+      close();
+      try {
+        const accessToken = await resolveAccessToken(token);
+        if (disposed) return;
+        const stream = new EventSource(`/api/v1/dashboard/ecosystem-supply-chain/stream?token=${encodeURIComponent(accessToken)}`);
+        scheduleTokenRefresh(accessToken);
+        streamRef.current = stream;
+
+        stream.addEventListener('ecosystem-supply-chain-connected', () => {
+          stopPolling();
+          setConnected(true);
+          setError(null);
+        });
+
+        stream.addEventListener('ecosystem-supply-chain-update', (event) => {
+          try {
+            const next = normalizeSnapshot(JSON.parse((event as MessageEvent).data));
+            applySnapshot(next);
+            setLoading(false);
+            stopPolling();
+            setConnected(true);
+            setError(null);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to parse ecosystem supply-chain stream');
+          }
+        });
+
+        stream.addEventListener('ecosystem-supply-chain-error', (event) => {
+          try {
+            const payload = JSON.parse((event as MessageEvent).data);
+            const message = payload?.message || 'Ecosystem supply-chain stream failed';
+            setError(message);
+            handleStreamAuthError(message);
+          } catch {
+            setError('Ecosystem supply-chain stream failed');
+          }
+        });
+
+        stream.onerror = () => {
+          close();
+          startPolling();
+          scheduleRetry();
+        };
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to connect ecosystem supply-chain stream');
+        setConnected(false);
+        startPolling();
+        scheduleRetry();
+      }
+    };
+
+    void connect();
     return () => {
+      disposed = true;
       close();
       if (retryTimer) clearTimeout(retryTimer);
       if (pollTimer) clearInterval(pollTimer);

@@ -29,6 +29,7 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { PKI_VISIBILITY_TABLES } from '../_lib/telemetry-sync';
 
 type LoadState = 'loading' | 'success' | 'error';
 
@@ -139,6 +140,7 @@ type PkiVisibilitySnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
     cryptoInventory: number;
     cryptoExposures: number;
@@ -146,8 +148,19 @@ type PkiVisibilitySnapshot = {
     scannerAgents: number;
     connectors: number;
     agentHeartbeats: number;
+    activeAssets: number;
+    inactiveAssets: number;
+    onlineAgents: number;
+    offlineAgents: number;
+    freshHeartbeats: number;
+    runningScans: number;
+    completedScans: number;
+    failedScans: number;
     eventPipelineStatus: string;
     latestRuntimeEventAt: string | null;
+    latestScanAt: string | null;
+    latestAgentHeartbeatAt: string | null;
+    latestDiscoveryAt: string | null;
   };
 };
 
@@ -192,6 +205,7 @@ const EMPTY_SNAPSHOT: PkiVisibilitySnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
     cryptoInventory: 0,
     cryptoExposures: 0,
@@ -199,8 +213,19 @@ const EMPTY_SNAPSHOT: PkiVisibilitySnapshot = {
     scannerAgents: 0,
     connectors: 0,
     agentHeartbeats: 0,
+    activeAssets: 0,
+    inactiveAssets: 0,
+    onlineAgents: 0,
+    offlineAgents: 0,
+    freshHeartbeats: 0,
+    runningScans: 0,
+    completedScans: 0,
+    failedScans: 0,
     eventPipelineStatus: 'no_agents',
     latestRuntimeEventAt: null,
+    latestScanAt: null,
+    latestAgentHeartbeatAt: null,
+    latestDiscoveryAt: null,
   },
 };
 
@@ -378,23 +403,7 @@ function usePkiVisibility() {
   useEffect(() => {
     if (!user) return;
 
-    const tables = [
-      'assets',
-      'certificates',
-      'generated_keys',
-      'runtime_crypto_events',
-      'scanner_evidence',
-      'scanner_alerts',
-      'pqc_scan_results',
-      'crypto_inventory',
-      'crypto_exposures',
-      'security_events',
-      'scanner_agents',
-      'connector_accounts',
-      'agent_heartbeats',
-    ];
-
-    const channels = tables.map((table) => supabase
+    const channels = PKI_VISIBILITY_TABLES.map((table) => supabase
       .channel(`pki-visibility-${table}`)
       .on(
         'postgres_changes',
@@ -852,6 +861,9 @@ function PipelineStatus({ snapshot, sseConnected }: { snapshot: PkiVisibilitySna
     { label: 'QGuard PKI Records', value: snapshot.telemetry.generatedPki, icon: KeyRound, color: GOLD },
     { label: 'Runtime PKI Events', value: snapshot.telemetry.runtimeEvents, icon: Activity, color: GREEN },
     { label: 'Scanner Evidence', value: snapshot.telemetry.scannerEvidence, icon: Search, color: PURPLE },
+    { label: 'Scan Sessions', value: snapshot.telemetry.scanSessions, icon: CalendarClock, color: ORANGE },
+    { label: 'Active Assets', value: snapshot.telemetry.activeAssets, icon: BadgeCheck, color: TEAL },
+    { label: 'Online Agents', value: snapshot.telemetry.onlineAgents, icon: Network, color: GREEN },
     { label: 'Crypto Exposures', value: snapshot.telemetry.cryptoExposures, icon: ShieldAlert, color: RED },
     { label: 'Security Events', value: snapshot.telemetry.securityEvents, icon: Network, color: CYAN },
   ];
@@ -980,7 +992,7 @@ export default function PkiVisibilityPage() {
               Certificate lifecycle, trust-chain posture, and quantum readiness across your authenticated tenant assets.
             </p>
             <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-[0.08em] text-white/45">
-              <span>Latest: {longDate(snapshot.latestActivityAt)}</span>
+              <span>Latest: {longDate(snapshot.latestActivityAt || snapshot.telemetry.latestScanAt || snapshot.telemetry.latestDiscoveryAt)}</span>
               <span className="text-white/20">/</span>
               <span>Backend synchronized</span>
               <span className="text-white/20">/</span>

@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { buildTenantTelemetrySync } from './tenant-telemetry-sync'
 
 const router = Router()
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
@@ -266,6 +267,7 @@ async function buildPkiVisibilitySnapshot(token: string, userId: string) {
     runtimeEvents,
     scannerEvidence,
     scannerAlerts,
+    scanSessions,
     scanResults,
     cryptoInventory,
     cryptoExposures,
@@ -274,12 +276,13 @@ async function buildPkiVisibilitySnapshot(token: string, userId: string) {
     connectorAccounts,
     agentHeartbeats,
   ] = await Promise.all([
-    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'assets', (q) => q.select('id, name, type, status, environment, region, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, subject, serial_number, not_before, not_after, is_quantum_safe, is_expiring_soon, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
     safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, fingerprint, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).like('algorithm', 'PKI-%').order('created_at', { ascending: false }).limit(1800)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, connector_account_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, port, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(5000)),
     safeRows(client, 'scanner_evidence', (q) => q.select('id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, port, protocol, observed_algorithm, raw_evidence, processed_at, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2500)),
     safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, connector_account_id, evidence_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1500)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, target_scope, progress, total_assets, scanned_assets, findings_count, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(600)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(1800)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
@@ -677,14 +680,34 @@ async function buildPkiVisibilitySnapshot(token: string, userId: string) {
     .slice(0, 12)
 
   const latestRuntimeEventAt = latestDate(...certRuntimeEvents.map((event: any) => event.observed_at || event.created_at))
+  const sync = buildTenantTelemetrySync({
+    assets,
+    scannerAgents,
+    connectorAccounts,
+    agentHeartbeats,
+    scanSessions,
+    runtimeEvents: certRuntimeEvents,
+    scannerEvidence: certEvidence,
+    scannerAlerts: certAlerts,
+    scanResults: certScanResults,
+    cryptoInventory,
+    cryptoExposures: certExposures,
+    securityEvents: certSecurityEvents,
+    generatedKeys: generatedPki,
+    certificates: certRecords,
+  })
   const latestActivityAt = latestDate(
     ...certRecords.map((cert) => cert.updatedAt || cert.createdAt || cert.expiresAt),
     latestRuntimeEventAt,
+    sync.latestScanAt,
+    sync.latestDiscoveryAt,
     ...certAlerts.map((alert: any) => alert.updated_at || alert.created_at),
     ...certExposures.map((exposure: any) => exposure.updated_at || exposure.created_at),
   )
   const eventPipelineStatus = certRuntimeEvents.length || certEvidence.length || certAlerts.length
     ? 'active'
+    : sync.runningScans
+      ? 'scan_running'
     : totalCertificates || certTexts
       ? 'inventory_only'
       : scannerAgents.length || connectorAccounts.length
@@ -741,6 +764,7 @@ async function buildPkiVisibilitySnapshot(token: string, userId: string) {
       agentHeartbeats: agentHeartbeats.length,
       eventPipelineStatus,
       latestRuntimeEventAt,
+      ...sync,
     },
   }
 }

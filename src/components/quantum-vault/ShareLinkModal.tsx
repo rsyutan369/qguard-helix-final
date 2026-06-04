@@ -57,7 +57,7 @@ export default function ShareLinkModal({
   authHeaders,
   getFileData,
 }: ShareLinkModalProps) {
-  const [step, setStep] = useState<'configure' | 'encrypting' | 'done' | 'error'>('configure')
+  const [step, setStep] = useState<'configure' | 'encrypting' | 'creating' | 'done' | 'error'>('configure')
   const [shareLink, setShareLink] = useState('')
   const [copied, setCopied] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
@@ -104,15 +104,15 @@ export default function ShareLinkModal({
         result = await encryptForSharing(fileData)
       }
 
-      // 3. Send encrypted payload to Supabase (key NEVER leaves browser)
+      // 3. Create the share record (key NEVER leaves browser)
       const expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : undefined
 
+      setStep('creating')
       const created = await createSharedLink({
         fileId,
         originalFilename: fileName,
         originalSize: fileData.length,
         mimeType: 'application/octet-stream',
-        encryptedFileData: new TextEncoder().encode(result.encryptedPayload),
         encryptionMetadata: {
           iv: result.iv,
           integrityHash: result.integrityHash,
@@ -320,7 +320,7 @@ export default function ShareLinkModal({
         )}
 
         {/* ── Encrypting Step ────────────────────────── */}
-        {step === 'encrypting' && (
+        {(step === 'encrypting' || step === 'creating') && (
           <div style={{ textAlign: 'center', padding: '30px 0' }}>
             <div style={{
               width: 48, height: 48, margin: '0 auto 16px',
@@ -332,10 +332,12 @@ export default function ShareLinkModal({
               animation: 'spin 1s linear infinite',
             }} />
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
-              Encrypting file...
+              {step === 'encrypting' ? 'Encrypting file...' : 'Creating secure link...'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--qg-text-muted)' }}>
-              Client-side AES-256-GCM encryption in progress
+              {step === 'encrypting'
+                ? 'Client-side AES-256-GCM encryption in progress'
+                : 'Registering the zero-knowledge share payload'}
             </div>
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>

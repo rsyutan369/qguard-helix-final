@@ -84,6 +84,32 @@ export type MigrationPlannerScenario = {
   playbook: string[];
 };
 
+export type MigrationPlannerPlanAction = 'save' | 'export' | 'schedule' | 'start' | 'sandbox';
+
+export type MigrationPlannerCreatePlanInput = {
+  action?: MigrationPlannerPlanAction;
+  assetIds?: string[];
+  selectedAssets?: MigrationPlannerAsset[];
+  configuration?: {
+    currentAlgorithms?: string[];
+    targetAlgorithms?: string[];
+    deploymentStrategy?: string;
+    controls?: {
+      rollback?: boolean;
+      validation?: boolean;
+      compatibility?: boolean;
+      hybridMode?: boolean;
+      continuousMonitoring?: boolean;
+      complianceValidation?: boolean;
+    };
+    scheduleAt?: string | null;
+    tags?: string[];
+    notes?: string;
+  };
+  limit?: number;
+  planId?: string;
+};
+
 export type MigrationPlannerSnapshot = {
   generatedAt: string;
   range: { key: MigrationPlannerRangeKey; label: string; days: number | null };
@@ -209,6 +235,38 @@ function writeCache(key: string | null, snapshot: MigrationPlannerSnapshot) {
   }
 }
 
+function tokenExpiresSoon(token: string | null | undefined, skewSeconds = 60) {
+  if (!token || typeof globalThis.atob !== 'function') return false;
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return false;
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const parsed = JSON.parse(globalThis.atob(padded));
+    return typeof parsed.exp === 'number' && parsed.exp <= Math.floor(Date.now() / 1000) + skewSeconds;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveAccessToken(fallbackToken: string | null | undefined) {
+  let accessToken = fallbackToken || null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    accessToken = data.session?.access_token || accessToken;
+    if (tokenExpiresSoon(accessToken)) {
+      const refreshed = await supabase.auth.refreshSession();
+      accessToken = refreshed.data.session?.access_token || accessToken;
+    }
+  } catch {
+    // The caller will surface the authentication failure if no usable token remains.
+  }
+  if (!accessToken || tokenExpiresSoon(accessToken, 0)) {
+    throw new Error('Authentication expired. Please sign in again before starting the migration handoff.');
+  }
+  return accessToken;
+}
+
 export function useMigrationPlanner(range: MigrationPlannerRangeKey) {
   const { session, user } = useAuth();
   const token = session?.access_token;
@@ -254,10 +312,11 @@ export function useMigrationPlanner(range: MigrationPlannerRangeKey) {
 
     try {
       setLoading((current) => current && !hasPlannerData(readCache(cacheKey, range) || normalizeSnapshot(null, range)));
+      const accessToken = await resolveAccessToken(token);
       const response = await fetch(`/api/v1/migration/planner?range=${encodeURIComponent(range)}`, {
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${accessToken}`,
         },
       });
       const payload = await response.json().catch(() => ({}));
@@ -279,32 +338,60 @@ export function useMigrationPlanner(range: MigrationPlannerRangeKey) {
     }, 250);
   }, [refresh]);
 
-  const createPlan = useCallback(async () => {
+  const createPlan = useCallback(async (options: MigrationPlannerCreatePlanInput = {}) => {
     if (!token) throw new Error('Authentication required');
-    setActionMessage('Creating migration plan from live posture...');
-    const response = await fetch('/api/v1/migration/planner/create', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ range, limit: 8 }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload?.error?.message || 'Failed to create migration plan');
-    if (payload.data?.snapshot) applySnapshot(normalizeSnapshot(payload.data.snapshot, range));
-    setActionMessage(payload.data?.message || 'Migration plan created.');
-    return payload.data;
+    const sandboxHandoff = options.action === 'sandbox';
+    const startHandoff = options.action === 'start';
+    setActionMessage(
+      sandboxHandoff
+        ? 'Queuing sandbox simulations and opening Migration Sandbox...'
+        : startHandoff
+          ? 'Starting migration handoff and opening PQC Orchestration...'
+          : 'Creating migration plan from live posture...',
+    );
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), sandboxHandoff || startHandoff ? 60000 : 30000);
+    try {
+      const accessToken = await resolveAccessToken(token);
+      const response = await fetch('/api/v1/migration/planner/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ range, limit: options.limit || Math.max(8, options.assetIds?.length || 0), ...options }),
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || 'Failed to create migration plan');
+      if (payload.data?.snapshot) applySnapshot(normalizeSnapshot(payload.data.snapshot, range));
+      setActionMessage(payload.data?.message || (sandboxHandoff ? 'Migration Sandbox handoff queued.' : 'Migration plan created.'));
+      return payload.data;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        throw new Error(
+          sandboxHandoff
+            ? 'Migration Sandbox handoff timed out. Please try again.'
+            : startHandoff
+              ? 'Start Migration handoff timed out before confirmation. Please try again.'
+              : 'Migration plan creation timed out. Please try again.',
+        );
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }, [applySnapshot, range, token]);
 
   const runScenario = useCallback(async (options: { targetMode: string; optimization: string }) => {
     if (!token) throw new Error('Authentication required');
     setActionMessage('Running scenario analysis...');
+    const accessToken = await resolveAccessToken(token);
     const response = await fetch('/api/v1/migration/planner/scenario', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({ ...options, range }),
     });
@@ -317,8 +404,9 @@ export function useMigrationPlanner(range: MigrationPlannerRangeKey) {
   const exportRoadmap = useCallback(async (format: 'json' | 'csv' = 'json') => {
     if (!token) throw new Error('Authentication required');
     setActionMessage('Preparing roadmap export...');
+    const accessToken = await resolveAccessToken(token);
     const response = await fetch(`/api/v1/migration/planner/export?range=${encodeURIComponent(range)}&format=${format}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -360,6 +448,13 @@ export function useMigrationPlanner(range: MigrationPlannerRangeKey) {
       'crypto_inventory',
       'crypto_exposures',
       'migration_jobs',
+      'migration_plans',
+      'migration_plan_configurations',
+      'migration_scope',
+      'migration_assets',
+      'migration_tasks',
+      'migration_controls',
+      'migration_audit_logs',
       'migration_events',
       'pqc_scan_sessions',
       'pqc_scan_results',
@@ -367,6 +462,7 @@ export function useMigrationPlanner(range: MigrationPlannerRangeKey) {
       'certificates',
       'compliance_evidence',
       'security_events',
+      'audit_logs',
     ];
 
     const channels = tables.map((table) => supabase

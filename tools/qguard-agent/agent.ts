@@ -4,6 +4,12 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
+import { collectNativeRuntimeEvents, nativeRuntimeCollectorsEnabled, type NativeRuntimeEvent } from './native-runtime-collectors.ts'
+import {
+  MANDATORY_PQC_CONFIG_VALUES,
+  MANDATORY_PQC_STACK,
+  mandatoryPqcStackMetadata,
+} from '../../src/lib/crypto/mandatory-pqc-stack.ts'
 
 type EvidenceConfidence = 'high' | 'medium' | 'low'
 type EvidenceType =
@@ -61,6 +67,7 @@ interface RuntimeCryptoEvent {
   packageName?: string | null
   packageVersion?: string | null
   processName?: string | null
+  processId?: number | null
   isPqc?: boolean
   isLegacy?: boolean
   downgradeDetected?: boolean
@@ -306,6 +313,7 @@ function runtimeFlags(evidence: ScannerEvidence) {
 
 function runtimeEventFromEvidence(evidence: ScannerEvidence): RuntimeCryptoEvent {
   const flags = runtimeFlags(evidence)
+  const processId = Number(evidence.rawEvidence?.processId || evidence.rawEvidence?.process_id)
   return {
     eventType: evidence.evidenceType,
     operationType: runtimeOperationType(evidence),
@@ -322,7 +330,12 @@ function runtimeEventFromEvidence(evidence: ScannerEvidence): RuntimeCryptoEvent
     certificateFingerprint: evidence.certificateFingerprint,
     packageName: evidence.packageName,
     packageVersion: evidence.packageVersion,
-    processName: os.hostname(),
+    processName: typeof evidence.rawEvidence?.processName === 'string'
+      ? evidence.rawEvidence.processName
+      : typeof evidence.rawEvidence?.process_name === 'string'
+        ? evidence.rawEvidence.process_name
+        : null,
+    processId: Number.isFinite(processId) ? processId : null,
     ...flags,
     metadata: {
       evidenceType: evidence.evidenceType,
@@ -862,11 +875,14 @@ function adapterForJob(job: RemediationJob) {
 
 function remediationPlan(job: RemediationJob) {
   const adapter = adapterForJob(job)
-  const targetAlgorithm = job.targetAlgorithm || 'ML-KEM-768 hybrid'
+  const stack = mandatoryPqcStackMetadata(job.targetAlgorithm, `${adapter} ${job.jobType || ''} ${job.name || ''}`)
+  const targetAlgorithm = String(stack.targetAlgorithm)
   const common = [
     'Claim the tenant-scoped remediation workflow and capture an immutable audit event.',
     'Run pre-change discovery against the authorized target or local asset evidence.',
     `Prepare a ${targetAlgorithm} remediation plan for the detected HNDL exposure.`,
+    `Use OpenSSL 3.x with OQS Provider/liboqs integration points where this agent or connector owns the TLS or signing configuration.`,
+    `Enforce TLS ${MANDATORY_PQC_STACK.tls.keyExchange}, signatures ${MANDATORY_PQC_STACK.signatures.hybrid}, encryption ${MANDATORY_PQC_STACK.encryption.symmetric}, KDF ${MANDATORY_PQC_STACK.kdf.primary}, and hashes ${MANDATORY_PQC_STACK.hashes.join(' / ')}.`,
     'Execute only policy-approved local actions or wait for the owning platform connector/operator.',
     'Rescan the target and close the job only when validation proves no active HNDL risk remains.',
   ]
@@ -930,6 +946,8 @@ function positiveConfigValidationEvidence(job: RemediationJob, filePath: string)
       hndlRisk: false,
       validationMethod: 'authorized local config rescan',
       redacted: true,
+      mandatoryPqcStack: MANDATORY_PQC_STACK,
+      cryptographicStack: mandatoryPqcStackMetadata(job.targetAlgorithm, `${adapterForJob(job)} ${job.name || ''}`),
     },
     observedAt: isoNow(),
   }
@@ -975,13 +993,72 @@ function validationFromEvidence(evidence: ScannerEvidence[], scanned: boolean): 
   }
 }
 
-function patchKnownSafeCryptoToggles(content: string) {
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function replaceConfigStringValue(content: string, keys: string[], value: string, filePath: string) {
+  const ext = path.extname(filePath).toLowerCase()
+  const quoteRequired = ['.json', '.toml'].includes(ext)
+  let next = content
+
+  for (const key of keys) {
+    const escaped = escapeRegex(key)
+    if (quoteRequired) {
+      next = next.replace(new RegExp(`(\\b${escaped}\\b\\s*[:=]\\s*["'])[^"'\r\n]+(["'])`, 'gi'), `$1${value}$2`)
+    } else {
+      next = next.replace(new RegExp(`(\\b${escaped}\\b\\s*[:=]\\s*)(["'])?[^"'\r\n#;]+(["'])?`, 'gi'), (_match, prefix, openQuote = '', closeQuote = '') => {
+        const quote = openQuote || closeQuote
+        return `${prefix}${quote}${value}${quote}`
+      })
+    }
+  }
+
+  return next
+}
+
+function patchKnownSafeCryptoToggles(content: string, filePath: string) {
   let next = content
   next = next.replace(/(\bPQC_ENABLED\s*[:=]\s*)false\b/gi, '$1true')
   next = next.replace(/(\bPOST_QUANTUM_ENABLED\s*[:=]\s*)false\b/gi, '$1true')
   next = next.replace(/(\bTLS_HYBRID_KEM\s*[:=]\s*)false\b/gi, '$1true')
   next = next.replace(/(\bHYBRID_KEM\s*[:=]\s*)false\b/gi, '$1true')
-  next = next.replace(/(\bssl_protocols\s+)[^;\r\n]+/gi, '$1TLSv1.2 TLSv1.3')
+  next = replaceConfigStringValue(next, ['TLS_GROUPS', 'TLS_CURVES', 'SSL_GROUPS'], MANDATORY_PQC_CONFIG_VALUES.tlsGroups, filePath)
+  next = replaceConfigStringValue(next, ['KEM_ALGORITHM', 'PQC_KEM'], MANDATORY_PQC_CONFIG_VALUES.kemAlgorithm, filePath)
+  next = replaceConfigStringValue(next, ['TLS_KEM_GROUP'], MANDATORY_PQC_CONFIG_VALUES.tlsKemGroup, filePath)
+  next = replaceConfigStringValue(next, ['SIGNATURE_ALGORITHM', 'TLS_SIGNATURE_ALGORITHM'], MANDATORY_PQC_CONFIG_VALUES.signatureAlgorithm, filePath)
+  next = replaceConfigStringValue(next, ['PQC_SIGNATURE', 'ML_DSA_ALGORITHM'], MANDATORY_PQC_CONFIG_VALUES.pqcSignature, filePath)
+  next = replaceConfigStringValue(next, ['SYMMETRIC_CIPHER', 'CIPHER_SUITE', 'ENCRYPTION_ALGORITHM'], MANDATORY_PQC_CONFIG_VALUES.symmetricCipher, filePath)
+  next = replaceConfigStringValue(next, ['KDF', 'KDF_ALGORITHM'], MANDATORY_PQC_CONFIG_VALUES.kdf, filePath)
+  next = replaceConfigStringValue(next, ['HASH_ALGORITHM', 'DIGEST_ALGORITHM'], MANDATORY_PQC_CONFIG_VALUES.hashAlgorithm, filePath)
+  next = replaceConfigStringValue(next, ['INTEGRITY_HASH'], MANDATORY_PQC_CONFIG_VALUES.integrityHash, filePath)
+  next = replaceConfigStringValue(next, ['OPENSSL_PROVIDER'], MANDATORY_PQC_CONFIG_VALUES.opensslProvider, filePath)
+  next = replaceConfigStringValue(next, ['OPENSSL_CONF'], MANDATORY_PQC_CONFIG_VALUES.opensslConf, filePath)
+  next = next.replace(/(\bssl_protocols\s+)[^;\r\n]+;?/gi, '$1TLSv1.3;')
+  next = next.replace(/(\bssl_ecdh_curve\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
+  next = next.replace(/(\bssl_conf_command\s+Groups\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
+  next = next.replace(/(\bssl_ciphers\s+)[^;\r\n]+;?/gi, '$1TLS_AES_256_GCM_SHA384;')
+
+  const ext = path.extname(filePath).toLowerCase()
+  const lineAppendSafe = ['.cfg', '.ini', '.properties'].includes(ext)
+  if (lineAppendSafe && next !== content && !/QGuard mandatory PQC stack/i.test(next)) {
+    next += [
+      '',
+      '# QGuard mandatory PQC stack',
+      `PQC_ENABLED=${MANDATORY_PQC_CONFIG_VALUES.pqcEnabled}`,
+      `POST_QUANTUM_ENABLED=${MANDATORY_PQC_CONFIG_VALUES.postQuantumEnabled}`,
+      `TLS_HYBRID_KEM=${MANDATORY_PQC_CONFIG_VALUES.hybridKemEnabled}`,
+      `TLS_GROUPS=${MANDATORY_PQC_CONFIG_VALUES.tlsGroups}`,
+      `KEM_ALGORITHM=${MANDATORY_PQC_CONFIG_VALUES.kemAlgorithm}`,
+      `SIGNATURE_ALGORITHM=${MANDATORY_PQC_CONFIG_VALUES.signatureAlgorithm}`,
+      `SYMMETRIC_CIPHER=${MANDATORY_PQC_CONFIG_VALUES.symmetricCipher}`,
+      `KDF=${MANDATORY_PQC_CONFIG_VALUES.kdf}`,
+      `HASH_ALGORITHM=${MANDATORY_PQC_CONFIG_VALUES.hashAlgorithm}`,
+      `INTEGRITY_HASH=${MANDATORY_PQC_CONFIG_VALUES.integrityHash}`,
+      `OPENSSL_PROVIDER=${MANDATORY_PQC_CONFIG_VALUES.opensslProvider}`,
+      '',
+    ].join(os.EOL)
+  }
   return next
 }
 
@@ -1003,7 +1080,7 @@ async function applyLocalConfigRemediation(job: RemediationJob, policy: AgentPol
   }
 
   const before = await fs.readFile(filePath, 'utf8')
-  const after = patchKnownSafeCryptoToggles(before)
+  const after = patchKnownSafeCryptoToggles(before, filePath)
   if (after === before) {
     return { executed: false, manualRequired: true, reason: 'No known safe PQC/TLS toggle was found for automatic patching.', changedFiles: [] as string[] }
   }
@@ -1039,6 +1116,7 @@ async function attemptRemediation(job: RemediationJob, policy: AgentPolicy) {
 
 async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
   const adapter = adapterForJob(job)
+  const stack = mandatoryPqcStackMetadata(job.targetAlgorithm, `${adapter} ${job.jobType || ''} ${job.name || ''}`)
   const plan = remediationPlan(job)
   await postRemediationEvent(job.id, {
     eventType: 'agent-remediation-started',
@@ -1052,6 +1130,8 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       plan,
       remediationEnabled: REMEDIATION_ENABLED,
       configPatchesEnabled: CONFIG_PATCHES_ENABLED,
+      mandatoryPqcStack: MANDATORY_PQC_STACK,
+      cryptographicStack: stack,
     },
   })
 
@@ -1064,7 +1144,7 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
     message: precheckValidation.hndlRiskRemaining
       ? `Precheck confirmed active HNDL exposure on ${job.name}.`
       : `Precheck found no active HNDL exposure on ${job.name}.`,
-    metadata: { adapter, precheckValidation },
+    metadata: { adapter, precheckValidation, mandatoryPqcStack: MANDATORY_PQC_STACK, cryptographicStack: stack },
     validation: precheckValidation,
     evidence: precheck.evidence,
   })
@@ -1075,7 +1155,7 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       status: 'completed',
       progress: 100,
       message: `HNDL remediation already validated for ${job.name}; no active exposure remains.`,
-      metadata: { adapter, plan, alreadyRemediated: true },
+      metadata: { adapter, plan, alreadyRemediated: true, mandatoryPqcStack: MANDATORY_PQC_STACK, cryptographicStack: stack },
       validation: precheckValidation,
       evidence: precheck.evidence,
     })
@@ -1097,6 +1177,8 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       changedFiles: execution.changedFiles,
       remediationEnabled: REMEDIATION_ENABLED,
       configPatchesEnabled: CONFIG_PATCHES_ENABLED,
+      mandatoryPqcStack: MANDATORY_PQC_STACK,
+      cryptographicStack: stack,
     },
   })
 
@@ -1114,6 +1196,8 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       plan,
       reason: validation.notes || execution.reason,
       changedFiles: execution.changedFiles,
+      mandatoryPqcStack: MANDATORY_PQC_STACK,
+      cryptographicStack: stack,
     },
     validation,
     evidence: validationProbe.evidence,
@@ -1208,12 +1292,51 @@ async function scanOnce() {
   }
 
   await uploadEvidence(evidence)
-  const runtimeEvents = runtimeEventsEnabled(scanTypes) ? evidence.map(runtimeEventFromEvidence) : []
+  const evidenceRuntimeEvents = runtimeEventsEnabled(scanTypes) ? evidence.map(runtimeEventFromEvidence) : []
+  let nativeRuntimeEvents: NativeRuntimeEvent[] = []
+  let nativeCollectorDiagnostics: unknown[] = []
+
+  if (nativeRuntimeCollectorsEnabled(scanTypes)) {
+    try {
+      const nativeRun = await collectNativeRuntimeEvents({
+        allowedTargets: policy.allowedTargets,
+        allowedPaths: policy.allowedPaths,
+        scanTypes: [...scanTypes],
+        intervalSeconds: policy.intervalSeconds,
+      })
+      nativeRuntimeEvents = nativeRun.events
+      nativeCollectorDiagnostics = nativeRun.diagnostics
+      await sendTelemetry('agent_native_runtime_capture', 'Native runtime collector cycle completed', {
+        nativeRuntimeEvents: nativeRuntimeEvents.length,
+        collectors: nativeCollectorDiagnostics,
+      })
+    } catch (error) {
+      nativeCollectorDiagnostics = [{ status: 'error', message: (error as Error).message }]
+      await sendTelemetry('agent_native_runtime_failed', 'Native runtime collector cycle failed', {
+        error: (error as Error).message,
+      }).catch(() => undefined)
+      console.warn(`Native runtime collection failed: ${(error as Error).message}`)
+    }
+  }
+
+  const runtimeEvents = [...evidenceRuntimeEvents, ...nativeRuntimeEvents]
   await uploadRuntimeEvents(runtimeEvents)
   const remediationJobs = await executePendingRemediations(policy)
-  await sendHeartbeat('active', { phase: 'completed', evidenceCount: evidence.length, runtimeEventCount: runtimeEvents.length, remediationJobs })
-  await sendTelemetry('agent_scan_completed', 'Local scanner evidence collection completed', { evidenceCount: evidence.length, runtimeEventCount: runtimeEvents.length, remediationJobs })
-  console.log(`QGuard agent scan complete. Uploaded ${evidence.length} evidence record(s); processed ${remediationJobs} remediation job(s).`)
+  await sendHeartbeat('active', {
+    phase: 'completed',
+    evidenceCount: evidence.length,
+    runtimeEventCount: runtimeEvents.length,
+    nativeRuntimeEventCount: nativeRuntimeEvents.length,
+    nativeCollectors: nativeCollectorDiagnostics,
+    remediationJobs,
+  })
+  await sendTelemetry('agent_scan_completed', 'Local scanner evidence collection completed', {
+    evidenceCount: evidence.length,
+    runtimeEventCount: runtimeEvents.length,
+    nativeRuntimeEventCount: nativeRuntimeEvents.length,
+    remediationJobs,
+  })
+  console.log(`QGuard agent scan complete. Uploaded ${evidence.length} evidence record(s), ${runtimeEvents.length} runtime event(s), and processed ${remediationJobs} remediation job(s).`)
 }
 
 async function watch() {

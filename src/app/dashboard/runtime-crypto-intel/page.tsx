@@ -371,7 +371,14 @@ function useRuntimeCryptoSnapshot() {
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const streamsRef = useRef<EventSource[]>([])
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const closeStreams = useCallback(() => {
+    for (const stream of streamsRef.current) stream.close()
+    streamsRef.current = []
+    setSseConnected(false)
+  }, [])
 
   const fetchSnapshot = useCallback(async () => {
     if (!token) return
@@ -396,8 +403,25 @@ function useRuntimeCryptoSnapshot() {
     }
   }, [token])
 
+  const queueRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null
+      void fetchSnapshot()
+    }, 250)
+  }, [fetchSnapshot])
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+  }, [])
+
   useEffect(() => {
-    if (!token || !user) return
+    if (!token || !user) {
+      setSnapshot(EMPTY_SNAPSHOT)
+      setState('success')
+      setError(null)
+      return
+    }
     fetchSnapshot()
   }, [token, user, fetchSnapshot])
 
@@ -413,6 +437,7 @@ function useRuntimeCryptoSnapshot() {
       'security_events',
       'migration_jobs',
       'migration_events',
+      'compliance_evidence',
       'certificates',
       'qrng_events',
       'vault_audit_logs',
@@ -420,6 +445,9 @@ function useRuntimeCryptoSnapshot() {
       'runtime_crypto_events',
       'scanner_agents',
       'scanner_alerts',
+      'scanner_evidence',
+      'agent_heartbeats',
+      'connector_accounts',
     ]
 
     const channels = tables.map((table) => supabase
@@ -427,7 +455,7 @@ function useRuntimeCryptoSnapshot() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` },
-        () => fetchSnapshot()
+        queueRefresh
       )
       .subscribe())
 
@@ -436,34 +464,53 @@ function useRuntimeCryptoSnapshot() {
         supabase.removeChannel(channel)
       }
     }
-  }, [user, fetchSnapshot])
+  }, [user, queueRefresh])
 
   useEffect(() => {
-    if (!token) return
+    if (!token) {
+      closeStreams()
+      return
+    }
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     const connect = () => {
-      const eventSource = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
-      eventSourceRef.current = eventSource
-      eventSource.onopen = () => setSseConnected(true)
-      eventSource.onerror = () => {
+      closeStreams()
+      const runtimeStream = new EventSource(`/api/v1/dashboard/runtime-crypto-intel/stream?token=${encodeURIComponent(token)}`)
+      const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
+      const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`)
+      streamsRef.current = [runtimeStream, metricsStream, scannerStream]
+
+      const markOpen = () => setSseConnected(true)
+      const scheduleReconnect = () => {
         setSseConnected(false)
-        eventSource.close()
+        closeStreams()
+        if (retryTimer) clearTimeout(retryTimer)
         retryTimer = setTimeout(connect, 10000)
       }
-      eventSource.addEventListener('metrics-update', fetchSnapshot)
-      eventSource.addEventListener('runtime-crypto-update', fetchSnapshot)
-      eventSource.addEventListener('scan-complete', fetchSnapshot)
+      const refreshFromStream = () => queueRefresh()
+
+      runtimeStream.onopen = markOpen
+      metricsStream.onopen = markOpen
+      scannerStream.onopen = markOpen
+      runtimeStream.onerror = scheduleReconnect
+      metricsStream.onerror = scheduleReconnect
+      scannerStream.onerror = scheduleReconnect
+      runtimeStream.addEventListener('runtime-crypto-intel-connected', refreshFromStream)
+      runtimeStream.addEventListener('runtime-crypto-intel-update', refreshFromStream)
+      runtimeStream.addEventListener('runtime-crypto-intel-error', refreshFromStream)
+      metricsStream.addEventListener('metrics-update', refreshFromStream)
+      metricsStream.addEventListener('runtime-crypto-update', refreshFromStream)
+      metricsStream.addEventListener('scan-complete', refreshFromStream)
+      scannerStream.addEventListener('scanner-intelligence', refreshFromStream)
+      scannerStream.addEventListener('scanner-error', refreshFromStream)
     }
 
     connect()
     return () => {
       if (retryTimer) clearTimeout(retryTimer)
-      eventSourceRef.current?.close()
-      eventSourceRef.current = null
-      setSseConnected(false)
+      closeStreams()
     }
-  }, [token, fetchSnapshot])
+  }, [token, queueRefresh, closeStreams])
 
   return { snapshot, state, error, sseConnected, refresh: fetchSnapshot }
 }

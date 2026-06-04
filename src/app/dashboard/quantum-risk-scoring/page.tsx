@@ -402,6 +402,7 @@ function useQuantumRiskScoring() {
 
     const tables = [
       'assets',
+      'asset_relationships',
       'runtime_crypto_events',
       'scanner_alerts',
       'scanner_evidence',
@@ -412,6 +413,9 @@ function useQuantumRiskScoring() {
       'crypto_exposures',
       'crypto_inventory',
       'security_events',
+      'migration_jobs',
+      'migration_events',
+      'compliance_evidence',
       'generated_keys',
       'certificates',
       'qrng_events',
@@ -750,59 +754,6 @@ function TopRiskyAssets({ rows }: { rows: TopAssetRow[] }) {
   );
 }
 
-function QuantumRiskMap({ regions }: { regions: HeatmapRegion[] }) {
-  const lookup = new Map(regions.map((region) => [region.region, region]));
-  const markers = [
-    { region: 'North America', x: 178, y: 96 },
-    { region: 'Europe', x: 405, y: 86 },
-    { region: 'Asia', x: 574, y: 122 },
-    { region: 'South America', x: 278, y: 220 },
-    { region: 'Oceania', x: 660, y: 236 },
-    { region: 'Africa', x: 430, y: 182 },
-  ];
-
-  return (
-    <div className="relative min-h-[226px] overflow-hidden rounded-md bg-[#06101C]">
-      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 760 280" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        <defs>
-          <radialGradient id="map-glow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#F97316" stopOpacity="0.95" />
-            <stop offset="45%" stopColor="#FBBF24" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#2478FF" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <rect width="760" height="280" fill="#06101C" />
-        <path d="M78 90 L132 64 L224 76 L256 114 L220 152 L146 142 L102 126 Z" fill="#2B4A62" opacity="0.75" />
-        <path d="M226 154 L286 170 L306 224 L278 266 L238 230 Z" fill="#27465F" opacity="0.72" />
-        <path d="M360 70 L430 56 L484 86 L448 126 L382 118 Z" fill="#2E536E" opacity="0.78" />
-        <path d="M424 124 L492 132 L526 196 L478 236 L420 206 Z" fill="#2A4A64" opacity="0.72" />
-        <path d="M508 82 L644 72 L708 128 L680 198 L572 178 L536 130 Z" fill="#2E536E" opacity="0.78" />
-        <path d="M632 214 L706 224 L724 258 L668 268 Z" fill="#2F5570" opacity="0.75" />
-        <path d="M60 210 C140 190 228 188 328 200 C450 216 560 204 718 188" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-        {markers.map((marker) => {
-          const value = lookup.get(marker.region)?.riskScore || 0;
-          const radius = 22 + Math.max(0, value) * 0.45;
-          return (
-            <g key={marker.region}>
-              <circle cx={marker.x} cy={marker.y} r={radius} fill="url(#map-glow)" opacity={value > 0 ? 0.9 : 0.16} />
-              <circle cx={marker.x} cy={marker.y} r="3" fill={riskTone(value)} opacity={value > 0 ? 1 : 0.3} />
-            </g>
-          );
-        })}
-      </svg>
-      <div className="absolute right-5 top-10 rounded-md border border-white/8 bg-black/32 p-3 text-[10px] text-white/70 backdrop-blur">
-        <div className="mb-2 font-bold text-white">Risk Level</div>
-        {['High', 'Medium', 'Low', 'Minimal'].map((label) => (
-          <div key={label} className="mb-1 flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: LEVEL_COLORS[label] || BLUE }} />
-            {label}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function RiskFactorTable({ rows }: { rows: RiskFactorRow[] }) {
   if (!rows.length) return <EmptyState label="No risk factors detected yet." />;
   return (
@@ -1025,7 +976,7 @@ export default function QuantumRiskScoringPage() {
         </motion.section>
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <Panel className="p-5 xl:col-span-6">
+          <Panel className="p-5 xl:col-span-12">
             <SectionTitle
               suffix={(
                 <div className="flex items-center gap-2">
@@ -1044,8 +995,10 @@ export default function QuantumRiskScoringPage() {
             </SectionTitle>
             <RiskTrendChart points={snapshot.timeline} />
           </Panel>
+        </section>
 
-          <Panel className="p-5 xl:col-span-3">
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <Panel className="p-5 xl:col-span-6">
             <SectionTitle>Risk Score Breakdown</SectionTitle>
             <DonutBreakdown rows={snapshot.breakdown} score={snapshot.metrics.quantumRiskScore} level={snapshot.metrics.riskScoreLevel} />
             <div className="mt-4 flex justify-end">
@@ -1055,7 +1008,7 @@ export default function QuantumRiskScoringPage() {
             </div>
           </Panel>
 
-          <Panel className="p-5 xl:col-span-3">
+          <Panel className="p-5 xl:col-span-6">
             <SectionTitle>Risk Distribution</SectionTitle>
             <DistributionBars rows={snapshot.distribution} />
             <div className="mt-5 flex justify-end">
@@ -1067,7 +1020,7 @@ export default function QuantumRiskScoringPage() {
         </section>
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <Panel className="p-5 xl:col-span-4">
+          <Panel className="p-5 xl:col-span-12">
             <SectionTitle>Top Risky Assets</SectionTitle>
             <TopRiskyAssets rows={snapshot.topAssets} />
             <div className="mt-4 flex justify-end">
@@ -1076,18 +1029,10 @@ export default function QuantumRiskScoringPage() {
               </a>
             </div>
           </Panel>
+        </section>
 
-          <Panel className="p-5 xl:col-span-4">
-            <SectionTitle suffix={<Info className="h-3.5 w-3.5 text-white/38" />}>Quantum Risk Heatmap</SectionTitle>
-            <QuantumRiskMap regions={snapshot.heatmap} />
-            <div className="mt-3 flex justify-end">
-              <a href="/dashboard/runtime-telemetry" className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 transition hover:text-gold">
-                View Full Map <ChevronRight className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          </Panel>
-
-          <Panel className="p-5 xl:col-span-4">
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <Panel className="p-5 xl:col-span-12">
             <SectionTitle>Risk Factor Analysis</SectionTitle>
             <RiskFactorTable rows={snapshot.riskFactors} />
             <div className="mt-4 flex justify-end">
@@ -1099,7 +1044,7 @@ export default function QuantumRiskScoringPage() {
         </section>
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <Panel className="p-5 xl:col-span-6">
+          <Panel className="p-5 xl:col-span-12">
             <SectionTitle>Risk Drivers</SectionTitle>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
               {snapshot.drivers.map((driver) => (
@@ -1115,7 +1060,7 @@ export default function QuantumRiskScoringPage() {
             </div>
           </Panel>
 
-          <Panel className="p-5 xl:col-span-3">
+          <Panel className="p-5 xl:col-span-6">
             <SectionTitle>Risk Score Benchmark</SectionTitle>
             <Benchmark rows={snapshot.benchmark} />
             <div className="mt-5 flex justify-end">
@@ -1125,7 +1070,7 @@ export default function QuantumRiskScoringPage() {
             </div>
           </Panel>
 
-          <Panel className="p-5 xl:col-span-3">
+          <Panel className="p-5 xl:col-span-6">
             <SectionTitle>Risk Mitigation Recommendations</SectionTitle>
             <Recommendations rows={snapshot.recommendations} />
             <div className="mt-4 flex justify-end">

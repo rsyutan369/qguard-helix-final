@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -272,7 +272,124 @@ function QuestionMatrix() {
   );
 }
 
-function DependencyMapView({ nodes }: { nodes: TrustNode[] }) {
+function nodeText(node: TrustNode | null | undefined) {
+  if (!node) return '';
+  return `${node.name} ${node.type} ${node.risk} ${node.details.join(' ')}`.toLowerCase();
+}
+
+function dependencyCategory(node: TrustNode | null | undefined) {
+  const text = nodeText(node);
+  if (/certificate|pki|issuer|ca|oid|trust chain|ecdsa|rsa|tls|mtls/.test(text)) return 'pki';
+  if (/runtime|downgrade|shadow|hndl|cipher|handshake/.test(text)) return 'runtime';
+  if (/vendor|supplier|third-party|third party|sdk|library|contract/.test(text)) return 'vendor';
+  if (/oauth|oidc|jwt|saml|federation|api/.test(text)) return 'identity-api';
+  if (/owner|ownership|unassigned/.test(text)) return 'ownership';
+  return 'dependency';
+}
+
+function remediationPlaybook(node: TrustNode | null | undefined) {
+  const category = dependencyCategory(node);
+  if (category === 'pki') {
+    return [
+      'Open PKI Visibility and identify the exact certificate, issuer, root/intermediate CA, algorithm, key size, expiry, and affected asset.',
+      'Replace weak or quantum-vulnerable RSA/ECDSA/legacy certificates with the approved migration profile, or stage a hybrid-compatible certificate path where required.',
+      'Update every relying trust store, middleware trust bundle, API gateway, mTLS client, identity provider, and certificate pinning rule that consumes this chain.',
+      'Run Trust Chain Analyzer to confirm the new chain validates end-to-end before releasing the migration gate.',
+    ];
+  }
+  if (category === 'runtime') {
+    return [
+      'Open Runtime Crypto Intel and inspect the live process, host, port, protocol, cipher, downgrade, shadow crypto, or HNDL evidence.',
+      'Patch the service configuration, TLS policy, crypto library, container image, or runtime package that is still emitting vulnerable telemetry.',
+      'Restart or redeploy the affected workload and keep the agent collector online so new runtime evidence is recorded.',
+      'Recheck this dependency only after fresh runtime telemetry shows the vulnerable algorithm or downgrade signal has stopped.',
+    ];
+  }
+  if (category === 'vendor') {
+    return [
+      'Open Vendor PQC Readiness Center and request supplier evidence for ML-KEM, ML-DSA, hybrid TLS, certificate-size handling, API validation, rollback, and support timeline.',
+      'Attach vendor evidence, update contract/PQC obligation status, and mark unsupported paths as blocked until a migration-safe option exists.',
+      'Map which internal assets depend on the vendor and assign a business owner for each affected integration.',
+      'Do not approve migration sequencing until vendor readiness is Ready or a documented compensating control is accepted.',
+    ];
+  }
+  if (category === 'identity-api') {
+    return [
+      'Open Trust Chain Analyzer and inspect the identity/API path for JWT, OAuth/OIDC, SAML, webhook, gateway, or API-signature failure points.',
+      'Update signing/verification policy, JWKS trust, API gateway validation, token issuer metadata, or partner signature acceptance rules.',
+      'Test larger certificates/signatures and hybrid handshake behavior in the compatibility lab before production rollout.',
+      'Record evidence that authentication and API flows still pass after the trust change.',
+    ];
+  }
+  if (category === 'ownership') {
+    return [
+      'Open Assets & CBOM and assign service owner, business owner, escalation contact, environment, and criticality to the affected dependency.',
+      'Map the dependency to the consuming application, certificate, vendor, and runtime endpoint.',
+      'Add missing relationship edges so blast radius can be calculated before certificate or trust-store replacement.',
+      'Re-run discovery after ownership updates so Trust-State Discovery can clear ownership review findings.',
+    ];
+  }
+  return [
+    'Create or correct asset relationship edges for every upstream issuer, certificate, vendor, API, identity provider, runtime service, and downstream workload.',
+    'Assign an owner to each node in the dependency path and confirm the business impact of replacing its trust object.',
+    'Use Trust Chain Analyzer to simulate the dependency path after the proposed migration change.',
+    'Only move to migration execution after the dependency score improves and no critical trust breaks remain for this path.',
+  ];
+}
+
+function verificationChecklist(node: TrustNode | null | undefined) {
+  const category = dependencyCategory(node);
+  const common = [
+    'A new scanner or collector event is recorded after the mitigation timestamp.',
+    'The selected dependency score improves above the blocker threshold and no longer appears as a critical dependency.',
+    'Trust-State Discovery gate findings drop from blocker to review/monitor or disappear after refresh.',
+  ];
+
+  if (category === 'pki') {
+    return [
+      'PKI Visibility shows the replacement certificate or chain with approved algorithm/profile, valid issuer, owner, and expiry.',
+      'Trust Chain Analyzer reports the certificate path as Low/Pass for the affected relying parties.',
+      ...common,
+    ];
+  }
+  if (category === 'runtime') {
+    return [
+      'Runtime Crypto Intel stops receiving weak cipher, downgrade, shadow crypto, or HNDL signals for the host/process.',
+      'Scanner evidence shows the affected endpoint or package as remediated or PQC/hybrid-ready.',
+      ...common,
+    ];
+  }
+  if (category === 'vendor') {
+    return [
+      'Vendor PQC Readiness Center contains current supplier evidence and no open PQC obligation gap for this dependency.',
+      'Contract/readiness status is no longer blocked or unknown for the affected support area.',
+      ...common,
+    ];
+  }
+  return [
+    'Ecosystem Dependency Map shows all required relationship edges and reduced blast radius.',
+    'Trust Chain Analyzer no longer shows a critical/high break for this path.',
+    ...common,
+  ];
+}
+
+function dependencyActions(node: TrustNode | null | undefined) {
+  const category = dependencyCategory(node);
+  const encoded = encodeURIComponent(node?.name || node?.id || '');
+  const actions = [
+    { label: 'Open Trust Chain Analyzer', href: `/dashboard/trust-chain-analyzer?dependency=${encoded}`, icon: Route },
+    { label: 'Open Trust-State Discovery', href: '/dashboard/trust-state-discovery', icon: ShieldCheck },
+  ];
+  if (category === 'pki') actions.unshift({ label: 'Open PKI Visibility', href: '/dashboard/pki-visibility', icon: KeyRound });
+  else if (category === 'runtime') actions.unshift({ label: 'Open Runtime Crypto Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity });
+  else if (category === 'vendor') actions.unshift({ label: 'Open Vendor Readiness', href: '/dashboard/vendor-pqc-readiness', icon: Building2 });
+  else if (category === 'ownership') actions.unshift({ label: 'Open Assets & CBOM', href: '/dashboard/assets', icon: Database });
+  else if (category === 'identity-api') actions.unshift({ label: 'Open Hybrid Lab', href: '/dashboard/hybrid-crypto-lab', icon: FlaskConical });
+  else actions.unshift({ label: 'Build Dependency Edges', href: '/dashboard/ecosystem-dependency-map', icon: Network });
+  return actions;
+}
+
+function DependencyMapView({ nodes, chains }: { nodes: TrustNode[]; chains: Chain[] }) {
   const [selectedId, setSelectedId] = useState(() => nodes.find((node) => node.id !== 'qguard')?.id || nodes[0]?.id || '');
 
   useEffect(() => {
@@ -287,9 +404,15 @@ function DependencyMapView({ nodes }: { nodes: TrustNode[] }) {
 
   const selected = nodes.find((node) => node.id === selectedId) || nodes[0];
   const vulnerableCount = nodes.filter((node) => node.id !== 'qguard' && node.score < 55).length;
+  const playbook = remediationPlaybook(selected);
+  const verification = verificationChecklist(selected);
+  const actions = dependencyActions(selected);
+  const relatedChain = selected
+    ? chains.find((chain) => `${chain.name} ${chain.path.join(' ')} ${chain.issue} ${chain.impact}`.toLowerCase().includes(selected.name.toLowerCase().split(':')[0]))
+    : null;
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_460px]">
       <div className={panelClass('p-4')}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/60">
@@ -301,7 +424,7 @@ function DependencyMapView({ nodes }: { nodes: TrustNode[] }) {
         </div>
         <TrustTopology nodes={nodes} selectedId={selectedId} onSelect={setSelectedId} />
       </div>
-      <div className={panelClass()}>
+      <div className={panelClass('max-h-[720px] overflow-y-auto')}>
         {selected ? (
           <>
             <div className="flex items-start justify-between gap-3">
@@ -323,6 +446,55 @@ function DependencyMapView({ nodes }: { nodes: TrustNode[] }) {
                   {detail}
                 </div>
               ))}
+            </div>
+            <div className="mt-6 rounded-xl border border-cyan-400/25 bg-cyan-400/10 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-200">Blocker Resolution</div>
+                  <div className="mt-1 text-sm font-black text-slate-950 dark:text-white">What users should do next</div>
+                </div>
+                <span className="rounded-full border border-white/10 bg-white/60 px-2 py-1 text-[9px] font-black uppercase text-slate-600 dark:bg-white/5 dark:text-white/50">
+                  {dependencyCategory(selected).replace(/-/g, ' ')}
+                </span>
+              </div>
+              <ol className="mt-4 space-y-3">
+                {playbook.map((step, index) => (
+                  <li key={step} className="grid grid-cols-[24px_1fr] gap-3 text-xs font-semibold leading-5 text-slate-700 dark:text-white/68">
+                    <span className="grid h-6 w-6 place-items-center rounded-md border border-cyan-400/30 bg-cyan-400/10 text-[10px] font-black text-cyan-700 dark:text-cyan-200">{index + 1}</span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-emerald-400/25 bg-emerald-400/10 p-4">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-200">How users know it worked</div>
+              <div className="mt-1 text-sm font-black text-slate-950 dark:text-white">Remediation evidence checklist</div>
+              <div className="mt-4 space-y-2">
+                {verification.map((item) => (
+                  <div key={item} className="flex gap-2 text-xs font-semibold leading-5 text-slate-700 dark:text-white/68">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {actions.map((action) => {
+                const ActionIcon = action.icon;
+                return (
+                  <Link key={`${action.href}-${action.label}`} to={action.href} className="inline-flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-slate-700 no-underline transition hover:border-cyan-400 hover:text-cyan-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-white/62 dark:hover:border-[#FFD36B]/40 dark:hover:text-[#FFD36B]">
+                    <span className="inline-flex items-center gap-2"><ActionIcon className="h-3.5 w-3.5" /> {action.label}</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-violet-400/25 bg-violet-400/10 p-4 text-xs font-semibold leading-5 text-slate-700 dark:text-white/64">
+              <Link2 className="mr-2 inline h-4 w-4 text-violet-400" />
+              Blockers are connected to Trust Chain Analyzer through the same live ecosystem telemetry. {relatedChain ? `Related chain: ${relatedChain.name}.` : 'Open Trust Chain Analyzer to simulate the selected dependency path and confirm whether the mitigation removes the break.'}
             </div>
           </>
         ) : (
@@ -384,7 +556,143 @@ function VendorReadinessView({ vendors, workflow }: { vendors: Vendor[]; workflo
   );
 }
 
+function chainVendorName(chain: Chain) {
+  return chain.path[0] || chain.name.replace(/\s+Trust Path$/i, '') || 'External Vendor';
+}
+
+function quantumBreakSignal(chain: Chain) {
+  const text = `${chain.name} ${chain.issue} ${chain.impact} ${chain.path.join(' ')}`.toLowerCase();
+  if (/ml[-_ ]?dsa|jwt|jose|signature|api/.test(text)) {
+    return {
+      label: 'PQC signature blocker',
+      detail: 'Vendor path can break token, API, or federation validation during ML-DSA migration.',
+      standard: 'NIST FIPS 204 review',
+    };
+  }
+  if (/cert|certificate|pki|x509|root|intermediate|m-?tls/.test(text)) {
+    return {
+      label: 'Quantum-vulnerable PKI',
+      detail: 'Certificate or trust-anchor evidence still depends on classical public-key assumptions.',
+      standard: 'FIPS 204 / FIPS 205 readiness',
+    };
+  }
+  if (/vpn|tls|hybrid|mtu|handshake|network|edge/.test(text)) {
+    return {
+      label: 'Hybrid TLS blocker',
+      detail: 'Vendor edge path needs ML-KEM or hybrid handshake validation before migration assurance.',
+      standard: 'NIST FIPS 203 validation',
+    };
+  }
+  if (/contract|obligation|evidence|incomplete|unknown/.test(text)) {
+    return {
+      label: 'PQC evidence gap',
+      detail: 'Vendor trust cannot be marked assured until PQC support evidence is synchronized.',
+      standard: 'Vendor attestation required',
+    };
+  }
+  return {
+    label: chain.risk === 'Low' ? 'Monitored trust path' : 'Quantum-vulnerable dependency',
+    detail: 'Supply-chain trust path requires PQC migration validation before production approval.',
+    standard: 'FIPS 203 / 204 / 205 review',
+  };
+}
+
+function SupplyChainTrustFlow({ chain }: { chain: Chain }) {
+  const vendor = chainVendorName(chain);
+  const breakSignal = quantumBreakSignal(chain);
+  const path = chain.path.length ? chain.path : [vendor, 'External Dependency', 'QGuard Trust Policy', 'Tenant Workload'];
+  const stages = path.map((label, index) => {
+    const last = index === path.length - 1;
+    const isVendor = index === 0;
+    const Icon = isVendor ? Building2 : last ? Server : index === 2 ? ShieldAlert : Link2;
+    return {
+      label,
+      Icon,
+      status: isVendor ? 'break-source' : last ? 'impacted' : 'propagates',
+      role: isVendor ? 'Vendor break source' : last ? 'Impacted workload' : index === 2 ? 'Trust control' : 'Dependency hop',
+      detail: isVendor ? breakSignal.label : last ? 'Receives broken trust assertion' : 'Propagates vendor trust state',
+    };
+  });
+
+  return (
+    <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/80 dark:border-white/10 dark:bg-black/20">
+      <div className="flex flex-col gap-3 border-b border-slate-200 bg-white/70 px-4 py-3 dark:border-white/8 dark:bg-white/[0.03] lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">
+            <Network className="h-4 w-4 text-cyan-500 dark:text-[#FFD36B]" />
+            Supply Chain Trust Break Workflow
+          </div>
+          <div className="mt-1 text-sm font-black text-slate-950 dark:text-white">{vendor}</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className={cx('rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-widest', riskTone(chain.risk))}>{chain.risk}</span>
+          <span className="rounded-full border border-red-400/35 bg-red-500/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-red-600 dark:text-red-300">{breakSignal.label}</span>
+        </div>
+      </div>
+
+      <div className="relative p-4">
+        <div className="pointer-events-none absolute inset-x-6 top-1/2 hidden h-px -translate-y-1/2 bg-gradient-to-r from-red-400/70 via-cyan-400/45 to-emerald-400/60 lg:block" />
+        <div className="relative grid gap-3 lg:grid-cols-4">
+          {stages.map(({ label, Icon, role, detail, status }, index) => {
+            const broken = status === 'break-source';
+            const impacted = status === 'impacted';
+            return (
+              <div
+                key={`${label}-${index}`}
+                className={cx(
+                  'relative rounded-xl border p-4 shadow-sm backdrop-blur-xl',
+                  broken
+                    ? 'border-red-400/45 bg-red-500/10 shadow-[0_0_24px_rgba(239,68,68,0.12)]'
+                    : impacted
+                      ? 'border-amber-300/35 bg-amber-300/10'
+                      : 'border-slate-200 bg-white/80 dark:border-white/8 dark:bg-white/[0.04]',
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className={cx(
+                    'grid h-10 w-10 place-items-center rounded-lg border',
+                    broken
+                      ? 'border-red-400/45 bg-red-500/10 text-red-500 dark:text-red-300'
+                      : impacted
+                        ? 'border-amber-300/35 bg-amber-300/10 text-amber-500 dark:text-amber-300'
+                        : 'border-cyan-400/30 bg-cyan-400/10 text-cyan-500 dark:border-[#FFD36B]/30 dark:bg-[#FFD36B]/10 dark:text-[#FFD36B]',
+                  )}>
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-white/70 px-2 py-1 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:border-white/10 dark:bg-white/5 dark:text-white/35">
+                    {index + 1}
+                  </span>
+                </div>
+                <div className="mt-4 text-[9px] font-black uppercase tracking-[0.18em] text-slate-500 dark:text-white/35">{role}</div>
+                <div className="mt-1 min-h-10 text-sm font-black text-slate-950 dark:text-white">{label}</div>
+                <div className="mt-2 text-[10px] font-semibold leading-4 text-slate-500 dark:text-white/45">{detail}</div>
+                {index < stages.length - 1 && <ArrowRight className="absolute -right-4 top-1/2 z-10 hidden h-5 w-5 -translate-y-1/2 text-cyan-500 dark:text-[#FFD36B] lg:block" />}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid gap-3 border-t border-slate-200 p-4 dark:border-white/8 lg:grid-cols-3">
+        {[
+          ['Break Source', vendor, 'Vendor evidence is the first failed trust hop.'],
+          ['Root Cause', chain.issue, breakSignal.detail],
+          ['Resolution Gate', breakSignal.standard, 'Require vendor attestation, PQC compatibility evidence, and migration retest before approval.'],
+        ].map(([label, value, detail]) => (
+          <div key={label} className="rounded-lg border border-slate-200 bg-white/70 p-3 dark:border-white/8 dark:bg-white/[0.03]">
+            <div className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">{label}</div>
+            <div className="mt-1 text-xs font-black text-slate-950 dark:text-white">{value}</div>
+            <div className="mt-1 text-[10px] font-semibold leading-4 text-slate-500 dark:text-white/42">{detail}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TrustChainView({ chains }: { chains: Chain[] }) {
+  const location = useLocation();
+  const dependencyQuery = useMemo(() => new URLSearchParams(location.search).get('dependency') || '', [location.search]);
   const [activeChain, setActiveChain] = useState(() => chains[0]?.name || '');
 
   useEffect(() => {
@@ -392,8 +700,16 @@ function TrustChainView({ chains }: { chains: Chain[] }) {
       setActiveChain('');
       return;
     }
+    if (dependencyQuery) {
+      const normalized = dependencyQuery.toLowerCase();
+      const matched = chains.find((item) => `${item.name} ${item.path.join(' ')} ${item.issue} ${item.impact}`.toLowerCase().includes(normalized));
+      if (matched) {
+        setActiveChain(matched.name);
+        return;
+      }
+    }
     if (!chains.some((item) => item.name === activeChain)) setActiveChain(chains[0].name);
-  }, [activeChain, chains]);
+  }, [activeChain, chains, dependencyQuery]);
 
   const chain = chains.find((item) => item.name === activeChain) || chains[0];
 
@@ -436,18 +752,7 @@ function TrustChainView({ chains }: { chains: Chain[] }) {
               </div>
               <span className={cx('rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest', riskTone(chain.risk))}>{chain.risk}</span>
             </div>
-            <div className="relative grid gap-4 lg:grid-cols-4">
-              {chain.path.map((step, index) => (
-                <div key={step} className="relative rounded-xl border border-slate-200 bg-white/70 p-4 dark:border-white/8 dark:bg-white/[0.03]">
-                  <div className="grid h-10 w-10 place-items-center rounded-lg border border-cyan-400/30 bg-cyan-400/10 text-cyan-500 dark:border-[#FFD36B]/30 dark:bg-[#FFD36B]/10 dark:text-[#FFD36B]">
-                    {index === 0 ? <Building2 className="h-5 w-5" /> : index === chain.path.length - 1 ? <Server className="h-5 w-5" /> : <Link2 className="h-5 w-5" />}
-                  </div>
-                  <div className="mt-4 text-sm font-black text-slate-950 dark:text-white">{step}</div>
-                  <div className="mt-2 text-[10px] font-semibold text-slate-500 dark:text-white/40">Trust hop {index + 1}</div>
-                  {index < chain.path.length - 1 && <ArrowRight className="absolute -right-5 top-1/2 z-10 hidden h-5 w-5 -translate-y-1/2 text-cyan-500 dark:text-[#FFD36B] lg:block" />}
-                </div>
-              ))}
-            </div>
+            <SupplyChainTrustFlow chain={chain} />
             <div className="mt-6 rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm font-bold text-red-300">
               <AlertTriangle className="mr-2 inline h-4 w-4" />
               {chain.issue}
@@ -589,7 +894,7 @@ export default function EcosystemSupplyChainModule({ mode }: { mode: EcosystemMo
           <EmptyState label="Synchronizing ecosystem, scanner, CBOM, certificate, runtime, and vendor telemetry." />
         )}
 
-        {mode === 'dependency-map' && <DependencyMapView nodes={snapshot.trustNodes} />}
+        {mode === 'dependency-map' && <DependencyMapView nodes={snapshot.trustNodes} chains={snapshot.chains} />}
         {mode === 'vendor-readiness' && <VendorReadinessView vendors={snapshot.vendors} workflow={snapshot.workflow} />}
         {mode === 'trust-chain' && <TrustChainView chains={snapshot.chains} />}
         {mode === 'hybrid-lab' && <HybridLabView labTests={snapshot.labTests} />}

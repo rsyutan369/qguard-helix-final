@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   Bell,
   CalendarClock,
-  CheckCircle2,
   ChevronDown,
   CircleHelp,
   Database,
@@ -593,20 +592,7 @@ function FocusedTabDashboard({
       </div>
 
       {activeTab === 'Inventory' && (
-        <div className="grid gap-3 xl:grid-cols-12">
-          <div className="grid gap-3 md:grid-cols-2 xl:col-span-5">
-            <DashboardMetric icon={Database} label="Assets Indexed" value={totalAssets} detail="Unique authorized assets discovered" tone="blue" />
-            <DashboardMetric icon={Layers} label="CBOM Rows" value={entries.length} detail={`${numberFmt(totalComponents)} total components tracked`} tone="cyan" />
-            <DashboardMetric icon={Activity} label="Observed Instances" value={entries.reduce((sum, entry) => sum + Number(entry.instances || 1), 0)} detail="Runtime or scan-observed crypto usage" tone="amber" />
-            <DashboardMetric icon={ShieldCheck} label="Quantum Safe" value={pqcReady} detail={`${percent(pqcReady, totalComponents)}% inventory readiness`} tone="green" />
-            <div className="md:col-span-2">
-              <DashboardAction to="/dashboard/scanner" icon={Target} label="Start Authorized Inventory Scan" detail="Discover assets, certificates, keys, and cryptographic libraries" />
-            </div>
-          </div>
-          <div className="xl:col-span-7">
-            <EntryEvidenceList entries={entries} assets={assets} emptyLabel="No tenant inventory has been synchronized yet. Start an authorized scan to populate assets and components." />
-          </div>
-        </div>
+        <EntryEvidenceList entries={entries} assets={assets} emptyLabel="No tenant inventory has been synchronized yet. Start an authorized scan to populate assets and components." />
       )}
 
       {activeTab === 'PQC Readiness' && (
@@ -856,22 +842,6 @@ export default function CbomExplorer() {
   const safePage = Math.min(page, maxPage);
   const pagedEntries = filteredEntries.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const recentLogs = useMemo(() => {
-    const live = telemetry.slice(0, 4).map((event: any) => ({
-      id: String(event.id || `${event.timestamp}-${event.message}`),
-      title: String(event.message || event.event || event.type || 'Scanner telemetry event'),
-      time: event.timestamp || event.created_at || event.startedAt,
-      tone: String(event.severity || event.status || 'info'),
-    }));
-    if (live.length) return live;
-    return history.slice(0, 4).map((scan: any) => ({
-      id: String(scan.scanId || scan.id),
-      title: `${scan.status || 'scan'} - ${scan.target || 'authorized target'}`,
-      time: scan.completedAt || scan.startedAt,
-      tone: scan.status || 'info',
-    }));
-  }, [history, telemetry]);
-
   const exportSnapshot = () => {
     const payload = {
       generatedAt: data.generatedAt,
@@ -899,6 +869,33 @@ export default function CbomExplorer() {
     { label: 'Not PQC Ready', value: notPqcReady, detail: `${numberFmt(vulnerableComponents)} vulnerable components`, icon: ShieldAlert, tone: 'orange' },
     { label: 'At Risk', value: atRisk, detail: `${numberFmt(findings.length)} correlated findings`, icon: AlertTriangle, tone: 'red' },
   ];
+
+  const focusedTabDashboard = activeTab === 'Overview' ? null : (
+    <FocusedTabDashboard
+      activeTab={activeTab}
+      entries={entries}
+      assets={assets}
+      findings={findings}
+      history={history}
+      telemetry={telemetry}
+      certificateEntries={certificateEntries}
+      keyEntries={keyEntries}
+      vulnerabilityEntries={vulnerabilityEntries}
+      readinessBacklog={readinessBacklog}
+      trendPoints={trendPoints}
+      complianceRows={complianceRows}
+      totalAssets={totalAssets}
+      totalComponents={totalComponents}
+      pqcReady={pqcReady}
+      inProgress={inProgress}
+      notPqcReady={notPqcReady}
+      atRisk={atRisk}
+      readinessScore={readinessScore}
+      loading={loading}
+      exportSnapshot={exportSnapshot}
+      refresh={refresh}
+    />
+  );
 
   return (
     <div
@@ -1045,7 +1042,7 @@ export default function CbomExplorer() {
 
       {activeTab === 'Overview' ? (
       <section className="grid gap-3 xl:grid-cols-12">
-        <div className={`${panelClass} p-4 xl:col-span-3`}>
+        <div className={`${panelClass} p-4 xl:col-span-6`}>
           <div className="mb-3 flex items-center gap-2 text-sm font-bold">
             PQC Readiness Score <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
           </div>
@@ -1073,7 +1070,7 @@ export default function CbomExplorer() {
           </Link>
         </div>
 
-        <div className={`${panelClass} p-4 xl:col-span-3`}>
+        <div className={`${panelClass} p-4 xl:col-span-6`}>
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm font-bold">PQC Readiness Trend</div>
             <span className="rounded-md border border-[var(--qg-card-border)] px-2 py-1 text-[10px] text-[var(--qg-text-muted)]">Last {Math.max(1, trendPoints.length)} scans</span>
@@ -1087,7 +1084,7 @@ export default function CbomExplorer() {
           </div>
         </div>
 
-        <div className={`${panelClass} p-4 xl:col-span-4`}>
+        <div className={`${panelClass} p-4 xl:col-span-8`}>
           <div className="mb-3 flex items-center gap-2 text-sm font-bold">
             Algorithm Distribution <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
           </div>
@@ -1124,7 +1121,7 @@ export default function CbomExplorer() {
           )}
         </div>
 
-        <div className={`${panelClass} p-4 xl:col-span-2`}>
+        <div className={`${panelClass} p-4 xl:col-span-4`}>
           <div className="mb-3 flex items-center gap-2 text-sm font-bold">
             Top Risky Algorithms <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
           </div>
@@ -1145,31 +1142,8 @@ export default function CbomExplorer() {
           )}
         </div>
       </section>
-      ) : (
-        <FocusedTabDashboard
-          activeTab={activeTab}
-          entries={entries}
-          assets={assets}
-          findings={findings}
-          history={history}
-          telemetry={telemetry}
-          certificateEntries={certificateEntries}
-          keyEntries={keyEntries}
-          vulnerabilityEntries={vulnerabilityEntries}
-          readinessBacklog={readinessBacklog}
-          trendPoints={trendPoints}
-          complianceRows={complianceRows}
-          totalAssets={totalAssets}
-          totalComponents={totalComponents}
-          pqcReady={pqcReady}
-          inProgress={inProgress}
-          notPqcReady={notPqcReady}
-          atRisk={atRisk}
-          readinessScore={readinessScore}
-          loading={loading}
-          exportSnapshot={exportSnapshot}
-          refresh={refresh}
-        />
+      ) : activeTab === 'Inventory' ? null : (
+        focusedTabDashboard
       )}
 
       <section className="grid gap-3 xl:grid-cols-12">
@@ -1331,52 +1305,10 @@ export default function CbomExplorer() {
             <button type="button" onClick={() => setActiveTab('Vulnerabilities')} className="mt-3 inline-flex w-full items-center justify-end gap-1 text-xs font-bold text-[var(--qg-amber)]">View All Actions <ExternalLink className="h-3 w-3" /></button>
           </div>
 
-          <div className={`${panelClass} p-4`}>
-            <div className="mb-3 flex items-center gap-2 text-sm font-bold">Policy & Compliance</div>
-            <div className="space-y-2">
-              {complianceRows.map((row) => (
-                <div key={row.label} className="flex items-center justify-between border-b border-[var(--qg-card-border)] pb-2 text-xs">
-                  <span>{row.label}</span>
-                  <span className={`inline-flex items-center gap-1 font-bold ${row.status === 'Compliant' ? 'text-emerald-300' : row.status === 'Partial' ? 'text-amber-300' : 'text-[var(--qg-text-muted)]'}`}>
-                    {row.status === 'Compliant' ? <CheckCircle2 className="h-3 w-3" /> : <ListFilter className="h-3 w-3" />}
-                    {row.status}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <Link to="/dashboard/compliance" className="mt-3 inline-flex w-full items-center justify-end gap-1 text-xs font-bold text-[var(--qg-amber)]">View Compliance Dashboard <ExternalLink className="h-3 w-3" /></Link>
-          </div>
-
-          <div className={`${panelClass} p-4`}>
-            <div className="mb-3 flex items-center gap-2 text-sm font-bold"><LineChart className="h-4 w-4 text-[var(--qg-amber)]" /> Live Activity</div>
-            {recentLogs.length === 0 ? (
-              <EmptyState label="No live CBOM activity yet." />
-            ) : (
-              <div className="space-y-2">
-                {recentLogs.map((log) => (
-                  <div key={log.id} className={`${subtlePanelClass} p-3`}>
-                    <div className="text-xs font-bold">{log.title}</div>
-                    <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--qg-text-muted)]">
-                      <span>{shortDate(log.time)}</span>
-                      <span>{log.tone}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className={`${panelClass} p-4`}>
-            <div className="mb-2 flex items-center gap-2 text-sm font-bold"><Gauge className="h-4 w-4 text-[var(--qg-amber)]" /> Sync Integrity</div>
-            <div className="space-y-2 text-xs text-[var(--qg-text-muted)]">
-              <div className="flex justify-between"><span>Data source</span><span className="font-bold text-[var(--qg-dashboard-text)]">{data.mode}</span></div>
-              <div className="flex justify-between"><span>CBOM rows</span><span className="font-bold text-[var(--qg-dashboard-text)]">{numberFmt(entries.length)}</span></div>
-              <div className="flex justify-between"><span>Scan findings</span><span className="font-bold text-[var(--qg-dashboard-text)]">{numberFmt(findings.length)}</span></div>
-              <div className="flex justify-between"><span>Runtime events</span><span className="font-bold text-[var(--qg-dashboard-text)]">{numberFmt(telemetry.length)}</span></div>
-            </div>
-          </div>
         </aside>
       </section>
+
+      {activeTab === 'Inventory' && focusedTabDashboard}
     </div>
   );
 }

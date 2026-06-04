@@ -24,6 +24,7 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { TLS_DASHBOARD_TABLES } from '../_lib/telemetry-sync';
 
 type LoadState = 'loading' | 'success' | 'error';
 
@@ -117,6 +118,7 @@ type TlsTelemetrySnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
     certificates: number;
     securityEvents: number;
@@ -124,8 +126,19 @@ type TlsTelemetrySnapshot = {
     scannerAgents: number;
     connectors: number;
     agentHeartbeats: number;
+    activeAssets: number;
+    inactiveAssets: number;
+    onlineAgents: number;
+    offlineAgents: number;
+    freshHeartbeats: number;
+    runningScans: number;
+    completedScans: number;
+    failedScans: number;
     eventPipelineStatus: string;
     latestRuntimeEventAt: string | null;
+    latestScanAt: string | null;
+    latestAgentHeartbeatAt: string | null;
+    latestDiscoveryAt: string | null;
   };
 };
 
@@ -163,6 +176,7 @@ const EMPTY_SNAPSHOT: TlsTelemetrySnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
     certificates: 0,
     securityEvents: 0,
@@ -170,8 +184,19 @@ const EMPTY_SNAPSHOT: TlsTelemetrySnapshot = {
     scannerAgents: 0,
     connectors: 0,
     agentHeartbeats: 0,
+    activeAssets: 0,
+    inactiveAssets: 0,
+    onlineAgents: 0,
+    offlineAgents: 0,
+    freshHeartbeats: 0,
+    runningScans: 0,
+    completedScans: 0,
+    failedScans: 0,
     eventPipelineStatus: 'no_agents',
     latestRuntimeEventAt: null,
+    latestScanAt: null,
+    latestAgentHeartbeatAt: null,
+    latestDiscoveryAt: null,
   },
 };
 
@@ -477,20 +502,7 @@ function useTlsTelemetry() {
   useEffect(() => {
     if (!user) return;
 
-    const tables = [
-      'assets',
-      'runtime_crypto_events',
-      'scanner_evidence',
-      'scanner_alerts',
-      'pqc_scan_results',
-      'certificates',
-      'security_events',
-      'scanner_agents',
-      'connector_accounts',
-      'agent_heartbeats',
-    ];
-
-    const channels = tables.map((table) => supabase
+    const channels = TLS_DASHBOARD_TABLES.map((table) => supabase
       .channel(`tls-telemetry-${table}`)
       .on(
         'postgres_changes',
@@ -1021,7 +1033,23 @@ export default function TlsTelemetryPage() {
         </section>
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <Panel className="p-5 xl:col-span-3">
+          <Panel className="p-5 xl:col-span-6">
+            <SectionTitle suffix={<a href="/dashboard/runtime-crypto-intel" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
+              SNI / Top Domains
+            </SectionTitle>
+            <Domains rows={snapshot.topDomains} />
+          </Panel>
+
+          <Panel className="p-5 xl:col-span-6">
+            <SectionTitle suffix={<a href="/dashboard/telemetry-correlation" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
+              Recent Alerts
+            </SectionTitle>
+            <Alerts rows={snapshot.recentAlerts} />
+          </Panel>
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <Panel className="p-5 xl:col-span-6">
             <SectionTitle>Connections By Type</SectionTitle>
             <DonutChart
               rows={snapshot.connectionTypes}
@@ -1035,23 +1063,9 @@ export default function TlsTelemetryPage() {
             />
           </Panel>
 
-          <Panel className="p-5 xl:col-span-3">
+          <Panel className="p-5 xl:col-span-6">
             <SectionTitle>Quantum Risk (PQC Readiness)</SectionTitle>
             <QuantumRiskPanel snapshot={snapshot} />
-          </Panel>
-
-          <Panel className="p-5 xl:col-span-3">
-            <SectionTitle suffix={<a href="/dashboard/runtime-crypto-intel" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
-              SNI / Top Domains
-            </SectionTitle>
-            <Domains rows={snapshot.topDomains} />
-          </Panel>
-
-          <Panel className="p-5 xl:col-span-3">
-            <SectionTitle suffix={<a href="/dashboard/telemetry-correlation" className="text-xs font-bold text-blue-300 transition hover:text-gold">View all</a>}>
-              Recent Alerts
-            </SectionTitle>
-            <Alerts rows={snapshot.recentAlerts} />
           </Panel>
         </section>
 
@@ -1086,7 +1100,13 @@ export default function TlsTelemetryPage() {
             <span className={cn('h-2 w-2 rounded-full', sseConnected ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-gold animate-pulse')} />
             {sseConnected ? 'TLS SSE, metrics stream, scanner stream, and live table subscriptions connected' : 'Connecting TLS telemetry streams'}
           </span>
-          <span>Pipeline: {snapshot.telemetry.eventPipelineStatus.replace(/_/g, ' ')} - Latest activity: {longDate(snapshot.latestActivityAt || snapshot.telemetry.latestRuntimeEventAt)}</span>
+          <span>
+            Pipeline: {snapshot.telemetry.eventPipelineStatus.replace(/_/g, ' ')}
+            {' - '}Latest activity: {longDate(snapshot.latestActivityAt || snapshot.telemetry.latestRuntimeEventAt || snapshot.telemetry.latestScanAt)}
+            {' - '}Scans: {compactFmt(snapshot.telemetry.scanSessions)}
+            {' - '}Active assets: {compactFmt(snapshot.telemetry.activeAssets)}
+            {' - '}Online agents: {compactFmt(snapshot.telemetry.onlineAgents)}
+          </span>
         </div>
       </div>
     </div>

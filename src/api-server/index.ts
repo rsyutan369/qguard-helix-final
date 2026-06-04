@@ -6,10 +6,12 @@ import quantumRiskScoringRoutes from './quantum-risk-scoring'
 import tlsTelemetryRoutes from './tls-telemetry'
 import pkiVisibilityRoutes from './pki-visibility'
 import ecosystemSupplyChainRoutes from './ecosystem-supply-chain'
+import trustStateDiscoveryRoutes from './trust-state-discovery'
 import { protocolAnalyticsRoutes, encryptionMonitoringRoutes } from './crypto-operations-dashboard'
 import { continuousTrustRoutes, identityTrustRoutes, deviceTrustRoutes, trustAnalyticsRoutes, zeroTrustRoutes } from './trust-center-dashboard'
 import { quantumGovernanceRoutes, cryptoPoliciesRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
 import { runtimeTelemetryRoutes, certificateTelemetryRoutes, keyAnalyticsRoutes, apiEncryptionRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
+import qkmsRoutes from './qkms-dashboard'
 import profileRoutes from './profile'
 import billingRoutes from './billing'
 import scannerRoutes from './scanner'
@@ -17,7 +19,7 @@ import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import serviceRecordRoutes from './service-records'
 import migrationRoutes from './migration'
 import sandboxRoutes, { startSandboxScheduler } from './sandbox'
-import { getServerUser, getServiceClient } from '@/lib/supabase-server'
+import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
 
 const shareIpAttempts = new Map<string, { count: number; windowStart: number }>()
@@ -157,7 +159,7 @@ export function createApiServer() {
   const app = express()
 
   app.use(express.json({
-    limit: '8mb',
+    limit: '80mb',
     verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
       req.rawBody = Buffer.from(buf)
     },
@@ -215,6 +217,133 @@ export function createApiServer() {
         pqcAlgorithms: ['ML-KEM (Kyber)', 'ML-DSA (Dilithium)', 'SPHINCS+', 'HYBRID'],
       },
     })
+  })
+
+  app.post('/api/v1/vault/share', async (req, res) => {
+    setNoStoreShareHeaders(res)
+
+    const token = getToken(req)
+    const user = token ? await getServerUser(token) : null
+    if (!user) {
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
+      return
+    }
+
+    const db = getServiceClient()
+    if (!db) {
+      res.status(503).json({ error: { code: 'CONFIG_ERROR', message: 'Share service is unavailable' } })
+      return
+    }
+
+    const body = req.body || {}
+    const metadata = readShareMetadata(body.encryptionMetadata)
+    const fileId = typeof body.fileId === 'string' ? body.fileId : ''
+    const originalFilename = typeof body.originalFilename === 'string' ? body.originalFilename.trim() : ''
+    const originalSize = Number(body.originalSize)
+    const mimeType = typeof body.mimeType === 'string' && body.mimeType.trim()
+      ? body.mimeType.trim()
+      : 'application/octet-stream'
+    const encryptedPayload = typeof body.encryptedPayload === 'string'
+      ? body.encryptedPayload
+      : metadataText(metadata, 'encryptedPayload')
+    const iv = typeof body.iv === 'string' ? body.iv : metadataText(metadata, 'iv')
+    const integrityHash = typeof body.integrityHash === 'string'
+      ? body.integrityHash
+      : metadataText(metadata, 'integrityHash')
+
+    if (!fileId || !originalFilename || !Number.isFinite(originalSize) || originalSize <= 0 || !encryptedPayload || !iv || !integrityHash) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Missing required share-link fields' } })
+      return
+    }
+
+    if (encryptedPayload.length > 70_000_000) {
+      res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'Encrypted payload exceeds the 50 MB secure-share limit' } })
+      return
+    }
+
+    if (!isBase64Payload(encryptedPayload)) {
+      res.status(400).json({ error: { code: 'INVALID_PAYLOAD', message: 'Encrypted payload must be base64 encoded' } })
+      return
+    }
+
+    const { data: file, error: fileError } = await db
+      .from('vault_files')
+      .select('id, user_id')
+      .eq('id', fileId)
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (fileError) {
+      console.error('[share/create] File ownership check failed:', fileError)
+      res.status(500).json({ error: { code: 'FILE_CHECK_ERROR', message: 'Could not verify file ownership' } })
+      return
+    }
+
+    if (!file) {
+      res.status(404).json({ error: { code: 'FILE_NOT_FOUND', message: 'Vault file not found for this user' } })
+      return
+    }
+
+    const maxDownloads = Number.isFinite(Number(body.maxDownloads)) && Number(body.maxDownloads) > 0
+      ? Math.floor(Number(body.maxDownloads))
+      : null
+    const expiresAt = typeof body.expiresAt === 'string' && body.expiresAt ? body.expiresAt : null
+    const isPasswordProtected = Boolean(body.isPasswordProtected)
+    const passwordHash = typeof body.passwordHash === 'string' && body.passwordHash ? body.passwordHash : null
+    const passwordHint = typeof body.passwordHint === 'string' && body.passwordHint ? body.passwordHint : undefined
+    const permissions = Array.isArray(body.permissions) && body.permissions.length
+      ? body.permissions.filter((permission: unknown) => typeof permission === 'string')
+      : ['view', 'download']
+    const encryptionMetadata: Record<string, unknown> = {
+      ...metadata,
+      encryptedPayload,
+      iv,
+      integrityHash,
+    }
+
+    const insertPayload: Record<string, unknown> = {
+      user_id: user.id,
+      file_id: fileId,
+      original_filename: originalFilename,
+      original_size: originalSize,
+      mime_type: mimeType,
+      encryption_metadata: encryptionMetadata,
+      is_password_protected: isPasswordProtected,
+      password_hash: isPasswordProtected ? passwordHash : null,
+      max_downloads: maxDownloads,
+      expires_at: expiresAt,
+      is_one_time: Boolean(body.isOneTime) || maxDownloads === 1,
+      permissions,
+    }
+
+    if (passwordHint) {
+      insertPayload.password_hint = passwordHint
+    }
+
+    const { data: link, error: insertError } = await db
+      .from('vault_shared_links')
+      .insert(insertPayload)
+      .select('*')
+      .single()
+
+    if (insertError || !link) {
+      console.error('[share/create] Insert failed:', insertError)
+      res.status(500).json({ error: { code: 'DB_ERROR', message: 'Failed to create shared link' } })
+      return
+    }
+
+    await db.from('vault_audit_logs').insert({
+      user_id: user.id,
+      event_type: 'share_created',
+      severity: 'info',
+      result: 'success',
+      resource_type: 'share_link',
+      resource_id: link.id,
+      description: `Created share link for: ${originalFilename}`,
+      metadata: { fileId, originalSize, passwordProtected: isPasswordProtected },
+    })
+
+    res.status(201).json({ data: link })
   })
 
   app.post('/api/v1/vault/share/public', async (req, res) => {
@@ -437,6 +566,7 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/tls-orchestrator', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/pki-visibility', pkiVisibilityRoutes)
   app.use('/api/v1/dashboard/ecosystem-supply-chain', ecosystemSupplyChainRoutes)
+  app.use('/api/v1/dashboard/trust-state-discovery', trustStateDiscoveryRoutes)
   app.use('/api/v1/dashboard/protocol-analytics', protocolAnalyticsRoutes)
   app.use('/api/v1/dashboard/encryption-monitoring', encryptionMonitoringRoutes)
   app.use('/api/v1/dashboard/continuous-trust', continuousTrustRoutes)
@@ -453,6 +583,8 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/key-analytics', keyAnalyticsRoutes)
   app.use('/api/v1/dashboard/api-encryption', apiEncryptionRoutes)
   app.use('/api/v1/dashboard/multi-cloud-telemetry', multiCloudTelemetryRoutes)
+  app.use('/api/v1/dashboard/qkms', qkmsRoutes)
+  app.use('/api/qkms', qkmsRoutes)
   app.use('/api/v1/dashboard', dashboardRoutes)
   app.use('/api/v1/migration', migrationRoutes)
   app.use('/api/v1/sandbox', sandboxRoutes)

@@ -25,7 +25,8 @@ type BehavioralOperation = {
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = getToken(req)
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : null
+  const token = getToken(req) || queryToken
   if (!token) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   }
@@ -41,6 +42,20 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 router.use(requireAuth)
+
+function sseHeaders(res: Response) {
+  res.status(200)
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+}
+
+function writeSse(res: Response, event: string, data: unknown) {
+  if (res.writableEnded) return
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+}
 
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -161,6 +176,36 @@ async function safeRows(client: any, table: string, build: (query: any) => any) 
     return []
   }
 }
+
+router.get('/stream', async (req: Request, res: Response) => {
+  sseHeaders(res)
+  writeSse(res, 'behavioral-analytics-connected', {
+    timestamp: new Date().toISOString(),
+    source: 'dashboard.behavioral-analytics',
+  })
+
+  let closed = false
+  const emitUpdate = () => {
+    if (closed) return
+    writeSse(res, 'behavioral-analytics-update', {
+      timestamp: new Date().toISOString(),
+      source: 'dashboard.behavioral-analytics',
+      reason: 'tenant-behavioral-sync',
+    })
+  }
+
+  emitUpdate()
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(': behavioral-analytics heartbeat\n\n')
+  }, 25000)
+  const syncPoll = setInterval(emitUpdate, 8000)
+
+  req.on('close', () => {
+    closed = true
+    clearInterval(heartbeat)
+    clearInterval(syncPoll)
+  })
+})
 
 router.get('/', async (req: Request, res: Response) => {
   try {

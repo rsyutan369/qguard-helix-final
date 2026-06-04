@@ -66,7 +66,7 @@ type PolicyControl = {
 };
 
 const GLASS_PANEL_CLASSES =
-  'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+  'group relative overflow-hidden rounded-xl border border-slate-200/80 bg-white/72 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-all duration-500 hover:-translate-y-1 hover:border-cyan-300/80 hover:bg-white/88 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_22px_55px_rgba(15,23,42,0.12),0_0_42px_rgba(0,197,235,0.18)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-cyan-300/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(0,197,235,0.55)] group-hover:before:via-cyan-300 after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-cyan-300/12 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-cyan-300/20 group-hover:after:blur-[36px] dark:border-[#FFD36B]/20 dark:bg-[#0f1428]/45 dark:text-white dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] dark:hover:border-[#FFD36B]/70 dark:hover:bg-[#0f1428]/65 dark:hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] dark:before:via-[#FFF4C0]/70 dark:group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] dark:group-hover:before:via-[#FFF4C0] dark:after:bg-[#FFD36B]/10 dark:group-hover:after:bg-[#FFD36B]/25';
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(Math.max(0, Number(value) || 0));
@@ -79,6 +79,18 @@ function formatPercent(value: number) {
 function percentOf(value: number, total: number) {
   if (!total) return 0;
   return Math.max(0, Math.min(100, Math.round((value / total) * 100)));
+}
+
+function normalizeDisplayText(value: unknown, fallback: string) {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+
+  return text
+    .replace(/\u00e2\u20ac\u201d|\u00e2\u20ac\u201c|[\u2013\u2014]/g, ' - ')
+    .replace(/\u00e2\u20ac\u2122/g, "'")
+    .replace(/\u00e2\u20ac\u0153|\u00e2\u20ac\u009d/g, '"')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function normalizeSeverity(finding: ScannerFinding): Finding['severity'] {
@@ -112,11 +124,11 @@ const FINDING_FILTERS: FindingFilter[] = ['All', 'Non-Compliant', 'Undocumented'
 function toneClasses(tone: Metric['tone']) {
   switch (tone) {
     case 'red':
-      return 'border-red-400/30 bg-red-500/10 text-red-300 shadow-[0_0_24px_rgba(248,113,113,0.14)]';
+      return 'border-red-500/30 bg-red-500/10 text-red-600 shadow-[0_0_24px_rgba(248,113,113,0.14)] dark:border-red-400/30 dark:text-red-300';
     case 'orange':
-      return 'border-orange-400/30 bg-orange-500/10 text-orange-300 shadow-[0_0_24px_rgba(251,146,60,0.14)]';
+      return 'border-orange-500/30 bg-orange-500/10 text-orange-600 shadow-[0_0_24px_rgba(251,146,60,0.14)] dark:border-orange-400/30 dark:text-orange-300';
     case 'green':
-      return 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300 shadow-[0_0_24px_rgba(52,211,153,0.14)]';
+      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 shadow-[0_0_24px_rgba(52,211,153,0.14)] dark:border-emerald-400/30 dark:text-emerald-300';
     default:
       return 'border-gold/30 bg-gold/10 text-gold shadow-[0_0_24px_rgba(255,211,107,0.16)]';
   }
@@ -125,39 +137,39 @@ function toneClasses(tone: Metric['tone']) {
 function severityClasses(severity: Finding['severity']) {
   switch (severity) {
     case 'Critical':
-      return 'border-red-500/30 bg-red-500/10 text-red-300';
+      return 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300';
     case 'High':
-      return 'border-orange-500/30 bg-orange-500/10 text-orange-300';
+      return 'border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-300';
     default:
-      return 'border-amber-400/30 bg-amber-400/10 text-amber-300';
+      return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:border-amber-400/30 dark:text-amber-300';
   }
 }
 
 function policyClasses(policy: Finding['policy']) {
   switch (policy) {
     case 'Non-Compliant':
-      return 'text-red-300';
+      return 'text-red-600 dark:text-red-300';
     case 'Undocumented':
       return 'text-gold';
     default:
-      return 'text-amber-300';
+      return 'text-amber-700 dark:text-amber-300';
   }
 }
 
 function controlStatusClasses(status: PolicyControl['status']) {
   switch (status) {
     case 'Gap':
-      return 'border-red-500/30 bg-red-500/10 text-red-300';
+      return 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300';
     case 'Review':
-      return 'border-amber-400/30 bg-amber-400/10 text-amber-300';
+      return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:border-amber-400/30 dark:text-amber-300';
     default:
-      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300';
   }
 }
 
 function SectionTitle({ icon: Icon, children }: { icon: LucideIcon; children: string }) {
   return (
-    <h2 className="relative z-10 flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-white/60">
+    <h2 className="relative z-10 flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/60">
       <Icon className="h-4 w-4 text-gold" />
       {children}
     </h2>
@@ -212,25 +224,25 @@ export default function ShadowCrypto() {
     });
 
     const fromFindings = priorityFindings.map((finding) => ({
-      asset: String(finding.location || finding.target || finding.category || 'Unknown asset'),
+      asset: normalizeDisplayText(finding.location || finding.target || finding.category, 'Unknown asset'),
       owner: 'Tenant scope',
-      source: String(finding.source || 'scanner telemetry'),
-      implementation: String(finding.algorithm || finding.category || 'Unknown cryptographic implementation'),
-      evidence: String(finding.evidence || 'Stored scanner evidence'),
+      source: normalizeDisplayText(finding.source, 'scanner telemetry'),
+      implementation: normalizeDisplayText(finding.algorithm || finding.category, 'Unknown cryptographic implementation'),
+      evidence: normalizeDisplayText(finding.evidence, 'Stored scanner evidence'),
       severity: normalizeSeverity(finding),
       policy: normalizePolicy(finding),
-      action: String(finding.recommendation || 'Create remediation task'),
+      action: normalizeDisplayText(finding.recommendation, 'Create remediation task'),
     }));
 
     const fromCbom = vulnerableEntries.map((entry: any) => ({
-      asset: String(entry.sourceAsset || entry.component || 'Unknown asset'),
+      asset: normalizeDisplayText(entry.sourceAsset || entry.component, 'Unknown asset'),
       owner: 'Tenant scope',
-      source: String(entry.detectionMethod || 'CBOM inventory'),
-      implementation: String(entry.algorithm || entry.component || 'Unknown cryptographic implementation'),
-      evidence: String(entry.evidence || 'Stored CBOM evidence'),
+      source: normalizeDisplayText(entry.detectionMethod, 'CBOM inventory'),
+      implementation: normalizeDisplayText(entry.algorithm || entry.component, 'Unknown cryptographic implementation'),
+      evidence: normalizeDisplayText(entry.evidence, 'Stored CBOM evidence'),
       severity: entry.riskSeverity === 'critical' ? 'Critical' : entry.riskSeverity === 'high' ? 'High' : 'Medium',
       policy: entry.status === 'Unknown / requires manual review' ? 'Undocumented' : 'Non-Compliant',
-      action: String(entry.recommendation || entry.pqcReplacement || 'Schedule PQC migration'),
+      action: normalizeDisplayText(entry.recommendation || entry.pqcReplacement, 'Schedule PQC migration'),
     } as Finding));
 
     return [...fromFindings, ...fromCbom]
@@ -307,18 +319,18 @@ export default function ShadowCrypto() {
   }, [data.cbom.entries, data.findings]);
 
   return (
-    <div className="p-4 lg:p-8 space-y-6 animate-in fade-in duration-700 text-white">
+    <div className="animate-in space-y-6 p-4 text-slate-950 fade-in duration-700 dark:text-white lg:p-8">
       <header className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <div className="mb-2 flex items-center gap-3">
             <div className="rounded bg-gold/10 border border-gold/20 p-2">
               <Radar className="h-6 w-6 text-gold drop-shadow-[0_0_6px_rgba(255,211,107,0.4)]" />
             </div>
-            <h1 className="text-3xl font-black uppercase leading-none tracking-tight text-white">
+            <h1 className="text-3xl font-black uppercase leading-none tracking-tight text-slate-950 dark:text-white">
               Shadow <span className="text-gold">Crypto</span>
             </h1>
           </div>
-          <p className="max-w-3xl text-sm font-medium text-white/50">
+          <p className="max-w-3xl text-sm font-medium text-slate-600 dark:text-white/50">
             Identify undocumented or non-compliant cryptographic implementations across scanner evidence, CBOM inventory, runtime telemetry, and policy drift.
           </p>
         </div>
@@ -328,7 +340,7 @@ export default function ShadowCrypto() {
             <ScanSearch className="h-4 w-4" />
             Launch Sweep
           </a>
-          <button onClick={refresh} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-white/60 transition hover:border-gold/30 hover:text-white">
+          <button onClick={refresh} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/70 px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-slate-600 transition hover:border-cyan-300 hover:text-slate-950 dark:border-white/10 dark:bg-white/5 dark:text-white/60 dark:hover:border-gold/30 dark:hover:text-white">
             <RefreshCw className={`h-4 w-4 text-gold ${loading ? 'animate-spin' : ''}`} />
             {connected ? 'Sync Evidence' : 'Load Evidence'}
           </button>
@@ -336,7 +348,7 @@ export default function ShadowCrypto() {
       </header>
 
       {error && (
-        <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm font-semibold text-red-300">
+        <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm font-semibold text-red-600 dark:text-red-300">
           {error}
         </div>
       )}
@@ -349,9 +361,9 @@ export default function ShadowCrypto() {
             <section key={metric.label} className={`${GLASS_PANEL_CLASSES} p-5`}>
               <div className="relative z-10 flex items-center justify-between gap-4">
                 <div>
-                  <span className="block text-[9px] font-bold uppercase tracking-widest text-white/40">{metric.label}</span>
-                  <span className="mt-3 block text-3xl font-black leading-none text-white">{metric.value}</span>
-                  <span className="mt-3 block text-[10px] font-black uppercase tracking-wider text-white/35">{metric.detail}</span>
+                  <span className="block text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-white/40">{metric.label}</span>
+                  <span className="mt-3 block text-3xl font-black leading-none text-slate-950 dark:text-white">{metric.value}</span>
+                  <span className="mt-3 block text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-white/35">{metric.detail}</span>
                 </div>
                 <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-full border ${toneClasses(metric.tone)}`}>
                   <Icon className="h-7 w-7" />
@@ -363,7 +375,7 @@ export default function ShadowCrypto() {
       </div>
 
       <div className="grid grid-cols-1 gap-6">
-        <section className={`${GLASS_PANEL_CLASSES} p-6`}>
+        <section className={`${GLASS_PANEL_CLASSES} selection:bg-transparent selection:text-current p-6`}>
           <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <SectionTitle icon={ShieldAlert}>Priority Shadow Findings</SectionTitle>
             <div className="flex flex-wrap gap-2">
@@ -375,7 +387,7 @@ export default function ShadowCrypto() {
                   className={`rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition ${
                     activeFindingFilter === filter
                       ? 'border-gold/50 bg-gold/10 text-gold'
-                      : 'border-white/10 bg-white/[0.03] text-white/40 hover:border-gold/30 hover:text-white/70'
+                      : 'border-slate-200 bg-white/70 text-slate-600 hover:border-cyan-300 hover:text-slate-950 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40 dark:hover:border-gold/30 dark:hover:text-white/70'
                   }`}
                 >
                   {filter}
@@ -384,37 +396,37 @@ export default function ShadowCrypto() {
             </div>
           </div>
 
-          <div className="relative z-10 mt-5 overflow-x-auto">
+          <div className="relative z-10 mt-5 overflow-x-auto rounded-xl border border-slate-200/80 bg-white/75 selection:bg-transparent selection:text-current dark:border-white/5 dark:bg-transparent">
             <table className="w-full min-w-[980px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-gold/15 bg-gold/[0.03]">
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-white/40">Asset</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-white/40">Source</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-white/40">Implementation</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-white/40">Severity</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-white/40">Policy</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-white/40">Action</th>
+                <tr className="border-b border-slate-200/80 bg-slate-50/80 dark:border-gold/15 dark:bg-gold/[0.03]">
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Asset</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Source</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Implementation</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Severity</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Policy</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/5">
+              <tbody className="divide-y divide-slate-200/70 dark:divide-white/5">
                 {filteredFindings.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-10 text-center text-xs font-black uppercase tracking-widest text-white/30">
+                    <td colSpan={6} className="p-10 text-center text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">
                       {activeFindingFilter === 'All'
                         ? 'No shadow crypto findings have been detected for this tenant.'
                         : `No ${activeFindingFilter.toLowerCase()} shadow crypto findings match this tenant scan.`}
                     </td>
                   </tr>
                 ) : filteredFindings.map((finding) => (
-                  <tr key={`${finding.asset}-${finding.implementation}-${finding.evidence}`} className="group/row transition hover:bg-gold/[0.04]">
+                  <tr key={`${finding.asset}-${finding.implementation}-${finding.evidence}`} className="group/row bg-white/45 transition hover:bg-cyan-50/75 dark:bg-transparent dark:hover:bg-gold/[0.04]">
                     <td className="p-4">
-                      <div className="font-bold text-white/85 group-hover/row:text-gold">{finding.asset}</div>
-                      <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-white/30">{finding.owner}</div>
+                      <div className="font-bold text-slate-950 group-hover/row:text-gold dark:text-white/85">{finding.asset}</div>
+                      <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-white/30">{finding.owner}</div>
                     </td>
-                    <td className="p-4 text-xs font-semibold text-white/55">{finding.source}</td>
+                    <td className="p-4 text-xs font-semibold text-slate-600 dark:text-white/55">{finding.source}</td>
                     <td className="p-4">
-                      <div className="text-xs font-bold text-white/75">{finding.implementation}</div>
-                      <div className="mt-1 max-w-[270px] truncate font-mono text-[10px] text-white/35">{finding.evidence}</div>
+                      <div className="text-xs font-bold text-slate-800 dark:text-white/75">{finding.implementation}</div>
+                      <div className="mt-1 max-w-[270px] truncate font-mono text-[10px] text-slate-500 dark:text-white/35">{finding.evidence}</div>
                     </td>
                     <td className="p-4">
                       <span className={`inline-flex rounded border px-2 py-1 text-[9px] font-black uppercase tracking-wider ${severityClasses(finding.severity)}`}>
@@ -423,7 +435,7 @@ export default function ShadowCrypto() {
                     </td>
                     <td className={`p-4 text-xs font-black ${policyClasses(finding.policy)}`}>{finding.policy}</td>
                     <td className="p-4">
-                      <button className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-gold transition hover:text-white">
+                      <button className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-gold transition hover:text-slate-950 dark:hover:text-white">
                         {finding.action}
                         <ArrowRight className="h-3.5 w-3.5" />
                       </button>

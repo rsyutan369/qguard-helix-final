@@ -39,6 +39,36 @@ function writeSse(res: Response, event: string, data: unknown) {
 
 router.use(requireAuth)
 
+function openDashboardSyncStream(req: Request, res: Response, eventBase: string, source: string, reason: string) {
+  setSseHeaders(res)
+  writeSse(res, `${eventBase}-connected`, {
+    timestamp: new Date().toISOString(),
+    source,
+  })
+
+  let closed = false
+  const emitUpdate = () => {
+    if (closed) return
+    writeSse(res, `${eventBase}-update`, {
+      timestamp: new Date().toISOString(),
+      source,
+      reason,
+    })
+  }
+
+  emitUpdate()
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(`: ${eventBase} heartbeat\n\n`)
+  }, 25000)
+  const syncPoll = setInterval(emitUpdate, 8000)
+
+  req.on('close', () => {
+    closed = true
+    clearInterval(heartbeat)
+    clearInterval(syncPoll)
+  })
+}
+
 function isMissingRpc(error: any) {
   const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
   return text.includes('42883') || text.includes('pgrst202') || text.includes('could not find the function') || text.includes('does not exist')
@@ -3349,6 +3379,18 @@ function dateLabel(value: number) {
  * exposures, scan results, compliance evidence, migration events, certificates,
  * and vulnerability records.
  */
+router.get('/drift/stream', (req: Request, res: Response) => {
+  openDashboardSyncStream(req, res, 'drift', 'dashboard.drift', 'tenant-drift-sync')
+})
+
+router.get('/vulnerabilities/stream', (req: Request, res: Response) => {
+  openDashboardSyncStream(req, res, 'vulnerabilities', 'dashboard.vulnerabilities', 'tenant-vulnerability-sync')
+})
+
+router.get('/runtime-crypto-intel/stream', (req: Request, res: Response) => {
+  openDashboardSyncStream(req, res, 'runtime-crypto-intel', 'dashboard.runtime-crypto-intel', 'tenant-runtime-crypto-sync')
+})
+
 router.get('/drift', async (req: Request, res: Response) => {
   try {
     const user = (req as any).user

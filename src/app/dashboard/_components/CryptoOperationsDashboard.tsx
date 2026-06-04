@@ -29,6 +29,7 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { CRYPTO_OPERATIONS_TABLES } from '../_lib/telemetry-sync';
 
 type Mode = 'protocol' | 'encryption';
 type LoadState = 'loading' | 'success' | 'error';
@@ -144,6 +145,7 @@ type CryptoOperationsSnapshot = {
     runtimeEvents: number;
     scannerEvidence: number;
     scannerAlerts: number;
+    scanSessions: number;
     scanResults: number;
     cryptoInventory: number;
     cryptoExposures: number;
@@ -155,8 +157,19 @@ type CryptoOperationsSnapshot = {
     scannerAgents: number;
     connectors: number;
     agentHeartbeats: number;
+    activeAssets: number;
+    inactiveAssets: number;
+    onlineAgents: number;
+    offlineAgents: number;
+    freshHeartbeats: number;
+    runningScans: number;
+    completedScans: number;
+    failedScans: number;
     eventPipelineStatus: string;
     latestRuntimeEventAt: string | null;
+    latestScanAt: string | null;
+    latestAgentHeartbeatAt: string | null;
+    latestDiscoveryAt: string | null;
   };
 };
 
@@ -199,6 +212,7 @@ const EMPTY_SNAPSHOT: CryptoOperationsSnapshot = {
     runtimeEvents: 0,
     scannerEvidence: 0,
     scannerAlerts: 0,
+    scanSessions: 0,
     scanResults: 0,
     cryptoInventory: 0,
     cryptoExposures: 0,
@@ -210,8 +224,19 @@ const EMPTY_SNAPSHOT: CryptoOperationsSnapshot = {
     scannerAgents: 0,
     connectors: 0,
     agentHeartbeats: 0,
+    activeAssets: 0,
+    inactiveAssets: 0,
+    onlineAgents: 0,
+    offlineAgents: 0,
+    freshHeartbeats: 0,
+    runningScans: 0,
+    completedScans: 0,
+    failedScans: 0,
     eventPipelineStatus: 'no_agents',
     latestRuntimeEventAt: null,
+    latestScanAt: null,
+    latestAgentHeartbeatAt: null,
+    latestDiscoveryAt: null,
   },
 };
 
@@ -400,25 +425,7 @@ function useCryptoOperationsDashboard(mode: Mode) {
   useEffect(() => {
     if (!user) return;
 
-    const tables = [
-      'assets',
-      'runtime_crypto_events',
-      'scanner_evidence',
-      'scanner_alerts',
-      'pqc_scan_results',
-      'crypto_inventory',
-      'crypto_exposures',
-      'security_events',
-      'generated_keys',
-      'certificates',
-      'scanner_agents',
-      'connector_accounts',
-      'agent_heartbeats',
-      'qrng_events',
-      'vault_audit_logs',
-    ];
-
-    const channels = tables.map((table) => supabase
+    const channels = CRYPTO_OPERATIONS_TABLES.map((table) => supabase
       .channel(`${config.segment}-${table}`)
       .on(
         'postgres_changes',
@@ -881,6 +888,9 @@ function PipelineStatus({ snapshot, sseConnected }: { snapshot: CryptoOperations
   const rows = [
     { label: 'Runtime Events', value: snapshot.telemetry.runtimeEvents, icon: Activity, color: GREEN },
     { label: 'Scanner Evidence', value: snapshot.telemetry.scannerEvidence, icon: Search, color: PURPLE },
+    { label: 'Scan Sessions', value: snapshot.telemetry.scanSessions, icon: Radar, color: ORANGE },
+    { label: 'Active Assets', value: snapshot.telemetry.activeAssets, icon: BadgeCheck, color: TEAL },
+    { label: 'Online Agents', value: snapshot.telemetry.onlineAgents, icon: Network, color: GREEN },
     { label: 'Crypto Inventory', value: snapshot.telemetry.cryptoInventory, icon: FileText, color: BLUE },
     { label: 'Crypto Exposures', value: snapshot.telemetry.cryptoExposures, icon: ShieldAlert, color: RED },
     { label: 'Generated Keys', value: snapshot.telemetry.generatedKeys, icon: KeyRound, color: GOLD },
@@ -972,7 +982,7 @@ export default function CryptoOperationsDashboard({ mode }: { mode: Mode }) {
               {config.subtitle}
             </p>
             <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-[0.08em] text-white/45">
-              <span>Latest: {longDate(snapshot.latestActivityAt)}</span>
+              <span>Latest: {longDate(snapshot.latestActivityAt || snapshot.telemetry.latestScanAt || snapshot.telemetry.latestDiscoveryAt)}</span>
               <span className="text-white/20">/</span>
               <span>Backend synchronized</span>
               <span className="text-white/20">/</span>
@@ -1105,9 +1115,12 @@ export default function CryptoOperationsDashboard({ mode }: { mode: Mode }) {
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               {[
                 ['Assets', snapshot.telemetry.assets],
+                ['Active Assets', snapshot.telemetry.activeAssets],
                 ['Agents', snapshot.telemetry.scannerAgents],
+                ['Online Agents', snapshot.telemetry.onlineAgents],
                 ['Connectors', snapshot.telemetry.connectors],
                 ['Heartbeats', snapshot.telemetry.agentHeartbeats],
+                ['Scan Sessions', snapshot.telemetry.scanSessions],
                 ['QRNG', snapshot.telemetry.qrngEvents],
                 ['Vault Logs', snapshot.telemetry.vaultAuditLogs],
                 ['Security', snapshot.telemetry.securityEvents],

@@ -28,6 +28,7 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 type WorkflowStatus = 'completed' | 'running' | 'failed' | 'pending' | 'paused'
 type StageState = 'completed' | 'active' | 'pending' | 'failed'
@@ -121,6 +122,37 @@ type HndlRemediationSummary = {
   lastDetectedAt: string | null
 }
 
+type MigrationPlan = {
+  id: string
+  status: string
+  selectedAssets: Array<{
+    id: string
+    assetId: string | null
+    name: string
+    type: string
+    environment: string
+    owner: string
+    currentAlgorithm: string
+    targetSolution: string
+    risk: number
+    priority: string
+    status: string
+    progress: number
+  }>
+  configuration: {
+    currentAlgorithms?: string[]
+    targetAlgorithms?: string[]
+    deploymentStrategy?: string
+    controls?: Record<string, boolean>
+    tags?: string[]
+  }
+  riskData: Record<string, unknown>
+  migrationMetadata: Record<string, unknown>
+  jobs: Array<{ id: string; status: string; progress: number; target_algorithm?: string }>
+  orchestrationUrl: string
+  liveMigrationUrl: string
+}
+
 type OrchestrationSnapshot = {
   generatedAt: string
   metrics: OrchestrationMetrics
@@ -177,6 +209,7 @@ const GREEN = '#22c55e'
 const RED = '#ef4444'
 const BLUE = '#38bdf8'
 const SLATE = '#94a3b8'
+const WORKFLOW_PAGE_SIZE = 5
 
 function numberFmt(value: number) {
   return new Intl.NumberFormat('en-US').format(value || 0)
@@ -229,10 +262,12 @@ function priorityClass(priority: string) {
   return 'text-emerald-300'
 }
 
-function usePqcOrchestrationSnapshot() {
+function usePqcOrchestrationSnapshot(planId?: string | null) {
   const { session, user } = useAuth()
   const token = session?.access_token
   const [snapshot, setSnapshot] = useState<OrchestrationSnapshot>(EMPTY_SNAPSHOT)
+  const [plan, setPlan] = useState<MigrationPlan | null>(null)
+  const [planLoading, setPlanLoading] = useState(false)
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
@@ -277,10 +312,53 @@ function usePqcOrchestrationSnapshot() {
     return payload?.data || { created: 0 }
   }, [token, fetchSnapshot])
 
+  const fetchPlan = useCallback(async () => {
+    if (!token || !planId) {
+      setPlan(null)
+      setPlanLoading(false)
+      return
+    }
+    setPlanLoading(true)
+    try {
+      const response = await fetch(`/api/v1/migration/plans/${encodeURIComponent(planId)}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`)
+      setPlan(payload.data || null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load approved migration plan')
+      setPlan(null)
+    } finally {
+      setPlanLoading(false)
+    }
+  }, [planId, token])
+
+  const runPlanAction = useCallback(async (action: 'start_execution' | 'pause' | 'resume' | 'rollback' | 'approve_next_phase') => {
+    if (!token || !planId) throw new Error('Migration plan is required')
+    const response = await fetch(`/api/v1/migration/plans/${encodeURIComponent(planId)}/action`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`)
+    if (payload.data?.plan) setPlan(payload.data.plan)
+    await fetchSnapshot()
+    return payload.data
+  }, [fetchSnapshot, planId, token])
+
   useEffect(() => {
     if (!token || !user) return
     fetchSnapshot()
-  }, [token, user, fetchSnapshot])
+    void fetchPlan()
+  }, [token, user, fetchSnapshot, fetchPlan])
 
   useEffect(() => {
     if (!user) return
@@ -289,6 +367,7 @@ function usePqcOrchestrationSnapshot() {
       'crypto_inventory',
       'crypto_exposures',
       'migration_jobs',
+      'migration_plans',
       'migration_events',
       'pqc_scan_sessions',
       'pqc_scan_results',
@@ -301,7 +380,10 @@ function usePqcOrchestrationSnapshot() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` },
-        () => fetchSnapshot()
+        () => {
+          void fetchSnapshot()
+          if (table === 'migration_plans') void fetchPlan()
+        }
       )
       .subscribe())
 
@@ -310,7 +392,7 @@ function usePqcOrchestrationSnapshot() {
         supabase.removeChannel(channel)
       }
     }
-  }, [user, fetchSnapshot])
+  }, [user, fetchSnapshot, fetchPlan])
 
   useEffect(() => {
     if (!token) return
@@ -338,7 +420,7 @@ function usePqcOrchestrationSnapshot() {
     }
   }, [token, fetchSnapshot])
 
-  return { snapshot, state, error, sseConnected, refresh: fetchSnapshot, queueHndlRemediation }
+  return { snapshot, state, error, sseConnected, refresh: fetchSnapshot, queueHndlRemediation, plan, planLoading, refreshPlan: fetchPlan, runPlanAction }
 }
 
 function GlassPanel({ children, className }: { children: ReactNode; className?: string }) {
@@ -371,6 +453,31 @@ function HeaderButton({ icon: Icon, children, href, onClick, primary }: { icon: 
       <Icon className="h-3.5 w-3.5" />
       {children}
     </button>
+  )
+}
+
+function WorkflowActionLink({ href, label, detail, children }: { href: string; label: string; detail: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <a
+      href={href}
+      aria-label={`${label}. ${detail}`}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      className="relative flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 transition hover:border-gold/40 hover:text-gold focus-visible:border-gold focus-visible:outline-none"
+    >
+      <span className="sr-only">{label}</span>
+      {children}
+      {open && (
+        <span className="pointer-events-none absolute right-0 top-9 z-30 w-72 rounded-md border border-gold/25 bg-[#080c19] p-3 text-left shadow-[0_18px_45px_rgba(0,0,0,0.45)]">
+          <span className="block text-[9px] font-black uppercase tracking-[0.18em] text-gold">{label}</span>
+          <span className="mt-1 block whitespace-normal text-[11px] font-semibold leading-relaxed text-white/72">{detail}</span>
+        </span>
+      )}
+    </a>
   )
 }
 
@@ -459,13 +566,19 @@ function exportJson(name: string, value: unknown) {
 }
 
 export default function PqcOrchestration() {
-  const { snapshot, state, error, sseConnected, refresh, queueHndlRemediation } = usePqcOrchestrationSnapshot()
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const planId = searchParams.get('planId')
+  const { snapshot, state, error, sseConnected, refresh, queueHndlRemediation, plan, planLoading, runPlanAction } = usePqcOrchestrationSnapshot(planId)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
   const [type, setType] = useState('all')
   const [environment, setEnvironment] = useState('all')
   const [actionPending, setActionPending] = useState('')
+  const [planActionPending, setPlanActionPending] = useState('')
   const [notice, setNotice] = useState('')
+  const [workflowPage, setWorkflowPage] = useState(1)
+  const [showAllWorkflows, setShowAllWorkflows] = useState(false)
 
   const metrics = snapshot.metrics
   const hndlSummary = snapshot.hndlRemediation || EMPTY_SNAPSHOT.hndlRemediation
@@ -479,6 +592,24 @@ export default function PqcOrchestration() {
       && (type === 'all' || workflow.assetType === type)
       && (environment === 'all' || workflow.environment === environment)
   }), [snapshot.workflowQueue, search, status, type, environment])
+  const workflowPageCount = Math.max(1, Math.ceil(visibleWorkflows.length / WORKFLOW_PAGE_SIZE))
+  const safeWorkflowPage = Math.min(workflowPage, workflowPageCount)
+  const workflowStartIndex = showAllWorkflows ? 0 : (safeWorkflowPage - 1) * WORKFLOW_PAGE_SIZE
+  const workflowEndIndex = showAllWorkflows ? visibleWorkflows.length : Math.min(workflowStartIndex + WORKFLOW_PAGE_SIZE, visibleWorkflows.length)
+  const pagedWorkflows = showAllWorkflows ? visibleWorkflows : visibleWorkflows.slice(workflowStartIndex, workflowEndIndex)
+  const workflowPageNumbers = useMemo(() => {
+    const totalButtons = Math.min(5, workflowPageCount)
+    const firstPage = Math.max(1, Math.min(safeWorkflowPage - 2, workflowPageCount - totalButtons + 1))
+    return Array.from({ length: totalButtons }, (_, index) => firstPage + index)
+  }, [safeWorkflowPage, workflowPageCount])
+
+  useEffect(() => {
+    setWorkflowPage(1)
+  }, [search, status, type, environment, showAllWorkflows])
+
+  useEffect(() => {
+    if (workflowPage > workflowPageCount) setWorkflowPage(workflowPageCount)
+  }, [workflowPage, workflowPageCount])
 
   const metricCards = [
     { label: 'Active Workflows', value: numberFmt(metrics.activeWorkflows), detail: metrics.hndlPending ? `${numberFmt(metrics.pendingWorkflows)} pending | ${numberFmt(metrics.hndlPending)} HNDL` : `${numberFmt(metrics.pendingWorkflows)} pending`, icon: Layers3, tone: 'gold' as const },
@@ -503,6 +634,22 @@ export default function PqcOrchestration() {
       setActionPending('')
     }
   }, [queueHndlRemediation])
+
+  const applyPlanAction = useCallback(async (action: 'start_execution' | 'pause' | 'resume' | 'rollback' | 'approve_next_phase') => {
+    setPlanActionPending(action)
+    setNotice('')
+    try {
+      const result = await runPlanAction(action)
+      setNotice(`${action.replace(/_/g, ' ')} applied to ${numberFmt(result?.affected || 0)} linked migration job(s).`)
+      if (action === 'start_execution') {
+        navigate(result?.liveMigrationUrl || `/dashboard/live-migration${planId ? `?planId=${encodeURIComponent(planId)}` : ''}`)
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Unable to apply orchestration action.')
+    } finally {
+      setPlanActionPending('')
+    }
+  }, [navigate, planId, runPlanAction])
 
   return (
     <main className="min-h-screen space-y-4 p-3 text-white lg:p-5">
@@ -538,9 +685,11 @@ export default function PqcOrchestration() {
               {actionPending === 'hndl:all' ? 'Queuing HNDL' : `Queue HNDL (${numberFmt(hndlSummary.pendingFindings)})`}
             </button>
           )}
-          <HeaderButton icon={Plus} href="/dashboard/migration_planner" primary>New Orchestration</HeaderButton>
-          <HeaderButton icon={Play} href="/dashboard/live-migration">Launch Workflow</HeaderButton>
-          <HeaderButton icon={Pause} href="/dashboard/live-migration">Pause All</HeaderButton>
+          <HeaderButton icon={Plus} href="/dashboard/migration-planner" primary>New Orchestration</HeaderButton>
+          <HeaderButton icon={Play} onClick={() => planId ? void applyPlanAction('start_execution') : navigate('/dashboard/live-migration')}>Start Execution</HeaderButton>
+          <HeaderButton icon={Pause} onClick={() => planId ? void applyPlanAction('pause') : navigate('/dashboard/live-migration')}>Pause</HeaderButton>
+          <HeaderButton icon={ShieldCheck} onClick={() => planId ? void applyPlanAction('approve_next_phase') : undefined}>Approve Phase</HeaderButton>
+          <HeaderButton icon={X} onClick={() => planId ? void applyPlanAction('rollback') : undefined}>Rollback</HeaderButton>
           <div className="hidden items-center gap-2 pl-1 xl:flex">
             <Clock3 className="h-5 w-5 text-gold" />
             <div className="font-mono text-[10px] font-bold uppercase text-white/60">
@@ -567,6 +716,64 @@ export default function PqcOrchestration() {
           </div>
         ))}
       </div>
+
+      {(planId || planLoading || plan) && (
+        <GlassPanel className="p-4">
+          <div className="relative z-10 grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
+            <div>
+              <SectionTitle
+                icon={ListChecks}
+                suffix={<a href={plan?.liveMigrationUrl || `/dashboard/live-migration${planId ? `?planId=${encodeURIComponent(planId)}` : ''}`} className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">Live Migration</a>}
+              >
+                Approved Migration Plan
+              </SectionTitle>
+              {planLoading ? (
+                <div className="text-xs font-bold text-white/45">Loading approved plan...</div>
+              ) : plan ? (
+                <div className="grid gap-3 md:grid-cols-5">
+                  {[
+                    ['Plan ID', plan.id],
+                    ['Status', plan.status],
+                    ['Assets', numberFmt(plan.selectedAssets.length)],
+                    ['Strategy', plan.configuration.deploymentStrategy || 'Unspecified'],
+                    ['Targets', (plan.configuration.targetAlgorithms || []).join(', ') || 'Unspecified'],
+                    ['Controls', `${Object.values(plan.configuration.controls || {}).filter((enabled) => enabled !== false).length} enabled`],
+                    ['Tags', (plan.configuration.tags || []).join(', ') || 'All assets'],
+                    ['Complexity', `${Number(plan.riskData.migrationComplexityScore || 0)}/100`],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-md border border-white/8 bg-black/24 p-3">
+                      <div className="text-[8px] font-black uppercase tracking-widest text-white/35">{label}</div>
+                      <div className="mt-1 truncate text-xs font-black text-white/80">{value}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs font-bold text-red-300">Plan {planId} could not be loaded for this authenticated user.</div>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-5 xl:grid-cols-2">
+              {[
+                { action: 'start_execution', label: 'Start Execution', icon: Play },
+                { action: 'pause', label: 'Pause', icon: Pause },
+                { action: 'resume', label: 'Resume', icon: Radio },
+                { action: 'approve_next_phase', label: 'Approve Next Phase', icon: ShieldCheck },
+                { action: 'rollback', label: 'Rollback', icon: X },
+              ].map(({ action, label, icon: Icon }) => (
+                <button
+                  key={action}
+                  type="button"
+                  disabled={!planId || Boolean(planActionPending)}
+                  onClick={() => void applyPlanAction(action as 'start_execution' | 'pause' | 'resume' | 'rollback' | 'approve_next_phase')}
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-gold/25 bg-gold/8 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-gold transition hover:border-gold/60 hover:bg-gold/14 disabled:cursor-wait disabled:opacity-45"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {planActionPending === action ? 'Applying' : label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </GlassPanel>
+      )}
 
       {(hndlSummary.pendingFindings > 0 || notice) && (
         <GlassPanel className="border-red-500/30 bg-red-950/20 p-4">
@@ -600,7 +807,70 @@ export default function PqcOrchestration() {
         </GlassPanel>
       )}
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(520px,1.05fr)]">
+      <div className="space-y-4">
+        <GlassPanel className="p-4">
+          <SectionTitle
+            icon={Radio}
+            suffix={<a href="/dashboard/live-migration" className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">View Details</a>}
+          >
+            Live Execution <span className="ml-2 text-[10px] text-white/35">Workflow ID: {snapshot.liveExecution?.workflowId?.slice(0, 12) || 'none'}</span>
+          </SectionTitle>
+          {snapshot.liveExecution ? (
+            <div>
+              <div className="flex flex-col gap-4 border-b border-white/5 pb-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-lg font-black text-white">{snapshot.liveExecution.name}</h3>
+                  <div className="mt-4 grid gap-4 text-xs md:grid-cols-4">
+                    <div>
+                      <div className="text-[9px] uppercase tracking-widest text-white/35">Current Step</div>
+                      <div className="mt-1 font-bold text-white/80">{snapshot.liveExecution.currentStep}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-widest text-white/35">Algorithm Transition</div>
+                      <div className="mt-1 font-bold text-white/80">{snapshot.liveExecution.algorithmTransition}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-widest text-white/35">Progress</div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <div className="w-24"><ProgressBar value={snapshot.liveExecution.progress} /></div>
+                        <span className="font-mono text-white/65">{snapshot.liveExecution.progress}%</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-widest text-white/35">ETA</div>
+                      <div className="mt-1 font-bold text-white/80">{snapshot.liveExecution.eta}</div>
+                    </div>
+                  </div>
+                </div>
+                <span className={cn('rounded border px-3 py-1 text-[10px] font-black uppercase tracking-wider', statusClass(statusLabel(snapshot.liveExecution.status)))}>{statusLabel(snapshot.liveExecution.status)}</span>
+              </div>
+              <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
+                {snapshot.liveExecution.stages.map((stage, index) => (
+                  <div key={stage.key} className="relative text-center">
+                    {index < snapshot.liveExecution!.stages.length - 1 && <div className="absolute left-1/2 top-4 hidden h-px w-full bg-gold/20 md:block" />}
+                    <div className={cn(
+                      'relative mx-auto flex h-8 w-8 items-center justify-center rounded-full border',
+                      stage.state === 'completed' && 'border-emerald-500 bg-emerald-500/10 text-emerald-300',
+                      stage.state === 'active' && 'border-gold bg-gold/10 text-gold',
+                      stage.state === 'failed' && 'border-red-500 bg-red-500/10 text-red-300',
+                      stage.state === 'pending' && 'border-white/15 bg-black/30 text-white/35'
+                    )}>
+                      {stage.state === 'completed' ? <CheckCircle2 className="h-4 w-4" /> : stage.state === 'failed' ? <X className="h-4 w-4" /> : <ListChecks className="h-4 w-4" />}
+                    </div>
+                    <div className="mt-2 text-[10px] font-black text-white/70">{stage.label}</div>
+                    <div className={cn('mt-1 text-[9px] font-bold', stage.state === 'completed' ? 'text-emerald-300' : stage.state === 'active' ? 'text-gold' : stage.state === 'failed' ? 'text-red-300' : 'text-white/35')}>
+                      {stage.state === 'completed' ? 'Completed' : stage.state === 'active' ? 'In Progress' : stage.state === 'failed' ? 'Failed' : 'Pending'}
+                    </div>
+                    <div className="mt-0.5 text-[9px] font-mono text-white/25">{timeOnly(stage.timestamp)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <EmptyState label="No active or scheduled orchestration workflow yet." />
+          )}
+        </GlassPanel>
+
         <GlassPanel className="p-4">
           <SectionTitle icon={Workflow}>Workflow Queue</SectionTitle>
           <div className="mb-3 grid gap-2 md:grid-cols-[1fr_110px_110px_140px_36px]">
@@ -647,7 +917,13 @@ export default function PqcOrchestration() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {visibleWorkflows.map((workflow) => (
+                  {pagedWorkflows.map((workflow) => {
+                    const liveMigrationHref = `/dashboard/live-migration${planId ? `?planId=${encodeURIComponent(planId)}` : ''}`
+                    const primaryActionLabel = workflow.status === 'running' ? 'Pause workflow' : 'Open execution'
+                    const primaryActionDetail = workflow.status === 'running'
+                      ? `Opens Live Migration for ${workflow.name}, where operators can pause, roll back, inspect telemetry, and review execution logs.`
+                      : `Opens Live Migration for ${workflow.name}, where operators can start/resume execution, inspect progress, and validate telemetry.`
+                    return (
                     <tr key={workflow.id} className="transition hover:bg-gold/[0.04]">
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-3">
@@ -680,126 +956,140 @@ export default function PqcOrchestration() {
                               disabled={!workflow.sourceFindingId || actionPending === `hndl:${workflow.sourceFindingId}`}
                               onClick={() => workflow.sourceFindingId && queueHndl(workflow.sourceFindingId)}
                               className="inline-flex h-7 items-center justify-center rounded border border-red-400/40 bg-red-500/10 px-2 text-[9px] font-black uppercase tracking-wider text-red-200 transition hover:border-gold/50 hover:bg-gold/10 hover:text-gold disabled:cursor-wait disabled:opacity-60"
-                              aria-label={`Queue remediation job for ${workflow.name}`}
+                              aria-label={`Queue remediation job for ${workflow.name}. Creates a linked migration job from the active HNDL finding.`}
                             >
                               {actionPending === `hndl:${workflow.sourceFindingId}` ? 'Queuing' : 'Queue'}
                             </button>
                           ) : (
                             <>
-                              <a href="/dashboard/live-migration" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Open ${workflow.name}`}>
+                              <WorkflowActionLink href={liveMigrationHref} label={primaryActionLabel} detail={primaryActionDetail}>
                                 {workflow.status === 'running' ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                              </a>
-                              <a href="/dashboard/live-migration" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-gold hover:border-gold/40" aria-label={`Inspect ${workflow.name}`}>
+                              </WorkflowActionLink>
+                              <WorkflowActionLink
+                                href={liveMigrationHref}
+                                label="Workflow details"
+                                detail={`Opens Live Migration details for ${workflow.name}: execution state, agent telemetry, migration events, validation evidence, rollback controls, and exports.`}
+                              >
                                 <MoreHorizontal className="h-3.5 w-3.5" />
-                              </a>
+                              </WorkflowActionLink>
                             </>
                           )}
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
           )}
-          <div className="mt-3 flex items-center justify-between text-xs text-white/45">
-            <span>Showing {visibleWorkflows.length} of {snapshot.workflowQueue.length} workflows</span>
-            <div className="flex items-center gap-3 text-gold">
-              <span className="text-white/25">1</span>
-              <ArrowRight className="h-4 w-4" />
+          <div className="mt-3 flex flex-col gap-3 border-t border-gold/10 pt-3 text-xs text-white/45 md:flex-row md:items-center md:justify-between">
+            <span>
+              {visibleWorkflows.length === 0
+                ? 'Showing 0 results'
+                : showAllWorkflows
+                  ? `Showing all ${numberFmt(visibleWorkflows.length)} results`
+                  : `Showing ${numberFmt(workflowStartIndex + 1)} to ${numberFmt(workflowEndIndex)} of ${numberFmt(visibleWorkflows.length)} results`}
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={showAllWorkflows || safeWorkflowPage <= 1}
+                onClick={() => setWorkflowPage((page) => Math.max(1, page - 1))}
+                className="h-9 rounded-md border border-white/10 bg-black/20 px-3 text-[10px] font-bold text-white/45 transition hover:border-gold/40 hover:text-gold disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                Prev
+              </button>
+              {!showAllWorkflows && workflowPageNumbers.map((page) => (
+                <button
+                  key={page}
+                  type="button"
+                  onClick={() => setWorkflowPage(page)}
+                  className={cn(
+                    'h-9 min-w-9 rounded-md border px-3 text-[11px] font-bold transition',
+                    page === safeWorkflowPage
+                      ? 'border-gold bg-gold/10 text-gold shadow-[0_0_18px_rgba(255,211,107,0.18)]'
+                      : 'border-white/10 bg-black/20 text-white/45 hover:border-gold/40 hover:text-gold',
+                  )}
+                >
+                  {page}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setShowAllWorkflows((value) => !value)}
+                className={cn(
+                  'h-9 rounded-md border px-3 text-[10px] font-black uppercase tracking-wider transition',
+                  showAllWorkflows
+                    ? 'border-gold bg-gold/10 text-gold'
+                    : 'border-white/10 bg-black/20 text-white/45 hover:border-gold/40 hover:text-gold',
+                )}
+              >
+                {showAllWorkflows ? 'Show 5' : 'Show All'}
+              </button>
+              <button
+                type="button"
+                disabled={showAllWorkflows || safeWorkflowPage >= workflowPageCount}
+                onClick={() => setWorkflowPage((page) => Math.min(workflowPageCount, page + 1))}
+                className="h-9 rounded-md border border-white/10 bg-black/20 px-3 text-[10px] font-bold text-white/45 transition hover:border-gold/40 hover:text-gold disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                Next
+              </button>
             </div>
           </div>
         </GlassPanel>
 
-        <div className="space-y-4">
-          <GlassPanel className="p-4">
-            <SectionTitle
-              icon={Radio}
-              suffix={<a href="/dashboard/live-migration" className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">View Details</a>}
-            >
-              Live Execution <span className="ml-2 text-[10px] text-white/35">Workflow ID: {snapshot.liveExecution?.workflowId?.slice(0, 12) || 'none'}</span>
-            </SectionTitle>
-            {snapshot.liveExecution ? (
-              <div>
-                <div className="flex flex-col gap-4 border-b border-white/5 pb-4 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <h3 className="text-lg font-black text-white">{snapshot.liveExecution.name}</h3>
-                    <div className="mt-4 grid gap-4 text-xs md:grid-cols-4">
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest text-white/35">Current Step</div>
-                        <div className="mt-1 font-bold text-white/80">{snapshot.liveExecution.currentStep}</div>
-                      </div>
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest text-white/35">Algorithm Transition</div>
-                        <div className="mt-1 font-bold text-white/80">{snapshot.liveExecution.algorithmTransition}</div>
-                      </div>
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest text-white/35">Progress</div>
-                        <div className="mt-1 flex items-center gap-2">
-                          <div className="w-24"><ProgressBar value={snapshot.liveExecution.progress} /></div>
-                          <span className="font-mono text-white/65">{snapshot.liveExecution.progress}%</span>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-[9px] uppercase tracking-widest text-white/35">ETA</div>
-                        <div className="mt-1 font-bold text-white/80">{snapshot.liveExecution.eta}</div>
-                      </div>
-                    </div>
-                  </div>
-                  <span className={cn('rounded border px-3 py-1 text-[10px] font-black uppercase tracking-wider', statusClass(statusLabel(snapshot.liveExecution.status)))}>{statusLabel(snapshot.liveExecution.status)}</span>
+        <GlassPanel className="p-4">
+          <SectionTitle
+            icon={Terminal}
+            suffix={<button type="button" onClick={() => exportJson('pqc-orchestration-logs', snapshot.telemetryLogs)} className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">Download Logs</button>}
+          >
+            Live Telemetry
+          </SectionTitle>
+          {snapshot.telemetryLogs.length === 0 ? (
+            <EmptyState label="No orchestration logs have been emitted for this user yet." />
+          ) : (
+            <div className="max-h-[188px] space-y-2 overflow-y-auto rounded-md border border-white/5 bg-black/25 p-3 font-mono text-[11px]">
+              {snapshot.telemetryLogs.map((log) => (
+                <div key={log.id} className="grid grid-cols-[82px_1fr_32px] gap-2 text-white/55">
+                  <span>[{timeOnly(log.timestamp)}]</span>
+                  <span className="truncate">{log.message}</span>
+                  <span className={cn('text-right font-black', log.severity === 'success' ? 'text-emerald-300' : log.severity === 'critical' || log.severity === 'error' ? 'text-red-300' : 'text-gold')}>{log.severity === 'success' ? 'OK' : log.severity.toUpperCase().slice(0, 4)}</span>
                 </div>
-                <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
-                  {snapshot.liveExecution.stages.map((stage, index) => (
-                    <div key={stage.key} className="relative text-center">
-                      {index < snapshot.liveExecution!.stages.length - 1 && <div className="absolute left-1/2 top-4 hidden h-px w-full bg-gold/20 md:block" />}
-                      <div className={cn(
-                        'relative mx-auto flex h-8 w-8 items-center justify-center rounded-full border',
-                        stage.state === 'completed' && 'border-emerald-500 bg-emerald-500/10 text-emerald-300',
-                        stage.state === 'active' && 'border-gold bg-gold/10 text-gold',
-                        stage.state === 'failed' && 'border-red-500 bg-red-500/10 text-red-300',
-                        stage.state === 'pending' && 'border-white/15 bg-black/30 text-white/35'
-                      )}>
-                        {stage.state === 'completed' ? <CheckCircle2 className="h-4 w-4" /> : stage.state === 'failed' ? <X className="h-4 w-4" /> : <ListChecks className="h-4 w-4" />}
-                      </div>
-                      <div className="mt-2 text-[10px] font-black text-white/70">{stage.label}</div>
-                      <div className={cn('mt-1 text-[9px] font-bold', stage.state === 'completed' ? 'text-emerald-300' : stage.state === 'active' ? 'text-gold' : stage.state === 'failed' ? 'text-red-300' : 'text-white/35')}>
-                        {stage.state === 'completed' ? 'Completed' : stage.state === 'active' ? 'In Progress' : stage.state === 'failed' ? 'Failed' : 'Pending'}
-                      </div>
-                      <div className="mt-0.5 text-[9px] font-mono text-white/25">{timeOnly(stage.timestamp)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <EmptyState label="No active or scheduled orchestration workflow yet." />
-            )}
-          </GlassPanel>
-
-          <GlassPanel className="p-4">
-            <SectionTitle
-              icon={Terminal}
-              suffix={<button type="button" onClick={() => exportJson('pqc-orchestration-logs', snapshot.telemetryLogs)} className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">Download Logs</button>}
-            >
-              Live Telemetry
-            </SectionTitle>
-            {snapshot.telemetryLogs.length === 0 ? (
-              <EmptyState label="No orchestration logs have been emitted for this user yet." />
-            ) : (
-              <div className="max-h-[188px] space-y-2 overflow-y-auto rounded-md border border-white/5 bg-black/25 p-3 font-mono text-[11px]">
-                {snapshot.telemetryLogs.map((log) => (
-                  <div key={log.id} className="grid grid-cols-[82px_1fr_32px] gap-2 text-white/55">
-                    <span>[{timeOnly(log.timestamp)}]</span>
-                    <span className="truncate">{log.message}</span>
-                    <span className={cn('text-right font-black', log.severity === 'success' ? 'text-emerald-300' : log.severity === 'critical' || log.severity === 'error' ? 'text-red-300' : 'text-gold')}>{log.severity === 'success' ? 'OK' : log.severity.toUpperCase().slice(0, 4)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </GlassPanel>
-        </div>
+              ))}
+            </div>
+          )}
+        </GlassPanel>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(300px,0.9fr)_minmax(360px,1fr)_minmax(360px,1.25fr)]">
+      <GlassPanel className="p-4">
+        <SectionTitle icon={SlidersHorizontal} suffix={<a href="/dashboard/live-migration" className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">View All Tasks</a>}>
+          Task Queue
+        </SectionTitle>
+        {snapshot.taskQueue.length === 0 ? (
+          <EmptyState label="No pending orchestration tasks. Findings and migration jobs will appear here." />
+        ) : (
+          <div className="grid gap-3 xl:grid-cols-2">
+            {snapshot.taskQueue.map((task) => (
+              <a key={task.id} href="/dashboard/live-migration" className="grid grid-cols-[1fr_86px_62px] items-center gap-4 rounded-md border border-white/5 bg-white/[0.02] p-3 transition hover:border-gold/35 hover:bg-gold/[0.05]">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-black text-white/80">{task.title}</div>
+                  <div className={cn('mt-0.5 text-[10px] font-bold', priorityClass(task.priority))}>{task.priority}</div>
+                </div>
+                <div>
+                  {task.progress > 0 ? <ProgressBar value={task.progress} /> : <span className="text-xs text-white/45">{task.status}</span>}
+                </div>
+                <div className="text-right">
+                  <div className="text-[9px] uppercase text-white/30">ETA</div>
+                  <div className="font-mono text-[10px] text-white/55">{task.eta}</div>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </GlassPanel>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <GlassPanel className="p-4">
           <SectionTitle icon={ShieldCheck}>PQC Readiness Overview</SectionTitle>
           <div className="flex flex-col gap-6 md:flex-row md:items-center">
@@ -849,33 +1139,6 @@ export default function PqcOrchestration() {
           <a href="/dashboard/compliance" className="mt-4 inline-flex items-center gap-2 text-xs font-black text-gold hover:text-[#FFE8A8]">
             View Compliance Report <ArrowRight className="h-4 w-4" />
           </a>
-        </GlassPanel>
-
-        <GlassPanel className="p-4">
-          <SectionTitle icon={SlidersHorizontal} suffix={<a href="/dashboard/live-migration" className="rounded border border-gold/25 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">View All Tasks</a>}>
-            Task Queue
-          </SectionTitle>
-          {snapshot.taskQueue.length === 0 ? (
-            <EmptyState label="No pending orchestration tasks. Findings and migration jobs will appear here." />
-          ) : (
-            <div className="space-y-3">
-              {snapshot.taskQueue.map((task) => (
-                <a key={task.id} href="/dashboard/live-migration" className="grid grid-cols-[1fr_86px_62px] items-center gap-4 rounded-md border border-white/5 bg-white/[0.02] p-3 transition hover:border-gold/35 hover:bg-gold/[0.05]">
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-black text-white/80">{task.title}</div>
-                    <div className={cn('mt-0.5 text-[10px] font-bold', priorityClass(task.priority))}>{task.priority}</div>
-                  </div>
-                  <div>
-                    {task.progress > 0 ? <ProgressBar value={task.progress} /> : <span className="text-xs text-white/45">{task.status}</span>}
-                  </div>
-                  <div className="text-right">
-                    <div className="text-[9px] uppercase text-white/30">ETA</div>
-                    <div className="font-mono text-[10px] text-white/55">{task.eta}</div>
-                  </div>
-                </a>
-              ))}
-            </div>
-          )}
         </GlassPanel>
       </div>
 

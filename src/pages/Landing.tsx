@@ -1139,13 +1139,23 @@ function EnterpriseProtectionShowcase() {
                 type="button"
                 disabled={isRunning}
                 onClick={runAssessment}
-                className="rounded-none border-2 border-[#00c5eb] bg-[#00c5eb] px-5 py-3 text-center font-mono text-[10.5px] font-extrabold uppercase tracking-widest text-slate-950 transition-all duration-150 hover:bg-[#00c5eb]/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500 whitespace-nowrap select-none"
+                className="inline-flex w-full items-center justify-center rounded-none border-2 border-[#00c5eb] bg-[#00c5eb] px-5 py-3 text-center font-mono text-[10.5px] font-extrabold uppercase tracking-wide text-slate-950 transition-all duration-150 hover:bg-[#00c5eb]/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500 select-none sm:w-auto sm:tracking-widest"
               >
-                <Terminal className="mr-1.5 inline-block h-3.5 w-3.5 shrink-0 text-slate-950" />
+                <Terminal className="mr-1.5 h-3.5 w-3.5 shrink-0 text-slate-950" />
                 {isRunning ? 'Assessment Running...' : 'Run Quantum Risk Assessment'}
               </button>
             </div>
           </div>
+        </div>
+
+        <div className="mt-8 flex justify-center">
+          <a
+            href="/resources/quantum-simulation"
+            className="inline-flex w-full max-w-xs items-center justify-center rounded-none border-2 border-[#090d16] bg-[#d4af37] px-5 py-3 text-center font-mono text-[10px] font-extrabold uppercase tracking-wide text-slate-950 no-underline shadow-[4px_4px_0px_#090d16] transition-all duration-150 hover:bg-[#d4af37]/90 active:scale-95 sm:w-auto sm:max-w-none sm:tracking-widest"
+          >
+            <ArrowRight className="mr-1.5 h-3.5 w-3.5 shrink-0 text-slate-950" />
+            See Quantum Simulations
+          </a>
         </div>
       </div>
     </section>
@@ -2934,8 +2944,8 @@ export default function App() {
                     icon: Calendar
                   },
                   {
-                    title: 'Qguard Helix Command Center',
-                    description: 'Unified operational surface for scanning, vaulting, policy, planning, and monitoring.',
+                    title: 'Qguard Helix - Advance Features',
+                    description: 'Unified operational surface for HNDL, runtime visibility, trust fabric, crypto agility, migration, sandboxing, rollback, and vaulting.',
                     href: '#command-center',
                     icon: Database
                   },

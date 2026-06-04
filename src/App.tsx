@@ -7,6 +7,7 @@ import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
 import DocsPage from './app/docs/page';
 import PqcChecklistPage from './app/resources/pqc-checklist/page';
+import QuantumSimulationPage from './app/resources/quantum-simulation/page';
 import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
@@ -64,10 +65,15 @@ import CertificateTelemetryPage from './app/dashboard/certificate-telemetry/page
 import KeyAnalyticsPage from './app/dashboard/key-analytics/page';
 import ApiEncryptionPage from './app/dashboard/api-encryption/page';
 import MultiCloudTelemetryPage from './app/dashboard/multi-cloud-telemetry/page';
+import QkmsOverviewPage from './app/dashboard/qkms/overview/page';
+import QkmsInventoryPage from './app/dashboard/qkms/inventory/page';
+import QkmsGovernancePage from './app/dashboard/qkms/governance/page';
+import QkmsReadinessPage from './app/dashboard/qkms/readiness/page';
 import QFeaturesPage from './app/dashboard/q-features/page';
 import EcosystemDependencyMapPage from './app/dashboard/ecosystem-dependency-map/page';
 import VendorPqcReadinessPage from './app/dashboard/vendor-pqc-readiness/page';
 import TrustChainAnalyzerPage from './app/dashboard/trust-chain-analyzer/page';
+import TrustStateDiscoveryPage from './app/dashboard/trust-state-discovery/page';
 import HybridCryptoCompatibilityLabPage from './app/dashboard/hybrid-crypto-lab/page';
 
 export default function App() {
@@ -86,6 +92,11 @@ export default function App() {
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/localhost/resources/pqc-checklist" element={<PqcChecklistPage />} />
+          <Route path="/resources/quantum-simulation" element={<QuantumSimulationPage />} />
+          <Route path="/resources/quantum-emulation" element={<QuantumSimulationPage />} />
+          <Route path="/quantum-emulation" element={<QuantumSimulationPage />} />
+          <Route path="/localhost/resources/quantum-simulation" element={<QuantumSimulationPage />} />
+          <Route path="/localhost/resources/quantum-emulation" element={<QuantumSimulationPage />} />
           <Route path="/vault/shared/:id" element={<SharedFilePage />} />
           <Route path="/dashboard" element={<DashboardLayout />}>
           <Route index element={<DashboardPage />} />
@@ -166,6 +177,7 @@ export default function App() {
           <Route path="ecosystem-dependency-map" element={<EcosystemDependencyMapPage />} />
           <Route path="vendor-pqc-readiness" element={<VendorPqcReadinessPage />} />
           <Route path="trust-chain-analyzer" element={<TrustChainAnalyzerPage />} />
+          <Route path="trust-state-discovery" element={<TrustStateDiscoveryPage />} />
           <Route path="hybrid-crypto-lab" element={<HybridCryptoCompatibilityLabPage />} />
           <Route path="runtime-crypto-intel" element={<RuntimeCryptoIntelPage />} />
           <Route path="behavioral-analytics" element={<BehavioralAnalyticsPage />} />
@@ -189,6 +201,10 @@ export default function App() {
           <Route path="key-analytics" element={<KeyAnalyticsPage />} />
           <Route path="api-encryption" element={<ApiEncryptionPage />} />
           <Route path="multi-cloud-telemetry" element={<MultiCloudTelemetryPage />} />
+          <Route path="qkms/overview" element={<QkmsOverviewPage />} />
+          <Route path="qkms/inventory" element={<QkmsInventoryPage />} />
+          <Route path="qkms/governance" element={<QkmsGovernancePage />} />
+          <Route path="qkms/readiness" element={<QkmsReadinessPage />} />
           <Route path="q-features" element={<QFeaturesPage />} />
           </Route>
         </Routes>

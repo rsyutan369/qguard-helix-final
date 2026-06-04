@@ -13,13 +13,17 @@ DECLARE
     tbl TEXT;
     tables TEXT[] := ARRAY[
         'assets', 'asset_relationships', 'crypto_inventory', 'crypto_exposures',
-        'vulnerabilities', 'certificates', 'migration_jobs', 'migration_events',
+        'vulnerabilities', 'certificates', 'migration_jobs', 'migration_plans',
+        'migration_plan_configurations', 'migration_scope', 'migration_assets',
+        'migration_tasks', 'migration_controls', 'migration_audit_logs', 'migration_events',
+        'deployment_packages', 'orchestration_jobs', 'execution_queues',
+        'migration_execution', 'migration_telemetry', 'migration_validation_logs',
         'pqc_scan_sessions', 'pqc_scan_results', 'vault_files', 'vault_audit_logs',
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions',
-        'vendor_assessments'
+        'scanner_agent_policies', 'runtime_crypto_events', 'trust_state_findings',
+        'remediation_operator_actions', 'vendor_assessments'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
@@ -131,6 +135,81 @@ BEGIN
         EXECUTE 'ALTER TABLE public.pqc_scan_results ADD COLUMN IF NOT EXISTS remediation TEXT';
         EXECUTE 'ALTER TABLE public.pqc_scan_results ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
         EXECUTE 'ALTER TABLE public.pqc_scan_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.deployment_packages') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS plan_id TEXT';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS migration_job_id UUID';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS package_type VARCHAR(120) DEFAULT ''pqc_migration''';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS action_type VARCHAR(120)';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS target_algorithm VARCHAR(160)';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS required_capabilities TEXT[] DEFAULT ''{}''';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS status VARCHAR(60) DEFAULT ''ready''';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.deployment_packages ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.orchestration_jobs') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS plan_id TEXT';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS migration_job_id UUID';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS package_id UUID';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS status VARCHAR(60) DEFAULT ''queued''';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS readiness JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.orchestration_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.execution_queues') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS plan_id TEXT';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS migration_job_id UUID';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS package_id UUID';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS assigned_agent_id UUID';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS queue_status VARCHAR(60) DEFAULT ''queued''';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 50';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS available_after TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.execution_queues ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.migration_execution') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS migration_id UUID';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS plan_id TEXT';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS agent_id UUID';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS status VARCHAR(60) DEFAULT ''queued''';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS progress INTEGER DEFAULT 0';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS current_step TEXT';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.migration_execution ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.migration_telemetry') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS migration_id UUID';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS agent_id UUID';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS event_type VARCHAR(120)';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS metric_type VARCHAR(120)';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS metric_value NUMERIC';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS message TEXT';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.migration_telemetry ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.migration_validation_logs') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS migration_id UUID';
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS agent_id UUID';
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS validation_type VARCHAR(120)';
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS status VARCHAR(60)';
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS evidence JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.migration_validation_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
     END IF;
 
     IF to_regclass('public.scanner_agents') IS NOT NULL THEN
@@ -267,6 +346,23 @@ BEGIN
         EXECUTE 'ALTER TABLE public.runtime_crypto_events ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
     END IF;
 
+    IF to_regclass('public.trust_state_findings') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS asset_id UUID';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS category VARCHAR(100)';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS severity VARCHAR(20) DEFAULT ''medium''';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS title VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS detail TEXT';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS gate_impact VARCHAR(50) DEFAULT ''review''';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT ''open''';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS owner VARCHAR(255)';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS evidence JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP WITH TIME ZONE';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+        EXECUTE 'ALTER TABLE public.trust_state_findings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
     IF to_regclass('public.scanner_agent_policies') IS NOT NULL THEN
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS agent_id UUID';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS name VARCHAR(255) DEFAULT ''Default scanner policy''';
@@ -298,6 +394,10 @@ BEGIN
         EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS validated_at TIMESTAMP WITH TIME ZONE';
         EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
         EXECUTE 'ALTER TABLE public.remediation_operator_actions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
+    END IF;
+
+    IF to_regclass('public.compliance_evidence') IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE public.compliance_evidence ADD COLUMN IF NOT EXISTS asset_id UUID';
     END IF;
 END;
 $$;
@@ -498,6 +598,197 @@ CREATE POLICY migration_jobs_user_isolation ON migration_jobs
     WITH CHECK (user_id = auth.uid());
 CREATE INDEX IF NOT EXISTS idx_mj_user ON migration_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_mj_status ON migration_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_mj_metadata_plan ON migration_jobs USING GIN (metadata jsonb_path_ops);
+
+-- ============================================================
+-- 7B. MIGRATION PLANS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS migration_plans (
+    id TEXT PRIMARY KEY,
+    user_id UUID NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'draft', -- draft, approved, scheduled, executing, paused, rollback_requested, phase_approved, completed
+    selected_asset_ids TEXT[] DEFAULT '{}',
+    configuration JSONB DEFAULT '{}',
+    risk_data JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    approved_at TIMESTAMP WITH TIME ZONE,
+    scheduled_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE migration_plans ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_plans_user_isolation ON migration_plans;
+CREATE POLICY migration_plans_user_isolation ON migration_plans
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_mp_user ON migration_plans(user_id);
+CREATE INDEX IF NOT EXISTS idx_mp_status ON migration_plans(status);
+CREATE INDEX IF NOT EXISTS idx_mp_updated ON migration_plans(updated_at DESC);
+
+-- ============================================================
+-- 7C. MIGRATION PLAN CONFIGURATION AND EXECUTION DETAIL
+-- ============================================================
+CREATE TABLE IF NOT EXISTS migration_plan_configurations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id TEXT NOT NULL REFERENCES migration_plans(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    current_algorithms TEXT[] DEFAULT '{}',
+    target_algorithms TEXT[] DEFAULT '{}',
+    deployment_strategy VARCHAR(120) NOT NULL DEFAULT 'Staged Rollout',
+    controls JSONB DEFAULT '{}',
+    tags TEXT[] DEFAULT '{}',
+    schedule_at TIMESTAMP WITH TIME ZONE,
+    notes TEXT,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id)
+);
+
+ALTER TABLE migration_plan_configurations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_plan_configurations_user_isolation ON migration_plan_configurations;
+CREATE POLICY migration_plan_configurations_user_isolation ON migration_plan_configurations
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_mpc_user ON migration_plan_configurations(user_id);
+CREATE INDEX IF NOT EXISTS idx_mpc_plan ON migration_plan_configurations(plan_id);
+CREATE INDEX IF NOT EXISTS idx_mpc_strategy ON migration_plan_configurations(user_id, deployment_strategy);
+
+CREATE TABLE IF NOT EXISTS migration_scope (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id TEXT NOT NULL REFERENCES migration_plans(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    scope_type VARCHAR(80) NOT NULL,
+    scope_value TEXT NOT NULL,
+    asset_count INTEGER DEFAULT 0,
+    priority_score NUMERIC DEFAULT 0,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, scope_type, scope_value)
+);
+
+ALTER TABLE migration_scope ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_scope_user_isolation ON migration_scope;
+CREATE POLICY migration_scope_user_isolation ON migration_scope
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_ms_user ON migration_scope(user_id);
+CREATE INDEX IF NOT EXISTS idx_ms_plan ON migration_scope(plan_id);
+CREATE INDEX IF NOT EXISTS idx_ms_type ON migration_scope(user_id, scope_type);
+
+CREATE TABLE IF NOT EXISTS migration_assets (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id TEXT NOT NULL REFERENCES migration_plans(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    asset_id TEXT NOT NULL,
+    asset_name VARCHAR(255) NOT NULL,
+    asset_type VARCHAR(100),
+    environment VARCHAR(100),
+    owner VARCHAR(255),
+    current_algorithm VARCHAR(160),
+    target_algorithm VARCHAR(160),
+    priority VARCHAR(40),
+    risk_score INTEGER DEFAULT 0,
+    readiness_status VARCHAR(80),
+    tags TEXT[] DEFAULT '{}',
+    phase_index INTEGER DEFAULT 1,
+    sequence_order INTEGER DEFAULT 1,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, asset_id)
+);
+
+ALTER TABLE migration_assets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_assets_user_isolation ON migration_assets;
+CREATE POLICY migration_assets_user_isolation ON migration_assets
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_ma_user ON migration_assets(user_id);
+CREATE INDEX IF NOT EXISTS idx_ma_plan ON migration_assets(plan_id);
+CREATE INDEX IF NOT EXISTS idx_ma_sequence ON migration_assets(plan_id, phase_index, sequence_order);
+CREATE INDEX IF NOT EXISTS idx_ma_tags ON migration_assets USING GIN(tags);
+
+CREATE TABLE IF NOT EXISTS migration_tasks (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id TEXT NOT NULL REFERENCES migration_plans(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    migration_job_id UUID REFERENCES migration_jobs(id) ON DELETE SET NULL,
+    asset_id TEXT NOT NULL,
+    task_type VARCHAR(120) NOT NULL,
+    phase_index INTEGER DEFAULT 1,
+    sequence_order INTEGER DEFAULT 1,
+    status VARCHAR(60) DEFAULT 'pending',
+    target_algorithm VARCHAR(160),
+    controls JSONB DEFAULT '{}',
+    telemetry JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, asset_id, task_type)
+);
+
+ALTER TABLE migration_tasks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_tasks_user_isolation ON migration_tasks;
+CREATE POLICY migration_tasks_user_isolation ON migration_tasks
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_mt_user ON migration_tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_mt_plan ON migration_tasks(plan_id);
+CREATE INDEX IF NOT EXISTS idx_mt_job ON migration_tasks(migration_job_id);
+CREATE INDEX IF NOT EXISTS idx_mt_status ON migration_tasks(user_id, status);
+
+CREATE TABLE IF NOT EXISTS migration_controls (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id TEXT NOT NULL REFERENCES migration_plans(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    control_key VARCHAR(80) NOT NULL,
+    label VARCHAR(120) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    enforced_at TIMESTAMP WITH TIME ZONE,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, control_key)
+);
+
+ALTER TABLE migration_controls ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_controls_user_isolation ON migration_controls;
+CREATE POLICY migration_controls_user_isolation ON migration_controls
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_mc_user ON migration_controls(user_id);
+CREATE INDEX IF NOT EXISTS idx_mc_plan ON migration_controls(plan_id);
+CREATE INDEX IF NOT EXISTS idx_mc_enabled ON migration_controls(user_id, enabled);
+
+CREATE TABLE IF NOT EXISTS migration_audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    plan_id TEXT NOT NULL REFERENCES migration_plans(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL,
+    action VARCHAR(120) NOT NULL,
+    stage VARCHAR(120) NOT NULL,
+    result VARCHAR(60) DEFAULT 'success',
+    details JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE migration_audit_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_audit_logs_user_isolation ON migration_audit_logs;
+CREATE POLICY migration_audit_logs_user_isolation ON migration_audit_logs
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_mal_user ON migration_audit_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mal_plan ON migration_audit_logs(plan_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mal_stage ON migration_audit_logs(user_id, stage);
 
 -- ============================================================
 -- 8. MIGRATION EVENTS
@@ -521,6 +812,161 @@ CREATE POLICY migration_events_user_isolation ON migration_events
     WITH CHECK (user_id = auth.uid());
 CREATE INDEX IF NOT EXISTS idx_me_user ON migration_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_me_migration ON migration_events(migration_id);
+
+-- ============================================================
+-- 8B. MIGRATION EXECUTION PIPELINE
+-- ============================================================
+CREATE TABLE IF NOT EXISTS deployment_packages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    plan_id TEXT REFERENCES migration_plans(id) ON DELETE CASCADE,
+    migration_job_id UUID REFERENCES migration_jobs(id) ON DELETE CASCADE,
+    package_type VARCHAR(120) NOT NULL DEFAULT 'pqc_migration',
+    action_type VARCHAR(120),
+    target_algorithm VARCHAR(160),
+    required_capabilities TEXT[] DEFAULT '{}',
+    payload JSONB DEFAULT '{}',
+    status VARCHAR(60) NOT NULL DEFAULT 'ready',
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, migration_job_id)
+);
+
+ALTER TABLE deployment_packages ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS deployment_packages_user_isolation ON deployment_packages;
+CREATE POLICY deployment_packages_user_isolation ON deployment_packages
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_deployment_packages_user ON deployment_packages(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deployment_packages_job ON deployment_packages(migration_job_id);
+CREATE INDEX IF NOT EXISTS idx_deployment_packages_status ON deployment_packages(user_id, status);
+
+CREATE TABLE IF NOT EXISTS orchestration_jobs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    plan_id TEXT REFERENCES migration_plans(id) ON DELETE CASCADE,
+    migration_job_id UUID REFERENCES migration_jobs(id) ON DELETE CASCADE,
+    package_id UUID REFERENCES deployment_packages(id) ON DELETE SET NULL,
+    status VARCHAR(60) NOT NULL DEFAULT 'queued',
+    readiness JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, migration_job_id)
+);
+
+ALTER TABLE orchestration_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS orchestration_jobs_user_isolation ON orchestration_jobs;
+CREATE POLICY orchestration_jobs_user_isolation ON orchestration_jobs
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_orchestration_jobs_user ON orchestration_jobs(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orchestration_jobs_plan ON orchestration_jobs(plan_id, status);
+CREATE INDEX IF NOT EXISTS idx_orchestration_jobs_job ON orchestration_jobs(migration_job_id);
+
+CREATE TABLE IF NOT EXISTS execution_queues (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    plan_id TEXT REFERENCES migration_plans(id) ON DELETE CASCADE,
+    migration_job_id UUID REFERENCES migration_jobs(id) ON DELETE CASCADE,
+    package_id UUID REFERENCES deployment_packages(id) ON DELETE SET NULL,
+    assigned_agent_id UUID,
+    queue_status VARCHAR(60) NOT NULL DEFAULT 'queued',
+    priority INTEGER DEFAULT 50,
+    available_after TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    claimed_at TIMESTAMP WITH TIME ZONE,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(plan_id, user_id, migration_job_id)
+);
+
+ALTER TABLE execution_queues ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS execution_queues_user_isolation ON execution_queues;
+CREATE POLICY execution_queues_user_isolation ON execution_queues
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_execution_queues_user ON execution_queues(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_queues_status ON execution_queues(user_id, queue_status);
+CREATE INDEX IF NOT EXISTS idx_execution_queues_agent ON execution_queues(assigned_agent_id, claimed_at DESC);
+
+CREATE TABLE IF NOT EXISTS migration_execution (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    migration_id UUID REFERENCES migration_jobs(id) ON DELETE CASCADE,
+    plan_id TEXT REFERENCES migration_plans(id) ON DELETE SET NULL,
+    agent_id UUID,
+    status VARCHAR(60) NOT NULL DEFAULT 'queued',
+    progress INTEGER DEFAULT 0,
+    current_step TEXT,
+    started_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(migration_id, user_id)
+);
+
+ALTER TABLE migration_execution ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_execution_user_isolation ON migration_execution;
+CREATE POLICY migration_execution_user_isolation ON migration_execution
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_migration_execution_user ON migration_execution(user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_execution_migration ON migration_execution(migration_id);
+CREATE INDEX IF NOT EXISTS idx_migration_execution_agent ON migration_execution(agent_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_execution_status ON migration_execution(user_id, status);
+
+CREATE TABLE IF NOT EXISTS migration_telemetry (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    migration_id UUID REFERENCES migration_jobs(id) ON DELETE CASCADE,
+    agent_id UUID,
+    event_type VARCHAR(120) NOT NULL,
+    metric_type VARCHAR(120),
+    metric_value NUMERIC,
+    message TEXT,
+    metadata JSONB DEFAULT '{}',
+    observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE migration_telemetry ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_telemetry_user_isolation ON migration_telemetry;
+CREATE POLICY migration_telemetry_user_isolation ON migration_telemetry
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_migration_telemetry_user ON migration_telemetry(user_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_telemetry_migration ON migration_telemetry(migration_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_telemetry_type ON migration_telemetry(user_id, event_type);
+
+CREATE TABLE IF NOT EXISTS migration_validation_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    migration_id UUID REFERENCES migration_jobs(id) ON DELETE CASCADE,
+    agent_id UUID,
+    validation_type VARCHAR(120) NOT NULL,
+    status VARCHAR(60) NOT NULL DEFAULT 'recorded',
+    evidence JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE migration_validation_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS migration_validation_logs_user_isolation ON migration_validation_logs;
+CREATE POLICY migration_validation_logs_user_isolation ON migration_validation_logs
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_migration_validation_logs_user ON migration_validation_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_validation_logs_migration ON migration_validation_logs(migration_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_migration_validation_logs_status ON migration_validation_logs(user_id, status);
 
 -- ============================================================
 -- 9. PQC SCAN SESSIONS
@@ -757,6 +1203,7 @@ CREATE INDEX IF NOT EXISTS idx_se_severity ON security_events(severity);
 CREATE TABLE IF NOT EXISTS compliance_evidence (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL,
+    asset_id UUID REFERENCES assets(id) ON DELETE SET NULL,
     framework VARCHAR(100) NOT NULL, -- NIST, ISO27001, PCI-DSS, etc.
     control_id VARCHAR(50) NOT NULL,
     evidence_type VARCHAR(100),
@@ -774,6 +1221,7 @@ CREATE POLICY compliance_evidence_user_isolation ON compliance_evidence
     USING (user_id = auth.uid())
     WITH CHECK (user_id = auth.uid());
 CREATE INDEX IF NOT EXISTS idx_cev_user ON compliance_evidence(user_id);
+CREATE INDEX IF NOT EXISTS idx_cev_asset ON compliance_evidence(asset_id);
 
 -- ============================================================
 -- 16. AUDIT LOGS
@@ -1055,7 +1503,41 @@ CREATE INDEX IF NOT EXISTS idx_runtime_crypto_events_hash ON runtime_crypto_even
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_crypto_events_user_hash ON runtime_crypto_events(user_id, event_hash);
 
 -- ============================================================
--- 24. REMEDIATION OPERATOR ACTIONS
+-- 24. TRUST-STATE FINDINGS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS trust_state_findings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    asset_id UUID REFERENCES assets(id) ON DELETE SET NULL,
+    category VARCHAR(100) NOT NULL DEFAULT 'Migration Gate',
+    severity VARCHAR(20) NOT NULL DEFAULT 'medium',
+    title VARCHAR(255) NOT NULL,
+    detail TEXT NOT NULL,
+    gate_impact VARCHAR(50) NOT NULL DEFAULT 'review', -- blocker, review, monitor
+    status VARCHAR(50) NOT NULL DEFAULT 'open', -- open, assigned, resolved, suppressed
+    owner VARCHAR(255),
+    evidence JSONB DEFAULT '{}',
+    metadata JSONB DEFAULT '{}',
+    observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    resolved_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE trust_state_findings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS trust_state_findings_user_isolation ON trust_state_findings;
+CREATE POLICY trust_state_findings_user_isolation ON trust_state_findings
+    FOR ALL
+    USING (user_id = auth.uid())
+    WITH CHECK (user_id = auth.uid());
+CREATE INDEX IF NOT EXISTS idx_trust_state_findings_user ON trust_state_findings(user_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trust_state_findings_asset ON trust_state_findings(asset_id, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trust_state_findings_gate ON trust_state_findings(user_id, gate_impact, status);
+CREATE INDEX IF NOT EXISTS idx_trust_state_findings_severity ON trust_state_findings(user_id, severity);
+CREATE INDEX IF NOT EXISTS idx_trust_state_findings_evidence ON trust_state_findings USING GIN (evidence jsonb_path_ops);
+
+-- ============================================================
+-- 25. REMEDIATION OPERATOR ACTIONS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS remediation_operator_actions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1337,13 +1819,17 @@ DECLARE
     tbl TEXT;
     tables TEXT[] := ARRAY[
         'assets', 'asset_relationships', 'crypto_inventory', 'crypto_exposures',
-        'vulnerabilities', 'certificates', 'migration_jobs', 'migration_events',
+        'vulnerabilities', 'certificates', 'migration_jobs', 'migration_plans',
+        'migration_plan_configurations', 'migration_scope', 'migration_assets',
+        'migration_tasks', 'migration_controls', 'migration_audit_logs', 'migration_events',
+        'deployment_packages', 'orchestration_jobs', 'execution_queues',
+        'migration_execution', 'migration_telemetry', 'migration_validation_logs',
         'pqc_scan_sessions', 'pqc_scan_results', 'vault_files', 'vault_audit_logs',
         'qrng_events', 'security_events', 'compliance_evidence', 'audit_logs',
         'user_devices', 'auth_events', 'scanner_agents', 'agent_heartbeats',
         'connector_accounts', 'scanner_evidence', 'scanner_alerts',
-        'scanner_agent_policies', 'runtime_crypto_events', 'remediation_operator_actions',
-        'vendor_assessments'
+        'scanner_agent_policies', 'runtime_crypto_events', 'trust_state_findings',
+        'remediation_operator_actions', 'vendor_assessments'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP

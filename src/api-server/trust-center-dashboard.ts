@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { buildTenantTelemetrySync } from './tenant-telemetry-sync'
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
@@ -1016,17 +1017,48 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
     },
   ].filter(Boolean)
 
-  const eventPipelineStatus = current.length
-    ? 'active'
-    : total
-      ? 'inventory_only'
-      : scannerAgents.length || connectorAccounts.length
-        ? 'waiting_for_trust_events'
-        : 'no_agents'
+  const sync = buildTenantTelemetrySync({
+    assets,
+    scannerAgents,
+    connectorAccounts,
+    agentHeartbeats,
+    scanSessions,
+    runtimeEvents,
+    scannerEvidence,
+    scannerAlerts,
+    scanResults,
+    cryptoInventory,
+    cryptoExposures,
+    securityEvents,
+    generatedKeys,
+    certificates,
+    vaultAuditLogs,
+    vulnerabilities,
+    auditLogs,
+    authEvents,
+    userSecurityEvents,
+    userSessions,
+    userDevices,
+    complianceEvidence,
+    migrationJobs,
+  })
+
+  const activeConnectors = connectorAccounts.filter((connector: any) => /connected|active|healthy|ok|synced/i.test(String(connector.status || ''))).length
+
+  let eventPipelineStatus = 'no_agents'
+  if (current.length) {
+    eventPipelineStatus = 'active'
+  } else if (sync.runningScans) {
+    eventPipelineStatus = 'scan_running'
+  } else if (total) {
+    eventPipelineStatus = 'inventory_only'
+  } else if (scannerAgents.length || connectorAccounts.length) {
+    eventPipelineStatus = 'waiting_for_trust_events'
+  }
 
   return {
     generatedAt: new Date().toISOString(),
-    latestActivityAt: latestDate(...signals.slice(0, 60).map((signal) => signal.timestamp)),
+    latestActivityAt: latestDate(...signals.slice(0, 60).map((signal) => signal.timestamp), sync.latestScanAt, sync.latestDiscoveryAt, sync.latestAgentHeartbeatAt),
     metrics: {
       trustScore,
       trustScoreDelta: deltaPercent(current.filter((signal) => signal.trusted).length, previous.filter((signal) => signal.trusted).length),
@@ -1036,7 +1068,7 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       trustedSignals: trusted.length,
       reviewSignals: review.length,
       highRiskSignals: highRisk.length,
-      assetsCovered: new Set(signals.map((signal) => signal.subject).filter(Boolean)).size,
+      assetsCovered: Math.max(sync.activeAssets, new Set(signals.map((signal) => signal.subject).filter(Boolean)).size),
       identities,
       devices,
       activeSessions: userSessions.filter((session: any) => !session.revoked_at && (!session.expires_at || dateMs(session.expires_at) > now)).length,
@@ -1046,7 +1078,7 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       encryptedPercent: percentOf(encrypted.length, total),
       staleSignals: stale.length,
       zeroTrustPassRate: percentOf(zeroControls.filter((control) => control.status === 'passed').length, zeroControls.length),
-      activeSources: scannerAgents.length + connectorAccounts.length,
+      activeSources: sync.onlineAgents + activeConnectors,
     },
     timeline,
     domainRows,
@@ -1086,11 +1118,12 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
         detail: signal.detail,
       })),
     telemetry: {
+      ...sync,
       assets: assets.length,
       runtimeEvents: runtimeEvents.length,
       scannerEvidence: scannerEvidence.length,
       scannerAlerts: scannerAlerts.length,
-      scanSessions: scanSessions.length,
+      scanSessions: sync.scanSessions,
       scanResults: scanResults.length,
       vulnerabilities: vulnerabilities.length,
       cryptoInventory: cryptoInventory.length,

@@ -44,6 +44,7 @@ import {
   TestTube2,
   TrendingDown,
   TrendingUp,
+  Trash2,
   Upload,
   X,
   Zap,
@@ -150,6 +151,32 @@ type PqcStackItem = {
   usage: number
 }
 
+type SimulationHistoryRow = {
+  id: string
+  name: string
+  sourceAlgorithm: string
+  targetAlgorithm: string
+  assetName: string
+  assetType: string
+  assets: number
+  riskScore: number
+  complianceScore: number
+  status: SimulationStatus
+  durationMs: number
+  duration: string
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
+  updatedAt: string
+  riskLevel: string
+  runMode: string
+  runModeLabel: string
+  owner: string
+  environment: string
+  snapshots: number
+  eventCount: number
+}
+
 type LogEntry = {
   id: string
   jobId: string
@@ -196,6 +223,7 @@ type SandboxSnapshot = {
   generatedAt: string
   summary: SandboxSummary
   simulations: Simulation[]
+  history: SimulationHistoryRow[]
   workflows: Simulation[]
   riskFactors: RiskFactor[]
   recommendations: Recommendation[]
@@ -211,12 +239,23 @@ type OperatorNotice = {
   message: string
 }
 
-type ActiveTab = 'overview' | 'simulations' | 'risk' | 'rollback' | 'compliance' | 'logs' | 'recommendations' | 'pqc-stack'
+type ActiveTab = 'overview' | 'simulations' | 'history' | 'risk' | 'rollback' | 'compliance' | 'logs' | 'recommendations' | 'pqc-stack'
+type SandboxActionHandler = (id: string, action: string, options?: Record<string, unknown>) => void | Promise<void>
+type TerminalLineLevel = 'command' | 'telemetry' | 'event' | 'nist' | 'success' | 'warning' | 'error'
+type TerminalLine = {
+  id: string
+  timestamp: string
+  level: TerminalLineLevel
+  prompt: string
+  command: string
+  detail?: string
+}
 
 const EMPTY: SandboxSnapshot = {
   generatedAt: new Date().toISOString(),
   summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalWorkflows: 0, actualMigrations: 0, remediationWorkflows: 0, runningWorkflows: 0, completedWorkflows: 0, failedWorkflows: 0, queuedWorkflows: 0, pausedWorkflows: 0, blockedWorkflows: 0, averageWorkflowProgress: 0, backgroundEngine: 'idle', lastMigrationEventAt: null, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, openVulnerabilities: 0, pqcReadiness: 0, riskScore: 100, complianceScore: 0, expiringCerts: 0, lastScanAt: null, completionRate: 0, workflowCompletionRate: 0 },
   simulations: [],
+  history: [],
   workflows: [],
   riskFactors: [],
   recommendations: [],
@@ -311,12 +350,249 @@ function severityIcon(s: string) {
   return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
 }
 
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
 function progressBarColor(v: number, status: string) {
   if (status === 'failed') return RED
   if (status === 'completed') return GREEN
   if (v >= 70) return GREEN
   if (v >= 40) return GOLD
   return ORANGE
+}
+
+function canDeleteSimulationStatus(status: string) {
+  return ['completed', 'failed', 'stopped', 'rolled_back'].includes(status)
+}
+
+function historyDuration(start: string | null, end: string | null, fallback: string | null) {
+  const started = start ? new Date(start).getTime() : 0
+  const finished = end ? new Date(end).getTime() : fallback ? new Date(fallback).getTime() : 0
+  if (!started || !finished || !Number.isFinite(started) || !Number.isFinite(finished) || finished < started) {
+    return { durationMs: 0, duration: '--' }
+  }
+  const ms = finished - started
+  const minutes = Math.floor(ms / 60000)
+  const seconds = Math.max(0, Math.round((ms % 60000) / 1000))
+  if (minutes >= 60) return { durationMs: ms, duration: `${Math.floor(minutes / 60)}h ${minutes % 60}m` }
+  if (minutes > 0) return { durationMs: ms, duration: `${minutes}m ${seconds}s` }
+  return { durationMs: ms, duration: `${seconds}s` }
+}
+
+function historyRiskScore(sim: Simulation) {
+  const riskPenalty = sim.riskLevel === 'critical' ? 35 : sim.riskLevel === 'high' ? 25 : sim.riskLevel === 'medium' ? 12 : 4
+  const statusPenalty = sim.status === 'failed' ? 25 : sim.status === 'rolled_back' ? 15 : 0
+  return Math.max(0, Math.min(100, Math.round(100 - riskPenalty - statusPenalty + sim.progress * 0.35)))
+}
+
+function deriveHistory(simulations: Simulation[], complianceScore = 0): SimulationHistoryRow[] {
+  return simulations.map((sim) => {
+    const duration = historyDuration(sim.startedAt || sim.createdAt, sim.completedAt, sim.updatedAt)
+    return {
+      id: sim.id,
+      name: sim.name,
+      sourceAlgorithm: sim.fromAlgo,
+      targetAlgorithm: sim.toAlgo,
+      assetName: sim.assetName,
+      assetType: sim.assetType,
+      assets: sim.assetName && sim.assetName !== 'Unknown Asset' ? 1 : 0,
+      riskScore: historyRiskScore(sim),
+      complianceScore: Math.max(0, Math.min(100, Math.round((complianceScore + (sim.status === 'completed' ? 100 : sim.progress || 0)) / 2))),
+      status: sim.status,
+      durationMs: duration.durationMs,
+      duration: duration.duration,
+      createdAt: sim.createdAt,
+      startedAt: sim.startedAt,
+      completedAt: sim.completedAt,
+      updatedAt: sim.updatedAt,
+      riskLevel: sim.riskLevel,
+      runMode: sim.runMode,
+      runModeLabel: sim.runModeLabel,
+      owner: sim.owner,
+      environment: sim.environment,
+      snapshots: Array.isArray(sim.metadata?.snapshots) ? sim.metadata.snapshots.length : 0,
+      eventCount: sim.eventCount,
+    }
+  })
+}
+
+function downloadJson(filename: string, value: unknown) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function historyDateMatches(value: string, range: string) {
+  if (range === 'all') return true
+  const ms = new Date(value).getTime()
+  if (!Number.isFinite(ms)) return false
+  const days = range === '24h' ? 1 : range === '7d' ? 7 : range === '30d' ? 30 : 90
+  return Date.now() - ms <= days * 24 * 60 * 60 * 1000
+}
+
+function quoteArg(value: unknown) {
+  const text = String(value ?? '').trim() || 'unknown'
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+function nistStandardsForAlgorithm(algorithm: string) {
+  const normalized = String(algorithm || '').toLowerCase()
+  const standards: string[] = []
+  if (/ml-kem|kyber|kem/.test(normalized)) standards.push('NIST FIPS 203 (ML-KEM)')
+  if (/ml-dsa|dilithium/.test(normalized)) standards.push('NIST FIPS 204 (ML-DSA)')
+  if (/slh-dsa|sphincs/.test(normalized)) standards.push('NIST FIPS 205 (SLH-DSA)')
+  if (/aes-?256/.test(normalized)) standards.push('NIST FIPS 197 (AES-256)')
+  if (/sha-?3|shake/.test(normalized)) standards.push('NIST FIPS 202 (SHA-3/SHAKE)')
+  return standards.length ? standards.join(' + ') : 'NIST PQC target pending'
+}
+
+function sourceRiskStandard(sourceAlgorithm: string) {
+  const normalized = String(sourceAlgorithm || '').toLowerCase()
+  if (/rsa|ecdsa|ecdh|diffie|dh|ed25519|x25519/.test(normalized)) {
+    return 'quantum-vulnerable public-key source; transition tracked against NIST PQC migration guidance'
+  }
+  if (/aes|sha-?3|shake/.test(normalized)) return 'symmetric/hash primitive reviewed for quantum security posture'
+  return 'source inventory normalized from tenant crypto evidence'
+}
+
+function phaseCommandForSimulation(sim: Simulation, planId: string) {
+  const phase = String(sim.phaseId || sim.phase || '').toLowerCase()
+  if (sim.status === 'queued') {
+    return `qguard-sandbox queue inspect --plan ${quoteArg(planId)} --job ${quoteArg(sim.id)} --engine ${quoteArg(sim.engineStatus)}`
+  }
+  if (sim.status === 'failed') {
+    return `qguard-sandbox triage --job ${quoteArg(sim.id)} --status "failed" --evidence "migration_events"`
+  }
+  if (sim.status === 'rollback_requested' || sim.status === 'rolled_back' || phase.includes('rollback')) {
+    return `qguard-sandbox rollback verify --plan ${quoteArg(planId)} --job ${quoteArg(sim.id)} --checkpoint "latest"`
+  }
+  if (phase.includes('preparation')) {
+    return `qguard-sandbox snapshot create --job ${quoteArg(sim.id)} --asset ${quoteArg(sim.assetName)} --rollback-checkpoint`
+  }
+  if (phase.includes('assessment')) {
+    return `qguard-pqc assess --job ${quoteArg(sim.id)} --source ${quoteArg(sim.fromAlgo)} --target ${quoteArg(sim.toAlgo)} --nist "FIPS-203,FIPS-204,FIPS-205"`
+  }
+  if (phase.includes('verification')) {
+    return `qguard-pqc verify --job ${quoteArg(sim.id)} --handshake --certificate-chain --target ${quoteArg(sim.toAlgo)}`
+  }
+  if (phase.includes('finalization') || sim.status === 'completed') {
+    return `qguard-evidence collect --plan ${quoteArg(planId)} --job ${quoteArg(sim.id)} --format "nist-pqc-readiness"`
+  }
+  return `qguard-pqc simulate --job ${quoteArg(sim.id)} --mode "sandbox" --source ${quoteArg(sim.fromAlgo)} --target ${quoteArg(sim.toAlgo)}`
+}
+
+function terminalLevelClass(level: TerminalLineLevel) {
+  if (level === 'command') return 'text-sky-200'
+  if (level === 'telemetry') return 'text-cyan-200'
+  if (level === 'event') return 'text-white/70'
+  if (level === 'nist') return 'text-gold'
+  if (level === 'success') return 'text-emerald-300'
+  if (level === 'warning') return 'text-amber-300'
+  if (level === 'error') return 'text-red-300'
+  return 'text-white/70'
+}
+
+function buildHandoffTerminalLines(planId: string, simulations: Simulation[], recentLogs: LogEntry[], generatedAt: string, sseActive: boolean): TerminalLine[] {
+  const lines: TerminalLine[] = [{
+    id: `stream-${planId}-${generatedAt}`,
+    timestamp: generatedAt,
+    level: sseActive ? 'success' : 'warning',
+    prompt: '$',
+    command: `qguard-sandbox watch --plan ${quoteArg(planId)} --source "migration-planner" --stream ${quoteArg(sseActive ? 'sse-live' : 'reconnecting')}`,
+    detail: `${fmt(simulations.length)} linked simulation(s) in authenticated tenant scope`,
+  }]
+
+  if (simulations.length === 0) {
+    lines.push({
+      id: `waiting-${planId}-${generatedAt}`,
+      timestamp: generatedAt,
+      level: 'warning',
+      prompt: '>',
+      command: 'awaiting planner handoff jobs from migration_jobs',
+      detail: 'No sandbox simulation rows are linked to this plan yet.',
+    })
+    return lines
+  }
+
+  simulations.forEach((sim) => {
+    const standards = nistStandardsForAlgorithm(sim.toAlgo)
+    const snapshots = Array.isArray(sim.metadata?.snapshots) ? sim.metadata.snapshots as Array<Record<string, unknown>> : []
+    const jobLogs = recentLogs
+      .filter((log) => log.jobId === sim.id)
+      .slice(-4)
+
+    lines.push(
+      {
+        id: `standard-${sim.id}-${sim.toAlgo}-${sim.updatedAt}`,
+        timestamp: sim.updatedAt || generatedAt,
+        level: 'nist',
+        prompt: 'nist',
+        command: `qguard-pqc standards validate --job ${quoteArg(sim.id)} --target ${quoteArg(sim.toAlgo)} --standard ${quoteArg(standards)}`,
+        detail: `source=${sim.fromAlgo || 'unknown'}; ${sourceRiskStandard(sim.fromAlgo)}`,
+      },
+      {
+        id: `phase-${sim.id}-${sim.phaseId}-${sim.progress}-${sim.updatedAt}`,
+        timestamp: sim.updatedAt || generatedAt,
+        level: sim.status === 'failed' ? 'error' : sim.status === 'completed' ? 'success' : 'command',
+        prompt: '$',
+        command: phaseCommandForSimulation(sim, planId),
+        detail: `phase=${sim.phase || sim.phaseId || 'queued'}; ${sim.phaseDetail || sim.queuedReason || sim.eta || 'live sandbox state'}`,
+      },
+      {
+        id: `telemetry-${sim.id}-${sim.status}-${sim.progress}-${sim.updatedAt}`,
+        timestamp: sim.updatedAt || generatedAt,
+        level: 'telemetry',
+        prompt: 'tel',
+        command: `telemetry status=${sim.status} progress=${pct(sim.progress)} engine=${quoteArg(sim.engineStatus)} risk=${sim.riskLevel || 'unknown'}`,
+        detail: `asset=${sim.assetName || sim.name}; env=${sim.environment}; owner=${sim.owner}; eta=${sim.eta}; events=${fmt(sim.eventCount || 0)}`,
+      },
+    )
+
+    if (snapshots.length > 0) {
+      const latest = snapshots[snapshots.length - 1]
+      lines.push({
+        id: `snapshot-${sim.id}-${String(latest?.id || snapshots.length)}-${sim.updatedAt}`,
+        timestamp: String(latest?.capturedAt || latest?.createdAt || sim.updatedAt || generatedAt),
+        level: 'event',
+        prompt: 'snap',
+        command: `rollback checkpoint ${quoteArg(latest?.id || `snapshot-${snapshots.length}`)} captured`,
+        detail: `snapshot_count=${fmt(snapshots.length)}; rollback evidence retained in simulation metadata`,
+      })
+    }
+
+    sim.recentEvents.slice(-4).forEach((event) => {
+      const severity = String(event.severity || '').toLowerCase()
+      lines.push({
+        id: `event-${sim.id}-${event.id}`,
+        timestamp: event.timestamp || sim.updatedAt || generatedAt,
+        level: severity === 'error' || severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : 'event',
+        prompt: 'evt',
+        command: `${event.type || 'migration_event'}: ${event.message || 'migration event received'}`,
+        detail: `job=${sim.id}; severity=${event.severity || 'info'}`,
+      })
+    })
+
+    jobLogs.forEach((log) => {
+      const severity = String(log.severity || '').toLowerCase()
+      lines.push({
+        id: `log-${sim.id}-${log.id}`,
+        timestamp: log.timestamp || sim.updatedAt || generatedAt,
+        level: severity === 'error' || severity === 'critical' ? 'error' : severity === 'warning' ? 'warning' : 'event',
+        prompt: 'log',
+        command: `${log.type || 'sandbox_log'}: ${log.message || 'telemetry event received'}`,
+        detail: `source=recentLogs; severity=${log.severity || 'info'}`,
+      })
+    })
+  })
+
+  return Array.from(new Map(lines.map((line) => [line.id, line])).values())
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .slice(-120)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -336,9 +612,12 @@ function useSandbox() {
 
   const applySnapshot = useCallback((snapshot?: SandboxSnapshot | null) => {
     if (snapshot) {
+      const simulations = Array.isArray(snapshot.simulations) ? snapshot.simulations : []
       setData({
         ...snapshot,
-        workflows: Array.isArray(snapshot.workflows) ? snapshot.workflows : snapshot.simulations || [],
+        simulations,
+        history: Array.isArray(snapshot.history) ? snapshot.history : deriveHistory(simulations, snapshot.complianceScore || snapshot.summary?.complianceScore || 0),
+        workflows: Array.isArray(snapshot.workflows) ? snapshot.workflows : simulations,
       })
     }
   }, [])
@@ -419,7 +698,7 @@ function useSandbox() {
   }, [user, fetchSnapshot])
 
   // Actions
-  const doAction = useCallback(async (jobId: string, action: string) => {
+  const doAction = useCallback(async (jobId: string, action: string, options: Record<string, unknown> = {}) => {
     if (!token) return
     const key = `${jobId}:${action}`
     setPendingAction(key)
@@ -427,7 +706,7 @@ function useSandbox() {
       const response = await fetch(`/api/v1/sandbox/jobs/${jobId}/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...options }),
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(payload?.error?.message || `Failed to ${action} simulation`)
@@ -520,7 +799,34 @@ function useSandbox() {
     }
   }, [token, showNotice])
 
-  return { data, loading, error, notice, pendingAction, sseActive, refresh: fetchSnapshot, doAction, doBulkAction, startSimulation, exportReport }
+  const exportSimulation = useCallback(async (simulationId: string, format: 'json' | 'csv' = 'json') => {
+    if (!token) return
+    const key = `${simulationId}:export:${format}`
+    setPendingAction(key)
+    try {
+      const r = await fetch(`/api/v1/sandbox/export?format=${format}&simulationId=${encodeURIComponent(simulationId)}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!r.ok) {
+        const payload = await r.json().catch(() => ({}))
+        throw new Error(payload?.error?.message || `Simulation export failed (${r.status})`)
+      }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `qguard-simulation-${simulationId.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+      showNotice('success', `${format.toUpperCase()} simulation report generated.`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to export simulation report'
+      setError(message)
+      showNotice('error', message)
+    } finally {
+      setPendingAction(null)
+    }
+  }, [token, showNotice])
+
+  return { data, loading, error, notice, pendingAction, sseActive, refresh: fetchSnapshot, doAction, doBulkAction, startSimulation, exportReport, exportSimulation }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -577,6 +883,88 @@ function ActionBtn({ icon: Icon, label, onClick, variant = 'default', small, dis
       <Icon className={small ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
       {label}
     </button>
+  )
+}
+
+function HandoffTerminalConsole({
+  planId,
+  simulations,
+  recentLogs,
+  generatedAt,
+  sseActive,
+}: {
+  planId: string
+  simulations: Simulation[]
+  recentLogs: LogEntry[]
+  generatedAt: string
+  sseActive: boolean
+}) {
+  const terminalRef = useRef<HTMLDivElement | null>(null)
+  const lines = useMemo(
+    () => buildHandoffTerminalLines(planId, simulations, recentLogs, generatedAt, sseActive),
+    [generatedAt, planId, recentLogs, simulations, sseActive],
+  )
+  const activeCount = simulations.filter((sim) => ['running', 'queued', 'paused'].includes(sim.status)).length
+  const targetStandards = Array.from(new Set(
+    simulations
+      .map((sim) => nistStandardsForAlgorithm(sim.toAlgo))
+      .filter((standard) => standard !== 'NIST PQC target pending'),
+  ))
+
+  useEffect(() => {
+    const el = terminalRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [lines])
+
+  return (
+    <div className="migration-handoff-terminal mt-4 overflow-hidden rounded-xl border border-white/8 bg-[#02070E]/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_18px_48px_rgba(0,0,0,0.24)]">
+      <div className="flex flex-col gap-3 border-b border-white/8 bg-black/20 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gold/25 bg-gold/10 text-gold">
+            <Terminal className="h-4.5 w-4.5" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-black text-white">Real-Time Migration Terminal</h3>
+              <span className={cn('h-2 w-2 rounded-full', sseActive ? 'bg-emerald-400 shadow-[0_0_10px_rgba(34,197,94,0.8)] animate-pulse' : 'bg-amber-400')} />
+            </div>
+            <p className="mt-0.5 truncate text-[10px] font-semibold text-white/40">
+              Live commands are reconstructed from tenant sandbox jobs, migration events, and SSE telemetry.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill className="border-cyan-500/25 bg-cyan-500/10 text-cyan-300">{fmt(lines.length)} entries</Pill>
+          <Pill className={cn(sseActive ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300')}>
+            {sseActive ? 'streaming' : 'reconnecting'}
+          </Pill>
+          <Pill className="border-gold/25 bg-gold/10 text-gold">
+            {targetStandards.length ? targetStandards.slice(0, 2).join(' + ') : 'NIST PQC'}
+          </Pill>
+          <Pill className="border-white/10 bg-white/[0.03] text-white/45">{fmt(activeCount)} active</Pill>
+        </div>
+      </div>
+
+      <div
+        ref={terminalRef}
+        role="log"
+        aria-live="polite"
+        aria-label="Real-time migration planner handoff terminal"
+        className="max-h-[320px] overflow-y-auto px-4 py-3 font-mono text-[11px] leading-relaxed"
+      >
+        {lines.map((line) => (
+          <div key={line.id} className="grid gap-2 border-b border-white/[0.04] py-2 last:border-b-0 sm:grid-cols-[70px_46px_minmax(0,1fr)]">
+            <span className="text-white/30">{timeStr(line.timestamp)}</span>
+            <span className={cn('uppercase tracking-[0.18em]', terminalLevelClass(line.level))}>{line.prompt}</span>
+            <div className="min-w-0">
+              <div className={cn('break-words font-semibold', terminalLevelClass(line.level))}>{line.command}</div>
+              {line.detail && <div className="mt-0.5 break-words text-white/35">{line.detail}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -714,13 +1102,14 @@ function SimulationDetailsModal({
 }: {
   simulation: Simulation | null
   onClose: () => void
-  onAction: (id: string, action: string) => void
+  onAction: SandboxActionHandler
   pendingAction: string | null
 }) {
   if (!simulation) return null
   const sc = statusColor(simulation.status)
   const snapshots = Array.isArray(simulation.metadata?.snapshots) ? simulation.metadata.snapshots as Array<Record<string, unknown>> : []
   const busy = (action: string) => pendingAction === `${simulation.id}:${action}`
+  const deleteAllowed = simulation.isSandbox && canDeleteSimulationStatus(simulation.status)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
@@ -797,15 +1186,40 @@ function SimulationDetailsModal({
                 <EmptyBlock label="No recovery snapshots captured yet." />
               ) : (
                 <div className="space-y-2">
-                  {snapshots.slice().reverse().slice(0, 6).map((snap, index) => (
-                    <div key={String(snap.id || index)} className="rounded-lg border border-white/6 bg-white/[0.025] px-3 py-2 text-[11px]">
+                  {snapshots.slice().reverse().slice(0, 6).map((snap, index) => {
+                    const simulationState = objectRecord(snap.simulationState)
+                    const riskState = objectRecord(snap.riskState)
+                    const complianceState = objectRecord(snap.complianceState)
+                    const snapshotId = String(snap.id || `snapshot-${index + 1}`)
+                    return (
+                    <div key={snapshotId} className="rounded-lg border border-white/6 bg-white/[0.025] px-3 py-2 text-[11px]">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="font-mono font-bold text-gold">{String(snap.id || `snapshot-${index + 1}`)}</span>
+                        <span className="font-mono font-bold text-gold">{snapshotId}</span>
                         <span className="text-white/35">{relTime(String(snap.at || ''))}</span>
                       </div>
-                      <div className="mt-1 text-white/45">Status: {String(snap.status || '--')} | Progress: {String(snap.progress ?? '--')}%</div>
+                      <div className="mt-1 grid gap-1 text-white/45 sm:grid-cols-2">
+                        <span>Snapshot: {String(snap.status || simulationState.status || '--')} | {String(snap.progress ?? simulationState.progress ?? '--')}%</span>
+                        <span>Current: {simulation.status} | {simulation.progress}%</span>
+                        <span>Risk score: {String(riskState.riskScore ?? '--')}</span>
+                        <span>Compliance: {String(complianceState.score ?? '--')}</span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <ActionBtn
+                          icon={Upload}
+                          label={busy('restore_snapshot') ? 'Restoring' : 'Restore'}
+                          onClick={() => onAction(simulation.id, 'restore_snapshot', { snapshotId })}
+                          disabled={busy('restore_snapshot')}
+                          small
+                        />
+                        <ActionBtn
+                          icon={Download}
+                          label="Export"
+                          onClick={() => downloadJson(`qguard-snapshot-${snapshotId}.json`, { simulationId: simulation.id, simulationName: simulation.name, snapshot: snap })}
+                          small
+                        />
+                      </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               )}
             </div>
@@ -818,6 +1232,8 @@ function SimulationDetailsModal({
             {simulation.isSandbox && simulation.status === 'running' && <ActionBtn icon={Square} label={busy('stop') ? 'Stopping' : 'Stop'} onClick={() => onAction(simulation.id, 'stop')} disabled={busy('stop')} variant="danger" />}
             {['running', 'paused', 'completed'].includes(simulation.status) && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(simulation.id, 'rollback')} disabled={busy('rollback')} variant="danger" />}
             <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(simulation.id, 'snapshot')} disabled={busy('snapshot')} />
+            {snapshots.length > 0 && <ActionBtn icon={Upload} label={busy('restore_snapshot') ? 'Restoring' : 'Restore Snapshot'} onClick={() => onAction(simulation.id, 'restore_snapshot', { snapshotId: String(snapshots[snapshots.length - 1]?.id || '') })} disabled={busy('restore_snapshot')} />}
+            {deleteAllowed && <ActionBtn icon={Trash2} label={busy('delete') ? 'Deleting' : 'Delete Simulation'} onClick={() => { if (window.confirm('Delete this completed simulation and purge its execution artifacts? Audit and security records will remain.')) onAction(simulation.id, 'delete') }} disabled={busy('delete')} variant="danger" />}
           </div>
         </div>
       </div>
@@ -832,13 +1248,15 @@ function SimulationRow({
   pendingAction,
 }: {
   sim: Simulation
-  onAction: (id: string, action: string) => void
+  onAction: SandboxActionHandler
   onDetails: (sim: Simulation) => void
   pendingAction: string | null
 }) {
   const [expanded, setExpanded] = useState(false)
   const sc = statusColor(sim.status)
   const busy = (action: string) => pendingAction === `${sim.id}:${action}`
+  const deleteAllowed = sim.isSandbox && canDeleteSimulationStatus(sim.status)
+  const snapshots = Array.isArray(sim.metadata?.snapshots) ? sim.metadata.snapshots as Array<Record<string, unknown>> : []
 
   return (
     <div className="rounded-lg border border-white/6 bg-white/[0.015] transition hover:border-gold/15 hover:bg-gold/[0.02]">
@@ -916,7 +1334,9 @@ function SimulationRow({
             {sim.isSandbox && sim.status === 'running' && <ActionBtn icon={Square} label={busy('stop') ? 'Stopping' : 'Stop'} onClick={() => onAction(sim.id, 'stop')} disabled={busy('stop')} variant="danger" small />}
             {['running', 'paused', 'completed'].includes(sim.status) && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(sim.id, 'rollback')} disabled={busy('rollback')} variant="danger" small />}
             <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(sim.id, 'snapshot')} disabled={busy('snapshot')} small />
+            {snapshots.length > 0 && <ActionBtn icon={Upload} label={busy('restore_snapshot') ? 'Restoring' : 'Restore'} onClick={() => onAction(sim.id, 'restore_snapshot', { snapshotId: String(snapshots[snapshots.length - 1]?.id || '') })} disabled={busy('restore_snapshot')} small />}
             <ActionBtn icon={Eye} label="Details" onClick={() => onDetails(sim)} small />
+            {deleteAllowed && <ActionBtn icon={Trash2} label={busy('delete') ? 'Deleting' : 'Delete'} onClick={() => { if (window.confirm('Delete this completed simulation and purge its execution artifacts? Audit and security records will remain.')) onAction(sim.id, 'delete') }} disabled={busy('delete')} variant="danger" small />}
           </div>
         </div>
       )}
@@ -935,7 +1355,7 @@ function WorkflowQueueRow({
   pendingAction,
 }: {
   workflow: Simulation
-  onAction: (id: string, action: string) => void
+  onAction: SandboxActionHandler
   onDetails: (sim: Simulation) => void
   pendingAction: string | null
 }) {
@@ -1025,14 +1445,43 @@ function WorkflowTimeline({ phases }: { phases: WorkflowPhase[] }) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function MigrationSandbox() {
-  const { data, loading, error, notice, pendingAction, sseActive, refresh, doAction, doBulkAction, startSimulation, exportReport } = useSandbox()
-  const [tab, setTab] = useState<ActiveTab>('overview')
+  const { data, loading, error, notice, pendingAction, sseActive, refresh, doAction, doBulkAction, startSimulation, exportReport, exportSimulation } = useSandbox()
+  const plannerHandoffPlanId = useMemo(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('planId') || ''
+  }, [])
+  const [tab, setTab] = useState<ActiveTab>(() => plannerHandoffPlanId ? 'simulations' : 'overview')
   const [showNewSim, setShowNewSim] = useState(false)
   const [selectedSimulation, setSelectedSimulation] = useState<Simulation | null>(null)
   const [logFilter, setLogFilter] = useState('')
+  const [historyStatus, setHistoryStatus] = useState('all')
+  const [historyAlgorithm, setHistoryAlgorithm] = useState('all')
+  const [historyDateRange, setHistoryDateRange] = useState('all')
+  const [historyAssetType, setHistoryAssetType] = useState('all')
+  const [historyRisk, setHistoryRisk] = useState('all')
 
   const s = data.summary
   const generated = useMemo(() => new Date(data.generatedAt), [data.generatedAt])
+  const plannerHandoffSimulations = useMemo(() => {
+    if (!plannerHandoffPlanId) return []
+    return data.simulations.filter((sim) => {
+      const metadata = objectRecord(sim.metadata)
+      const plan = objectRecord(metadata.plan)
+      return [metadata.planId, metadata.sandboxPlanId, plan.id]
+        .some((value) => String(value || '') === plannerHandoffPlanId)
+    })
+  }, [data.simulations, plannerHandoffPlanId])
+  const plannerHandoffStats = useMemo(() => ({
+    total: plannerHandoffSimulations.length,
+    queued: plannerHandoffSimulations.filter((sim) => sim.status === 'queued').length,
+    running: plannerHandoffSimulations.filter((sim) => sim.status === 'running').length,
+    completed: plannerHandoffSimulations.filter((sim) => sim.status === 'completed').length,
+    failed: plannerHandoffSimulations.filter((sim) => sim.status === 'failed').length,
+    averageProgress: plannerHandoffSimulations.length
+      ? Math.round(plannerHandoffSimulations.reduce((sum, sim) => sum + Number(sim.progress || 0), 0) / plannerHandoffSimulations.length)
+      : 0,
+  }), [plannerHandoffSimulations])
+  const visibleSimulations = plannerHandoffPlanId ? plannerHandoffSimulations : data.simulations
   const operationalWorkflows = useMemo(() => data.workflows.filter((workflow) => !workflow.isSandbox), [data.workflows])
   const rollbackEligibleWorkflows = useMemo(
     () => data.workflows.filter((workflow) => ['completed', 'running', 'paused'].includes(workflow.status)),
@@ -1042,6 +1491,7 @@ export default function MigrationSandbox() {
   const tabs: { key: ActiveTab; label: string; icon: LucideIcon }[] = [
     { key: 'overview', label: 'Overview', icon: Layers },
     { key: 'simulations', label: `Simulations (${s.totalSimulations})`, icon: FlaskConical },
+    { key: 'history', label: `History (${data.history.length})`, icon: History },
     { key: 'risk', label: 'Risk Analysis', icon: ShieldAlert },
     { key: 'rollback', label: 'Rollback Center', icon: RotateCcw },
     { key: 'compliance', label: 'Compliance', icon: ShieldCheck },
@@ -1056,10 +1506,34 @@ export default function MigrationSandbox() {
     return data.recentLogs.filter((l) => l.message.toLowerCase().includes(q) || l.type.toLowerCase().includes(q) || l.severity.toLowerCase().includes(q))
   }, [data.recentLogs, logFilter])
 
+  const historyAlgorithms = useMemo(() => {
+    const values = new Set<string>()
+    data.history.forEach((row) => {
+      if (row.sourceAlgorithm) values.add(row.sourceAlgorithm)
+      if (row.targetAlgorithm) values.add(row.targetAlgorithm)
+    })
+    return Array.from(values).sort()
+  }, [data.history])
+
+  const historyAssetTypes = useMemo(() => Array.from(new Set(data.history.map((row) => row.assetType || 'service'))).sort(), [data.history])
+  const historyRisks = useMemo(() => Array.from(new Set(data.history.map((row) => row.riskLevel || 'low'))).sort((a, b) => ['critical', 'high', 'medium', 'low'].indexOf(a) - ['critical', 'high', 'medium', 'low'].indexOf(b)), [data.history])
+
+  const filteredHistory = useMemo(() => {
+    return data.history.filter((row) => {
+      const statusOk = historyStatus === 'all' || row.status === historyStatus
+      const algorithmOk = historyAlgorithm === 'all' || row.sourceAlgorithm === historyAlgorithm || row.targetAlgorithm === historyAlgorithm
+      const dateOk = historyDateMatches(row.completedAt || row.updatedAt || row.createdAt, historyDateRange)
+      const assetTypeOk = historyAssetType === 'all' || row.assetType === historyAssetType
+      const riskOk = historyRisk === 'all' || row.riskLevel === historyRisk
+      return statusOk && algorithmOk && dateOk && assetTypeOk && riskOk
+    })
+  }, [data.history, historyStatus, historyAlgorithm, historyDateRange, historyAssetType, historyRisk])
+
   useEffect(() => {
     if (!selectedSimulation) return
     const refreshed = data.simulations.find((sim) => sim.id === selectedSimulation.id)
     if (refreshed) setSelectedSimulation(refreshed)
+    else setSelectedSimulation(null)
   }, [data.simulations, selectedSimulation])
 
   /* ─── Loading State ──────────────────────────────────────────────────── */
@@ -1120,6 +1594,19 @@ export default function MigrationSandbox() {
         .qg-theme-light .migration-sandbox-shell [class*="bg-white/"],
         .qg-theme-light .migration-sandbox-shell [class*="bg-white\\["] {
           background-color: rgba(236,249,255,0.76) !important;
+        }
+        .qg-theme-light .migration-handoff-terminal {
+          background: rgba(255,255,255,0.9) !important;
+          border-color: var(--qg-card-border) !important;
+          color: var(--qg-dashboard-text) !important;
+          box-shadow: var(--qg-panel-shadow) !important;
+        }
+        .qg-theme-light .migration-handoff-terminal > div:first-child {
+          background: rgba(236,249,255,0.74) !important;
+          border-color: var(--qg-card-border) !important;
+        }
+        .qg-theme-light .migration-handoff-terminal [role="log"] {
+          color: var(--qg-dashboard-text) !important;
         }
         .qg-theme-light .migration-sandbox-shell [class*="border-white"],
         .qg-theme-light .migration-sandbox-shell [class*="border-gold"] {
@@ -1248,6 +1735,87 @@ export default function MigrationSandbox() {
       </header>
 
       <div className="space-y-4 p-3 lg:p-4">
+        {plannerHandoffPlanId && (
+          <Panel className="border-gold/30 bg-gold/[0.025] p-5">
+            <SectionHead icon={FlaskConical} suffix={
+              <div className="flex flex-wrap items-center gap-2">
+                <Pill className={cn(sseActive ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/30 bg-amber-500/10 text-amber-300')}>
+                  {sseActive ? 'SSE live' : 'SSE reconnecting'}
+                </Pill>
+                <ActionBtn icon={RefreshCw} label="Refresh" onClick={refresh} small />
+                <ActionBtn icon={Terminal} label="Logs" onClick={() => setTab('logs')} small />
+              </div>
+            }>
+              Migration Planner Handoff
+            </SectionHead>
+
+            <div className="grid gap-3 lg:grid-cols-[1.1fr_1.9fr]">
+              <div className="rounded-xl border border-white/8 bg-black/20 p-4">
+                <div className="text-[9px] font-bold uppercase tracking-[0.22em] text-white/35">Plan ID</div>
+                <div className="mt-1 truncate font-mono text-sm font-black text-gold">{plannerHandoffPlanId}</div>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  {[
+                    { label: 'Assets', value: plannerHandoffStats.total, tone: 'text-white' },
+                    { label: 'Queued', value: plannerHandoffStats.queued, tone: 'text-sky-300' },
+                    { label: 'Running', value: plannerHandoffStats.running, tone: 'text-emerald-300' },
+                    { label: 'Complete', value: plannerHandoffStats.completed, tone: 'text-gold' },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-lg border border-white/6 bg-white/[0.025] px-3 py-2">
+                      <div className="text-[8px] font-bold uppercase tracking-wider text-white/30">{item.label}</div>
+                      <div className={cn('mt-1 font-mono text-xl font-black', item.tone)}>{fmt(item.value)}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4">
+                  <div className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-white/35">
+                    <span>Simulation Progress</span>
+                    <span className="font-mono text-gold">{plannerHandoffStats.averageProgress}%</span>
+                  </div>
+                  <ProgressBar value={plannerHandoffStats.averageProgress} color={plannerHandoffStats.failed > 0 ? RED : plannerHandoffStats.completed === plannerHandoffStats.total && plannerHandoffStats.total > 0 ? GREEN : GOLD} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {plannerHandoffSimulations.length === 0 ? (
+                  <EmptyBlock label="Waiting for sandbox simulation jobs from this migration plan handoff." />
+                ) : (
+                  plannerHandoffSimulations.slice(0, 5).map((sim) => {
+                    const colors = statusColor(sim.status)
+                    return (
+                      <div key={sim.id} className="rounded-xl border border-white/8 bg-white/[0.025] px-4 py-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-black text-white">{sim.assetName || sim.name}</div>
+                            <div className="mt-1 text-[11px] font-semibold text-white/45">{sim.fromAlgo} -&gt; {sim.toAlgo} · {sim.environment}</div>
+                          </div>
+                          <Pill className={cn(colors.bg, colors.border, colors.text)}>{sim.status.replace(/_/g, ' ')}</Pill>
+                        </div>
+                        <div className="mt-3 flex items-center gap-3">
+                          <div className="min-w-0 flex-1"><ProgressBar value={sim.progress} color={progressBarColor(sim.progress, sim.status)} /></div>
+                          <span className="w-10 text-right font-mono text-[11px] font-black text-white/55">{sim.progress}%</span>
+                          <ActionBtn icon={Eye} label="Details" onClick={() => setSelectedSimulation(sim)} small />
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
+                {plannerHandoffSimulations.length > 5 && (
+                  <button type="button" onClick={() => setTab('simulations')} className="w-full rounded-lg border border-gold/20 bg-gold/[0.04] py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/[0.08]">
+                    View all {plannerHandoffSimulations.length} handoff simulations
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <HandoffTerminalConsole
+              planId={plannerHandoffPlanId}
+              simulations={plannerHandoffSimulations}
+              recentLogs={data.recentLogs}
+              generatedAt={data.generatedAt}
+              sseActive={sseActive}
+            />
+          </Panel>
+        )}
 
         {/* ═══════════════════════════════════════════════════════════════════
            TAB: OVERVIEW
@@ -1423,8 +1991,9 @@ export default function MigrationSandbox() {
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-black text-white">Sandbox Simulations</h2>
-                <Pill className="border-gold/25 bg-gold/10 text-gold">{fmt(s.totalSimulations)} total</Pill>
+                <h2 className="text-lg font-black text-white">{plannerHandoffPlanId ? 'Migration Plan Simulations' : 'Sandbox Simulations'}</h2>
+                <Pill className="border-gold/25 bg-gold/10 text-gold">{fmt(visibleSimulations.length)} total</Pill>
+                {plannerHandoffPlanId && <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">Plan handoff</Pill>}
               </div>
               <div className="flex items-center gap-2">
                 {s.running > 0 && <ActionBtn icon={Pause} label={pendingAction === 'bulk:pause' ? 'Pausing' : 'Pause All'} onClick={() => doBulkAction('pause')} disabled={pendingAction === 'bulk:pause'} small />}
@@ -1435,14 +2004,14 @@ export default function MigrationSandbox() {
               </div>
             </div>
 
-            {data.simulations.length === 0 ? (
+            {visibleSimulations.length === 0 ? (
               <Panel className="p-8">
-                <EmptyBlock label="No migration simulations found. Start a new simulation to safely test PQC migration workflows." />
+                <EmptyBlock label={plannerHandoffPlanId ? "No simulations are linked to this migration plan yet. The sandbox stream will update this view when jobs are queued." : "No migration simulations found. Start a new simulation to safely test PQC migration workflows."} />
               </Panel>
             ) : (
               <Panel className="p-5">
                 <div className="space-y-2">
-                  {data.simulations.map((sim) => (
+                  {visibleSimulations.map((sim) => (
                     <div key={sim.id}>
                       <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
                     </div>
@@ -1456,6 +2025,129 @@ export default function MigrationSandbox() {
         {/* ═══════════════════════════════════════════════════════════════════
            TAB: RISK ANALYSIS
            ═══════════════════════════════════════════════════════════════════ */}
+        {tab === 'history' && (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-black text-white">Simulation History</h2>
+                <Pill className="border-gold/25 bg-gold/10 text-gold">{fmt(filteredHistory.length)} shown</Pill>
+                <Pill className="border-white/10 bg-white/5 text-white/45">{fmt(data.history.length)} total</Pill>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <ActionBtn icon={Download} label={pendingAction === 'export:json' ? 'Exporting' : 'Export All'} onClick={() => exportReport('json')} disabled={pendingAction === 'export:json'} small />
+                <ActionBtn icon={RefreshCw} label="Refresh" onClick={refresh} small />
+              </div>
+            </div>
+
+            <Panel className="p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <label className="space-y-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-white/30">Status</span>
+                  <select value={historyStatus} onChange={(e) => setHistoryStatus(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-white outline-none focus:border-gold/40">
+                    <option value="all">All statuses</option>
+                    {['queued', 'running', 'paused', 'completed', 'failed', 'stopped', 'rolled_back'].map((status) => <option key={status} value={status}>{status.replace(/_/g, ' ')}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-white/30">Algorithm</span>
+                  <select value={historyAlgorithm} onChange={(e) => setHistoryAlgorithm(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-white outline-none focus:border-gold/40">
+                    <option value="all">All algorithms</option>
+                    {historyAlgorithms.map((algorithm) => <option key={algorithm} value={algorithm}>{algorithm}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-white/30">Date Range</span>
+                  <select value={historyDateRange} onChange={(e) => setHistoryDateRange(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-white outline-none focus:border-gold/40">
+                    <option value="all">All dates</option>
+                    <option value="24h">Last 24 hours</option>
+                    <option value="7d">Last 7 days</option>
+                    <option value="30d">Last 30 days</option>
+                    <option value="90d">Last 90 days</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-white/30">Asset Type</span>
+                  <select value={historyAssetType} onChange={(e) => setHistoryAssetType(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-white outline-none focus:border-gold/40">
+                    <option value="all">All asset types</option>
+                    {historyAssetTypes.map((assetType) => <option key={assetType} value={assetType}>{assetType}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-white/30">Risk Level</span>
+                  <select value={historyRisk} onChange={(e) => setHistoryRisk(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-white outline-none focus:border-gold/40">
+                    <option value="all">All risk levels</option>
+                    {historyRisks.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+                  </select>
+                </label>
+              </div>
+            </Panel>
+
+            <Panel className="p-5">
+              {filteredHistory.length === 0 ? (
+                <EmptyBlock label="No simulation history matches the selected filters." />
+              ) : (
+                <div className="space-y-3">
+                  {filteredHistory.map((row) => {
+                    const sim = data.simulations.find((item) => item.id === row.id)
+                    const colors = statusColor(row.status)
+                    const canDelete = canDeleteSimulationStatus(row.status)
+                    return (
+                      <div key={row.id} className="rounded-xl border border-white/8 bg-white/[0.018] p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3 className="truncate text-sm font-black text-white">{row.name}</h3>
+                              <Pill className={cn(colors.bg, colors.border, colors.text)}>{row.status.replace(/_/g, ' ')}</Pill>
+                              <Pill className={riskBadge(row.riskLevel)}>{row.riskLevel}</Pill>
+                            </div>
+                            <div className="mt-1 text-[11px] font-semibold text-white/40">
+                              <span className="font-mono">{row.sourceAlgorithm}</span>
+                              <span className="mx-1.5 text-gold">-&gt;</span>
+                              <span className="font-mono text-emerald-300">{row.targetAlgorithm}</span>
+                              <span className="mx-2 text-white/20">|</span>
+                              <span>{row.assetName || 'Unknown Asset'}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <ActionBtn icon={Eye} label="View Details" onClick={() => sim && setSelectedSimulation(sim)} disabled={!sim} small />
+                            <ActionBtn icon={RefreshCw} label={pendingAction === 'simulate' ? 'Queued' : 'Re-Run'} onClick={() => startSimulation({ fromAlgo: row.sourceAlgorithm, toAlgo: row.targetAlgorithm, migrationType: 'history_rerun', dryRun: row.runMode === 'dry_run' })} disabled={pendingAction === 'simulate'} variant="gold" small />
+                            <ActionBtn icon={Download} label={pendingAction === `${row.id}:export:json` ? 'Exporting' : 'Export Report'} onClick={() => exportSimulation(row.id, 'json')} disabled={pendingAction === `${row.id}:export:json`} small />
+                            <ActionBtn icon={Upload} label={pendingAction === `${row.id}:restore_snapshot` ? 'Restoring' : 'Restore Snapshot'} onClick={() => doAction(row.id, 'restore_snapshot')} disabled={row.snapshots < 1 || pendingAction === `${row.id}:restore_snapshot`} small />
+                            {canDelete && <ActionBtn icon={Trash2} label={pendingAction === `${row.id}:delete` ? 'Deleting' : 'Delete'} onClick={() => { if (window.confirm('Delete this completed simulation and purge its execution artifacts? Audit and security records will remain.')) doAction(row.id, 'delete') }} disabled={pendingAction === `${row.id}:delete`} variant="danger" small />}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+                          {[
+                            ['Assets', fmt(row.assets || 0)],
+                            ['Asset Type', row.assetType || 'service'],
+                            ['Risk Score', `${row.riskScore}`],
+                            ['Compliance', `${row.complianceScore}%`],
+                            ['Duration', row.duration || '--'],
+                            ['Events', fmt(row.eventCount || 0)],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2">
+                              <div className="text-[8px] font-bold uppercase tracking-wider text-white/25">{label}</div>
+                              <div className="mt-1 truncate font-mono text-xs font-black text-white/70">{value}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-semibold text-white/35">
+                          <span>Created {timeStr(row.createdAt)} ({relTime(row.createdAt)})</span>
+                          <span>Started {row.startedAt ? timeStr(row.startedAt) : '--'}</span>
+                          <span>Completed {row.completedAt ? timeStr(row.completedAt) : '--'}</span>
+                          <span>Snapshots {fmt(row.snapshots || 0)}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </Panel>
+          </>
+        )}
+
         {tab === 'risk' && (
           <>
             <div className="grid gap-4 lg:grid-cols-[340px_1fr]">

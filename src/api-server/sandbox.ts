@@ -11,6 +11,7 @@ let sandboxSchedulerStarted = false
 
 const ENGINE_NAME = 'qguard-sandbox-orchestrator'
 const ACTIVE_JOB_STATUSES = ['pending', 'queued', 'running', 'in_progress', 'executing', 'rollback_requested']
+const DELETABLE_SIMULATION_STATUSES = ['completed', 'failed', 'stopped', 'rolled_back']
 
 const ENGINE_PHASES = [
   { id: 'preparation', label: 'Preparation', detail: 'Environment snapshot, dependency inventory, and rollback checkpoint.', at: 0 },
@@ -58,6 +59,15 @@ function writeSse(res: Response, event: string, data: unknown) {
 function isMissingTable(error: any) {
   const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
   return text.includes('42p01') || text.includes('pgrst205') || text.includes('does not exist') || text.includes('could not find the table')
+}
+
+function isSchemaShapeError(error: any) {
+  const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
+  return isMissingTable(error)
+    || text.includes('42703')
+    || text.includes('pgrst204')
+    || text.includes('could not find')
+    || text.includes('column')
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -165,6 +175,10 @@ function isSandboxSimulationJob(job: any) {
     || ['sandbox_simulation', 'dry_run', 'simulation'].includes(executionMode)
     || /sandbox|simulation|dry_run|dry-run/.test(jobType)
     || /^\[dry run\]|^sandbox:/i.test(name)
+}
+
+function canDeleteSimulationJob(job: any) {
+  return isSandboxSimulationJob(job) && DELETABLE_SIMULATION_STATUSES.includes(normalizeStatus(job?.status))
 }
 
 function classifyJobMode(job: any): 'dry_run' | 'simulation' | 'remediation' | 'actual_migration' | 'migration_workflow' {
@@ -409,9 +423,75 @@ async function advanceSandboxJobs(client: any, userId?: string) {
   return { advanced }
 }
 
-function snapshotEntry(job: any, action: string, now: string, meta: Record<string, unknown>) {
+function buildSnapshotState(job: any, meta: Record<string, unknown>, context?: any) {
+  const workflows = Array.isArray(context?.workflows) ? context.workflows : []
+  const simulations = Array.isArray(context?.simulations) ? context.simulations : []
+  const current = [...simulations, ...workflows].find((row: any) => row?.id === job?.id) || {}
+  const summary = asRecord(context?.summary)
+  const complianceItems = Array.isArray(context?.complianceItems) ? context.complianceItems : []
+  const sourceAlgorithm = current.fromAlgo || pickStr(meta, ['sourceAlgorithm', 'source_algorithm', 'fromAlgorithm', 'from_algorithm', 'fromAlgo']) || 'Classical'
+  const targetAlgorithm = current.toAlgo || job?.target_algorithm || pickStr(meta, ['targetAlgorithm', 'target_algorithm', 'toAlgo']) || pqcAlgoRec(sourceAlgorithm, job?.job_type || '')
+  const status = normalizeStatus(job?.status || current.status)
+  const progress = clamp(Number(job?.progress ?? current.progress ?? 0))
+
+  return {
+    assetState: {
+      assetId: job?.asset_id || current.assetId || null,
+      assetName: current.assetName || pickStr(meta, ['assetName', 'asset_name']) || 'Unknown Asset',
+      assetType: current.assetType || pickStr(meta, ['assetType', 'asset_type']) || 'service',
+      environment: current.environment || pickStr(meta, ['environment']) || 'sandbox',
+      owner: current.owner || pickStr(meta, ['owner', 'serviceOwner']) || 'Unassigned',
+      criticality: current.criticality || pickStr(meta, ['criticality']) || 'medium',
+    },
+    riskState: {
+      riskLevel: current.riskLevel || quantumRisk(sourceAlgorithm),
+      riskScore: Number(summary.riskScore ?? context?.riskScore ?? meta.riskScore ?? 0),
+      criticalExposures: Number(summary.criticalExposures ?? 0),
+      highExposures: Number(summary.highExposures ?? 0),
+      runtimeSignals: Number((context?.riskFactors || []).find((f: any) => f?.label === 'Runtime Crypto Risk Signals')?.count || 0),
+    },
+    complianceState: {
+      score: Number(context?.complianceScore ?? summary.complianceScore ?? meta.complianceScore ?? 0),
+      controls: complianceItems.slice(0, 12).map((item: any) => ({
+        framework: item.framework,
+        control: item.control,
+        status: item.status,
+        score: item.score,
+      })),
+    },
+    simulationState: {
+      id: job?.id,
+      name: job?.name || current.name || job?.id,
+      status,
+      progress,
+      phase: current.phase || textMeta(meta, ['phase']) || 'unknown',
+      phaseDetail: current.phaseDetail || textMeta(meta, ['phaseDetail']) || '',
+      startedAt: job?.started_at || current.startedAt || null,
+      completedAt: job?.completed_at || current.completedAt || null,
+    },
+    migrationState: {
+      jobType: job?.job_type || current.migrationType || 'sandbox_pqc_migration',
+      strategy: job?.strategy || `${sourceAlgorithm} -> ${targetAlgorithm}`,
+      sourceAlgorithm,
+      targetAlgorithm,
+      runMode: current.runMode || textMeta(meta, ['executionMode', 'runMode']) || classifyJobMode(job),
+      engine: textMeta(meta, ['engine'], ENGINE_NAME),
+    },
+    configurationState: {
+      sandboxMode: true,
+      dryRun: boolMeta(meta.dryRun),
+      executionScope: current.executionScope || textMeta(meta, ['executionScope'], 'sandbox'),
+      deploymentControls: meta.deploymentControls || meta.controls || null,
+      rollbackPolicy: meta.rollbackPolicy || meta.rollback || 'snapshot-required',
+      connector: meta.connector || meta.operator || null,
+    },
+  }
+}
+
+function snapshotEntry(job: any, action: string, now: string, meta: Record<string, unknown>, context?: any) {
   const snapshots = Array.isArray(meta.snapshots) ? [...(meta.snapshots as any[])] : []
   const snapshotId = `snap_${now.replace(/[-:.TZ]/g, '').slice(0, 14)}_${String(job.id || '').slice(0, 8)}`
+  const state = buildSnapshotState(job, meta, context)
   snapshots.push({
     id: snapshotId,
     at: now,
@@ -419,11 +499,12 @@ function snapshotEntry(job: any, action: string, now: string, meta: Record<strin
     progress: Number(job.progress || 0),
     status: job.status || 'unknown',
     name: job.name || job.id,
+    ...state,
   })
-  return { snapshotId, snapshots }
+  return { snapshotId, snapshots: snapshots.slice(-25), state }
 }
 
-function actionUpdate(job: any, action: string, now: string) {
+function actionUpdate(job: any, action: string, now: string, options: { snapshotId?: string; context?: any } = {}) {
   const meta = asRecord(job.metadata)
   const nextMeta = { ...meta, lastOperatorAction: action, lastOperatorActionAt: now }
   let update: any = { updated_at: now, metadata: nextMeta }
@@ -434,8 +515,28 @@ function actionUpdate(job: any, action: string, now: string) {
   else if (action === 'rollback') update = { ...update, status: 'rollback_requested', progress: 0, metadata: { ...nextMeta, rollbackRequestedAt: now, phase: 'rollback' } }
   else if (action === 'stop') update = { ...update, status: 'stopped', completed_at: now, metadata: { ...nextMeta, stoppedAt: now, phase: 'stopped' } }
   else if (action === 'snapshot') {
-    const { snapshotId, snapshots } = snapshotEntry(job, action, now, meta)
-    update = { ...update, metadata: { ...nextMeta, snapshots, lastSnapshotId: snapshotId, lastSnapshotAt: now } }
+    const { snapshotId, snapshots, state } = snapshotEntry(job, action, now, meta, options.context)
+    update = { ...update, metadata: { ...nextMeta, snapshots, lastSnapshotId: snapshotId, lastSnapshotAt: now, lastSnapshotState: state } }
+  } else if (action === 'restore_snapshot') {
+    const snapshots = Array.isArray(meta.snapshots) ? meta.snapshots as Array<Record<string, unknown>> : []
+    const requested = options.snapshotId || String(meta.lastSnapshotId || '')
+    const selected = [...snapshots].reverse().find((snap) => String(snap.id || '') === requested) || snapshots[snapshots.length - 1]
+    const restoredProgress = clamp(Number(selected?.progress ?? job.progress ?? 0))
+    update = {
+      ...update,
+      status: 'rolled_back',
+      progress: Math.max(restoredProgress, 100),
+      completed_at: now,
+      metadata: {
+        ...nextMeta,
+        phase: 'rollback',
+        phaseDetail: selected
+          ? `Snapshot ${String(selected.id || 'latest')} restored and rollback posture validated.`
+          : 'Snapshot restore requested; no captured snapshot was present, rollback posture validated from current metadata.',
+        restoredSnapshotId: selected?.id || null,
+        restoredAt: now,
+      },
+    }
   }
 
   return update
@@ -448,11 +549,13 @@ function actionMessage(action: string, jobName: string, noun = 'sandbox simulati
   if (action === 'rollback') return `Operator requested rollback for ${noun} "${jobName}".`
   if (action === 'stop') return `Operator stopped ${noun} "${jobName}".`
   if (action === 'snapshot') return `Operator captured recovery snapshot for ${noun} "${jobName}".`
+  if (action === 'restore_snapshot') return `Operator restored a recovery snapshot for ${noun} "${jobName}".`
+  if (action === 'delete') return `Operator deleted ${noun} "${jobName}" and purged simulation execution artifacts.`
   return `Operator ${action} action recorded for ${noun} "${jobName}".`
 }
 
 function actionSeverity(action: string) {
-  return action === 'rollback' || action === 'stop' ? 'warning' : 'info'
+  return action === 'rollback' || action === 'stop' || action === 'restore_snapshot' || action === 'delete' ? 'warning' : 'info'
 }
 
 async function recordOperatorTelemetry(client: any, req: AuthenticatedRequest, jobs: any[], action: string, now: string, mode: 'single' | 'bulk') {
@@ -532,6 +635,57 @@ async function safeCount(client: any, table: string, userId: string, apply?: (q:
     if (error) return 0
     return count || 0
   } catch { return 0 }
+}
+
+async function safeDeleteRelatedRows(client: any, table: string, userId: string, jobId: string, columns: string[]) {
+  for (const column of columns) {
+    try {
+      const { error } = await client.from(table).delete().eq('user_id', userId).eq(column, jobId)
+      if (error && !isSchemaShapeError(error)) console.warn(`[sandbox] ${table} cleanup failed:`, error.message)
+    } catch {
+      // Optional execution-artifact tables are not guaranteed in every tenant schema.
+    }
+  }
+}
+
+async function purgeSimulationArtifacts(client: any, userId: string, jobId: string) {
+  const columnNames = ['migration_id', 'migration_job_id', 'job_id', 'simulation_id', 'sandbox_job_id']
+  const tables = [
+    'migration_events',
+    'migration_telemetry',
+    'migration_validation_logs',
+    'migration_execution_logs',
+    'migration_execution_steps',
+    'execution_logs',
+    'execution_telemetry',
+    'sandbox_simulation_events',
+    'sandbox_simulation_snapshots',
+    'sandbox_simulation_runs',
+    'deployment_packages',
+    'operator_tasks',
+    'patcher_runs',
+    'orchestration_jobs',
+  ]
+  await Promise.all(tables.map((table) => safeDeleteRelatedRows(client, table, userId, jobId, columnNames)))
+}
+
+function historyDuration(start: string | null, end: string | null, fallbackUpdated: string | null) {
+  const started = dateMs(start || '')
+  const finished = dateMs(end || fallbackUpdated || '')
+  if (!started || !finished || finished < started) return { durationMs: 0, duration: '--' }
+  const ms = finished - started
+  const minutes = Math.floor(ms / 60000)
+  const seconds = Math.max(0, Math.round((ms % 60000) / 1000))
+  if (minutes >= 60) return { durationMs: ms, duration: `${Math.floor(minutes / 60)}h ${minutes % 60}m` }
+  if (minutes > 0) return { durationMs: ms, duration: `${minutes}m ${seconds}s` }
+  return { durationMs: ms, duration: `${seconds}s` }
+}
+
+function riskScoreForSimulation(sim: any) {
+  const statusPenalty = sim.status === 'failed' ? 25 : sim.status === 'rolled_back' ? 15 : 0
+  const riskPenalty = sim.riskLevel === 'critical' ? 35 : sim.riskLevel === 'high' ? 25 : sim.riskLevel === 'medium' ? 12 : 4
+  const progressCredit = Math.round(Number(sim.progress || 0) * 0.35)
+  return clamp(100 - riskPenalty - statusPenalty + progressCredit)
 }
 
 async function buildSandboxPayload(client: any, userId: string) {
@@ -817,9 +971,14 @@ async function buildSandboxPayload(client: any, userId: string) {
   const agileReady = totalInventory > 0
   const auditAvailable = (events || []).length > 0 || (securityEvents || []).length > 0 || (auditLogs || []).length > 0
   const complianceItems = [
+    { framework: 'NIST PQC Standards', control: 'FIPS 203/204/205 readiness', status: pqcReadiness >= 75 ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: Math.max(0, Math.min(100, Math.round((pqcReadiness + (criticalExposures === 0 ? 100 : 35)) / 2))) },
+    { framework: 'NIST Migration Guidance', control: 'Inventory, prioritization, validation, and evidence', status: totalInventory > 0 && totalJobs > 0 ? 'compliant' : totalInventory > 0 ? 'partial' : 'pending', score: totalInventory > 0 ? (totalJobs > 0 ? 88 : 55) : 0 },
     { framework: 'NIST SP 800-208', control: 'PQC Algorithm Adoption', status: nistReady ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: pqcReadiness },
     { framework: 'NIST SP 800-57 Rev.5', control: 'Key Management Practices', status: expiringCerts === 0 && failedJobs === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 15 - failedJobs * 20) },
     { framework: 'CNSA 2.0', control: 'NSS Algorithm Suite', status: criticalExposures === 0 && highExposures < 3 ? 'compliant' : 'non-compliant', score: Math.max(0, 100 - criticalExposures * 20 - highExposures * 10) },
+    { framework: 'ISO 27001', control: 'Cryptographic controls and change management', status: auditAvailable && totalInventory > 0 ? 'compliant' : auditAvailable ? 'partial' : 'pending', score: auditAvailable ? (totalInventory > 0 ? 86 : 62) : 0 },
+    { framework: 'PCI DSS', control: 'Strong cryptography, TLS, and key lifecycle evidence', status: expiringCerts === 0 && criticalExposures === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 18 - criticalExposures * 25 - highExposures * 8) },
+    { framework: 'SOC 2', control: 'Change auditability and runtime monitoring', status: auditAvailable && runtimeRiskEvents === 0 ? 'compliant' : auditAvailable ? 'partial' : 'pending', score: auditAvailable ? Math.max(45, 95 - runtimeRiskEvents * 8 - failedJobs * 12) : 0 },
     { framework: 'Crypto Agility', control: 'Algorithm Replaceability', status: agileReady ? 'compliant' : 'pending', score: agileReady ? 85 : 0 },
     { framework: 'Audit Trail', control: 'Migration Evidence Collection', status: auditAvailable ? 'compliant' : 'pending', score: auditAvailable ? 100 : 0 },
     { framework: 'HNDL Posture', control: 'Harvest-Now-Decrypt-Later', status: criticalExposures === 0 ? 'compliant' : 'critical', score: Math.max(0, 100 - criticalExposures * 25) },
@@ -923,13 +1082,22 @@ async function buildSandboxPayload(client: any, userId: string) {
   ]
 
   // ── PQC Stack Status ────────────────────────────────────────────────────────
+  const algoUsage = (pattern: RegExp) => {
+    const inventoryHits = (inventory || []).filter((i: any) => pattern.test(`${i.algorithm || ''} ${i.protocol || ''} ${i.name || ''}`)).length
+    const workflowHits = workflows.filter((w) => pattern.test(`${w.fromAlgo || ''} ${w.toAlgo || ''} ${w.migrationType || ''} ${w.name || ''}`)).length
+    const runtimeHits = (runtimeEvents || []).filter((event: any) => pattern.test(JSON.stringify(event || ''))).length
+    return inventoryHits + workflowHits + runtimeHits
+  }
   const pqcStack = [
-    { name: 'ML-KEM-768 (Kyber)', standard: 'NIST FIPS 203', status: 'available', usage: (inventory || []).filter((i: any) => /ml-kem|kyber/i.test(i.algorithm || '')).length },
-    { name: 'ML-DSA-65 (Dilithium)', standard: 'NIST FIPS 204', status: 'available', usage: (inventory || []).filter((i: any) => /ml-dsa|dilithium/i.test(i.algorithm || '')).length },
-    { name: 'SLH-DSA (SPHINCS+)', standard: 'NIST FIPS 205', status: 'available', usage: 0 },
-    { name: 'AES-256-GCM', standard: 'NIST FIPS 197', status: 'active', usage: (inventory || []).filter((i: any) => /aes-256/i.test(i.algorithm || '')).length },
-    { name: 'SHA3-256 / SHA3-512', standard: 'NIST FIPS 202', status: 'active', usage: (inventory || []).filter((i: any) => /sha3/i.test(i.algorithm || '')).length },
-    { name: 'X25519 Hybrid KEX', standard: 'IETF RFC 9370', status: 'available', usage: 0 },
+    { name: 'ML-KEM-768 (Kyber)', standard: 'NIST FIPS 203', status: 'available', usage: algoUsage(/ml-kem|kyber/i) },
+    { name: 'X25519 + ML-KEM-768 Hybrid', standard: 'TLS hybrid key exchange', status: 'available', usage: algoUsage(/x25519.*ml-kem|ml-kem.*x25519|hybrid.*kex|hybrid tls/i) },
+    { name: 'ML-DSA-65 (Dilithium)', standard: 'NIST FIPS 204', status: 'available', usage: algoUsage(/ml-dsa|dilithium/i) },
+    { name: 'Ed25519 + ML-DSA-65 Hybrid', standard: 'Hybrid digital signatures', status: 'available', usage: algoUsage(/ed25519.*ml-dsa|ml-dsa.*ed25519|hybrid.*sign/i) },
+    { name: 'SLH-DSA (SPHINCS+)', standard: 'NIST FIPS 205', status: 'available', usage: algoUsage(/slh-dsa|sphincs/i) },
+    { name: 'AES-256-GCM', standard: 'NIST FIPS 197', status: 'active', usage: algoUsage(/aes-256-gcm|aes_256_gcm|aes-256/i) },
+    { name: 'HKDF-SHA3-256', standard: 'KDF', status: 'active', usage: algoUsage(/hkdf.*sha3-256|sha3-256.*hkdf/i) },
+    { name: 'SHA3-256 / SHA3-512', standard: 'NIST FIPS 202', status: 'active', usage: algoUsage(/sha3-256|sha3-512|sha3/i) },
+    { name: 'liboqs / OQS Provider / OpenSSL 3.x', standard: 'Open Quantum Safe integration', status: 'available', usage: algoUsage(/liboqs|oqs-provider|oqs openssl|open quantum safe/i) },
   ]
 
   // ── Summary Metrics ─────────────────────────────────────────────────────────
@@ -994,11 +1162,42 @@ async function buildSandboxPayload(client: any, userId: string) {
   const recentLogs = [...eventLogs, ...securityLogs, ...runtimeLogs]
     .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
     .slice(0, 80)
+  const history = simulations.map((sim) => {
+    const duration = historyDuration(sim.startedAt || sim.createdAt, sim.completedAt, sim.updatedAt)
+    const simRiskScore = riskScoreForSimulation(sim)
+    const simComplianceScore = clamp(Math.round((complianceScore + (sim.status === 'completed' ? 100 : sim.progress || 0)) / 2))
+    return {
+      id: sim.id,
+      name: sim.name,
+      sourceAlgorithm: sim.fromAlgo,
+      targetAlgorithm: sim.toAlgo,
+      assetName: sim.assetName,
+      assetType: sim.assetType,
+      assets: sim.assetName && sim.assetName !== 'Unknown Asset' ? 1 : 0,
+      riskScore: simRiskScore,
+      complianceScore: simComplianceScore,
+      status: sim.status,
+      durationMs: duration.durationMs,
+      duration: duration.duration,
+      createdAt: sim.createdAt,
+      startedAt: sim.startedAt,
+      completedAt: sim.completedAt,
+      updatedAt: sim.updatedAt,
+      riskLevel: sim.riskLevel,
+      runMode: sim.runMode,
+      runModeLabel: sim.runModeLabel,
+      owner: sim.owner,
+      environment: sim.environment,
+      snapshots: Array.isArray(sim.metadata?.snapshots) ? (sim.metadata.snapshots as any[]).length : 0,
+      eventCount: sim.eventCount,
+    }
+  })
 
   return {
     generatedAt: new Date().toISOString(),
     summary,
     simulations,
+    history,
     workflows,
     riskFactors,
     recommendations: recommendations.slice(0, 8),
@@ -1055,14 +1254,14 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const action = String(req.body?.action || '').toLowerCase()
-  const validActions = ['pause', 'resume', 'retry', 'rollback', 'stop', 'snapshot']
+  const validActions = ['pause', 'resume', 'retry', 'rollback', 'stop', 'snapshot', 'restore_snapshot', 'delete']
   if (!validActions.includes(action)) {
     return res.status(400).json({ error: { code: 'INVALID_ACTION', message: `Invalid action. Must be one of: ${validActions.join(', ')}` } })
   }
 
   const { data: job, error: readError } = await client
     .from('migration_jobs')
-    .select('id, user_id, name, job_type, status, metadata, progress')
+    .select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, metadata, progress, started_at, completed_at, created_at, updated_at')
     .eq('id', req.params.id)
     .eq('user_id', req.user!.id)
     .single()
@@ -1072,7 +1271,41 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   }
 
   const now = new Date().toISOString()
-  const update = actionUpdate(job, action, now)
+
+  if (action === 'delete') {
+    if (!canDeleteSimulationJob(job)) {
+      return res.status(400).json({
+        error: {
+          code: 'DELETE_NOT_ALLOWED',
+          message: 'Only completed, failed, cancelled/stopped, or rolled-back sandbox simulations can be deleted.',
+        },
+      })
+    }
+
+    await recordOperatorTelemetry(client, req, [job], action, now, 'single')
+    await purgeSimulationArtifacts(client, req.user!.id, job.id)
+
+    const { error: deleteError } = await client
+      .from('migration_jobs')
+      .delete()
+      .eq('id', job.id)
+      .eq('user_id', req.user!.id)
+
+    if (deleteError) {
+      return res.status(500).json({ error: { code: 'DELETE_FAILED', message: 'Failed to delete simulation' } })
+    }
+
+    const payload = await buildSandboxPayload(client, req.user!.id)
+    return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
+  }
+
+  const context = action === 'snapshot' || action === 'restore_snapshot'
+    ? await buildSandboxPayload(client, req.user!.id)
+    : undefined
+  const update = actionUpdate(job, action, now, {
+    snapshotId: typeof req.body?.snapshotId === 'string' ? req.body.snapshotId : undefined,
+    context,
+  })
 
   const { error: updateError } = await client
     .from('migration_jobs')
@@ -1286,16 +1519,42 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const payload = await buildSandboxPayload(client, req.user!.id)
     const format = String(req.query.format || 'json').toLowerCase()
-    const baseName = `qguard-sandbox-${new Date().toISOString().slice(0, 10)}`
+    const simulationId = typeof req.query.simulationId === 'string' ? req.query.simulationId : ''
+    const selectedSimulation = simulationId
+      ? [...(payload.simulations || []), ...(payload.workflows || [])].find((s: any) => s.id === simulationId)
+      : null
+    if (simulationId && !selectedSimulation) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Simulation not found' } })
+    }
+    const snapshots = selectedSimulation && Array.isArray(selectedSimulation.metadata?.snapshots)
+      ? selectedSimulation.metadata.snapshots
+      : []
+    const exportPayload = selectedSimulation
+      ? {
+          generatedAt: payload.generatedAt,
+          reportType: 'simulation-history-report',
+          simulation: selectedSimulation,
+          history: (payload.history || []).find((row: any) => row.id === selectedSimulation.id) || null,
+          snapshots,
+          events: (payload.recentLogs || []).filter((log: any) => log.jobId === selectedSimulation.id),
+          complianceItems: payload.complianceItems,
+          pqcStack: payload.pqcStack,
+          summary: payload.summary,
+        }
+      : payload
+    const baseName = selectedSimulation
+      ? `qguard-sandbox-${String(selectedSimulation.id).slice(0, 8)}-${new Date().toISOString().slice(0, 10)}`
+      : `qguard-sandbox-${new Date().toISOString().slice(0, 10)}`
 
     if (format === 'csv') {
       const escape = (v: unknown) => {
         const t = String(v ?? '')
         return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
       }
+      const sourceRows = selectedSimulation ? [selectedSimulation] : (payload.workflows || payload.simulations)
       const rows = [
-        ['id', 'name', 'runMode', 'asset', 'status', 'fromAlgo', 'toAlgo', 'progress', 'riskLevel', 'phase', 'eta', 'owner', 'environment'],
-        ...(payload.workflows || payload.simulations).map((s: any) => [s.id, s.name, s.runModeLabel || s.runMode || 'workflow', s.assetName, s.status, s.fromAlgo, s.toAlgo, s.progress, s.riskLevel, s.phase, s.eta, s.owner, s.environment]),
+        ['id', 'name', 'runMode', 'asset', 'assetType', 'status', 'fromAlgo', 'toAlgo', 'progress', 'riskLevel', 'phase', 'eta', 'owner', 'environment', 'snapshots', 'events'],
+        ...sourceRows.map((s: any) => [s.id, s.name, s.runModeLabel || s.runMode || 'workflow', s.assetName, s.assetType, s.status, s.fromAlgo, s.toAlgo, s.progress, s.riskLevel, s.phase, s.eta, s.owner, s.environment, Array.isArray(s.metadata?.snapshots) ? s.metadata.snapshots.length : 0, s.eventCount || 0]),
       ]
       res.setHeader('Content-Type', 'text/csv')
       res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`)
@@ -1304,7 +1563,7 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     res.setHeader('Content-Type', 'application/json')
     res.setHeader('Content-Disposition', `attachment; filename="${baseName}.json"`)
-    return res.send(JSON.stringify(payload, null, 2))
+    return res.send(JSON.stringify(exportPayload, null, 2))
   } catch (err) {
     return res.status(500).json({ error: { code: 'EXPORT_FAILED', message: 'Export failed' } })
   }

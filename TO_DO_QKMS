@@ -1,0 +1,443 @@
+Create a new enterprise-grade QKMS module for Qguard Helix.
+
+Module name: Qguard Helix QKMS — Quantum-Safe Key Lifecycle Manager
+
+Goal:
+Build a Quantum-Safe Key Management System that manages the full lifecycle of cryptographic keys and proves key governance, ownership, rotation, storage, policy compliance, and PQC readiness.
+
+Important rule:
+Do not break or modify existing backend logic, authentication, tenant isolation, SSE/WebSocket wiring, scanner logic, migration logic, or existing APIs unless required for integration. Extend the platform cleanly.
+
+Core concept:
+QKMS is not just a key vault. It is a Key Lifecycle Control Plane.
+
+Workflow:
+Discover Keys → Classify Purpose → Assign Owner → Enforce Policy → Rotate/Expire → Validate PQC Readiness → Generate Audit Evidence
+
+Create route/page:
+`/dashboard/qkms`
+
+UI requirements:
+Use the existing Qguard Helix enterprise dashboard style. Create a premium, modern, professional UI with light/dark compatibility if the platform supports it.
+
+Main dashboard sections:
+
+1. QKMS Overview
+   Show KPI cards:
+
+* Total Keys
+* Quantum-Ready Keys
+* Keys Near Expiry
+* Orphaned Keys
+* Weak / Deprecated Algorithms
+* Rotation Required
+* HSM / Vault Protected Keys
+* Policy Violations
+* Audit-Ready Evidence Count
+
+2. Key Inventory Table
+   Create a searchable, filterable table with:
+
+* Key ID / Alias
+* Key Type
+* Algorithm
+* Purpose
+* Owner
+* System / Asset
+* Environment
+* Storage Backend
+* Created Date
+* Last Rotated
+* Expiry Date
+* Rotation Status
+* PQC Readiness
+* Risk Score
+* Compliance Status
+* Actions
+
+Supported key categories:
+
+* Symmetric encryption keys
+* TLS private keys
+* API secrets
+* SSH keys
+* Signing keys
+* Database encryption keys
+* Vault keys
+* Tokenization keys
+* PQC/hybrid keys
+
+Supported algorithms:
+
+* AES-256-GCM
+* RSA-2048 / RSA-3072 / RSA-4096
+* ECDSA P-256 / P-384
+* Ed25519
+* X25519
+* ML-KEM-512 / 768 / 1024
+* ML-DSA-44 / 65 / 87
+* SLH-DSA
+* HKDF-SHA3-256
+* SHA3-256 / SHA3-512
+
+Important accuracy:
+
+* ML-KEM is for key establishment / key encapsulation / hybrid TLS shared-secret exchange.
+* ML-DSA and SLH-DSA are for digital signatures.
+* Do not label ML-KEM as a certificate-signing algorithm.
+
+3. Key Detail Drawer / Modal
+   When a user clicks a key, show:
+
+* Metadata
+* Owner
+* Linked assets
+* Linked certificates
+* Linked migration jobs
+* Runtime usage events
+* Rotation history
+* Access policy
+* Audit trail
+* Risk explanation
+* PQC readiness explanation
+* Recommended action
+
+4. Policy Engine
+   Create a QKMS policy panel allowing users to define:
+
+* Allowed algorithms
+* Disallowed/deprecated algorithms
+* Maximum key age
+* Rotation interval
+* Expiry threshold
+* Required owner
+* Required storage backend
+* Exportability allowed/blocked
+* Required approval workflow
+* Environment-specific policies
+* Tenant-specific policies
+
+Default policy examples:
+
+* Block RSA-2048 for new key creation where PQC/hybrid alternative is available
+* Warn on ECDSA/ECDH exposure for long-lived data
+* Require rotation every 90/180/365 days depending on key type
+* Require owner assignment for every production key
+* Require HSM/KMS protection for high-risk production keys
+* Require audit evidence for all signing keys
+
+5. Rotation & Expiry Automation
+   Create automation-ready workflows:
+
+* Detect stale keys
+* Detect near-expiry keys
+* Detect keys without owners
+* Detect exportable production keys
+* Detect keys stored outside approved vaults
+* Detect weak/deprecated algorithms
+* Create rotation recommendation
+* Create rotation job
+* Track rotation status
+* Record audit evidence
+
+Rotation statuses:
+
+* Healthy
+* Due Soon
+* Overdue
+* Blocked
+* Rotating
+* Completed
+* Failed
+
+6. PQC Readiness Layer
+   Create a readiness panel that separates:
+
+* Key establishment readiness: ML-KEM / hybrid X25519 + ML-KEM
+* Signature readiness: ML-DSA / SLH-DSA
+* Symmetric readiness: AES-256-GCM
+* Hash/KDF readiness: SHA3 / HKDF-SHA3
+* TLS readiness: TLS 1.3 + hybrid PQC test support
+* Certificate readiness: ML-DSA / SLH-DSA migration planning
+
+Add readiness statuses:
+
+* Quantum-Ready
+* Hybrid-Ready
+* Classical Only
+* Deprecated
+* Unknown
+* Blocked
+
+7. Storage Backend Integration Layer
+   Create backend abstraction for storage providers:
+
+* Local encrypted software vault for MVP
+* HashiCorp Vault integration-ready
+* AWS KMS integration-ready
+* Azure Key Vault integration-ready
+* Google Cloud KMS integration-ready
+* SoftHSM integration-ready
+* On-prem HSM integration-ready
+* YubiHSM integration-ready
+
+For MVP:
+Implement interface/service classes but allow mock/demo adapters if real provider credentials are not configured.
+
+Storage backend fields:
+
+* provider
+* region/location
+* tenant_id
+* key_reference
+* protection_level
+* exportable
+* hsm_backed
+* last_verified_at
+* status
+
+8. QRNG Entropy Source Option
+   Add optional QRNG-ready design:
+
+* Show entropy source field
+* Supported values: OS CSPRNG, HSM RNG, QRNG Provider, IBM Quantum QRNG Demo, ID Quantique QRNG
+* For MVP, do not claim real QRNG unless configured
+* Add warning: “QRNG not configured — using approved system CSPRNG”
+
+9. Trust & Dependency Mapping
+   Integrate with existing assets/certificates/CBOM/migration data if available.
+
+Map:
+
+* Key protects asset
+* Key signs certificate
+* Key used by application
+* Key used by TLS endpoint
+* Key stored in vault/backend
+* Key owned by team/user
+* Key affected by migration job
+* Key observed in runtime event
+
+Show graph view:
+Key → Certificate → TLS Endpoint → Application → Data Flow → Business Service
+
+10. Migration Gate Integration
+    Before allowing PQC migration, run QKMS prechecks:
+
+* No owner = block
+* Unknown storage backend = block
+* Deprecated algorithm in critical path = block
+* Runtime key observed but missing from inventory = block
+* No rotation history = warn/block depending on criticality
+* Vendor-managed key with unknown readiness = warn/block
+* Signing key not ready for ML-DSA/SLH-DSA plan = warn
+* Key establishment path not ready for ML-KEM/hybrid TLS = warn/block
+
+Output:
+
+* Allow Migration
+* Warn
+* Block Migration
+
+11. Audit Evidence
+    Create audit-ready reports:
+
+* Key inventory export
+* Key lifecycle report
+* Rotation evidence
+* Policy compliance report
+* PQC readiness report
+* Exceptions and approvals
+* HSM/KMS protection report
+* Tenant-level cryptographic posture report
+
+Export formats:
+
+* PDF
+* CSV
+* JSON
+
+12. API Requirements
+    Create or extend backend APIs:
+
+GET `/api/qkms/overview`
+GET `/api/qkms/keys`
+GET `/api/qkms/keys/:id`
+POST `/api/qkms/keys`
+POST `/api/qkms/keys/:id/rotate`
+POST `/api/qkms/keys/:id/revoke`
+POST `/api/qkms/keys/:id/assign-owner`
+GET `/api/qkms/policies`
+POST `/api/qkms/policies`
+PUT `/api/qkms/policies/:id`
+GET `/api/qkms/readiness`
+POST `/api/qkms/precheck`
+GET `/api/qkms/audit-evidence`
+POST `/api/qkms/export`
+
+If the project already has naming conventions, follow existing route/controller/service style.
+
+13. Database Tables
+    Add migrations only if needed. Suggested tables:
+
+`qkms_keys`
+
+* id
+* tenant_id
+* key_alias
+* key_type
+* algorithm
+* purpose
+* owner_id
+* asset_id
+* certificate_id
+* storage_backend
+* storage_reference
+* environment
+* created_at
+* last_rotated_at
+* expires_at
+* rotation_interval_days
+* status
+* pqc_readiness
+* risk_score
+* compliance_status
+* exportable
+* hsm_backed
+* entropy_source
+* metadata_json
+
+`qkms_policies`
+
+* id
+* tenant_id
+* name
+* description
+* allowed_algorithms
+* blocked_algorithms
+* max_key_age_days
+* rotation_interval_days
+* require_owner
+* require_hsm
+* allow_export
+* environment_scope
+* severity
+* enabled
+* created_at
+* updated_at
+
+`qkms_rotation_jobs`
+
+* id
+* tenant_id
+* key_id
+* status
+* reason
+* requested_by
+* approved_by
+* started_at
+* completed_at
+* failure_reason
+* evidence_json
+
+`qkms_audit_events`
+
+* id
+* tenant_id
+* key_id
+* event_type
+* actor_id
+* event_summary
+* before_json
+* after_json
+* created_at
+
+`qkms_storage_backends`
+
+* id
+* tenant_id
+* provider
+* name
+* location
+* protection_level
+* hsm_backed
+* status
+* last_verified_at
+* config_reference
+
+Ensure strict tenant isolation and RLS if using Supabase/Postgres RLS.
+
+14. Security Requirements
+
+* Never expose raw private keys in UI or logs.
+* Never store unencrypted secrets in database.
+* Mask sensitive values.
+* Use envelope encryption for locally stored secret material.
+* Add audit logging for all key actions.
+* Enforce tenant isolation.
+* Validate authorization on every action.
+* Use least privilege for provider integrations.
+* Mark demo/mock data clearly if real backends are not connected.
+
+15. Frontend UX
+    Use enterprise-grade components:
+
+* KPI cards
+* Inventory table
+* Policy cards
+* Readiness timeline
+* Risk heatmap
+* Trust graph
+* Key detail drawer
+* Migration precheck modal
+* Audit evidence panel
+* Export buttons
+* Refresh / sync button
+* Live status indicator if SSE/WebSocket exists
+
+Recommended tabs:
+
+* Overview
+* Key Inventory
+* Policies
+* Rotation Jobs
+* PQC Readiness
+* Storage Backends
+* Trust Graph
+* Audit Evidence
+
+16. Demo Data
+    Seed demo data for:
+
+* AES-256-GCM database encryption key
+* RSA-2048 legacy TLS key
+* ECDSA P-256 signing key
+* X25519 exchange key
+* Hybrid X25519 + ML-KEM-768 key establishment profile
+* ML-DSA-65 signing profile
+* SLH-DSA backup signing profile
+* Orphaned key with no owner
+* Near-expiry key
+* HSM-backed production key
+
+17. Success Criteria
+    The completed module must:
+
+* Show QKMS dashboard at `/dashboard/qkms`
+* Display key inventory and risk posture
+* Explain PQC readiness accurately
+* Separate ML-KEM from ML-DSA/SLH-DSA use cases
+* Support policy and rotation workflows
+* Generate audit evidence
+* Integrate with migration gate/precheck logic
+* Preserve existing backend functionality
+* Look professional, enterprise-grade, and aligned with Qguard Helix branding
+
+Final positioning:
+Qguard Helix QKMS should communicate:
+
+“PKI tells you who holds the key. QKMS governs the key’s entire existence.”
+
+And:
+
+“Do not just become quantum-safe. Prove it.”

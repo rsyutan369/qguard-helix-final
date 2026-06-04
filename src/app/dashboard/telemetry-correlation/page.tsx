@@ -401,6 +401,7 @@ function useTelemetryCorrelation() {
 
     const tables = [
       'assets',
+      'asset_relationships',
       'runtime_crypto_events',
       'scanner_alerts',
       'scanner_evidence',
@@ -411,6 +412,9 @@ function useTelemetryCorrelation() {
       'crypto_exposures',
       'crypto_inventory',
       'security_events',
+      'migration_jobs',
+      'migration_events',
+      'compliance_evidence',
       'generated_keys',
       'certificates',
       'qrng_events',

@@ -277,6 +277,7 @@ function useBehavioralAnalytics() {
   const [error, setError] = useState<string | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
   const streamsRef = useRef<EventSource[]>([]);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const closeStreams = useCallback(() => {
     for (const stream of streamsRef.current) stream.close();
@@ -313,6 +314,18 @@ function useBehavioralAnalytics() {
     }
   }, [token]);
 
+  const queueRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refresh();
+    }, 250);
+  }, [refresh]);
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+  }, []);
+
   useEffect(() => {
     if (!token || !user) {
       setSnapshot(EMPTY_SNAPSHOT);
@@ -327,16 +340,23 @@ function useBehavioralAnalytics() {
 
     const tables = [
       'assets',
+      'asset_relationships',
       'runtime_crypto_events',
       'crypto_inventory',
       'crypto_exposures',
       'pqc_scan_results',
       'pqc_scan_sessions',
       'security_events',
+      'migration_jobs',
+      'migration_events',
+      'compliance_evidence',
       'generated_keys',
       'certificates',
       'scanner_alerts',
+      'scanner_evidence',
       'scanner_agents',
+      'agent_heartbeats',
+      'connector_accounts',
       'qrng_events',
       'vault_audit_logs',
     ];
@@ -346,14 +366,14 @@ function useBehavioralAnalytics() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` },
-        () => void refresh(),
+        queueRefresh,
       )
       .subscribe());
 
     return () => {
       for (const channel of channels) supabase.removeChannel(channel);
     };
-  }, [user, refresh]);
+  }, [user, queueRefresh]);
 
   useEffect(() => {
     if (!token) {
@@ -365,22 +385,29 @@ function useBehavioralAnalytics() {
 
     const connect = () => {
       closeStreams();
+      const behavioralStream = new EventSource(`/api/v1/dashboard/behavioral-analytics/stream?token=${encodeURIComponent(token)}`);
       const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`);
       const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`);
-      streamsRef.current = [metricsStream, scannerStream];
+      streamsRef.current = [behavioralStream, metricsStream, scannerStream];
 
       const markOpen = () => setSseConnected(true);
       const scheduleReconnect = () => {
         setSseConnected(false);
         closeStreams();
+        if (retryTimer) clearTimeout(retryTimer);
         retryTimer = setTimeout(connect, 10000);
       };
-      const refreshFromStream = () => void refresh();
+      const refreshFromStream = () => queueRefresh();
 
+      behavioralStream.onopen = markOpen;
       metricsStream.onopen = markOpen;
       scannerStream.onopen = markOpen;
+      behavioralStream.onerror = scheduleReconnect;
       metricsStream.onerror = scheduleReconnect;
       scannerStream.onerror = scheduleReconnect;
+      behavioralStream.addEventListener('behavioral-analytics-connected', refreshFromStream);
+      behavioralStream.addEventListener('behavioral-analytics-update', refreshFromStream);
+      behavioralStream.addEventListener('behavioral-analytics-error', refreshFromStream);
       metricsStream.addEventListener('metrics-update', refreshFromStream);
       metricsStream.addEventListener('runtime-crypto-update', refreshFromStream);
       metricsStream.addEventListener('scan-complete', refreshFromStream);
@@ -393,7 +420,7 @@ function useBehavioralAnalytics() {
       if (retryTimer) clearTimeout(retryTimer);
       closeStreams();
     };
-  }, [token, refresh, closeStreams]);
+  }, [token, queueRefresh, closeStreams]);
 
   return { snapshot, state, error, sseConnected, refresh };
 }

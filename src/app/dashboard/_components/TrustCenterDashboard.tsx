@@ -38,6 +38,7 @@ import { motion } from 'framer-motion';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { TRUST_CENTER_TABLES } from '../_lib/telemetry-sync';
 
 type TrustMode = 'continuous' | 'identity' | 'device' | 'analytics' | 'zero';
 type LoadState = 'loading' | 'success' | 'error';
@@ -190,8 +191,19 @@ type TrustSnapshot = {
     auditLogs: number;
     migrationJobs: number;
     complianceEvidence: number;
+    activeAssets: number;
+    inactiveAssets: number;
+    onlineAgents: number;
+    offlineAgents: number;
+    freshHeartbeats: number;
+    runningScans: number;
+    completedScans: number;
+    failedScans: number;
     eventPipelineStatus: string;
     latestRuntimeEventAt: string | null;
+    latestScanAt: string | null;
+    latestAgentHeartbeatAt: string | null;
+    latestDiscoveryAt: string | null;
   };
 };
 
@@ -256,8 +268,19 @@ const EMPTY_SNAPSHOT: TrustSnapshot = {
     auditLogs: 0,
     migrationJobs: 0,
     complianceEvidence: 0,
+    activeAssets: 0,
+    inactiveAssets: 0,
+    onlineAgents: 0,
+    offlineAgents: 0,
+    freshHeartbeats: 0,
+    runningScans: 0,
+    completedScans: 0,
+    failedScans: 0,
     eventPipelineStatus: 'no_agents',
     latestRuntimeEventAt: null,
+    latestScanAt: null,
+    latestAgentHeartbeatAt: null,
+    latestDiscoveryAt: null,
   },
 };
 
@@ -465,34 +488,7 @@ function useTrustDashboard(mode: TrustMode) {
 
   useEffect(() => {
     if (!user) return;
-    const tables = [
-      'assets',
-      'runtime_crypto_events',
-      'scanner_evidence',
-      'scanner_alerts',
-      'pqc_scan_sessions',
-      'pqc_scan_results',
-      'vulnerabilities',
-      'crypto_inventory',
-      'crypto_exposures',
-      'certificates',
-      'generated_keys',
-      'scanner_agents',
-      'connector_accounts',
-      'agent_heartbeats',
-      'profiles',
-      'user_security_settings',
-      'user_devices',
-      'user_sessions',
-      'user_security_events',
-      'auth_events',
-      'security_events',
-      'vault_audit_logs',
-      'audit_logs',
-      'migration_jobs',
-      'compliance_evidence',
-    ];
-    const channels = tables.map((table) => supabase
+    const channels = TRUST_CENTER_TABLES.map((table) => supabase
       .channel(`${config.segment}-${table}`)
       .on(
         'postgres_changes',
@@ -889,9 +885,21 @@ function ControlGrid({ rows }: { rows: ControlRow[] }) {
 }
 
 function Pipeline({ snapshot, sseConnected, compact = false }: { snapshot: TrustSnapshot; sseConnected: boolean; compact?: boolean }) {
+  const activeAssets = snapshot.telemetry.activeAssets || snapshot.telemetry.assets;
+  const scannerTelemetry = snapshot.telemetry.scanResults + snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts;
+  const latestScanLabel = snapshot.telemetry.latestScanAt ? shortTime(snapshot.telemetry.latestScanAt) : 'Awaiting scan';
+  const summaryRows = [
+    ['Live Sync', sseConnected ? 'SSE Active' : 'SSE Connecting', sseConnected ? GREEN : GOLD],
+    ['Pipeline', snapshot.telemetry.eventPipelineStatus.replace(/_/g, ' '), BLUE],
+    ['Latest Scan', latestScanLabel, PURPLE],
+    ['Fresh Beats', compactFmt(snapshot.telemetry.freshHeartbeats), TEAL],
+  ] as const;
   const rows = [
     ['Runtime', snapshot.telemetry.runtimeEvents, Activity, GREEN],
-    ['Scanner', snapshot.telemetry.scanSessions + snapshot.telemetry.scanResults + snapshot.telemetry.scannerEvidence + snapshot.telemetry.scannerAlerts, ScanSearch, PURPLE],
+    ['Scan Sessions', snapshot.telemetry.scanSessions, ScanSearch, PURPLE],
+    ['Scanner Evidence', scannerTelemetry, Radar, PURPLE],
+    ['Active Assets', activeAssets, Network, CYAN],
+    ['Online Agents', snapshot.telemetry.onlineAgents, Cpu, GREEN],
     ['Security', snapshot.telemetry.vulnerabilities + snapshot.telemetry.securityEvents + snapshot.telemetry.auditLogs, ShieldAlert, RED],
     ['Identity', snapshot.telemetry.userSessions + snapshot.telemetry.userSecurityEvents + snapshot.telemetry.authEvents, UserCheck, GOLD],
     ['Devices', snapshot.telemetry.userDevices + snapshot.telemetry.scannerAgents, Laptop, CYAN],
@@ -901,14 +909,12 @@ function Pipeline({ snapshot, sseConnected, compact = false }: { snapshot: Trust
   return (
     <div className="grid gap-4">
       <div className={cn('grid gap-3', compact ? 'grid-cols-1' : 'grid-cols-2')}>
-        <div className="rounded-md border border-white/8 bg-white/[0.03] p-3">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-white/42">Live Sync</div>
-          <div className={cn('mt-2 text-sm font-bold', sseConnected ? 'text-emerald-300' : 'text-amber-300')}>{sseConnected ? 'SSE Active' : 'SSE Connecting'}</div>
-        </div>
-        <div className="rounded-md border border-white/8 bg-white/[0.03] p-3">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-white/42">Pipeline</div>
-          <div className="mt-2 truncate text-sm font-bold text-white/78">{snapshot.telemetry.eventPipelineStatus.replace(/_/g, ' ')}</div>
-        </div>
+        {summaryRows.map(([label, value, color]) => (
+          <div key={label} className="rounded-md border border-white/8 bg-white/[0.03] p-3">
+            <div className="text-[10px] uppercase tracking-[0.1em] text-white/42">{label}</div>
+            <div className="mt-2 truncate text-sm font-bold" style={{ color }}>{value}</div>
+          </div>
+        ))}
       </div>
       <div className={cn('grid grid-cols-1 gap-2', compact ? '' : 'sm:grid-cols-2')}>
         {rows.map(([label, value, Icon, color]) => (
@@ -928,6 +934,12 @@ function Pipeline({ snapshot, sseConnected, compact = false }: { snapshot: Trust
 function Header({ mode, snapshot, state, sseConnected, refresh }: { mode: TrustMode; snapshot: TrustSnapshot; state: LoadState; sseConnected: boolean; refresh: () => void }) {
   const config = MODE_COPY[mode];
   const Icon = config.Icon;
+  const latestActivity = snapshot.latestActivityAt
+    || snapshot.telemetry.latestScanAt
+    || snapshot.telemetry.latestDiscoveryAt
+    || snapshot.telemetry.latestAgentHeartbeatAt
+    || snapshot.telemetry.latestRuntimeEventAt;
+  const activeAssets = snapshot.telemetry.activeAssets || snapshot.telemetry.assets;
   const exportReport = useCallback(() => {
     const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -949,9 +961,15 @@ function Header({ mode, snapshot, state, sseConnected, refresh }: { mode: TrustM
         </div>
         <p className="mt-4 font-mono text-sm tracking-[0.08em] text-gold/70 md:text-base">{config.subtitle}</p>
         <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-[0.08em] text-white/45">
-          <span>Latest: {longDate(snapshot.latestActivityAt)}</span>
+          <span>Latest: {longDate(latestActivity)}</span>
           <span className="text-white/20">/</span>
           <span>Backend synchronized</span>
+          <span className="text-white/20">/</span>
+          <span>Scans: {compactFmt(snapshot.telemetry.scanSessions)}</span>
+          <span className="text-white/20">/</span>
+          <span>Assets: {compactFmt(activeAssets)}</span>
+          <span className="text-white/20">/</span>
+          <span>Agents: {compactFmt(snapshot.telemetry.onlineAgents)}/{compactFmt(snapshot.telemetry.scannerAgents)}</span>
           <span className="text-white/20">/</span>
           <span>{sseConnected ? 'Live stream active' : 'Live stream connecting'}</span>
         </div>
@@ -987,7 +1005,7 @@ function ContinuousLayout({ snapshot, sseConnected }: { snapshot: TrustSnapshot;
           <div className="grid place-items-center"><ScoreRing value={snapshot.metrics.trustScore} label="Trust" /></div>
           <div className="mt-5 grid grid-cols-2 gap-3 text-center text-xs">
             <div className="rounded-md border border-white/8 bg-white/[0.03] p-3"><div className="font-mono text-lg text-white">{signedPercent(snapshot.metrics.trustScoreDelta)}</div><div className="mt-1 text-white/42">7d delta</div></div>
-            <div className="rounded-md border border-white/8 bg-white/[0.03] p-3"><div className="font-mono text-lg text-white">{percentFmt(snapshot.metrics.validationRate)}</div><div className="mt-1 text-white/42">pass rate</div></div>
+            <div className="rounded-md border border-white/8 bg-white/[0.03] p-3"><div className="font-mono text-lg text-white">{percentFmt(snapshot.metrics.validationRate)}</div><div className="mt-1 text-white/42">{compactFmt(snapshot.telemetry.runningScans)} scan(s) running</div></div>
           </div>
         </Panel>
         <Panel className="p-5 xl:col-span-6">
@@ -1013,7 +1031,7 @@ function IdentityLayout({ snapshot, sseConnected }: { snapshot: TrustSnapshot; s
   return (
     <>
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        <Panel className="p-5 xl:col-span-4">
+        <Panel className="p-5 xl:col-span-6">
           <SectionTitle>Identity Assurance</SectionTitle>
           <div className="grid grid-cols-[150px_1fr] items-center gap-5">
             <ScoreRing value={snapshot.metrics.trustScore} label="Identity" size="md" />
@@ -1024,12 +1042,14 @@ function IdentityLayout({ snapshot, sseConnected }: { snapshot: TrustSnapshot; s
             </div>
           </div>
         </Panel>
-        <MetricTile className="xl:col-span-2" icon={Fingerprint} label="Trusted Signals" value={compactFmt(snapshot.metrics.trustedSignals)} detail="identity and access evidence" color={GREEN} />
-        <MetricTile className="xl:col-span-2" icon={Laptop} label="Trusted Devices" value={compactFmt(snapshot.metrics.trustedDevices)} detail="account device posture" color={CYAN} />
-        <MetricTile className="xl:col-span-2" icon={ShieldAlert} label="Review Queue" value={compactFmt(snapshot.metrics.reviewSignals)} detail="identity findings to inspect" color={GOLD} />
-        <Panel className="p-5 xl:col-span-2">
+        <MetricTile className="xl:col-span-3" icon={Fingerprint} label="Trusted Signals" value={compactFmt(snapshot.metrics.trustedSignals)} detail={`${compactFmt(snapshot.telemetry.authEvents + snapshot.telemetry.userSecurityEvents)} identity events`} color={GREEN} />
+        <MetricTile className="xl:col-span-3" icon={Laptop} label="Trusted Devices" value={compactFmt(snapshot.metrics.trustedDevices)} detail={`${compactFmt(snapshot.telemetry.onlineAgents)} online collector(s)`} color={CYAN} />
+      </section>
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <MetricTile className="xl:col-span-4" icon={ShieldAlert} label="Review Queue" value={compactFmt(snapshot.metrics.reviewSignals)} detail={`${compactFmt(snapshot.telemetry.failedScans)} failed scan(s)`} color={GOLD} />
+        <Panel className="p-5 xl:col-span-8">
           <SectionTitle>Sync</SectionTitle>
-          <Pipeline snapshot={snapshot} sseConnected={sseConnected} compact />
+          <Pipeline snapshot={snapshot} sseConnected={sseConnected} />
         </Panel>
       </section>
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
@@ -1049,10 +1069,10 @@ function DeviceLayout({ snapshot, sseConnected }: { snapshot: TrustSnapshot; sse
   return (
     <>
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <MetricTile icon={MonitorCheck} label="Device Signals" value={compactFmt(snapshot.metrics.devices)} detail="devices, agents, endpoints" color={CYAN} />
-        <MetricTile icon={BadgeCheck} label="Trusted Devices" value={compactFmt(snapshot.metrics.trustedDevices)} detail="trusted account devices" color={GREEN} />
-        <MetricTile icon={Cpu} label="Active Sources" value={compactFmt(snapshot.metrics.activeSources)} detail="agents and connectors" color={BLUE} />
-        <MetricTile icon={AlertTriangle} label="Device Review" value={compactFmt(snapshot.metrics.reviewSignals)} detail="posture checks requiring review" color={GOLD} />
+        <MetricTile icon={MonitorCheck} label="Device Signals" value={compactFmt(snapshot.metrics.devices)} detail={`${compactFmt(snapshot.telemetry.activeAssets || snapshot.telemetry.assets)} active asset(s)`} color={CYAN} />
+        <MetricTile icon={BadgeCheck} label="Trusted Devices" value={compactFmt(snapshot.metrics.trustedDevices)} detail={`${compactFmt(snapshot.telemetry.freshHeartbeats)} fresh heartbeat(s)`} color={GREEN} />
+        <MetricTile icon={Cpu} label="Active Sources" value={compactFmt(snapshot.metrics.activeSources)} detail={`${compactFmt(snapshot.telemetry.onlineAgents)}/${compactFmt(snapshot.telemetry.scannerAgents)} agents online`} color={BLUE} />
+        <MetricTile icon={AlertTriangle} label="Device Review" value={compactFmt(snapshot.metrics.reviewSignals)} detail={`${compactFmt(snapshot.telemetry.offlineAgents)} offline collector(s)`} color={GOLD} />
         <Panel className="p-4"><div className="grid place-items-center"><ScoreRing value={snapshot.metrics.trustScore} label="Fleet" size="md" /></div></Panel>
       </section>
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
@@ -1073,11 +1093,11 @@ function AnalyticsLayout({ snapshot, sseConnected }: { snapshot: TrustSnapshot; 
     <>
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
         <MetricTile icon={CircleGauge} label="Trust Score" value={integerFmt(snapshot.metrics.trustScore)} detail={`${signedPercent(snapshot.metrics.trustScoreDelta)} vs previous window`} color={TEAL} />
-        <MetricTile icon={Activity} label="Validations" value={compactFmt(snapshot.metrics.validations)} detail={`${signedPercent(snapshot.metrics.validationsDelta)} validation delta`} color={BLUE} />
+        <MetricTile icon={Activity} label="Validations" value={compactFmt(snapshot.metrics.validations)} detail={`${compactFmt(snapshot.telemetry.scanSessions)} scan session(s)`} color={BLUE} />
         <MetricTile icon={ShieldAlert} label="High Risk" value={compactFmt(snapshot.metrics.highRiskSignals)} detail="critical and high signals" color={RED} />
         <MetricTile icon={Sparkles} label="PQC Ready" value={percentFmt(snapshot.metrics.pqcReadyPercent)} detail="quantum-safe evidence" color={PURPLE} />
         <MetricTile icon={Lock} label="Encrypted" value={percentFmt(snapshot.metrics.encryptedPercent)} detail="encrypted trust evidence" color={GREEN} />
-        <MetricTile icon={Network} label="Sources" value={compactFmt(snapshot.metrics.activeSources)} detail="agents and connectors" color={GOLD} />
+        <MetricTile icon={Network} label="Sources" value={compactFmt(snapshot.metrics.activeSources)} detail={`${compactFmt(snapshot.telemetry.onlineAgents)} online / ${compactFmt(snapshot.telemetry.connectors)} connector(s)`} color={GOLD} />
       </section>
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <Panel className="p-5 xl:col-span-7"><SectionTitle>Trust Trend Analytics</SectionTitle><TimelineChart points={snapshot.timeline} /></Panel>

@@ -7,7 +7,7 @@ import {
   Rocket, GitCompare, ChevronLeft,
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
-  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost
+  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost, Workflow
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
@@ -65,6 +65,7 @@ const NAV_SECTIONS = [
     label: 'Ecosystem & Supply-Chain',
     collapsible: true,
     items: [
+      { name: 'Trust-State Discovery', path: '/dashboard/trust-state-discovery', icon: Workflow },
       { name: 'Ecosystem Dependency Map', path: '/dashboard/ecosystem-dependency-map', icon: Globe },
       { name: 'Vendor PQC Readiness Center', path: '/dashboard/vendor-pqc-readiness', icon: ClipboardCheck },
       { name: 'Trust Chain Analyzer', path: '/dashboard/trust-chain-analyzer', icon: Network },
@@ -92,6 +93,16 @@ const NAV_SECTIONS = [
       { name: 'PKI Visibility', path: '/dashboard/pki-visibility', icon: Award },
       { name: 'Protocol Analytics', path: '/dashboard/protocol-analytics', icon: Activity },
       { name: 'Encryption Monitoring', path: '/dashboard/encryption-monitoring', icon: Lock },
+    ],
+  },
+  {
+    label: 'Qguard Helix QKMS',
+    collapsible: true,
+    items: [
+      { name: 'QKMS Overview', path: '/dashboard/qkms/overview', icon: Key },
+      { name: 'QKMS Key Inventory', path: '/dashboard/qkms/inventory', icon: Database },
+      { name: 'QKMS Governance', path: '/dashboard/qkms/governance', icon: Scale },
+      { name: 'QKMS PQC Readiness', path: '/dashboard/qkms/readiness', icon: ShieldCheck },
     ],
   },
   {
@@ -149,6 +160,7 @@ export default function DashboardLayout() {
     'Ecosystem & Supply-Chain': false,
     'Intelligence': false,
     'Observability': false,
+    'Qguard Helix QKMS': false,
     'Trust Center': false,
     'Governance': false,
     'Telemetry': false,
@@ -166,8 +178,8 @@ export default function DashboardLayout() {
 
   if (loading) {
     return (
-      <div className="qg-dashboard-shell grid min-h-screen place-items-center bg-[var(--qg-dashboard-bg)] text-[var(--qg-accent)]">
-        <div className="rounded-lg border border-gold/20 bg-gold/[0.04] px-5 py-3 text-xs font-black uppercase tracking-[0.18em]">
+      <div className="qg-dashboard-shell grid min-h-screen place-items-center bg-[var(--qg-dashboard-bg)] text-[var(--qg-accent-cyan)]">
+        <div className="rounded-lg border border-blue-400/20 bg-blue-500/[0.06] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] shadow-[0_18px_60px_rgba(0,0,0,0.32)]">
           Securing session
         </div>
       </div>
@@ -179,7 +191,7 @@ export default function DashboardLayout() {
   }
 
   return (
-    <div className="qg-dashboard-shell flex h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)] font-mono overflow-hidden">
+    <div className="qg-dashboard-shell flex h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)] font-sans overflow-hidden">
       {/* Mobile overlay */}
       <AnimatePresence>
         {mobileOpen && (
@@ -195,23 +207,23 @@ export default function DashboardLayout() {
 
       {/* Sidebar */}
       <aside className={`
-        qg-dashboard-sidebar ${sidebarWidth} flex flex-col border-r border-[#FFD36B]/15 bg-[#050816]/90 backdrop-blur-2xl transition-all duration-300 z-50
+        qg-dashboard-sidebar ${sidebarWidth} flex flex-col border-r border-slate-700/40 bg-slate-950/90 backdrop-blur-2xl transition-all duration-300 z-50
         fixed lg:relative inset-y-0 left-0
         ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
         {/* Brand */}
-        <div className={`flex items-center border-b border-gold/15 ${collapsed ? 'justify-center p-4' : 'p-5'}`}>
+        <div className={`flex items-center border-b border-slate-700/45 ${collapsed ? 'justify-center p-4' : 'p-5'}`}>
           <Link to="/" className="flex items-center gap-2.5 no-underline group">
-            <div className="h-9 w-9 rounded-lg border border-gold/30 bg-gold/10 flex items-center justify-center shrink-0 shadow-[0_0_20px_rgba(212,175,55,0.15)] group-hover:shadow-[0_0_28px_rgba(212,175,55,0.3)] transition-all">
-              <ShieldAlert className="h-5 w-5 text-gold" />
+            <div className="h-9 w-9 rounded-lg border border-blue-400/30 bg-blue-500/10 flex items-center justify-center shrink-0 shadow-[0_0_22px_rgba(37,99,235,0.18)] group-hover:shadow-[0_0_28px_rgba(6,182,212,0.24)] transition-all">
+              <ShieldAlert className="h-5 w-5 text-cyan-300" />
             </div>
             {!collapsed && (
               <div className="min-w-0">
-                <span className="block text-sm font-black uppercase tracking-[0.06em] text-gold gold-glow">
+                <span className="block text-sm font-black uppercase tracking-[0.06em] text-slate-50">
                   Qguard Helix
                 </span>
-                <span className="block text-[9px] font-bold uppercase tracking-[0.2em] text-white/30">
-                  Quantum SOC
+                <span className="block text-[9px] font-bold uppercase tracking-[0.2em] text-cyan-300/60">
+                  Quantum Defense
                 </span>
               </div>
             )}
@@ -228,11 +240,11 @@ export default function DashboardLayout() {
               <div key={section.label} className="space-y-1">
                 {!collapsed && (
                   <div 
-                    className={`px-3 mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] flex items-center justify-between transition-colors group/header ${isCollapsible ? 'cursor-pointer hover:text-gold text-gold/60' : 'text-white/20'}`}
+                    className={`px-3 mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] flex items-center justify-between transition-colors group/header ${isCollapsible ? 'cursor-pointer hover:text-cyan-300 text-slate-500' : 'text-slate-600'}`}
                     onClick={() => isCollapsible && toggleSection(section.label)}
                   >
                     <div className="flex items-center gap-2">
-                      {section.label === 'Quantum Tools' && <Sparkles className="h-2.5 w-2.5 text-gold/50 group-hover/header:text-gold transition-colors" />}
+                      {section.label === 'Quantum Tools' && <Sparkles className="h-2.5 w-2.5 text-cyan-300/50 group-hover/header:text-cyan-300 transition-colors" />}
                       <span>{section.label}</span>
                     </div>
                     {isCollapsible && (
@@ -240,7 +252,7 @@ export default function DashboardLayout() {
                     )}
                   </div>
                 )}
-                {collapsed && <div className="h-px bg-gold/10 mx-2 mb-2" />}
+                {collapsed && <div className="h-px bg-slate-700/45 mx-2 mb-2" />}
                 
                 <AnimatePresence initial={false}>
                   {isOpen && (
@@ -265,14 +277,14 @@ export default function DashboardLayout() {
                               collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2.5'
                             } ${
                               isActive 
-                                ? 'bg-gold/10 text-gold border border-gold/25 shadow-[0_0_18px_rgba(212,175,55,0.12)]' 
-                                : 'text-white/45 hover:bg-white/[0.04] hover:text-white/75 border border-transparent'
+                                ? 'bg-gradient-to-r from-blue-600/20 to-violet-600/14 text-cyan-100 border border-blue-400/30 shadow-[0_12px_30px_rgba(37,99,235,0.12)]' 
+                                : 'text-slate-400 hover:bg-white/[0.045] hover:text-slate-100 border border-transparent'
                             }`}
                           >
                             {isActive && (
                               <motion.div 
                                 layoutId="sidebarActive"
-                                className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-gold rounded-r-full shadow-[0_0_12px_rgba(212,175,55,0.6)]"
+                                className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-gradient-to-b from-blue-400 to-cyan-300 rounded-r-full shadow-[0_0_14px_rgba(6,182,212,0.5)]"
                                 transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                               />
                             )}
@@ -292,7 +304,7 @@ export default function DashboardLayout() {
         </nav>
 
         {/* Bottom controls */}
-        <div className="border-t border-gold/15 p-2.5 space-y-1.5">
+        <div className="border-t border-slate-700/45 p-2.5 space-y-1.5">
           <ThemeToggle compact={collapsed} showSystem={!collapsed} className="w-full justify-center" />
 
           {/* Collapse toggle (desktop) */}
@@ -324,26 +336,24 @@ export default function DashboardLayout() {
         {/* Atmospheric Background Layers */}
         <div className="qg-dashboard-bg-layers pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
           {/* Deep navy base */}
-          <div className="absolute inset-0 bg-[#050816]" />
-          {/* Gold radial glow — top right */}
-          <div className="absolute -right-24 -top-36 h-[560px] w-[560px] rounded-full border border-[#FFD36B]/10 bg-[radial-gradient(circle,rgba(255,211,107,0.14),rgba(255,179,0,0.04)_38%,transparent_68%)]" />
-          {/* Gold radial glow — top left */}
-          <div className="absolute left-1/4 top-0 h-80 w-[520px] bg-[radial-gradient(circle,rgba(255,211,107,0.08),transparent_68%)] blur-3xl" />
-          {/* Subtle gold grid pattern */}
-          <div className="absolute inset-0 bg-[linear-gradient(rgba(255,211,107,0.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,211,107,0.03)_1px,transparent_1px)] bg-[size:48px_48px] opacity-50" />
+          <div className="absolute inset-0 bg-[var(--qg-dashboard-bg)]" />
+          {/* Blue-violet command-center depth */}
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_82%_0%,rgba(37,99,235,0.16),transparent_42%),radial-gradient(ellipse_at_24%_8%,rgba(6,182,212,0.09),transparent_38%),linear-gradient(135deg,transparent,rgba(124,58,237,0.055)_58%,transparent)]" />
+          {/* Subtle enterprise grid */}
+          <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.035)_1px,transparent_1px)] bg-[size:52px_52px] opacity-60" />
         </div>
 
         {/* Mobile header */}
-        <div className="qg-dashboard-mobile-header lg:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-[#FFD36B]/15 bg-[#050816]/90 backdrop-blur-xl px-4 py-3">
+        <div className="qg-dashboard-mobile-header lg:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-slate-700/40 bg-slate-950/90 backdrop-blur-xl px-4 py-3">
           <button
             onClick={() => setMobileOpen(true)}
-            className="p-2 rounded-lg border border-gold/20 bg-gold/5 text-gold"
+            className="p-2 rounded-lg border border-blue-400/25 bg-blue-500/10 text-cyan-300"
           >
             <Menu className="h-4 w-4" />
           </button>
           <div className="flex items-center gap-2">
-            <ShieldAlert className="h-5 w-5 text-gold" />
-            <span className="text-sm font-black uppercase tracking-wider text-gold">Qguard Helix</span>
+            <ShieldAlert className="h-5 w-5 text-cyan-300" />
+            <span className="text-sm font-black uppercase tracking-wider text-slate-50">Qguard Helix</span>
           </div>
           <ThemeToggle compact showSystem={false} className="ml-auto" />
         </div>

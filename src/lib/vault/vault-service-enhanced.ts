@@ -1499,42 +1499,75 @@ export interface CreateSharedLinkParams {
 }
 
 export async function createSharedLink(params: CreateSharedLinkParams): Promise<VaultSharedLinkRecord> {
-  return withRetry(async () => {
-    const user = await getAuthenticatedUser()
-
-    const { data, error } = await supabase
-      .from('vault_shared_links')
-      .insert({
-        user_id: user.id,
-        file_id: params.fileId,
-        original_filename: params.originalFilename,
-        original_size: params.originalSize,
-        mime_type: params.mimeType,
-        encrypted_file_data: params.encryptedFileData,
-        encryption_metadata: params.encryptionMetadata,
-        is_password_protected: params.isPasswordProtected || false,
-        password_hash: params.passwordHash,
-        password_hint: params.passwordHint,
-        max_downloads: params.maxDownloads,
-        expires_at: params.expiresAt,
-        is_one_time: params.isOneTime || false,
-        permissions: params.permissions || ['view', 'download'],
-      })
-      .select()
-      .single()
-
-    if (error) handleSupabaseError(error, 'creating shared link')
-
-    await logAudit(
-      'share_created',
-      'info',
-      'share_link',
-      data.id,
-      `Created share link for: ${params.originalFilename}`
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+  if (sessionError || !session?.access_token) {
+    throw new VaultError(
+      'Not authenticated. Please sign in to create a share link.',
+      'AUTH_REQUIRED',
+      401
     )
+  }
 
-    return data as VaultSharedLinkRecord
+  const metadata = params.encryptionMetadata || {}
+  const encryptedPayload = typeof metadata.encryptedPayload === 'string' ? metadata.encryptedPayload : ''
+  const iv = typeof metadata.iv === 'string' ? metadata.iv : ''
+  const integrityHash = typeof metadata.integrityHash === 'string' ? metadata.integrityHash : ''
+  const requestMetadata = { ...metadata }
+  delete requestMetadata.encryptedPayload
+
+  if (!encryptedPayload || !iv || !integrityHash) {
+    throw new VaultError(
+      'Share payload is incomplete. Please try again.',
+      'INVALID_SHARE_PAYLOAD',
+      400
+    )
+  }
+
+  const response = await fetch('/api/v1/vault/share', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({
+      fileId: params.fileId,
+      originalFilename: params.originalFilename,
+      originalSize: params.originalSize,
+      mimeType: params.mimeType,
+      encryptedPayload,
+      iv,
+      integrityHash,
+      encryptionMetadata: requestMetadata,
+      isPasswordProtected: params.isPasswordProtected || false,
+      passwordHash: params.passwordHash,
+      passwordHint: params.passwordHint,
+      maxDownloads: params.maxDownloads,
+      expiresAt: params.expiresAt,
+      isOneTime: params.isOneTime || false,
+      permissions: params.permissions || ['view', 'download'],
+    }),
   })
+
+  let payload: { data?: VaultSharedLinkRecord; error?: { code?: string; message?: string } } | null = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    throw new VaultError(
+      payload?.error?.message || 'Failed to create shared link',
+      payload?.error?.code || 'SHARE_ERROR',
+      response.status
+    )
+  }
+
+  if (!payload?.data?.id) {
+    throw new VaultError('Share service returned an invalid response', 'INVALID_SHARE_RESPONSE', 502)
+  }
+
+  return payload.data
 }
 
 export async function revokeSharedLink(linkId: string): Promise<void> {
