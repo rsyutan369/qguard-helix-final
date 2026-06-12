@@ -77,12 +77,8 @@ pub fn messaging_send_encrypted_message(
     state: State<'_, AppState>,
     request: SendMessageRequest,
 ) -> Result<EncryptedMessageEnvelope> {
-    let session_user_id = state.user_id()?;
-    if request.sender_user_id != session_user_id {
-        return Err(QGuardError::Trust(
-            "sender user does not match authenticated desktop session".to_string(),
-        ));
-    }
+    state.require_user_auth(&request.sender_user_id)?;
+    let _key_scope = state.lock_key_scope()?;
     if request.recipient_user_id != request.recipient.identity.user_id
         || request.recipient_device_id != request.recipient.identity.device_id
     {
@@ -91,7 +87,7 @@ pub fn messaging_send_encrypted_message(
         ));
     }
 
-    let identity_bundle = state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    let identity_bundle = state.ensure_identity(&request.sender_user_id, "Windows Desktop")?;
     verify_identity_bundle(
         &request.recipient.identity.user_id,
         &request.recipient.identity.device_id,
@@ -128,6 +124,7 @@ pub fn messaging_send_encrypted_message(
         &prekey.mlkem_public,
         kex_info.as_bytes(),
     )?;
+    let pq_kem = hybrid_ciphertext.suite.pq_kem.clone();
 
     let ratchet_id = format!(
         "{}:{}:{}:{}",
@@ -169,7 +166,7 @@ pub fn messaging_send_encrypted_message(
     shared_secret.zeroize();
     state.touch_telemetry(
         "message",
-        "Fresh ML-KEM-768/X25519 secret encapsulated; per-message ratchet key sealed",
+        &format!("Fresh {pq_kem}/X25519 secret encapsulated; per-message ratchet key sealed"),
         100,
     );
     state.audit_info(
@@ -212,19 +209,12 @@ pub fn messaging_receive_encrypted_message(
     state: State<'_, AppState>,
     envelope: EncryptedMessageEnvelope,
 ) -> Result<DecryptedMessage> {
-    let session_user_id = state.user_id()?;
-    if envelope.recipient_user_id != session_user_id {
-        return Err(QGuardError::Trust(
-            "message envelope is not addressed to this authenticated user".to_string(),
-        ));
-    }
+    let session_user_id = envelope.recipient_user_id.clone();
+    state.require_user_auth(&session_user_id)?;
+    let _key_scope = state.lock_key_scope()?;
 
     let identity_bundle = state.ensure_identity(&session_user_id, "Windows Desktop")?;
-    if envelope.recipient_device_id != identity_bundle.device_id {
-        return Err(QGuardError::Trust(
-            "message envelope is not addressed to this device".to_string(),
-        ));
-    }
+    let exact_local_device = envelope.recipient_device_id == identity_bundle.device_id;
 
     dual_verify(
         &envelope.sender_ed25519_public,
@@ -258,24 +248,44 @@ pub fn messaging_receive_encrypted_message(
 
     let (x25519_secret, mlkem_secret) = match envelope.prekey_kind.as_str() {
         "signed_prekey" => {
-            let guard = state
+            let prekey = state
                 .signed_prekey
                 .lock()
-                .map_err(|_| QGuardError::Storage("signed prekey lock poisoned".to_string()))?;
-            let prekey = guard
+                .map_err(|_| QGuardError::Storage("signed prekey lock poisoned".to_string()))?
                 .as_ref()
                 .filter(|p| p.public.prekey_id == envelope.prekey_id)
+                .cloned()
+                .or_else(|| {
+                    state.legacy_signed_prekeys.lock().ok().and_then(|legacy| {
+                        legacy
+                            .iter()
+                            .find(|p| p.public.prekey_id == envelope.prekey_id)
+                            .cloned()
+                    })
+                })
                 .ok_or_else(|| QGuardError::NotFound("local signed prekey".to_string()))?;
             (prekey.x25519_secret, prekey.mlkem_secret.clone())
         }
         "one_time_prekey" => {
-            let guard = state
+            let prekey = state
                 .one_time_prekeys
                 .lock()
-                .map_err(|_| QGuardError::Storage("one-time prekey lock poisoned".to_string()))?;
-            let prekey = guard
+                .map_err(|_| QGuardError::Storage("one-time prekey lock poisoned".to_string()))?
                 .iter()
                 .find(|p| p.public.prekey_id == envelope.prekey_id)
+                .cloned()
+                .or_else(|| {
+                    state
+                        .legacy_one_time_prekeys
+                        .lock()
+                        .ok()
+                        .and_then(|legacy| {
+                            legacy
+                                .iter()
+                                .find(|p| p.public.prekey_id == envelope.prekey_id)
+                                .cloned()
+                        })
+                })
                 .ok_or_else(|| QGuardError::NotFound("local one-time prekey".to_string()))?;
             (prekey.x25519_secret, prekey.mlkem_secret.clone())
         }
@@ -377,6 +387,15 @@ pub fn messaging_receive_encrypted_message(
         .lock()
         .map_err(|_| QGuardError::Storage("decrypted message cache lock poisoned".to_string()))?
         .insert(cache_key, plaintext.clone());
+    state.touch_telemetry(
+        "message",
+        if exact_local_device {
+            "Encrypted message decrypted locally with replay protection"
+        } else {
+            "Synced trusted-device envelope decrypted locally with replay protection"
+        },
+        100,
+    );
     Ok(DecryptedMessage {
         message_id: envelope.message_id,
         conversation_id: envelope.conversation_id,

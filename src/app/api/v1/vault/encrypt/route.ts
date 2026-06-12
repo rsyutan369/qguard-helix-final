@@ -8,7 +8,7 @@ import {
   logRateLimited,
   logKeyGenerated,
 } from '@/lib/vault/audit-service'
-import { ml_kem768 } from '@noble/post-quantum/ml-kem.js'
+import { CURRENT_VAULT_KEM, kemForName } from '@/lib/vault/kem-profile'
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
@@ -25,7 +25,7 @@ function toHex(bytes: Uint8Array): string {
 /**
  * POST /api/v1/vault/encrypt
  *
- * Encrypts an already-uploaded vault file using ML-KEM-768 + AES-256-GCM
+ * Encrypts an already-uploaded vault file using ML-KEM-1024 + AES-256-GCM
  * envelope encryption with ML-DSA-65 signature.
  *
  * Body: { fileId: string }
@@ -116,10 +116,10 @@ export async function POST(request: NextRequest) {
 
     const fileData = new Uint8Array(await rawBlob.arrayBuffer())
     const originalSize = fileData.length
-    console.log('[encrypt] Step 2: Generating ML-KEM-768 key pair...')
+    console.log('[encrypt] Step 2: Generating ML-KEM-1024 key pair...')
 
-    // Step 2: Generate ML-KEM-768 key pair for this encryption
-    const encKeyPair = ml_kem768.keygen()
+    // Step 2: Generate ML-KEM-1024 key pair for this encryption
+    const encKeyPair = kemForName(CURRENT_VAULT_KEM).keygen()
     const encFingerprint = toHex(sha256(encKeyPair.publicKey)).slice(0, 32)
     console.log('[encrypt] Step 3: Encrypting file...')
 
@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
     }
     const effectiveMasterKey = masterKey ?? 'qguard-dev-fallback-key-not-for-production'
 
-    // Encrypt the ML-KEM-768 secret key before storage.
+    // Encrypt the ML-KEM-1024 secret key before storage.
     // user.id is mixed into the HKDF derivation — each customer gets a unique
     // wrapping key so a master key leak alone cannot decrypt any user's vault.
     const { encryptedKey: encEncKey, nonce: encNonce } = encryptSecretKey(encKeyPair.secretKey, effectiveMasterKey, user.id)
@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
       .insert({
         user_id: user.id,
         key_type: 'encryption',
-        algorithm: 'ML-KEM-768',
+        algorithm: CURRENT_VAULT_KEM,
         public_key: toHex(encKeyPair.publicKey),
         encrypted_private_key: encStoredKey,
         key_encryption_method: 'AES-256-GCM-USER',
@@ -242,7 +242,7 @@ export async function POST(request: NextRequest) {
     const { data: updatedFile, error: updateError } = await client
       .from('vault_files')
       .update({
-        encryption_algorithm: 'ML-KEM-768+AES-256-GCM',
+        encryption_algorithm: `${CURRENT_VAULT_KEM}+AES-256-GCM`,
         storage_path: encStoragePath,
         kem_ciphertext: encryptionResult.encryptedDataKey,
         aes_nonce: encryptionResult.aesNonce,
@@ -270,7 +270,7 @@ export async function POST(request: NextRequest) {
 
     // Step 8: Audit logging
     await logFileEncrypted(user.id, fileId, file.name, encKeyRecord.id, ip, client)
-    await logKeyGenerated(user.id, encKeyRecord.id, 'encryption', 'ML-KEM-768', ip, client)
+    await logKeyGenerated(user.id, encKeyRecord.id, 'encryption', CURRENT_VAULT_KEM, ip, client)
 
     // Zero out key material
     encKeyPair.secretKey.fill(0)
@@ -279,7 +279,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       data: {
         ...updatedFile,
-        encryption: 'ML-KEM-768+AES-256-GCM',
+        encryption: `${CURRENT_VAULT_KEM}+AES-256-GCM`,
         signed: true,
         integrityHash: encryptionResult.integrityHash,
         originalSize,

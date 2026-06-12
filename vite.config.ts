@@ -12,7 +12,16 @@ const tsconfigPath = path.join(rootDir, 'tsconfig.json');
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, rootDir, '');
-  for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+  for (const key of [
+    'VITE_SUPABASE_URL',
+    'VITE_SUPABASE_ANON_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'VITE_SUPABASE_FALLBACK_URL',
+    'VITE_SUPABASE_FALLBACK_ANON_KEY',
+    'SUPABASE_FALLBACK_SERVICE_ROLE_KEY',
+    'VITE_SUPABASE_USE_FALLBACK',
+    'SUPABASE_USE_FALLBACK',
+  ]) {
     if (env[key] && !process.env[key]) {
       process.env[key] = env[key];
     }
@@ -108,6 +117,41 @@ export default defineConfig(({mode}) => {
                 // The request path reports the concrete API load error if prewarm fails.
               })
             }, 1000)
+          })
+
+          const sharePageCsp = [
+            "default-src 'self'",
+            "base-uri 'self'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+            mode === 'production' ? "script-src 'self' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+            "font-src 'self' https://fonts.gstatic.com data:",
+            "img-src 'self' blob: data:",
+            "media-src 'self' blob:",
+            "connect-src 'self' https://*.supabase.co wss://*.supabase.co ws: wss:",
+            "worker-src 'self' blob:",
+            mode === 'production' ? 'upgrade-insecure-requests' : '',
+          ].filter(Boolean).join('; ')
+
+          server.middlewares.use((req: any, res: any, next: any) => {
+            const pathname = (req.url || '').split('?')[0]
+            if (pathname.startsWith('/vault/shared')) {
+              res.setHeader('Content-Security-Policy', sharePageCsp)
+              res.setHeader('Referrer-Policy', 'no-referrer')
+              res.setHeader('X-Frame-Options', 'DENY')
+              res.setHeader('X-Content-Type-Options', 'nosniff')
+              res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()')
+              res.setHeader('Cache-Control', 'no-store, max-age=0')
+              const forwardedProto = Array.isArray(req.headers['x-forwarded-proto'])
+                ? req.headers['x-forwarded-proto'][0]
+                : req.headers['x-forwarded-proto']
+              if (mode === 'production' || forwardedProto === 'https') {
+                res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload')
+              }
+            }
+            next()
           })
 
           server.middlewares.use((req: any, res: any, next: any) => {

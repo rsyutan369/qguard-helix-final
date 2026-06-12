@@ -94,8 +94,10 @@ export interface VaultFileSummary {
 
 export interface SecurityEvent {
   id: string;
+  device_id?: string | null;
   event_type: string;
   severity: "info" | "warning" | "critical";
+  encrypted_details?: Record<string, unknown> | null;
   event_hash: string;
   previous_hash: string | null;
   created_at: string;

@@ -32,14 +32,14 @@ export async function GET(request: NextRequest) {
         { stage: 'preparing', percent: 0, message: 'Preparing file for encryption' },
         { stage: 'generating_data_key', percent: 10, message: 'Generating AES-256-GCM data key' },
         { stage: 'encrypting_file', percent: 30, message: 'Encrypting file blocks with AES-256-GCM' },
-        { stage: 'encapsulating_key', percent: 60, message: 'Encapsulating data key with ML-KEM-768' },
+        { stage: 'encapsulating_key', percent: 60, message: 'Encapsulating data key with ML-KEM-1024' },
         { stage: 'signing_metadata', percent: 80, message: 'Signing metadata with ML-DSA-65' },
         { stage: 'uploading', percent: 90, message: 'Uploading encrypted file to vault' },
         { stage: 'complete', percent: 100, message: 'Encryption and upload complete' },
       ]
     : [
         { stage: 'preparing', percent: 0, message: 'Preparing for decryption' },
-        { stage: 'encapsulating_key', percent: 20, message: 'Decapsulating data key with ML-KEM-768' },
+        { stage: 'encapsulating_key', percent: 20, message: 'Decapsulating data key with ML-KEM-1024' },
         { stage: 'generating_data_key', percent: 40, message: 'Recovering AES-256 data key' },
         { stage: 'encrypting_file', percent: 60, message: 'Decrypting file with AES-256-GCM' },
         { stage: 'signing_metadata', percent: 80, message: 'Verifying metadata signature' },

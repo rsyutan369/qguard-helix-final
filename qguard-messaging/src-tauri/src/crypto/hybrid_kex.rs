@@ -1,4 +1,4 @@
-use pqcrypto_kyber::kyber768;
+use pqcrypto_kyber::{kyber1024, kyber768};
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use zeroize::Zeroize;
 
 use crate::error::{QGuardError, Result};
 
-use super::{kdf::derive_32, AlgorithmSuite, HybridCiphertext};
+use super::{kdf::derive_32, AlgorithmSuite, HybridCiphertext, CURRENT_PQ_KEM, LEGACY_PQ_KEM_768};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalKemKeypair {
@@ -21,14 +21,27 @@ impl LocalKemKeypair {
     pub fn generate() -> Self {
         let x_secret = StaticSecret::random_from_rng(OsRng);
         let x_public = X25519PublicKey::from(&x_secret);
-        let (ml_public, ml_secret) = kyber768::keypair();
+        let (ml_public, ml_secret) = kyber1024::keypair();
 
         Self {
             x25519_secret: x_secret.to_bytes(),
             x25519_public: x_public.as_bytes().to_vec(),
-            mlkem_secret: kyber768::SecretKey::as_bytes(&ml_secret).to_vec(),
-            mlkem_public: kyber768::PublicKey::as_bytes(&ml_public).to_vec(),
+            mlkem_secret: kyber1024::SecretKey::as_bytes(&ml_secret).to_vec(),
+            mlkem_public: kyber1024::PublicKey::as_bytes(&ml_public).to_vec(),
         }
+    }
+
+    pub fn is_current_public_key(public_key: &[u8]) -> bool {
+        kyber1024::PublicKey::from_bytes(public_key).is_ok()
+    }
+
+    pub fn is_current_secret_key(secret_key: &[u8]) -> bool {
+        kyber1024::SecretKey::from_bytes(secret_key).is_ok()
+    }
+
+    pub fn is_current_suite(&self) -> bool {
+        Self::is_current_public_key(&self.mlkem_public)
+            && Self::is_current_secret_key(&self.mlkem_secret)
     }
 }
 
@@ -59,10 +72,30 @@ pub fn encapsulate(
     let classical_shared = eph_secret.diffie_hellman(&peer_public);
     let mut classical = classical_shared.as_bytes().to_vec();
 
-    let pq_public = kyber768::PublicKey::from_bytes(peer_mlkem_public)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-KEM public key: {e:?}")))?;
-    let (pq_shared, pq_ciphertext) = kyber768::encapsulate(&pq_public);
-    let mut pq = kyber768::SharedSecret::as_bytes(&pq_shared).to_vec();
+    let (mut pq, pq_ciphertext, suite) = if let Ok(pq_public) =
+        kyber1024::PublicKey::from_bytes(peer_mlkem_public)
+    {
+        let (pq_shared, pq_ciphertext) = kyber1024::encapsulate(&pq_public);
+        (
+            kyber1024::SharedSecret::as_bytes(&pq_shared).to_vec(),
+            kyber1024::Ciphertext::as_bytes(&pq_ciphertext).to_vec(),
+            AlgorithmSuite::default(),
+        )
+    } else if let Ok(pq_public) = kyber768::PublicKey::from_bytes(peer_mlkem_public) {
+        let (pq_shared, pq_ciphertext) = kyber768::encapsulate(&pq_public);
+        let mut suite = AlgorithmSuite::default();
+        suite.pq_kem = LEGACY_PQ_KEM_768.to_string();
+        (
+            kyber768::SharedSecret::as_bytes(&pq_shared).to_vec(),
+            kyber768::Ciphertext::as_bytes(&pq_ciphertext).to_vec(),
+            suite,
+        )
+    } else {
+        return Err(QGuardError::Crypto(format!(
+                "invalid ML-KEM public key length: actual {}, expected 1568 for ML-KEM-1024 or 1184 for ML-KEM-768",
+                peer_mlkem_public.len()
+            )));
+    };
 
     let mut combined = Vec::with_capacity(64);
     combined.extend_from_slice(&classical);
@@ -76,8 +109,8 @@ pub fn encapsulate(
     Ok((
         HybridCiphertext {
             x25519_ephemeral_public: eph_public.as_bytes().to_vec(),
-            ml_kem_ciphertext: kyber768::Ciphertext::as_bytes(&pq_ciphertext).to_vec(),
-            suite: AlgorithmSuite::default(),
+            ml_kem_ciphertext: pq_ciphertext,
+            suite,
         },
         shared,
     ))
@@ -102,12 +135,11 @@ pub fn decapsulate(
     let classical_shared = our_secret.diffie_hellman(&peer_public);
     let mut classical = classical_shared.as_bytes().to_vec();
 
-    let pq_secret = kyber768::SecretKey::from_bytes(our_mlkem_secret)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-KEM secret key: {e:?}")))?;
-    let pq_ct = kyber768::Ciphertext::from_bytes(&ciphertext.ml_kem_ciphertext)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-KEM ciphertext: {e:?}")))?;
-    let pq_shared = kyber768::decapsulate(&pq_ct, &pq_secret);
-    let mut pq = kyber768::SharedSecret::as_bytes(&pq_shared).to_vec();
+    let mut pq = decapsulate_pq_secret(
+        our_mlkem_secret,
+        &ciphertext.ml_kem_ciphertext,
+        &ciphertext.suite,
+    )?;
 
     let mut combined = Vec::with_capacity(64);
     combined.extend_from_slice(&classical);
@@ -119,6 +151,38 @@ pub fn decapsulate(
     combined.zeroize();
 
     Ok(shared)
+}
+
+fn decapsulate_pq_secret(
+    our_mlkem_secret: &[u8],
+    pq_ciphertext: &[u8],
+    suite: &AlgorithmSuite,
+) -> Result<Vec<u8>> {
+    match suite.pq_kem.as_str() {
+        CURRENT_PQ_KEM => {
+            let pq_secret = kyber1024::SecretKey::from_bytes(our_mlkem_secret).map_err(|e| {
+                QGuardError::Crypto(format!("invalid ML-KEM-1024 secret key: {e:?}"))
+            })?;
+            let pq_ct = kyber1024::Ciphertext::from_bytes(pq_ciphertext).map_err(|e| {
+                QGuardError::Crypto(format!("invalid ML-KEM-1024 ciphertext: {e:?}"))
+            })?;
+            let pq_shared = kyber1024::decapsulate(&pq_ct, &pq_secret);
+            Ok(kyber1024::SharedSecret::as_bytes(&pq_shared).to_vec())
+        }
+        LEGACY_PQ_KEM_768 => {
+            let pq_secret = kyber768::SecretKey::from_bytes(our_mlkem_secret).map_err(|e| {
+                QGuardError::Crypto(format!("invalid legacy ML-KEM-768 secret key: {e:?}"))
+            })?;
+            let pq_ct = kyber768::Ciphertext::from_bytes(pq_ciphertext).map_err(|e| {
+                QGuardError::Crypto(format!("invalid legacy ML-KEM-768 ciphertext: {e:?}"))
+            })?;
+            let pq_shared = kyber768::decapsulate(&pq_ct, &pq_secret);
+            Ok(kyber768::SharedSecret::as_bytes(&pq_shared).to_vec())
+        }
+        other => Err(QGuardError::Crypto(format!(
+            "unsupported ML-KEM suite for decapsulation: {other}"
+        ))),
+    }
 }
 
 #[cfg(feature = "oqs-backend")]
@@ -137,6 +201,31 @@ mod tests {
         let (ct, alice_secret) =
             encapsulate(&bob.x25519_public, &bob.mlkem_public, b"test").unwrap();
         let bob_secret = decapsulate(&bob.x25519_secret, &bob.mlkem_secret, &ct, b"test").unwrap();
+        assert_eq!(ct.suite.pq_kem, CURRENT_PQ_KEM);
+        assert!(LocalKemKeypair::is_current_public_key(&bob.mlkem_public));
+        assert!(LocalKemKeypair::is_current_secret_key(&bob.mlkem_secret));
+        assert_eq!(alice_secret, bob_secret);
+    }
+
+    #[test]
+    fn hybrid_key_agreement_accepts_legacy_ml_kem_768_recipient() {
+        let x_secret = StaticSecret::random_from_rng(OsRng);
+        let x_public = X25519PublicKey::from(&x_secret);
+        let (ml_public, ml_secret) = kyber768::keypair();
+        let (ct, alice_secret) = encapsulate(
+            x_public.as_bytes(),
+            kyber768::PublicKey::as_bytes(&ml_public),
+            b"legacy-test",
+        )
+        .unwrap();
+        let bob_secret = decapsulate(
+            &x_secret.to_bytes(),
+            kyber768::SecretKey::as_bytes(&ml_secret),
+            &ct,
+            b"legacy-test",
+        )
+        .unwrap();
+        assert_eq!(ct.suite.pq_kem, LEGACY_PQ_KEM_768);
         assert_eq!(alice_secret, bob_secret);
     }
 }

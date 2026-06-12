@@ -86,7 +86,7 @@ pub fn devices_approve_qr(
         label: request.label,
         fingerprint: request.fingerprint,
         trust_state: DeviceTrustState::Trusted,
-        pqc_status: "Hybrid active: X25519 + ML-KEM-768".to_string(),
+        pqc_status: "Hybrid active: X25519 + ML-KEM-1024".to_string(),
         last_seen_at: chrono::Utc::now(),
     };
     state

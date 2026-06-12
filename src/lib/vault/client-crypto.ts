@@ -1,4 +1,3 @@
-import { ml_kem768 } from '@noble/post-quantum/ml-kem.js'
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
 import { ed25519, x25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
@@ -6,6 +5,17 @@ import { pbkdf2Async } from '@noble/hashes/pbkdf2.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { sha3_256, sha3_512 } from '@noble/hashes/sha3.js'
 import { gcm } from '@noble/ciphers/aes.js'
+import { buildMerkleIntegrity, verifyMerkleIntegrity, type MerkleIntegrityMeta } from './merkle-tree'
+import {
+  CURRENT_VAULT_KEM,
+  type VaultKemName,
+  type VaultKexName,
+  kemForName,
+  kemForPublicKey,
+  kemForSecretKey,
+  kexName,
+  securityLevelForKem,
+} from './kem-profile'
 
 /**
  * Zero-Knowledge Client Cryptography for the Quantum Vault.
@@ -38,13 +48,15 @@ export interface WrappedMasterKeys {
 export interface VaultEnvelopeMeta {
   version: 2
   mode: 'hybrid' | 'ml-kem'
-  kem: 'ML-KEM-768'
-  kex: 'X25519+ML-KEM-768' | 'ML-KEM-768'
+  kem: VaultKemName
+  kex: VaultKexName
+  securityLevel?: string
   signature: 'Ed25519+ML-DSA-65' | 'ML-DSA-65'
   symmetric: 'AES-256-GCM'
   kdf: 'HKDF-SHA3-256'
   hash: 'SHA3-256'
   encryptedHash: 'SHA3-512'
+  merkle?: MerkleIntegrityMeta
   wrappedDataKey: string
   wrapNonce: string
   wrapSalt: string
@@ -61,6 +73,7 @@ export interface LocalEncryptionResult {
   encryptedIntegrityHash: string
   aadHash: string
   envelopeMeta: VaultEnvelopeMeta
+  merkleIntegrity: MerkleIntegrityMeta
   originalSize: number
   algorithm: string
 }
@@ -176,7 +189,7 @@ async function derivePassphraseMaterial(
  * Generates a new set of master keys for zero-knowledge vault access.
  */
 export async function generateMasterKeys(): Promise<ZKMasterKeys> {
-  const encKeys = ml_kem768.keygen()
+  const encKeys = kemForName(CURRENT_VAULT_KEM).keygen()
   const signKeys = ml_dsa65.keygen()
   const x25519Secret = x25519.utils.randomPrivateKey()
   const ed25519Secret = ed25519.utils.randomPrivateKey()
@@ -312,9 +325,10 @@ export function decryptFileLocal(
   x25519SecretKey?: Uint8Array,
 ): Uint8Array {
   const kemCiphertext = fromHex(kemCiphertextHex)
-  const sharedSecret = ml_kem768.decapsulate(kemCiphertext, secretKey)
-  const nonce = fromHex(aesNonceHex)
   const meta = normalizeEnvelopeMeta(envelopeMeta)
+  const { kem } = kemForSecretKey(secretKey, meta?.kem || meta?.kex)
+  const sharedSecret = kem.decapsulate(kemCiphertext, secretKey)
+  const nonce = fromHex(aesNonceHex)
   let fileKey: Uint8Array
 
   if (meta?.wrappedDataKey && meta.wrapNonce && meta.wrapSalt) {
@@ -326,7 +340,7 @@ export function decryptFileLocal(
       mlkemSecret: sharedSecret,
       x25519Secret: classicalSecret,
       salt: fromHex(meta.wrapSalt),
-      aadHash: fromHex(meta.aadHash),
+      aadHash: fromHex(meta.aadHash || ''),
     })
     fileKey = gcm(wrappingKey, fromHex(meta.wrapNonce)).decrypt(fromHex(meta.wrappedDataKey))
     wrappingKey.fill(0)
@@ -349,6 +363,10 @@ export function decryptFileLocal(
       throw new Error('INTEGRITY_CHECK_FAILED')
     }
   }
+
+  if (meta?.merkle && !verifyMerkleIntegrity(decrypted, meta.merkle)) {
+    throw new Error('MERKLE_INTEGRITY_CHECK_FAILED')
+  }
   
   return decrypted
 }
@@ -367,9 +385,11 @@ export function encryptFileLocal(
   const wrapSalt = randomBytes(32)
   const aad = new TextEncoder().encode(`qguard-vault-file:${data.length}:${Date.now()}`)
   const aadHash = sha3_256(aad)
+  const merkleIntegrity = buildMerkleIntegrity(data)
 
   const encrypted = gcm(fileKey, payloadNonce).encrypt(data)
-  const { sharedSecret, cipherText } = ml_kem768.encapsulate(recipientPublicKey)
+  const { name: kemName, kem } = kemForPublicKey(recipientPublicKey)
+  const { sharedSecret, cipherText } = kem.encapsulate(recipientPublicKey)
 
   let ephemeralPublic: Uint8Array | undefined
   let classicalSecret: Uint8Array | undefined
@@ -399,13 +419,15 @@ export function encryptFileLocal(
   const envelopeMeta: VaultEnvelopeMeta = {
     version: 2,
     mode,
-    kem: 'ML-KEM-768',
-    kex: recipientX25519Public ? 'X25519+ML-KEM-768' : 'ML-KEM-768',
+    kem: kemName,
+    kex: kexName(kemName, !!recipientX25519Public),
+    securityLevel: securityLevelForKem(kemName),
     signature: 'Ed25519+ML-DSA-65',
     symmetric: 'AES-256-GCM',
     kdf: 'HKDF-SHA3-256',
     hash: 'SHA3-256',
     encryptedHash: 'SHA3-512',
+    merkle: merkleIntegrity,
     wrappedDataKey: toHex(wrappedDataKey),
     wrapNonce: toHex(wrapNonce),
     wrapSalt: toHex(wrapSalt),
@@ -422,6 +444,7 @@ export function encryptFileLocal(
     encryptedIntegrityHash: toHex(encryptedIntegrityHash),
     aadHash: toHex(aadHash),
     envelopeMeta,
+    merkleIntegrity,
     originalSize: data.length,
     algorithm: envelopeMeta.kex + '+AES-256-GCM',
   }

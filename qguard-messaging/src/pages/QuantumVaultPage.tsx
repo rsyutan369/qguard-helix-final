@@ -165,7 +165,7 @@ interface VaultPipelineControl {
   label: string | null;
 }
 
-const algorithmLabel = "ML-KEM-768 + X25519 + HKDF-SHA3-256 + AES-256-GCM + ML-DSA-65 + Ed25519";
+const algorithmLabel = "ML-KEM-1024 + X25519 + HKDF-SHA3-256 + AES-256-GCM + ML-DSA-65 + Ed25519";
 const archiveExtensions = new Set(["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz"]);
 const codeExtensions = new Set(["c", "cpp", "css", "go", "html", "java", "js", "json", "jsx", "py", "rs", "sql", "tsx", "ts", "xml", "yaml", "yml"]);
 const spreadsheetExtensions = new Set(["csv", "ods", "tsv", "xls", "xlsx"]);
@@ -245,7 +245,7 @@ function fileDisplayName(file: File): string {
 function suiteLabel(suite?: Record<string, unknown> | null): string {
   if (!suite) return algorithmLabel;
   return [
-    suite.pq_kem ?? "ML-KEM-768",
+    suite.pq_kem ?? "ML-KEM-1024",
     suite.classical_kex ?? "X25519",
     suite.kdf ?? "HKDF-SHA3-256",
     suite.symmetric ?? "AES-256-GCM",
@@ -1232,7 +1232,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
     const displayName = fileDisplayName(file);
     try {
       appendLog("info", `Selected ${displayName} (${formatBytes(file.size)})`);
-      appendLog("info", `Crypto suite locked: PQC ML-KEM-768 + ML-DSA-65; KDF HKDF-SHA3-256; cipher AES-256-GCM; signatures Ed25519 + ML-DSA-65`);
+      appendLog("info", `Crypto suite locked: PQC ML-KEM-1024 + ML-DSA-65; KDF HKDF-SHA3-256; cipher AES-256-GCM; signatures Ed25519 + ML-DSA-65`);
       setStatus(`Queued encryption for ${displayName}`);
       operationId = await createOperation("encrypt", null, displayName, file.size);
       setLocalNames((current) => ({ ...current, [operationId]: displayName }));
@@ -1478,7 +1478,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
       appendLog("info", `Preparing local decrypt for ${displayName}`);
       await validateDecryptionSession(userId, stream);
       enforceClientDecryptionRateLimit(userId, `vault:${file.id}`, stream);
-      await unlockDevicePrivateKey(stream);
+      await unlockDevicePrivateKey(stream, userId);
       await updateOperation(operationId, { current_operation: "Key validation", progress: 26 });
       const packageData = await fetchPackage(file, operationId, "Preparing decrypt");
       const resolvedName = await resolveFileActionDisplayName(file, packageData);
@@ -1488,7 +1488,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
       }
       stream.emit({
         stage: "hybrid_decapsulation",
-        detail: "Recovering file key with ML-KEM-768 + X25519",
+        detail: "Recovering file key with ML-KEM-1024 + X25519",
         progress: 72,
         status: "progress",
         level: "info",
@@ -1607,7 +1607,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
 
       stream.emit({
         stage: "hybrid_decapsulation",
-        detail: "Recovering local package file key with ML-KEM-768 + X25519",
+        detail: "Recovering local package file key with ML-KEM-1024 + X25519",
         progress: 62,
         status: "progress",
         level: "info",
@@ -1735,7 +1735,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
       appendLog("info", `Local decrypt intake received ${selected.length} file${selected.length === 1 ? "" : "s"}`);
       await validateDecryptionSession(userId, stream);
       enforceClientDecryptionRateLimit(userId, "vault:local-package-import", stream);
-      await unlockDevicePrivateKey(stream);
+      await unlockDevicePrivateKey(stream, userId);
 
       let restoredCount = 0;
       for (const selectedFile of selected) {
@@ -2132,7 +2132,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
         >
           {uploadBusy ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={42} /> : <UploadCloud className="vault-dropzone-icon mb-3" size={42} />}
           <div className="vault-dropzone-title text-base font-bold">{uploadBusy ? "Encryption pipeline running" : "Click to select a file to Encrypt"}</div>
-          <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Files are encrypted with X25519+ML-KEM-768 / AES-256-GCM / HKDF-SHA3-256</div>
+          <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Files are encrypted with X25519+ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256</div>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             <button
               type="button"

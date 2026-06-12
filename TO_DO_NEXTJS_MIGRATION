@@ -4,11 +4,11 @@ React + Vite + Supabase + Express API
 
 into a scalable enterprise-grade architecture using:
 
-Next.js + React + Supabase + Existing Express/FastAPI Backend Services
+Next.js + React + Supabase + FastAPI Backend Services
 
 The goal is to preserve the existing functionality while upgrading the frontend architecture into a modern production-ready Next.js App Router structure suitable for a multi-tenant enterprise cybersecurity SaaS platform.
 
-Do NOT break existing features, backend APIs, telemetry, authentication, Supabase integrations, or UI functionality during migration.
+DO NOT break existing features, backend APIs, telemetry, authentication, Supabase integrations, or UI functionality during migration.
 
 🎯 Target Architecture
 
@@ -23,8 +23,7 @@ Frontend:
 - React Query / Zustand (if needed)
 
 Backend Services:
-- Existing Express API (retain)
-- Optional FastAPI microservices for scanners/migration engines
+- FastAPI microservices for scanners/migration engines
 
 Database/Auth/Realtime:
 - Supabase Auth
@@ -101,7 +100,6 @@ Examples:
 /dashboard/crypto-exposure
 /dashboard/assets
 /dashboard/migration
-/dashboard/threat-intel
 /dashboard/governance
 /dashboard/compliance
 /dashboard/settings
@@ -155,14 +153,9 @@ Tenant-specific assets/scans/users
 
 🔌 Preserve Existing Backend APIs
 
-Keep the existing Express API backend operational.
-
-Do NOT rewrite working backend services unless necessary.
-
 Connect Next.js frontend to:
 
-Express APIs
-FastAPI services (optional)
+FastAPI services
 Supabase services
 Realtime telemetry streams
 
@@ -200,7 +193,7 @@ Create reusable hooks:
 
 Maintain the existing:
 
-Golden Quantum Cyber Defense UI theme
+Light mode Quantum Cyber Defense UI theme
 Glassmorphism effects
 Animated border beam effects
 Cybersecurity visual identity

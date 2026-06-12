@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAuthClient } from '@/lib/supabase'
 import { getServerUser, getToken } from '@/lib/server-auth'
 import { sha3_256 } from '@noble/hashes/sha3.js'
+import { resolveKemNameFromPublicKey } from '@/lib/vault/kem-profile'
 
 /**
  * Register / read a user's portable hybrid identity public-key set.
@@ -20,7 +21,9 @@ const HYBRID_METHOD = 'QGKEY-v1'
 
 interface PublicsPayload {
   x25519_b64: string
-  mlkem768_b64: string
+  mlkem_b64?: string
+  mlkem1024_b64?: string
+  mlkem768_b64?: string
   ed25519_b64: string
   mldsa65_b64: string
   label?: string
@@ -39,10 +42,18 @@ function toHex(b: Uint8Array): string {
   return s
 }
 
+function mlkemPublicB64(p: PublicsPayload): string {
+  return p.mlkem1024_b64 || p.mlkem_b64 || p.mlkem768_b64 || ''
+}
+
+function mlkemPublicBytes(p: PublicsPayload): Uint8Array {
+  return b64decode(mlkemPublicB64(p))
+}
+
 function identityFingerprint(p: PublicsPayload): string {
   const parts = [
     b64decode(p.x25519_b64),
-    b64decode(p.mlkem768_b64),
+    mlkemPublicBytes(p),
     b64decode(p.ed25519_b64),
     b64decode(p.mldsa65_b64),
   ]
@@ -121,6 +132,8 @@ export async function GET(request: NextRequest) {
       identityId: best.identityId,
       publicsHex: {
         x25519: byAlgo['X25519'],
+        mlkem: byAlgo['ML-KEM-1024'] || byAlgo['ML-KEM-768'],
+        mlkem1024: byAlgo['ML-KEM-1024'],
         mlkem768: byAlgo['ML-KEM-768'],
         ed25519: byAlgo['Ed25519'],
         mldsa65: byAlgo['ML-DSA-65'],
@@ -156,7 +169,7 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     )
   }
-  if (!body.x25519_b64 || !body.mlkem768_b64 || !body.ed25519_b64 || !body.mldsa65_b64) {
+  if (!body.x25519_b64 || !mlkemPublicB64(body) || !body.ed25519_b64 || !body.mldsa65_b64) {
     return NextResponse.json(
       { error: { code: 'MISSING_KEYS', message: 'All four public keys are required' } },
       { status: 400 },
@@ -165,13 +178,19 @@ export async function POST(request: NextRequest) {
 
   const lengths = {
     x25519: b64decode(body.x25519_b64).length,
-    mlkem768: b64decode(body.mlkem768_b64).length,
+    mlkem: mlkemPublicBytes(body).length,
     ed25519: b64decode(body.ed25519_b64).length,
     mldsa65: b64decode(body.mldsa65_b64).length,
   }
+  let mlkemAlgorithm: 'ML-KEM-768' | 'ML-KEM-1024' | null
+  try {
+    mlkemAlgorithm = resolveKemNameFromPublicKey(mlkemPublicBytes(body))
+  } catch {
+    mlkemAlgorithm = null
+  }
   if (
     lengths.x25519 !== 32 ||
-    lengths.mlkem768 !== 1184 ||
+    !mlkemAlgorithm ||
     lengths.ed25519 !== 32 ||
     lengths.mldsa65 !== 1952
   ) {
@@ -179,7 +198,7 @@ export async function POST(request: NextRequest) {
       {
         error: {
           code: 'BAD_KEY_LENGTHS',
-          message: `Key length mismatch: got ${JSON.stringify(lengths)}, want 32/1184/32/1952`,
+          message: `Key length mismatch: got ${JSON.stringify(lengths)}, want 32/1568/32/1952 for ML-KEM-1024`,
         },
       },
       { status: 400 },
@@ -216,8 +235,8 @@ export async function POST(request: NextRequest) {
     {
       ...base,
       key_type: 'encryption',
-      algorithm: 'ML-KEM-768',
-      public_key: toHex(b64decode(body.mlkem768_b64)),
+      algorithm: mlkemAlgorithm,
+      public_key: toHex(mlkemPublicBytes(body)),
       encrypted_private_key: '',
     },
     {

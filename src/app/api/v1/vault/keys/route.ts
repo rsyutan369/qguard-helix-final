@@ -8,7 +8,7 @@ import {
   recordAuditEvent,
   logAccess,
 } from '@/lib/vault/audit-service'
-import { ml_kem768 } from '@noble/post-quantum/ml-kem.js'
+import { CURRENT_VAULT_KEM, kemForName } from '@/lib/vault/kem-profile'
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
@@ -198,8 +198,8 @@ export async function POST(request: NextRequest) {
       let newKeyId: string
 
       if (keyType === 'encryption') {
-        // Generate new ML-KEM-768 keypair
-        const keyPair = ml_kem768.keygen()
+        // Generate new ML-KEM-1024 keypair
+        const keyPair = kemForName(CURRENT_VAULT_KEM).keygen()
         const fingerprint = toHex(sha256(keyPair.publicKey)).slice(0, 32)
 
         // Encrypt secret key with per-user derivation
@@ -221,7 +221,7 @@ export async function POST(request: NextRequest) {
           .insert({
             user_id: user.id,
             key_type: 'encryption',
-            algorithm: 'ML-KEM-768',
+            algorithm: CURRENT_VAULT_KEM,
             public_key: toHex(keyPair.publicKey),
             encrypted_private_key: storedKey,
             key_encryption_method: 'AES-256-GCM-USER',
@@ -295,7 +295,7 @@ export async function POST(request: NextRequest) {
       // Audit log
       await Promise.all([
         logKeyRotated(user.id, newKeyId, keyType, ip, client),
-        logKeyGenerated(user.id, newKeyId, keyType, keyType === 'encryption' ? 'ML-KEM-768' : 'ML-DSA-65', ip, client),
+        logKeyGenerated(user.id, newKeyId, keyType, keyType === 'encryption' ? CURRENT_VAULT_KEM : 'ML-DSA-65', ip, client),
       ])
 
       return NextResponse.json({
@@ -304,7 +304,7 @@ export async function POST(request: NextRequest) {
           keyType,
           newKeyId,
           version: newVersion,
-          algorithm: keyType === 'encryption' ? 'ML-KEM-768' : 'ML-DSA-65',
+          algorithm: keyType === 'encryption' ? CURRENT_VAULT_KEM : 'ML-DSA-65',
         },
       })
     }

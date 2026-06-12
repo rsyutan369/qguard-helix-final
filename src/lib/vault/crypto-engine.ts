@@ -1,12 +1,12 @@
-import { ml_kem768 } from '@noble/post-quantum/ml-kem.js'
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
 import { sha3_256 } from '@noble/hashes/sha3.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import crypto from 'node:crypto'
+import { kemForPublicKey, kemForSecretKey } from './kem-profile'
 
 /**
  * Server-side Crypto Engine for the Quantum Vault.
- * Uses ML-KEM-768 for key encapsulation and AES-256-GCM for data encryption.
+ * Uses ML-KEM-1024 for new key encapsulation and AES-256-GCM for data encryption.
  * Uses ML-DSA-65 for metadata signing.
  */
 
@@ -25,8 +25,9 @@ function fromHex(hex: string): Uint8Array {
  * Returns the encrypted data, the encapsulated key, and the nonce.
  */
 export function encryptFile(data: Uint8Array, recipientPublicKey: Uint8Array) {
-  // 1. Encapsulate a shared secret using ML-KEM-768
-  const { sharedSecret, cipherText } = ml_kem768.encapsulate(recipientPublicKey)
+  // 1. Encapsulate a shared secret using the recipient's ML-KEM profile.
+  const { name: kemName, kem } = kemForPublicKey(recipientPublicKey)
+  const { sharedSecret, cipherText } = kem.encapsulate(recipientPublicKey)
   
   // 2. Use the shared secret to derive a 256-bit AES key
   // We use the shared secret directly as it's already high entropy from ML-KEM
@@ -49,7 +50,7 @@ export function encryptFile(data: Uint8Array, recipientPublicKey: Uint8Array) {
     encryptedDataKey: toHex(cipherText),
     aesNonce: toHex(nonce),
     integrityHash,
-    algorithm: 'ML-KEM-768+AES-256-GCM'
+    algorithm: `${kemName}+AES-256-GCM`
   }
 }
 
@@ -65,7 +66,8 @@ export function decryptFile(
 ) {
   // 1. Decapsulate the shared secret
   const kemCiphertext = fromHex(kemCiphertextHex)
-  const sharedSecret = ml_kem768.decapsulate(kemCiphertext, secretKey)
+  const { kem } = kemForSecretKey(secretKey)
+  const sharedSecret = kem.decapsulate(kemCiphertext, secretKey)
   const aesKey = sharedSecret.slice(0, 32)
   
   // 2. Extract encrypted body and tag

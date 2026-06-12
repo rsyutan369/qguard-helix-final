@@ -74,6 +74,21 @@ function downloadText(filename: string, text: string) {
   triggerDownload(blob, filename)
 }
 
+function publicRecipientBundle(material: HybridKeyMaterial, label?: string) {
+  return {
+    label: label || 'qguard-recipient-public',
+    version: '1.0',
+    type: 'qguard-public-recipient',
+    generatedAt: new Date().toISOString(),
+    publics: {
+      x25519: b64encode(material.x25519Public),
+      mlkem: b64encode(material.mlkemPublic),
+      ed25519: b64encode(material.ed25519Public),
+      mldsa: b64encode(material.mldsaPublic),
+    },
+  }
+}
+
 function downloadBinary(filename: string, bytes: Uint8Array) {
   const blob = new Blob([new Uint8Array(bytes) as unknown as BlobPart], {
     type: 'application/octet-stream',
@@ -177,7 +192,7 @@ export default function PortableIdentityCard() {
       mode: 'create',
       title: 'Choose a passphrase',
       description:
-        'Wraps your hybrid identity (X25519 + ML-KEM-768 + Ed25519 + ML-DSA-65). Min 12 characters. There is no recovery — store it in a password manager.',
+        'Protects your portable identity bundle locally. Min 12 characters. There is no recovery — store it in a password manager.',
       onSubmit: async (passphrase) => {
         setModal(null)
         await runGenerate(passphrase, pendingLabel.trim() || undefined)
@@ -188,7 +203,7 @@ export default function PortableIdentityCard() {
   async function runGenerate(passphrase: string, label?: string) {
     setStatus({
       kind: 'busy',
-      message: 'Generating hybrid identity (X25519 + ML-KEM-768 + Ed25519 + ML-DSA-65)...',
+      message: 'Generating hybrid identity...',
     })
     await new Promise((r) => setTimeout(r, 10))
 
@@ -206,7 +221,7 @@ export default function PortableIdentityCard() {
         mldsaSecret: sign.mldsa.secretKey,
       }
 
-      setStatus({ kind: 'busy', message: 'Wrapping with PBKDF2-SHA3-256 + AES-256-GCM...' })
+      setStatus({ kind: 'busy', message: 'Protecting identity bundle locally...' })
       await new Promise((r) => setTimeout(r, 10))
 
       const bundle = exportBundle({ material, passphrase, label })
@@ -259,7 +274,7 @@ export default function PortableIdentityCard() {
   }
 
   async function runImport(file: File, passphrase: string) {
-    setStatus({ kind: 'busy', message: 'Deriving key (PBKDF2-SHA3-256)...' })
+    setStatus({ kind: 'busy', message: 'Unlocking protected identity bundle...' })
     await new Promise((r) => setTimeout(r, 10))
 
     try {
@@ -279,6 +294,28 @@ export default function PortableIdentityCard() {
         message: `Import failed: ${(e as Error).message}. Wrong passphrase or corrupted bundle.`,
       })
     }
+  }
+
+  function handlePublicRecipientExport() {
+    if (!identity.unlocked) {
+      setStatus({ kind: 'error', message: 'Unlock or generate an identity first.' })
+      return
+    }
+
+    const fp = identity.fingerprint ?? fingerprint(identity.unlocked)
+    const safeLabel = identity.label ? identity.label.replace(/[^a-z0-9-_]+/gi, '_') : 'identity'
+    const bundle = publicRecipientBundle(identity.unlocked, identity.label ?? undefined)
+
+    downloadText(
+      `qguard-${safeLabel}-${fp.slice(0, 8)}.public.qgkey.json`,
+      JSON.stringify(bundle, null, 2),
+    )
+    setStatus({
+      kind: 'ok',
+      message:
+        'Public recipient JSON downloaded. Share this public file with senders; keep your private .qgkey bundle secret.',
+      fingerprint: fp,
+    })
   }
 
   // ── Client-side .qgv1 export ───────────────────────────────────────────────
@@ -368,8 +405,8 @@ export default function PortableIdentityCard() {
             Portable Hybrid Identity (.qgkey)
           </div>
           <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>
-            X25519 + ML-KEM-768 + Ed25519 + ML-DSA-65, wrapped with PBKDF2-SHA3-256 and AES-256-GCM.
-            Exports are signed locally by your unlocked identity — never by the server.
+            Creates a private identity bundle for decrypting recipient-bound shares. Export the public
+            recipient JSON when another user needs to share a file with you.
           </div>
         </div>
       </div>
@@ -411,6 +448,27 @@ export default function PortableIdentityCard() {
         >
           Import .qgkey
         </button>
+        {identity.unlocked && (
+          <button
+            type="button"
+            onClick={handlePublicRecipientExport}
+            disabled={status.kind === 'busy' || !!modal}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 10,
+              background: 'rgba(212,175,55,0.12)',
+              border: '1px solid rgba(212,175,55,0.28)',
+              color: '#fff3c1',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: status.kind === 'busy' ? 'wait' : 'pointer',
+              opacity: status.kind === 'busy' ? 0.6 : 1,
+            }}
+            title="Download the public JSON that senders paste into Recipient Public-Key Binding"
+          >
+            Export public recipient JSON
+          </button>
+        )}
         {identity.unlocked && (
           <button
             type="button"
@@ -530,6 +588,7 @@ export default function PortableIdentityCard() {
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.5 }}>
             Auto-locks after {Math.round(identity.idleMs / 60000)} min idle, after the tab is
             hidden for {Math.round(identity.hiddenMs / 1000)} s, or when this page closes.
+            Share only the public recipient JSON with senders; this private .qgkey bundle stays with you.
           </div>
 
           <div

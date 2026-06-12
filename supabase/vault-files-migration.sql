@@ -25,10 +25,10 @@ ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT;
 
 -- Post-Quantum Encryption Metadata
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS encryption_status VARCHAR(100) DEFAULT 'pending';
-ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS encryption_algorithm TEXT DEFAULT 'ML-KEM-768+AES-256-GCM';
+ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS encryption_algorithm TEXT DEFAULT 'ML-KEM-1024+AES-256-GCM';
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS algorithm_version TEXT DEFAULT 'v2.0';
 
--- ML-KEM-768 Encapsulated Key
+-- ML-KEM-1024 Encapsulated Key
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS kem_ciphertext TEXT;
 
 -- AES-256-GCM Parameters

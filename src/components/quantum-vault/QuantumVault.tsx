@@ -213,7 +213,7 @@ function OverviewPanel({ metrics, unlocked }: { metrics: VaultHeroMetrics; unloc
     {
       icon: ShieldCheck,
       status: encryptionStatus,
-      title: 'ML-KEM-768 Shield',
+      title: 'ML-KEM-1024 Shield',
       copy: metrics.fileCount === 0
         ? `${encryptionStatus.state} - no files sealed yet`
         : `${encryptionStatus.state} - ${metrics.encryptedFileCount}/${metrics.fileCount} files sealed with per-file keys`,
@@ -279,9 +279,9 @@ function SecurityMetricsPanel({ metrics }: { metrics: VaultHeroMetrics }) {
       icon: LockKeyhole,
       status: metrics.statusCards.encryption,
       label: 'Encryption Strength',
-      value: metrics.statusCards.encryption.healthy ? '768-bit' : `${metrics.quantumResistance}%`,
+      value: metrics.statusCards.encryption.healthy ? 'Level 5' : `${metrics.quantumResistance}%`,
       numeric: metrics.quantumResistance,
-      copy: metrics.statusCards.encryption.headline || 'ML-KEM-768',
+      copy: metrics.statusCards.encryption.headline || 'ML-KEM-1024',
     },
     {
       icon: Atom,

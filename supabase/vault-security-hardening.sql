@@ -137,10 +137,22 @@ BEGIN
 
   -- Track failed attempts
   IF NOT is_valid THEN
-    UPDATE public.vault_shared_links
-    SET failed_password_attempts = failed_password_attempts + 1,
-        updated_at = NOW()
-    WHERE id = link_id;
+    IF EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'vault_shared_links'
+        AND column_name = 'updated_at'
+    ) THEN
+      UPDATE public.vault_shared_links
+      SET failed_password_attempts = failed_password_attempts + 1,
+          updated_at = NOW()
+      WHERE id = link_id;
+    ELSE
+      UPDATE public.vault_shared_links
+      SET failed_password_attempts = failed_password_attempts + 1
+      WHERE id = link_id;
+    END IF;
 
     -- Log the failure
     INSERT INTO public.vault_audit_logs (
@@ -241,28 +253,41 @@ COMMENT ON FUNCTION public.log_vault_audit_event IS
 -- 4. SAFE VIEW FOR SHARED LINKS (hides password_hash from API)
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CREATE OR REPLACE VIEW public.vault_shared_links_safe AS
-SELECT
-  id, user_id, file_id, folder_id, token,
-  permissions, is_password_protected,
-  -- Explicitly EXCLUDE password_hash
-  max_downloads, download_count,
-  is_one_time,
-  encrypted_file_data, original_filename, original_size, mime_type,
-  encryption_metadata,
-  is_revoked, is_destroyed, failed_password_attempts,
-  expires_at, last_accessed_at, revoked_at, created_at
-FROM public.vault_shared_links
-WHERE user_id = auth.uid();
+DO $$
+BEGIN
+  IF to_regclass('public.vault_shared_links') IS NOT NULL THEN
+    BEGIN
+      EXECUTE $view$
+        CREATE OR REPLACE VIEW public.vault_shared_links_safe AS
+        SELECT
+          id, user_id, file_id, folder_id, token,
+          permissions, is_password_protected,
+          -- Explicitly EXCLUDE password_hash
+          max_downloads, download_count,
+          is_one_time,
+          encrypted_file_data, original_filename, original_size, mime_type,
+          encryption_metadata,
+          is_revoked, is_destroyed, failed_password_attempts,
+          expires_at, last_accessed_at, revoked_at, created_at
+        FROM public.vault_shared_links
+        WHERE user_id = auth.uid()
+      $view$;
 
-COMMENT ON VIEW public.vault_shared_links_safe IS
-  'Read-only view of shared links that excludes password_hash column. '
-  'Use this view in client-side queries instead of the base table.';
+      COMMENT ON VIEW public.vault_shared_links_safe IS
+        'Read-only view of shared links that excludes password_hash column. '
+        'Use this view in client-side queries instead of the base table.';
+    EXCEPTION WHEN undefined_column THEN
+      RAISE NOTICE 'Skipping vault_shared_links_safe view: public.vault_shared_links columns do not match this hardening schema.';
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_shared_links_safe view: public.vault_shared_links does not exist. Run vault-schema.sql first for share-link support.';
+  END IF;
+END $$;
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- 5. COLUMN SIZE CONSTRAINTS — Prevent oversized crypto payloads
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- ML-KEM-768 ciphertext: 1088 bytes = 2176 hex chars
+-- ML-KEM-1024 ciphertext: 1568 bytes = 3136 hex chars
 -- AES-GCM nonce: 12 bytes = 24 hex chars
 -- AES-GCM auth tag: 16 bytes = 32 hex chars
 -- ML-DSA-65 signature: ~3300 bytes base64 ≈ 4500 chars + envelope JSON
@@ -271,153 +296,188 @@ COMMENT ON VIEW public.vault_shared_links_safe IS
 -- Wrapped data key: 32 bytes + 16 tag = 96 hex chars
 
 -- vault_files constraints
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_kem_ct_len
-    CHECK (kem_ciphertext IS NULL OR length(kem_ciphertext) <= 4096);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+DO $$
+BEGIN
+  IF to_regclass('public.vault_files') IS NOT NULL THEN
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_kem_ct_len
+        CHECK (kem_ciphertext IS NULL OR length(kem_ciphertext) <= 4096);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_aes_nonce_len
-    CHECK (aes_nonce IS NULL OR length(aes_nonce) <= 64);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_aes_nonce_len
+        CHECK (aes_nonce IS NULL OR length(aes_nonce) <= 64);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_aes_tag_len
-    CHECK (aes_auth_tag IS NULL OR length(aes_auth_tag) <= 64);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_aes_tag_len
+        CHECK (aes_auth_tag IS NULL OR length(aes_auth_tag) <= 64);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_content_hash_len
-    CHECK (content_hash IS NULL OR length(content_hash) <= 128);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_content_hash_len
+        CHECK (content_hash IS NULL OR length(content_hash) <= 128);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_enc_hash_len
-    CHECK (encrypted_content_hash IS NULL OR length(encrypted_content_hash) <= 256);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_enc_hash_len
+        CHECK (encrypted_content_hash IS NULL OR length(encrypted_content_hash) <= 256);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_aad_hash_len
-    CHECK (aad_hash IS NULL OR length(aad_hash) <= 128);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_aad_hash_len
+        CHECK (aad_hash IS NULL OR length(aad_hash) <= 128);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_signature_len
-    CHECK (signature IS NULL OR length(signature) <= 16384);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_signature_len
+        CHECK (signature IS NULL OR length(signature) <= 16384);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_algo_len
-    CHECK (encryption_algorithm IS NULL OR length(encryption_algorithm) <= 200);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_algo_len
+        CHECK (encryption_algorithm IS NULL OR length(encryption_algorithm) <= 200);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_storage_path_len
-    CHECK (storage_path IS NULL OR length(storage_path) <= 1024);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_storage_path_len
+        CHECK (storage_path IS NULL OR length(storage_path) <= 1024);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
--- Envelope meta & key derivation meta: limit JSONB size to 32KB
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_envelope_meta_size
-    CHECK (envelope_meta IS NULL OR pg_column_size(envelope_meta) <= 32768);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    -- Envelope meta & key derivation meta: limit JSONB size to 32KB
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_envelope_meta_size
+        CHECK (envelope_meta IS NULL OR pg_column_size(envelope_meta) <= 32768);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_kdf_meta_size
-    CHECK (key_derivation_meta IS NULL OR pg_column_size(key_derivation_meta) <= 32768);
-EXCEPTION WHEN duplicate_object THEN NULL;
+    BEGIN
+      ALTER TABLE public.vault_files ADD CONSTRAINT chk_vf_kdf_meta_size
+        CHECK (key_derivation_meta IS NULL OR pg_column_size(key_derivation_meta) <= 32768);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_files constraints: public.vault_files does not exist. Run vault-schema.sql first for vault file hardening.';
+  END IF;
 END $$;
 
 -- vault_keys constraints
-DO $$ BEGIN
-  ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_pubkey_len
-    CHECK (public_key_hex IS NULL OR length(public_key_hex) <= 8192);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+DO $$
+BEGIN
+  IF to_regclass('public.vault_keys') IS NOT NULL THEN
+    BEGIN
+      ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_pubkey_len
+        CHECK (public_key_hex IS NULL OR length(public_key_hex) <= 8192);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_wrapped_secret_len
-    CHECK (wrapped_secret_key IS NULL OR length(wrapped_secret_key) <= 16384);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_wrapped_secret_len
+        CHECK (wrapped_secret_key IS NULL OR length(wrapped_secret_key) <= 16384);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_nonce_len
-    CHECK (wrapping_nonce IS NULL OR length(wrapping_nonce) <= 64);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_nonce_len
+        CHECK (wrapping_nonce IS NULL OR length(wrapping_nonce) <= 64);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_fingerprint_len
-    CHECK (length(fingerprint) <= 512);
-EXCEPTION WHEN duplicate_object THEN NULL;
+    BEGIN
+      ALTER TABLE public.vault_keys ADD CONSTRAINT chk_vk_fingerprint_len
+        CHECK (length(fingerprint) <= 512);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_keys constraints: public.vault_keys does not exist. Run vault-schema.sql first for key hardening.';
+  END IF;
 END $$;
 
 -- vault_user_keys constraints
-DO $$ BEGIN
-  ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_bundle_len
-    CHECK (length(wrapped_bundle) <= 65536);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+DO $$
+BEGIN
+  IF to_regclass('public.vault_user_keys') IS NOT NULL THEN
+    BEGIN
+      ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_bundle_len
+        CHECK (length(wrapped_bundle) <= 65536);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_enc_pk_len
-    CHECK (enc_public_key IS NULL OR length(enc_public_key) <= 8192);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_enc_pk_len
+        CHECK (enc_public_key IS NULL OR length(enc_public_key) <= 8192);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_sign_pk_len
-    CHECK (sign_public_key IS NULL OR length(sign_public_key) <= 8192);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_sign_pk_len
+        CHECK (sign_public_key IS NULL OR length(sign_public_key) <= 8192);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_salt_len
-    CHECK (kdf_salt IS NULL OR length(kdf_salt) <= 128);
-EXCEPTION WHEN duplicate_object THEN NULL;
+    BEGIN
+      ALTER TABLE public.vault_user_keys ADD CONSTRAINT chk_vuk_salt_len
+        CHECK (kdf_salt IS NULL OR length(kdf_salt) <= 128);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_user_keys constraints: public.vault_user_keys does not exist. Run vault-schema.sql first for user-key hardening.';
+  END IF;
 END $$;
 
 -- vault_audit_logs constraints (prevent text bomb injection)
-DO $$ BEGIN
-  ALTER TABLE public.vault_audit_logs ADD CONSTRAINT chk_val_event_type_len
-    CHECK (length(event_type) <= 100);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+DO $$
+BEGIN
+  IF to_regclass('public.vault_audit_logs') IS NOT NULL THEN
+    BEGIN
+      ALTER TABLE public.vault_audit_logs ADD CONSTRAINT chk_val_event_type_len
+        CHECK (length(event_type) <= 100);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_audit_logs ADD CONSTRAINT chk_val_description_len
-    CHECK (description IS NULL OR length(description) <= 2000);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+    BEGIN
+      ALTER TABLE public.vault_audit_logs ADD CONSTRAINT chk_val_description_len
+        CHECK (description IS NULL OR length(description) <= 2000);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_audit_logs ADD CONSTRAINT chk_val_metadata_size
-    CHECK (metadata IS NULL OR pg_column_size(metadata) <= 65536);
-EXCEPTION WHEN duplicate_object THEN NULL;
+    BEGIN
+      ALTER TABLE public.vault_audit_logs ADD CONSTRAINT chk_val_metadata_size
+        CHECK (metadata IS NULL OR pg_column_size(metadata) <= 65536);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_audit_logs constraints: public.vault_audit_logs does not exist. Run vault-schema.sql first for audit hardening.';
+  END IF;
 END $$;
 
 -- vault_shared_links constraints
-DO $$ BEGIN
-  ALTER TABLE public.vault_shared_links ADD CONSTRAINT chk_vsl_token_len
-    CHECK (length(token) <= 128);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+DO $$
+BEGIN
+  IF to_regclass('public.vault_shared_links') IS NOT NULL THEN
+    BEGIN
+      ALTER TABLE public.vault_shared_links ADD CONSTRAINT chk_vsl_token_len
+        CHECK (length(token) <= 128);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
 
-DO $$ BEGIN
-  ALTER TABLE public.vault_shared_links ADD CONSTRAINT chk_vsl_password_hash_len
-    CHECK (password_hash IS NULL OR length(password_hash) <= 256);
-EXCEPTION WHEN duplicate_object THEN NULL;
+    BEGIN
+      ALTER TABLE public.vault_shared_links ADD CONSTRAINT chk_vsl_password_hash_len
+        CHECK (password_hash IS NULL OR length(password_hash) <= 256);
+    EXCEPTION WHEN duplicate_object OR undefined_column THEN NULL;
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_shared_links constraints: public.vault_shared_links does not exist. Run vault-schema.sql first for share-link support.';
+  END IF;
 END $$;
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -457,10 +517,17 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_enforce_unlock_rate_limit ON public.vault_unlock_sessions;
-CREATE TRIGGER trg_enforce_unlock_rate_limit
-  BEFORE INSERT ON public.vault_unlock_sessions
-  FOR EACH ROW EXECUTE FUNCTION public.enforce_vault_unlock_rate_limit();
+DO $$
+BEGIN
+  IF to_regclass('public.vault_unlock_sessions') IS NOT NULL THEN
+    DROP TRIGGER IF EXISTS trg_enforce_unlock_rate_limit ON public.vault_unlock_sessions;
+    CREATE TRIGGER trg_enforce_unlock_rate_limit
+      BEFORE INSERT ON public.vault_unlock_sessions
+      FOR EACH ROW EXECUTE FUNCTION public.enforce_vault_unlock_rate_limit();
+  ELSE
+    RAISE NOTICE 'Skipping vault unlock rate-limit trigger: public.vault_unlock_sessions does not exist. Run vault-schema.sql first for session hardening.';
+  END IF;
+END $$;
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- 7. AUTO-EXPIRE OLD SESSIONS (cleanup function)
@@ -507,47 +574,73 @@ COMMENT ON FUNCTION public.cleanup_expired_vault_sessions IS
 -- never be returned by default SELECT queries through PostgREST.
 -- Create a safe view and use it for all client queries.
 
-CREATE OR REPLACE VIEW public.vault_keys_safe AS
-SELECT
-  id, user_id, key_type, algorithm, fingerprint,
-  public_key_hex,
-  -- Explicitly EXCLUDE: wrapped_secret_key, wrapping_nonce
-  wrapping_algorithm,
-  status, version, is_active, device_id,
-  rotated_from_id, rotated_at, revoked_at, revocation_reason,
-  expires_at, last_used_at,
-  created_at, updated_at
-FROM public.vault_keys
-WHERE user_id = auth.uid();
+DO $$
+BEGIN
+  IF to_regclass('public.vault_keys') IS NOT NULL THEN
+    BEGIN
+      EXECUTE $view$
+        CREATE OR REPLACE VIEW public.vault_keys_safe AS
+        SELECT
+          id, user_id, key_type, algorithm, fingerprint,
+          public_key_hex,
+          -- Explicitly EXCLUDE: wrapped_secret_key, wrapping_nonce
+          wrapping_algorithm,
+          status, version, is_active, device_id,
+          rotated_from_id, rotated_at, revoked_at, revocation_reason,
+          expires_at, last_used_at,
+          created_at, updated_at
+        FROM public.vault_keys
+        WHERE user_id = auth.uid()
+      $view$;
 
-COMMENT ON VIEW public.vault_keys_safe IS
-  'Read-only view of vault keys that excludes wrapped_secret_key and wrapping_nonce. '
-  'Client code should query this view instead of vault_keys directly.';
+      COMMENT ON VIEW public.vault_keys_safe IS
+        'Read-only view of vault keys that excludes wrapped_secret_key and wrapping_nonce. '
+        'Client code should query this view instead of vault_keys directly.';
+    EXCEPTION WHEN undefined_column THEN
+      RAISE NOTICE 'Skipping vault_keys_safe view: public.vault_keys columns do not match this hardening schema.';
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_keys_safe view: public.vault_keys does not exist. Run vault-schema.sql first for key hardening.';
+  END IF;
+END $$;
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- 9. VAULT FILES SAFE VIEW (for list queries — no crypto metadata)
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CREATE OR REPLACE VIEW public.vault_files_listing AS
-SELECT
-  id, user_id, folder_id,
-  original_filename, encrypted_filename,
-  mime_type, original_size, encrypted_size,
-  encryption_status, encryption_algorithm,
-  -- Explicitly EXCLUDE: kem_ciphertext, aes_nonce, aes_auth_tag,
-  -- content_hash, encrypted_content_hash, aad_hash, envelope_meta,
-  -- key_derivation_meta, signature
-  signature_status,
-  is_deleted, is_latest,
-  processing_status, error_message,
-  version,
-  uploaded_at, encrypted_at, created_at, updated_at
-FROM public.vault_files
-WHERE user_id = auth.uid();
+DO $$
+BEGIN
+  IF to_regclass('public.vault_files') IS NOT NULL THEN
+    BEGIN
+      EXECUTE $view$
+        CREATE OR REPLACE VIEW public.vault_files_listing AS
+        SELECT
+          id, user_id, folder_id,
+          original_filename, encrypted_filename,
+          mime_type, original_size, encrypted_size,
+          encryption_status, encryption_algorithm,
+          -- Explicitly EXCLUDE: kem_ciphertext, aes_nonce, aes_auth_tag,
+          -- content_hash, encrypted_content_hash, aad_hash, envelope_meta,
+          -- key_derivation_meta, signature
+          signature_status,
+          is_deleted, is_latest,
+          processing_status, error_message,
+          version,
+          uploaded_at, encrypted_at, created_at, updated_at
+        FROM public.vault_files
+        WHERE user_id = auth.uid()
+      $view$;
 
-COMMENT ON VIEW public.vault_files_listing IS
-  'Read-only view for file list queries. Excludes KEM ciphertext, AES nonce/tag, '
-  'hashes, signatures, and envelope metadata. Use full table only at decrypt time.';
+      COMMENT ON VIEW public.vault_files_listing IS
+        'Read-only view for file list queries. Excludes KEM ciphertext, AES nonce/tag, '
+        'hashes, signatures, and envelope metadata. Use full table only at decrypt time.';
+    EXCEPTION WHEN undefined_column THEN
+      RAISE NOTICE 'Skipping vault_files_listing view: public.vault_files columns do not match this hardening schema.';
+    END;
+  ELSE
+    RAISE NOTICE 'Skipping vault_files_listing view: public.vault_files does not exist. Run vault-schema.sql first for vault file hardening.';
+  END IF;
+END $$;
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- 10. FORCE PostgREST SCHEMA CACHE RELOAD
@@ -567,11 +660,11 @@ COMMIT;
 --   ✅ Dropped plaintext hash_password/verify_password_hash functions
 --   ✅ Added verify_share_link_access() with rate limiting
 --   ✅ Replaced audit INSERT policy with validated SECURITY DEFINER function
---   ✅ Created vault_shared_links_safe view (hides password_hash)
---   ✅ Created vault_keys_safe view (hides wrapped_secret_key)
---   ✅ Created vault_files_listing view (hides all crypto metadata)
---   ✅ Added CHECK constraints on all crypto column sizes
---   ✅ Added vault unlock rate-limit trigger (5 attempts / 15 min lockout)
+--   ✅ Created vault_shared_links_safe view when vault_shared_links exists
+--   ✅ Created vault_keys_safe view when vault_keys exists
+--   ✅ Created vault_files_listing view when vault_files exists
+--   ✅ Added CHECK constraints on existing crypto tables
+--   ✅ Added vault unlock rate-limit trigger when vault_unlock_sessions exists
 --   ✅ Added session cleanup function for pg_cron
 --   ✅ Reloaded PostgREST schema cache
 -- ============================================================================

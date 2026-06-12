@@ -6,12 +6,14 @@ import QuantumVault, { type VaultCardTelemetry, type VaultHeroMetrics } from '@/
 import ShareLinkModal from '@/components/quantum-vault/ShareLinkModal'
 import ShareSecurityAlerts from '@/components/quantum-vault/ShareSecurityAlerts'
 import VaultFolderExplorer from '@/components/quantum-vault/VaultFolderExplorer'
+import PortableIdentityCard from '@/components/quantum-vault/PortableIdentityCard'
 import MoveToModal from '@/components/quantum-vault/MoveToModal'
 import VaultAlertDialog, {
   type VaultAlertAction,
   type VaultAlertVariant,
 } from '@/components/quantum-vault/VaultAlertDialog'
 import type { ZKMasterKeys } from '@/lib/vault/client-crypto'
+import { CURRENT_VAULT_KEM, CURRENT_VAULT_SECURITY_LEVEL } from '@/lib/vault/kem-profile'
 import * as vaultSvc from '@/lib/vault/vault-service-enhanced'
 
 // ─── Desktop Download Manifest ─────────────────────────────
@@ -103,6 +105,8 @@ interface VerifyResult {
     storageIntegrity: boolean
     signatureValid: boolean
     hasSignature: boolean
+    merkleProofValid: boolean
+    hasMerkleProof: boolean
   }
   verifiedAt: string
 }
@@ -211,9 +215,11 @@ function hasRequiredPqcEnvelope(file: VaultFileEntry): boolean {
   ].join(' ')
 
   const hasHybridKem =
-    algorithmText.includes('X25519+ML-KEM-768') &&
+    algorithmText.includes(`X25519+${CURRENT_VAULT_KEM}`) &&
     textFromRecord(meta, 'mode') === 'hybrid' &&
-    textFromRecord(meta, 'kem') === 'ML-KEM-768'
+    textFromRecord(meta, 'kem') === CURRENT_VAULT_KEM
+
+  const hasLevel5 = textFromRecord(meta, 'securityLevel') === CURRENT_VAULT_SECURITY_LEVEL
 
   const hasAesGcm =
     algorithmText.includes('AES-256-GCM') &&
@@ -233,8 +239,25 @@ function hasRequiredPqcEnvelope(file: VaultFileEntry): boolean {
     file.is_locked &&
     file.processing_status !== 'failed' &&
     hasHybridKem &&
+    hasLevel5 &&
     hasAesGcm &&
     hasKeyWrap,
+  )
+}
+
+function hasRequiredMerkleIntegrity(file: VaultFileEntry): boolean {
+  const meta = asRecord(file.envelope_meta)
+  const merkle = asRecord(meta?.merkle)
+  const proof = asRecord(merkle?.proof)
+
+  return Boolean(
+    textFromRecord(merkle, 'algorithm') === 'SHA3-256' &&
+    hasText(textFromRecord(merkle, 'root')) &&
+    typeof merkle?.chunkSize === 'number' &&
+    typeof merkle?.leafCount === 'number' &&
+    typeof proof?.leafIndex === 'number' &&
+    hasText(textFromRecord(proof, 'leafHash')) &&
+    Array.isArray(proof?.siblings),
   )
 }
 
@@ -249,6 +272,7 @@ function hasRequiredIntegrityStack(file: VaultFileEntry): boolean {
     hasText(file.encrypted_content_hash) &&
     hasText(file.aad_hash) &&
     hasText(textFromRecord(meta, 'aadHash')) &&
+    hasRequiredMerkleIntegrity(file) &&
     hasText(textFromRecord(meta, 'signedMetadata')) &&
     hasText(file.signature),
   )
@@ -347,7 +371,7 @@ export default function VaultPage() {
   const [verifying, setVerifying] = useState<string | null>(null)
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null)
   const [sharedLinks, setSharedLinks] = useState<SharedLinkEntry[]>([])
-  const [shareModalFile, setShareModalFile] = useState<{ id: string; name: string } | null>(null)
+  const [shareModalFile, setShareModalFile] = useState<{ id: string; name: string; mimeType: string } | null>(null)
   const [revokingLink, setRevokingLink] = useState<string | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [realtimeConnected, setRealtimeConnected] = useState(false)
@@ -525,6 +549,8 @@ export default function VaultPage() {
         fileSize: result.originalSize,
         integrityHash: result.integrityHash,
         encryptedIntegrityHash: result.encryptedIntegrityHash,
+        merkleRoot: result.merkleIntegrity.root,
+        merkleProof: result.merkleIntegrity.proof,
         encryptionAlgorithm: result.algorithm,
         envelope: result.envelopeMeta,
         timestamp: new Date().toISOString(),
@@ -541,8 +567,14 @@ export default function VaultPage() {
           contentHash: result.integrityHash,
           encryptedContentHash: result.encryptedIntegrityHash,
           aadHash: result.aadHash,
-          envelopeMeta: { ...result.envelopeMeta, signedMetadata },
-          keyDerivationMeta: { kdf: 'HKDF-SHA3-256', hash: 'SHA3-256' },
+          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata },
+          keyDerivationMeta: {
+            kdf: 'HKDF-SHA3-256',
+            hash: 'SHA3-256',
+            merkleRoot: result.merkleIntegrity.root,
+            merkleLeafCount: result.merkleIntegrity.leafCount,
+            oqsProfile: 'liboqs/oqs-provider compatible ML-KEM-1024 Level 5 hybrid envelope',
+          },
           algorithm: result.algorithm,
           signature,
         },
@@ -588,13 +620,15 @@ export default function VaultPage() {
       }
 
       const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
-      setEncryptProgress({ stage: 'encrypting', percent: 50, message: 'Encrypting with X25519 + ML-KEM-768 + AES-256-GCM...' })
+      setEncryptProgress({ stage: 'encrypting', percent: 50, message: 'Encrypting with X25519 + ML-KEM-1024 + AES-256-GCM and Merkle proof...' })
       const result = encryptFileLocal(fileData, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
       const signedMetadata = JSON.stringify({
         fileName: filename,
         fileSize: result.originalSize,
         integrityHash: result.integrityHash,
         encryptedIntegrityHash: result.encryptedIntegrityHash,
+        merkleRoot: result.merkleIntegrity.root,
+        merkleProof: result.merkleIntegrity.proof,
         encryptionAlgorithm: result.algorithm,
         envelope: result.envelopeMeta,
         timestamp: new Date().toISOString(),
@@ -616,15 +650,21 @@ export default function VaultPage() {
           contentHash: result.integrityHash,
           encryptedContentHash: result.encryptedIntegrityHash,
           aadHash: result.aadHash,
-          envelopeMeta: { ...result.envelopeMeta, signedMetadata },
-          keyDerivationMeta: { kdf: 'HKDF-SHA3-256', hash: 'SHA3-256' },
+          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata },
+          keyDerivationMeta: {
+            kdf: 'HKDF-SHA3-256',
+            hash: 'SHA3-256',
+            merkleRoot: result.merkleIntegrity.root,
+            merkleLeafCount: result.merkleIntegrity.leafCount,
+            oqsProfile: 'liboqs/oqs-provider compatible ML-KEM-1024 Level 5 hybrid envelope',
+          },
           algorithm: result.algorithm,
           signature,
         }
       })
 
       setFiles((prev) => [uploaded, ...prev.filter((f) => f.id !== fileId)])
-      setEncryptProgress({ stage: 'complete', percent: 100, message: 'File encrypted with X25519 + ML-KEM-768 + AES-256-GCM' })
+      setEncryptProgress({ stage: 'complete', percent: 100, message: 'File encrypted with X25519 + ML-KEM-1024 + AES-256-GCM and Merkle proof' })
       pushTelemetry('encryption_completed', `Encryption completed: ${filename}`)
       await vaultSvc.logAudit('encryption_completed', 'info', 'file', uploaded.id, `Encryption completed: ${filename}`)
     } catch (err) {
@@ -675,7 +715,7 @@ export default function VaultPage() {
           currentZkKeys.x25519Secret,
         )
 
-        const blob = new Blob([decrypted.buffer as ArrayBuffer], { type: file.mime_type || 'application/octet-stream' })
+        const blob = new Blob([decrypted.slice()], { type: file.mime_type || 'application/octet-stream' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -771,9 +811,16 @@ export default function VaultPage() {
       const data = new Uint8Array(await blob.arrayBuffer())
 
       const { computeEncryptedHash, computeHash, verifyHybridSignature } = await import('@/lib/vault/client-crypto')
+      const { verifyMerkleProof } = await import('@/lib/vault/merkle-tree')
       const storageHash = file.encrypted_content_hash ? computeEncryptedHash(data) : computeHash(data)
       const expectedHash = file.encrypted_content_hash || file.integrity_hash
       const storageIntegrity = expectedHash ? storageHash === expectedHash : data.length === file.size
+      const meta = asRecord(file.envelope_meta)
+      const merkle = asRecord(meta?.merkle)
+      const hasMerkleProof = hasRequiredMerkleIntegrity(file)
+      const merkleProofValid = hasMerkleProof
+        ? verifyMerkleProof(textFromRecord(merkle, 'root'), merkle?.proof)
+        : false
 
       const signedMetadata = file.envelope_meta?.signedMetadata
       let signatureValid = false
@@ -794,7 +841,7 @@ export default function VaultPage() {
         }
       }
 
-      const valid = storageIntegrity && (!hasSignature || signatureValid)
+      const valid = storageIntegrity && (!hasSignature || signatureValid) && (!hasMerkleProof || merkleProofValid)
       setVerifyResult({
         fileId,
         fileName: file.name,
@@ -803,6 +850,8 @@ export default function VaultPage() {
           storageIntegrity,
           signatureValid,
           hasSignature,
+          merkleProofValid,
+          hasMerkleProof,
         },
         verifiedAt: new Date().toISOString(),
       })
@@ -855,7 +904,7 @@ export default function VaultPage() {
    */
   const getPlaintextForSharing = (fileId: string): (() => Promise<Uint8Array>) => {
     return async () => {
-      const file = files.find(f => f.id === fileId)
+      const file = filesRef.current.find(f => f.id === fileId)
       if (!file) throw new Error('File not found')
 
       const isEncrypted = file.is_locked
@@ -864,14 +913,22 @@ export default function VaultPage() {
       const { data: blob } = await vaultSvc.downloadVaultFile(fileId)
       const rawData = new Uint8Array(await blob.arrayBuffer())
 
-      if (needsClient && zkKeys) {
+      if (needsClient) {
+        const currentZkKeys = zkKeysRef.current
+        if (!currentZkKeys) {
+          throw new Error('Open the vault with your passphrase before sharing this encrypted file.')
+        }
         const { decryptFileLocal } = await import('@/lib/vault/client-crypto')
         return decryptFileLocal(
           rawData, file.kem_ciphertext!, file.aes_nonce!,
-          zkKeys.encSecretKey, file.integrity_hash || undefined,
+          currentZkKeys.encSecretKey, file.integrity_hash || undefined,
           file.envelope_meta,
-          zkKeys.x25519Secret,
+          currentZkKeys.x25519Secret,
         )
+      }
+
+      if (isEncrypted) {
+        throw new Error('This encrypted file must be unlocked locally before it can be shared.')
       }
 
       return rawData
@@ -909,7 +966,7 @@ export default function VaultPage() {
       case 'decrypt': handleDecrypt(file.id); break
       case 'download': handleDownloadEncrypted(file.id, file.name); break
       case 'verify': handleVerify(file.id, file); break
-      case 'share': setShareModalFile({ id: file.id, name: file.name }); break
+      case 'share': setShareModalFile({ id: file.id, name: file.name, mimeType: file.mime_type }); break
       case 'delete': handleDelete(file.id); break
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -960,7 +1017,7 @@ export default function VaultPage() {
           .map(b => b.toString(16).padStart(2, '0')).join(':')
         await vaultSvc.createVaultKey({
           keyType,
-          algorithm: keyType === 'encryption' ? 'ML-KEM-768' : 'ML-DSA-65',
+          algorithm: keyType === 'encryption' ? CURRENT_VAULT_KEM : 'ML-DSA-65',
           fingerprint: fp,
         })
       }
@@ -1070,10 +1127,10 @@ export default function VaultPage() {
         },
         encryption: {
           healthy: encryptionHealthy,
-          headline: 'ML-KEM-768',
+          headline: CURRENT_VAULT_KEM,
           state: encryptionHealthy ? 'Fully Applied' : files.length === 0 ? 'No Files Sealed' : 'Not Fully Applied',
           description: encryptionHealthy
-            ? `${requiredEnvelopeCount}/${files.length} files use X25519 + ML-KEM-768 + AES-256-GCM`
+            ? `${requiredEnvelopeCount}/${files.length} files use X25519 + ${CURRENT_VAULT_KEM} + AES-256-GCM`
             : files.length === 0
               ? 'No user files have been sealed yet'
               : `${missingEncryptionCount} files missing required hybrid PQC envelope`,
@@ -1376,8 +1433,8 @@ export default function VaultPage() {
         </div>
         <div className="q-card stat-card animate-fade-in-up delay-400">
           <div className="stat-label">Encryption</div>
-          <div className="stat-value" style={{ color: 'var(--qg-green)', fontSize: 14 }}>ML-KEM-768</div>
-          <div style={{ fontSize: 12, color: 'var(--qg-text-muted)' }}>FIPS 203 + AES-256-GCM</div>
+          <div className="stat-value" style={{ color: 'var(--qg-green)', fontSize: 14 }}>{CURRENT_VAULT_KEM}</div>
+          <div style={{ fontSize: 12, color: 'var(--qg-text-muted)' }}>FIPS 203 Level 5 + AES-256-GCM</div>
         </div>
       </div>
 
@@ -1484,6 +1541,7 @@ export default function VaultPage() {
               <div style={{ fontSize: 12, color: 'var(--qg-text-muted)' }}>
                 {verifyResult.fileName} — Storage: {verifyResult.checks.storageIntegrity ? 'OK' : 'FAIL'}
                 {verifyResult.checks.hasSignature && ` | Signature: ${verifyResult.checks.signatureValid ? 'Valid' : 'INVALID'}`}
+                {` | Merkle: ${verifyResult.checks.hasMerkleProof ? (verifyResult.checks.merkleProofValid ? 'Valid' : 'INVALID') : 'MISSING'}`}
                 {' | '}Verified at {formatDate(verifyResult.verifiedAt)}
               </div>
               <button className="q-btn q-btn-ghost" style={{ padding: '2px 8px', fontSize: 10, marginTop: 8 }}
@@ -1507,7 +1565,9 @@ export default function VaultPage() {
 
       {/* ── Keys Tab ─────────────────────────────────────── */}
       {activeTab === 'keys' && (
-        <div className="q-card animate-fade-in-up">
+        <>
+          <PortableIdentityCard />
+          <div className="q-card animate-fade-in-up">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <h3 style={{ fontSize: 16 }}>Key Vault</h3>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -1515,7 +1575,7 @@ export default function VaultPage() {
                 disabled={!!keyActionLoading}
                 onClick={() => requestConfirm(
                   'rotate',
-                  'Generate a new ML-KEM-768 encryption key? The current active key will be deactivated. Existing encrypted files will still use their original keys.',
+                  'Generate a new ML-KEM-1024 Level 5 encryption key? The current active key will be deactivated. Existing encrypted files will still use their original keys.',
                   'encryption',
                 )}>
                 {keyActionLoading === 'encryption' ? '⏳ Rotating...' : '🔄 Rotate Encryption Key'}
@@ -1652,7 +1712,8 @@ export default function VaultPage() {
               ))}
             </div>
           )}
-        </div>
+          </div>
+        </>
       )}
 
       {/* ── Audit Tab ────────────────────────────────────── */}
@@ -1836,6 +1897,7 @@ export default function VaultPage() {
         <ShareLinkModal
           fileId={shareModalFile.id}
           fileName={shareModalFile.name}
+          fileMimeType={shareModalFile.mimeType}
           isOpen={true}
           onClose={() => setShareModalFile(null)}
           onShareCreated={() => {

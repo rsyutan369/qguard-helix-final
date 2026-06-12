@@ -1,20 +1,21 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useTheme } from "@/lib/use-theme";
-import AuditLogsPage from "@/pages/AuditLogsPage";
-import DashboardPage from "@/pages/DashboardPage";
-import DeviceTrustCenterPage from "@/pages/DeviceTrustCenterPage";
-import KeyManagementPage from "@/pages/KeyManagementPage";
 import LoginPage from "@/pages/LoginPage";
-import QuantumSecurityDashboardPage from "@/pages/QuantumSecurityDashboardPage";
-import QuantumVaultPage from "@/pages/QuantumVaultPage";
-import SecurityVerificationPage from "@/pages/SecurityVerificationPage";
-import SecureChatPage from "@/pages/SecureChatPage";
-import SettingsPage from "@/pages/SettingsPage";
 import type { Page } from "@/lib/types";
+
+const AuditLogsPage = lazy(() => import("@/pages/AuditLogsPage"));
+const DashboardPage = lazy(() => import("@/pages/DashboardPage"));
+const DeviceTrustCenterPage = lazy(() => import("@/pages/DeviceTrustCenterPage"));
+const KeyManagementPage = lazy(() => import("@/pages/KeyManagementPage"));
+const QuantumSecurityDashboardPage = lazy(() => import("@/pages/QuantumSecurityDashboardPage"));
+const QuantumVaultPage = lazy(() => import("@/pages/QuantumVaultPage"));
+const SecurityVerificationPage = lazy(() => import("@/pages/SecurityVerificationPage"));
+const SecureChatPage = lazy(() => import("@/pages/SecureChatPage"));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 
 const titles: Record<Page, [string, string]> = {
   dashboard: ["Dashboard", "Overview of secure communication and quantum security status."],
@@ -28,6 +29,17 @@ const titles: Record<Page, [string, string]> = {
   admin: ["Admin Security Console", "Organization member and device security posture."],
   settings: ["Settings", "Security modes, alerts, retention, and advanced options."],
 };
+
+function ModuleFallback() {
+  return (
+    <div className="grid gap-4">
+      <div className="grid grid-cols-4 gap-4">
+        {[1, 2, 3, 4].map((item) => <div key={item} className="h-36 animate-pulse rounded-lg border border-line bg-white" />)}
+      </div>
+      <div className="h-96 animate-pulse rounded-lg border border-line bg-white" />
+    </div>
+  );
+}
 
 function ProtectedMessagingApp() {
   const auth = useAuth();
@@ -92,7 +104,7 @@ function ProtectedMessagingApp() {
   } else {
     switch (page) {
       case "dashboard":
-        content = <DashboardPage data={data} onNavigate={(next) => setPage(next as Page)} />;
+        content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => setPage(next as Page)} />;
         break;
       case "chat":
         content = <SecureChatPage userId={auth.user.id} conversations={data.conversations} devices={data.devices} contacts={data.contacts} onSent={refresh} />;
@@ -101,25 +113,25 @@ function ProtectedMessagingApp() {
         content = <QuantumVaultPage userId={auth.user.id} files={data.vaultFiles} telemetry={data.telemetry} onUploaded={refresh} />;
         break;
       case "keys":
-        content = <KeyManagementPage devices={data.devices} keyInventory={data.keyInventory} securityEvents={data.securityEvents} onRefresh={refresh} />;
+        content = <KeyManagementPage userId={auth.user.id} devices={data.devices} keyInventory={data.keyInventory} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
       case "devices":
         content = <DeviceTrustCenterPage userId={auth.user.id} devices={data.devices} telemetry={data.telemetry} securityEvents={data.securityEvents} onRefresh={refresh} />;
         break;
       case "verification":
-        content = <SecurityVerificationPage devices={data.devices} />;
+        content = <SecurityVerificationPage userId={auth.user.id} devices={data.devices} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
       case "audit":
-        content = <AuditLogsPage events={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} />;
+        content = <AuditLogsPage userId={auth.user.id} events={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
       case "quantum":
-        content = <QuantumSecurityDashboardPage report={data.report} hardening={data.hardening} />;
+        content = <QuantumSecurityDashboardPage userId={auth.user.id} data={data} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
       case "settings":
-        content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} onRefresh={refresh} />;
+        content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
       default:
-        content = <DashboardPage data={data} onNavigate={(next) => setPage(next as Page)} />;
+        content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => setPage(next as Page)} />;
         break;
     }
   }
@@ -138,7 +150,9 @@ function ProtectedMessagingApp() {
           onToggleTheme={toggleTheme}
           onSignOut={auth.signOut}
         />
-        <main className="min-h-0 flex-1 overflow-y-auto p-5">{content}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto p-5">
+          <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
+        </main>
       </div>
     </div>
   );

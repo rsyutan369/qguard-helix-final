@@ -3,7 +3,7 @@
 Each device owns independent key material:
 
 - X25519 identity key
-- ML-KEM-768 identity key
+- ML-KEM-1024 identity key
 - Ed25519 signing identity key
 - ML-DSA-65 signing identity key
 - Signed hybrid prekey

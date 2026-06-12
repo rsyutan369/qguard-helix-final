@@ -38,7 +38,7 @@ impl Default for QuantumSecurityReport {
     fn default() -> Self {
         Self {
             hybrid_session_status: "Hybrid Active".to_string(),
-            pqc_algorithm: "ML-KEM-768 + ML-DSA-65".to_string(),
+            pqc_algorithm: "ML-KEM-1024 + ML-DSA-65".to_string(),
             forward_secrecy: "Per-message ratchet keys active".to_string(),
             hndl_protection: "Enabled".to_string(),
             quantum_safe_score: 98,

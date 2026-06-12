@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export type PassphraseModalMode = 'create' | 'unlock'
 
@@ -83,9 +84,14 @@ export default function PassphraseModal({
   const [confirm, setConfirm] = useState('')
   const [reveal, setReveal] = useState(false)
   const [touched, setTouched] = useState(false)
+  const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const passId = useId()
   const confirmId = useId()
+
+  useEffect(() => {
+    setPortalRoot(document.body)
+  }, [])
 
   // Reset state whenever the modal is closed.
   useEffect(() => {
@@ -115,7 +121,16 @@ export default function PassphraseModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
-  if (!open) return null
+  useEffect(() => {
+    if (!open) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [open])
+
+  if (!open || !portalRoot) return null
 
   const strength = estimateStrength(pass)
   const tooShort = mode === 'create' && pass.length > 0 && pass.length < minLength
@@ -143,7 +158,7 @@ export default function PassphraseModal({
     onCancel()
   }
 
-  return (
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -151,13 +166,14 @@ export default function PassphraseModal({
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 1000,
+        zIndex: 10050,
         background: 'rgba(0,0,0,0.6)',
         backdropFilter: 'blur(4px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         padding: 16,
+        boxSizing: 'border-box',
       }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) cancel()
@@ -167,6 +183,8 @@ export default function PassphraseModal({
         style={{
           width: '100%',
           maxWidth: 440,
+          maxHeight: 'calc(100vh - 32px)',
+          overflowY: 'auto',
           background: 'rgba(20,22,32,0.96)',
           border: '1px solid rgba(255,255,255,0.12)',
           borderRadius: 16,
@@ -369,6 +387,7 @@ export default function PassphraseModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    portalRoot,
   )
 }

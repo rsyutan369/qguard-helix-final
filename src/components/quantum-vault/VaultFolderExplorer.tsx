@@ -365,7 +365,7 @@ export default function VaultFolderExplorer({
           <div style={{ fontSize: 13 }}>
             {currentFolderId
               ? 'Upload files or create subfolders to get started.'
-              : 'Upload files first, then encrypt them with ML-KEM-768 + AES-256-GCM'}
+              : 'Upload files first, then encrypt them with ML-KEM-1024 + AES-256-GCM'}
           </div>
         </div>
       )}
@@ -512,7 +512,7 @@ export default function VaultFolderExplorer({
                         style={{ padding: '4px 12px', fontSize: 10 }}
                         onClick={() => onFileAction('encrypt', file)}
                         disabled={encrypting === file.id}
-                        title="Encrypt with ML-KEM-768 + AES-256-GCM"
+                        title="Encrypt with ML-KEM-1024 + AES-256-GCM"
                       >
                         {encrypting === file.id ? '⏳ Encrypting...' : '🔐 Encrypt'}
                       </button>

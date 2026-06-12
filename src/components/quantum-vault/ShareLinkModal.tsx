@@ -6,6 +6,7 @@ import { createSharedLink } from '@/lib/vault/vault-service-enhanced'
 interface ShareLinkModalProps {
   fileId: string
   fileName: string
+  fileMimeType?: string
   isOpen: boolean
   onClose: () => void
   onShareCreated: () => void
@@ -20,22 +21,38 @@ type ExpirationOption = {
 }
 
 const EXPIRATION_OPTIONS: ExpirationOption[] = [
-  { label: 'No expiration', seconds: null },
+  { label: '15 minutes', seconds: 900 },
   { label: '1 hour', seconds: 3600 },
   { label: '24 hours', seconds: 86400 },
   { label: '7 days', seconds: 604800 },
-  { label: '30 days', seconds: 2592000 },
 ]
 
 const MAX_DOWNLOAD_OPTIONS = [
-  { label: 'Unlimited', value: null },
   { label: '1 download (one-time)', value: 1 },
+  { label: '3 downloads', value: 3 },
   { label: '5 downloads', value: 5 },
   { label: '10 downloads', value: 10 },
-  { label: '25 downloads', value: 25 },
 ]
 
 const MIN_SHARE_PASSWORD_LENGTH = 12
+
+function inferMimeType(fileName: string): string {
+  const extension = fileName.split('.').pop()?.toLowerCase()
+  const mimeByExtension: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    json: 'application/json',
+    csv: 'text/csv',
+    zip: 'application/zip',
+  }
+  return extension ? mimeByExtension[extension] || 'application/octet-stream' : 'application/octet-stream'
+}
 
 function isSharePasswordStrong(value: string): boolean {
   if (value.length < MIN_SHARE_PASSWORD_LENGTH) return false
@@ -51,6 +68,7 @@ function isSharePasswordStrong(value: string): boolean {
 export default function ShareLinkModal({
   fileId,
   fileName,
+  fileMimeType,
   isOpen,
   onClose,
   onShareCreated,
@@ -63,19 +81,27 @@ export default function ShareLinkModal({
   const [errorMsg, setErrorMsg] = useState('')
 
   // Options
-  const [expiresIn, setExpiresIn] = useState<number | null>(86400) // default 24h
-  const [maxDownloads, setMaxDownloads] = useState<number | null>(null)
+  const [expiresIn, setExpiresIn] = useState<number | null>(900) // secure default: 15 minutes
+  const [maxDownloads, setMaxDownloads] = useState<number | null>(1) // secure default: one-time
   const [usePassword, setUsePassword] = useState(false)
   const [password, setPassword] = useState('')
+  const [useRecipientBinding, setUseRecipientBinding] = useState(false)
+  const [recipientPublicKey, setRecipientPublicKey] = useState('')
 
   if (!isOpen) return null
 
   const handleCreate = async () => {
     setErrorMsg('')
-    const isPasswordProtected = usePassword && password.length > 0
+    const isRecipientBound = useRecipientBinding && recipientPublicKey.trim().length > 0
+    const isPasswordProtected = usePassword && password.length > 0 && !isRecipientBound
 
     if (usePassword && !isSharePasswordStrong(password)) {
       setErrorMsg(`Use at least ${MIN_SHARE_PASSWORD_LENGTH} characters with 3 character types for password-protected shares.`)
+      return
+    }
+
+    if (useRecipientBinding && !recipientPublicKey.trim()) {
+      setErrorMsg('Paste the recipient public key bundle before creating a recipient-bound share.')
       return
     }
 
@@ -94,9 +120,14 @@ export default function ShareLinkModal({
         shareKey?: string
         passwordSalt?: string
         passwordHash?: string
+        passwordKdf?: Record<string, unknown>
+        recipientWrap?: Record<string, unknown>
       }
 
-      if (isPasswordProtected) {
+      if (isRecipientBound) {
+        const { encryptForRecipientSharing } = await import('@/lib/vault/sharing-crypto')
+        result = await encryptForRecipientSharing(fileData, recipientPublicKey)
+      } else if (isPasswordProtected) {
         const { encryptForSharingWithPassword } = await import('@/lib/vault/sharing-crypto')
         result = await encryptForSharingWithPassword(fileData, password)
       } else {
@@ -112,27 +143,30 @@ export default function ShareLinkModal({
         fileId,
         originalFilename: fileName,
         originalSize: fileData.length,
-        mimeType: 'application/octet-stream',
+        mimeType: fileMimeType || inferMimeType(fileName),
         encryptionMetadata: {
           iv: result.iv,
           integrityHash: result.integrityHash,
           encryptedPayload: result.encryptedPayload,
           passwordSalt: result.passwordSalt,
+          passwordKdf: result.passwordKdf,
+          recipientWrap: result.recipientWrap,
+          sharingMode: isRecipientBound ? 'recipient-bound-public-key' : isPasswordProtected ? 'password-hardened' : 'url-fragment-key',
         },
         isPasswordProtected,
         passwordHash: result.passwordHash,
-        maxDownloads: maxDownloads ?? undefined,
+        maxDownloads: maxDownloads ?? 1,
         expiresAt,
-        isOneTime: maxDownloads === 1,
+        isOneTime: (maxDownloads ?? 1) === 1,
       })
 
-      // 4. Build the share link. Password-protected links do not carry the
-      // decryption key; the recipient derives it locally from the password.
+      // 4. Build the share link. Password-protected and recipient-bound links
+      // do not carry a decryption key in the URL fragment.
       const origin = window.location.origin
-      if (!isPasswordProtected && !result.shareKey) {
+      if (!isPasswordProtected && !isRecipientBound && !result.shareKey) {
         throw new Error('Share key generation failed. Please try again.')
       }
-      const link = isPasswordProtected
+      const link = isPasswordProtected || isRecipientBound
         ? `${origin}/vault/shared/${created.id}`
         : `${origin}/vault/shared/${created.id}#${result.shareKey}`
 
@@ -172,6 +206,8 @@ export default function ShareLinkModal({
     setCopied(false)
     setErrorMsg('')
     setPassword('')
+    setUseRecipientBinding(false)
+    setRecipientPublicKey('')
     onClose()
   }
 
@@ -181,7 +217,7 @@ export default function ShareLinkModal({
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'rgba(0, 0, 0, 0.7)', backdropFilter: 'blur(4px)',
     }} onClick={(e) => { if (e.target === e.currentTarget) handleClose() }}>
-      <div className="glass-panel" style={{ borderRadius: "var(--radius-lg, 12px)", padding: 28, maxWidth: 520, width: "90%" }}>
+      <div className="glass-panel" style={{ borderRadius: "var(--radius-lg, 12px)", padding: 28, maxWidth: 560, width: "90%", maxHeight: '90vh', overflowY: 'auto' }}>
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h3 style={{ fontSize: 16, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -210,7 +246,9 @@ export default function ShareLinkModal({
               background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.2)',
               marginBottom: 20, fontSize: 12, color: 'var(--qg-green, #10b981)',
             }}>
-              {usePassword
+              {useRecipientBinding
+                ? 'Recipient-bound sharing: the file key is wrapped to the recipient public JSON and never appears in the URL. The recipient must unlock it with their private .qgkey bundle.'
+                : usePassword
                 ? 'Password-protected sharing: the file is encrypted in your browser with AES-256-GCM using a key derived from the password. The generated link will not contain the file decryption key.'
                 : 'Zero-knowledge link sharing: the file is encrypted in your browser with AES-256-GCM. The decryption key is placed in the URL fragment (#) and is never sent to the server.'}
             </div>
@@ -263,12 +301,18 @@ export default function ShareLinkModal({
               }}>
                 <input
                   type="checkbox"
-                  checked={usePassword}
+                checked={usePassword}
+                  disabled={useRecipientBinding}
                   onChange={(e) => setUsePassword(e.target.checked)}
                   style={{ accentColor: 'var(--qg-cyan)' }}
                 />
-                Password Protection (requires both link + password)
+                Password Protection (enhanced, link + password)
               </label>
+              {useRecipientBinding && (
+                <div style={{ margin: '-4px 0 10px', fontSize: 11, color: 'var(--qg-text-muted)' }}>
+                  Recipient-bound sharing already removes the URL key and requires the recipient private key.
+                </div>
+              )}
               {usePassword && (
                 <>
                   <input
@@ -284,7 +328,49 @@ export default function ShareLinkModal({
                     }}
                   />
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--qg-text-muted)' }}>
-                    Use at least {MIN_SHARE_PASSWORD_LENGTH} characters with 3 character types. Send it through a separate trusted channel.
+                    Use at least {MIN_SHARE_PASSWORD_LENGTH} characters with 3 character types. Enhanced local hardening is applied before the password proof is sent to the server.
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Recipient-bound sharing */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{
+                fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
+                marginBottom: 8, color: 'var(--qg-text-muted)', cursor: 'pointer',
+              }}>
+                <input
+                  type="checkbox"
+                  checked={useRecipientBinding}
+                  onChange={(e) => {
+                    setUseRecipientBinding(e.target.checked)
+                    if (e.target.checked) {
+                      setUsePassword(false)
+                      setPassword('')
+                    }
+                  }}
+                  style={{ accentColor: 'var(--qg-cyan)' }}
+                />
+                Recipient Public-Key Binding
+              </label>
+              {useRecipientBinding && (
+                <>
+                  <textarea
+                    value={recipientPublicKey}
+                    onChange={(e) => { setRecipientPublicKey(e.target.value); setErrorMsg('') }}
+                    placeholder="Paste recipient public JSON or raw ML-KEM public key"
+                    spellCheck={false}
+                    style={{
+                      width: '100%', minHeight: 92, resize: 'vertical', padding: '8px 12px', fontSize: 12,
+                      background: 'var(--qg-bg, #010409)', color: 'var(--qg-text, #e6edf3)',
+                      border: '1px solid var(--qg-border, #1e293b)',
+                      borderRadius: 'var(--radius-md, 8px)',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  />
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--qg-text-muted)' }}>
+                    Ask the recipient for their public recipient JSON. Never ask for their private .qgkey bundle.
                   </div>
                 </>
               )}
@@ -309,9 +395,11 @@ export default function ShareLinkModal({
               className="q-btn q-btn-primary"
               style={{ width: '100%', padding: '10px 20px', fontSize: 13 }}
               onClick={handleCreate}
-              aria-disabled={usePassword && !isSharePasswordStrong(password)}
+              aria-disabled={(usePassword && !isSharePasswordStrong(password)) || (useRecipientBinding && !recipientPublicKey.trim())}
               title={usePassword && !isSharePasswordStrong(password)
                 ? `Use at least ${MIN_SHARE_PASSWORD_LENGTH} characters with 3 character types.`
+                : useRecipientBinding && !recipientPublicKey.trim()
+                  ? 'Paste the recipient public key bundle first.'
                 : 'Encrypt and generate secure share link'}
             >
               🔐 Encrypt & Generate Share Link
@@ -351,7 +439,9 @@ export default function ShareLinkModal({
               background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.2)',
               marginBottom: 16, fontSize: 12, color: 'var(--qg-green, #10b981)',
             }}>
-              {usePassword
+              {useRecipientBinding
+                ? 'Recipient-bound share created. The link contains no decryption key; only the matching recipient private .qgkey bundle can unwrap the file key in the browser.'
+                : usePassword
                 ? 'Password-protected share created. The recipient needs this link and the password; the file decryption key is derived locally in their browser and is not embedded in the URL.'
                 : 'Secure share link created. The decryption key is in the link fragment (#) and is never stored on or transmitted to our servers. Share this link only through trusted, secure channels.'}
             </div>
@@ -382,9 +472,12 @@ export default function ShareLinkModal({
                 {expiresIn ? `Expires in ${EXPIRATION_OPTIONS.find(o => o.seconds === expiresIn)?.label}` : 'No expiration'}
                 {maxDownloads ? ` · ${maxDownloads} download${maxDownloads === 1 ? '' : 's'} max` : ''}
                 {usePassword ? ' · Password protected' : ''}
+                {useRecipientBinding ? ' · Recipient-bound' : ''}
               </div>
               <div style={{ marginTop: 4, color: 'var(--qg-amber, #f59e0b)' }}>
-                {usePassword
+                {useRecipientBinding
+                  ? 'Only the matching recipient private key can unwrap this file key.'
+                  : usePassword
                   ? 'Send the password separately. Anyone without the password cannot decrypt this file.'
                   : 'Anyone with the full link can decrypt the file. Share it securely.'}
               </div>

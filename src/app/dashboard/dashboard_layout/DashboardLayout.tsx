@@ -7,10 +7,11 @@ import {
   Rocket, GitCompare, ChevronLeft,
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
-  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost, Workflow
+  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost, Workflow, Crown
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
+import { isOwnerEmail } from '@/lib/admin-access';
 import ThemeToggle from '@/components/theme/ThemeToggle';
 
 const NAV_SECTIONS = [
@@ -175,6 +176,12 @@ export default function DashboardLayout() {
   };
 
   const sidebarWidth = collapsed ? 'w-[72px]' : 'w-[260px]';
+  const isOwner = isOwnerEmail(user?.email);
+  const navSections = isOwner
+    ? NAV_SECTIONS.map(section => section.label === 'System'
+      ? { ...section, items: [{ name: 'Owner Administrator', path: '/dashboard/admin', icon: Crown }, ...section.items] }
+      : section)
+    : NAV_SECTIONS;
 
   if (loading) {
     return (
@@ -232,7 +239,7 @@ export default function DashboardLayout() {
         
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-4 px-2.5 space-y-5 scrollbar-thin">
-          {NAV_SECTIONS.map(section => {
+          {navSections.map(section => {
             const isCollapsible = section.collapsible;
             const isOpen = !isCollapsible || openSections[section.label];
 

@@ -171,8 +171,8 @@ const zkDetail = (
         Key derivation from user password
       </div>
       <p style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--qg-text-secondary)', margin: 0 }}>
-        The ML-KEM private key is derived from the user&apos;s master password using Argon2id
-        (memory: 64 MiB, iterations: 3, parallelism: 4). The derived key never leaves the
+        The ML-KEM private key is derived from the user&apos;s master password using a
+        memory-hard password hardening profile. The derived key never leaves the
         client and is never stored server-side — password reset requires re-encryption of all
         wrapped DEKs from a recovery key.
       </p>

@@ -415,7 +415,7 @@ export default function VaultDoor({ vaultState, onOpenComplete }: VaultDoorProps
               letterSpacing="3" opacity={isOpening ? '0.9' : '0.35'}
               filter="url(#qvg-text)" style={{ transition: 'opacity 0.5s' }}
             >
-              ML-KEM-768 · AES-256-GCM
+              ML-KEM-1024 · AES-256-GCM
             </text>
 
             {/* ── 10. Opening effects ───────────────────────────── */}

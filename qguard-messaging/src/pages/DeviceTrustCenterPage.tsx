@@ -17,8 +17,8 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { bytesToBytea } from "@/lib/encoding";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
 import { safeInvoke } from "@/lib/tauri";
@@ -69,7 +69,7 @@ type ConfirmAction = {
 
 const requiredSuite = {
   classical_kex: "X25519",
-  pq_kem: "ML-KEM-768",
+  pq_kem: "ML-KEM-1024",
   kdf: "HKDF-SHA3-256",
   symmetric: "AES-256-GCM",
   classical_signature: "Ed25519",
@@ -159,7 +159,7 @@ function trustClass(level: ReturnType<typeof trustLevel>): string {
 
 function suiteLabel(device: TrustedDevice | ParsedPairingPayload | DeviceLinkRequest): string {
   const suite = "requested_suite" in device ? device.requested_suite : device.suite;
-  const pqKem = String(suite.pq_kem ?? "ML-KEM-768");
+  const pqKem = String(suite.pq_kem ?? "ML-KEM-1024");
   const classical = String(suite.classical_kex ?? "X25519");
   return `${pqKem} + ${classical}`;
 }
@@ -412,37 +412,13 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
     setStatus({ tone: "info", message: "Syncing device registry and hybrid identity bundle..." });
     try {
       await recordDeviceTelemetry(thisDevice?.device_id ?? null, "device_sync_started", "Fetching current device key bundle", 10, "started");
-      const bundle = await safeInvoke<{
-        device_id: string;
-        device_label: string;
-        identity_id: string;
-        x25519_identity_public: number[];
-        mlkem_identity_public: number[];
-        ed25519_identity_public: number[];
-        mldsa_identity_public: number[];
-        signature: Record<string, unknown>;
-        fingerprint: string;
-        suite: Record<string, unknown>;
-      }>("keys_upload_identity_bundle");
-
-      const { error } = await supabase.rpc("register_messaging_device", {
-        p_device_id: bundle.device_id,
-        p_device_label: bundle.device_label,
-        p_identity_id: bundle.identity_id,
-        p_x25519_identity_public: bytesToBytea(bundle.x25519_identity_public),
-        p_mlkem_identity_public: bytesToBytea(bundle.mlkem_identity_public),
-        p_ed25519_identity_public: bytesToBytea(bundle.ed25519_identity_public),
-        p_mldsa_identity_public: bytesToBytea(bundle.mldsa_identity_public),
-        p_identity_signature: bundle.signature,
-        p_fingerprint: bundle.fingerprint,
-        p_suite: bundle.suite,
-      });
-      if (error) throw error;
+      const bundle = await syncCurrentMessagingDevice(supabase, userId);
+      if (!bundle) throw new Error("Device sync requires the QGuard desktop app.");
 
       await safeInvoke("devices_list_trust_center", {}, []).catch(() => []);
       await logDeviceEvent("device_sync_completed", "info", bundle.device_id, {
         fingerprint: bundle.fingerprint.slice(0, 18),
-        suite: `${String(bundle.suite.pq_kem ?? "ML-KEM-768")} + ${String(bundle.suite.classical_kex ?? "X25519")}`,
+        suite: `${String(bundle.suite.pq_kem ?? "ML-KEM-1024")} + ${String(bundle.suite.classical_kex ?? "X25519")}`,
       });
       await recordDeviceTelemetry(bundle.device_id, "device_sync_completed", "Device registry synced from backend", 100, "complete");
       setStatus({ tone: "success", message: "Device registry synced with backend state." });

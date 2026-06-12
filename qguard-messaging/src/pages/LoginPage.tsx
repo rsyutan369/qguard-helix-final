@@ -17,6 +17,14 @@ interface LoginPageProps {
 function toVisibleError(message: string | null): string | null {
   if (!message) return null;
 
+  if (/secure sign in timed out|supabase request timed out|auth service/i.test(message)) {
+    return "Supabase Auth is not responding. Your Supabase project may be resource constrained; please wait for the project to recover or upgrade/optimize it, then try again.";
+  }
+
+  if (message.includes("QGUARD_SUPABASE_CONFIG_REQUIRED")) {
+    return "Registration is not connected to a Supabase project. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the workspace .env or .env.example, then restart QGuard Messaging.";
+  }
+
   const internalTerms = ["supabase", "vite_", "environment", "jwt", "token", "auth_sync_session", "auth session", "configured"];
   if (internalTerms.some((term) => message.toLowerCase().includes(term))) {
     return "We could not complete sign in right now. Please try again later.";
@@ -32,10 +40,12 @@ function toVisibleError(message: string | null): string | null {
 export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn, onVerifyMfa, onCancelMfa, onSignUp, onResendVerification, onClearError }: LoginPageProps) {
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [email, setEmail] = useState("");
+  const [lastVerificationEmail, setLastVerificationEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   const visibleError = toVisibleError(error);
+  const verificationEmail = email.trim() || lastVerificationEmail;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -44,10 +54,18 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
       await onVerifyMfa(mfaCode);
       return;
     }
+    const normalizedEmail = email.trim();
     if (mode === "sign-in") {
-      await onSignIn(email, password);
+      await onSignIn(normalizedEmail, password);
     } else {
-      await onSignUp(email, password, name);
+      const registered = await onSignUp(normalizedEmail, password, name.trim());
+      if (registered) {
+        setLastVerificationEmail(normalizedEmail);
+        setEmail(normalizedEmail);
+        setName("");
+        setPassword("");
+        setMode("sign-in");
+      }
     }
   }
 
@@ -118,7 +136,10 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
             <input
               type="email"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                if (event.target.value.trim()) setLastVerificationEmail(event.target.value.trim());
+              }}
               className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-violet-300"
               autoComplete="email"
               required
@@ -168,9 +189,9 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
           {!pendingMfa && mode === "sign-in" && (
             <button
               type="button"
-              disabled={loading || !email.trim()}
-              onClick={() => onResendVerification(email)}
-              className="mt-3 w-full text-sm font-semibold text-ink-600 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={loading || !verificationEmail}
+              onClick={() => onResendVerification(verificationEmail)}
+              className="mt-3 w-full text-sm font-semibold text-violet-600 hover:text-violet-700 disabled:cursor-not-allowed disabled:text-ink-500 disabled:opacity-50"
             >
               Resend verification email
             </button>

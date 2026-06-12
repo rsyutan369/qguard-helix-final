@@ -30,7 +30,7 @@ interface SecurityPostureResult {
 
 const requiredSuite = {
   classicalKex: "X25519",
-  pqKem: "ML-KEM-768",
+  pqKem: "ML-KEM-1024",
   kdf: "HKDF-SHA3-256",
   symmetric: "AES-256-GCM",
   classicalSignature: "Ed25519",
@@ -158,7 +158,7 @@ export function buildSecurityPosture({
     ...(activeMyDevices.length === 0 ? ["No active device identity is registered for this account"] : []),
     ...(!hybridKexReady ? ["Hybrid key exchange is not fully verified for an active device"] : []),
     ...(!hybridSignatureReady ? ["Hybrid Ed25519 + ML-DSA-65 device signatures are not fully verified"] : []),
-    ...(!deviceSuiteReady ? ["Device crypto suite does not fully report X25519, ML-KEM-768, HKDF-SHA3-256, AES-256-GCM, Ed25519, and ML-DSA-65"] : []),
+    ...(!deviceSuiteReady ? ["Device crypto suite does not fully report X25519, ML-KEM-1024, HKDF-SHA3-256, AES-256-GCM, Ed25519, and ML-DSA-65"] : []),
     ...(!vaultStackReady ? ["One or more vault records do not report the required AES-256-GCM / HKDF-SHA3-256 hybrid suite"] : []),
     ...(!signedPrekeysReady ? ["Signed prekeys are missing or below active device count"] : []),
     ...(!oneTimePrekeysReady ? [`One-time prekeys below readiness target (${keyInventory.available_one_time_prekeys}/${oneTimePrekeysNeeded})`] : []),

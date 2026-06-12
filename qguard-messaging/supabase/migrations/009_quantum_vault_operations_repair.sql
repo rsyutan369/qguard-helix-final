@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS public.qguard_vault_operations (
   progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
   size_bytes BIGINT NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
   processed_bytes BIGINT NOT NULL DEFAULT 0 CHECK (processed_bytes >= 0),
-  algorithm TEXT NOT NULL DEFAULT 'ML-KEM-768 + X25519 + HKDF-SHA3-256 + AES-256-GCM + ML-DSA-65 + Ed25519',
+  algorithm TEXT NOT NULL DEFAULT 'ML-KEM-1024 + X25519 + HKDF-SHA3-256 + AES-256-GCM + ML-DSA-65 + Ed25519',
   integrity_status TEXT NOT NULL DEFAULT 'pending' CHECK (integrity_status IN ('pending', 'verified', 'failed', 'not_checked')),
   error_message TEXT,
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS public.qguard_vault_operations (
 );
 
 ALTER TABLE public.qguard_vault_operations
-  ALTER COLUMN algorithm SET DEFAULT 'ML-KEM-768 + X25519 + HKDF-SHA3-256 + AES-256-GCM + ML-DSA-65 + Ed25519';
+  ALTER COLUMN algorithm SET DEFAULT 'ML-KEM-1024 + X25519 + HKDF-SHA3-256 + AES-256-GCM + ML-DSA-65 + Ed25519';
 
 ALTER TABLE public.qguard_vault_operations ENABLE ROW LEVEL SECURITY;
 

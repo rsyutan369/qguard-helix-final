@@ -44,7 +44,7 @@ ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS storage_path TEXT;
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS storage_bucket TEXT DEFAULT 'vault-encrypted';
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT;
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS encryption_status VARCHAR(100) DEFAULT 'pending';
-ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS encryption_algorithm TEXT DEFAULT 'ML-KEM-768+AES-256-GCM';
+ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS encryption_algorithm TEXT DEFAULT 'ML-KEM-1024+AES-256-GCM';
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS algorithm_version TEXT DEFAULT 'v2.0';
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS kem_ciphertext TEXT;
 ALTER TABLE public.vault_files ADD COLUMN IF NOT EXISTS aes_nonce TEXT;

@@ -4,7 +4,7 @@
 
 | Purpose | Classical | Post-Quantum | Combination |
 | --- | --- | --- | --- |
-| Key agreement | X25519 | ML-KEM-768 | HKDF-SHA3-256 over both shared secrets |
+| Key agreement | X25519 | ML-KEM-1024 | HKDF-SHA3-256 over both shared secrets |
 | Signatures | Ed25519 | ML-DSA-65 | Both signatures must verify |
 | Symmetric encryption | AES-256-GCM | N/A | Unique key/nonce per operation |
 | Hash/KDF | N/A | SHA3-256 | HKDF-SHA3-256 |
@@ -14,11 +14,11 @@
 The sender fetches the recipient device bundle, verifies identity and signed prekey signatures, consumes a one-time prekey when available, and establishes a hybrid shared secret:
 
 1. X25519 ephemeral DH against recipient public prekey.
-2. ML-KEM-768 encapsulation against recipient PQ prekey.
+2. ML-KEM-1024 encapsulation against recipient PQ prekey.
 3. Concatenate both secrets.
 4. Derive a root secret with HKDF-SHA3-256.
 
-The session remains protected if either X25519 or ML-KEM-768 remains secure.
+The session remains protected if either X25519 or ML-KEM-1024 remains secure.
 
 ## Message Encryption
 
@@ -39,4 +39,3 @@ Files use envelope encryption:
 3. Wrap the file key separately for each recipient device using hybrid X25519 + ML-KEM.
 4. Sign metadata and ciphertext bindings with Ed25519 + ML-DSA-65.
 5. Upload ciphertext and encrypted metadata only.
-

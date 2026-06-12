@@ -1,14 +1,18 @@
 import {
+  Activity,
   AlertTriangle,
   BadgeCheck,
   Camera,
   CheckCircle2,
+  Database,
   Download,
   KeyRound,
+  Loader2,
   LockKeyhole,
   Mail,
   Moon,
   QrCode,
+  Radio,
   RefreshCcw,
   ShieldCheck,
   Sun,
@@ -16,15 +20,21 @@ import {
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
-import type { Profile } from "@/lib/types";
+import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
 import type { ThemeMode } from "@/lib/use-theme";
 
 interface SettingsPageProps {
   theme: ThemeMode;
   profile: Profile | null;
+  telemetry: TelemetryEvent[];
+  securityEvents: SecurityEvent[];
+  liveEvents: QGuardLiveEvent[];
+  liveStatus: QGuardLiveStatus;
   onToggleTheme: () => void;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
 }
 
 interface MfaEnrollment {
@@ -39,6 +49,17 @@ interface AuditRow {
   severity: "info" | "warning" | "critical";
   created_at: string;
 }
+
+type TelemetryStatus = "started" | "progress" | "verified" | "failed" | "complete";
+
+const settingsLiveTables = new Set([
+  "profiles",
+  "qguard_profile_audit_events",
+  "messaging_crypto_telemetry",
+  "messaging_security_events",
+]);
+
+const settingsTerms = /settings|profile|avatar|theme|email|password|mfa|totp|recovery|session|login|auth/i;
 
 const avatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const recoveryAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -79,6 +100,64 @@ function normalizedRecoveryCode(code: string) {
   return code.trim().replace(/-/g, "").toUpperCase();
 }
 
+function sortTime(value: string | null | undefined): number {
+  const parsed = new Date(value ?? "").getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function latestIso(values: Array<string | null | undefined>): string | null {
+  const latest = values.map(sortTime).filter(Boolean).sort((a, b) => b - a)[0];
+  return latest ? new Date(latest).toISOString() : null;
+}
+
+function relativeTime(value: string | null | undefined): string {
+  if (!value) return "No events yet";
+  const time = sortTime(value);
+  if (!time) return "Unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function cleanLabel(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function liveTone(state: QGuardLiveStatus["state"]): string {
+  if (state === "live") return "bg-emerald-50 text-emerald-600";
+  if (state === "connecting") return "bg-amber-50 text-amber-600";
+  if (state === "fallback") return "bg-cyan-50 text-cyan-700";
+  return "bg-rose-50 text-rose-600";
+}
+
+function statusTone(value: string): string {
+  if (/critical|failed|error|blocked|locked/i.test(value)) return "text-rose-500";
+  if (/warning|fallback|connecting|pending|off|not enabled|aal1|review/i.test(value)) return "text-amber-600";
+  return "text-emerald-600";
+}
+
+function isSettingsTelemetry(event: TelemetryEvent): boolean {
+  return settingsTerms.test(`${event.stage} ${event.detail}`);
+}
+
+function isSettingsSecurityEvent(event: SecurityEvent): boolean {
+  return settingsTerms.test(event.event_type);
+}
+
+function isSettingsLiveEvent(event: QGuardLiveEvent): boolean {
+  if (!settingsLiveTables.has(event.table)) return false;
+  if (event.table === "messaging_crypto_telemetry" || event.table === "messaging_security_events") {
+    return settingsTerms.test(event.detail);
+  }
+  return true;
+}
+
 function qrCodeSrc(value: string) {
   if (value.startsWith("data:")) return value;
   return `data:image/svg+xml;utf-8,${encodeURIComponent(value)}`;
@@ -106,7 +185,7 @@ async function resizeAvatar(file: File): Promise<Blob> {
   }
 }
 
-export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh }: SettingsPageProps) {
+export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh }: SettingsPageProps) {
   const auth = useAuth();
   const user = auth.user;
   const [displayName, setDisplayName] = useState(profile?.name ?? "");
@@ -132,6 +211,18 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const strength = useMemo(() => passwordScore(newPassword), [newPassword]);
+  const settingsTelemetry = useMemo(() => telemetry.filter(isSettingsTelemetry).slice(0, 5), [telemetry]);
+  const settingsSecurityEvents = useMemo(() => securityEvents.filter(isSettingsSecurityEvent).slice(0, 5), [securityEvents]);
+  const settingsLiveEvents = useMemo(() => liveEvents.filter(isSettingsLiveEvent).slice(0, 5), [liveEvents]);
+  const latestSettingsAt = latestIso([
+    liveStatus.lastEventAt,
+    settingsTelemetry[0]?.created_at,
+    settingsSecurityEvents[0]?.created_at,
+    auditRows[0]?.created_at,
+    profile?.avatar_updated_at,
+  ]);
+  const accountPosture = mfaEnabled ? "AAL2 Protected" : "AAL1 Session";
+  const recoveryPosture = recoveryCount > 0 ? `${recoveryCount} active` : "No active codes";
 
   const setAvatarPreviewUrl = useCallback((nextUrl: string | null) => {
     if (avatarObjectUrlRef.current) {
@@ -202,13 +293,36 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
     };
   }, [loadSecurityState, onRefresh, user]);
 
+  async function recordSettingsTelemetry(stage: string, detail: string, progress: number, statusValue: TelemetryStatus) {
+    if (!user) return;
+    await recordCryptoTelemetry({
+      userId: user.id,
+      scope: "verification",
+      stage,
+      detail,
+      progress,
+      status: statusValue,
+      metadata: {
+        module: "settings",
+        live_state: liveStatus.state,
+        aal: mfaEnabled ? "aal2" : "aal1",
+      },
+    });
+  }
+
   async function runAction(name: string, action: () => Promise<void>) {
     setBusy(name);
     setError(null);
     try {
+      await recordSettingsTelemetry(`settings_${name}_started`, "Settings action started", 10, "started");
       await action();
+      await Promise.resolve(onRefresh());
+      await loadSecurityState();
+      await recordSettingsTelemetry(`settings_${name}_complete`, "Settings action completed", 100, "complete");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      await recordSettingsTelemetry(`settings_${name}_failed`, message, 100, "failed");
     } finally {
       setBusy(null);
     }
@@ -456,8 +570,28 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = "qguard-recovery-codes.txt";
+    document.body.appendChild(anchor);
     anchor.click();
+    anchor.remove();
     URL.revokeObjectURL(url);
+    void audit("mfa_recovery_codes_downloaded", "warning", { recovery_codes_exported: recoveryCodes.length });
+    void recordSettingsTelemetry("settings_recovery_codes_downloaded", "Recovery codes downloaded locally", 100, "complete");
+  }
+
+  function toggleThemeWithAudit() {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    void runAction("theme", async () => {
+      onToggleTheme();
+      await audit("theme_changed", "info", { theme: nextTheme });
+      setStatus(`Theme set to ${nextTheme}`);
+    });
+  }
+
+  function refreshSettingsState() {
+    void runAction("refresh", async () => {
+      await loadSecurityState();
+      setStatus("Settings state refreshed from live backend data");
+    });
   }
 
   return (
@@ -496,7 +630,7 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
               <div className="mt-1 truncate text-sm text-ink-600">{email}</div>
               <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-600">
                 <ShieldCheck size={14} />
-                {mfaEnabled ? "AAL2 Protected" : "AAL1 Session"}
+                {accountPosture}
               </div>
             </div>
           </div>
@@ -520,8 +654,8 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
               Theme
             </div>
             <div className="mt-3 text-sm text-ink-600">{theme}</div>
-            <button onClick={onToggleTheme} className="mt-4 rounded-lg bg-ink-950 px-4 py-2 text-sm font-bold text-white">
-              Toggle Theme
+            <button onClick={toggleThemeWithAudit} disabled={Boolean(busy)} className="mt-4 rounded-lg bg-ink-950 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
+              {busy === "theme" ? "Saving Theme" : "Toggle Theme"}
             </button>
           </div>
         </div>
@@ -532,6 +666,107 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
           {error ?? status}
         </div>
       )}
+
+      <section className="shell-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-ink-950">Realtime Settings Telemetry</h2>
+            <div className="mt-1 text-xs text-ink-600">Profile and credential state refreshed {relativeTime(latestSettingsAt)}</div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`status-pill ${liveTone(liveStatus.state)}`}>
+              <Radio size={13} />
+              {liveStatus.state}
+            </span>
+            <button onClick={refreshSettingsState} disabled={Boolean(busy)} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink-700 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50">
+              {busy === "refresh" ? <Loader2 className="animate-spin" size={14} /> : <RefreshCcw size={14} />}
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 border-y border-line py-3 md:grid-cols-4">
+          <div>
+            <div className="text-[11px] font-bold uppercase text-ink-400">Live Detail</div>
+            <div className="mt-1 truncate text-sm font-semibold text-ink-950">{liveStatus.detail}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold uppercase text-ink-400">Last Event</div>
+            <div className="mt-1 text-sm font-semibold text-ink-950">{relativeTime(liveStatus.lastEventAt)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold uppercase text-ink-400">Profile Audit</div>
+            <div className="mt-1 text-sm font-semibold text-ink-950">{auditRows.length} recent rows</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold uppercase text-ink-400">Account Posture</div>
+            <div className={`mt-1 text-sm font-semibold ${statusTone(accountPosture)}`}>{accountPosture}</div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-6 xl:grid-cols-3">
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase text-ink-400">
+              <Database size={14} />
+              Backend Events
+            </div>
+            {settingsLiveEvents.length === 0 && <div className="rounded-lg border border-line bg-canvas p-3 text-xs text-ink-600">Live stream connected. No settings backend changes received yet.</div>}
+            <div className="space-y-2">
+              {settingsLiveEvents.map((event) => (
+                <div key={event.id} className="flex items-center gap-3 border-t border-line pt-2 first:border-t-0 first:pt-0">
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-ink-950">{event.detail}</div>
+                    <div className="text-[11px] text-ink-400">{event.table} - {event.event.toLowerCase()} - {relativeTime(event.at)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase text-ink-400">
+              <Activity size={14} />
+              Settings Telemetry
+            </div>
+            {settingsTelemetry.length === 0 && <div className="rounded-lg border border-line bg-canvas p-3 text-xs text-ink-600">No settings telemetry yet.</div>}
+            <div className="space-y-2">
+              {settingsTelemetry.map((event) => (
+                <div key={event.id} className="flex items-center gap-3 border-t border-line pt-2 first:border-t-0 first:pt-0">
+                  <span className={`status-pill shrink-0 ${event.progress >= 100 ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"}`}>{Math.max(0, Math.min(100, Math.round(event.progress)))}%</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-ink-950">{cleanLabel(event.stage)}</div>
+                    <div className="truncate text-[11px] text-ink-500">{event.detail}</div>
+                  </div>
+                  <div className="shrink-0 text-[11px] text-ink-400">{relativeTime(event.created_at)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase text-ink-400">
+              <ShieldCheck size={14} />
+              Security Signals
+            </div>
+            {settingsSecurityEvents.length === 0 && auditRows.length === 0 && <div className="rounded-lg border border-line bg-canvas p-3 text-xs text-ink-600">No settings security events yet.</div>}
+            <div className="space-y-2">
+              {[
+                ...auditRows.map((row) => ({ id: `profile-${row.id}`, label: row.event_type, severity: row.severity, created_at: row.created_at })),
+                ...settingsSecurityEvents.map((event) => ({ id: `security-${event.id}`, label: event.event_type, severity: event.severity, created_at: event.created_at })),
+              ].sort((a, b) => sortTime(b.created_at) - sortTime(a.created_at)).slice(0, 5).map((event) => (
+                <div key={event.id} className="flex items-center gap-3 border-t border-line pt-2 first:border-t-0 first:pt-0">
+                  <span className={`status-pill shrink-0 ${event.severity === "critical" ? "bg-rose-50 text-rose-600" : event.severity === "warning" ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-600"}`}>{event.severity}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-ink-950">{cleanLabel(event.label)}</div>
+                    <div className="text-[11px] text-ink-400">{relativeTime(event.created_at)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
         <section className="grid gap-4">
@@ -596,7 +831,7 @@ export default function SettingsPage({ theme, profile, onToggleTheme, onRefresh 
             <div className="mt-4 h-2 overflow-hidden rounded-full bg-canvas">
               <div className="h-full bg-cyan-500 transition-all" style={{ width: `${(strength.score / 5) * 100}%` }} />
             </div>
-            <div className="mt-2 text-xs font-semibold text-ink-600">{strength.label} · {strength.entropy} bits estimated entropy</div>
+            <div className="mt-2 text-xs font-semibold text-ink-600">{strength.label} - {strength.entropy} bits estimated entropy</div>
             <button disabled={busy === "password"} className="mt-5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:opacity-50">
               Update Password
             </button>

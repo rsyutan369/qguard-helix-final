@@ -1,7 +1,7 @@
 -- ============================================================================
 -- Qguard Helix Quantum Vault — Complete Supabase SQL Schema
 -- Post-Quantum Encrypted File Storage
--- ML-KEM-768 + AES-256-GCM Envelope Encryption with ML-DSA-65 Signatures
+-- ML-KEM-1024 + AES-256-GCM Envelope Encryption with ML-DSA-65 Signatures
 -- ============================================================================
 -- Run this entire script in the Supabase SQL Editor.
 -- ============================================================================
@@ -114,20 +114,24 @@ CREATE TABLE IF NOT EXISTS public.vault_user_profiles (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+DROP TRIGGER IF EXISTS trg_vault_user_profiles_updated ON public.vault_user_profiles;
 CREATE TRIGGER trg_vault_user_profiles_updated
   BEFORE UPDATE ON public.vault_user_profiles
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_user_profiles ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view own profile" ON public.vault_user_profiles;
 CREATE POLICY "Users can view own profile"
   ON public.vault_user_profiles FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.vault_user_profiles;
 CREATE POLICY "Users can insert own profile"
   ON public.vault_user_profiles FOR INSERT
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can update own profile" ON public.vault_user_profiles;
 CREATE POLICY "Users can update own profile"
   ON public.vault_user_profiles FOR UPDATE
   USING (user_id = auth.uid());
@@ -149,11 +153,12 @@ CREATE TABLE IF NOT EXISTS public.vault_unlock_sessions (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_sessions_user ON public.vault_unlock_sessions(user_id, status);
-CREATE INDEX idx_vault_sessions_expires ON public.vault_unlock_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_vault_sessions_user ON public.vault_unlock_sessions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_vault_sessions_expires ON public.vault_unlock_sessions(expires_at);
 
 ALTER TABLE public.vault_unlock_sessions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own sessions" ON public.vault_unlock_sessions;
 CREATE POLICY "Users manage own sessions"
   ON public.vault_unlock_sessions FOR ALL
   USING (user_id = auth.uid());
@@ -169,14 +174,16 @@ CREATE TABLE IF NOT EXISTS public.vault_failed_attempts (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_failed_user ON public.vault_failed_attempts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vault_failed_user ON public.vault_failed_attempts(user_id, created_at DESC);
 
 ALTER TABLE public.vault_failed_attempts ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users view own failed attempts" ON public.vault_failed_attempts;
 CREATE POLICY "Users view own failed attempts"
   ON public.vault_failed_attempts FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users insert own failed attempts" ON public.vault_failed_attempts;
 CREATE POLICY "Users insert own failed attempts"
   ON public.vault_failed_attempts FOR INSERT
   WITH CHECK (user_id = auth.uid());
@@ -197,6 +204,7 @@ CREATE TABLE IF NOT EXISTS public.vault_trusted_devices (
 
 ALTER TABLE public.vault_trusted_devices ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own devices" ON public.vault_trusted_devices;
 CREATE POLICY "Users manage own devices"
   ON public.vault_trusted_devices FOR ALL
   USING (user_id = auth.uid());
@@ -218,15 +226,17 @@ CREATE TABLE IF NOT EXISTS public.vault_folders (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_folders_user ON public.vault_folders(user_id, is_deleted);
-CREATE INDEX idx_vault_folders_parent ON public.vault_folders(parent_id);
+CREATE INDEX IF NOT EXISTS idx_vault_folders_user ON public.vault_folders(user_id, is_deleted);
+CREATE INDEX IF NOT EXISTS idx_vault_folders_parent ON public.vault_folders(parent_id);
 
+DROP TRIGGER IF EXISTS trg_vault_folders_updated ON public.vault_folders;
 CREATE TRIGGER trg_vault_folders_updated
   BEFORE UPDATE ON public.vault_folders
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_folders ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own folders" ON public.vault_folders;
 CREATE POLICY "Users manage own folders"
   ON public.vault_folders FOR ALL
   USING (user_id = auth.uid());
@@ -246,19 +256,19 @@ CREATE TABLE IF NOT EXISTS public.vault_files (
   encrypted_size        BIGINT,
   storage_path          TEXT,
   checksum_sha256       TEXT,
-  -- Encryption metadata (ML-KEM-768 + AES-256-GCM)
+  -- Encryption metadata (ML-KEM-1024 + AES-256-GCM)
   encryption_status     public.encryption_status NOT NULL DEFAULT 'pending',
-  encryption_algorithm  TEXT DEFAULT 'ML-KEM-768+AES-256-GCM',
+  encryption_algorithm  TEXT DEFAULT 'ML-KEM-1024+AES-256-GCM',
   algorithm_version     TEXT DEFAULT 'v1',
-  kem_ciphertext        TEXT,    -- ML-KEM-768 encapsulated key ciphertext (hex)
+  kem_ciphertext        TEXT,    -- ML-KEM-1024 encapsulated key ciphertext (hex)
   aes_nonce             TEXT,    -- AES-256-GCM nonce / IV (hex)
   aes_auth_tag          TEXT,    -- AES-256-GCM authentication tag (hex)
   aad_hash              TEXT,    -- associated data hash
   content_hash          TEXT,    -- SHA-256 of original plaintext
   encrypted_content_hash TEXT,   -- SHA-256 of encrypted data
   encryption_key_id     UUID,    -- reference to vault_keys
-  key_derivation_meta   JSONB,   -- KDF parameters used
-  envelope_meta         JSONB,   -- envelope encryption metadata
+  key_derivation_meta   JSONB,   -- KDF parameters used, Merkle root summary
+  envelope_meta         JSONB,   -- envelope encryption metadata, Merkle root/proof
   -- Signature (ML-DSA-65)
   signature             TEXT,    -- ML-DSA-65 signature (hex)
   signing_key_id        UUID,    -- reference to vault_keys
@@ -285,18 +295,20 @@ CREATE TABLE IF NOT EXISTS public.vault_files (
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_files_user ON public.vault_files(user_id, is_deleted);
-CREATE INDEX idx_vault_files_folder ON public.vault_files(folder_id);
-CREATE INDEX idx_vault_files_status ON public.vault_files(encryption_status);
-CREATE INDEX idx_vault_files_processing ON public.vault_files(processing_status);
-CREATE INDEX idx_vault_files_latest ON public.vault_files(user_id, is_latest, is_deleted);
+CREATE INDEX IF NOT EXISTS idx_vault_files_user ON public.vault_files(user_id, is_deleted);
+CREATE INDEX IF NOT EXISTS idx_vault_files_folder ON public.vault_files(folder_id);
+CREATE INDEX IF NOT EXISTS idx_vault_files_status ON public.vault_files(encryption_status);
+CREATE INDEX IF NOT EXISTS idx_vault_files_processing ON public.vault_files(processing_status);
+CREATE INDEX IF NOT EXISTS idx_vault_files_latest ON public.vault_files(user_id, is_latest, is_deleted);
 
+DROP TRIGGER IF EXISTS trg_vault_files_updated ON public.vault_files;
 CREATE TRIGGER trg_vault_files_updated
   BEFORE UPDATE ON public.vault_files
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_files ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own files" ON public.vault_files;
 CREATE POLICY "Users manage own files"
   ON public.vault_files FOR ALL
   USING (user_id = auth.uid());
@@ -318,6 +330,7 @@ CREATE TABLE IF NOT EXISTS public.vault_file_metadata (
 
 ALTER TABLE public.vault_file_metadata ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own file metadata" ON public.vault_file_metadata;
 CREATE POLICY "Users manage own file metadata"
   ON public.vault_file_metadata FOR ALL
   USING (user_id = auth.uid());
@@ -347,14 +360,16 @@ CREATE TABLE IF NOT EXISTS public.vault_upload_sessions (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_upload_sessions_user ON public.vault_upload_sessions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_upload_sessions_user ON public.vault_upload_sessions(user_id, status);
 
+DROP TRIGGER IF EXISTS trg_upload_sessions_updated ON public.vault_upload_sessions;
 CREATE TRIGGER trg_upload_sessions_updated
   BEFORE UPDATE ON public.vault_upload_sessions
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_upload_sessions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own upload sessions" ON public.vault_upload_sessions;
 CREATE POLICY "Users manage own upload sessions"
   ON public.vault_upload_sessions FOR ALL
   USING (user_id = auth.uid());
@@ -393,16 +408,18 @@ CREATE TABLE IF NOT EXISTS public.vault_keys (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_vault_keys_user ON public.vault_keys(user_id, key_type, is_active);
-CREATE INDEX idx_vault_keys_fingerprint ON public.vault_keys(fingerprint);
-CREATE INDEX idx_vault_keys_status ON public.vault_keys(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_vault_keys_user ON public.vault_keys(user_id, key_type, is_active);
+CREATE INDEX IF NOT EXISTS idx_vault_keys_fingerprint ON public.vault_keys(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_vault_keys_status ON public.vault_keys(user_id, status);
 
+DROP TRIGGER IF EXISTS trg_vault_keys_updated ON public.vault_keys;
 CREATE TRIGGER trg_vault_keys_updated
   BEFORE UPDATE ON public.vault_keys
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_keys ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own keys" ON public.vault_keys;
 CREATE POLICY "Users manage own keys"
   ON public.vault_keys FOR ALL
   USING (user_id = auth.uid());
@@ -412,7 +429,7 @@ CREATE TABLE IF NOT EXISTS public.vault_user_keys (
   id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id         UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
   wrapped_bundle  TEXT NOT NULL,   -- base64 of AES-GCM encrypted JSON with salt/iv
-  enc_public_key  TEXT,            -- ML-KEM-768 public key (hex)
+  enc_public_key  TEXT,            -- ML-KEM-1024 public key (hex)
   sign_public_key TEXT,            -- ML-DSA-65 public key (hex)
   key_version     INT NOT NULL DEFAULT 1,
   -- KDF parameters for zero-knowledge derivation
@@ -423,12 +440,14 @@ CREATE TABLE IF NOT EXISTS public.vault_user_keys (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+DROP TRIGGER IF EXISTS trg_vault_user_keys_updated ON public.vault_user_keys;
 CREATE TRIGGER trg_vault_user_keys_updated
   BEFORE UPDATE ON public.vault_user_keys
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_user_keys ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own user keys" ON public.vault_user_keys;
 CREATE POLICY "Users manage own user keys"
   ON public.vault_user_keys FOR ALL
   USING (user_id = auth.uid());
@@ -451,6 +470,7 @@ CREATE TABLE IF NOT EXISTS public.vault_key_rotations (
 
 ALTER TABLE public.vault_key_rotations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users view own rotations" ON public.vault_key_rotations;
 CREATE POLICY "Users view own rotations"
   ON public.vault_key_rotations FOR ALL
   USING (user_id = auth.uid());
@@ -468,6 +488,7 @@ CREATE TABLE IF NOT EXISTS public.vault_recovery_keys (
 
 ALTER TABLE public.vault_recovery_keys ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own recovery keys" ON public.vault_recovery_keys;
 CREATE POLICY "Users manage own recovery keys"
   ON public.vault_recovery_keys FOR ALL
   USING (user_id = auth.uid());
@@ -507,12 +528,13 @@ CREATE TABLE IF NOT EXISTS public.vault_shared_links (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_shared_links_user ON public.vault_shared_links(user_id);
-CREATE INDEX idx_shared_links_token ON public.vault_shared_links(token);
-CREATE INDEX idx_shared_links_file ON public.vault_shared_links(file_id);
+CREATE INDEX IF NOT EXISTS idx_shared_links_user ON public.vault_shared_links(user_id);
+CREATE INDEX IF NOT EXISTS idx_shared_links_token ON public.vault_shared_links(token);
+CREATE INDEX IF NOT EXISTS idx_shared_links_file ON public.vault_shared_links(file_id);
 
 ALTER TABLE public.vault_shared_links ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own shared links" ON public.vault_shared_links;
 CREATE POLICY "Users manage own shared links"
   ON public.vault_shared_links FOR ALL
   USING (user_id = auth.uid());
@@ -534,10 +556,12 @@ CREATE TABLE IF NOT EXISTS public.vault_access_grants (
 
 ALTER TABLE public.vault_access_grants ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Owners manage their grants" ON public.vault_access_grants;
 CREATE POLICY "Owners manage their grants"
   ON public.vault_access_grants FOR ALL
   USING (owner_id = auth.uid());
 
+DROP POLICY IF EXISTS "Grantees view their grants" ON public.vault_access_grants;
 CREATE POLICY "Grantees view their grants"
   ON public.vault_access_grants FOR SELECT
   USING (grantee_id = auth.uid());
@@ -562,17 +586,19 @@ CREATE TABLE IF NOT EXISTS public.vault_audit_logs (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_audit_logs_user ON public.vault_audit_logs(user_id, created_at DESC);
-CREATE INDEX idx_audit_logs_type ON public.vault_audit_logs(event_type);
-CREATE INDEX idx_audit_logs_resource ON public.vault_audit_logs(resource_type, resource_id);
-CREATE INDEX idx_audit_logs_severity ON public.vault_audit_logs(severity);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON public.vault_audit_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_type ON public.vault_audit_logs(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON public.vault_audit_logs(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_severity ON public.vault_audit_logs(severity);
 
 ALTER TABLE public.vault_audit_logs ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users view own audit logs" ON public.vault_audit_logs;
 CREATE POLICY "Users view own audit logs"
   ON public.vault_audit_logs FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users insert own audit logs" ON public.vault_audit_logs;
 CREATE POLICY "Users insert own audit logs"
   ON public.vault_audit_logs FOR INSERT
   WITH CHECK (user_id = auth.uid());
@@ -597,14 +623,16 @@ CREATE TABLE IF NOT EXISTS public.vault_processing_status (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_processing_user ON public.vault_processing_status(user_id, is_complete);
+CREATE INDEX IF NOT EXISTS idx_processing_user ON public.vault_processing_status(user_id, is_complete);
 
+DROP TRIGGER IF EXISTS trg_processing_status_updated ON public.vault_processing_status;
 CREATE TRIGGER trg_processing_status_updated
   BEFORE UPDATE ON public.vault_processing_status
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 ALTER TABLE public.vault_processing_status ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own processing status" ON public.vault_processing_status;
 CREATE POLICY "Users manage own processing status"
   ON public.vault_processing_status FOR ALL
   USING (user_id = auth.uid());
@@ -628,6 +656,7 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 -- Storage RLS policies
+DROP POLICY IF EXISTS "Users upload own vault objects" ON storage.objects;
 CREATE POLICY "Users upload own vault objects"
   ON storage.objects FOR INSERT
   WITH CHECK (
@@ -636,6 +665,7 @@ CREATE POLICY "Users upload own vault objects"
     AND (storage.foldername(name))[2] = auth.uid()::TEXT
   );
 
+DROP POLICY IF EXISTS "Users read own vault objects" ON storage.objects;
 CREATE POLICY "Users read own vault objects"
   ON storage.objects FOR SELECT
   USING (
@@ -644,6 +674,7 @@ CREATE POLICY "Users read own vault objects"
     AND (storage.foldername(name))[2] = auth.uid()::TEXT
   );
 
+DROP POLICY IF EXISTS "Users delete own vault objects" ON storage.objects;
 CREATE POLICY "Users delete own vault objects"
   ON storage.objects FOR DELETE
   USING (
@@ -679,6 +710,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- 14. HELPER: Count folder items
 -- ============================================================================
 
+DROP FUNCTION IF EXISTS public.vault_folder_item_count(UUID);
 CREATE OR REPLACE FUNCTION public.vault_folder_item_count(folder_uuid UUID)
 RETURNS INT AS $$
   SELECT (
@@ -694,14 +726,48 @@ $$ LANGUAGE sql STABLE SECURITY DEFINER;
 -- 15. REALTIME PUBLICATION
 -- ============================================================================
 
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_files;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_folders;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_keys;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_shared_links;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_audit_logs;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_processing_status;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_upload_sessions;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_user_profiles;
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_files;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_folders;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_keys;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_shared_links;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_audit_logs;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_processing_status;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_upload_sessions;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.vault_user_profiles;
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+END $$;
 
 -- ============================================================================
 -- DONE — Schema ready for production deployment

@@ -40,6 +40,9 @@ function payloadDetail(table: string, eventType: string, payload: Record<string,
   if (table === "messaging_device_link_requests") {
     return `device_link_${String(payload.status ?? eventType).toLowerCase()}: ${String(payload.requested_device_label ?? payload.requested_fingerprint ?? payload.id ?? "pairing request")}`;
   }
+  if (table === "messaging_device_verification_payloads") {
+    return `verification_payload_${eventType.toLowerCase()}: ${String(payload.fingerprint ?? payload.device_id ?? "trusted device")}`;
+  }
   const candidate = payload.display_name_hint
     ?? payload.current_operation
     ?? payload.event_type
@@ -55,6 +58,7 @@ function tableSpecs(userId: string): LiveTableSpec[] {
     { table: "messaging_user_modules", filter: `user_id=eq.${userId}` },
     { table: "profiles", filter: `id=eq.${userId}` },
     { table: "messaging_devices", filter: `user_id=eq.${userId}` },
+    { table: "messaging_device_verification_payloads", filter: `user_id=eq.${userId}` },
     { table: "messaging_device_link_requests", filter: `user_id=eq.${userId}` },
     { table: "messaging_contacts", filter: `owner_user_id=eq.${userId}` },
     { table: "messaging_conversation_members", filter: `user_id=eq.${userId}` },
@@ -63,6 +67,7 @@ function tableSpecs(userId: string): LiveTableSpec[] {
     { table: "messaging_one_time_prekeys", filter: `user_id=eq.${userId}` },
     { table: "messaging_message_envelopes", filter: `recipient_user_id=eq.${userId}` },
     { table: "messaging_message_envelopes", filter: `sender_user_id=eq.${userId}` },
+    { table: "messaging_message_user_states", filter: `user_id=eq.${userId}` },
     { table: "messaging_vault_files", filter: `owner_user_id=eq.${userId}` },
     { table: "qguard_vault_operations", filter: `user_id=eq.${userId}` },
     { table: "messaging_security_events", filter: `user_id=eq.${userId}` },
@@ -83,6 +88,7 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
   const refreshRef = useRef(onRefresh);
   const retryRef = useRef(0);
   const retryTimerRef = useRef<number | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     refreshRef.current = onRefresh;
@@ -121,6 +127,21 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
       }
     };
 
+    const clearScheduledRefresh = () => {
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+
+    const scheduleRefresh = (delayMs = 450) => {
+      if (!active || refreshTimerRef.current) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        void refreshRef.current();
+      }, delayMs);
+    };
+
     const scheduleRetry = () => {
       if (!active || retryTimerRef.current) return;
       retryRef.current += 1;
@@ -133,7 +154,7 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
       });
       retryTimerRef.current = window.setTimeout(() => {
         retryTimerRef.current = null;
-        refreshRef.current();
+        scheduleRefresh(0);
       }, waitMs);
     };
 
@@ -146,7 +167,7 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
           retryRef.current = 0;
           clearRetry();
           emit(spec.table, payload.eventType, (payload.new ?? payload.old ?? {}) as Record<string, unknown>);
-          refreshRef.current();
+          scheduleRefresh();
         },
       );
     });
@@ -183,12 +204,13 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
     });
 
     const poll = window.setInterval(() => {
-      refreshRef.current();
+      scheduleRefresh(0);
     }, fallbackPollMs);
 
     return () => {
       active = false;
       clearRetry();
+      clearScheduledRefresh();
       window.clearInterval(poll);
       supabase.removeChannel(channel);
     };

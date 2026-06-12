@@ -42,7 +42,7 @@ const fallbackUnlockStatus: PrivateKeyUnlockStatus = {
   storage: "WebCrypto session key",
   suite: {
     classical_kex: "X25519",
-    pq_kem: "ML-KEM-768",
+    pq_kem: "ML-KEM-1024",
     kdf: "HKDF-SHA3-256",
     symmetric: "AES-256-GCM",
     classical_signature: "Ed25519",
@@ -196,6 +196,7 @@ export function enforceClientDecryptionRateLimit(
 
 export async function unlockDevicePrivateKey(
   stream: SecureDecryptionSseStream,
+  userId?: string,
 ): Promise<PrivateKeyUnlockStatus> {
   stream.emit({
     stage: "key_validation",
@@ -206,7 +207,7 @@ export async function unlockDevicePrivateKey(
   });
 
   const status = isTauriRuntime()
-    ? await safeInvoke<PrivateKeyUnlockStatus>("keys_unlock_private_key")
+    ? await safeInvoke<PrivateKeyUnlockStatus>("keys_unlock_private_key", userId ? { userId } : {})
     : fallbackUnlockStatus;
 
   if (!status.unlocked || status.private_key_exported) {

@@ -43,7 +43,6 @@ import {
   Flame,
   Sparkles,
   Terminal,
-  Info,
   X,
   ShieldCheck,
   ArrowRight,
@@ -595,70 +594,70 @@ type PricingPlan = {
 const PRICING_PLANS: PricingPlan[] = [
   {
     name: "Starter",
-    description: "Essential post-quantum discovery tools for growing systems targeting early compliance.",
-    priceMonthly: 490,
-    priceYearly: 390,
-    badge: "BASIC DISCOVERY",
+    description: "Entry-level crypto discovery for small teams that need essential asset visibility, secure storage, and protected messaging.",
+    priceMonthly: 10,
+    priceYearly: 8,
+    badge: "ESSENTIAL DISCOVERY",
     icon: Shield,
     features: [
-      "Passive Cryptographic Discovery",
-      "Legacy Cipher Vulnerability Scanning",
-      "Identify up to 250 Active Endpoints",
-      "Basic Q-Score Risk Indicator",
-      "Weekly Automated Posture Scan",
-      "NIST PQC Standards Alignment Reports",
-      "Standard Email Support (24hr SLA)"
+      "Quantum Vault and Quantum Messaging App access",
+      "Discover up to 25 cryptographic assets",
+      "Basic PQC Scanner with CBOM inventory snapshot",
+      "Starter Quantum Risk Score summary",
+      "Weekly automated posture scan",
+      "5 GB encrypted vault storage with 30-day retention",
+      "Email support for onboarding and billing"
     ],
     notIncluded: [
-      "Active Hybrid Orchestrator Controls",
-      "Real-time VPN Packet Inspections",
-      "Custom SOC 2 Crypto Audits",
-      "Dedicated Post-Quantum Cryptographers"
+      "Quantum QRNG, QKMS, PKI, OTP, and tokenization tools",
+      "PQC orchestration, migration sandbox, and rollback automation",
+      "Runtime, API, certificate, and multi-cloud telemetry",
+      "Advanced compliance evidence packs and SIEM webhooks"
     ],
     ctaText: "Start Scanning Today",
     popular: false
   },
   {
     name: "Pro",
-    description: "Advanced intelligence, automated assessments, and live hybrid orchestration controls.",
-    priceMonthly: 1490,
-    priceYearly: 1195,
+    description: "Operational PQC readiness for teams that need active monitoring, migration planning, and production crypto tooling.",
+    priceMonthly: 50,
+    priceYearly: 40,
     badge: "MOST POPULAR",
     icon: Zap,
     features: [
-      "Everything in Starter tier",
-      "Automated Hybrid Cryptography Orchestration",
-      "Up to 2,500 Monitored Endpoints",
-      "Active Q-Score Risk Priority Analytics",
-      "Real-time VPN and Network Packet Inspects",
-      "Continuous ML-KEM/Kyber Handshake Simulation",
-      "NIST PQC, NSA Suite B & CNSA 2.0 Audits",
-      "Priority 24/7 Engineering Hotline"
+      "Everything in Starter, including Vault and Messaging",
+      "Discover and monitor up to 500 crypto assets",
+      "Agent collector scanners and 10 active monitoring jobs",
+      "Quantum QRNG, key generation, OTP, PKI, and tokenization",
+      "Migration Planner, Hybrid Crypto Lab, and sandbox analysis",
+      "TLS, certificate, runtime, and API encryption telemetry",
+      "NIST PQC, CNSA 2.0, and compliance evidence reports",
+      "Priority email support with next-business-day response"
     ],
     notIncluded: [
-      "Enterprise Dedicated Post-Quantum Team",
-      "Custom Hardware Security Module (HSM) patches"
+      "Enterprise-scale QKMS governance and HSM/KMS integrations",
+      "Dedicated post-quantum architect, custom MSA, and SLA",
+      "Custom compliance mapping and executive migration workshops"
     ],
     ctaText: "Elevate Your Security",
     popular: true
   },
   {
     name: "Elite",
-    description: "Full enterprise capabilities, customized threat assessments, and comprehensive crypto-agility.",
-    priceMonthly: 4990,
-    priceYearly: 3990,
+    description: "Enterprise-grade crypto-agility for organizations that require governed migration, QKMS operations, and live assurance.",
+    priceMonthly: 199,
+    priceYearly: 159,
     badge: "ENTERPRISE AGILITY",
     icon: Sparkles,
     features: [
-      "Full Global Access to platforms & APIs",
-      "Unlimited Monitored Crypto Endpoints",
-      "Custom HSM and KMS Direct Cryptographic Integrations",
-      "Continuous Intercept Protection (Anti-Harvesting)",
-      "Real-Time Live Cryptographic Telemetry Grid",
-      "Tailored SOC 2 & PCI-DSS 4.0 Quantum Compliance",
-      "Dedicated Post-Quantum Architect Assigned",
-      "Co-Authoring Migration Playbook Support",
-      "Uptime SLA guarantee & Custom MSA contracts"
+      "Everything in Pro, including Vault and Messaging",
+      "Discover and govern up to 5,000 crypto assets",
+      "Full QKMS overview, inventory, governance, and readiness",
+      "PQC orchestration, live migration ops, rollback, and sandboxing",
+      "Runtime, TLS, certificate, API, and multi-cloud telemetry grid",
+      "HNDL defense workflows, audit vault, and policy enforcement",
+      "SOC 2, PCI-DSS 4.0, NIST, and custom compliance mapping",
+      "Priority engineering support with enterprise SLA options"
     ],
     notIncluded: [],
     ctaText: "Establish Quantum Agility",
@@ -726,10 +725,6 @@ const FAQ_DATA = {
     {
       question: "What encryption does the Quantum Vault use?",
       answer: "The vault uses ML-KEM-1024, NIST FIPS 203 security level 5, for key encapsulation and AES-256-GCM for symmetric file encryption. File integrity is verified using Merkle proofs. This combination is designed to remain secure beyond 2050 even with quantum hardware."
-    },
-    {
-      question: "How does family sharing work in the Quantum Vault?",
-      answer: "Invited members receive their own ML-KEM key pair. Shared folders use per-member key wrapping, so each member decrypts with their own private key. Revoking one member instantly invalidates only their key wrap, leaving all other members unaffected and the underlying data unchanged."
     },
     {
       question: "Is the Quantum Vault available offline?",
@@ -2258,28 +2253,6 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
           })}
         </div>
 
-        <div className="mx-auto mt-14 flex max-w-4xl flex-col items-center justify-between gap-5 rounded-none border-2 border-slate-950 bg-white p-5 text-left shadow-[4px_4px_0px_#090d16] sm:flex-row">
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 select-none rounded-none border-2 border-slate-900 bg-slate-50 p-2.5 text-slate-500">
-              <Info className="h-4 w-4 text-slate-950" />
-            </div>
-            <div>
-              <h4 className="select-none font-sans text-xs font-black uppercase tracking-tight text-slate-950">
-                Lattice-Migration Trial Assistance
-              </h4>
-              <p className="mt-1 max-w-xl select-text font-sans text-[10px] leading-relaxed tracking-wide text-slate-500">
-                Deploy QGuard Helix key checks alongside your standard infrastructure risk-free. If ML-KEM/Kyber envelope payload checks create any performance degradation, our enterprise security agents will rollback configurations with zero footprint.
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onRequestDemo}
-            className="shrink-0 cursor-pointer whitespace-nowrap rounded-none border-2 border-slate-950 bg-white px-5 py-2.5 font-mono text-xs font-bold uppercase text-slate-950 shadow-[3px_3px_0px_#090d16] transition-all hover:bg-slate-50 active:scale-95"
-          >
-            Speak to a PQC Expert
-          </button>
-        </div>
       </div>
     </motion.section>
   );

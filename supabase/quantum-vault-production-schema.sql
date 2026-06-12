@@ -1,6 +1,6 @@
 -- ============================================================================
 -- QUANTUM VAULT — ENTERPRISE-GRADE SUPABASE SQL SCHEMA
--- Post-Quantum Encrypted File Storage: ML-KEM-768 + AES-256-GCM + ML-DSA-65
+-- Post-Quantum Encrypted File Storage: ML-KEM-1024 + AES-256-GCM + ML-DSA-65
 -- Version: 2.0 Production-Ready
 -- ============================================================================
 -- 
@@ -528,23 +528,23 @@ CREATE TABLE IF NOT EXISTS public.vault_files (
   checksum_sha256         TEXT,  -- SHA-256 of original file
   
   -- ─────────────────────────────────────────────────────────────────
-  -- POST-QUANTUM ENCRYPTION METADATA (ML-KEM-768 + AES-256-GCM)
+  -- POST-QUANTUM ENCRYPTION METADATA (ML-KEM-1024 + AES-256-GCM)
   -- ─────────────────────────────────────────────────────────────────
   
   encryption_status       public.encryption_status NOT NULL DEFAULT 'pending',
-  encryption_algorithm    TEXT DEFAULT 'ML-KEM-768+AES-256-GCM',
+  encryption_algorithm    TEXT DEFAULT 'ML-KEM-1024+AES-256-GCM',
   algorithm_version       TEXT DEFAULT 'v2.0',
   
-  -- ML-KEM-768 Encapsulated Key (ciphertext)
-  kem_ciphertext          TEXT,  -- Hex-encoded ML-KEM-768 encapsulated key
+  -- ML-KEM-1024 Encapsulated Key (ciphertext)
+  kem_ciphertext          TEXT,  -- Hex-encoded ML-KEM-1024 encapsulated key
   
   -- AES-256-GCM Parameters
   aes_nonce               TEXT,  -- Hex-encoded 96-bit IV/nonce
   aes_auth_tag            TEXT,  -- Hex-encoded 128-bit authentication tag
   
   -- Envelope Encryption Metadata
-  key_derivation_meta     JSONB,  -- {"salt": "...", "kdf": "Argon2id", "params": {...}}
-  envelope_meta           JSONB,  -- {"wrapped_key": "...", "key_version": 1}
+  key_derivation_meta     JSONB,  -- {"salt": "...", "kdf": "Argon2id", "params": {...}, "merkleRoot": "..."}
+  envelope_meta           JSONB,  -- {"wrapped_key": "...", "key_version": 1, "merkle": {"root": "...", "proof": {...}}}
   
   -- Integrity Verification
   content_hash            TEXT,  -- SHA-256 of original plaintext
@@ -627,8 +627,8 @@ CREATE POLICY "Users manage own files"
   ON public.vault_files FOR ALL
   USING (user_id = auth.uid());
 
-COMMENT ON TABLE public.vault_files IS 'Encrypted file storage with ML-KEM-768 + AES-256-GCM encryption metadata';
-COMMENT ON COLUMN public.vault_files.kem_ciphertext IS 'ML-KEM-768 encapsulated key (hex) - used to derive AES key';
+COMMENT ON TABLE public.vault_files IS 'Encrypted file storage with ML-KEM-1024 + AES-256-GCM encryption metadata and Merkle proof integrity metadata';
+COMMENT ON COLUMN public.vault_files.kem_ciphertext IS 'ML-KEM-1024 encapsulated key (hex) - used to derive AES key';
 COMMENT ON COLUMN public.vault_files.aes_nonce IS 'AES-256-GCM nonce/IV (hex) - must be unique per encryption';
 COMMENT ON COLUMN public.vault_files.aes_auth_tag IS 'AES-256-GCM authentication tag (hex) - ensures integrity';
 
@@ -768,7 +768,7 @@ CREATE TABLE IF NOT EXISTS public.vault_keys (
   
   -- Key Identity
   key_type              public.vault_key_type NOT NULL,
-  algorithm             TEXT NOT NULL,  -- ML-KEM-768, ML-DSA-65, AES-256-GCM
+  algorithm             TEXT NOT NULL,  -- ML-KEM-1024, ML-DSA-65, AES-256-GCM
   fingerprint           TEXT NOT NULL,  -- Public key fingerprint
   
   -- Public Key (safe to store)
@@ -847,7 +847,7 @@ CREATE TABLE IF NOT EXISTS public.vault_user_keys (
   bundle_format         TEXT DEFAULT 'v1',
   
   -- Public Keys (for verification)
-  enc_public_key        TEXT,  -- ML-KEM-768 public key (hex)
+  enc_public_key        TEXT,  -- ML-KEM-1024 public key (hex)
   sign_public_key       TEXT,  -- ML-DSA-65 public key (hex)
   
   -- KDF Metadata (for key derivation)
@@ -1110,12 +1110,32 @@ CREATE TABLE IF NOT EXISTS public.vault_audit_logs (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Existing projects may already have vault_audit_logs from an older schema.
+-- CREATE TABLE IF NOT EXISTS will not add new columns, so add the production
+-- audit columns before indexes/views reference them.
+ALTER TABLE public.vault_audit_logs
+  ADD COLUMN IF NOT EXISTS severity public.audit_severity NOT NULL DEFAULT 'info',
+  ADD COLUMN IF NOT EXISTS result public.audit_result DEFAULT 'success',
+  ADD COLUMN IF NOT EXISTS resource_type TEXT,
+  ADD COLUMN IF NOT EXISTS resource_id TEXT,
+  ADD COLUMN IF NOT EXISTS description TEXT,
+  ADD COLUMN IF NOT EXISTS ip_address TEXT,
+  ADD COLUMN IF NOT EXISTS user_agent TEXT,
+  ADD COLUMN IF NOT EXISTS device_id TEXT,
+  ADD COLUMN IF NOT EXISTS session_id UUID,
+  ADD COLUMN IF NOT EXISTS country_code TEXT,
+  ADD COLUMN IF NOT EXISTS city TEXT,
+  ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::JSONB,
+  ADD COLUMN IF NOT EXISTS retention_class TEXT DEFAULT 'standard',
+  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 -- Indexes (Critical for query performance)
-CREATE INDEX idx_audit_logs_user ON public.vault_audit_logs(user_id, created_at DESC);
-CREATE INDEX idx_audit_logs_type ON public.vault_audit_logs(event_type, created_at DESC);
-CREATE INDEX idx_audit_logs_resource ON public.vault_audit_logs(resource_type, resource_id);
-CREATE INDEX idx_audit_logs_severity ON public.vault_audit_logs(severity, created_at DESC);
-CREATE INDEX idx_audit_logs_ip ON public.vault_audit_logs(ip_address, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON public.vault_audit_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_type ON public.vault_audit_logs(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON public.vault_audit_logs(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_severity ON public.vault_audit_logs(severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_ip ON public.vault_audit_logs(ip_address, created_at DESC);
 
 -- Partitioning (optional, for high-volume deployments)
 -- This requires pg_partman or manual setup for production
@@ -1172,11 +1192,33 @@ CREATE TABLE IF NOT EXISTS public.vault_processing_status (
   completed_at          TIMESTAMPTZ
 );
 
+-- Backfill production telemetry columns for projects with an older table.
+ALTER TABLE public.vault_processing_status
+  ADD COLUMN IF NOT EXISTS operation TEXT NOT NULL DEFAULT 'unknown',
+  ADD COLUMN IF NOT EXISTS resource_type TEXT NOT NULL DEFAULT 'file',
+  ADD COLUMN IF NOT EXISTS resource_id TEXT,
+  ADD COLUMN IF NOT EXISTS resource_name TEXT,
+  ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS progress_pct INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS message TEXT,
+  ADD COLUMN IF NOT EXISTS error_message TEXT,
+  ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS is_complete BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS bytes_processed BIGINT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS total_bytes BIGINT,
+  ADD COLUMN IF NOT EXISTS speed_mbps NUMERIC(10,2),
+  ADD COLUMN IF NOT EXISTS eta_seconds INT,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+
 -- Indexes
-CREATE INDEX idx_processing_user ON public.vault_processing_status(user_id, is_complete);
-CREATE INDEX idx_processing_resource ON public.vault_processing_status(resource_id, operation);
+CREATE INDEX IF NOT EXISTS idx_processing_user ON public.vault_processing_status(user_id, is_complete);
+CREATE INDEX IF NOT EXISTS idx_processing_resource ON public.vault_processing_status(resource_id, operation);
 
 -- Triggers
+DROP TRIGGER IF EXISTS trg_processing_status_updated ON public.vault_processing_status;
 CREATE TRIGGER trg_processing_status_updated
   BEFORE UPDATE ON public.vault_processing_status
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
@@ -1378,6 +1420,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 COMMENT ON FUNCTION public.ensure_vault_profile() IS 'Auto-creates vault profile if missing; returns profile ID';
 
 -- Count items in folder
+DROP FUNCTION IF EXISTS public.vault_folder_item_count(UUID);
 CREATE OR REPLACE FUNCTION public.vault_folder_item_count(folder_uuid UUID)
 RETURNS TABLE(item_count BIGINT, file_count BIGINT, folder_count BIGINT) AS $$
 BEGIN

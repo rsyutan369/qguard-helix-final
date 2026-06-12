@@ -1047,10 +1047,10 @@ CREATE TABLE IF NOT EXISTS vault_files (
 
     -- Post-Quantum Encryption Metadata
     encryption_status VARCHAR(100) NOT NULL DEFAULT 'pending',
-    encryption_algorithm TEXT DEFAULT 'ML-KEM-768+AES-256-GCM',
+    encryption_algorithm TEXT DEFAULT 'ML-KEM-1024+AES-256-GCM',
     algorithm_version TEXT DEFAULT 'v2.0',
 
-    -- ML-KEM-768 Encapsulated Key
+    -- ML-KEM-1024 Encapsulated Key
     kem_ciphertext TEXT,
 
     -- AES-256-GCM Parameters

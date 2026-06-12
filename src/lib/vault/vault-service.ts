@@ -328,7 +328,7 @@ export async function uploadVaultFile(
     encrypted_size: isEncrypted ? encryptionData!.encryptedData.length : null,
     storage_path: storagePath,
     encryption_status: isEncrypted ? 'encrypted' : 'pending',
-    encryption_algorithm: isEncrypted ? 'ZK-ML-KEM-768+AES-256-GCM' : 'none',
+    encryption_algorithm: isEncrypted ? 'ZK-ML-KEM-1024+AES-256-GCM' : 'none',
     kem_ciphertext: encryptionData?.kemCiphertext || null,
     aes_nonce: encryptionData?.aesNonce || null,
     content_hash: encryptionData?.contentHash || null,

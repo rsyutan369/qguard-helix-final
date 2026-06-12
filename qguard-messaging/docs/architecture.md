@@ -15,11 +15,10 @@ The server must never receive private keys, raw session keys, plaintext messages
 
 - `identity`: per-device hybrid identity bundles.
 - `prekeys`: signed prekeys and one-time prekeys.
-- `crypto/hybrid_kex`: X25519 + ML-KEM-768 key agreement.
+- `crypto/hybrid_kex`: X25519 + ML-KEM-1024 key agreement.
 - `ratchet`: per-message key derivation and replay protection.
 - `message_crypto`: encrypted message envelopes.
 - `file_crypto`: envelope encryption for vault files.
 - `device_trust`: linked device status and revocation.
 - `audit`: local hash-chained audit log.
 - `telemetry`: dashboard and quantum security status.
-

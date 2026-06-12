@@ -5,8 +5,8 @@ use crate::crypto::hybrid_kex::LocalKemKeypair;
 use crate::crypto::signatures::LocalSigningKeypair;
 use crate::error::{QGuardError, Result};
 use crate::file_crypto::{
-    decrypt_file_name_for_device, encrypt_file_for_device, verify_file_metadata,
-    EncryptedFilePackage, EncryptionContext,
+    decrypt_file_for_device, decrypt_file_name_for_device, encrypt_file_for_device,
+    verify_file_metadata, EncryptedFilePackage, EncryptionContext,
 };
 use crate::state::AppState;
 
@@ -102,15 +102,31 @@ pub fn vault_download_decrypt(
         mlkem_secret: identity.kem.mlkem_secret.clone(),
         mlkem_public: identity.kem.mlkem_public.clone(),
     };
-    let plaintext = crate::file_crypto::decrypt_file_for_device(
+    let context = EncryptionContext {
+        owner_user_id: identity.user_id.clone(),
+        owner_device_id: identity.device_id.clone(),
+    };
+    let plaintext = match decrypt_file_for_device(
         &package,
         &identity.device_id,
         &recipient,
-        EncryptionContext {
-            owner_user_id: identity.user_id.clone(),
-            owner_device_id: identity.device_id.clone(),
-        },
-    )?;
+        context.clone(),
+    ) {
+        Ok(plaintext) => plaintext,
+        Err(current_error) => {
+            let legacy_kems = state
+                .legacy_kem_keypairs
+                .lock()
+                .map_err(|_| QGuardError::Storage("legacy KEM keypair lock poisoned".to_string()))?
+                .clone();
+            decrypt_with_legacy_kems(&package, &identity.device_id, &legacy_kems, context)
+                .map_err(|legacy_error| {
+                    QGuardError::Crypto(format!(
+                        "current ML-KEM-1024 unwrap failed: {current_error}; legacy unwrap fallback failed: {legacy_error}"
+                    ))
+                })?
+        }
+    };
     state.touch_telemetry(
         "vault_decrypt",
         "Client-side vault decrypt completed with local key material",
@@ -142,15 +158,26 @@ pub fn vault_decrypt_file_name(
         mlkem_secret: identity.kem.mlkem_secret.clone(),
         mlkem_public: identity.kem.mlkem_public.clone(),
     };
-    decrypt_file_name_for_device(
-        &package,
-        &identity.device_id,
-        &recipient,
-        EncryptionContext {
-            owner_user_id: identity.user_id.clone(),
-            owner_device_id: identity.device_id.clone(),
-        },
-    )
+    let context = EncryptionContext {
+        owner_user_id: identity.user_id.clone(),
+        owner_device_id: identity.device_id.clone(),
+    };
+    match decrypt_file_name_for_device(&package, &identity.device_id, &recipient, context.clone()) {
+        Ok(file_name) => Ok(file_name),
+        Err(current_error) => {
+            let legacy_kems = state
+                .legacy_kem_keypairs
+                .lock()
+                .map_err(|_| QGuardError::Storage("legacy KEM keypair lock poisoned".to_string()))?
+                .clone();
+            decrypt_file_name_with_legacy_kems(&package, &identity.device_id, &legacy_kems, context)
+                .map_err(|legacy_error| {
+                    QGuardError::Crypto(format!(
+                        "current ML-KEM-1024 filename unwrap failed: {current_error}; legacy unwrap fallback failed: {legacy_error}"
+                    ))
+                })
+        }
+    }
 }
 
 #[tauri::command]
@@ -194,4 +221,43 @@ pub fn vault_verify_metadata(
     state.require_auth()?;
     verify_file_metadata(&package)?;
     Ok(true)
+}
+
+fn decrypt_with_legacy_kems(
+    package: &EncryptedFilePackage,
+    current_device_id: &str,
+    legacy_kems: &[LocalKemKeypair],
+    context: EncryptionContext,
+) -> Result<Vec<u8>> {
+    let mut last_error: Option<QGuardError> = None;
+    for legacy_kem in legacy_kems {
+        match decrypt_file_for_device(package, current_device_id, legacy_kem, context.clone()) {
+            Ok(plaintext) => return Ok(plaintext),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        QGuardError::NotFound("legacy ML-KEM-768 vault KEM material".to_string())
+    }))
+}
+
+fn decrypt_file_name_with_legacy_kems(
+    package: &EncryptedFilePackage,
+    current_device_id: &str,
+    legacy_kems: &[LocalKemKeypair],
+    context: EncryptionContext,
+) -> Result<String> {
+    let mut last_error: Option<QGuardError> = None;
+    for legacy_kem in legacy_kems {
+        match decrypt_file_name_for_device(package, current_device_id, legacy_kem, context.clone())
+        {
+            Ok(file_name) => return Ok(file_name),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        QGuardError::NotFound("legacy ML-KEM-768 vault KEM material".to_string())
+    }))
 }

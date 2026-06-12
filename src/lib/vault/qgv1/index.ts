@@ -3,13 +3,13 @@ import { gcm } from '@noble/ciphers/aes.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha3_256, sha3_512 } from '@noble/hashes/sha3.js'
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
-import { ml_kem768 } from '@noble/post-quantum/ml-kem.js'
+import { kemForPublicKey, kemForSecretKey, kexName } from '../kem-profile'
 
 /**
  * QGV1 Container Implementation.
  *
  * A QGV1 file is a JSON container with binary fields base64url-encoded:
- * - hybrid key establishment: X25519 + ML-KEM-768
+ * - hybrid key establishment: X25519 + ML-KEM-1024 for new containers
  * - payload encryption: AES-256-GCM
  * - signatures: Ed25519 + ML-DSA-65
  * - hashes: SHA3-256/SHA3-512
@@ -69,7 +69,8 @@ export function encryptToQGV1(options: QGV1Options): Uint8Array {
   const xSecret = x25519.utils.randomPrivateKey()
   const xPublic = x25519.getPublicKey(xSecret)
   const xShared = x25519.getSharedSecret(xSecret, options.recipientX25519Public)
-  const { sharedSecret: kemShared, cipherText: kemCiphertext } = ml_kem768.encapsulate(options.recipientMlkemPublic)
+  const { name: kemName, kem } = kemForPublicKey(options.recipientMlkemPublic)
+  const { sharedSecret: kemShared, cipherText: kemCiphertext } = kem.encapsulate(options.recipientMlkemPublic)
 
   const context = {
     header: 'QGV1',
@@ -102,7 +103,8 @@ export function encryptToQGV1(options: QGV1Options): Uint8Array {
     ...context,
     createdAt: new Date().toISOString(),
     algorithms: {
-      kex: 'X25519+ML-KEM-768',
+      kem: kemName,
+      kex: kexName(kemName, true),
       symmetric: 'AES-256-GCM',
       kdf: 'HKDF-SHA3-256',
       signatures: 'Ed25519+ML-DSA-65',
@@ -171,7 +173,11 @@ export function decryptFromQGV1(options: QGV1DecryptOptions) {
   }
 
   const envelope = manifest.envelope
-  const kemShared = ml_kem768.decapsulate(
+  const { kem } = kemForSecretKey(
+    options.recipientMlkemSecret,
+    manifest.algorithms?.kem || manifest.algorithms?.kex,
+  )
+  const kemShared = kem.decapsulate(
     fromBase64Url(envelope.mlkemCiphertext),
     options.recipientMlkemSecret,
   )

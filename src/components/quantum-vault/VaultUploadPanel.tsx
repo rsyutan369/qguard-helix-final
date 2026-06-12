@@ -89,9 +89,7 @@ export default function VaultUploadPanel({
       setEncStage({ stage: 'encrypting', percent: pct(10), message: `Loading PQC engine for ${targetFile.name}...` })
       const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
 
-      setEncStage({ stage: 'encrypting', percent: pct(24), message: `Computing SHA3 integrity context for ${targetFile.name}...` })
-      const { buildMerkleTreeFromData } = await import('@/lib/vault/merkle-tree')
-      buildMerkleTreeFromData(fileData)
+      setEncStage({ stage: 'encrypting', percent: pct(24), message: `Computing SHA3 + Merkle proof context for ${targetFile.name}...` })
 
       setEncStage({ stage: 'encrypting', percent: pct(42), message: `Encrypting ${targetFile.name} with AES-256-GCM...` })
       const result = encryptFileLocal(fileData, encPublicKey, x25519Public)
@@ -102,6 +100,8 @@ export default function VaultUploadPanel({
         fileSize: result.originalSize,
         integrityHash: result.integrityHash,
         encryptedIntegrityHash: result.encryptedIntegrityHash,
+        merkleRoot: result.merkleIntegrity.root,
+        merkleProof: result.merkleIntegrity.proof,
         encryptionAlgorithm: result.algorithm,
         envelope: result.envelopeMeta,
         timestamp: new Date().toISOString(),
@@ -121,12 +121,15 @@ export default function VaultUploadPanel({
           aadHash: result.aadHash,
           envelopeMeta: {
             ...result.envelopeMeta,
+            merkle: result.merkleIntegrity,
             signedMetadata,
           },
           keyDerivationMeta: {
             kdf: 'HKDF-SHA3-256',
             hash: 'SHA3-256',
-            oqsProfile: 'liboqs/oqs-provider compatible ML-KEM-768 hybrid envelope',
+            merkleRoot: result.merkleIntegrity.root,
+            merkleLeafCount: result.merkleIntegrity.leafCount,
+            oqsProfile: 'liboqs/oqs-provider compatible ML-KEM-1024 Level 5 hybrid envelope',
           },
           algorithm: result.algorithm,
           signature,
@@ -148,7 +151,7 @@ export default function VaultUploadPanel({
         setEncStage({
           stage: 'complete',
           percent: 100,
-          message: 'File sealed client-side with X25519 + ML-KEM-768, AES-256-GCM, and ML-DSA-65.',
+          message: 'File sealed client-side with X25519 + ML-KEM-1024, AES-256-GCM, ML-DSA-65, and Merkle proof.',
         })
         onFileUploaded()
       } else {
@@ -367,9 +370,9 @@ export default function VaultUploadPanel({
                 }}>
                   {[
                     'Per-file AES-256-GCM data keys',
-                    'X25519 + ML-KEM-768 hybrid key wrapping',
+                    'X25519 + ML-KEM-1024 Level 5 hybrid key wrapping',
                     'ML-DSA-65 + Ed25519 signature verification metadata',
-                    'HKDF-SHA3-256 and SHA3 integrity context',
+                    'HKDF-SHA3-256, SHA3 integrity context, and Merkle proof',
                   ].map((item) => (
                     <div key={item} style={{
                       display: 'flex',
@@ -564,7 +567,7 @@ export default function VaultUploadPanel({
             <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--qg-cyan)', boxShadow: '0 0 6px var(--qg-cyan)' }} />
               <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--qg-text-muted)' }}>
-                Zero-knowledge envelope: X25519 + ML-KEM-768, AES-256-GCM, HKDF-SHA3-256.
+                Zero-knowledge envelope: X25519 + ML-KEM-1024, AES-256-GCM, HKDF-SHA3-256, Merkle proof.
               </span>
             </div>
           </div>

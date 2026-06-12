@@ -11,6 +11,7 @@ import {
   wipeBytes,
   type DecryptionStatus,
 } from "@/lib/secure-decryption";
+import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
@@ -83,6 +84,16 @@ interface DecryptedChatEnvelope {
   plaintext: string;
   authenticated: boolean;
   replay_protected: boolean;
+}
+
+interface LocalIdentityBundle {
+  device_id: string;
+  fingerprint: string;
+}
+
+interface LocalSignedPrekeyBundle {
+  prekey_id: string;
+  device_id: string;
 }
 
 interface ChatMessage {
@@ -479,6 +490,15 @@ function visibleContactName(contact: ContactSummary): string {
   return contact.alias || contact.display_name || contact.username || contact.contact_user_id.slice(0, 8);
 }
 
+function mapDeviceTrustState(value: string): TrustedDevice["trust_state"] {
+  const normalized = value.toLowerCase();
+  if (value === "ThisDevice" || normalized === "this_device") return "ThisDevice";
+  if (value === "Trusted" || normalized === "trusted") return "Trusted";
+  if (value === "PendingQrApproval" || normalized === "pending") return "PendingQrApproval";
+  if (value === "Revoked" || normalized === "revoked") return "Revoked";
+  return "Suspicious";
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -499,6 +519,27 @@ function messageGroupId(row: MessageEnvelopeRow): string {
   if (row.client_message_id) return row.client_message_id;
   const clientMessageId = row.sealed_sender_envelope.client_message_id;
   return typeof clientMessageId === "string" && clientMessageId.length > 0 ? clientMessageId : row.id;
+}
+
+function envelopeString(row: MessageEnvelopeRow, key: string): string | null {
+  const value = row.sealed_sender_envelope[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function originalSenderUserId(row: MessageEnvelopeRow): string {
+  return envelopeString(row, "sync_original_sender_user_id")
+    ?? envelopeString(row, "original_sender_user_id")
+    ?? row.sender_user_id;
+}
+
+function originalSenderDeviceId(row: MessageEnvelopeRow): string | null {
+  return envelopeString(row, "sync_original_sender_device_id")
+    ?? envelopeString(row, "original_sender_device_id")
+    ?? row.sender_device_id;
+}
+
+function envelopeControlType(row: MessageEnvelopeRow): string | null {
+  return envelopeString(row, "control_type");
 }
 
 function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
@@ -535,19 +576,120 @@ function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
   };
 }
 
+const mlKemPublicKeyLengths = new Set([1184, 1568]);
+
+function hasValidMlKemPublicKey(bytes: number[]): boolean {
+  return mlKemPublicKeyLengths.has(bytes.length);
+}
+
 function hasSendableKeyBundle(device: TrustedDevice): boolean {
   return Boolean(
     device.identity_signature
     && device.x25519_identity_public.length > 0
-    && device.mlkem_identity_public.length > 0
+    && hasValidMlKemPublicKey(device.mlkem_identity_public)
     && device.ed25519_identity_public.length > 0
     && device.mldsa_identity_public.length > 0
     && device.signed_prekey
     && device.signed_prekey.x25519_public.length > 0
-    && device.signed_prekey.mlkem_public.length > 0
+    && hasValidMlKemPublicKey(device.signed_prekey.mlkem_public)
     && device.signed_prekey.signature.ed25519.length > 0
     && device.signed_prekey.signature.ml_dsa_65.length > 0
   );
+}
+
+function isTrustedDeviceForDelivery(device: TrustedDevice): boolean {
+  return device.trust_state === "ThisDevice" || device.trust_state === "Trusted";
+}
+
+function isSendableDevice(device: TrustedDevice): boolean {
+  return isTrustedDeviceForDelivery(device) && hasSendableKeyBundle(device);
+}
+
+function deviceTime(value: string | null | undefined): number {
+  const parsed = new Date(value ?? "").getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function recordTime(record: Record<string, unknown>, key: string): number {
+  return deviceTime(typeof record[key] === "string" ? String(record[key]) : null);
+}
+
+function deliveryDeviceBucket(device: TrustedDevice): string {
+  const stableLabel = device.label.trim().toLowerCase();
+  return `${device.user_id}:${stableLabel || device.fingerprint || device.device_id}`;
+}
+
+function compareDeliveryDevices(a: TrustedDevice, b: TrustedDevice, localDeviceId: string | null = null): number {
+  const aLocal = localDeviceId && a.device_id === localDeviceId ? 1 : 0;
+  const bLocal = localDeviceId && b.device_id === localDeviceId ? 1 : 0;
+  if (aLocal !== bLocal) return bLocal - aLocal;
+  const aCurrent = a.trust_state === "ThisDevice" ? 1 : 0;
+  const bCurrent = b.trust_state === "ThisDevice" ? 1 : 0;
+  if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+  const lastSeenDelta = deviceTime(b.last_seen_at) - deviceTime(a.last_seen_at);
+  if (lastSeenDelta !== 0) return lastSeenDelta;
+  return deviceTime(b.created_at) - deviceTime(a.created_at);
+}
+
+function selectDeliveryDevicesForUsers(
+  devices: TrustedDevice[],
+  userIds: string[],
+  localDeviceId: string | null = null,
+): TrustedDevice[] {
+  const targetUserIds = new Set(userIds.filter(Boolean));
+  if (targetUserIds.size === 0) return [];
+
+  const selectedByBucket = new Map<string, TrustedDevice>();
+  devices
+    .filter((device) => targetUserIds.has(device.user_id) && isSendableDevice(device))
+    .sort((a, b) => compareDeliveryDevices(a, b, localDeviceId))
+    .forEach((device) => {
+      const bucket = deliveryDeviceBucket(device);
+      if (!selectedByBucket.has(bucket)) selectedByBucket.set(bucket, device);
+    });
+
+  return Array.from(selectedByBucket.values()).sort((a, b) => compareDeliveryDevices(a, b, localDeviceId));
+}
+
+function envelopePrekeyId(row: MessageEnvelopeRow): string | null {
+  return envelopeString(row, "prekey_id");
+}
+
+function mapSignedPrekeyRow(record: Record<string, unknown>): SignedPrekeySummary {
+  return {
+    prekey_id: String(record.id),
+    x25519_public: byteaToBytes(record.x25519_public),
+    mlkem_public: byteaToBytes(record.mlkem_public),
+    signature: (record.signature as SignedPrekeySummary["signature"]) ?? { ed25519: [], ml_dsa_65: [] },
+    fingerprint: String(record.fingerprint ?? ""),
+    expires_at: record.expires_at ? String(record.expires_at) : undefined,
+  };
+}
+
+function mapTrustedDeviceRow(
+  record: Record<string, unknown>,
+  signedPrekeysByDevice: Map<string, SignedPrekeySummary>,
+): TrustedDevice {
+  const suite = record.suite as Record<string, string> | null;
+  return {
+    device_id: String(record.id),
+    user_id: String(record.user_id),
+    label: String(record.device_label),
+    fingerprint: String(record.fingerprint),
+    trust_state: mapDeviceTrustState(String(record.trust_state)),
+    pqc_status: suite?.pq_kem ?? "Unknown",
+    suite: suite ?? {},
+    last_seen_at: String(record.last_seen_at ?? record.created_at),
+    created_at: String(record.created_at ?? record.last_seen_at),
+    revoked_at: record.revoked_at ? String(record.revoked_at) : null,
+    approved_by_device_id: record.approved_by_device_id ? String(record.approved_by_device_id) : null,
+    x25519_identity_public: byteaToBytes(record.x25519_identity_public),
+    mlkem_identity_public: byteaToBytes(record.mlkem_identity_public),
+    ed25519_identity_public: byteaToBytes(record.ed25519_identity_public),
+    mldsa_identity_public: byteaToBytes(record.mldsa_identity_public),
+    identity_signature: (record.identity_signature as DualSignature | null) ?? null,
+    signed_prekey: signedPrekeysByDevice.get(String(record.id)) ?? null,
+  };
 }
 
 async function claimOneTimePrekey(recipientDevice: TrustedDevice, senderDeviceId: string): Promise<SignedPrekeySummary | null> {
@@ -568,6 +710,42 @@ async function claimOneTimePrekey(recipientDevice: TrustedDevice, senderDeviceId
     signature,
     fingerprint: String(record.fingerprint ?? ""),
   };
+}
+
+async function loadTrustedDevicesForUsers(userIds: string[]): Promise<TrustedDevice[]> {
+  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (uniqueUserIds.length === 0) return [];
+
+  const { data: deviceRows, error: deviceError } = await supabase
+    .from("messaging_devices")
+    .select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature")
+    .in("user_id", uniqueUserIds)
+    .neq("trust_state", "revoked")
+    .order("last_seen_at", { ascending: false });
+  if (deviceError) throw deviceError;
+
+  const rows = (deviceRows ?? []) as Array<Record<string, unknown>>;
+  const deviceIds = rows.map((device) => String(device.id));
+  const signedPrekeysByDevice = new Map<string, SignedPrekeySummary>();
+
+  if (deviceIds.length > 0) {
+    const { data: prekeyRows, error: prekeyError } = await supabase
+      .from("messaging_signed_prekeys")
+      .select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at")
+      .in("device_id", deviceIds)
+      .eq("is_active", true)
+      .order("expires_at", { ascending: true });
+    if (prekeyError) throw prekeyError;
+
+    ((prekeyRows ?? []) as Array<Record<string, unknown>>)
+      .sort((a, b) => recordTime(b, "created_at") - recordTime(a, "created_at") || recordTime(b, "expires_at") - recordTime(a, "expires_at"))
+      .forEach((prekey) => {
+        const deviceId = String(prekey.device_id);
+        if (!signedPrekeysByDevice.has(deviceId)) signedPrekeysByDevice.set(deviceId, mapSignedPrekeyRow(prekey));
+      });
+  }
+
+  return rows.map((device) => mapTrustedDeviceRow(device, signedPrekeysByDevice));
 }
 
 function recipientKeyBundle(device: TrustedDevice, oneTimePrekey: SignedPrekeySummary | null) {
@@ -604,6 +782,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchFeedback, setSearchFeedback] = useState<string | null>(null);
   const [contactAction, setContactAction] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -627,6 +806,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [openConversationMenuId, setOpenConversationMenuId] = useState<string | null>(null);
   const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
   const [conversationAction, setConversationAction] = useState<string | null>(null);
+  const [contactChatBusyId, setContactChatBusyId] = useState<string | null>(null);
+  const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
+  const [localSignedPrekeyId, setLocalSignedPrekeyId] = useState<string | null>(null);
   const [conversationStateOverrides, setConversationStateOverrides] = useState<Record<string, Pick<ConversationSummary, "archived_at" | "hidden_at" | "deleted_at">>>({});
   const [protectionConfig, setProtectionConfig] = useState<ChatProtectionConfig | null>(() => readChatProtectionConfig(userId));
   const [protectedUnlockUntil, setProtectedUnlockUntil] = useState<Record<ProtectedConversationView, number>>({ archived: 0, hidden: 0 });
@@ -644,6 +826,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const decryptedMessageCacheRef = useRef<Map<string, ChatMessage>>(new Map());
   const decryptedControlCacheRef = useRef<Map<string, SecureControlMessage & { sender_user_id: string; created_at: string }>>(new Map());
   const decryptInFlightRef = useRef<Map<string, Promise<DecryptedChatEnvelope>>>(new Map());
+  const syncInFlightRef = useRef<Set<string>>(new Set());
+  const syncedEnvelopeTargetsRef = useRef<Set<string>>(new Set());
+  const searchRequestRef = useRef(0);
   const threatTelemetryRef = useRef<Set<string>>(new Set());
   const typingPulseRef = useRef<number>(0);
   const effectiveConversations = useMemo(() => conversations
@@ -660,22 +845,115 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return activeConversations;
   }, [activeConversations, archivedConversations, conversationView, hiddenConversations, isArchivedUnlocked, isHiddenUnlocked]);
   const activeConversation = visibleConversations.find((conversation) => conversation.id === activeConversationId) ?? visibleConversations[0] ?? null;
-  const myDevices = devices.filter((device) => device.user_id === userId && device.trust_state !== "Revoked");
-  const currentDevice = myDevices.find((device) => device.trust_state === "ThisDevice") ?? myDevices[0] ?? null;
+  const myDevices = devices.filter((device) => device.user_id === userId && isTrustedDeviceForDelivery(device));
+  const rawLocalDevice = localDeviceId ? myDevices.find((device) => device.device_id === localDeviceId) ?? null : null;
+  const localDevice = rawLocalDevice
+    && localSignedPrekeyId
+    && rawLocalDevice.signed_prekey?.prekey_id === localSignedPrekeyId
+    ? rawLocalDevice
+    : null;
+  const currentDevice = localDeviceId
+    ? localDevice
+    : myDevices.find((device) => device.trust_state === "ThisDevice" && hasSendableKeyBundle(device)) ?? myDevices.find(hasSendableKeyBundle) ?? myDevices[0] ?? null;
+  const activeContact = activeConversation
+    ? contacts.find((contact) => (
+      activeConversation.member_user_ids.includes(contact.contact_user_id)
+      || chatMessages.some((chatMessage) => (
+        chatMessage.conversation_id === activeConversation.id
+        && (chatMessage.sender_user_id === contact.contact_user_id || chatMessage.recipient_user_id === contact.contact_user_id)
+      ))
+    ))
+    : null;
+  const activeRecipientUserIds = useMemo(() => {
+    const recipientIds = new Set<string>();
+    if (activeConversation) {
+      activeConversation.member_user_ids.forEach((memberId) => {
+        if (memberId && memberId !== userId) recipientIds.add(memberId);
+      });
+    }
+    if (activeContact?.contact_user_id && activeContact.contact_user_id !== userId) {
+      recipientIds.add(activeContact.contact_user_id);
+    }
+    chatMessages.forEach((chatMessage) => {
+      if (!activeConversation || chatMessage.conversation_id !== activeConversation.id) return;
+      if (chatMessage.sender_user_id && chatMessage.sender_user_id !== userId) recipientIds.add(chatMessage.sender_user_id);
+      if (chatMessage.recipient_user_id && chatMessage.recipient_user_id !== userId) recipientIds.add(chatMessage.recipient_user_id);
+    });
+    return Array.from(recipientIds);
+  }, [activeContact, activeConversation, chatMessages, userId]);
   const recipientDevices = useMemo(() => {
     if (!activeConversation) return [];
-    const memberIds = activeConversation.member_user_ids.filter((memberId) => memberId !== userId);
-    return devices.filter((device) => memberIds.includes(device.user_id) && device.trust_state !== "Revoked");
-  }, [activeConversation, devices, userId]);
-  const activeContact = activeConversation
-    ? contacts.find((contact) => activeConversation.member_user_ids.includes(contact.contact_user_id))
-    : null;
+    return devices.filter((device) => activeRecipientUserIds.includes(device.user_id) && isTrustedDeviceForDelivery(device));
+  }, [activeConversation, activeRecipientUserIds, devices]);
+  const sendableRecipientDevices = useMemo(
+    () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId),
+    [activeRecipientUserIds, localDeviceId, recipientDevices],
+  );
+  const recipientDevicesMissingPrekeys = activeRecipientUserIds.length > 0 && sendableRecipientDevices.length === 0 && recipientDevices.length > 0;
+  const recipientDevicesReady = sendableRecipientDevices.length > 0;
 
   useEffect(() => {
     setProtectionConfig(readChatProtectionConfig(userId));
     setProtectedUnlockUntil({ archived: 0, hidden: 0 });
     setConversationStateOverrides({});
+    setLocalDeviceId(null);
+    setLocalSignedPrekeyId(null);
+    decryptedMessageCacheRef.current.clear();
+    decryptedControlCacheRef.current.clear();
+    decryptInFlightRef.current.clear();
+    syncInFlightRef.current.clear();
+    syncedEnvelopeTargetsRef.current.clear();
   }, [userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    async function syncLocalDevice() {
+      for (let attempt = 0; attempt < 4 && !cancelled; attempt += 1) {
+        try {
+          const bundle = await safeInvoke<LocalIdentityBundle | null>("keys_upload_identity_bundle", { userId }, null);
+          if (cancelled) return;
+          if (bundle?.device_id) setLocalDeviceId(bundle.device_id);
+
+          const signedPrekey = await safeInvoke<LocalSignedPrekeyBundle | null>("keys_upload_signed_prekey", { userId }, null);
+          if (cancelled) return;
+          if (signedPrekey?.prekey_id) setLocalSignedPrekeyId(signedPrekey.prekey_id);
+
+          const registeredBundle = await syncCurrentMessagingDevice(supabase, userId);
+          if (cancelled) return;
+          if (registeredBundle?.device_id) {
+            setLocalDeviceId(registeredBundle.device_id);
+            await recordCryptoTelemetry({
+              userId,
+              deviceId: registeredBundle.device_id,
+              scope: "message",
+              stage: "chat_device_sync_completed",
+              detail: "Current desktop identity and signed prekey published for secure chat",
+              progress: 100,
+              status: "complete",
+              metadata: { module: "secure_chat" },
+            }).catch(() => undefined);
+            onSent();
+          }
+          return;
+        } catch {
+          if (attempt < 3) await wait(600);
+        }
+      }
+    }
+    syncLocalDevice();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    decryptedMessageCacheRef.current.clear();
+    decryptedControlCacheRef.current.clear();
+    decryptInFlightRef.current.clear();
+    syncInFlightRef.current.clear();
+    syncedEnvelopeTargetsRef.current.clear();
+  }, [localDeviceId]);
 
   useEffect(() => {
     setConversationStateOverrides((current) => {
@@ -714,11 +992,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }, [activeConversationId, visibleConversations]);
 
   useEffect(() => {
-    if (myDevices.length === 0) setStatus("Open the desktop app to activate this device");
+    if (localDeviceId && rawLocalDevice && !localSignedPrekeyId) setStatus("Syncing this desktop signed prekey");
+    else if (localDeviceId && rawLocalDevice && localSignedPrekeyId && rawLocalDevice.signed_prekey?.prekey_id !== localSignedPrekeyId) setStatus("Refreshing this desktop signed prekey");
+    else if (localDeviceId && !currentDevice) setStatus("Sync this desktop device before decrypting or sending");
+    else if (myDevices.length === 0) setStatus("Open the desktop app to activate this device");
+    else if (activeConversation && activeRecipientUserIds.length === 0) setStatus("Open a contact chat before sending");
     else if (activeConversation && recipientDevices.length === 0) setStatus("Add a trusted contact device");
-    else if (recipientDevices.some((device) => !hasSendableKeyBundle(device))) setStatus("Waiting for recipient PQC prekeys");
+    else if (activeConversation && !recipientDevicesReady) setStatus("Waiting for recipient PQC prekeys");
+    else if (recipientDevicesMissingPrekeys) setStatus("Ready - some trusted devices need PQC prekeys");
     else setStatus("Ready");
-  }, [activeConversation, myDevices.length, recipientDevices.length]);
+  }, [activeConversation, activeRecipientUserIds.length, currentDevice, localDeviceId, localSignedPrekeyId, myDevices.length, rawLocalDevice, recipientDevices.length, recipientDevicesMissingPrekeys, recipientDevicesReady]);
 
   useEffect(() => {
     attachmentPreviewUrlsRef.current = attachmentPreviewUrls;
@@ -797,6 +1080,191 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return String(error);
   }
 
+  async function syncMissingDeviceEnvelopes(
+    groupId: string,
+    sourceRow: MessageEnvelopeRow,
+    orderedRows: MessageEnvelopeRow[],
+    plaintext: string,
+  ): Promise<void> {
+    if (!activeConversation || !currentDevice || !hasSendableKeyBundle(currentDevice)) return;
+
+    const syncRunKey = `${activeConversation.id}:${groupId}:${currentDevice.device_id}`;
+    if (syncInFlightRef.current.has(syncRunKey)) return;
+    syncInFlightRef.current.add(syncRunKey);
+
+    try {
+      const participantUserIds = Array.from(new Set([
+        userId,
+        ...activeConversation.member_user_ids,
+        originalSenderUserId(sourceRow),
+        sourceRow.recipient_user_id,
+      ].filter(Boolean)));
+      const participantDevices = selectDeliveryDevicesForUsers(
+        await loadTrustedDevicesForUsers(participantUserIds),
+        participantUserIds,
+        localDeviceId,
+      );
+      const existingTargets = new Set(
+        orderedRows
+          .filter((row) => !row.deleted_at && row.recipient_device_id)
+          .map((row) => `${row.recipient_user_id}:${row.recipient_device_id}`),
+      );
+      const missingDevices = participantDevices.filter((device) => !existingTargets.has(`${device.user_id}:${device.device_id}`));
+      if (missingDevices.length === 0) return;
+
+      appendChatDecryptionEvent(
+        "device_sync_started",
+        `Rewrapping encrypted history for ${missingDevices.length} trusted device${missingDevices.length === 1 ? "" : "s"}`,
+        18,
+        "progress",
+      );
+      await recordCryptoTelemetry({
+        userId,
+        deviceId: currentDevice.device_id,
+        scope: "message",
+        stage: "device_sync_started",
+        detail: "Trusted-device envelope synchronization started",
+        progress: 18,
+        status: "started",
+        metadata: {
+          conversation_id: activeConversation.id,
+          client_message_id: groupId,
+          missing_devices: missingDevices.length,
+          source_envelope_id: sourceRow.id,
+        },
+      });
+
+      let syncedCount = 0;
+      for (const targetDevice of missingDevices) {
+        const targetKey = `${activeConversation.id}:${groupId}:${targetDevice.device_id}`;
+        if (syncedEnvelopeTargetsRef.current.has(targetKey)) continue;
+        syncedEnvelopeTargetsRef.current.add(targetKey);
+
+        const recipient = recipientKeyBundle(targetDevice, null);
+        if (!recipient) continue;
+
+        const { data: existingRows, error: existingError } = await supabase
+          .from("messaging_message_envelopes")
+          .select("id")
+          .eq("conversation_id", activeConversation.id)
+          .eq("client_message_id", groupId)
+          .eq("recipient_user_id", targetDevice.user_id)
+          .eq("recipient_device_id", targetDevice.device_id)
+          .is("deleted_at", null)
+          .limit(1);
+        if (!existingError && existingRows && existingRows.length > 0) continue;
+
+        const envelope = await safeInvoke<EncryptedMessageEnvelope>("messaging_send_encrypted_message", {
+          request: {
+            conversationId: activeConversation.id,
+            senderUserId: userId,
+            recipientUserId: targetDevice.user_id,
+            recipientDeviceId: targetDevice.device_id,
+            plaintext,
+            kind: fromMessageKind(sourceRow.message_kind),
+            recipient,
+          },
+        });
+
+        const sourceLifecycle = sourceRow.lifecycle;
+        const sourceExpiresAt = typeof sourceLifecycle.expires_at === "string" ? sourceLifecycle.expires_at : null;
+        const { error } = await supabase.from("messaging_message_envelopes").insert({
+          id: envelope.message_id,
+          conversation_id: envelope.conversation_id,
+          client_message_id: groupId,
+          parent_client_message_id: sourceRow.parent_client_message_id,
+          sender_user_id: userId,
+          sender_device_id: envelope.sender_device_id,
+          recipient_user_id: targetDevice.user_id,
+          recipient_device_id: envelope.recipient_device_id,
+          message_kind: sourceRow.message_kind,
+          sealed_sender_envelope: {
+            sealed_sender: envelope.sealed_sender,
+            desktop_envelope_version: 3,
+            client_message_id: groupId,
+            parent_client_message_id: sourceRow.parent_client_message_id,
+            control_type: envelopeControlType(sourceRow),
+            local_archive: targetDevice.user_id === userId,
+            synced_from_envelope_id: sourceRow.id,
+            sync_original_sender_user_id: originalSenderUserId(sourceRow),
+            sync_original_sender_device_id: originalSenderDeviceId(sourceRow),
+            sync_rewrapped_by_user_id: userId,
+            sync_rewrapped_by_device_id: currentDevice.device_id,
+            sync_rewrapped_at: new Date().toISOString(),
+            hybrid_ciphertext: envelope.hybrid_ciphertext,
+            prekey_id: envelope.prekey_id,
+            prekey_kind: envelope.prekey_kind,
+            message_signature: envelope.message_signature,
+            sender_ed25519_public: envelope.sender_ed25519_public,
+            sender_mldsa_public: envelope.sender_mldsa_public,
+          },
+          ciphertext: bytesToBytea(envelope.envelope.ciphertext),
+          nonce: bytesToBytea(envelope.envelope.nonce),
+          auth_tag: bytesToBytea(envelope.envelope.tag),
+          aad: bytesToBytea(envelope.aad),
+          ratchet_counter: envelope.counter,
+          suite: envelope.suite,
+          expires_at: sourceExpiresAt,
+          lifecycle: sourceRow.lifecycle,
+          verification_state: "valid",
+          threat_result: {
+            ...sourceRow.threat_result,
+            synced_from_envelope_id: sourceRow.id,
+            sync_rewrapped_by_device_id: currentDevice.device_id,
+          },
+        });
+        if (error) {
+          syncedEnvelopeTargetsRef.current.delete(targetKey);
+          throw error;
+        }
+        syncedCount += 1;
+      }
+
+      if (syncedCount > 0) {
+        appendChatDecryptionEvent(
+          "device_sync_completed",
+          `Historical envelope rewrapped for ${syncedCount} trusted device${syncedCount === 1 ? "" : "s"}`,
+          100,
+          "complete",
+        );
+        await recordCryptoTelemetry({
+          userId,
+          deviceId: currentDevice.device_id,
+          scope: "message",
+          stage: "device_sync_completed",
+          detail: "Historical message envelopes rewrapped for trusted devices",
+          progress: 100,
+          status: "complete",
+          metadata: {
+            conversation_id: activeConversation.id,
+            client_message_id: groupId,
+            synced_devices: syncedCount,
+            source_envelope_id: sourceRow.id,
+          },
+        });
+      }
+    } catch (error) {
+      const detail = describeMessageError(error);
+      appendChatDecryptionEvent("device_sync_failed", detail, 0, "failed");
+      await recordCryptoTelemetry({
+        userId,
+        deviceId: currentDevice.device_id,
+        scope: "message",
+        stage: "device_sync_failed",
+        detail,
+        progress: 0,
+        status: "failed",
+        metadata: {
+          conversation_id: activeConversation.id,
+          client_message_id: groupId,
+          source_envelope_id: sourceRow.id,
+        },
+      });
+    } finally {
+      syncInFlightRef.current.delete(syncRunKey);
+    }
+  }
+
   async function hydrateMessageRows(rows: MessageEnvelopeRow[], userStates: Map<string, MessageUserState>): Promise<ChatMessage[]> {
     const groups = new Map<string, MessageEnvelopeRow[]>();
     rows
@@ -808,14 +1276,28 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
     const hydrated: ChatMessage[] = [];
     const controls: Array<SecureControlMessage & { sender_user_id: string; created_at: string }> = [];
+    const decryptDeviceId = localDeviceId ?? currentDevice?.device_id ?? null;
     for (const [groupId, groupRows] of groups) {
       const orderedRows = [...groupRows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      const localRow = currentDevice
-        ? orderedRows.find((row) => row.recipient_user_id === userId && row.recipient_device_id === currentDevice.device_id)
+      const candidateRows = orderedRows.filter((row) => row.recipient_user_id === userId);
+      const exactLocalRow = decryptDeviceId
+        ? orderedRows.find((row) => row.recipient_user_id === userId && row.recipient_device_id === decryptDeviceId)
         : null;
-      const userRow = orderedRows.find((row) => row.recipient_user_id === userId) ?? null;
-      const displayRow = localRow ?? userRow ?? orderedRows[0];
-      const isMine = displayRow.sender_user_id === userId;
+      const decryptRows = (exactLocalRow
+        ? [exactLocalRow, ...candidateRows.filter((row) => row.id !== exactLocalRow.id)]
+        : candidateRows)
+        .sort((a, b) => {
+          const aPrekeyMatch = localSignedPrekeyId && envelopePrekeyId(a) === localSignedPrekeyId ? 1 : 0;
+          const bPrekeyMatch = localSignedPrekeyId && envelopePrekeyId(b) === localSignedPrekeyId ? 1 : 0;
+          if (aPrekeyMatch !== bPrekeyMatch) return bPrekeyMatch - aPrekeyMatch;
+          const aDeviceMatch = decryptDeviceId && a.recipient_device_id === decryptDeviceId ? 1 : 0;
+          const bDeviceMatch = decryptDeviceId && b.recipient_device_id === decryptDeviceId ? 1 : 0;
+          if (aDeviceMatch !== bDeviceMatch) return bDeviceMatch - aDeviceMatch;
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        });
+      const userRow = candidateRows[0] ?? null;
+      const displayRow = exactLocalRow ?? userRow ?? orderedRows[0];
+      const isMine = originalSenderUserId(displayRow) === userId;
       const state = userStates.get(groupId);
       const cachedControl = decryptedControlCacheRef.current.get(groupId);
       if (cachedControl) {
@@ -833,41 +1315,51 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         continue;
       }
 
-      if (localRow) {
-        try {
-          let decryptedPromise = decryptInFlightRef.current.get(groupId);
+      if (decryptRows.length > 0) {
+        let lastDecryptError: string | null = null;
+        let handledGroup = false;
+        for (const localRow of decryptRows) {
+          try {
+          const decryptKey = `${groupId}:${localRow.id}`;
+          let decryptedPromise = decryptInFlightRef.current.get(decryptKey);
           if (!decryptedPromise) {
             decryptedPromise = safeInvoke<DecryptedChatEnvelope>("messaging_receive_encrypted_message", {
               envelope: buildTauriEnvelope(localRow),
             });
-            decryptInFlightRef.current.set(groupId, decryptedPromise);
+            decryptInFlightRef.current.set(decryptKey, decryptedPromise);
             decryptedPromise.finally(() => {
-              if (decryptInFlightRef.current.get(groupId) === decryptedPromise) {
-                decryptInFlightRef.current.delete(groupId);
+              if (decryptInFlightRef.current.get(decryptKey) === decryptedPromise) {
+                decryptInFlightRef.current.delete(decryptKey);
               }
             }).catch(() => undefined);
           }
           const decrypted = await decryptedPromise;
+          const localRowSenderUserId = originalSenderUserId(localRow);
+          const localRowIsMine = localRowSenderUserId === userId;
           const control = parseSecureControl(decrypted.plaintext);
           if (control) {
-            const controlMessage = { ...control, sender_user_id: localRow.sender_user_id, created_at: localRow.created_at };
+            void syncMissingDeviceEnvelopes(groupId, localRow, orderedRows, decrypted.plaintext);
+            const controlMessage = { ...control, sender_user_id: localRowSenderUserId, created_at: localRow.created_at };
             decryptedControlCacheRef.current.set(groupId, controlMessage);
             controls.push(controlMessage);
-            continue;
+            handledGroup = true;
+            break;
           }
           const secureMessage = parseSecurePlaintext(decrypted.plaintext);
           const isExpired = Boolean(secureMessage.lifecycle.expires_at && new Date(secureMessage.lifecycle.expires_at).getTime() <= Date.now());
           const isLocked = Boolean(secureMessage.lifecycle.available_at && new Date(secureMessage.lifecycle.available_at).getTime() > Date.now());
-          if (state?.hidden_at || isExpired || (!isMine && (secureMessage.lifecycle.read_once || secureMessage.lifecycle.view_once) && state?.first_read_at)) {
-            continue;
+          if (state?.hidden_at || isExpired || (!localRowIsMine && (secureMessage.lifecycle.read_once || secureMessage.lifecycle.view_once) && state?.first_read_at)) {
+            handledGroup = true;
+            break;
           }
+          void syncMissingDeviceEnvelopes(groupId, localRow, orderedRows, decrypted.plaintext);
           const threat = assessThreatLocally(secureMessage.body);
           const chatMessage: ChatMessage = {
             id: decrypted.message_id,
             client_message_id: groupId,
             row_ids: orderedRows.map((row) => row.id),
             conversation_id: decrypted.conversation_id,
-            sender_user_id: localRow.sender_user_id,
+            sender_user_id: localRowSenderUserId,
             recipient_user_id: localRow.recipient_user_id,
             kind: localRow.message_kind,
             plaintext: isLocked ? `Time-locked message unlocks ${new Date(secureMessage.lifecycle.available_at ?? "").toLocaleString()}` : secureMessage.body,
@@ -885,36 +1377,49 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             replay_protected: decrypted.replay_protected,
             created_at: localRow.created_at,
             error: null,
-            can_delete: isMine,
+            can_delete: localRowIsMine,
           };
           decryptedMessageCacheRef.current.set(groupId, chatMessage);
           hydrated.push(chatMessage);
+          handledGroup = true;
+          break;
         } catch (error) {
           const replayMessage = describeMessageError(error);
+          lastDecryptError = replayMessage;
           const cachedAfterReplay = decryptedMessageCacheRef.current.get(groupId);
           if (replayMessage.toLowerCase().includes("replay detected") && cachedAfterReplay) {
-            if (!isMine && (cachedAfterReplay.read_once || cachedAfterReplay.view_once) && state?.first_read_at) continue;
+            if (!isMine && (cachedAfterReplay.read_once || cachedAfterReplay.view_once) && state?.first_read_at) {
+              handledGroup = true;
+              break;
+            }
             hydrated.push({
               ...cachedAfterReplay,
               row_ids: orderedRows.map((row) => row.id),
               can_delete: isMine,
             });
-            continue;
+            handledGroup = true;
+            break;
           }
           const cachedControlAfterReplay = decryptedControlCacheRef.current.get(groupId);
           if (replayMessage.toLowerCase().includes("replay detected") && cachedControlAfterReplay) {
             controls.push(cachedControlAfterReplay);
-            continue;
+            handledGroup = true;
+            break;
           }
+        }
+        }
+        if (handledGroup) continue;
+        const failedRow = decryptRows[0];
+        const failedRowSenderUserId = originalSenderUserId(failedRow);
           hydrated.push({
-            id: localRow.id,
+            id: failedRow.id,
             client_message_id: groupId,
             row_ids: orderedRows.map((row) => row.id),
-            conversation_id: localRow.conversation_id,
-            sender_user_id: localRow.sender_user_id,
-            recipient_user_id: localRow.recipient_user_id,
-            kind: localRow.message_kind,
-            plaintext: messageKindLabel(localRow.message_kind),
+            conversation_id: failedRow.conversation_id,
+            sender_user_id: failedRowSenderUserId,
+            recipient_user_id: failedRow.recipient_user_id,
+            kind: failedRow.message_kind,
+            plaintext: messageKindLabel(failedRow.message_kind),
             attachment: null,
             reply_to: null,
             edited_at: null,
@@ -927,18 +1432,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             status: "failed",
             authenticated: false,
             replay_protected: false,
-            created_at: localRow.created_at,
-            error: replayMessage,
-            can_delete: isMine,
+            created_at: failedRow.created_at,
+            error: lastDecryptError ?? "No decryptable trusted-device envelope could be recovered locally.",
+            can_delete: failedRowSenderUserId === userId,
           });
-        }
       } else if (isMine) {
         hydrated.push({
           id: displayRow.id,
           client_message_id: groupId,
           row_ids: orderedRows.map((row) => row.id),
           conversation_id: displayRow.conversation_id,
-          sender_user_id: displayRow.sender_user_id,
+          sender_user_id: originalSenderUserId(displayRow),
           recipient_user_id: displayRow.recipient_user_id,
           kind: displayRow.message_kind,
           plaintext: "Sent encrypted message",
@@ -955,16 +1459,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           authenticated: true,
           replay_protected: true,
           created_at: displayRow.created_at,
-          error: "This older envelope was not archived for the current device.",
+          error: "Syncing this older sent message to the current trusted device.",
           can_delete: true,
         });
       } else if (userRow) {
+        const sealedReason = decryptDeviceId
+          ? "Waiting for trusted-device synchronization. No sender resend is required once a device with message access comes online."
+          : "No local desktop private key is active. Sign in with the QGuard desktop app to sync trusted devices.";
         hydrated.push({
           id: userRow.id,
           client_message_id: groupId,
           row_ids: orderedRows.map((row) => row.id),
           conversation_id: userRow.conversation_id,
-          sender_user_id: userRow.sender_user_id,
+          sender_user_id: originalSenderUserId(userRow),
           recipient_user_id: userRow.recipient_user_id,
           kind: userRow.message_kind,
           plaintext: messageKindLabel(userRow.message_kind),
@@ -981,7 +1488,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           authenticated: false,
           replay_protected: false,
           created_at: userRow.created_at,
-          error: "Encrypted for another device. Open that device or ask the sender to resend after this device is trusted.",
+          error: sealedReason,
           can_delete: false,
         });
       }
@@ -1013,21 +1520,24 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (!activeConversation) return;
     const rows = messages
       .filter((item) => item.status === "decrypted")
-      .map((item) => ({
-        user_id: userId,
-        conversation_id: activeConversation.id,
-        client_message_id: item.client_message_id,
-        first_read_at: item.sender_user_id !== userId && (item.read_once || item.view_once) ? new Date().toISOString() : null,
-        verification_state: item.authenticated ? "valid" : "tampered",
-        threat_score: item.threat.score,
-        threat_flags: item.threat.flags,
-        proof: {
-          suite: "X25519 + ML-KEM-768, HKDF-SHA3-256, AES-256-GCM, Ed25519 + ML-DSA-65",
-          replay_protected: item.replay_protected,
-          local_only_plaintext: true,
-        },
-        updated_at: new Date().toISOString(),
-      }));
+      .map((item) => {
+        const markAsRead = item.sender_user_id !== userId && (item.read_once || (item.view_once && !item.attachment));
+        return {
+          user_id: userId,
+          conversation_id: activeConversation.id,
+          client_message_id: item.client_message_id,
+          first_read_at: markAsRead ? new Date().toISOString() : null,
+          verification_state: item.authenticated ? "valid" : "tampered",
+          threat_score: item.threat.score,
+          threat_flags: item.threat.flags,
+          proof: {
+            suite: "X25519 + ML-KEM-1024, HKDF-SHA3-256, AES-256-GCM, Ed25519 + ML-DSA-65",
+            replay_protected: item.replay_protected,
+            local_only_plaintext: true,
+          },
+          updated_at: new Date().toISOString(),
+        };
+      });
     if (rows.length === 0) return;
     await supabase
       .from("messaging_message_user_states")
@@ -1051,6 +1561,30 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         },
       });
     }
+  }
+
+  async function markViewOnceAttachmentOpened(chatMessage: ChatMessage) {
+    if (!activeConversation || chatMessage.sender_user_id === userId || !chatMessage.view_once || !chatMessage.attachment) return;
+    const viewedAt = new Date().toISOString();
+    const { error } = await supabase
+      .from("messaging_message_user_states")
+      .upsert({
+        user_id: userId,
+        conversation_id: activeConversation.id,
+        client_message_id: chatMessage.client_message_id,
+        first_read_at: viewedAt,
+        verification_state: chatMessage.authenticated ? "valid" : "tampered",
+        threat_score: chatMessage.threat.score,
+        threat_flags: chatMessage.threat.flags,
+        proof: {
+          suite: "X25519 + ML-KEM-1024, HKDF-SHA3-256, AES-256-GCM, Ed25519 + ML-DSA-65",
+          replay_protected: chatMessage.replay_protected,
+          local_only_plaintext: true,
+          view_once_opened: true,
+        },
+        updated_at: viewedAt,
+      }, { onConflict: "user_id,conversation_id,client_message_id" });
+    if (error) throw error;
   }
 
   const loadConversationMessages = useCallback(async () => {
@@ -1118,7 +1652,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     } finally {
       setMessagesLoading(false);
     }
-  }, [activeConversation, currentDevice?.device_id, userId]);
+  }, [activeConversation, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId]);
 
   useEffect(() => {
     loadConversationMessages();
@@ -1135,6 +1669,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           loadConversationMessages();
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "messaging_message_user_states", filter: `conversation_id=eq.${activeConversation.id}` },
+        () => {
+          loadConversationMessages();
+        },
+      )
       .subscribe();
 
     return () => {
@@ -1147,6 +1688,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (!viewport) return;
     viewport.scrollTop = viewport.scrollHeight;
   }, [activeConversationId, chatMessages.length]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setChatMessages((items) => items.filter((item) => !item.expires_at || new Date(item.expires_at).getTime() > now));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const loadChatTelemetry = useCallback(async () => {
     const { data, error } = await supabase
@@ -1231,24 +1780,133 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const trimmed = query.trim();
     if (trimmed.length < 2) {
       setSearchResults([]);
+      setSearchFeedback(null);
       return;
     }
+    await runUserSearch(trimmed);
+  }
+
+  function normalizeUserSearchQuery(value: string): string {
+    const trimmed = value.trim();
+    if (trimmed.toLowerCase().startsWith("qguard-user:")) return trimmed.slice("qguard-user:".length).trim();
+    return trimmed.replace(/^qr:/i, "").trim();
+  }
+
+  function mapProfileSearchRows(rows: Array<Record<string, unknown>>): UserSearchResult[] {
+    const byId = new Map<string, UserSearchResult>();
+    rows.forEach((row) => {
+      const userIdValue = String(row.id ?? row.user_id ?? "");
+      if (!userIdValue || userIdValue === userId) return;
+      const emailPrefix = String(row.email ?? "").split("@")[0];
+      const username = String(row.username ?? emailPrefix ?? userIdValue.slice(0, 8));
+      byId.set(userIdValue, {
+        user_id: userIdValue,
+        display_name: String(row.name ?? row.display_name ?? (username || "QGuard User")),
+        username,
+      });
+    });
+    return Array.from(byId.values()).slice(0, 10);
+  }
+
+  async function fallbackSearchProfiles(rawQuery: string): Promise<UserSearchResult[]> {
+    const normalized = normalizeUserSearchQuery(rawQuery);
+    if (normalized.length < 2) return [];
+    const escaped = normalized.replace(/[%_]/g, "\\$&");
+    const columns = "id,email,name,username";
+    const queries = [
+      supabase.from("profiles").select(columns).neq("id", userId).ilike("username", `${escaped}%`).limit(10),
+      supabase.from("profiles").select(columns).neq("id", userId).ilike("name", `${escaped}%`).limit(10),
+      supabase.from("profiles").select(columns).neq("id", userId).ilike("email", `${escaped}%`).limit(10),
+    ];
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)) {
+      queries.unshift(supabase.from("profiles").select(columns).eq("id", normalized).limit(1));
+    }
+    const results = await Promise.allSettled(queries);
+    const rows = results.flatMap((result) => result.status === "fulfilled" && !result.value.error ? (result.value.data ?? []) as Array<Record<string, unknown>> : []);
+    return mapProfileSearchRows(rows);
+  }
+
+  async function runUserSearch(rawQuery: string) {
+    const trimmed = rawQuery.trim();
+    if (trimmed.length < 2) {
+      setSearchResults([]);
+      setSearchFeedback(null);
+      return;
+    }
+    const requestId = ++searchRequestRef.current;
     setSearching(true);
+    setSearchFeedback(null);
     setContactAction(null);
     try {
-      const normalized = trimmed.startsWith("qguard-user:") ? trimmed : trimmed.replace(/^qr:/i, "");
+      const normalized = normalizeUserSearchQuery(trimmed);
       const { data, error } = await supabase.rpc("search_messaging_users", { p_query: normalized });
-      if (error) throw error;
-      setSearchResults((data ?? []) as UserSearchResult[]);
+      let results = error ? [] : (data ?? []) as UserSearchResult[];
+      if (results.length === 0) {
+        const fallbackResults = await fallbackSearchProfiles(trimmed);
+        if (fallbackResults.length > 0) results = fallbackResults;
+      }
+      if (searchRequestRef.current !== requestId) return;
+      setSearchResults(results);
+      setSearchFeedback(results.length === 0 ? `No users found for "${trimmed}".` : null);
     } catch (err) {
-      setContactAction(err instanceof Error ? err.message : String(err));
+      if (searchRequestRef.current !== requestId) return;
+      const fallbackResults = await fallbackSearchProfiles(trimmed);
+      setSearchResults(fallbackResults);
+      setSearchFeedback(fallbackResults.length > 0 ? null : (err instanceof Error ? err.message : String(err)));
     } finally {
-      setSearching(false);
+      if (searchRequestRef.current === requestId) setSearching(false);
     }
+  }
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) {
+      searchRequestRef.current += 1;
+      setSearchResults([]);
+      setSearchFeedback(null);
+      setSearching(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      void runUserSearch(trimmed);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  async function ensureCurrentUserProfile() {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    const authUser = data.user;
+    if (!authUser || authUser.id !== userId) return;
+    const email = authUser.email ?? "";
+    const metadata = authUser.user_metadata ?? {};
+    const displayName = String(metadata.full_name ?? metadata.name ?? email.split("@")[0] ?? "QGuard User");
+    const { error: rpcError } = await supabase.rpc("ensure_qguard_profile", {
+      p_user_id: userId,
+      p_email: email || null,
+      p_name: displayName || null,
+    });
+    if (!rpcError) return;
+    const username = `${email.split("@")[0] || "qguard"}_${userId.replace(/-/g, "").slice(0, 6)}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "_");
+    const { error: upsertError } = await supabase.from("profiles").upsert({
+      id: userId,
+      email: email || null,
+      name: displayName || "QGuard User",
+      username,
+    }, { onConflict: "id" });
+    if (upsertError) throw rpcError;
   }
 
   async function addContact(result: UserSearchResult) {
     setContactAction(null);
+    try {
+      await ensureCurrentUserProfile();
+    } catch (error) {
+      setContactAction(describeMessageError(error));
+      return;
+    }
     const { error } = await supabase.from("messaging_contacts").upsert({
       owner_user_id: userId,
       contact_user_id: result.user_id,
@@ -1263,6 +1921,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setContactAction(`${result.display_name} added`);
     setQuery("");
     setSearchResults([]);
+    setSearchFeedback(null);
     onSent();
   }
 
@@ -1431,69 +2090,110 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
   }
 
+  async function loadContactDevices(contact: ContactSummary): Promise<TrustedDevice[]> {
+    return loadTrustedDevicesForUsers([contact.contact_user_id]);
+  }
+
   async function startPrivateChat(contact: ContactSummary) {
-    if (contact.trust_state === "blocked") {
-      setStatus("Unblock this contact before starting a chat");
-      return;
-    }
+    if (contactChatBusyId) return;
 
-    const existing = effectiveConversations.find((conversation) => conversation.member_user_ids.includes(contact.contact_user_id));
-    if (existing) {
-      openConversation(existing);
-      return;
-    }
+    setContactChatBusyId(contact.id);
+    setContactAction(null);
+    setStatus(`Opening private chat with ${visibleContactName(contact)}`);
 
-    const contactDevices = devices.filter((device) => device.user_id === contact.contact_user_id && device.trust_state !== "Revoked");
-    if (myDevices.length === 0) {
-      setStatus("Open the desktop app to activate this device");
-      return;
-    }
-    if (contactDevices.length === 0) {
-      setStatus("This contact has no trusted device yet");
-      return;
-    }
+    try {
+      if (contact.trust_state === "blocked") {
+        setStatus("Unblock this contact before starting a chat");
+        setContactAction(`${visibleContactName(contact)} is blocked. Restore the contact before opening chat.`);
+        return;
+      }
 
-    const { data: conversation, error: conversationError } = await supabase
-      .from("messaging_conversations")
-      .insert({
-        owner_user_id: userId,
-        conversation_type: "direct",
-        encrypted_title: { version: 1, contact_hint: contact.contact_user_id.slice(0, 8) },
-      })
-      .select("id")
-      .single();
-    if (conversationError) {
-      setStatus(conversationError.message);
-      return;
+      const existing = effectiveConversations.find((conversation) => conversation.member_user_ids.includes(contact.contact_user_id));
+      if (existing) {
+        openConversation(existing);
+        setContactAction(`Opened chat with ${visibleContactName(contact)}.`);
+        return;
+      }
+
+      if (myDevices.length === 0) {
+        setStatus("Open the desktop app to activate this device");
+        setContactAction("This account needs a registered QGuard desktop device before it can start encrypted chats.");
+        return;
+      }
+
+      const localDevices = localDeviceId
+        ? (localDevice && isSendableDevice(localDevice) ? [localDevice] : [])
+        : selectDeliveryDevicesForUsers(myDevices, [userId], localDeviceId);
+      if (localDevices.length === 0) {
+        setStatus("Local device is missing signed PQC prekeys");
+        setContactAction("This account needs a trusted QGuard desktop device with active signed PQC prekeys before it can start encrypted chats.");
+        return;
+      }
+
+      const latestContactDevices = await loadContactDevices(contact);
+      const fallbackDevices = devices.filter((device) => device.user_id === contact.contact_user_id && isTrustedDeviceForDelivery(device));
+      const contactDevices = latestContactDevices.length > 0 ? latestContactDevices : fallbackDevices;
+      const trustedContactDevices = contactDevices.filter(isTrustedDeviceForDelivery);
+      const sendableContactDevices = selectDeliveryDevicesForUsers(trustedContactDevices, [contact.contact_user_id], localDeviceId);
+
+      if (trustedContactDevices.length === 0) {
+        setStatus("This contact has no trusted device yet");
+        setContactAction(`${visibleContactName(contact)} has not registered a trusted QGuard desktop device yet. Ask them to sign in to QGuard Messaging on desktop, then press Chat again.`);
+        await Promise.resolve(onSent());
+        return;
+      }
+
+      if (sendableContactDevices.length === 0) {
+        setStatus("Waiting for recipient PQC prekeys");
+        setContactAction(`${visibleContactName(contact)} has a device, but it has not published active PQC prekeys yet. Ask them to open QGuard Messaging once more, then press Chat again.`);
+        await Promise.resolve(onSent());
+        return;
+      }
+
+      const { data: conversation, error: conversationError } = await supabase
+        .from("messaging_conversations")
+        .insert({
+          owner_user_id: userId,
+          conversation_type: "direct",
+          encrypted_title: { version: 1, contact_hint: contact.contact_user_id.slice(0, 8) },
+        })
+        .select("id")
+        .single();
+      if (conversationError) throw conversationError;
+
+      const conversationId = String(conversation.id);
+      const rows = [
+        ...localDevices.map((device) => ({
+          conversation_id: conversationId,
+          user_id: userId,
+          device_id: device.device_id,
+          role: "owner",
+        })),
+        ...sendableContactDevices.map((device) => ({
+          conversation_id: conversationId,
+          user_id: contact.contact_user_id,
+          device_id: device.device_id,
+          role: "member",
+        })),
+      ];
+
+      const { error: memberError } = await supabase
+        .from("messaging_conversation_members")
+        .insert(rows);
+      if (memberError) throw memberError;
+
+      setActiveConversationId(conversationId);
+      setConversationView("active");
+      setStatus("Private chat ready");
+      setContactAction(`Private chat opened with ${visibleContactName(contact)}.`);
+      await Promise.resolve(onSent());
+    } catch (error) {
+      const detail = describeMessageError(error);
+      setStatus(detail);
+      setContactAction(detail);
+    } finally {
+      setContactChatBusyId(null);
     }
-
-    const conversationId = String(conversation.id);
-    const rows = [
-      ...myDevices.map((device) => ({
-        conversation_id: conversationId,
-        user_id: userId,
-        device_id: device.device_id,
-        role: "owner",
-      })),
-      ...contactDevices.map((device) => ({
-        conversation_id: conversationId,
-        user_id: contact.contact_user_id,
-        device_id: device.device_id,
-        role: "member",
-      })),
-    ];
-
-    const { error: memberError } = await supabase
-      .from("messaging_conversation_members")
-      .insert(rows);
-    if (memberError) {
-      setStatus(memberError.message);
-      return;
-    }
-
-    setActiveConversationId(conversationId);
-    setStatus("Private chat ready");
-    onSent();
   }
 
   function buildComposeLifecycle(): SecurePlaintextMessage["lifecycle"] {
@@ -1631,7 +2331,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     try {
       await validateDecryptionSession(userId, stream);
       enforceClientDecryptionRateLimit(userId, `attachment:${attachment.storage_path}`, stream);
-      await unlockDevicePrivateKey(stream);
+      await unlockDevicePrivateKey(stream, userId);
       await recordCryptoTelemetry({
         userId,
         deviceId: currentDevice?.device_id ?? null,
@@ -1661,6 +2361,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         });
       } else {
         downloadBlob(attachment.name, blob);
+        await markViewOnceAttachmentOpened(chatMessage);
       }
       stream.emit({
         stage: "attachment_decrypt_completed",
@@ -1702,7 +2403,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     kind: SecureChatAttachment["kind"],
     durationMs: number | null = null,
   ) {
-    if (!activeConversation || recipientDevices.length === 0) {
+    if (!activeConversation || !recipientDevicesReady) {
       setStatus("Select a secure conversation with a trusted recipient device");
       return;
     }
@@ -1772,7 +2473,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setStatus("Microphone recording is not available in this browser runtime");
       return;
     }
-    if (!activeConversation || recipientDevices.length === 0) {
+    if (!activeConversation || !recipientDevicesReady) {
       setStatus("Select a secure conversation with a trusted recipient device");
       return;
     }
@@ -1818,19 +2519,34 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       messageKind?: "Text" | "FileReference" | "VoiceNote" | "System";
     } = {},
   ): Promise<string> {
-    if (!activeConversation || recipientDevices.length === 0 || !plaintext.trim()) throw new Error("No active recipient devices");
-    const senderDevice = currentDevice ?? myDevices[0];
+    if (!activeConversation || !plaintext.trim()) throw new Error("No active recipient devices");
+    const senderDevice = currentDevice;
     if (!senderDevice) {
       throw new Error("Open the desktop app to activate this device");
     }
     if (!hasSendableKeyBundle(senderDevice)) {
       throw new Error("Local device is missing signed PQC prekeys");
     }
-    if (recipientDevices.some((device) => !hasSendableKeyBundle(device))) {
+    const recipientUserIds = activeRecipientUserIds;
+    if (recipientUserIds.length === 0) {
+      throw new Error("Open a direct chat with a contact before sending");
+    }
+    let latestRecipientDevices: TrustedDevice[] = [];
+    try {
+      latestRecipientDevices = await loadTrustedDevicesForUsers(recipientUserIds);
+    } catch {
+      latestRecipientDevices = [];
+    }
+    const deliveryRecipientDevices = selectDeliveryDevicesForUsers(
+      latestRecipientDevices.length > 0 ? latestRecipientDevices : recipientDevices,
+      recipientUserIds,
+      localDeviceId,
+    );
+    if (deliveryRecipientDevices.length === 0) {
       throw new Error("Recipient device is missing signed PQC prekeys");
     }
     const clientMessageId = options.clientMessageId ?? crypto.randomUUID();
-    const deliveryDevices = Array.from(new Map([...recipientDevices, senderDevice].map((device) => [device.device_id, device])).values());
+    const deliveryDevices = Array.from(new Map([...deliveryRecipientDevices, senderDevice].map((device) => [device.device_id, device])).values());
     const threat = options.controlType ? emptyThreat() : assessThreatLocally(parseSecurePlaintext(plaintext).body);
     const lifecycle = options.lifecycle ?? parseSecurePlaintext(plaintext).lifecycle;
 
@@ -1842,11 +2558,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       detail: "Fresh hybrid key exchange started",
       progress: 15,
       status: "started",
-      metadata: { conversation_id: activeConversation.id, recipients: recipientDevices.length, client_message_id: clientMessageId },
+      metadata: { conversation_id: activeConversation.id, recipients: deliveryRecipientDevices.length, client_message_id: clientMessageId },
     });
     for (const recipientDevice of deliveryDevices) {
       const isLocalArchive = recipientDevice.user_id === userId;
-      const oneTimePrekey = isLocalArchive ? null : await claimOneTimePrekey(recipientDevice, senderDevice.device_id);
+      const oneTimePrekey = null;
       const recipient = recipientKeyBundle(recipientDevice, oneTimePrekey);
       if (!recipient) throw new Error("Recipient key bundle is incomplete");
       const envelope = await safeInvoke<EncryptedMessageEnvelope>("messaging_send_encrypted_message", {
@@ -1878,6 +2594,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           parent_client_message_id: options.parentClientMessageId ?? null,
           control_type: options.controlType ?? null,
           local_archive: isLocalArchive,
+          original_sender_user_id: userId,
+          original_sender_device_id: senderDevice.device_id,
           hybrid_ciphertext: envelope.hybrid_ciphertext,
           prekey_id: envelope.prekey_id,
           prekey_kind: envelope.prekey_kind,
@@ -1914,7 +2632,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       detail: options.controlType ? "Encrypted message control committed" : "Ciphertext envelope relayed with dual signatures",
       progress: 100,
       status: "complete",
-      metadata: { conversation_id: activeConversation.id, recipients: recipientDevices.length, client_message_id: clientMessageId },
+      metadata: { conversation_id: activeConversation.id, recipients: deliveryRecipientDevices.length, client_message_id: clientMessageId },
     });
 
     const cachedAt = new Date().toISOString();
@@ -1934,7 +2652,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         row_ids: [],
         conversation_id: activeConversation.id,
         sender_user_id: userId,
-        recipient_user_id: recipientDevices[0]?.user_id ?? userId,
+        recipient_user_id: deliveryRecipientDevices[0]?.user_id ?? userId,
         kind: toMessageKind(options.messageKind ?? "Text"),
         plaintext: isLocked ? `Time-locked message unlocks ${new Date(secureMessage.lifecycle.available_at ?? "").toLocaleString()}` : secureMessage.body,
         attachment: isLocked ? null : secureMessage.attachment,
@@ -1958,8 +2676,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }
 
   async function sendMessage() {
-    if (!activeConversation || recipientDevices.length === 0 || !message.trim()) return;
-    const senderDevice = currentDevice ?? myDevices[0];
+    if (!activeConversation || !message.trim()) return;
+    const senderDevice = currentDevice;
     setStatus("Securing message");
     try {
       if (editingMessage) {
@@ -1993,7 +2711,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           deviceId: senderDevice.device_id,
           scope: "message",
           stage: "message_encryption_failed",
-          detail: "Message encryption or relay failed",
+          detail,
           progress: 0,
           status: "failed",
           metadata: { conversation_id: activeConversation.id },
@@ -2232,7 +2950,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             <h2 className="text-sm font-bold text-ink-950">{activeConversation ? conversationTitle(activeConversation) : "Select or start a private chat"}</h2>
             <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-600">
               <ShieldCheck size={14} />
-              E2EE active - ML-KEM-768 - Forward secrecy
+              E2EE active - ML-KEM-1024 - Forward secrecy
             </div>
           </div>
           <span className="status-pill bg-emerald-50 text-emerald-600">{status}</span>
@@ -2309,7 +3027,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                             </button>
                           </div>
                           {chatMessage.attachment.kind === "voice" && attachmentPreviewUrls[chatMessage.client_message_id] && (
-                            <audio controls src={attachmentPreviewUrls[chatMessage.client_message_id]} className="mt-3 w-full" />
+                            <audio
+                              controls
+                              src={attachmentPreviewUrls[chatMessage.client_message_id]}
+                              className="mt-3 w-full"
+                              onEnded={() => markViewOnceAttachmentOpened(chatMessage).catch((error) => setMessageAction(describeMessageError(error)))}
+                            />
                           )}
                         </div>
                       )}
@@ -2484,7 +3207,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             />
             <button
               type="button"
-              disabled={!activeConversation || recipientDevices.length === 0 || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState !== "idle"}
+              disabled={!activeConversation || !recipientDevicesReady || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState !== "idle"}
               onClick={() => fileInputRef.current?.click()}
               className="icon-button disabled:cursor-not-allowed disabled:opacity-50"
               title={attachmentBusy === "file" ? "Encrypting attachment" : "Attach encrypted file"}
@@ -2494,7 +3217,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             </button>
             <button
               type="button"
-              disabled={!activeConversation || recipientDevices.length === 0 || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState === "processing"}
+              disabled={!activeConversation || !recipientDevicesReady || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState === "processing"}
               onClick={toggleVoiceRecording}
               className={`icon-button disabled:cursor-not-allowed disabled:opacity-50 ${recordingState === "recording" ? "border-rose-200 bg-rose-50 text-rose-600" : ""}`}
               title={recordingState === "recording" ? "Stop and send encrypted voice note" : "Record encrypted voice note"}
@@ -2512,7 +3235,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               aria-label={activeConversation ? "Message composer" : "No conversation selected"}
             />
             <button
-              disabled={!activeConversation || recipientDevices.length === 0 || !message.trim() || Boolean(attachmentBusy) || recordingState !== "idle"}
+              disabled={!activeConversation || !message.trim() || Boolean(attachmentBusy) || recordingState !== "idle"}
               onClick={sendMessage}
               className="flex h-10 items-center gap-2 rounded-lg bg-violet-600 px-4 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -2543,9 +3266,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           </div>
         </div>
 
-        <div className="max-h-64 overflow-y-auto border-b border-line p-3">
+          <div className="max-h-64 overflow-y-auto border-b border-line p-3">
           {searching && <div className="py-3 text-sm text-ink-600">Searching...</div>}
-          {!searching && searchResults.length === 0 && (
+          {!searching && searchFeedback && (
+            <div className="py-3 text-sm text-ink-600">{searchFeedback}</div>
+          )}
+          {!searching && !searchFeedback && searchResults.length === 0 && (
             <div className="py-3 text-sm text-ink-600">Search by user ID, username, email, or QR payload.</div>
           )}
           <div className="space-y-2">
@@ -2566,28 +3292,44 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           {contactAction && <div className="mb-3 rounded-lg bg-canvas p-3 text-sm text-ink-600">{contactAction}</div>}
           {contacts.length === 0 && <div className="py-3 text-sm text-ink-600">No contacts added yet.</div>}
           <div className="space-y-2">
-            {contacts.map((contact) => (
-              <div key={contact.id} className="rounded-lg border border-line p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-bold text-ink-950">{visibleContactName(contact)}</div>
-                    <div className="mt-1 truncate font-mono text-xs text-ink-400">{contact.username}</div>
+            {contacts.map((contact) => {
+              const contactDevices = devices.filter((device) => device.user_id === contact.contact_user_id && isTrustedDeviceForDelivery(device));
+              const readyDeviceCount = selectDeliveryDevicesForUsers(contactDevices, [contact.contact_user_id], localDeviceId).length;
+              const isOpeningChat = contactChatBusyId === contact.id;
+              return (
+                <div key={contact.id} className="rounded-lg border border-line p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-bold text-ink-950">{visibleContactName(contact)}</div>
+                      <div className="mt-1 truncate font-mono text-xs text-ink-400">{contact.username}</div>
+                      <div className="mt-1 text-xs font-semibold text-ink-500">
+                        {readyDeviceCount > 0 ? `${readyDeviceCount} trusted device${readyDeviceCount === 1 ? "" : "s"} ready` : "No trusted device ready yet"}
+                      </div>
+                    </div>
+                    <span className={`status-pill ${contact.trust_state === "blocked" ? "bg-rose-50 text-rose-500" : "bg-emerald-50 text-emerald-600"}`}>
+                      {contact.trust_state}
+                    </span>
                   </div>
-                  <span className={`status-pill ${contact.trust_state === "blocked" ? "bg-rose-50 text-rose-500" : "bg-emerald-50 text-emerald-600"}`}>
-                    {contact.trust_state}
-                  </span>
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      disabled={isOpeningChat}
+                      onClick={() => startPrivateChat(contact)}
+                      className="flex items-center justify-center gap-1 rounded-lg bg-violet-600 px-2 py-2 text-xs font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isOpeningChat && <Loader2 className="animate-spin" size={13} />}
+                      {isOpeningChat ? "Opening" : "Chat"}
+                    </button>
+                    <button type="button" onClick={() => updateContact(contact, contact.trust_state === "blocked" ? "added" : "blocked")} className="flex items-center justify-center rounded-lg border border-line px-2 py-2 text-xs font-bold text-ink-700 hover:bg-canvas">
+                      <Ban size={14} />
+                    </button>
+                    <button type="button" onClick={() => updateContact(contact, "removed")} className="flex items-center justify-center rounded-lg border border-line px-2 py-2 text-xs font-bold text-ink-700 hover:bg-canvas">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  <button onClick={() => startPrivateChat(contact)} className="rounded-lg bg-violet-600 px-2 py-2 text-xs font-bold text-white hover:bg-violet-700">Chat</button>
-                  <button onClick={() => updateContact(contact, contact.trust_state === "blocked" ? "added" : "blocked")} className="flex items-center justify-center rounded-lg border border-line px-2 py-2 text-xs font-bold text-ink-700 hover:bg-canvas">
-                    <Ban size={14} />
-                  </button>
-                  <button onClick={() => updateContact(contact, "removed")} className="flex items-center justify-center rounded-lg border border-line px-2 py-2 text-xs font-bold text-ink-700 hover:bg-canvas">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
         <div className="border-t border-line p-3">

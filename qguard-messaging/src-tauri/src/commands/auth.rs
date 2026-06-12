@@ -38,6 +38,7 @@ pub fn auth_register_user(
         access_token: request.access_token,
         expires_at: request.expires_at,
     })?;
+    let _key_scope = state.lock_key_scope()?;
     let identity_bundle = state.ensure_identity(
         &user_id,
         request.device_label.as_deref().unwrap_or("Windows Desktop"),
@@ -60,8 +61,8 @@ pub fn auth_login(state: State<'_, AppState>, request: AuthRequest) -> Result<Au
 }
 
 #[tauri::command]
-pub fn auth_logout(state: State<'_, AppState>) -> Result<bool> {
-    state.clear_auth_session()?;
+pub fn auth_logout(state: State<'_, AppState>, user_id: Option<String>) -> Result<bool> {
+    state.clear_auth_session_for(user_id.as_deref())?;
     state.audit_info("auth_logout", "Session cleared from desktop state");
     state.touch_telemetry(
         "auth",
@@ -88,6 +89,7 @@ pub fn auth_sync_session(
         access_token,
         expires_at,
     })?;
+    let _key_scope = state.lock_key_scope()?;
     let identity_bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
     state.audit_info(
         "auth_sync",

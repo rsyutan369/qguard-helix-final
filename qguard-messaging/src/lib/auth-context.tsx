@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
-import { requireSupabase, supabase } from "@/lib/supabase";
+import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase, supabaseAuthTarget } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 
 interface AuthContextValue {
@@ -28,6 +28,30 @@ interface PendingMfaChallenge {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const authRequestTimeoutMs = 20_000;
+const signInRequestTimeoutMs = 35_000;
+const auditRequestTimeoutMs = 3_000;
+const desktopSessionSyncTimeoutMs = 8_000;
+
+async function withTimeout<T>(task: PromiseLike<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out. Please try again.`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([task, timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+function getEmailRedirectTo(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const origin = window.location.origin;
+  if (!/^https?:\/\//i.test(origin)) return undefined;
+  return origin;
+}
+
 const missingProviderAuth: AuthContextValue = {
   user: null,
   session: null,
@@ -51,17 +75,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const activeSessionTokenRef = useRef<string | null>(null);
 
   const syncBackend = useCallback(async (activeSession: Session) => {
     if (!isTauriRuntime()) return;
     const activeUser = activeSession.user;
-    await safeInvoke("auth_sync_session", {
+    await withTimeout(safeInvoke("auth_sync_session", {
       userId: activeUser.id,
       email: activeUser.email ?? "",
       tier: String(activeUser.app_metadata?.tier ?? activeUser.user_metadata?.tier ?? "user"),
       accessToken: activeSession.access_token,
       expiresAt: activeSession.expires_at ?? 0,
-    });
+    }), desktopSessionSyncTimeoutMs, "Desktop session sync");
   }, []);
 
   const hashEmail = useCallback(async (email: string) => {
@@ -78,13 +103,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     userId?: string | null,
   ) => {
     try {
-      await supabase.rpc("log_qguard_profile_security_event", {
+      await withTimeout(supabase.rpc("log_qguard_profile_security_event", {
         p_event_type: eventType,
         p_severity: severity,
         p_metadata: metadata,
         p_email_hash: await hashEmail(email),
         p_user_id: userId ?? null,
-      });
+      }), auditRequestTimeoutMs, "Auth audit");
     } catch {
       // Audit failures must not expose auth internals or block auth flow.
     }
@@ -92,12 +117,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkAuthRateLimit = useCallback(async (action: string, email: string) => {
     try {
-      const { data, error: limitError } = await supabase.rpc("check_qguard_profile_rate_limit", {
+      const { data, error: limitError } = await withTimeout(supabase.rpc("check_qguard_profile_rate_limit", {
         p_action: action,
         p_email_hash: await hashEmail(email),
         p_limit: 8,
         p_window_seconds: 300,
-      });
+      }), authRequestTimeoutMs, "Auth rate limit check");
       if (limitError) return true;
       return Boolean(data);
     } catch {
@@ -106,18 +131,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [hashEmail]);
 
   const requireMfaIfNeeded = useCallback(async (activeSession: Session): Promise<boolean> => {
-    const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    const { data: assurance, error: assuranceError } = await withTimeout(
+      supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+      authRequestTimeoutMs,
+      "MFA assurance check",
+    );
     if (assuranceError || assurance?.nextLevel !== "aal2" || assurance.currentLevel === "aal2") {
       setPendingMfa(null);
       return true;
     }
 
-    const { data: factors, error: factorsError } = await supabase.auth.mfa.listFactors();
+    const { data: factors, error: factorsError } = await withTimeout(
+      supabase.auth.mfa.listFactors(),
+      authRequestTimeoutMs,
+      "MFA factor check",
+    );
     if (factorsError) throw factorsError;
     const factor = factors.totp[0];
     if (!factor) return true;
 
-    const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({ factorId: factor.id });
+    const { data: challenge, error: challengeError } = await withTimeout(
+      supabase.auth.mfa.challenge({ factorId: factor.id }),
+      authRequestTimeoutMs,
+      "MFA challenge",
+    );
     if (challengeError) throw challengeError;
 
     setUser(null);
@@ -136,6 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const mfaSatisfied = await requireMfaIfNeeded(activeSession);
     if (!mfaSatisfied) return false;
     await syncBackend(activeSession);
+    activeSessionTokenRef.current = activeSession.access_token;
     setUser(activeSession.user);
     setSession(activeSession);
     setPendingMfa(null);
@@ -144,31 +182,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const validateSession = useCallback(async () => {
     setLoading(true);
-    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !sessionData.session) {
+    if (!isSupabaseConfigured) {
+      activeSessionTokenRef.current = null;
       setUser(null);
       setSession(null);
-      setLoading(false);
-      return;
-    }
-
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData.user) {
-      await supabase.auth.signOut({ scope: "local" });
-      setUser(null);
-      setSession(null);
-      setError("Your session could not be validated. Please sign in again.");
+      setError(getSupabaseConfigError()?.message ?? "QGuard Messaging Supabase is not configured.");
       setLoading(false);
       return;
     }
 
     try {
+      const { data: sessionData, error: sessionError } = await withTimeout(
+        supabase.auth.getSession(),
+        authRequestTimeoutMs,
+        "Session restore",
+      );
+      if (sessionError || !sessionData.session) {
+        activeSessionTokenRef.current = null;
+        setUser(null);
+        setSession(null);
+        setLoading(false);
+        return;
+      }
+
+      const { data: userData, error: userError } = await withTimeout(
+        supabase.auth.getUser(),
+        authRequestTimeoutMs,
+        "Session validation",
+      );
+      if (userError || !userData.user) {
+        await supabase.auth.signOut({ scope: "local" });
+        activeSessionTokenRef.current = null;
+        setUser(null);
+        setSession(null);
+        setError("Your session could not be validated. Please sign in again.");
+        setLoading(false);
+        return;
+      }
+
       const completed = await completeAuthenticatedSession(sessionData.session);
       if (!completed) {
         setLoading(false);
         return;
       }
     } catch (err) {
+      activeSessionTokenRef.current = null;
       setUser(null);
       setSession(null);
       setError(err instanceof Error ? err.message : String(err));
@@ -184,27 +242,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const client = supabase;
     const { data } = client.auth.onAuthStateChange((_event, nextSession) => {
       if (!nextSession) {
+        activeSessionTokenRef.current = null;
         setSession(null);
         setUser(null);
         setLoading(false);
         return;
       }
 
+      if (nextSession.access_token === activeSessionTokenRef.current) {
+        setSession(nextSession);
+        setUser(nextSession.user);
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
-      completeAuthenticatedSession(nextSession)
-        .then((completed) => {
-          if (!completed) return;
-          setSession(nextSession);
-          setUser(nextSession.user);
-        })
-        .catch(async (err) => {
-          setSession(null);
-          setUser(null);
-          setError(err instanceof Error ? err.message : String(err));
-        })
-        .finally(() => {
-          setLoading(false);
-        });
+      const processSession = () => {
+        completeAuthenticatedSession(nextSession)
+          .catch((err) => {
+            activeSessionTokenRef.current = null;
+            setSession(null);
+            setUser(null);
+            setError(err instanceof Error ? err.message : String(err));
+          })
+          .finally(() => {
+            setLoading(false);
+          });
+      };
+      setTimeout(processSession, 0);
     });
 
     return () => data.subscription.unsubscribe();
@@ -214,27 +279,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     setError(null);
     setNotice(null);
+    const cleanEmail = email.trim().toLowerCase();
     try {
       const client = requireSupabase();
-      const allowed = await checkAuthRateLimit("login_password", email);
+      const allowed = await checkAuthRateLimit("login_password", cleanEmail);
       if (!allowed) {
         setError("Too many sign-in attempts. Please wait a few minutes and try again.");
-        await auditAuthEvent("login_rate_limited", "warning", email);
+        await auditAuthEvent("login_rate_limited", "warning", cleanEmail);
         return false;
       }
-      const { data, error: signInError } = await client.auth.signInWithPassword({ email, password });
+      const { data, error: signInError } = await withTimeout(
+        client.auth.signInWithPassword({ email: cleanEmail, password }),
+        signInRequestTimeoutMs,
+        "Secure sign in",
+      );
       if (signInError || !data.session) {
         throw signInError ?? new Error("Sign in failed.");
       }
       const completed = await completeAuthenticatedSession(data.session);
       if (!completed) return false;
-      await auditAuthEvent("login_success", "info", email, {}, data.session.user.id);
+      void auditAuthEvent("login_success", "info", cleanEmail, {}, data.session.user.id);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await auditAuthEvent("login_failed", "warning", email);
+      await auditAuthEvent("login_failed", "warning", cleanEmail);
       if (message.toLowerCase().includes("email not confirmed")) {
-        await requireSupabase().auth.resend({ type: "signup", email }).catch(() => undefined);
+        const redirectTo = getEmailRedirectTo();
+        await requireSupabase().auth.resend({
+          type: "signup",
+          email: cleanEmail,
+          options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+        }).catch(() => undefined);
         setError("Please verify your email before signing in. We sent a new verification link if the address is registered.");
       } else {
         setError(message);
@@ -259,19 +334,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await auditAuthEvent("login_mfa_rate_limited", "warning", pendingMfa.email);
         return false;
       }
-      const { error: verifyError } = await supabase.auth.mfa.verify({
+      const { error: verifyError } = await withTimeout(supabase.auth.mfa.verify({
         factorId: pendingMfa.factorId,
         challengeId: pendingMfa.challengeId,
         code: code.trim(),
-      });
+      }), authRequestTimeoutMs, "MFA verification");
       if (verifyError) throw verifyError;
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const { data: sessionData, error: sessionError } = await withTimeout(
+        supabase.auth.getSession(),
+        authRequestTimeoutMs,
+        "MFA session restore",
+      );
       if (sessionError || !sessionData.session) throw sessionError ?? new Error("MFA session could not be restored.");
+      activeSessionTokenRef.current = sessionData.session.access_token;
       await syncBackend(sessionData.session);
       setUser(sessionData.session.user);
       setSession(sessionData.session);
       setPendingMfa(null);
-      await auditAuthEvent("login_mfa_verified", "info", pendingMfa.email, {}, sessionData.session.user.id);
+      void auditAuthEvent("login_mfa_verified", "info", pendingMfa.email, {}, sessionData.session.user.id);
       return true;
     } catch (err) {
       await auditAuthEvent("login_mfa_failed", "warning", pendingMfa.email);
@@ -293,19 +373,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     setError(null);
     setNotice(null);
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
     try {
+      if (!cleanEmail) throw new Error("Enter your email address first.");
       const client = requireSupabase();
-      const { data, error: signUpError } = await client.auth.signUp({
-        email,
-        password,
-        options: { data: { full_name: name } },
-      });
+      const redirectTo = getEmailRedirectTo();
+      const { data, error: signUpError } = await withTimeout(
+        client.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: { full_name: cleanName },
+            emailRedirectTo: redirectTo,
+          },
+        }),
+        signInRequestTimeoutMs,
+        "Secure registration",
+      );
       if (signUpError) throw signUpError;
+      if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        setNotice(`Supabase says this email is already registered in the ${supabaseAuthTarget}. No new Auth user was created. Use sign in or resend the verification email for this same project.`);
+        return true;
+      }
       if (data.session) {
         await completeAuthenticatedSession(data.session);
         return true;
       }
-      setNotice("Account created. Please check your email to finish verification, then sign in.");
+      setNotice(`Account request sent to the ${supabaseAuthTarget}. If email verification is enabled, check your inbox and spam folder, then sign in.`);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -319,10 +414,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     setError(null);
     setNotice(null);
+    const cleanEmail = email.trim().toLowerCase();
     try {
-      if (!email.trim()) throw new Error("Enter your email address first.");
+      if (!cleanEmail) throw new Error("Enter your email address first.");
       const client = requireSupabase();
-      const { error: resendError } = await client.auth.resend({ type: "signup", email: email.trim() });
+      const redirectTo = getEmailRedirectTo();
+      const { error: resendError } = await client.auth.resend({
+        type: "signup",
+        email: cleanEmail,
+        options: redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+      });
       if (resendError) throw resendError;
       setNotice("Verification email sent. Please check your inbox and spam folder.");
       return true;
@@ -335,12 +436,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    const userId = user?.id;
     await supabase.auth.signOut();
-    await safeInvoke("auth_logout", {}, false);
+    await safeInvoke("auth_logout", userId ? { userId } : {}, false);
+    activeSessionTokenRef.current = null;
     setUser(null);
     setSession(null);
     setPendingMfa(null);
-  }, []);
+  }, [user?.id]);
 
   const value = useMemo<AuthContextValue>(() => ({
     user,

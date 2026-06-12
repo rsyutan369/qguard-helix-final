@@ -2,6 +2,10 @@ import { verifyRuntimeAssetIntegrity, type RuntimeAssetIntegrity } from "@/lib/r
 import { safeInvoke } from "@/lib/tauri";
 import type { SecurityHardeningCheck, SecurityHardeningStatus } from "@/lib/types";
 
+const hardeningCacheTtlMs = 60_000;
+let cachedHardeningStatus: { loadedAt: number; status: SecurityHardeningStatus } | null = null;
+let hardeningStatusPromise: Promise<SecurityHardeningStatus> | null = null;
+
 export function fallbackHardeningStatus(): SecurityHardeningStatus {
   const releaseBuild = import.meta.env.PROD;
   const checks: SecurityHardeningCheck[] = [
@@ -87,9 +91,24 @@ export function mergeRuntimeAssetIntegrity(
 }
 
 export async function loadSecurityHardeningStatus(): Promise<SecurityHardeningStatus> {
-  const [hardening, assetIntegrity] = await Promise.all([
+  const now = Date.now();
+  if (cachedHardeningStatus && now - cachedHardeningStatus.loadedAt < hardeningCacheTtlMs) {
+    return cachedHardeningStatus.status;
+  }
+  if (hardeningStatusPromise) return hardeningStatusPromise;
+
+  hardeningStatusPromise = Promise.all([
     safeInvoke<SecurityHardeningStatus>("security_hardening_status", {}, fallbackHardeningStatus()),
     verifyRuntimeAssetIntegrity(),
-  ]);
-  return mergeRuntimeAssetIntegrity(hardening, assetIntegrity);
+  ])
+    .then(([hardening, assetIntegrity]) => {
+      const status = mergeRuntimeAssetIntegrity(hardening, assetIntegrity);
+      cachedHardeningStatus = { loadedAt: Date.now(), status };
+      return status;
+    })
+    .finally(() => {
+      hardeningStatusPromise = null;
+    });
+
+  return hardeningStatusPromise;
 }

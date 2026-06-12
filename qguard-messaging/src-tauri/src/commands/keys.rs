@@ -26,9 +26,13 @@ pub struct PrivateKeyUnlockStatus {
 }
 
 #[tauri::command]
-pub fn keys_unlock_private_key(state: State<'_, AppState>) -> Result<PrivateKeyUnlockStatus> {
-    let session_user_id = state.user_id()?;
+pub fn keys_unlock_private_key(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+) -> Result<PrivateKeyUnlockStatus> {
+    let session_user_id = state.resolve_user_id(user_id)?;
     state.check_decrypt_rate_limit("key_unlock", &session_user_id, 12, 300)?;
+    let _key_scope = state.lock_key_scope()?;
     let identity = state.ensure_identity(&session_user_id, "Windows Desktop")?;
     state.audit_info(
         "keys_unlock_private_key",
@@ -50,8 +54,13 @@ pub fn keys_unlock_private_key(state: State<'_, AppState>) -> Result<PrivateKeyU
 }
 
 #[tauri::command]
-pub fn keys_upload_identity_bundle(state: State<'_, AppState>) -> Result<PublicIdentityBundle> {
-    let bundle = state.ensure_identity(&state.user_id()?, "Windows Desktop")?;
+pub fn keys_upload_identity_bundle(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+) -> Result<PublicIdentityBundle> {
+    let session_user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    let bundle = state.ensure_identity(&session_user_id, "Windows Desktop")?;
     state.audit_info(
         "keys_upload_identity",
         "Public identity bundle prepared for Supabase relay",
@@ -60,8 +69,13 @@ pub fn keys_upload_identity_bundle(state: State<'_, AppState>) -> Result<PublicI
 }
 
 #[tauri::command]
-pub fn keys_upload_signed_prekey(state: State<'_, AppState>) -> Result<PublicSignedPrekey> {
-    state.ensure_identity(&state.user_id()?, "Windows Desktop")?;
+pub fn keys_upload_signed_prekey(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+) -> Result<PublicSignedPrekey> {
+    let session_user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    state.ensure_identity(&session_user_id, "Windows Desktop")?;
     let prekey = state
         .signed_prekey
         .lock()
@@ -75,8 +89,11 @@ pub fn keys_upload_signed_prekey(state: State<'_, AppState>) -> Result<PublicSig
 #[tauri::command]
 pub fn keys_upload_one_time_prekeys(
     state: State<'_, AppState>,
+    user_id: Option<String>,
 ) -> Result<Vec<PublicOneTimePrekey>> {
-    state.ensure_identity(&state.user_id()?, "Windows Desktop")?;
+    let session_user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    state.ensure_identity(&session_user_id, "Windows Desktop")?;
     let prekeys = state
         .one_time_prekeys
         .lock()
@@ -91,8 +108,11 @@ pub fn keys_upload_one_time_prekeys(
 pub fn keys_fetch_recipient_bundle(
     state: State<'_, AppState>,
     _recipient_user_id: String,
+    user_id: Option<String>,
 ) -> Result<RecipientKeyBundle> {
-    let identity = state.ensure_identity(&state.user_id()?, "Windows Desktop")?;
+    let session_user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    let identity = state.ensure_identity(&session_user_id, "Windows Desktop")?;
     let signed_prekey = state
         .signed_prekey
         .lock()
@@ -115,9 +135,13 @@ pub fn keys_fetch_recipient_bundle(
 }
 
 #[tauri::command]
-pub fn keys_rotate_prekeys(state: State<'_, AppState>) -> Result<PublicSignedPrekey> {
-    let session_user_id = state.user_id()?;
+pub fn keys_rotate_prekeys(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+) -> Result<PublicSignedPrekey> {
+    let session_user_id = state.resolve_user_id(user_id)?;
     state.check_decrypt_rate_limit("key_rotate", &session_user_id, 6, 300)?;
+    let _key_scope = state.lock_key_scope()?;
     state.ensure_identity(&session_user_id, "Windows Desktop")?;
 
     let identity = {
@@ -146,11 +170,26 @@ pub fn keys_rotate_prekeys(state: State<'_, AppState>) -> Result<PublicSignedPre
 
     let signed = crate::prekeys::generate_signed_prekey(&identity)?;
     let public = signed.public.clone();
-    state
+    let previous_signed = state
         .signed_prekey
         .lock()
         .map_err(|_| QGuardError::Storage("signed prekey lock poisoned".to_string()))?
         .replace(signed);
+    if let Some(previous_signed) = previous_signed {
+        let mut legacy = state
+            .legacy_signed_prekeys
+            .lock()
+            .map_err(|_| QGuardError::Storage("legacy signed prekey lock poisoned".to_string()))?;
+        if !legacy
+            .iter()
+            .any(|prekey| prekey.public.prekey_id == previous_signed.public.prekey_id)
+        {
+            legacy.push(previous_signed);
+            if legacy.len() > 32 {
+                legacy.remove(0);
+            }
+        }
+    }
     state.persist_current_device_key_material()?;
     state.audit_info("keys_rotate_prekeys", "Signed prekey rotated");
     state.touch_telemetry("key", "Signed prekey rotated and persisted locally", 100);

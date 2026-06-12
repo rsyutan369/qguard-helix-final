@@ -11,7 +11,7 @@ interface EncryptionProgressProps {
 
 const STAGE_LABELS: Record<string, { icon: string; label: string }> = {
   preparing:    { icon: '⚙️',  label: 'Preparing secure channel...' },
-  keygen:       { icon: '🔑',  label: 'Generating ML-KEM-768 keypair...' },
+  keygen:       { icon: '🔑',  label: 'Generating ML-KEM-1024 keypair...' },
   kem:          { icon: '🔐',  label: 'Applying quantum key encapsulation...' },
   aes:          { icon: '🛡️',  label: 'Encrypting with AES-256-GCM...' },
   signing:      { icon: '✍️',  label: 'Signing with ML-DSA-65...' },
@@ -24,7 +24,7 @@ const STAGE_LABELS: Record<string, { icon: string; label: string }> = {
 const SIM_STAGES = [
   { text: 'Initializing secure context...', pct: 5 },
   { text: 'Generating hybrid quantum keys...', pct: 20 },
-  { text: 'Applying ML-KEM-768 encapsulation...', pct: 40 },
+  { text: 'Applying ML-KEM-1024 encapsulation...', pct: 40 },
   { text: 'Encrypting with AES-256-GCM...', pct: 62 },
   { text: 'Signing with ML-DSA-65...', pct: 80 },
   { text: 'Sealing Quantum Vault...', pct: 95 },
@@ -174,7 +174,7 @@ export default function EncryptionProgress({ stage, percent, message }: Encrypti
           color: 'var(--qg-text-muted)',
           display: 'flex', gap: 20,
         }}>
-          <span>🛡️ ML-KEM-768</span>
+          <span>🛡️ ML-KEM-1024</span>
           <span>🔐 AES-256-GCM</span>
           <span>✍️ ML-DSA-65</span>
         </div>

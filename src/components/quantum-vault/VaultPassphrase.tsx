@@ -44,10 +44,10 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
 
       if (isCreate) {
         // ── CREATE: Generate keypairs, wrap with passphrase, store on server ──
-        setStage('Generating ML-KEM-768 + ML-DSA-65 keypairs...')
+        setStage('Generating ML-KEM-1024 + ML-DSA-65 keypairs...')
         const masterKeys = await generateMasterKeys()
 
-        setStage('Deriving key from passphrase (PBKDF2-SHA3 + HKDF-SHA3-256)...')
+        setStage('Hardening passphrase locally...')
         const wrapped = await wrapMasterKeys(masterKeys, passphrase)
 
         setStage('Storing wrapped keys in vault...')
@@ -55,8 +55,8 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
         const toHex = (bytes: Uint8Array) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
         await storeUserKeys(wrapped, toHex(masterKeys.encPublicKey), toHex(masterKeys.signPublicKey), {
           salt: 'stored-in-wrapped-bundle',
-          algorithm: 'PBKDF2-SHA3-256+HKDF-SHA3-256',
-          params: { iterations: 600000, finalKdf: 'HKDF-SHA3-256' },
+          algorithm: 'vault-passphrase-hardening-v1',
+          params: { profile: 'vault-passphrase-hardening-v1' },
         })
 
         onKeysReady(masterKeys)
@@ -69,7 +69,7 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
           throw new Error('No keys found — please create a vault passphrase first')
         }
 
-        setStage('Deriving key from passphrase (PBKDF2-SHA3 + HKDF-SHA3-256)...')
+        setStage('Hardening passphrase locally...')
         const wrappedData: WrappedMasterKeys = userKeys
 
         setStage('Unwrapping secret keys...')
@@ -317,8 +317,8 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
         </div>
         {isCreate ? (
           <>
-            Your passphrase derives a Key Encryption Key via PBKDF2-SHA3-256, then binds it with HKDF-SHA3-256.
-            The KEK wraps your ML-KEM-768 + ML-DSA-65 master secret keys using AES-256-GCM.
+            Your passphrase is hardened locally before it unlocks the Key Encryption Key.
+            The KEK wraps your master secret keys using authenticated encryption.
             Only the wrapped (encrypted) keys are stored on the server. Your passphrase and raw keys never leave this browser.
           </>
         ) : (

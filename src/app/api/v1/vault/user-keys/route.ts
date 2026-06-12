@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAuthClient } from '@/lib/supabase'
 import { getServerUser, getToken } from '@/lib/server-auth'
+import { CURRENT_VAULT_KEM } from '@/lib/vault/kem-profile'
 
 /**
  * GET /api/v1/vault/user-keys
@@ -167,7 +168,7 @@ export async function POST(request: NextRequest) {
       .insert({
         user_id: user.id,
         key_type: 'encryption',
-        algorithm: 'ML-KEM-768',
+        algorithm: CURRENT_VAULT_KEM,
         public_key: encPublicKey,
         encrypted_private_key: wrappedEncSecretKey,
         key_encryption_method: 'PBKDF2-AES-256-GCM',

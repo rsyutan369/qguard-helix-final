@@ -220,7 +220,7 @@ export async function POST(request: NextRequest) {
       .eq('id', fileId)
 
     // Return decrypted file as download
-    return new NextResponse(decryptedData.buffer as ArrayBuffer, {
+    return new NextResponse(decryptedData.slice(), {
       status: 200,
       headers: {
         'Content-Type': file.mime_type || 'application/octet-stream',

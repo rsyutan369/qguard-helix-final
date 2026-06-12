@@ -12,7 +12,7 @@ CREATE OR REPLACE FUNCTION public.register_messaging_device(
   p_mldsa_identity_public BYTEA,
   p_identity_signature JSONB,
   p_fingerprint TEXT,
-  p_suite JSONB DEFAULT '{"classical_kex":"X25519","pq_kem":"ML-KEM-768","kdf":"HKDF-SHA3-256","symmetric":"AES-256-GCM","classical_signature":"Ed25519","pq_signature":"ML-DSA-65"}'
+  p_suite JSONB DEFAULT '{"classical_kex":"X25519","pq_kem":"ML-KEM-1024","kdf":"HKDF-SHA3-256","symmetric":"AES-256-GCM","classical_signature":"Ed25519","pq_signature":"ML-DSA-65"}'
 )
 RETURNS UUID AS $$
 DECLARE

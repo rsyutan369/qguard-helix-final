@@ -80,6 +80,31 @@ function bytesToDisplay(bytes: number): string {
   return `${bytes} B`;
 }
 
+function latestIso(...values: Array<unknown>): string {
+  const latest = values
+    .map((value) => new Date(String(value ?? "")).getTime())
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0];
+  return latest ? new Date(latest).toISOString() : new Date().toISOString();
+}
+
+function recordTime(record: Record<string, unknown>, key: string): number {
+  const parsed = new Date(String(record[key] ?? "")).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function messageGroupId(row: Record<string, unknown>): string {
+  return String(row.client_message_id ?? row.id);
+}
+
+function messageKindLabel(value: unknown): string {
+  const kind = String(value ?? "message");
+  if (/file/i.test(kind)) return "Encrypted file";
+  if (/voice/i.test(kind)) return "Encrypted voice note";
+  if (/system|control/i.test(kind)) return "Secure control event";
+  return "Text message";
+}
+
 function mapTrustState(value: string): TrustedDevice["trust_state"] {
   if (value === "this_device") return "ThisDevice";
   if (value === "trusted") return "Trusted";
@@ -144,19 +169,24 @@ function emptyDashboardData(): DashboardData {
 export function useDashboardData(user: User | null, session: Session | null) {
   const [data, setData] = useState<DashboardData>(emptyDashboardData);
   const [loading, setLoading] = useState(Boolean(user));
-  const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasLoadedRef = useRef(false);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const refreshQueuedRef = useRef(false);
+  const refreshSequenceRef = useRef(0);
+  const refreshCoreRef = useRef<() => Promise<void>>(async () => undefined);
 
   const refreshCore = useCallback(async () => {
     if (!user || !session) {
+      refreshSequenceRef.current += 1;
       setData(emptyDashboardData());
       setLoading(false);
-      setHasLoaded(false);
+      hasLoadedRef.current = false;
       return;
     }
-    if (!hasLoaded) setLoading(true);
+    const refreshSequence = ++refreshSequenceRef.current;
+    const initialLoad = !hasLoadedRef.current;
+    if (initialLoad) setLoading(true);
     setError(null);
     try {
       const client = requireSupabase();
@@ -200,6 +230,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         contactsResult,
         conversationMembersResult,
         conversationStatesResult,
+        messageUserStatesResult,
         signedPrekeysResult,
         oneTimePrekeysResult,
         cryptoTelemetryResult,
@@ -208,13 +239,14 @@ export function useDashboardData(user: User | null, session: Session | null) {
       ] = await Promise.all([
         client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }),
         client.from("messaging_conversations").select("id,owner_user_id,conversation_type,encrypted_title,updated_at,created_at").order("updated_at", { ascending: false }).limit(100),
-        client.from("messaging_message_envelopes").select("id,conversation_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at").order("created_at", { ascending: false }).limit(50),
+        client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at").order("created_at", { ascending: false }).limit(50),
         fetchVaultFiles(),
-        client.from("messaging_security_events").select("id,event_type,severity,encrypted_details,event_hash,previous_hash,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
+        client.from("messaging_security_events").select("id,device_id,event_type,severity,encrypted_details,event_hash,previous_hash,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_org_members").select("org_id,user_id,role,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_contacts").select("id,contact_user_id,alias,trust_state,created_at,updated_at").eq("owner_user_id", user.id).neq("trust_state", "removed").order("updated_at", { ascending: false }),
         client.from("messaging_conversation_members").select("conversation_id,user_id,device_id,role,revoked_at").is("revoked_at", null),
         client.from("messaging_conversation_user_states").select("conversation_id,archived_at,hidden_at,deleted_at,updated_at").eq("user_id", user.id),
+        client.from("messaging_message_user_states").select("conversation_id,client_message_id,first_read_at,hidden_at").eq("user_id", user.id),
         client.from("messaging_signed_prekeys").select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at").eq("is_active", true).order("expires_at", { ascending: true }),
         client.from("messaging_one_time_prekeys").select("id,device_id,consumed_at,created_at").eq("user_id", user.id).is("consumed_at", null),
         client.from("messaging_crypto_telemetry").select("id,user_id,device_id,event_scope,stage,detail,progress,status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50),
@@ -232,6 +264,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         [contactsResult.error, "Contacts"],
         [conversationMembersResult.error, "Conversation members"],
         [conversationStatesResult.error && !isMissingRelationError(conversationStatesResult.error) ? conversationStatesResult.error : null, "Conversation privacy states"],
+        [messageUserStatesResult.error && !isMissingRelationError(messageUserStatesResult.error) ? messageUserStatesResult.error : null, "Message read states"],
         [signedPrekeysResult.error, "Signed prekeys"],
         [oneTimePrekeysResult.error, "One-time prekeys"],
         [cryptoTelemetryResult.error, "Crypto telemetry"],
@@ -258,8 +291,12 @@ export function useDashboardData(user: User | null, session: Session | null) {
         } satisfies MessagingModule));
       const activeSignedPrekeys = signedPrekeysResult.error ? [] : (signedPrekeysResult.data ?? []) as Array<Record<string, unknown>>;
       const signedPrekeysByDevice = new Map<string, SignedPrekeySummary>();
-      activeSignedPrekeys.forEach((prekey) => {
-        signedPrekeysByDevice.set(String(prekey.device_id), {
+      activeSignedPrekeys
+        .sort((a, b) => recordTime(b, "created_at") - recordTime(a, "created_at") || recordTime(b, "expires_at") - recordTime(a, "expires_at"))
+        .forEach((prekey) => {
+        const deviceId = String(prekey.device_id);
+        if (signedPrekeysByDevice.has(deviceId)) return;
+        signedPrekeysByDevice.set(deviceId, {
           prekey_id: String(prekey.id),
           x25519_public: byteaToBytes(prekey.x25519_public),
           mlkem_public: byteaToBytes(prekey.mlkem_public),
@@ -297,6 +334,11 @@ export function useDashboardData(user: User | null, session: Session | null) {
       const envelopeRows = envelopesResult.error ? [] : (envelopesResult.data ?? []) as Array<Record<string, unknown>>;
       const memberRows = conversationMembersResult.error ? [] : (conversationMembersResult.data ?? []) as Array<Record<string, unknown>>;
       const conversationStateRows = conversationStatesResult.error ? [] : (conversationStatesResult.data ?? []) as Array<Record<string, unknown>>;
+      const messageUserStateRows = messageUserStatesResult.error ? [] : (messageUserStatesResult.data ?? []) as Array<Record<string, unknown>>;
+      const messageStatesByClientId = new Map(messageUserStateRows.map((state) => [String(state.client_message_id), {
+        first_read_at: state.first_read_at ? String(state.first_read_at) : null,
+        hidden_at: state.hidden_at ? String(state.hidden_at) : null,
+      }]));
       const conversationStatesById = new Map(conversationStateRows.map((state) => [String(state.conversation_id), {
         archived_at: state.archived_at ? String(state.archived_at) : null,
         hidden_at: state.hidden_at ? String(state.hidden_at) : null,
@@ -309,24 +351,33 @@ export function useDashboardData(user: User | null, session: Session | null) {
         .filter((conversation) => String(conversation.owner_user_id) === user.id || userConversationIds.has(String(conversation.id)))
         .filter((conversation) => !conversationStatesById.get(String(conversation.id))?.deleted_at)
         .map((conversation) => {
-        const latestEnvelope = envelopeRows.find((envelope) => String(envelope.conversation_id) === String(conversation.id));
+        const conversationEnvelopeRows = envelopeRows.filter((envelope) => String(envelope.conversation_id) === String(conversation.id) && !envelope.deleted_at);
+        const latestEnvelope = conversationEnvelopeRows[0] ?? null;
+        const unreadGroups = new Set<string>();
+        conversationEnvelopeRows
+          .filter((envelope) => String(envelope.recipient_user_id) === user.id)
+          .forEach((envelope) => {
+            const state = messageStatesByClientId.get(messageGroupId(envelope));
+            if (!state?.first_read_at && !state?.hidden_at) unreadGroups.add(messageGroupId(envelope));
+          });
         const memberUserIds = Array.from(new Set(memberRows
           .filter((member) => String(member.conversation_id) === String(conversation.id))
           .map((member) => String(member.user_id))));
         const state = conversationStatesById.get(String(conversation.id));
+        const updatedAt = latestIso(conversation.updated_at, conversation.created_at, latestEnvelope?.created_at);
         return {
           id: String(conversation.id),
           conversation_type: String(conversation.conversation_type),
           title: `Encrypted ${String(conversation.conversation_type)} conversation`,
-          last_activity: latestEnvelope ? String(latestEnvelope.message_kind) : "No encrypted messages yet",
-          unread_count: envelopeRows.filter((envelope) => String(envelope.conversation_id) === String(conversation.id) && String(envelope.recipient_user_id) === user.id && !envelope.deleted_at).length,
-          updated_at: String(conversation.updated_at ?? conversation.created_at),
+          last_activity: latestEnvelope ? messageKindLabel(latestEnvelope.message_kind) : "No encrypted messages yet",
+          unread_count: unreadGroups.size,
+          updated_at: updatedAt,
           member_user_ids: memberUserIds,
           archived_at: state?.archived_at ?? null,
           hidden_at: state?.hidden_at ?? null,
           deleted_at: state?.deleted_at ?? null,
         } satisfies ConversationSummary;
-      });
+      }).sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
       const contactRows = contactsResult.error ? [] : (contactsResult.data ?? []) as Array<Record<string, unknown>>;
       const contacts = contactRows.map((contact) => {
@@ -357,8 +408,10 @@ export function useDashboardData(user: User | null, session: Session | null) {
 
       const securityEvents = (securityEventsResult.error ? [] : (securityEventsResult.data ?? []) as Array<Record<string, unknown>>).map((event) => ({
         id: String(event.id),
+        device_id: event.device_id ? String(event.device_id) : null,
         event_type: String(event.event_type),
         severity: String(event.severity) as SecurityEvent["severity"],
+        encrypted_details: (event.encrypted_details as Record<string, unknown> | null) ?? null,
         event_hash: String(event.event_hash),
         previous_hash: event.previous_hash ? String(event.previous_hash) : null,
         created_at: String(event.created_at),
@@ -419,7 +472,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         vaultStorageLabel: bytesToDisplay(totalVaultBytes),
       });
 
-      setData({
+      const nextData = {
         profile,
         modules,
         devices,
@@ -433,14 +486,28 @@ export function useDashboardData(user: User | null, session: Session | null) {
         hardening: hardeningStatus,
         snapshot,
         report,
-      });
+      };
+      if (refreshSequence !== refreshSequenceRef.current) return;
+      setData(nextData);
+      setError(null);
     } catch (err) {
-      setError(describeDataError(err, "Dashboard data"));
+      if (refreshSequence === refreshSequenceRef.current) {
+        const message = describeDataError(err, "Dashboard data");
+        if (!hasLoadedRef.current) {
+          setError(message);
+        } else {
+          console.warn("QGuard dashboard live refresh delayed:", message);
+        }
+      }
     } finally {
-      setLoading(false);
-      setHasLoaded(true);
+      if (refreshSequence === refreshSequenceRef.current) {
+        setLoading(false);
+        hasLoadedRef.current = true;
+      }
     }
-  }, [hasLoaded, session, user]);
+  }, [session, user]);
+
+  refreshCoreRef.current = refreshCore;
 
   const refresh = useCallback(async () => {
     if (refreshInFlightRef.current) {
@@ -451,7 +518,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
 
     do {
       refreshQueuedRef.current = false;
-      const refreshPromise = refreshCore();
+      const refreshPromise = refreshCoreRef.current();
       refreshInFlightRef.current = refreshPromise;
       try {
         await refreshPromise;
@@ -461,11 +528,19 @@ export function useDashboardData(user: User | null, session: Session | null) {
         }
       }
     } while (refreshQueuedRef.current);
-  }, [refreshCore]);
+  }, []);
+
+  useEffect(() => {
+    hasLoadedRef.current = false;
+    refreshSequenceRef.current += 1;
+    setError(null);
+    setLoading(Boolean(user && session));
+    if (!user || !session) setData(emptyDashboardData());
+  }, [user?.id]);
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
+  }, [refresh, session?.access_token, user?.id]);
 
   const live = useQGuardLiveSse(user?.id ?? null, refresh);
 

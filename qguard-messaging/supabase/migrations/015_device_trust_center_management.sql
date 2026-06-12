@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS public.messaging_device_link_requests (
   pairing_token TEXT NOT NULL UNIQUE,
   requested_device_label TEXT NOT NULL,
   requested_fingerprint TEXT NOT NULL,
-  requested_suite JSONB NOT NULL DEFAULT '{"classical_kex":"X25519","pq_kem":"ML-KEM-768","kdf":"HKDF-SHA3-256","symmetric":"AES-256-GCM","classical_signature":"Ed25519","pq_signature":"ML-DSA-65"}',
+  requested_suite JSONB NOT NULL DEFAULT '{"classical_kex":"X25519","pq_kem":"ML-KEM-1024","kdf":"HKDF-SHA3-256","symmetric":"AES-256-GCM","classical_signature":"Ed25519","pq_signature":"ML-DSA-65"}',
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'expired', 'rejected')),
   expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '10 minutes',
   approved_by_device_id UUID REFERENCES public.messaging_devices(id) ON DELETE SET NULL,
@@ -40,7 +40,7 @@ CREATE OR REPLACE FUNCTION public.create_messaging_device_link_request(
   p_requested_device_label TEXT,
   p_requested_fingerprint TEXT,
   p_pairing_token TEXT,
-  p_requested_suite JSONB DEFAULT '{"classical_kex":"X25519","pq_kem":"ML-KEM-768","kdf":"HKDF-SHA3-256","symmetric":"AES-256-GCM","classical_signature":"Ed25519","pq_signature":"ML-DSA-65"}',
+  p_requested_suite JSONB DEFAULT '{"classical_kex":"X25519","pq_kem":"ML-KEM-1024","kdf":"HKDF-SHA3-256","symmetric":"AES-256-GCM","classical_signature":"Ed25519","pq_signature":"ML-DSA-65"}',
   p_ttl_minutes INTEGER DEFAULT 10
 )
 RETURNS UUID AS $$

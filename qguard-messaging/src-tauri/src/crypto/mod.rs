@@ -5,6 +5,9 @@ pub mod symmetric;
 
 use serde::{Deserialize, Serialize};
 
+pub const CURRENT_PQ_KEM: &str = "ML-KEM-1024";
+pub const LEGACY_PQ_KEM_768: &str = "ML-KEM-768";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AlgorithmSuite {
     pub classical_kex: String,
@@ -19,7 +22,7 @@ impl Default for AlgorithmSuite {
     fn default() -> Self {
         Self {
             classical_kex: "X25519".to_string(),
-            pq_kem: "ML-KEM-768".to_string(),
+            pq_kem: CURRENT_PQ_KEM.to_string(),
             kdf: "HKDF-SHA3-256".to_string(),
             symmetric: "AES-256-GCM".to_string(),
             classical_signature: "Ed25519".to_string(),

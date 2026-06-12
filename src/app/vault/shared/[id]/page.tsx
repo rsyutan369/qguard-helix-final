@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
+import type { PasswordKdfMetadata, RecipientWrappedShareKey } from '@/lib/vault/sharing-crypto'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -15,6 +16,8 @@ interface SharedFileInfo {
   mimeType: string
   isPasswordProtected: boolean
   passwordSalt?: string
+  passwordKdf?: PasswordKdfMetadata
+  recipientWrap?: RecipientWrappedShareKey
 }
 
 type PageState =
@@ -46,6 +49,25 @@ function getMimeIcon(mime: string): string {
   return '📄'
 }
 
+function resolveMimeType(fileName: string, mimeType?: string): string {
+  if (mimeType && mimeType !== 'application/octet-stream') return mimeType
+  const extension = fileName.split('.').pop()?.toLowerCase()
+  const mimeByExtension: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    json: 'application/json',
+    csv: 'text/csv',
+    zip: 'application/zip',
+  }
+  return extension ? mimeByExtension[extension] || 'application/octet-stream' : 'application/octet-stream'
+}
+
 // ─── Page ───────────────────────────────────────────────────
 
 export default function SharedFilePage() {
@@ -61,6 +83,8 @@ export default function SharedFilePage() {
   const [remainingAttempts, setRemainingAttempts] = useState<number>(3)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [transportWarning, setTransportWarning] = useState('')
+  const [recipientKeyBundle, setRecipientKeyBundle] = useState('')
+  const [recipientKeyPassphrase, setRecipientKeyPassphrase] = useState('')
 
   // ── Security: extract key from URL fragment, then scrub it ──
   // The key lives in the hash ONLY until we capture it in memory.
@@ -151,15 +175,20 @@ export default function SharedFilePage() {
           integrityHash: '',
           originalFilename: json.data.originalFilename,
           originalSize: json.data.originalSize,
-          mimeType: json.data.mimeType,
+          mimeType: resolveMimeType(json.data.originalFilename, json.data.mimeType),
           isPasswordProtected: true,
           passwordSalt: json.data.passwordSalt,
+          passwordKdf: json.data.passwordKdf,
+          recipientWrap: json.data.recipientWrap,
         })
         setState('password_required')
         return
       }
 
-      setFileInfo(json.data)
+      setFileInfo({
+        ...json.data,
+        mimeType: resolveMimeType(json.data.originalFilename, json.data.mimeType),
+      })
       setState('ready')
     } catch (err) {
       console.error('Fetch error:', err)
@@ -184,7 +213,7 @@ export default function SharedFilePage() {
       if (!fileInfo?.passwordSalt) {
         throw new Error('Password salt missing for this protected share.')
       }
-      const passwordHash = await hashPassword(password, fileInfo.passwordSalt)
+      const passwordHash = await hashPassword(password, fileInfo.passwordSalt, fileInfo.passwordKdf)
       await fetchSharedFile(passwordHash)
     } finally {
       setIsSubmitting(false)
@@ -195,10 +224,16 @@ export default function SharedFilePage() {
   const handleDecrypt = async () => {
     const shareKey = getShareKey()
     if (!fileInfo) return
+    const isRecipientBound = !!fileInfo.recipientWrap
 
-    if (!fileInfo.isPasswordProtected && !shareKey) {
+    if (!fileInfo.isPasswordProtected && !shareKey && !isRecipientBound) {
       setErrorMsg('Decryption key not found in URL. The link may be incomplete.')
       setState('error')
+      return
+    }
+
+    if (isRecipientBound && (!recipientKeyBundle.trim() || !recipientKeyPassphrase)) {
+      setErrorMsg('Recipient private key bundle and passphrase are required to unwrap this file key.')
       return
     }
 
@@ -213,7 +248,20 @@ export default function SharedFilePage() {
     try {
       let decryptedData: Uint8Array
 
-      if (fileInfo.isPasswordProtected && fileInfo.passwordSalt) {
+      if (fileInfo.recipientWrap) {
+        const { decryptSharedFile, unwrapRecipientShareKey } = await import('@/lib/vault/sharing-crypto')
+        const unwrappedShareKey = await unwrapRecipientShareKey(
+          fileInfo.recipientWrap,
+          recipientKeyBundle,
+          recipientKeyPassphrase,
+        )
+        decryptedData = await decryptSharedFile(
+          fileInfo.encryptedPayload,
+          fileInfo.iv,
+          unwrappedShareKey,
+          fileInfo.integrityHash,
+        )
+      } else if (fileInfo.isPasswordProtected && fileInfo.passwordSalt) {
         const { decryptSharedFileWithPassword } = await import('@/lib/vault/sharing-crypto')
         decryptedData = await decryptSharedFileWithPassword(
           fileInfo.encryptedPayload,
@@ -222,6 +270,7 @@ export default function SharedFilePage() {
           password,
           fileInfo.passwordSalt,
           fileInfo.integrityHash,
+          fileInfo.passwordKdf,
         )
       } else {
         const { decryptSharedFile } = await import('@/lib/vault/sharing-crypto')
@@ -233,11 +282,12 @@ export default function SharedFilePage() {
         )
       }
 
-      const blob = new Blob([decryptedData.buffer as ArrayBuffer], { type: fileInfo.mimeType })
+      const resolvedMimeType = resolveMimeType(fileInfo.originalFilename, fileInfo.mimeType)
+      const blob = new Blob([decryptedData.slice()], { type: resolvedMimeType })
       setDecryptedBlob(blob)
 
       // Generate preview for supported types
-      if (fileInfo.mimeType.startsWith('image/') || fileInfo.mimeType === 'application/pdf') {
+      if (resolvedMimeType.startsWith('image/') || resolvedMimeType === 'application/pdf') {
         setPreviewUrl(URL.createObjectURL(blob))
       }
 
@@ -468,12 +518,87 @@ export default function SharedFilePage() {
               The server never sees the decryption key or your file contents.
             </div>
 
+            {fileInfo.recipientWrap && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(212, 175, 55, 0.08)',
+                  border: '1px solid rgba(212, 175, 55, 0.24)',
+                  color: 'var(--qg-amber, #f59e0b)',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                }}>
+                  Recipient-bound share. Unlock with the matching private .qgkey bundle.
+                  <div style={{ marginTop: 4, color: 'var(--qg-text-muted, #8b949e)' }}>
+                    Fingerprint: {fileInfo.recipientWrap.recipientFingerprint}
+                  </div>
+                </div>
+                <textarea
+                  value={recipientKeyBundle}
+                  onChange={(e) => { setRecipientKeyBundle(e.target.value); setErrorMsg('') }}
+                  placeholder="Paste your private .qgkey bundle JSON"
+                  spellCheck={false}
+                  style={{
+                    width: '100%',
+                    minHeight: 110,
+                    resize: 'vertical',
+                    padding: '10px 14px',
+                    fontSize: 12,
+                    lineHeight: 1.45,
+                    background: 'var(--qg-bg, #010409)',
+                    color: 'var(--qg-text, #e6edf3)',
+                    border: '1px solid var(--qg-border, #1e293b)',
+                    borderRadius: 8,
+                    marginBottom: 10,
+                    boxSizing: 'border-box',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                />
+                <input
+                  type="password"
+                  value={recipientKeyPassphrase}
+                  onChange={(e) => { setRecipientKeyPassphrase(e.target.value); setErrorMsg('') }}
+                  placeholder="Private key passphrase"
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: 14,
+                    background: 'var(--qg-bg, #010409)',
+                    color: 'var(--qg-text, #e6edf3)',
+                    border: '1px solid var(--qg-border, #1e293b)',
+                    borderRadius: 8,
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            )}
+
+            {errorMsg && (
+              <div style={{
+                padding: '8px 12px',
+                borderRadius: 6,
+                marginBottom: 12,
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                fontSize: 12,
+                color: 'var(--qg-red, #ef4444)',
+              }}>
+                {errorMsg}
+              </div>
+            )}
+
             <button
               onClick={handleDecrypt}
+              disabled={!!fileInfo.recipientWrap && (!recipientKeyBundle.trim() || !recipientKeyPassphrase)}
               style={{
                 width: '100%', padding: '12px 20px', fontSize: 14, fontWeight: 600,
-                background: 'linear-gradient(135deg, #0891b2, #06b6d4)',
+                background: fileInfo.recipientWrap && (!recipientKeyBundle.trim() || !recipientKeyPassphrase)
+                  ? 'var(--qg-border, #1e293b)'
+                  : 'linear-gradient(135deg, #0891b2, #06b6d4)',
                 color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer',
+                opacity: fileInfo.recipientWrap && (!recipientKeyBundle.trim() || !recipientKeyPassphrase) ? 0.65 : 1,
               }}
             >
               🔓 Decrypt & Download

@@ -34,7 +34,7 @@ impl TrustedDevice {
             label,
             fingerprint,
             trust_state: DeviceTrustState::ThisDevice,
-            pqc_status: "Hybrid active: X25519 + ML-KEM-768".to_string(),
+            pqc_status: "Hybrid active: X25519 + ML-KEM-1024".to_string(),
             last_seen_at: Utc::now(),
         }
     }

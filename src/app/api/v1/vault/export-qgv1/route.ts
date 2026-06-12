@@ -235,13 +235,13 @@ export async function POST(request: NextRequest) {
     const byAlgo = new Map<string, string>()
     for (const r of hybridRows) byAlgo.set(r.algorithm, r.public_key as string)
     const x25519Pub = byAlgo.get('X25519')
-    const mlkemPub = byAlgo.get('ML-KEM-768')
+    const mlkemPub = byAlgo.get('ML-KEM-1024') || byAlgo.get('ML-KEM-768')
     if (!x25519Pub || !mlkemPub) {
       return NextResponse.json(
         {
           error: {
             code: 'INCOMPLETE_HYBRID_IDENTITY',
-            message: 'Hybrid identity is missing X25519 or ML-KEM-768 public key',
+            message: 'Hybrid identity is missing X25519 or ML-KEM-1024 public key',
           },
         },
         { status: 412 },
