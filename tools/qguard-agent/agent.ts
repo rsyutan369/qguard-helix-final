@@ -25,6 +25,18 @@ type EvidenceType =
   | 'service-mesh-crypto-policy'
   | 'hsm-integration'
   | 'trust-store'
+  | 'cloud-kms-policy'
+  | 'cloud-hsm-policy'
+  | 'cloud-certificate-manager'
+  | 'cloud-database-crypto-policy'
+  | 'cloud-storage-encryption-policy'
+  | 'cloud-iam-key-policy'
+  | 'cdn-tls-policy'
+  | 'web-application-crypto-policy'
+  | 'saas-crypto-policy'
+  | 'network-device-crypto-policy'
+  | 'database-crypto-policy'
+  | 'container-crypto-policy'
   | 'package-manifest'
   | 'config-reference'
   | 'jwt-algorithm'
@@ -147,6 +159,20 @@ const DEFAULT_SCAN_TYPES = [
   'api_gateway',
   'load_balancer',
   'hsm',
+  'cloud',
+  'cloud_kms',
+  'cloud_hsm',
+  'cloud_database',
+  'cloud_storage',
+  'cloud_load_balancer',
+  'web_application',
+  'public_tls',
+  'api',
+  'cdn',
+  'saas',
+  'database',
+  'network_device',
+  'containers',
   'runtime',
 ]
 const PACKAGE_MANIFEST_NAMES = new Set([
@@ -817,6 +843,17 @@ const CONFIG_PATTERNS: Array<{ pattern: RegExp; algorithm: string; label: string
 
 function configEvidenceTypeFor(filePath: string, line: string): EvidenceType {
   const text = `${filePath} ${line}`.toLowerCase()
+  if (/rds|aurora|cloud sql|azure sql|cosmos|spanner|dynamodb|cloud database|database/.test(text)) return 'cloud-database-crypto-policy'
+  if (/s3|bucket|blob|object storage|cloud storage|storage account/.test(text)) return 'cloud-storage-encryption-policy'
+  if (/cloudhsm|hsm cluster|pkcs11|nshield|luna/.test(text)) return 'cloud-hsm-policy'
+  if (/kms|key vault|cloud kms|oci vault|alibaba kms|aliyun kms/.test(text)) return 'cloud-kms-policy'
+  if (/acm|certificate manager|private ca|managed certificate/.test(text)) return 'cloud-certificate-manager'
+  if (/cloudfront|cloudflare|akamai|fastly|cdn|front.?door/.test(text)) return 'cdn-tls-policy'
+  if (/saas|salesforce|servicenow|workday|zendesk|shopify|saml|oidc/.test(text)) return 'saas-crypto-policy'
+  if (/postgres|mysql|mariadb|sql server|oracle db|mongodb/.test(text)) return 'database-crypto-policy'
+  if (/router|switch|firewall|f5|big-ip|netscaler|fortinet|palo alto|checkpoint/.test(text)) return 'network-device-crypto-policy'
+  if (/container|dockerfile|image|registry|podman/.test(text)) return 'container-crypto-policy'
+  if (/website|web app|customer portal|ecommerce|e-commerce|reverse proxy|public tls/.test(text)) return 'web-application-crypto-policy'
   if (/openvpn|wireguard|ipsec|strongswan|ikev2|ssl vpn|vpn/.test(text)) return 'vpn-crypto-profile'
   if (/ingress|gateway api|cert-manager|clusterissuer|issuer|kubernetes|k8s|namespace/.test(text)) return 'kubernetes-crypto-policy'
   if (/istio|linkerd|consul|service.?mesh|destinationrule|peerauthentication|mtls/.test(text)) return 'service-mesh-crypto-policy'
@@ -831,6 +868,12 @@ function configEvidenceTypeFor(filePath: string, line: string): EvidenceType {
 
 function configAssetTypeFor(filePath: string, line: string) {
   const text = `${filePath} ${line}`.toLowerCase()
+  if (/aws|azure|gcp|google cloud|oracle cloud|oci|alibaba|aliyun|cloudhsm|cloud kms|key vault|rds|aurora|cloud sql|bucket|blob|cloudfront|front.?door/.test(text)) return 'cloud_infrastructure'
+  if (/website|web app|customer portal|ecommerce|e-commerce|reverse proxy|cdn|cloudflare|akamai|fastly|public tls/.test(text)) return 'web_application'
+  if (/saas|salesforce|servicenow|workday|zendesk|shopify|saml|oidc/.test(text)) return 'saas_application'
+  if (/postgres|mysql|mariadb|sql server|oracle db|mongodb|database/.test(text)) return 'database'
+  if (/router|switch|firewall|f5|big-ip|netscaler|fortinet|palo alto|checkpoint/.test(text)) return 'network_device'
+  if (/container|dockerfile|image|registry|podman/.test(text)) return 'container'
   if (/openvpn|wireguard|ipsec|strongswan|vpn/.test(text)) return 'vpn'
   if (/ingress|gateway api|cert-manager|kubernetes|k8s|service.?mesh|istio|linkerd|consul/.test(text)) return 'kubernetes'
   if (/api.?gateway|nginx|envoy|traefik|haproxy|load.?balancer|alb|elb|cdn|cloudfront/.test(text)) return 'network_edge'

@@ -285,6 +285,20 @@ const AGENT_SCAN_TYPE_OPTIONS = [
   { id: 'api_gateway', label: 'Gateway', detail: 'API gateway TLS policy' },
   { id: 'load_balancer', label: 'Load Balancer', detail: 'Edge and LB profiles' },
   { id: 'hsm', label: 'HSM/KMS', detail: 'PKCS#11, KMS, vault bindings' },
+  { id: 'cloud', label: 'Cloud', detail: 'AWS, Azure, GCP, OCI, Alibaba' },
+  { id: 'cloud_kms', label: 'Cloud KMS', detail: 'Key vault and KMS policies' },
+  { id: 'cloud_hsm', label: 'Cloud HSM', detail: 'HSM and private CA bindings' },
+  { id: 'cloud_database', label: 'Cloud DB', detail: 'Managed database crypto' },
+  { id: 'cloud_storage', label: 'Cloud Storage', detail: 'Bucket/blob encryption' },
+  { id: 'cloud_load_balancer', label: 'Cloud LB', detail: 'Cloud load balancer TLS' },
+  { id: 'web_application', label: 'Web Apps', detail: 'Websites and portals' },
+  { id: 'public_tls', label: 'Public TLS', detail: 'Internet-facing endpoints' },
+  { id: 'api', label: 'APIs', detail: 'API crypto and signing' },
+  { id: 'cdn', label: 'CDN', detail: 'Edge TLS and cert policy' },
+  { id: 'saas', label: 'SaaS', detail: 'SaaS trust and API policy' },
+  { id: 'database', label: 'Databases', detail: 'DB TLS, certs, keys' },
+  { id: 'network_device', label: 'Network Devices', detail: 'Firewalls, routers, VPNs' },
+  { id: 'containers', label: 'Containers', detail: 'Images and runtime crypto' },
   { id: 'runtime', label: 'Runtime', detail: 'Handshake and drift events' },
 ];
 
@@ -293,19 +307,19 @@ const REMEDIATION_WORKFLOW_STAGES = ['DISCOVER', 'ANALYZE', 'APPROVE', 'PATCH', 
 const REMEDIATION_READINESS_GROUPS = [
   {
     title: 'Discover',
-    items: ['TLS, certificates, PKI', 'SSH, VPN, gateways, load balancers', 'Kubernetes, service mesh, HSM/KMS', 'OpenSSL, OQS, JVM, .NET, BouncyCastle'],
+    items: ['TLS, certificates, PKI, keys, trust fabric', 'SSH, VPN, gateways, load balancers, network devices', 'AWS, Azure, GCP, OCI, Alibaba, Kubernetes, containers', 'Web apps, APIs, CDNs, SaaS, public TLS endpoints'],
   },
   {
     title: 'Assess',
-    items: ['Quantum-vulnerable algorithms', 'NIST and FIPS readiness', 'Migration feasibility', 'Dependency chain and blast radius'],
+    items: ['Quantum-vulnerable algorithms and weak cipher suites', 'NIST readiness and FIPS posture', 'Migration feasibility and dependency chains', 'Potential blast radius across local, cloud, web, and SaaS assets'],
   },
   {
     title: 'Patch',
-    items: ['TLS 1.3 and hybrid X25519 + ML-KEM', 'ML-DSA or hybrid certificates', 'SSH Ed25519 policy', 'OQS provider, VPN, gateway, ingress policy'],
+    items: ['TLS 1.3 and hybrid X25519 + ML-KEM', 'ML-DSA, SLH-DSA-ready, or hybrid certificates', 'SSH Ed25519, weak cipher removal, key rotation', 'OQS provider, VPN, KMS/HSM, database, CDN, API gateway, ingress policy'],
   },
   {
     title: 'Verify',
-    items: ['Before and after state', 'Certificate and service validation', 'Automatic rollback on failed validation', 'Continuous drift monitoring'],
+    items: ['Before and after state with functional testing', 'TLS, certificate, dependency, rollback, and compliance validation', 'Automatic rollback on failed guarded local patches', 'Runtime crypto intelligence, PQC adoption, trust fabric, and drift monitoring'],
   },
 ];
 const REMEDIATION_CONTROL_SUMMARY = [
@@ -314,6 +328,32 @@ const REMEDIATION_CONTROL_SUMMARY = [
   ['Rollback', 'Automatic after failed validation'],
   ['Telemetry', 'SSE heartbeat every 30-60s'],
 ];
+const SUPPORTED_ENVIRONMENT_GROUPS = [
+  {
+    title: 'Local / On-Prem',
+    items: ['Workstations', 'Servers', 'VMs', 'Databases', 'Internal apps', 'PKI, certificates, keys', 'TLS configs', 'Network devices'],
+  },
+  {
+    title: 'Cloud',
+    items: ['AWS', 'Azure', 'GCP', 'Oracle Cloud', 'Alibaba Cloud', 'Cloud databases/storage', 'KMS and HSM', 'Cloud load balancers'],
+  },
+  {
+    title: 'Kubernetes / Containers',
+    items: ['Clusters', 'Ingress', 'Gateway API', 'cert-manager', 'Service mesh', 'Containers', 'Registries', 'Workload crypto config'],
+  },
+  {
+    title: 'Web / Edge / SaaS',
+    items: ['Websites', 'Web apps', 'APIs', 'API gateways', 'Reverse proxies', 'CDNs', 'Customer portals', 'SaaS apps'],
+  },
+];
+const LOCAL_COLLECTOR_CLARIFICATIONS = [
+  ['Installed where?', 'A Local Collector is a tenant-owned agent installed on an endpoint, server, VM, container, sidecar, or controlled jump host.'],
+  ['Local only?', 'No. It monitors local OS/resources when authorized, but can also scan allowed network targets and submit evidence for external assets.'],
+  ['Cloud APIs?', 'Yes, when the customer explicitly authorizes provider API access. Remote mutation uses scoped Cloud Connectors or operator patch actions.'],
+  ['External assets?', 'Yes. Public TLS endpoints, APIs, web apps, SaaS trust metadata, and cloud resources can be discovered through allowlisted targets/connectors.'],
+  ['Remote remediation?', 'Yes. Collectors can trigger workflows; Cloud/Web/SaaS/Kubernetes changes require least-privilege scopes, approval, snapshots, validation, and audit logs.'],
+];
+const CONNECTOR_PROVIDER_OPTIONS = ['kubernetes', 'aws', 'azure', 'gcp', 'oracle-cloud', 'alibaba-cloud', 'cloudflare', 'akamai', 'fastly', 'pki', 'database', 'network-device', 'saas', 'okta', 'entra-id', 'auth0', 'custom'];
 
 function sevColor(s: string) {
   switch (s.toLowerCase()) {
@@ -718,9 +758,9 @@ export default function ScannerDashboard() {
   const [connectorForm, setConnectorForm] = useState<ConnectorFormState>({
     provider: 'kubernetes',
     displayName: 'Production Kubernetes Connector',
-    scopes: 'kubernetes:read\nkubernetes:patch:ingress\nkubernetes:patch:cert-manager\nkubernetes:patch:service-mesh',
-    allowedTargets: 'https://api.customer.com\nnamespace/default/ingress/customer-api',
-    allowedPaths: '/etc/kubernetes/manifests\n/opt/customer-api/config',
+    scopes: 'kubernetes:read\nkubernetes:patch:ingress\nkubernetes:patch:cert-manager\nkubernetes:patch:service-mesh\ncloud:read\ncloud:patch:load-balancer\ncloud:patch:kms\nweb:patch:tls\nsaas:patch:certificate',
+    allowedTargets: 'https://api.customer.com\nnamespace/default/ingress/customer-api\narn:aws:elasticloadbalancing:region:acct:listener/app/app-lb/listener-id\n/subscriptions/sub-id/resourceGroups/rg/providers/Microsoft.Network/applicationGateways/app-gw',
+    allowedPaths: '/etc/kubernetes/manifests\n/repos/customer-api\n/opt/customer-api/config',
   });
   const [operatorPatchForm, setOperatorPatchForm] = useState<OperatorPatchFormState>({
     assetClass: 'kubernetes',
@@ -1314,9 +1354,18 @@ export default function ScannerDashboard() {
           provider: connectorForm.provider,
           displayName: connectorForm.displayName,
           scopes,
-          capabilities: Object.fromEntries(scopes.map((scope) => [scope, true])),
+          capabilities: {
+            ...Object.fromEntries(scopes.map((scope) => [scope, true])),
+            localCollectorRelationship: 'Collectors discover and validate local/external assets; remote mutation uses connector credentials and operator approval.',
+            supportedEnvironments: SUPPORTED_ENVIRONMENT_GROUPS.map((group) => group.title),
+          },
           policy: connectorPolicyFromForm(),
-          metadata: { source: 'dashboard-operator-patch-workflow', connectorMode: 'operator-approved' },
+          metadata: {
+            source: 'dashboard-operator-patch-workflow',
+            connectorMode: 'operator-approved',
+            supportedEnvironments: SUPPORTED_ENVIRONMENT_GROUPS.map((group) => group.title),
+            credentialBoundary: 'least-privilege customer-authorized provider credentials',
+          },
         }),
       });
       const json = await response.json();
@@ -2580,6 +2629,34 @@ npm run agent:watch`;
                 </div>
               ))}
             </div>
+            <div className="mt-4 grid xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)] gap-4">
+              <div className="rounded-lg border border-cyan-400/10 bg-cyan-400/[0.035] p-4">
+                <div className="text-[9px] font-black uppercase tracking-[0.18em] text-cyan-300/80">Supported Remediation Environments</div>
+                <div className="mt-3 grid sm:grid-cols-2 xl:grid-cols-4 gap-2">
+                  {SUPPORTED_ENVIRONMENT_GROUPS.map((group) => (
+                    <div key={group.title} className="rounded border border-white/10 bg-black/20 p-3">
+                      <div className="text-[10px] font-black uppercase tracking-wider text-white/65">{group.title}</div>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {group.items.map((item) => (
+                          <span key={item} className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[8px] font-bold text-white/40">{item}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-lg border border-gold/10 bg-gold/[0.04] p-4">
+                <div className="text-[9px] font-black uppercase tracking-[0.18em] text-gold/80">Local Collector Clarification</div>
+                <div className="mt-3 space-y-2">
+                  {LOCAL_COLLECTOR_CLARIFICATIONS.map(([question, answer]) => (
+                    <div key={question} className="rounded border border-gold/10 bg-black/20 p-2.5">
+                      <div className="text-[9px] font-black uppercase tracking-wider text-white/35">{question}</div>
+                      <div className="mt-1 text-[10px] leading-relaxed text-white/55">{answer}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
@@ -2832,7 +2909,7 @@ npm run agent:watch`;
                   }))}
                   className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
                 >
-                  {['kubernetes', 'aws', 'azure', 'gcp', 'cloudflare', 'akamai', 'okta', 'entra-id', 'auth0', 'custom'].map((provider) => (
+                  {CONNECTOR_PROVIDER_OPTIONS.map((provider) => (
                     <option key={provider} value={provider}>{provider}</option>
                   ))}
                 </select>
@@ -2849,7 +2926,7 @@ npm run agent:watch`;
                   placeholder={'kubernetes:read\nkubernetes:patch:ingress\naws:acm:read\naws:elasticloadbalancing:modify-listener\ncloudflare:zone:edit'}
                 />
                 <div className="rounded-lg border border-gold/10 bg-gold/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
-                  <span className="font-black uppercase tracking-wider text-gold/80">Connector Credentials:</span> register least-privilege provider scopes here. Do not paste private keys into migration jobs; use the tenant connector or approved operator patch action.
+                  <span className="font-black uppercase tracking-wider text-gold/80">Connector Credentials:</span> register least-privilege provider scopes for cloud, Kubernetes, web, SaaS, PKI, database, or network device APIs. Do not paste private keys into migration jobs; use the tenant connector or approved operator patch action.
                 </div>
                 <textarea
                   value={connectorForm.allowedTargets}
@@ -2864,7 +2941,7 @@ npm run agent:watch`;
                   placeholder={'/etc/kubernetes/manifests\n/repos/customer-api\n/opt/customer-api/config'}
                 />
                 <div className="rounded-lg border border-cyan-400/10 bg-cyan-400/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
-                  <span className="font-black uppercase tracking-wider text-cyan-300/80">Connector Targets:</span> use provider resource IDs, cluster resources, endpoint URLs, or load balancer/certificate resources. Use paths only when the connector can actually read or patch that repository or mounted configuration.
+                  <span className="font-black uppercase tracking-wider text-cyan-300/80">Connector Targets:</span> use provider resource IDs, ARNs, Kubernetes resources, SaaS app IDs, endpoint URLs, APIs, CDN zones, load balancer IDs, certificate IDs, KMS/HSM keys, or database resources. Use paths only when the connector can actually read or patch that repository or mounted configuration.
                 </div>
                 <button
                   onClick={handleCreateConnector}
@@ -3425,7 +3502,7 @@ npm run agent:watch`;
                     onChange={(event) => setAgentForm((current) => ({ ...current, allowedTargets: event.target.value }))}
                     className="w-full resize-none rounded border border-gold/15 bg-black/20 px-3 py-2 font-mono text-xs text-white/70 outline-none focus:border-gold/50"
                   />
-                  <span className="block text-[10px] leading-relaxed text-white/35">Network allowlist only: URLs, hostnames, IP:port pairs, SSH URLs, or provider endpoints.</span>
+                  <span className="block text-[10px] leading-relaxed text-white/35">Authorization allowlist: URLs, hostnames, IP:port pairs, SSH URLs, provider resource IDs, ARNs, Kubernetes resources, SaaS app IDs, CDN zones, certificate IDs, KMS/HSM keys, or database resources.</span>
                 </label>
 
                 <label className="space-y-2">

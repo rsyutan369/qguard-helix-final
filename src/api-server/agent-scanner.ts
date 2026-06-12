@@ -113,22 +113,82 @@ const DEFAULT_AGENT_SCAN_TYPES = [
   'api_gateway',
   'load_balancer',
   'hsm',
+  'cloud',
+  'cloud_kms',
+  'cloud_hsm',
+  'cloud_database',
+  'cloud_storage',
+  'cloud_load_balancer',
+  'web_application',
+  'public_tls',
+  'api',
+  'cdn',
+  'saas',
+  'database',
+  'network_device',
+  'containers',
   'runtime',
 ]
 
 const REMEDIATION_WORKFLOW_STAGES = ['DISCOVER', 'ANALYZE', 'APPROVE', 'PATCH', 'VALIDATE', 'MONITOR', 'REPORT']
 
+const SUPPORTED_REMEDIATION_ENVIRONMENTS = [
+  {
+    id: 'local_on_prem',
+    label: 'Local / On-Premises',
+    assets: ['workstations', 'servers', 'virtual-machines', 'databases', 'internal-applications', 'pki', 'certificates-keys', 'tls-configurations', 'network-devices'],
+    execution: ['local-collector', 'operator-patcher', 'connector-assisted'],
+  },
+  {
+    id: 'multi_cloud',
+    label: 'Multi-Cloud',
+    assets: ['aws', 'azure', 'gcp', 'oracle-cloud', 'alibaba-cloud', 'cloud-databases', 'cloud-storage', 'kms', 'cloud-hsm', 'load-balancers', 'cloud-native-applications'],
+    execution: ['cloud-connector', 'operator-patcher', 'agent-validation'],
+  },
+  {
+    id: 'kubernetes_container',
+    label: 'Kubernetes / Containers',
+    assets: ['clusters', 'ingress', 'gateway-api', 'cert-manager', 'service-mesh', 'containers', 'registries', 'workload-crypto-config'],
+    execution: ['kubernetes-connector', 'operator-patcher', 'local-sidecar-collector'],
+  },
+  {
+    id: 'web_public_edge',
+    label: 'Web / Internet-Facing',
+    assets: ['websites', 'web-applications', 'apis', 'api-gateways', 'reverse-proxies', 'cdn-services', 'customer-portals', 'e-commerce-platforms', 'public-tls-endpoints'],
+    execution: ['external-scanner', 'edge-connector', 'operator-patcher', 'agent-validation'],
+  },
+  {
+    id: 'saas_identity',
+    label: 'SaaS / Identity Platforms',
+    assets: ['saas-applications', 'oidc-applications', 'saml-applications', 'jwt-signing-policy', 'trust-federation', 'api-keys', 'certificates'],
+    execution: ['saas-connector', 'identity-connector', 'operator-patcher'],
+  },
+]
+
+const LOCAL_COLLECTOR_CLARIFICATION = {
+  definition: 'A Local Collector is a tenant-owned QGuard agent installed on an endpoint, server, VM, container, sidecar, or controlled jump host.',
+  localOnly: false,
+  monitorsLocalResourcesWhenAuthorized: true,
+  canCallCloudApis: true,
+  canDiscoverExternalAssets: true,
+  canTriggerRemoteRemediation: true,
+  remoteMutationRule: 'Remote cloud, SaaS, Kubernetes, web, and edge changes require explicit connector credentials, declared scopes, tenant admin approval, change approval, snapshots, validation, and audit logging.',
+  credentialBoundary: 'Collectors and connectors never receive global credentials from QGuard; customers authorize least-privilege access in their own environment.',
+}
+
 function defaultRemediationCapabilities(overrides: Record<string, unknown> = {}) {
   return {
-    discover: ['tls', 'certificates', 'pki', 'ssh', 'vpn', 'api-gateway', 'load-balancer', 'hsm', 'kubernetes', 'service-mesh', 'crypto-libraries'],
-    assess: ['quantum-vulnerable-assets', 'nist-readiness', 'fips-status', 'migration-feasibility', 'dependency-chain', 'blast-radius'],
-    remediate: ['tls13-upgrade', 'hybrid-x25519-ml-kem', 'ml-dsa-certificate-migration', 'ssh-ed25519-policy', 'oqs-provider-config', 'vpn-pqc-profile', 'kubernetes-tls-policy'],
-    validation: ['before-state', 'after-state', 'verification', 'service-reachability', 'certificate-chain', 'cipher-negotiation'],
+    scope: SUPPORTED_REMEDIATION_ENVIRONMENTS,
+    localCollector: LOCAL_COLLECTOR_CLARIFICATION,
+    discover: ['asset-inventory', 'tls', 'certificates', 'pki', 'keys', 'trust-relationships', 'ssh', 'vpn', 'api-gateway', 'reverse-proxy', 'cdn', 'load-balancer', 'hsm', 'kms', 'kubernetes', 'containers', 'service-mesh', 'cloud-databases', 'cloud-storage', 'saas-apps', 'crypto-libraries'],
+    assess: ['quantum-vulnerable-assets', 'non-compliant-configurations', 'nist-readiness', 'fips-status', 'migration-feasibility', 'dependency-chain', 'blast-radius', 'pqc-readiness'],
+    remediate: ['tls13-upgrade', 'weak-cipher-removal', 'hybrid-x25519-ml-kem', 'ml-kem-deployment', 'ml-dsa-certificate-migration', 'slh-dsa-readiness', 'hybrid-certificate-deployment', 'ssh-ed25519-policy', 'oqs-provider-config', 'vpn-pqc-profile', 'kubernetes-tls-policy', 'cloud-kms-policy', 'cloud-load-balancer-policy', 'cdn-edge-policy', 'saas-crypto-policy', 'database-tls-policy'],
+    validation: ['before-state', 'after-state', 'verification', 'functional-testing', 'service-reachability', 'certificate-chain', 'cipher-negotiation', 'dependency-validation', 'rollback-validation', 'compliance-validation'],
     rollback: ['configuration-snapshot', 'certificate-backup', 'key-backup-metadata', 'tls-policy-snapshot', 'automatic-restore-on-failed-validation'],
-    monitoring: ['tls-handshakes', 'certificate-changes', 'key-rotations', 'library-updates', 'pqc-adoption', 'drift-detection', 'unauthorized-crypto-changes'],
+    monitoring: ['runtime-crypto-intelligence', 'tls-handshakes', 'certificate-health', 'certificate-changes', 'key-rotations', 'trust-fabric', 'library-updates', 'pqc-adoption', 'crypto-agility', 'drift-detection', 'unauthorized-crypto-changes'],
     workflow: REMEDIATION_WORKFLOW_STAGES,
     heartbeatSeconds: { min: 30, max: 60 },
-    executionMode: 'tenant-approved-guarded-agent-or-connector',
+    executionMode: 'tenant-approved-local-agent-cloud-connector-operator-patcher',
     ...overrides,
   }
 }
@@ -155,6 +215,14 @@ function remediationExecutionContract(option?: Record<string, any>) {
     telemetry: {
       stream: ['sse', 'websocket-compatible'],
       heartbeatSeconds: { min: 30, max: 60 },
+    },
+    supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+    localCollector: LOCAL_COLLECTOR_CLARIFICATION,
+    remoteExecution: {
+      localCollectorCanOrchestrate: true,
+      connectorRequiredForRemoteMutation: true,
+      allowedRemoteTargets: ['aws', 'azure', 'gcp', 'oracle-cloud', 'alibaba-cloud', 'kubernetes', 'containers', 'web-applications', 'apis', 'cdn', 'pki', 'saas'],
+      credentialBoundary: LOCAL_COLLECTOR_CLARIFICATION.credentialBoundary,
     },
     actionType: option?.actionType || null,
     requiredScopes: option?.requiredScopes || [],
@@ -185,6 +253,41 @@ async function recordAgentAudit(client: SupabaseClient | null, row: {
     details: row.details,
   })
   if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] audit log insert failed:', error.message)
+}
+
+function connectorProviderCapabilities(providerValue: unknown, scopes: string[], overrides: Record<string, unknown> = {}) {
+  const provider = cleanString(providerValue, 100)?.toLowerCase() || 'custom'
+  const cloudProvider = /aws|azure|gcp|google|oracle|oci|alibaba|aliyun/.test(provider)
+  const kubernetesProvider = /kubernetes|k8s|openshift|eks|aks|gke|oke/.test(provider)
+  const edgeProvider = /cloudflare|akamai|fastly|cdn|edge|front.?door|api.?gateway|kong|apigee/.test(provider)
+  const identityProvider = /okta|entra|azure-ad|auth0|identity|saml|oidc|idp/.test(provider)
+  const pkiProvider = /pki|certificate|cert-manager|acm|private-ca|key-vault/.test(provider)
+  const hsmProvider = /hsm|kms|key-vault|cloudhsm|nshield|luna/.test(provider)
+
+  return {
+    provider,
+    providerCategory: cloudProvider
+      ? 'multi-cloud'
+      : kubernetesProvider
+        ? 'kubernetes-container'
+        : edgeProvider
+          ? 'web-edge'
+          : identityProvider
+            ? 'saas-identity'
+            : pkiProvider || hsmProvider
+              ? 'pki-key-management'
+              : 'custom',
+    supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+    discover: ['remote-asset-inventory', 'crypto-asset-inventory', 'certificate-inventory', 'key-inventory', 'trust-relationship-inventory', 'pqc-readiness'],
+    assess: ['quantum-vulnerable-assets', 'non-compliant-configurations', 'nist-readiness', 'fips-status', 'migration-feasibility', 'dependency-chain', 'blast-radius'],
+    remediate: ['tls-upgrades', 'certificate-replacement', 'weak-cipher-removal', 'legacy-crypto-replacement', 'ml-kem-deployment', 'ml-dsa-deployment', 'slh-dsa-readiness', 'hybrid-cryptography', 'key-rotation', 'configuration-hardening', 'compliance-policy-enforcement'],
+    validate: ['post-remediation-verification', 'functional-testing', 'tls-validation', 'certificate-validation', 'dependency-validation', 'rollback-validation', 'compliance-validation'],
+    monitor: ['runtime-crypto-intelligence', 'pqc-adoption-tracking', 'certificate-health', 'crypto-agility', 'trust-fabric-monitoring'],
+    executionMode: 'authorized-connector-operator-patcher',
+    requiresCustomerAuthorization: true,
+    scopes,
+    ...overrides,
+  }
 }
 
 async function requireUserAuth(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -307,6 +410,47 @@ function parsePolicyTarget(value: string) {
   }
 }
 
+function normalizedPolicyText(value: unknown) {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\s+/g, ' ').toLowerCase()
+}
+
+function evidenceResourceIdentifiers(evidence: ScannerEvidenceRecord) {
+  const raw = evidence.rawEvidence && typeof evidence.rawEvidence === 'object' ? evidence.rawEvidence as Record<string, unknown> : {}
+  return [
+    evidence.target,
+    evidence.host,
+    evidence.assetName,
+    evidence.assetType,
+    raw.resourceId,
+    raw.resource_id,
+    raw.cloudResourceId,
+    raw.cloud_resource_id,
+    raw.arn,
+    raw.azureResourceId,
+    raw.azure_resource_id,
+    raw.gcpResourceName,
+    raw.gcp_resource_name,
+    raw.oracleOcid,
+    raw.oci_ocid,
+    raw.alibabaResourceId,
+    raw.clusterResource,
+    raw.kubernetesResource,
+    raw.namespace,
+    raw.serviceName,
+    raw.apiId,
+    raw.gatewayId,
+    raw.loadBalancerId,
+    raw.cdnDistributionId,
+    raw.certificateId,
+    raw.kmsKeyId,
+    raw.hsmClusterId,
+    raw.databaseId,
+    raw.storageBucket,
+    raw.saasTenantId,
+    raw.applicationId,
+  ].map(normalizedPolicyText).filter(Boolean)
+}
+
 function evidenceAllowedByPolicy(evidence: ScannerEvidenceRecord, policy: ReturnType<typeof normalizePolicy>, allowEmptyPolicy = false) {
   const allowedTargets = policy.allowedTargets.map(String).filter(Boolean)
   const allowedPaths = policy.allowedPaths.map(String).filter(Boolean)
@@ -326,6 +470,17 @@ function evidenceAllowedByPolicy(evidence: ScannerEvidenceRecord, policy: Return
       if (evidenceHost && parsed.host === evidenceHost && (!evidence.port || !parsed.port || parsed.port === evidence.port)) return true
       if (evidenceTarget && (evidenceTarget === parsed.raw || evidenceTarget.includes(parsed.host))) return true
     }
+  }
+
+  const identifiers = evidenceResourceIdentifiers(evidence)
+  for (const allowedTarget of allowedTargets) {
+    const allowed = normalizedPolicyText(allowedTarget)
+    if (!allowed) continue
+    if (identifiers.some((identifier) => {
+      if (identifier === allowed) return true
+      if (identifier.length >= 8 && allowed.length >= 8 && (identifier.includes(allowed) || allowed.includes(identifier))) return true
+      return false
+    })) return true
   }
 
   return false
@@ -361,6 +516,18 @@ const RUNTIME_EVIDENCE_TYPES = new Set([
   'service-mesh-crypto-policy',
   'hsm-integration',
   'trust-store',
+  'cloud-kms-policy',
+  'cloud-hsm-policy',
+  'cloud-certificate-manager',
+  'cloud-database-crypto-policy',
+  'cloud-storage-encryption-policy',
+  'cloud-iam-key-policy',
+  'cdn-tls-policy',
+  'web-application-crypto-policy',
+  'saas-crypto-policy',
+  'network-device-crypto-policy',
+  'database-crypto-policy',
+  'container-crypto-policy',
   'package-manifest',
   'config-reference',
   'jwt-algorithm',
@@ -1232,7 +1399,12 @@ function remediationAdapter(job: any) {
 
   if (/kubernetes|k8s|cluster|ingress|helm|namespace/.test(text)) return 'kubernetes'
   if (/container|docker|image|registry|podman/.test(text)) return 'container'
-  if (/aws|azure|gcp|cloud|load balancer|alb|elb|cdn|cloudfront|gateway/.test(text)) return 'cloud'
+  if (/saas|salesforce|servicenow|workday|zendesk|shopify|customer portal|commerce|e-commerce/.test(text)) return 'saas_application'
+  if (/database|postgres|mysql|mariadb|sql server|oracle db|rds|aurora|cloud sql|cosmos|spanner|dynamodb|mongodb/.test(text)) return 'database'
+  if (/api.?gateway|gateway api|kong|apigee|azure api management|aws api gateway/.test(text)) return 'api_gateway'
+  if (/network device|router|switch|firewall|f5|big-ip|citrix|netscaler|palo alto|fortinet|checkpoint|vpn/.test(text)) return 'network_device'
+  if (/website|web app|web_application|portal|reverse proxy|nginx|apache|iis|cdn|cloudfront|cloudflare|akamai|fastly|public tls|https?:\/\//.test(text)) return 'web_application'
+  if (/aws|azure|gcp|google cloud|oracle cloud|oci|alibaba|aliyun|cloud|load balancer|alb|elb|nlb|front door|kms|key vault|hsm|bucket|storage/.test(text)) return 'cloud'
   if (/iam|identity|access|oauth|oidc|saml|jwt|credential|secret|key vault|kms/.test(text)) return 'identity_access'
   if (/repo|source|code|package|dependency|manifest|config|library|application/.test(text)) return 'code_application'
   if (/https?:\/\/|website|web app|web_application|tls|ssl|ssh|protocol|certificate|cipher/.test(text)) return 'network_protocol'
@@ -1494,6 +1666,33 @@ const PATCH_OPTION_GROUPS = {
       summary: 'Replace or reissue certificates through ACM, Azure Key Vault Certificates, Google Certificate Manager, or private CA.',
       validation: 'Upload certificate-manager evidence and rescan served certificates.',
     },
+    {
+      id: 'cloud-database-encryption-policy',
+      label: 'Patch Cloud Database TLS / Encryption',
+      actionType: 'patch_cloud_database_crypto_policy',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:database'],
+      summary: 'Patch RDS, Aurora, Cloud SQL, Azure SQL, Cosmos DB, Spanner, Oracle, or Alibaba database TLS, certificate, and key-policy settings where supported.',
+      validation: 'Connector uploads database TLS/encryption evidence and QGuard validates client reachability and certificate trust.',
+    },
+    {
+      id: 'cloud-storage-encryption-policy',
+      label: 'Patch Cloud Storage Encryption',
+      actionType: 'patch_cloud_storage_encryption_policy',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:storage'],
+      summary: 'Enforce approved encryption, key rotation, and KMS/HSM binding for buckets, blobs, object stores, and managed file services.',
+      validation: 'Connector uploads storage encryption policy and key metadata after the approved change.',
+    },
+    {
+      id: 'cloud-hsm-provider-policy',
+      label: 'Patch Cloud HSM / KMS Provider',
+      actionType: 'patch_cloud_hsm_provider_policy',
+      requiresConnector: true,
+      requiredScopes: ['cloud:read', 'cloud:patch:hsm', 'cloud:patch:kms'],
+      summary: 'Update CloudHSM, Key Vault, Cloud KMS, OCI Vault, Alibaba KMS, or private CA provider policy and key backup metadata.',
+      validation: 'Connector uploads HSM/KMS provider evidence and runtime key-use proof.',
+    },
   ],
   identity_access: [
     {
@@ -1585,6 +1784,15 @@ const PATCH_OPTION_GROUPS = {
       summary: 'Patch API gateways, reverse proxies, and edge gateways to enforce TLS 1.3, approved cipher suites, certificate references, and hybrid KEM groups where supported.',
       validation: 'Connector uploads gateway policy evidence and QGuard rescans endpoint negotiation.',
     },
+    {
+      id: 'gateway-api-signing-policy',
+      label: 'Patch API Signing / JWT Policy',
+      actionType: 'patch_api_gateway_signing_policy',
+      requiresConnector: true,
+      requiredScopes: ['gateway:read', 'gateway:patch:signing'],
+      summary: 'Patch API signing, JWT verification, client certificate, and mTLS trust policy away from vulnerable RSA/ECDSA-only assumptions.',
+      validation: 'Connector uploads gateway policy and signed-token/certificate evidence after rollout.',
+    },
   ],
   hsm: [
     {
@@ -1626,6 +1834,95 @@ const PATCH_OPTION_GROUPS = {
       requiredScopes: ['container:read', 'container:patch:image'],
       summary: 'Patch image/runtime crypto config, rebuild, and redeploy through the container delivery system.',
       validation: 'Upload image digest/config evidence and rescan the running endpoint.',
+    },
+  ],
+  web_application: [
+    {
+      id: 'web-public-tls-profile',
+      label: 'Patch Public TLS Endpoint',
+      actionType: 'patch_web_public_tls_profile',
+      requiresConnector: true,
+      requiredScopes: ['web:read', 'web:patch:tls'],
+      summary: 'Patch website, portal, e-commerce, reverse proxy, or public TLS endpoint certificate and TLS profile through the owning edge/server connector.',
+      validation: 'QGuard rescans the public endpoint, certificate chain, protocol, cipher suite, and service reachability.',
+    },
+    {
+      id: 'web-reverse-proxy-crypto-policy',
+      label: 'Patch Reverse Proxy Crypto Policy',
+      actionType: 'patch_web_reverse_proxy_crypto_policy',
+      requiresConnector: true,
+      requiredScopes: ['web:read', 'web:patch:reverse-proxy'],
+      summary: 'Patch Nginx, Apache, IIS, Envoy, HAProxy, Traefik, or equivalent proxy TLS/cipher/certificate policy.',
+      validation: 'Connector uploads proxy configuration evidence and QGuard validates endpoint negotiation.',
+    },
+    {
+      id: 'web-cdn-edge-pqc-profile',
+      label: 'Patch CDN / Edge PQC Profile',
+      actionType: 'patch_web_cdn_edge_pqc_profile',
+      requiresConnector: true,
+      requiredScopes: ['web:read', 'web:patch:cdn'],
+      summary: 'Patch Cloudflare, Akamai, Fastly, CloudFront, Front Door, or equivalent edge TLS/certificate policy where supported.',
+      validation: 'Connector uploads edge policy evidence and public scans verify propagation.',
+    },
+  ],
+  saas_application: [
+    {
+      id: 'saas-certificate-trust-rotation',
+      label: 'Patch SaaS Certificate / Trust Rotation',
+      actionType: 'patch_saas_certificate_trust_rotation',
+      requiresConnector: true,
+      requiredScopes: ['saas:read', 'saas:patch:certificate'],
+      summary: 'Rotate SaaS application certificates, custom domain TLS, trust metadata, or federation certificates using approved tenant API scopes.',
+      validation: 'Connector uploads SaaS certificate/trust metadata and QGuard validates public or federation endpoints.',
+    },
+    {
+      id: 'saas-api-crypto-policy',
+      label: 'Patch SaaS API Crypto Policy',
+      actionType: 'patch_saas_api_crypto_policy',
+      requiresConnector: true,
+      requiredScopes: ['saas:read', 'saas:patch:api-security'],
+      summary: 'Patch SaaS API signing, mTLS, webhook signature, key rotation, and allowed algorithm policy where the provider exposes controls.',
+      validation: 'Connector uploads API policy evidence plus post-change functional verification.',
+    },
+  ],
+  database: [
+    {
+      id: 'database-tls-certificate-policy',
+      label: 'Patch Database TLS / Certificate Policy',
+      actionType: 'patch_database_tls_certificate_policy',
+      requiresConnector: true,
+      requiredScopes: ['database:read', 'database:patch:tls'],
+      summary: 'Patch PostgreSQL, MySQL, SQL Server, Oracle, MongoDB, or managed database TLS, certificate, and trust-store settings.',
+      validation: 'Connector uploads database TLS policy evidence and validates client connectivity plus certificate chain integrity.',
+    },
+    {
+      id: 'database-key-rotation-policy',
+      label: 'Patch Database Key Rotation',
+      actionType: 'patch_database_key_rotation_policy',
+      requiresConnector: true,
+      requiredScopes: ['database:read', 'database:patch:key-rotation'],
+      summary: 'Rotate or rebind database encryption keys through KMS/HSM or database-native key management after approval.',
+      validation: 'Connector uploads key metadata, rotation status, and service health evidence.',
+    },
+  ],
+  network_device: [
+    {
+      id: 'network-device-tls-ssh-policy',
+      label: 'Patch Network Device TLS / SSH Policy',
+      actionType: 'patch_network_device_tls_ssh_policy',
+      requiresConnector: true,
+      requiredScopes: ['network-device:read', 'network-device:patch:crypto-policy'],
+      summary: 'Patch routers, switches, firewalls, F5, Citrix, VPN concentrators, and appliances away from weak TLS, SSH RSA/DSA, and legacy cipher suites.',
+      validation: 'Connector uploads device config diff, snapshot metadata, and post-change TLS/SSH evidence.',
+    },
+    {
+      id: 'network-device-vpn-pqc-profile',
+      label: 'Patch Network Device VPN Profile',
+      actionType: 'patch_network_device_vpn_pqc_profile',
+      requiresConnector: true,
+      requiredScopes: ['network-device:read', 'network-device:patch:vpn'],
+      summary: 'Patch IPSec, SSL VPN, and appliance VPN profiles toward approved hybrid PQC settings where supported by the device ecosystem.',
+      validation: 'Connector uploads VPN profile evidence and handshake or tunnel health validation.',
     },
   ],
 }
@@ -1795,6 +2092,8 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       environment: cleanString(req.body?.environment, 80) || cleanString(req.body?.metadata?.environment, 80) || 'production',
       enrolledBy: user.id,
       remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+      supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+      localCollector: LOCAL_COLLECTOR_CLARIFICATION,
       securityGates: ['rbac-validation', 'tenant-admin-approval', 'change-approval', 'snapshot-before-patch', 'post-patch-validation'],
     },
     created_at: now,
@@ -1822,6 +2121,8 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       metadata: {
         remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
         heartbeatSeconds: { min: 30, max: 60 },
+        supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+        localCollector: LOCAL_COLLECTOR_CLARIFICATION,
         executionContract: remediationExecutionContract(),
       },
     })
@@ -2012,6 +2313,8 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
         metadata: {
           remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
           heartbeatSeconds: { min: 30, max: 60 },
+          supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+          localCollector: LOCAL_COLLECTOR_CLARIFICATION,
           executionContract: remediationExecutionContract(),
         },
         updated_at: new Date().toISOString(),
@@ -2029,6 +2332,8 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
         metadata: {
           remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
           heartbeatSeconds: { min: 30, max: 60 },
+          supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+          localCollector: LOCAL_COLLECTOR_CLARIFICATION,
           executionContract: remediationExecutionContract(),
         },
       })
@@ -2082,16 +2387,25 @@ router.get('/connectors', requireUserAuth, async (req: AuthedRequest, res) => {
 router.post('/connectors', requireUserAuth, async (req: AuthedRequest, res) => {
   const client = req.client || null
   const user = req.user!
+  const provider = cleanString(req.body?.provider, 100) || 'custom'
+  const scopes = Array.isArray(req.body?.scopes) ? req.body.scopes.slice(0, 50).map(String) : []
+  const capabilityOverrides = typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {}
   const row = {
     user_id: user.id,
-    provider: cleanString(req.body?.provider, 100) || 'custom',
+    provider,
     provider_account_id: cleanString(req.body?.providerAccountId || req.body?.provider_account_id, 255),
     display_name: cleanString(req.body?.displayName || req.body?.display_name, 255),
     status: 'connected',
-    scopes: Array.isArray(req.body?.scopes) ? req.body.scopes.slice(0, 50).map(String) : [],
-    capabilities: typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {},
+    scopes,
+    capabilities: connectorProviderCapabilities(provider, scopes, capabilityOverrides),
     policy: normalizePolicy(req.body?.policy || {}),
-    metadata: typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {},
+    metadata: sanitizeAgentMetadata({
+      ...(typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}),
+      supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+      localCollectorRelationship: 'Local collectors can discover and validate remote assets; connector credentials are required for remote mutations.',
+      securityGates: ['least-privilege-scopes', 'rbac-validation', 'tenant-admin-approval', 'change-approval', 'snapshot-before-patch', 'post-patch-validation', 'audit-log'],
+      credentialBoundary: LOCAL_COLLECTOR_CLARIFICATION.credentialBoundary,
+    }),
   }
   if (client) {
     const { data, error } = await client.from('connector_accounts').insert(row).select('*').single()

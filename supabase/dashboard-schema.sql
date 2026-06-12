@@ -370,7 +370,7 @@ BEGIN
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS interval_seconds INTEGER DEFAULT 60';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS allowed_targets JSONB DEFAULT ''[]''::jsonb';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS allowed_paths JSONB DEFAULT ''[]''::jsonb';
-        EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS scan_types TEXT[] DEFAULT ARRAY[''tls'', ''certificates'', ''pki'', ''ssh'', ''packages'', ''configs'', ''libraries'', ''vpn'', ''kubernetes'', ''service_mesh'', ''api_gateway'', ''load_balancer'', ''hsm'', ''runtime'']';
+        EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS scan_types TEXT[] DEFAULT ARRAY[''tls'', ''certificates'', ''pki'', ''ssh'', ''packages'', ''configs'', ''libraries'', ''vpn'', ''kubernetes'', ''service_mesh'', ''api_gateway'', ''load_balancer'', ''hsm'', ''cloud'', ''cloud_kms'', ''cloud_hsm'', ''cloud_database'', ''cloud_storage'', ''cloud_load_balancer'', ''web_application'', ''public_tls'', ''api'', ''cdn'', ''saas'', ''database'', ''network_device'', ''containers'', ''runtime'']';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS alert_threshold VARCHAR(20) DEFAULT ''moderate''';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
@@ -1615,7 +1615,7 @@ CREATE TABLE IF NOT EXISTS scanner_agent_policies (
     interval_seconds INTEGER DEFAULT 60,
     allowed_targets JSONB DEFAULT '[]',
     allowed_paths JSONB DEFAULT '[]',
-    scan_types TEXT[] DEFAULT ARRAY['tls', 'certificates', 'pki', 'ssh', 'packages', 'configs', 'libraries', 'vpn', 'kubernetes', 'service_mesh', 'api_gateway', 'load_balancer', 'hsm', 'runtime'],
+    scan_types TEXT[] DEFAULT ARRAY['tls', 'certificates', 'pki', 'ssh', 'packages', 'configs', 'libraries', 'vpn', 'kubernetes', 'service_mesh', 'api_gateway', 'load_balancer', 'hsm', 'cloud', 'cloud_kms', 'cloud_hsm', 'cloud_database', 'cloud_storage', 'cloud_load_balancer', 'web_application', 'public_tls', 'api', 'cdn', 'saas', 'database', 'network_device', 'containers', 'runtime'],
     alert_threshold VARCHAR(20) DEFAULT 'moderate',
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
