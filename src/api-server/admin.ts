@@ -137,6 +137,93 @@ async function safeInsert(ctx: SafeContext, client: any, table: string, payload:
   }
 }
 
+function assertNoSupabaseError(result: any, fallback: string) {
+  if (result?.error) throw new Error(result.error.message || fallback)
+}
+
+function prettifyAdminAction(action: unknown): string {
+  const normalized = textValue(action, 'admin.event')
+    .replace(/^admin\./, '')
+    .replace(/[._-]+/g, ' ')
+    .trim()
+  return normalized
+    ? normalized.replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : 'Admin Event'
+}
+
+function activitySeverity(action: unknown, details: Record<string, unknown> = {}): string {
+  const normalized = `${textValue(action, '')} ${textValue(details.status, '')} ${textValue(details.result, '')}`.toLowerCase()
+  if (/failed|error|delete|disabled|suspend/.test(normalized)) return 'warning'
+  if (/restore|approve|active|completed|success/.test(normalized)) return 'info'
+  return 'info'
+}
+
+function adminAuditTarget(row: any, details: Record<string, unknown>): string {
+  const targetName = textValue(details.targetName || details.name || details.full_name, '')
+  const targetEmail = textValue(details.targetEmail || details.email, '')
+  const targetId = textValue(details.targetUserId || row.entity_id || details.entityId, '')
+  const entityType = textValue(row.entity_type || details.targetType, 'platform')
+  if (targetName && targetEmail) return `${targetName} (${targetEmail})`
+  return targetEmail || targetName || targetId || prettifyAdminAction(entityType)
+}
+
+function normalizeAdminAuditActivity(row: any) {
+  const details = recordOf(row.details)
+  const action = textValue(row.action, 'admin.event')
+  const targetType = textValue(row.entity_type || details.targetType, 'platform')
+  const targetId = textValue(row.entity_id || details.targetUserId || details.entityId, '')
+  const target = adminAuditTarget(row, details)
+  const actorEmail = textValue(row.actor_email || details.actorEmail, '')
+  const result = textValue(details.status || details.result, 'completed')
+
+  return {
+    id: textValue(row.id, `${action}-${row.created_at || targetId || 'admin-audit'}`),
+    source: 'admin_audit',
+    severity: activitySeverity(action, details),
+    title: prettifyAdminAction(action),
+    detail: `${actorEmail || 'Administrator'} performed ${prettifyAdminAction(action).toLowerCase()} on ${target}`,
+    created_at: row.created_at,
+    actorEmail,
+    actorId: row.actor_user_id || null,
+    administrator: actorEmail || 'Administrator',
+    action,
+    targetType,
+    targetId,
+    target,
+    result,
+    ipAddress: row.ip_address || null,
+    row,
+  }
+}
+
+function normalizeGenericActivity(row: any, source: string, defaults: { title?: string; detail?: string; severity?: string; createdAt?: string } = {}) {
+  const details = recordOf(row.details || row.metadata)
+  const action = textValue(row.action || row.event_type || row.status || defaults.title, 'activity')
+  const actorEmail = textValue(details.actorEmail || row.actor_email || row.user_email || row.email || row.user_id, '')
+  const targetType = textValue(row.entity_type || row.resource_type || details.targetType || source, source)
+  const targetId = textValue(row.entity_id || row.resource_id || details.targetUserId || row.user_id || row.id, '')
+  const target = textValue(details.targetEmail || details.targetName || row.resource_name || row.name || row.plan || targetId, targetType)
+
+  return {
+    id: textValue(row.id, `${source}-${defaults.createdAt || row.created_at || row.updated_at || targetId || action}`),
+    source,
+    severity: textValue(row.severity || defaults.severity, 'info'),
+    title: textValue(defaults.title, prettifyAdminAction(action)),
+    detail: textValue(defaults.detail, row.message || row.description || row.entity_type || row.status || target),
+    created_at: defaults.createdAt || row.created_at || row.updated_at,
+    actorEmail,
+    actorId: row.actor_user_id || row.user_id || null,
+    administrator: actorEmail || (source === 'audit_logs' ? 'Administrator' : 'System'),
+    action,
+    targetType,
+    targetId,
+    target,
+    result: textValue(details.status || details.result || row.status, 'recorded'),
+    ipAddress: row.ip_address || null,
+    row,
+  }
+}
+
 async function recordAdminAudit(req: AdminRequest, action: string, entityType: string, entityId?: string | null, details: Record<string, unknown> = {}) {
   const db = req.adminDb
   const actor = req.adminUser
@@ -452,6 +539,30 @@ function roleStats(roles: any[]) {
   }
 }
 
+function roleIsProtected(role: any) {
+  const roleKey = normalizeRoleKey(role?.role_key || role?.name, '')
+  const metadata = recordOf(role?.metadata)
+  return textValue(role?.role_type, 'custom') === 'system'
+    || booleanValue(metadata.protected, false)
+    || SYSTEM_ROLE_DEFINITIONS.some((definition) => definition.role_key === roleKey)
+}
+
+function roleAuditDetails(role: any, details: Record<string, unknown> = {}) {
+  const permissions = rolePermissions(role)
+  return {
+    targetType: 'role',
+    targetName: textValue(role?.name, titleFromRoleKey(normalizeRoleKey(role?.role_key || role?.name, 'role'))),
+    roleKey: normalizeRoleKey(role?.role_key || role?.name, 'role'),
+    roleType: textValue(role?.role_type, 'custom'),
+    tenantId: textValue(role?.tenant_id, '') || null,
+    permissionScope: textValue(role?.permission_scope, permissions.includes('*') ? 'All' : 'Custom'),
+    permissionCount: numberValue(role?.permission_count, permissions.length),
+    previousStatus: textValue(role?.status, 'active'),
+    protected: roleIsProtected(role),
+    ...details,
+  }
+}
+
 function tenantMetadata(tenant: any) {
   return recordOf(tenant?.metadata)
 }
@@ -647,6 +758,88 @@ function creditCents(row: any) {
 
 function billingStatusIsActive(status: string) {
   return ['active', 'approved', 'trialing', 'trial'].includes(status.toLowerCase())
+}
+
+function billingEntitlementTier(plan: unknown, status: unknown) {
+  const normalizedStatus = textValue(status, '').toLowerCase()
+  if (['canceled', 'cancelled', 'inactive', 'deleted'].includes(normalizedStatus)) return 'free'
+  return textValue(plan, 'free').toLowerCase()
+}
+
+function subscriptionTargetName(subscription: any, profile?: any, tenant?: any) {
+  return textValue(
+    tenant?.name
+    || profile?.full_name
+    || profile?.name
+    || profile?.email
+    || subscription?.tenant_id
+    || subscription?.user_id
+    || subscription?.id,
+    'Billing subscription',
+  )
+}
+
+function subscriptionAuditDetails(subscription: any, profile: any = null, tenant: any = null, details: Record<string, unknown> = {}) {
+  const metadata = billingMetadata(subscription)
+  const plan = textValue(subscription?.plan, 'free')
+  const cycle = billingCycleFor(subscription)
+  return {
+    targetType: 'subscription',
+    targetName: subscriptionTargetName(subscription, profile, tenant),
+    targetUserId: subscription?.user_id || null,
+    targetEmail: profile?.email || null,
+    tenantId: subscription?.tenant_id || profile?.tenant_id || null,
+    tenantName: tenant?.name || null,
+    plan,
+    billingCycle: cycle,
+    amountCents: subscriptionAmountCents(subscription, []),
+    currency: textValue(subscription?.currency || metadata.currency, 'USD').toUpperCase(),
+    previousStatus: textValue(subscription?.status, 'inactive'),
+    previousPlan: plan,
+    previousRenewalDate: billingRenewalDate(subscription),
+    ...details,
+  }
+}
+
+async function loadSubscriptionContext(db: any, subscription: any) {
+  const profile = subscription?.user_id
+    ? await db.from('profiles').select('id,email,name,full_name,tier,tenant_id').eq('id', subscription.user_id).maybeSingle()
+    : { data: null, error: null }
+  assertNoSupabaseError(profile, 'Failed to load subscription user profile')
+
+  const tenantId = textValue(subscription?.tenant_id || profile.data?.tenant_id, '')
+  const tenant = tenantId
+    ? await db.from('organizations').select('id,name,slug,plan,status').eq('id', tenantId).maybeSingle()
+    : { data: null, error: null }
+  assertNoSupabaseError(tenant, 'Failed to load subscription tenant')
+
+  return { profile: profile.data || null, tenant: tenant.data || null }
+}
+
+async function syncBillingEntitlements(db: any, subscription: any, plan: unknown, status: unknown) {
+  const tier = billingEntitlementTier(plan, status)
+  if (subscription?.user_id) {
+    const profileUpdate = await db
+      .from('profiles')
+      .update({ tier, updated_at: new Date().toISOString() })
+      .eq('id', subscription.user_id)
+      .select('id,tier')
+      .maybeSingle()
+    assertNoSupabaseError(profileUpdate, 'Failed to sync user billing tier')
+    if (!profileUpdate.data) throw new Error('Failed to sync user billing tier: profile not found')
+  }
+
+  const tenantId = textValue(subscription?.tenant_id, '')
+  if (tenantId) {
+    const tenantUpdate = await db
+      .from('organizations')
+      .update({ plan: tier, updated_at: new Date().toISOString() })
+      .eq('id', tenantId)
+      .select('id,plan')
+      .maybeSingle()
+    assertNoSupabaseError(tenantUpdate, 'Failed to sync tenant billing plan')
+    if (!tenantUpdate.data) throw new Error('Failed to sync tenant billing plan: tenant not found')
+  }
 }
 
 function serializeAdminSubscription(subscription: any, maps: {
@@ -1355,6 +1548,10 @@ router.post('/roles', async (req: AdminRequest, res) => {
     jsonError(res, 400, 'VALIDATION_ERROR', 'Role name is required')
     return
   }
+  if (SYSTEM_ROLE_DEFINITIONS.some((definition) => definition.role_key === roleKey)) {
+    jsonError(res, 400, 'SYSTEM_ROLE_PROTECTED', 'System role keys cannot be replaced from the dashboard')
+    return
+  }
 
   const permissions = Array.isArray(body.permissions) ? body.permissions.map((item: unknown) => String(item)).filter(Boolean) : []
   const payload = {
@@ -1374,9 +1571,20 @@ router.post('/roles', async (req: AdminRequest, res) => {
   }
 
   try {
+    const existingRole = await req.adminDb.from('admin_roles').select('*').eq('role_key', roleKey).maybeSingle()
+    assertNoSupabaseError(existingRole, 'Failed to check existing role')
+    if (existingRole.data && roleIsProtected(existingRole.data)) {
+      jsonError(res, 400, 'SYSTEM_ROLE_PROTECTED', 'Protected roles cannot be replaced from the dashboard')
+      return
+    }
+
     const { data, error } = await req.adminDb.from('admin_roles').upsert(payload, { onConflict: 'role_key' }).select('*').single()
     if (error) throw error
-    await recordAdminAudit(req, 'admin.role.saved', 'role', data?.id || roleKey, { roleKey, name })
+    await recordAdminAudit(req, 'admin.role.saved', 'role', data?.id || roleKey, roleAuditDetails(data || payload, {
+      result: 'completed',
+      operation: existingRole.data ? 'updated_existing_role' : 'created_role',
+      changedFields: Object.keys(payload),
+    }))
     res.status(201).json({ data: { role: data } })
   } catch (error) {
     jsonError(res, 500, 'ADMIN_ROLE_SAVE_FAILED', error instanceof Error ? error.message : 'Failed to save role')
@@ -1406,9 +1614,25 @@ router.patch('/roles/:id', async (req: AdminRequest, res) => {
   }
 
   try {
+    const existingRole = await req.adminDb.from('admin_roles').select('*').eq('id', id).maybeSingle()
+    assertNoSupabaseError(existingRole, 'Failed to load role')
+    if (!existingRole.data) {
+      jsonError(res, 404, 'ROLE_NOT_FOUND', 'Role not found')
+      return
+    }
+    if (roleIsProtected(existingRole.data)) {
+      jsonError(res, 400, 'SYSTEM_ROLE_PROTECTED', 'Protected roles cannot be modified from the dashboard')
+      return
+    }
+
     const { data, error } = await req.adminDb.from('admin_roles').update(allowed).eq('id', id).select('*').single()
     if (error) throw error
-    await recordAdminAudit(req, 'admin.role.updated', 'role', id, allowed)
+    await recordAdminAudit(req, 'admin.role.updated', 'role', id, roleAuditDetails(existingRole.data, {
+      result: 'completed',
+      nextStatus: data?.status || existingRole.data.status || null,
+      changedFields: Object.keys(allowed).filter((key) => !['updated_by', 'updated_at'].includes(key)),
+      changes: allowed,
+    }))
     res.json({ data: { role: data } })
   } catch (error) {
     jsonError(res, 500, 'ADMIN_ROLE_UPDATE_FAILED', error instanceof Error ? error.message : 'Failed to update role')
@@ -1417,17 +1641,44 @@ router.patch('/roles/:id', async (req: AdminRequest, res) => {
 
 router.post('/roles/:id/actions', async (req: AdminRequest, res) => {
   const id = req.params.id
-  const action = textValue(req.body?.action, '')
+  const action = textValue(req.body?.action, '').toLowerCase()
   if (id.startsWith('system-')) {
     jsonError(res, 400, 'SYSTEM_ROLE_PROTECTED', 'System roles cannot be changed from the dashboard')
     return
   }
 
   try {
+    const existingRole = await req.adminDb.from('admin_roles').select('*').eq('id', id).maybeSingle()
+    assertNoSupabaseError(existingRole, 'Failed to load role')
+    if (!existingRole.data) {
+      jsonError(res, 404, 'ROLE_NOT_FOUND', 'Role not found')
+      return
+    }
+    if (roleIsProtected(existingRole.data)) {
+      jsonError(res, 400, 'SYSTEM_ROLE_PROTECTED', 'Protected roles cannot be changed from the dashboard')
+      return
+    }
+
     if (action === 'delete') {
-      const { error } = await req.adminDb.from('admin_roles').delete().eq('id', id)
-      if (error) throw error
-      await recordAdminAudit(req, 'admin.role.deleted', 'role', id)
+      const profiles = await req.adminDb.from('profiles').select('id,email,role,metadata').limit(5000)
+      assertNoSupabaseError(profiles, 'Failed to check role assignments')
+      const assignedUsers = userCountForRole(profiles.data || [], existingRole.data)
+      if (assignedUsers > 0) {
+        await recordAdminAudit(req, 'admin.role.delete.blocked', 'role', id, roleAuditDetails(existingRole.data, {
+          result: 'blocked',
+          reason: 'role_in_use',
+          assignedUsers,
+        }))
+        jsonError(res, 409, 'ROLE_IN_USE', `Role cannot be deleted while assigned to ${assignedUsers} user${assignedUsers === 1 ? '' : 's'}`)
+        return
+      }
+
+      const deleteResult = await req.adminDb.from('admin_roles').delete().eq('id', id).select('id').single()
+      assertNoSupabaseError(deleteResult, 'Failed to delete role')
+      await recordAdminAudit(req, 'admin.role.deleted', 'role', id, roleAuditDetails(existingRole.data, {
+        result: 'completed',
+        deleted: true,
+      }))
       res.json({ data: { deleted: true } })
       return
     }
@@ -1450,7 +1701,11 @@ router.post('/roles/:id/actions', async (req: AdminRequest, res) => {
       updated_at: new Date().toISOString(),
     }).eq('id', id).select('*').single()
     if (error) throw error
-    await recordAdminAudit(req, `admin.role.${action}`, 'role', id, { status: nextStatus })
+    await recordAdminAudit(req, `admin.role.${action}`, 'role', id, roleAuditDetails(existingRole.data, {
+      result: 'completed',
+      nextStatus,
+      changedFields: ['status'],
+    }))
     res.json({ data: { role: data } })
   } catch (error) {
     jsonError(res, 500, 'ADMIN_ROLE_ACTION_FAILED', error instanceof Error ? error.message : 'Failed to update role')
@@ -1591,17 +1846,36 @@ router.delete('/users/:id', async (req: AdminRequest, res) => {
     return
   }
   try {
+    const targetProfile = await req.adminDb
+      .from('profiles')
+      .select('id,email,name,full_name,role,account_status')
+      .eq('id', id)
+      .maybeSingle()
+    assertNoSupabaseError(targetProfile, 'Failed to load target user before delete')
+
     await Promise.allSettled([
       req.adminDb.from('organization_members').delete().eq('user_id', id),
       req.adminDb.from('user_sessions').delete().eq('user_id', id),
       req.adminDb.from('user_devices').delete().eq('user_id', id),
       req.adminDb.from('billing_subscriptions').delete().eq('user_id', id),
       req.adminDb.from('billing_notifications').delete().eq('user_id', id),
-      req.adminDb.from('profiles').delete().eq('id', id),
     ])
-    const { error } = await req.adminDb.auth.admin.deleteUser(id)
-    if (error) throw error
-    await recordAdminAudit(req, 'admin.user.deleted', 'user', id)
+    assertNoSupabaseError(
+      await req.adminDb.from('profiles').delete().eq('id', id),
+      'Failed to delete user profile'
+    )
+    assertNoSupabaseError(
+      await req.adminDb.auth.admin.deleteUser(id),
+      'Failed to delete auth user'
+    )
+    await recordAdminAudit(req, 'admin.user.deleted', 'user', id, {
+      targetUserId: id,
+      targetEmail: targetProfile.data?.email || null,
+      targetName: targetProfile.data?.full_name || targetProfile.data?.name || null,
+      previousRole: targetProfile.data?.role || null,
+      previousAccountStatus: targetProfile.data?.account_status || null,
+      status: 'completed',
+    })
     res.json({ data: { id, deleted: true } })
   } catch (error) {
     jsonError(res, 500, 'ADMIN_USER_DELETE_FAILED', error instanceof Error ? error.message : 'Failed to delete user')
@@ -1623,40 +1897,104 @@ router.post('/users/:id/actions', async (req: AdminRequest, res) => {
   try {
     const authResult = await req.adminDb.auth.admin.getUserById(id).catch(() => ({ data: { user: null } }))
     const authUser = authResult?.data?.user
+    const targetProfile = await req.adminDb
+      .from('profiles')
+      .select('id,email,name,full_name,role,tier,account_status,mfa_required,tenant_id')
+      .eq('id', id)
+      .maybeSingle()
+    assertNoSupabaseError(targetProfile, 'Failed to load target user profile')
+    const targetName = targetProfile.data?.full_name || targetProfile.data?.name || null
+    const targetEmail = targetProfile.data?.email || authUser?.email || null
     const appMetadata = { ...(authUser?.app_metadata || {}) }
     const userMetadata = { ...(authUser?.user_metadata || {}) }
-    let responsePayload: Record<string, unknown> = { action, status: 'completed' }
+    let responsePayload: Record<string, unknown> = {
+      action,
+      status: 'completed',
+      targetUserId: id,
+      targetEmail,
+      targetName,
+      previousAccountStatus: targetProfile.data?.account_status || null,
+      previousRole: targetProfile.data?.role || null,
+      previousMfaRequired: targetProfile.data?.mfa_required ?? null,
+    }
 
     if (['suspend', 'disable', 'restore'].includes(action)) {
       const accountStatus = action === 'restore' ? 'active' : action === 'suspend' ? 'suspended' : 'disabled'
-      await req.adminDb.from('profiles').update({ account_status: accountStatus, updated_at: new Date().toISOString() }).eq('id', id)
-      await req.adminDb.auth.admin.updateUserById(id, {
-        app_metadata: { ...appMetadata, account_status: accountStatus },
-        ban_duration: accountStatus === 'active' ? 'none' : '876000h',
-      })
+      assertNoSupabaseError(
+        await req.adminDb
+          .from('profiles')
+          .update({ account_status: accountStatus, updated_at: new Date().toISOString() })
+          .eq('id', id)
+          .select('id,account_status')
+          .single(),
+        `Failed to ${action} user profile`
+      )
+      assertNoSupabaseError(
+        await req.adminDb.auth.admin.updateUserById(id, {
+          app_metadata: { ...appMetadata, account_status: accountStatus },
+          ban_duration: accountStatus === 'active' ? 'none' : '876000h',
+        }),
+        `Failed to ${action} auth user`
+      )
       responsePayload.accountStatus = accountStatus
     } else if (action === 'reset_password') {
-      const profile = await req.adminDb.from('profiles').select('email').eq('id', id).maybeSingle()
-      const email = profile?.data?.email || authUser?.email
+      const email = targetEmail || authUser?.email
       if (!email) throw new Error('Target user email is unavailable')
       const link = await req.adminDb.auth.admin.generateLink({ type: 'recovery', email })
-      if (link.error) throw link.error
+      assertNoSupabaseError(link, 'Failed to generate password recovery link')
       responsePayload.recoveryLink = link.data?.properties?.action_link || null
     } else if (action === 'force_logout') {
       const revokedAt = new Date().toISOString()
-      await req.adminDb.from('user_sessions').update({ revoked_at: revokedAt, revoked_reason: 'admin_force_logout' }).eq('user_id', id).is('revoked_at', null)
-      await req.adminDb.from('admin_session_revocations').insert({ user_id: id, revoked_by: req.adminUser!.id, reason: 'admin_force_logout', created_at: revokedAt })
-      await req.adminDb.auth.admin.updateUserById(id, { user_metadata: { ...userMetadata, force_logout_after: revokedAt } })
+      assertNoSupabaseError(
+        await req.adminDb
+          .from('user_sessions')
+          .update({ revoked_at: revokedAt, revoked_reason: 'admin_force_logout' })
+          .eq('user_id', id)
+          .is('revoked_at', null),
+        'Failed to revoke active user sessions'
+      )
+      assertNoSupabaseError(
+        await req.adminDb
+          .from('admin_session_revocations')
+          .insert({ user_id: id, revoked_by: req.adminUser!.id, reason: 'admin_force_logout', created_at: revokedAt }),
+        'Failed to record session revocation'
+      )
+      assertNoSupabaseError(
+        await req.adminDb.auth.admin.updateUserById(id, { user_metadata: { ...userMetadata, force_logout_after: revokedAt } }),
+        'Failed to update force logout marker'
+      )
       responsePayload.revokedAt = revokedAt
     } else if (action === 'mfa_enable' || action === 'mfa_disable') {
       const mfaRequired = action === 'mfa_enable'
-      await req.adminDb.from('profiles').update({ mfa_required: mfaRequired, updated_at: new Date().toISOString() }).eq('id', id)
-      await req.adminDb.auth.admin.updateUserById(id, { user_metadata: { ...userMetadata, mfa_required: mfaRequired } })
+      assertNoSupabaseError(
+        await req.adminDb
+          .from('profiles')
+          .update({ mfa_required: mfaRequired, updated_at: new Date().toISOString() })
+          .eq('id', id)
+          .select('id,mfa_required')
+          .single(),
+        'Failed to update MFA requirement'
+      )
+      assertNoSupabaseError(
+        await req.adminDb.auth.admin.updateUserById(id, { user_metadata: { ...userMetadata, mfa_required: mfaRequired } }),
+        'Failed to update auth MFA requirement'
+      )
       responsePayload.mfaRequired = mfaRequired
     } else if (action === 'assign_role') {
       const role = textValue(req.body?.role, 'user')
-      await req.adminDb.from('profiles').update({ role, updated_at: new Date().toISOString() }).eq('id', id)
-      await req.adminDb.auth.admin.updateUserById(id, { app_metadata: { ...appMetadata, role } })
+      assertNoSupabaseError(
+        await req.adminDb
+          .from('profiles')
+          .update({ role, updated_at: new Date().toISOString() })
+          .eq('id', id)
+          .select('id,role')
+          .single(),
+        'Failed to update user role'
+      )
+      assertNoSupabaseError(
+        await req.adminDb.auth.admin.updateUserById(id, { app_metadata: { ...appMetadata, role } }),
+        'Failed to update auth user role'
+      )
       responsePayload.role = role
     } else {
       jsonError(res, 400, 'UNKNOWN_ACTION', `Unsupported user action: ${action}`)
@@ -1676,24 +2014,76 @@ router.post('/users/:id/subscription', async (req: AdminRequest, res) => {
   const now = new Date()
   const expiresAt = textValue(req.body?.expiresAt, '') || new Date(now.getTime() + 30 * 24 * 60 * 60_000).toISOString()
   const plan = textValue(req.body?.plan, 'Pro')
-  const status = ['cancel', 'deactivate'].includes(action) ? 'canceled' : action === 'approve' ? 'approved' : 'active'
-  const payload = {
-    user_id: id,
-    plan,
-    status,
-    billing_cycle: textValue(req.body?.interval, 'monthly'),
-    seats: numberValue(req.body?.seats, 1),
-    current_period_end: expiresAt,
-    approval_status: action === 'approve' ? 'approved' : 'not_required',
-    metadata: { adminAction: action, customPlan: req.body?.customPlan || null },
-    updated_at: new Date().toISOString(),
+  const status = ['cancel', 'deactivate'].includes(action)
+    ? 'canceled'
+    : action === 'approve'
+      ? 'approved'
+      : action === 'activate'
+        ? 'active'
+        : ''
+  if (!status) {
+    jsonError(res, 400, 'UNKNOWN_SUBSCRIPTION_ACTION', `Unsupported user subscription action: ${action}`)
+    return
   }
 
   try {
-    const { data, error } = await req.adminDb.from('billing_subscriptions').upsert(payload, { onConflict: 'user_id' }).select('*').single()
-    if (error) throw error
-    await req.adminDb.from('profiles').update({ tier: plan, updated_at: new Date().toISOString() }).eq('id', id)
-    await recordAdminAudit(req, `admin.subscription.${action}`, 'subscription', data?.id || id, { userId: id, plan, status })
+    const profile = await req.adminDb
+      .from('profiles')
+      .select('id,email,name,full_name,tier,tenant_id')
+      .eq('id', id)
+      .maybeSingle()
+    assertNoSupabaseError(profile, 'Failed to load user profile for subscription')
+    if (!profile.data) throw new Error('User profile not found for subscription')
+
+    const existingSubscription = await req.adminDb
+      .from('billing_subscriptions')
+      .select('*')
+      .eq('user_id', id)
+      .maybeSingle()
+    assertNoSupabaseError(existingSubscription, 'Failed to load existing subscription')
+    const existingMetadata = billingMetadata(existingSubscription.data)
+    const billingCycle = textValue(req.body?.interval || existingSubscription.data?.billing_cycle, 'monthly')
+    const payload = {
+      user_id: id,
+      tenant_id: textValue(req.body?.tenantId || profile.data.tenant_id || existingSubscription.data?.tenant_id, '') || null,
+      plan,
+      status,
+      billing_cycle: billingCycle,
+      plan_interval: billingCycle,
+      seats: numberValue(req.body?.seats ?? existingSubscription.data?.seats, 1),
+      amount_cents: numberValue(req.body?.amountCents ?? existingSubscription.data?.amount_cents, planAmountCents(plan, billingCycle)),
+      currency: textValue(req.body?.currency || existingSubscription.data?.currency, 'USD').toUpperCase(),
+      current_period_end: expiresAt,
+      renewal_date: expiresAt,
+      approval_status: action === 'approve' ? 'approved' : existingSubscription.data?.approval_status || 'not_required',
+      canceled_at: ['cancel', 'deactivate'].includes(action) ? new Date().toISOString() : null,
+      metadata: {
+        ...existingMetadata,
+        adminAction: action,
+        customPlan: req.body?.customPlan || existingMetadata.customPlan || null,
+        updatedBy: req.adminUser!.id,
+        updatedByEmail: req.adminUser!.email || null,
+        updatedAt: new Date().toISOString(),
+      },
+      updated_at: new Date().toISOString(),
+    }
+    const upsertResult = await req.adminDb
+      .from('billing_subscriptions')
+      .upsert(payload, { onConflict: 'user_id' })
+      .select('*')
+      .single()
+    assertNoSupabaseError(upsertResult, 'Failed to manage subscription')
+    await syncBillingEntitlements(req.adminDb, upsertResult.data, plan, status)
+    const context = await loadSubscriptionContext(req.adminDb, upsertResult.data)
+    await recordAdminAudit(req, `admin.subscription.${action}`, 'subscription', upsertResult.data?.id || id, subscriptionAuditDetails(existingSubscription.data || upsertResult.data, context.profile, context.tenant, {
+      result: 'completed',
+      action,
+      nextStatus: status,
+      nextPlan: plan,
+      nextRenewalDate: expiresAt,
+      operation: existingSubscription.data ? 'updated_existing_subscription' : 'created_subscription',
+    }))
+    const data = upsertResult.data
     res.json({ data: { subscription: data } })
   } catch (error) {
     jsonError(res, 500, 'ADMIN_SUBSCRIPTION_UPDATE_FAILED', error instanceof Error ? error.message : 'Failed to manage subscription')
@@ -1818,51 +2208,131 @@ router.get('/subscriptions', async (req: AdminRequest, res) => {
 router.post('/subscriptions/:id/actions', async (req: AdminRequest, res) => {
   const id = req.params.id
   const action = textValue(req.body?.action, '').toLowerCase()
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  const now = Date.now()
-
-  if (action === 'approve') {
-    updates.approval_status = 'approved'
-    updates.status = 'approved'
-  } else if (action === 'activate') {
-    updates.status = 'active'
-  } else if (action === 'deactivate') {
-    updates.status = 'inactive'
-  } else if (action === 'upgrade') {
-    updates.plan = textValue(req.body?.plan, 'Pro')
-    updates.status = 'active'
-  } else if (action === 'downgrade') {
-    updates.plan = textValue(req.body?.plan, 'Starter')
-  } else if (action === 'extend') {
-    const days = Math.max(1, numberValue(req.body?.days, 30))
-    updates.current_period_end = new Date(now + days * 24 * 60 * 60_000).toISOString()
-  } else if (action === 'cancel') {
-    updates.status = 'canceled'
-    updates.canceled_at = new Date().toISOString()
-  } else if (action === 'renewal_reminder') {
-    updates.metadata = { renewalReminderSentAt: new Date().toISOString() }
-  } else if (action === 'delete') {
-    const { error } = await req.adminDb.from('billing_subscriptions').delete().eq('id', id)
-    if (error) {
-      jsonError(res, 500, 'ADMIN_SUBSCRIPTION_DELETE_FAILED', error.message)
-      return
-    }
-    await recordAdminAudit(req, 'admin.subscription.deleted', 'subscription', id)
-    res.json({ data: { id, deleted: true } })
-    return
-  } else {
+  if (!['approve', 'activate', 'deactivate', 'upgrade', 'downgrade', 'extend', 'cancel', 'renewal_reminder', 'delete'].includes(action)) {
     jsonError(res, 400, 'UNKNOWN_ACTION', `Unsupported subscription action: ${action}`)
     return
   }
 
   try {
-    const { data, error } = await req.adminDb.from('billing_subscriptions').update(updates).eq('id', id).select('*').single()
-    if (error) throw error
-    if (data?.user_id && updates.plan) {
-      await req.adminDb.from('profiles').update({ tier: updates.plan, updated_at: new Date().toISOString() }).eq('id', data.user_id)
+    const existingSubscription = await req.adminDb
+      .from('billing_subscriptions')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+    assertNoSupabaseError(existingSubscription, 'Failed to load subscription')
+    if (!existingSubscription.data) {
+      jsonError(res, 404, 'SUBSCRIPTION_NOT_FOUND', 'Subscription not found')
+      return
     }
-    await recordAdminAudit(req, `admin.subscription.${action}`, 'subscription', id, updates)
-    res.json({ data: { subscription: data } })
+
+    const context = await loadSubscriptionContext(req.adminDb, existingSubscription.data)
+    const existingMetadata = billingMetadata(existingSubscription.data)
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    const previousRenewal = billingRenewalDate(existingSubscription.data)
+    const currentPeriodBase = previousRenewal
+      ? Math.max(Date.now(), new Date(previousRenewal).getTime())
+      : Date.now()
+
+    if (action === 'approve') {
+      updates.approval_status = 'approved'
+      updates.status = 'approved'
+    } else if (action === 'activate') {
+      updates.status = 'active'
+      updates.canceled_at = null
+      updates.cancelled_at = null
+      updates.cancel_at_period_end = false
+    } else if (action === 'deactivate') {
+      updates.status = 'inactive'
+      updates.cancel_at_period_end = false
+    } else if (action === 'upgrade') {
+      const plan = textValue(req.body?.plan, 'Elite')
+      const cycle = billingCycleFor(existingSubscription.data)
+      updates.plan = plan
+      updates.status = 'active'
+      updates.amount_cents = numberValue(req.body?.amountCents, planAmountCents(plan, cycle))
+      updates.currency = textValue(req.body?.currency || existingSubscription.data.currency, 'USD').toUpperCase()
+    } else if (action === 'downgrade') {
+      const plan = textValue(req.body?.plan, 'Starter')
+      const cycle = billingCycleFor(existingSubscription.data)
+      updates.plan = plan
+      updates.status = 'active'
+      updates.amount_cents = numberValue(req.body?.amountCents, planAmountCents(plan, cycle))
+      updates.currency = textValue(req.body?.currency || existingSubscription.data.currency, 'USD').toUpperCase()
+    } else if (action === 'extend') {
+      const days = Math.max(1, numberValue(req.body?.days, 30))
+      const nextRenewalDate = new Date(currentPeriodBase + days * 24 * 60 * 60_000).toISOString()
+      updates.current_period_end = nextRenewalDate
+      updates.renewal_date = nextRenewalDate
+      updates.expires_at = nextRenewalDate
+    } else if (action === 'cancel') {
+      updates.status = 'canceled'
+      updates.canceled_at = new Date().toISOString()
+      updates.cancelled_at = updates.canceled_at
+      updates.cancel_at_period_end = false
+      updates.auto_renew = false
+    } else if (action === 'renewal_reminder') {
+      updates.metadata = {
+        ...existingMetadata,
+        renewalReminderSentAt: new Date().toISOString(),
+        renewalReminderSentBy: req.adminUser!.id,
+        renewalReminderSentByEmail: req.adminUser!.email || null,
+      }
+    } else if (action === 'delete') {
+      const deleteResult = await req.adminDb
+        .from('billing_subscriptions')
+        .delete()
+        .eq('id', id)
+        .select('id')
+        .single()
+      assertNoSupabaseError(deleteResult, 'Failed to delete subscription')
+      await syncBillingEntitlements(req.adminDb, existingSubscription.data, 'free', 'deleted')
+      await recordAdminAudit(req, 'admin.subscription.deleted', 'subscription', id, subscriptionAuditDetails(existingSubscription.data, context.profile, context.tenant, {
+        result: 'completed',
+        action,
+        nextStatus: 'deleted',
+        nextPlan: 'free',
+        deleted: true,
+      }))
+      res.json({ data: { id, deleted: true } })
+      return
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'plan')) {
+      updates.plan = textValue(updates.plan, existingSubscription.data.plan || 'starter')
+    }
+    if (!Object.prototype.hasOwnProperty.call(updates, 'metadata')) {
+      updates.metadata = {
+        ...existingMetadata,
+        lastAdminAction: action,
+        lastAdminActionAt: new Date().toISOString(),
+        lastAdminActionBy: req.adminUser!.id,
+        lastAdminActionByEmail: req.adminUser!.email || null,
+      }
+    }
+
+    const updateResult = await req.adminDb
+      .from('billing_subscriptions')
+      .update(updates)
+      .eq('id', id)
+      .select('*')
+      .single()
+    assertNoSupabaseError(updateResult, 'Failed to run subscription action')
+
+    const nextPlan = textValue(updateResult.data?.plan, existingSubscription.data.plan || 'free')
+    const nextStatus = textValue(updateResult.data?.status, existingSubscription.data.status || 'inactive')
+    if (updateResult.data?.user_id || updateResult.data?.tenant_id) {
+      await syncBillingEntitlements(req.adminDb, updateResult.data, nextPlan, nextStatus)
+    }
+
+    await recordAdminAudit(req, `admin.subscription.${action}`, 'subscription', id, subscriptionAuditDetails(existingSubscription.data, context.profile, context.tenant, {
+      result: 'completed',
+      action,
+      nextStatus,
+      nextPlan,
+      nextRenewalDate: billingRenewalDate(updateResult.data),
+      changedFields: Object.keys(updates).filter((key) => key !== 'updated_at'),
+    }))
+    res.json({ data: { subscription: updateResult.data } })
   } catch (error) {
     jsonError(res, 500, 'ADMIN_SUBSCRIPTION_ACTION_FAILED', error instanceof Error ? error.message : 'Failed to run subscription action')
   }
@@ -1936,13 +2406,34 @@ router.get('/activities', async (req: AdminRequest, res) => {
     safeRows(ctx, req.adminDb, 'billing_subscriptions', (q) => q.select('*').order('updated_at', { ascending: false }).limit(limit)),
     safeRows(ctx, req.adminDb, 'admin_roles', (q) => q.select('*').order('updated_at', { ascending: false }).limit(limit)),
   ])
+  const fallbackAuditLogs = adminAudit.length
+    ? auditLogs.filter((row: any) => !recordOf(row.details).adminAudit)
+    : auditLogs
   const activities = [
-    ...adminAudit.map((row: any) => ({ source: 'admin_audit', severity: 'info', title: row.action, detail: row.actor_email, created_at: row.created_at, row })),
-    ...auditLogs.map((row: any) => ({ source: 'audit_logs', severity: 'info', title: row.action, detail: row.entity_type, created_at: row.created_at, row })),
-    ...securityEvents.map((row: any) => ({ source: 'security_events', severity: row.severity || 'info', title: row.event_type || 'security event', detail: row.message || row.resource_name, created_at: row.created_at, row })),
-    ...migrationEvents.map((row: any) => ({ source: 'migration_events', severity: row.severity || 'info', title: row.event_type || 'migration event', detail: row.message, created_at: row.created_at, row })),
-    ...subscriptions.map((row: any) => ({ source: 'billing_subscriptions', severity: 'info', title: `Subscription ${row.status || 'updated'}`, detail: row.plan || row.user_id, created_at: row.updated_at || row.created_at, row })),
-    ...roles.map((row: any) => ({ source: 'admin_roles', severity: 'info', title: `Role ${row.status || 'updated'}`, detail: row.name || row.role_key, created_at: row.updated_at || row.created_at, row })),
+    ...adminAudit.map((row: any) => normalizeAdminAuditActivity(row)),
+    ...fallbackAuditLogs.map((row: any) => normalizeGenericActivity(row, 'audit_logs')),
+    ...securityEvents.map((row: any) => normalizeGenericActivity(row, 'security_events', {
+      title: row.event_type || 'security event',
+      detail: row.message || row.resource_name,
+      severity: row.severity || 'info',
+      createdAt: row.created_at,
+    })),
+    ...migrationEvents.map((row: any) => normalizeGenericActivity(row, 'migration_events', {
+      title: row.event_type || 'migration event',
+      detail: row.message,
+      severity: row.severity || 'info',
+      createdAt: row.created_at,
+    })),
+    ...subscriptions.map((row: any) => normalizeGenericActivity(row, 'billing_subscriptions', {
+      title: `Subscription ${row.status || 'updated'}`,
+      detail: row.plan || row.user_id,
+      createdAt: row.updated_at || row.created_at,
+    })),
+    ...roles.map((row: any) => normalizeGenericActivity(row, 'admin_roles', {
+      title: `Role ${row.status || 'updated'}`,
+      detail: row.name || row.role_key,
+      createdAt: row.updated_at || row.created_at,
+    })),
   ].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()).slice(0, limit)
 
   res.json({ data: { activities, unavailableTables: Array.from(ctx.unavailable).sort() } })

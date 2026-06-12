@@ -50,10 +50,11 @@ import {
   AdminTenantStats,
   AdminUpcomingInvoice,
   AdminUser,
+  AdminActivity,
   useAdminDashboard,
 } from '@/hooks/use-admin-dashboard'
 
-type AdminTab = 'overview' | 'users' | 'roles' | 'tenants' | 'subscriptions' | 'security' | 'governance' | 'activity'
+type AdminTab = 'overview' | 'users' | 'roles' | 'tenants' | 'subscriptions' | 'security' | 'governance' | 'history'
 
 const tabs: Array<{ id: AdminTab; label: string; icon: typeof Activity }> = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -63,7 +64,7 @@ const tabs: Array<{ id: AdminTab; label: string; icon: typeof Activity }> = [
   { id: 'subscriptions', label: 'Plans & Billing', icon: CreditCard },
   { id: 'security', label: 'Security', icon: ShieldAlert },
   { id: 'governance', label: 'Governance', icon: ShieldCheck },
-  { id: 'activity', label: 'Activity', icon: Radio },
+  { id: 'history', label: 'History', icon: Radio },
 ]
 
 function formatNumber(value?: number) {
@@ -441,8 +442,8 @@ function AdminDashboardContent() {
               <GovernanceTab security={admin.security} generateEvidence={admin.generateEvidence} stats={admin.stats} />
             )}
 
-            {activeTab === 'activity' && (
-              <ActivityTab activities={admin.activities} exportReport={admin.exportReport} />
+            {activeTab === 'history' && (
+              <HistoryTab activities={admin.activities} exportReport={admin.exportReport} />
             )}
           </>
         )}
@@ -653,6 +654,7 @@ function UserActionsMenu(props: {
       <div className="absolute right-0 z-20 mt-2 w-52 rounded-lg border border-[#18335e] bg-[#061329] p-2 shadow-2xl">
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void props.inspectUser(user.id)}>Inspect details</button>
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void props.userAction(user.id, 'suspend')}>Suspend user</button>
+        <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void props.userAction(user.id, 'disable')}>Disable user</button>
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void props.userAction(user.id, 'restore')}>Restore user</button>
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void props.userAction(user.id, 'reset_password')}>Reset password</button>
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void props.userAction(user.id, 'force_logout')}>Force logout</button>
@@ -978,6 +980,10 @@ function RoleActionsMenu({ role, roleAction }: {
   roleAction: (roleId: string, action: string) => Promise<unknown>
 }) {
   const protectedRole = role.protected || role.type === 'system'
+  const status = String(role.status || '').toLowerCase()
+  const primaryAction = status === 'active' ? 'deactivate' : 'activate'
+  const primaryLabel = status === 'active' ? 'Deactivate role' : status === 'archived' ? 'Restore role' : 'Activate role'
+  const roleInUse = role.users > 0
 
   return (
     <details className="relative">
@@ -989,11 +995,21 @@ function RoleActionsMenu({ role, roleAction }: {
           <div className="rounded-md px-3 py-2 text-xs font-bold text-slate-400">System role protected</div>
         ) : (
           <>
-            <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void roleAction(role.id, role.status === 'active' ? 'deactivate' : 'activate')}>
-              {role.status === 'active' ? 'Deactivate role' : 'Activate role'}
+            <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void roleAction(role.id, primaryAction)}>
+              {primaryLabel}
             </button>
-            <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void roleAction(role.id, 'archive')}>Archive role</button>
-            <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-red-300 hover:bg-red-500/10" onClick={() => window.confirm(`Delete ${role.name}?`) && void roleAction(role.id, 'delete')}>Delete role</button>
+            {status !== 'archived' && (
+              <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void roleAction(role.id, 'archive')}>Archive role</button>
+            )}
+            <button
+              type="button"
+              className={`w-full rounded-md px-3 py-2 text-left text-xs font-bold ${roleInUse ? 'cursor-not-allowed text-slate-500 opacity-60' : 'text-red-300 hover:bg-red-500/10'}`}
+              disabled={roleInUse}
+              title={roleInUse ? `Assigned to ${role.users} user${role.users === 1 ? '' : 's'}` : `Delete ${role.name}`}
+              onClick={() => !roleInUse && window.confirm(`Delete ${role.name}?`) && void roleAction(role.id, 'delete')}
+            >
+              Delete role
+            </button>
           </>
         )}
       </div>
@@ -1589,17 +1605,43 @@ function BillingActionsMenu({ subscription, subscriptionAction }: {
   subscription: AdminSubscription
   subscriptionAction: (subscriptionId: string, action: string, payload?: Record<string, unknown>) => Promise<unknown>
 }) {
+  const status = String(subscription.status || '').toLowerCase()
+  const plan = String(subscription.plan || '').toLowerCase()
+  const isActive = /active|approved|trial/.test(status)
+  const isCanceled = /canceled|cancelled/.test(status)
+  const approvalStatus = String(subscription.approval_status || '').toLowerCase()
+  const needsApproval = Boolean(approvalStatus && !['approved', 'not_required'].includes(approvalStatus))
+  const proAction = plan === 'elite' ? 'downgrade' : 'upgrade'
+
   return (
     <details className="relative">
       <summary className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg border border-[#18335e] bg-[#071831] text-slate-300 transition hover:border-blue-400 hover:text-white [&::-webkit-details-marker]:hidden">
         <MoreVertical className="h-4 w-4" />
       </summary>
       <div className="absolute right-0 z-20 mt-2 w-52 rounded-lg border border-[#18335e] bg-[#061329] p-2 shadow-2xl">
-        <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'activate')}>Activate subscription</button>
-        <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'upgrade', { plan: 'Elite' })}>Move to Elite</button>
+        {needsApproval && (
+          <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'approve')}>
+            Approve subscription
+          </button>
+        )}
+        <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, isActive ? 'deactivate' : 'activate')}>
+          {isActive ? 'Deactivate subscription' : 'Activate subscription'}
+        </button>
+        {plan !== 'elite' && (
+          <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'upgrade', { plan: 'Elite' })}>Move to Elite</button>
+        )}
+        {plan !== 'pro' && (
+          <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, proAction, { plan: 'Pro' })}>Move to Pro</button>
+        )}
+        {plan !== 'starter' && (
+          <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'downgrade', { plan: 'Starter' })}>Downgrade to Starter</button>
+        )}
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'extend', { days: 30 })}>Extend 30 days</button>
         <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'renewal_reminder')}>Send reminder</button>
-        <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-red-300 hover:bg-red-500/10" onClick={() => void subscriptionAction(subscription.id, 'cancel')}>Cancel subscription</button>
+        {!isCanceled && (
+          <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-red-300 hover:bg-red-500/10" onClick={() => window.confirm(`Cancel ${subscriptionTenantName(subscription)} subscription?`) && void subscriptionAction(subscription.id, 'cancel')}>Cancel subscription</button>
+        )}
+        <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-red-300 hover:bg-red-500/10" onClick={() => window.confirm(`Delete ${subscriptionTenantName(subscription)} subscription record?`) && void subscriptionAction(subscription.id, 'delete')}>Delete record</button>
       </div>
     </details>
   )
@@ -1756,6 +1798,12 @@ function SubscriptionsTab(props: {
         <BillingMetricCard label="Next Billing" value={nextBilling} sub={nextBillingSub} icon={FileCheck} tone="violet" />
       </div>
 
+      <div className="grid gap-4 px-5 pb-5 lg:grid-cols-3">
+        <BillingSummaryPanel summary={props.summary} />
+        <UpcomingInvoicesPanel invoices={props.upcomingInvoices} />
+        <PaymentMethodsPanel methods={props.paymentMethods} />
+      </div>
+
       <div className="flex flex-wrap gap-6 border-b border-[#12305a] px-5">
         {sections.map((section) => (
           <button
@@ -1769,7 +1817,7 @@ function SubscriptionsTab(props: {
         ))}
       </div>
 
-      <div className="grid gap-4 p-5 xl:grid-cols-[minmax(0,1fr)_300px]">
+      <div className="p-5">
         <div className="min-w-0 space-y-4">
           <div className="grid gap-3 lg:grid-cols-[minmax(220px,1.3fr)_140px_140px_140px_96px_110px]">
             <label className="relative">
@@ -1883,12 +1931,6 @@ function SubscriptionsTab(props: {
             <span className="inline-flex items-center justify-end gap-2">Last updated: {timeAgo(props.subscriptionsLiveUpdatedAt)} <RefreshCw className={`h-4 w-4 ${props.sseConnected ? 'text-blue-300' : 'text-amber-300'}`} /></span>
           </div>
         </div>
-
-        <aside className="space-y-4">
-          <BillingSummaryPanel summary={props.summary} />
-          <UpcomingInvoicesPanel invoices={props.upcomingInvoices} />
-          <PaymentMethodsPanel methods={props.paymentMethods} />
-        </aside>
       </div>
     </div>
   )
@@ -2159,13 +2201,16 @@ function SecurityTab({ security, savePolicy, policy, setPolicy, refreshSecurity,
         <SecurityMetricCard icon={LockKeyhole} label="MFA Coverage" value={`${formatNumber(mfaCoverage)}%`} sub="↑ 6% vs yesterday" tone="emerald" values={[mfaCoverage, ...scoreSpark]} />
       </div>
 
-      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-[1.05fr_1.4fr_1.05fr]">
+      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-2">
         <SecurityPanel title="Security Posture Overview" action={<select className="h-8 rounded-md border border-[#12305a] bg-[#061329] px-3 text-xs font-bold text-slate-300"><option>NIST CSF 2.0</option></select>}>
           <SecurityRadar posture={posture} />
         </SecurityPanel>
         <SecurityPanel title="Threat Activity" action={<select className="h-8 rounded-md border border-[#12305a] bg-[#061329] px-3 text-xs font-bold text-slate-300"><option>By Severity</option></select>}>
           <ThreatActivityChart data={activity} />
         </SecurityPanel>
+      </div>
+
+      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-2">
         <SecurityPanel title="Top Threats" action={<button type="button" className="text-xs font-bold text-blue-300">View All</button>}>
           <div className="space-y-3">
             <div className="grid grid-cols-[1fr_90px_52px] gap-3 border-b border-[#12305a] pb-2 text-xs font-black uppercase text-slate-500">
@@ -2183,12 +2228,12 @@ function SecurityTab({ security, savePolicy, policy, setPolicy, refreshSecurity,
             ))}
           </div>
         </SecurityPanel>
-      </div>
-
-      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-[1fr_1.1fr_1.5fr]">
         <SecurityPanel title="Administrator Overview" action={<button type="button" className="text-xs font-bold text-blue-300">View All Admins</button>}>
           <SecurityDonut rows={adminOverview} center={formatNumber(totalAdmins)} sub="Total Admins" />
         </SecurityPanel>
+      </div>
+
+      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-2">
         <SecurityPanel title="Admin Access by Status" action={<button type="button" className="text-xs font-bold text-blue-300">View All</button>}>
           <SecurityDonut rows={adminStatus} center={formatNumber(totalAdmins)} sub="Admin Accounts" />
         </SecurityPanel>
@@ -2209,7 +2254,7 @@ function SecurityTab({ security, savePolicy, policy, setPolicy, refreshSecurity,
         </SecurityPanel>
       </div>
 
-      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-[1fr_1.1fr_1.5fr]">
+      <div className="grid gap-4 px-5 pb-5 xl:grid-cols-2">
         <SecurityPanel title="Critical Alerts" action={<button type="button" className="text-xs font-bold text-blue-300">View All</button>}>
           <div className="space-y-3">
             {(security?.criticalAlerts || []).length === 0 ? <EmptyState label="No critical alerts in the selected window" /> : security!.criticalAlerts!.map((alert) => (
@@ -2235,6 +2280,9 @@ function SecurityTab({ security, savePolicy, policy, setPolicy, refreshSecurity,
             ))}
           </div>
         </SecurityPanel>
+      </div>
+
+      <div className="px-5 pb-5">
         <SecurityPanel title="System Health" action={<button type="button" className="text-xs font-bold text-blue-300">View All</button>}>
           <div className="grid gap-3 md:grid-cols-4">
             {[
@@ -2295,14 +2343,113 @@ function GovernanceTab({ security, generateEvidence, stats }: {
   )
 }
 
-function ActivityTab({ activities, exportReport }: { activities: unknown[]; exportReport: () => void }) {
+function historyRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function historyText(value: unknown, fallback: string) {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
+function historyLabel(value: unknown, fallback: string) {
+  const normalized = historyText(value, fallback).replace(/^admin\./, '').replace(/[._-]+/g, ' ').trim()
+  return normalized
+    ? normalized.replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : fallback
+}
+
+function historyActor(activity: AdminActivity) {
+  const row = historyRecord(activity.row)
+  const details = historyRecord(row.details)
+  return historyText(activity.actorEmail || activity.administrator || row.actor_email || details.actorEmail || row.user_email || row.user_id, 'Unknown administrator')
+}
+
+function historyTarget(activity: AdminActivity) {
+  const row = historyRecord(activity.row)
+  const details = historyRecord(row.details)
+  return historyText(activity.target || details.targetEmail || details.targetName || row.entity_id || row.resource_name || row.name || row.id, 'Platform')
+}
+
+function historyTargetMeta(activity: AdminActivity) {
+  const row = historyRecord(activity.row)
+  const details = historyRecord(row.details)
+  const type = historyLabel(activity.targetType || row.entity_type || details.targetType || activity.source, 'Record')
+  const id = historyText(activity.targetId || row.entity_id || details.targetUserId, '')
+  return id ? `${type} ${id}` : type
+}
+
+function HistoryTab({ activities, exportReport }: { activities: AdminActivity[]; exportReport: () => void }) {
+  const administratorActions = activities.filter((activity) => (
+    activity.source === 'admin_audit' || String(activity.action || '').startsWith('admin.')
+  ))
+  const userActions = administratorActions.filter((activity) => String(activity.action || '').includes('.user.'))
+  const latestAction = activities[0]?.created_at
+
   return (
-    <div className="q-card p-5">
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <h3 className="text-lg font-black text-[var(--qg-text-primary)]">Audit And Telemetry Timeline</h3>
-        <button type="button" className="q-btn q-btn-primary" onClick={exportReport}><Download className="h-4 w-4" />Export</button>
+    <div className="space-y-5">
+      <div className="grid gap-4 md:grid-cols-3">
+        <KpiCard icon={Radio} label="History Records" value={formatNumber(activities.length)} />
+        <KpiCard icon={UserCog} label="Admin Actions" value={formatNumber(administratorActions.length)} />
+        <KpiCard icon={Users} label="User Actions" value={formatNumber(userActions.length)} sub={timeAgo(latestAction)} />
       </div>
-      <EventList title="Recent Platform Activity" rows={activities} />
+
+      <div className="q-card overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-[var(--qg-border)] p-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h3 className="text-lg font-black text-[var(--qg-text-primary)]">Administrator Audit History</h3>
+            <p className="text-sm text-[var(--qg-text-secondary)]">Who performed each action, what changed, and when it happened.</p>
+          </div>
+          <button type="button" className="q-btn q-btn-primary" onClick={exportReport}><Download className="h-4 w-4" />Export</button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-[var(--qg-border)]">
+            <thead className="bg-white/[0.03] text-left text-[11px] font-black uppercase tracking-[0.12em] text-[var(--qg-text-muted)]">
+              <tr>
+                <th className="px-5 py-3">When</th>
+                <th className="px-5 py-3">Administrator</th>
+                <th className="px-5 py-3">Action</th>
+                <th className="px-5 py-3">Target</th>
+                <th className="px-5 py-3">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--qg-border)]">
+              {activities.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-5 py-6">
+                    <EmptyState label="No administrator history found" />
+                  </td>
+                </tr>
+              ) : activities.map((activity, index) => (
+                <tr key={activity.id || `${activity.source}-${activity.created_at || index}`} className="align-top transition hover:bg-white/[0.03]">
+                  <td className="whitespace-nowrap px-5 py-4">
+                    <div className="font-mono text-xs font-bold text-[var(--qg-text-primary)]">{formatDate(activity.created_at)}</div>
+                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--qg-text-muted)]">{timeAgo(activity.created_at)}</div>
+                  </td>
+                  <td className="px-5 py-4">
+                    <div className="max-w-[220px] truncate text-sm font-bold text-[var(--qg-text-primary)]">{historyActor(activity)}</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-[0.08em] text-[var(--qg-text-muted)]">{historyText(activity.ipAddress, 'IP not captured')}</div>
+                  </td>
+                  <td className="px-5 py-4">
+                    <div className="text-sm font-black text-[var(--qg-text-primary)]">{historyLabel(activity.action || activity.title, 'Activity')}</div>
+                    <div className="mt-1 max-w-[320px] text-xs text-[var(--qg-text-secondary)]">{activity.detail || 'Recorded administrator activity'}</div>
+                  </td>
+                  <td className="px-5 py-4">
+                    <div className="max-w-[260px] break-words text-sm font-bold text-[var(--qg-text-primary)]">{historyTarget(activity)}</div>
+                    <div className="mt-1 break-all font-mono text-[11px] text-[var(--qg-text-muted)]">{historyTargetMeta(activity)}</div>
+                  </td>
+                  <td className="whitespace-nowrap px-5 py-4">
+                    <StatusBadge value={activity.result || activity.severity || 'recorded'} />
+                    <div className="mt-2 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--qg-text-muted)]">{historyLabel(activity.source, 'Source')}</div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
 }

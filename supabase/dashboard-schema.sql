@@ -367,10 +367,10 @@ BEGIN
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS agent_id UUID';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS name VARCHAR(255) DEFAULT ''Default scanner policy''';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE';
-        EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS interval_seconds INTEGER DEFAULT 300';
+        EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS interval_seconds INTEGER DEFAULT 60';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS allowed_targets JSONB DEFAULT ''[]''::jsonb';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS allowed_paths JSONB DEFAULT ''[]''::jsonb';
-        EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS scan_types TEXT[] DEFAULT ARRAY[''tls'', ''ssh'', ''packages'', ''configs'']';
+        EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS scan_types TEXT[] DEFAULT ARRAY[''tls'', ''certificates'', ''pki'', ''ssh'', ''packages'', ''configs'', ''libraries'', ''vpn'', ''kubernetes'', ''service_mesh'', ''api_gateway'', ''load_balancer'', ''hsm'', ''runtime'']';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS alert_threshold VARCHAR(20) DEFAULT ''moderate''';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT ''{}''::jsonb';
         EXECUTE 'ALTER TABLE public.scanner_agent_policies ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()';
@@ -1546,7 +1546,7 @@ CREATE TABLE IF NOT EXISTS remediation_operator_actions (
     connector_account_id UUID REFERENCES connector_accounts(id) ON DELETE SET NULL,
     action_type VARCHAR(120) NOT NULL,
     asset_class VARCHAR(80) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'planned', -- planned, approved, blocked, applying, applied, validating, validated, failed, cancelled
+    status VARCHAR(50) NOT NULL DEFAULT 'planned', -- planned, approved, rejected, scheduled, blocked, applying, applied, validating, validated, failed, cancelled
     approval_mode VARCHAR(80) DEFAULT 'operator_approved',
     patch_plan JSONB DEFAULT '{}',
     evidence JSONB DEFAULT '{}',
@@ -1612,10 +1612,10 @@ CREATE TABLE IF NOT EXISTS scanner_agent_policies (
     agent_id UUID REFERENCES scanner_agents(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL DEFAULT 'Default scanner policy',
     enabled BOOLEAN DEFAULT TRUE,
-    interval_seconds INTEGER DEFAULT 300,
+    interval_seconds INTEGER DEFAULT 60,
     allowed_targets JSONB DEFAULT '[]',
     allowed_paths JSONB DEFAULT '[]',
-    scan_types TEXT[] DEFAULT ARRAY['tls', 'ssh', 'packages', 'configs'],
+    scan_types TEXT[] DEFAULT ARRAY['tls', 'certificates', 'pki', 'ssh', 'packages', 'configs', 'libraries', 'vpn', 'kubernetes', 'service_mesh', 'api_gateway', 'load_balancer', 'hsm', 'runtime'],
     alert_threshold VARCHAR(20) DEFAULT 'moderate',
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

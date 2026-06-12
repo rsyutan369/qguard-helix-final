@@ -17,6 +17,14 @@ type EvidenceType =
   | 'tls-protocol'
   | 'tls-cipher'
   | 'ssh-metadata'
+  | 'pki-metadata'
+  | 'vpn-crypto-profile'
+  | 'api-gateway-crypto-policy'
+  | 'load-balancer-crypto-policy'
+  | 'kubernetes-crypto-policy'
+  | 'service-mesh-crypto-policy'
+  | 'hsm-integration'
+  | 'trust-store'
   | 'package-manifest'
   | 'config-reference'
   | 'jwt-algorithm'
@@ -112,9 +120,35 @@ interface RemediationValidation {
   notes?: string
 }
 
+interface RemediationAttemptResult {
+  executed: boolean
+  manualRequired: boolean
+  reason: string
+  changedFiles: string[]
+  targetPath?: string | null
+  backupPath?: string | null
+  snapshot?: Record<string, unknown> | null
+}
+
 const DEFAULT_API_URL = 'http://localhost:3000'
 const MAX_CONFIG_BYTES = 512 * 1024
 const MAX_FILES_PER_ROOT = 200
+const DEFAULT_SCAN_TYPES = [
+  'tls',
+  'certificates',
+  'pki',
+  'ssh',
+  'packages',
+  'configs',
+  'libraries',
+  'vpn',
+  'kubernetes',
+  'service_mesh',
+  'api_gateway',
+  'load_balancer',
+  'hsm',
+  'runtime',
+]
 const PACKAGE_MANIFEST_NAMES = new Set([
   'package.json',
   'package-lock.json',
@@ -128,8 +162,11 @@ const PACKAGE_MANIFEST_NAMES = new Set([
   'build.gradle.kts',
   'go.mod',
   'Cargo.toml',
+  'packages.config',
+  'Directory.Packages.props',
 ])
-const CONFIG_EXTENSIONS = new Set(['.conf', '.config', '.cfg', '.json', '.yaml', '.yml', '.toml', '.ini'])
+const CONFIG_EXTENSIONS = new Set(['.conf', '.config', '.cfg', '.json', '.yaml', '.yml', '.toml', '.ini', '.cnf', '.ovpn', '.xml', '.properties', '.tf', '.hcl'])
+const SSH_KEY_FILE_NAMES = new Set(['authorized_keys', 'known_hosts', 'id_rsa.pub', 'id_ecdsa.pub', 'id_ed25519.pub'])
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage', '.turbo', '.cache'])
 
 const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, '')
@@ -175,10 +212,10 @@ async function pullPolicy(): Promise<AgentPolicy> {
   const policy = payload.data?.policy || {}
   return {
     enabled: policy.enabled !== false,
-    intervalSeconds: Math.max(60, Math.min(86_400, Number(policy.intervalSeconds || 300))),
+    intervalSeconds: Math.max(30, Math.min(60, Number(policy.intervalSeconds || 60))),
     allowedTargets: Array.isArray(policy.allowedTargets) ? policy.allowedTargets.map(String) : [],
     allowedPaths: Array.isArray(policy.allowedPaths) ? policy.allowedPaths.map(String) : [],
-    scanTypes: Array.isArray(policy.scanTypes) ? policy.scanTypes.map(String) : ['tls', 'ssh', 'packages', 'configs'],
+    scanTypes: Array.isArray(policy.scanTypes) ? policy.scanTypes.map(String) : DEFAULT_SCAN_TYPES,
     alertThreshold: String(policy.alertThreshold || 'moderate'),
   }
 }
@@ -349,7 +386,7 @@ function runtimeEventFromEvidence(evidence: ScannerEvidence): RuntimeCryptoEvent
 }
 
 function runtimeEventsEnabled(scanTypes: Set<string>) {
-  return scanTypes.has('runtime') || ['tls', 'ssh', 'packages', 'configs'].some((type) => scanTypes.has(type))
+  return scanTypes.has('runtime') || DEFAULT_SCAN_TYPES.some((type) => scanTypes.has(type))
 }
 
 function normalizeKeyAlgorithm(keyType: string | undefined, details: Record<string, unknown> = {}) {
@@ -629,6 +666,8 @@ async function walkFiles(root: string, maxDepth = 4) {
 
 function packageAlgorithmEvidence(packageName: string): { algorithm: string; evidenceType: EvidenceType; confidence: EvidenceConfidence } | null {
   const name = packageName.toLowerCase()
+  if (name.includes('liboqs') || name.includes('oqs-provider') || name.includes('oqsprovider') || name.includes('oqs-openssl')) return { algorithm: 'ML-KEM-768', evidenceType: 'crypto-library', confidence: 'high' }
+  if (name.includes('ml-kem') || name.includes('ml_dsa') || name.includes('ml-dsa') || name.includes('kyber') || name.includes('dilithium')) return { algorithm: 'ML-KEM', evidenceType: 'crypto-library', confidence: 'high' }
   if (name === 'jsonwebtoken' || name.includes('jwt')) return { algorithm: 'RSA-2048', evidenceType: 'jwt-algorithm', confidence: 'medium' }
   if (name === 'jose') return { algorithm: 'ECDSA-P256', evidenceType: 'jwt-algorithm', confidence: 'medium' }
   if (name.includes('node-rsa') || name.includes('node-forge') || name.includes('openssl')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
@@ -638,9 +677,14 @@ function packageAlgorithmEvidence(packageName: string): { algorithm: string; evi
   if (name.includes('bcrypt') || name.includes('argon2') || name.includes('scrypt')) return { algorithm: 'SHA-256', evidenceType: 'crypto-library', confidence: 'low' }
   if (name.includes('cryptography') || name.includes('pycryptodome') || name.includes('pycrypto')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
   if (name.includes('pyjwt') || name.includes('jjwt') || name.includes('jose4j') || name.includes('go-jose')) return { algorithm: 'RSA-2048', evidenceType: 'jwt-algorithm', confidence: 'medium' }
-  if (name.includes('bouncycastle') || name.includes('bcprov') || name.includes('botan') || name.includes('ring') || name.includes('rustls')) return { algorithm: 'ECDSA-P256', evidenceType: 'crypto-library', confidence: 'medium' }
+  if (name.includes('bouncycastle') || name.includes('bcprov') || name.includes('portable.bouncycastle') || name.includes('botan') || name.includes('ring') || name.includes('rustls')) return { algorithm: 'ECDSA-P256', evidenceType: 'crypto-library', confidence: 'medium' }
   if (name.includes('openssl') || name.includes('libressl') || name.includes('boringssl')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
+  if (name.includes('wolfssl') || name.includes('libsodium') || name.includes('mbedtls') || name.includes('gnutls') || name.includes('system.security.cryptography') || name.includes('microsoft.identitymodel.tokens')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
   return null
+}
+
+function isPackageManifest(fileName: string) {
+  return PACKAGE_MANIFEST_NAMES.has(fileName) || fileName.endsWith('.csproj') || fileName.endsWith('.fsproj') || fileName.endsWith('.vbproj')
 }
 
 async function scanPackageManifest(filePath: string): Promise<ScannerEvidence[]> {
@@ -668,13 +712,23 @@ async function scanPackageManifest(filePath: string): Promise<ScannerEvidence[]>
       'crypto-js',
       'elliptic',
       'bouncycastle',
+      'portable.bouncycastle',
       'bcprov',
       'openssl',
       'libressl',
       'boringssl',
+      'wolfssl',
+      'libsodium',
+      'mbedtls',
+      'gnutls',
+      'liboqs',
+      'oqs-provider',
+      'oqs-openssl',
       'botan',
       'ring',
       'rustls',
+      'system.security.cryptography',
+      'microsoft.identitymodel.tokens',
     ]
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index].toLowerCase()
@@ -742,16 +796,48 @@ const CONFIG_PATTERNS: Array<{ pattern: RegExp; algorithm: string; label: string
   { pattern: /\bRSA[-_ ]?(1024|2048|3072|4096)?\b/i, algorithm: 'RSA-2048', label: 'RSA reference' },
   { pattern: /\bECDSA[-_ ]?(P-?256|P-?384|nistp256|nistp384)?\b/i, algorithm: 'ECDSA-P256', label: 'ECDSA reference' },
   { pattern: /\b(ECDH|Diffie[-_ ]?Hellman|DHE)\b/i, algorithm: 'DH-2048', label: 'DH/ECDH reference' },
+  { pattern: /\bssh-rsa\b/i, algorithm: 'RSA-2048', label: 'SSH RSA host/user key reference' },
+  { pattern: /\bssh-dss\b/i, algorithm: 'DSA-1024', label: 'SSH DSA key reference' },
+  { pattern: /\b(ed25519|ssh-ed25519)\b/i, algorithm: 'Ed25519', label: 'Ed25519 key reference' },
+  { pattern: /\b(X25519|curve25519)\b/i, algorithm: 'X25519', label: 'X25519 key exchange reference' },
+  { pattern: /\b(ML[-_ ]?KEM|Kyber|OQS|liboqs|oqsprovider|oqs-provider)\b/i, algorithm: 'ML-KEM-768', label: 'PQC KEM reference' },
+  { pattern: /\b(ML[-_ ]?DSA|Dilithium|SPHINCS)\b/i, algorithm: 'ML-DSA-65', label: 'PQC signature reference' },
   { pattern: /\bSHA[-_ ]?1\b/i, algorithm: 'SHA-1', label: 'SHA-1 reference' },
   { pattern: /\bMD5\b/i, algorithm: 'MD5', label: 'MD5 reference' },
+  { pattern: /\b(3DES|DES|RC4)\b/i, algorithm: '3DES', label: 'Weak cipher suite reference' },
   { pattern: /\bAES[-_ ]?128\b/i, algorithm: 'AES-128', label: 'AES-128 reference' },
   { pattern: /\bAES[-_ ]?256\b/i, algorithm: 'AES-256', label: 'AES-256 reference' },
   { pattern: /\bTLSv?1\.0\b/i, algorithm: 'TLS-1.0', label: 'TLS 1.0 reference' },
   { pattern: /\bTLSv?1\.1\b/i, algorithm: 'TLS-1.1', label: 'TLS 1.1 reference' },
   { pattern: /\bTLSv?1\.2\b/i, algorithm: 'TLS-1.2', label: 'TLS 1.2 reference' },
+  { pattern: /\bTLSv?1\.3\b/i, algorithm: 'TLS-1.3', label: 'TLS 1.3 reference' },
   { pattern: /\bRS256|RS384|RS512\b/i, algorithm: 'RSA-2048', label: 'RSA JWT signing reference' },
   { pattern: /\bES256|ES384|ES512\b/i, algorithm: 'ECDSA-P256', label: 'ECDSA JWT signing reference' },
 ]
+
+function configEvidenceTypeFor(filePath: string, line: string): EvidenceType {
+  const text = `${filePath} ${line}`.toLowerCase()
+  if (/openvpn|wireguard|ipsec|strongswan|ikev2|ssl vpn|vpn/.test(text)) return 'vpn-crypto-profile'
+  if (/ingress|gateway api|cert-manager|clusterissuer|issuer|kubernetes|k8s|namespace/.test(text)) return 'kubernetes-crypto-policy'
+  if (/istio|linkerd|consul|service.?mesh|destinationrule|peerauthentication|mtls/.test(text)) return 'service-mesh-crypto-policy'
+  if (/api.?gateway|kong|apigee|nginx|envoy|traefik|haproxy/.test(text)) return 'api-gateway-crypto-policy'
+  if (/load.?balancer|alb|elb|nlb|front.?door|cloudfront|cdn/.test(text)) return 'load-balancer-crypto-policy'
+  if (/hsm|pkcs11|cloudhsm|key.?vault|kms|nshield|luna/.test(text)) return 'hsm-integration'
+  if (/truststore|keystore|cacerts|root.?ca|certificate.?authority|pki/.test(text)) return 'trust-store'
+  if (/cert|certificate|issuer|csr|x509|pki/.test(text)) return 'pki-metadata'
+  if (/jwt|\b(RS|ES)\d{3}\b/i.test(line)) return 'jwt-algorithm'
+  return 'config-reference'
+}
+
+function configAssetTypeFor(filePath: string, line: string) {
+  const text = `${filePath} ${line}`.toLowerCase()
+  if (/openvpn|wireguard|ipsec|strongswan|vpn/.test(text)) return 'vpn'
+  if (/ingress|gateway api|cert-manager|kubernetes|k8s|service.?mesh|istio|linkerd|consul/.test(text)) return 'kubernetes'
+  if (/api.?gateway|nginx|envoy|traefik|haproxy|load.?balancer|alb|elb|cdn|cloudfront/.test(text)) return 'network_edge'
+  if (/hsm|pkcs11|kms|key.?vault/.test(text)) return 'hsm'
+  if (/cert|certificate|issuer|truststore|keystore|pki/.test(text)) return 'pki'
+  return 'application'
+}
 
 async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
   const stat = await fs.stat(filePath).catch(() => null)
@@ -771,9 +857,9 @@ async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
     for (const rule of CONFIG_PATTERNS) {
       if (!rule.pattern.test(line)) continue
       evidence.push({
-        evidenceType: line.toLowerCase().includes('jwt') || /\b(RS|ES)\d{3}\b/i.test(line) ? 'jwt-algorithm' : 'config-reference',
+        evidenceType: configEvidenceTypeFor(filePath, line),
         assetName: path.basename(path.dirname(filePath)) || path.basename(filePath),
-        assetType: 'application',
+        assetType: configAssetTypeFor(filePath, line),
         filePath,
         observedAlgorithm: rule.algorithm,
         confidence: 'medium',
@@ -792,17 +878,64 @@ async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
   return evidence
 }
 
+async function scanSshKeyFile(filePath: string): Promise<ScannerEvidence[]> {
+  const stat = await fs.stat(filePath).catch(() => null)
+  if (!stat || stat.size > MAX_CONFIG_BYTES) return []
+
+  const content = await fs.readFile(filePath, 'utf8').catch(() => '')
+  if (!content) return []
+
+  const evidence: ScannerEvidence[] = []
+  const observedAt = isoNow()
+  const lines = content.split(/\r?\n/).slice(0, 500)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim()
+    if (!line || line.startsWith('#')) continue
+    const algorithm = line.includes('ssh-rsa')
+      ? 'RSA-2048'
+      : line.includes('ssh-dss')
+        ? 'DSA-1024'
+        : line.includes('ecdsa-sha2')
+          ? 'ECDSA-P256'
+          : line.includes('ssh-ed25519')
+            ? 'Ed25519'
+            : null
+    if (!algorithm) continue
+    evidence.push({
+      evidenceType: 'ssh-metadata',
+      assetName: path.basename(filePath),
+      assetType: 'ssh_key_policy',
+      filePath,
+      protocol: 'SSH',
+      observedAlgorithm: algorithm,
+      confidence: 'high',
+      rawEvidence: {
+        filePath,
+        line: index + 1,
+        keyAlgorithmObserved: true,
+        redacted: true,
+      },
+      observedAt,
+    })
+  }
+
+  return evidence
+}
+
 async function scanAllowedPath(root: string, scanTypes: Set<string>) {
   const evidence: ScannerEvidence[] = []
   const files = await walkFiles(root)
 
   for (const filePath of files) {
     const fileName = path.basename(filePath)
-    if (scanTypes.has('packages') && PACKAGE_MANIFEST_NAMES.has(fileName)) {
+    if ((scanTypes.has('packages') || scanTypes.has('libraries')) && isPackageManifest(fileName)) {
       evidence.push(...await scanPackageManifest(filePath))
     }
     if (scanTypes.has('configs')) {
       evidence.push(...await scanConfigFile(filePath))
+    }
+    if (scanTypes.has('ssh') && (SSH_KEY_FILE_NAMES.has(fileName) || /\.pub$/i.test(fileName))) {
+      evidence.push(...await scanSshKeyFile(filePath))
     }
   }
 
@@ -993,6 +1126,95 @@ function validationFromEvidence(evidence: ScannerEvidence[], scanned: boolean): 
   }
 }
 
+function remediationStateFromEvidence(evidence: ScannerEvidence[], scanned: boolean) {
+  const tlsProtocol = evidence.find((item) => item.evidenceType === 'tls-protocol')
+  const tlsCertificate = evidence.find((item) => item.evidenceType === 'tls-certificate')
+  const tlsCipher = evidence.find((item) => item.evidenceType === 'tls-cipher')
+  const sshMetadata = evidence.find((item) => item.evidenceType === 'ssh-metadata')
+  const libraryEvidence = evidence.filter((item) => item.evidenceType === 'crypto-library' || item.evidenceType === 'package-manifest')
+  const configEvidence = evidence.filter((item) => item.evidenceType.includes('policy') || item.evidenceType === 'config-reference')
+  const algorithms = Array.from(new Set(evidence.map((item) => item.observedAlgorithm).filter(Boolean))).slice(0, 16)
+
+  return {
+    capturedAt: isoNow(),
+    scanned,
+    evidenceCount: evidence.length,
+    tlsVersion: tlsProtocol?.observedAlgorithm || tlsProtocol?.protocol || null,
+    certificate: tlsCertificate?.observedAlgorithm
+      ? `${tlsCertificate.observedAlgorithm}${tlsCertificate.keySize ? `-${tlsCertificate.keySize}` : ''}`
+      : null,
+    certificateFingerprint: tlsCertificate?.certificateFingerprint || null,
+    cipherSuite: tlsCipher?.observedAlgorithm || null,
+    sshHostKey: sshMetadata?.observedAlgorithm || null,
+    cryptographicLibraries: libraryEvidence.slice(0, 12).map((item) => ({
+      name: item.packageName || item.assetName,
+      version: item.packageVersion || null,
+      algorithm: item.observedAlgorithm || null,
+    })),
+    configurationEvidence: configEvidence.slice(0, 12).map((item) => ({
+      type: item.evidenceType,
+      asset: item.assetName,
+      algorithm: item.observedAlgorithm || null,
+      filePath: item.filePath || null,
+    })),
+    algorithms,
+  }
+}
+
+function verificationFromValidation(validation: RemediationValidation) {
+  return {
+    migrationSuccessful: validation.passed === true,
+    certificateValid: validation.passed === true && validation.scanned === true,
+    serviceReachable: validation.scanned === true,
+    rollbackRequired: validation.passed !== true,
+    hndlRiskRemaining: validation.hndlRiskRemaining,
+    hndlRiskCount: validation.hndlRiskCount,
+    evidenceCount: validation.evidenceCount,
+    verifiedAt: validation.validatedAt,
+  }
+}
+
+function sha256Text(value: string) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function cryptoPolicySnapshot(content: string) {
+  const lower = content.toLowerCase()
+  return {
+    tls12: /\btlsv?1\.2\b/i.test(content),
+    tls13: /\btlsv?1\.3\b/i.test(content),
+    rsa: /\brsa|ssh-rsa|rs256/i.test(content),
+    ecc: /\becdsa|ecdh|es256|secp|nistp/i.test(content),
+    hybridKem: /ml-kem|kyber|x25519.*ml-kem|hybrid/i.test(lower),
+    mlDsa: /ml-dsa|dilithium/i.test(lower),
+    weakCipher: /3des|des|rc4|md5|sha-?1/i.test(lower),
+  }
+}
+
+async function rollbackLocalConfigRemediation(execution: {
+  executed?: boolean
+  backupPath?: string | null
+  targetPath?: string | null
+  snapshot?: Record<string, unknown>
+}) {
+  if (!execution.executed || !execution.backupPath || !execution.targetPath) {
+    return { rollbackPerformed: false, rollbackRequired: true, reason: 'No restorable configuration snapshot was available.' }
+  }
+
+  await fs.copyFile(execution.backupPath, execution.targetPath)
+  const restored = await fs.readFile(execution.targetPath, 'utf8').catch(() => '')
+  return {
+    rollbackPerformed: true,
+    rollbackRequired: true,
+    reason: 'Validation failed; original configuration snapshot was restored automatically.',
+    restoredAt: isoNow(),
+    targetPath: execution.targetPath,
+    backupPath: execution.backupPath,
+    restoredHash: sha256Text(restored),
+    snapshot: execution.snapshot || null,
+  }
+}
+
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -1038,6 +1260,14 @@ function patchKnownSafeCryptoToggles(content: string, filePath: string) {
   next = next.replace(/(\bssl_ecdh_curve\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
   next = next.replace(/(\bssl_conf_command\s+Groups\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
   next = next.replace(/(\bssl_ciphers\s+)[^;\r\n]+;?/gi, '$1TLS_AES_256_GCM_SHA384;')
+  next = next.replace(/(\bssl_protocols\s+.*?)(TLSv1(?:\.0)?\s+|TLSv1\.1\s+|TLSv1\.2\s+)/gi, '$1TLSv1.3 ')
+  next = next.replace(/(\bHostKeyAlgorithms\s+)[^\r\n]+/gi, '$1ssh-ed25519,rsa-sha2-512,rsa-sha2-256')
+  next = next.replace(/(\bPubkeyAcceptedAlgorithms\s+)[^\r\n]+/gi, '$1ssh-ed25519,rsa-sha2-512,rsa-sha2-256')
+  next = next.replace(/(\bKexAlgorithms\s+)[^\r\n]+/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups}`)
+  next = next.replace(/(\btls-version-min\s+)[^\r\n]+/gi, '$1TLSv1.3')
+  next = next.replace(/(\btls-ciphersuites\s+)[^\r\n]+/gi, '$1TLS_AES_256_GCM_SHA384')
+  next = replaceConfigStringValue(next, ['CERTIFICATE_PROFILE', 'PKI_PROFILE'], 'Hybrid Ed25519 + ML-DSA', filePath)
+  next = replaceConfigStringValue(next, ['KEY_EXCHANGE_PROFILE', 'VPN_KEX_PROFILE'], MANDATORY_PQC_CONFIG_VALUES.tlsGroups, filePath)
 
   const ext = path.extname(filePath).toLowerCase()
   const lineAppendSafe = ['.cfg', '.ini', '.properties'].includes(ext)
@@ -1062,7 +1292,7 @@ function patchKnownSafeCryptoToggles(content: string, filePath: string) {
   return next
 }
 
-async function applyLocalConfigRemediation(job: RemediationJob, policy: AgentPolicy) {
+async function applyLocalConfigRemediation(job: RemediationJob, policy: AgentPolicy): Promise<RemediationAttemptResult> {
   const filePath = remediationFilePathFromJob(job)
   if (!filePath) {
     return { executed: false, manualRequired: true, reason: 'No local config file was attached to this remediation job.', changedFiles: [] as string[] }
@@ -1088,10 +1318,33 @@ async function applyLocalConfigRemediation(job: RemediationJob, policy: AgentPol
   const backupPath = `${filePath}.qguard-backup-${Date.now()}`
   await fs.copyFile(filePath, backupPath)
   await fs.writeFile(filePath, after, 'utf8')
-  return { executed: true, manualRequired: false, reason: 'Applied guarded local crypto configuration patch and created a backup.', changedFiles: [filePath, backupPath] }
+  const snapshot = {
+    type: 'configuration-snapshot',
+    targetPath: filePath,
+    backupPath,
+    createdAt: isoNow(),
+    beforeHash: sha256Text(before),
+    afterHash: sha256Text(after),
+    beforeBytes: Buffer.byteLength(before),
+    afterBytes: Buffer.byteLength(after),
+    beforePolicy: cryptoPolicySnapshot(before),
+    afterPolicy: cryptoPolicySnapshot(after),
+    certificateBackup: null,
+    keyBackupMetadata: null,
+    tlsPolicySnapshot: cryptoPolicySnapshot(before),
+  }
+  return {
+    executed: true,
+    manualRequired: false,
+    reason: 'Applied guarded local crypto configuration patch and created a backup.',
+    changedFiles: [filePath, backupPath],
+    targetPath: filePath,
+    backupPath,
+    snapshot,
+  }
 }
 
-async function attemptRemediation(job: RemediationJob, policy: AgentPolicy) {
+async function attemptRemediation(job: RemediationJob, policy: AgentPolicy): Promise<RemediationAttemptResult> {
   if (!REMEDIATION_ENABLED) {
     return {
       executed: false,
@@ -1137,6 +1390,7 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
 
   const precheck = await collectRemediationValidationEvidence(job, policy)
   const precheckValidation = validationFromEvidence(precheck.evidence, precheck.scanned)
+  const beforeState = remediationStateFromEvidence(precheck.evidence, precheck.scanned)
   await postRemediationEvent(job.id, {
     eventType: 'agent-remediation-precheck',
     status: 'running',
@@ -1144,7 +1398,14 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
     message: precheckValidation.hndlRiskRemaining
       ? `Precheck confirmed active HNDL exposure on ${job.name}.`
       : `Precheck found no active HNDL exposure on ${job.name}.`,
-    metadata: { adapter, precheckValidation, mandatoryPqcStack: MANDATORY_PQC_STACK, cryptographicStack: stack },
+    metadata: {
+      adapter,
+      workflowStage: 'ANALYZE',
+      precheckValidation,
+      beforeState,
+      mandatoryPqcStack: MANDATORY_PQC_STACK,
+      cryptographicStack: stack,
+    },
     validation: precheckValidation,
     evidence: precheck.evidence,
   })
@@ -1155,7 +1416,17 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       status: 'completed',
       progress: 100,
       message: `HNDL remediation already validated for ${job.name}; no active exposure remains.`,
-      metadata: { adapter, plan, alreadyRemediated: true, mandatoryPqcStack: MANDATORY_PQC_STACK, cryptographicStack: stack },
+      metadata: {
+        adapter,
+        workflowStage: 'VALIDATE',
+        plan,
+        alreadyRemediated: true,
+        beforeState,
+        afterState: beforeState,
+        verification: verificationFromValidation(precheckValidation),
+        mandatoryPqcStack: MANDATORY_PQC_STACK,
+        cryptographicStack: stack,
+      },
       validation: precheckValidation,
       evidence: precheck.evidence,
     })
@@ -1172,9 +1443,12 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       : `Manual or connector-backed remediation is required for ${job.name}: ${execution.reason}`,
     metadata: {
       adapter,
+      workflowStage: execution.manualRequired ? 'APPROVE' : 'PATCH',
       plan,
       reason: execution.reason,
       changedFiles: execution.changedFiles,
+      snapshot: execution.snapshot || null,
+      beforeState,
       remediationEnabled: REMEDIATION_ENABLED,
       configPatchesEnabled: CONFIG_PATCHES_ENABLED,
       mandatoryPqcStack: MANDATORY_PQC_STACK,
@@ -1184,6 +1458,8 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
 
   const validationProbe = await collectRemediationValidationEvidence(job, policy)
   const validation = validationFromEvidence(validationProbe.evidence, validationProbe.scanned)
+  const afterState = remediationStateFromEvidence(validationProbe.evidence, validationProbe.scanned)
+  const verification = verificationFromValidation(validation)
   await postRemediationEvent(job.id, {
     eventType: 'agent-remediation-validation',
     status: validation.passed ? 'completed' : execution.manualRequired ? 'manual_required' : 'failed',
@@ -1193,15 +1469,50 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       : `Rescan still shows active HNDL risk for ${job.name}; remediation remains open.`,
     metadata: {
       adapter,
+      workflowStage: 'VALIDATE',
       plan,
       reason: validation.notes || execution.reason,
       changedFiles: execution.changedFiles,
+      snapshot: execution.snapshot || null,
+      beforeState,
+      afterState,
+      verification,
       mandatoryPqcStack: MANDATORY_PQC_STACK,
       cryptographicStack: stack,
     },
     validation,
     evidence: validationProbe.evidence,
   })
+
+  if (!validation.passed && execution.executed && !execution.manualRequired) {
+    const rollback = await rollbackLocalConfigRemediation(execution)
+    await postRemediationEvent(job.id, {
+      eventType: 'agent-remediation-rollback',
+      status: 'failed',
+      progress: 95,
+      message: rollback.rollbackPerformed
+        ? `Validation failed for ${job.name}; original configuration snapshot was restored.`
+        : `Validation failed for ${job.name}; rollback could not restore automatically: ${rollback.reason}`,
+      metadata: {
+        adapter,
+        workflowStage: 'ROLLBACK',
+        plan,
+        beforeState,
+        failedAfterState: afterState,
+        verification: { ...verification, rollbackRequired: true },
+        rollback,
+        snapshot: execution.snapshot || null,
+        mandatoryPqcStack: MANDATORY_PQC_STACK,
+        cryptographicStack: stack,
+      },
+      validation: {
+        ...validation,
+        rollbackRequired: true,
+        rollbackPerformed: rollback.rollbackPerformed,
+      },
+      evidence: validationProbe.evidence,
+    })
+  }
 }
 
 async function executePendingRemediations(policy: AgentPolicy) {
@@ -1344,7 +1655,7 @@ async function watch() {
   for (;;) {
     const policy = await pullPolicy()
     await scanOnce()
-    const intervalMs = Math.max(60, Number(policy.intervalSeconds || 300)) * 1000
+    const intervalMs = Math.max(30, Math.min(60, Number(policy.intervalSeconds || 60))) * 1000
     console.log(`Next scan scheduled in ${Math.round(intervalMs / 1000)} seconds.`)
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }

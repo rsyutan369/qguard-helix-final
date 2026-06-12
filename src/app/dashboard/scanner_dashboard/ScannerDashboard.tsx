@@ -209,6 +209,7 @@ type PatchOption = {
   requiredScopes: string[];
   summary: string;
   validation: string;
+  executionContract?: Record<string, any>;
 };
 
 type PatchOptionGroup = {
@@ -269,6 +270,50 @@ type OneTimeAgentToken = {
   createdAt: string;
   mode: 'created' | 'rotated';
 } | null;
+
+const AGENT_SCAN_TYPE_OPTIONS = [
+  { id: 'tls', label: 'TLS', detail: 'Protocol, ciphers, KEX' },
+  { id: 'certificates', label: 'Certificates', detail: 'X.509 and chain state' },
+  { id: 'pki', label: 'PKI', detail: 'Trust stores and issuers' },
+  { id: 'ssh', label: 'SSH', detail: 'Host and authorized keys' },
+  { id: 'packages', label: 'Packages', detail: 'Manifests and versions' },
+  { id: 'configs', label: 'Configs', detail: 'Crypto policy files' },
+  { id: 'libraries', label: 'Libraries', detail: 'OpenSSL, OQS, JVM, .NET' },
+  { id: 'vpn', label: 'VPN', detail: 'IPSec, OpenVPN, WireGuard' },
+  { id: 'kubernetes', label: 'Kubernetes', detail: 'Ingress and cert-manager' },
+  { id: 'service_mesh', label: 'Mesh', detail: 'mTLS and workload policy' },
+  { id: 'api_gateway', label: 'Gateway', detail: 'API gateway TLS policy' },
+  { id: 'load_balancer', label: 'Load Balancer', detail: 'Edge and LB profiles' },
+  { id: 'hsm', label: 'HSM/KMS', detail: 'PKCS#11, KMS, vault bindings' },
+  { id: 'runtime', label: 'Runtime', detail: 'Handshake and drift events' },
+];
+
+const DEFAULT_AGENT_SCAN_TYPES = AGENT_SCAN_TYPE_OPTIONS.map((item) => item.id);
+const REMEDIATION_WORKFLOW_STAGES = ['DISCOVER', 'ANALYZE', 'APPROVE', 'PATCH', 'VALIDATE', 'MONITOR', 'REPORT'];
+const REMEDIATION_READINESS_GROUPS = [
+  {
+    title: 'Discover',
+    items: ['TLS, certificates, PKI', 'SSH, VPN, gateways, load balancers', 'Kubernetes, service mesh, HSM/KMS', 'OpenSSL, OQS, JVM, .NET, BouncyCastle'],
+  },
+  {
+    title: 'Assess',
+    items: ['Quantum-vulnerable algorithms', 'NIST and FIPS readiness', 'Migration feasibility', 'Dependency chain and blast radius'],
+  },
+  {
+    title: 'Patch',
+    items: ['TLS 1.3 and hybrid X25519 + ML-KEM', 'ML-DSA or hybrid certificates', 'SSH Ed25519 policy', 'OQS provider, VPN, gateway, ingress policy'],
+  },
+  {
+    title: 'Verify',
+    items: ['Before and after state', 'Certificate and service validation', 'Automatic rollback on failed validation', 'Continuous drift monitoring'],
+  },
+];
+const REMEDIATION_CONTROL_SUMMARY = [
+  ['Approval gate', 'RBAC + tenant admin'],
+  ['Snapshots', 'Config, cert, key metadata, TLS policy'],
+  ['Rollback', 'Automatic after failed validation'],
+  ['Telemetry', 'SSE heartbeat every 30-60s'],
+];
 
 function sevColor(s: string) {
   switch (s.toLowerCase()) {
@@ -336,10 +381,10 @@ function moduleStatusColor(status: ModuleStatus) {
 function normalizeAgentPolicy(policy?: AgentPolicy) {
   return {
     enabled: policy?.enabled !== false,
-    intervalSeconds: Number(policy?.intervalSeconds || policy?.interval_seconds || 300),
+    intervalSeconds: Math.max(30, Math.min(60, Number(policy?.intervalSeconds || policy?.interval_seconds || 60))),
     allowedTargets: policy?.allowedTargets || policy?.allowed_targets || [],
     allowedPaths: policy?.allowedPaths || policy?.allowed_paths || [],
-    scanTypes: policy?.scanTypes || policy?.scan_types || ['tls', 'ssh', 'packages', 'configs'],
+    scanTypes: policy?.scanTypes || policy?.scan_types || DEFAULT_AGENT_SCAN_TYPES,
     alertThreshold: policy?.alertThreshold || policy?.alert_threshold || 'moderate',
   };
 }
@@ -666,8 +711,8 @@ export default function ScannerDashboard() {
     enabled: true,
     allowedTargets: 'https://api.customer.com\napi.customer.com:443\nssh://server.customer.com:22',
     allowedPaths: 'C:\\Apps\\CustomerApi\\config\nC:\\nginx\\conf\n/opt/customer-api/config\n/etc/nginx/sites-enabled',
-    intervalSeconds: '300',
-    scanTypes: ['tls', 'ssh', 'packages', 'configs', 'runtime'],
+    intervalSeconds: '60',
+    scanTypes: DEFAULT_AGENT_SCAN_TYPES,
     alertThreshold: 'moderate',
   });
   const [connectorForm, setConnectorForm] = useState<ConnectorFormState>({
@@ -1197,7 +1242,7 @@ export default function ScannerDashboard() {
 
   const agentPolicyFromForm = useCallback(() => ({
     enabled: agentForm.enabled,
-    intervalSeconds: Math.max(60, Number(agentForm.intervalSeconds || 300)),
+    intervalSeconds: Math.max(30, Math.min(60, Number(agentForm.intervalSeconds || 60))),
     allowedTargets: agentForm.allowedTargets.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     allowedPaths: agentForm.allowedPaths.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     scanTypes: agentForm.scanTypes,
@@ -1245,10 +1290,10 @@ export default function ScannerDashboard() {
 
   const connectorPolicyFromForm = useCallback(() => ({
     enabled: true,
-    intervalSeconds: 300,
+    intervalSeconds: 60,
     allowedTargets: connectorForm.allowedTargets.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     allowedPaths: connectorForm.allowedPaths.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-    scanTypes: ['tls', 'ssh', 'packages', 'configs', 'runtime'],
+    scanTypes: DEFAULT_AGENT_SCAN_TYPES,
     alertThreshold: 'moderate',
   }), [connectorForm.allowedPaths, connectorForm.allowedTargets]);
 
@@ -1666,7 +1711,7 @@ export default function ScannerDashboard() {
   const selectedMissingScopes = selectedPatchOption?.requiredScopes?.filter((scope) => !connectorScopeSet.has(scope.toLowerCase())) || [];
   const operatorActionStats = {
     total: operatorActions.length,
-    blocked: operatorActions.filter((action) => action.status === 'blocked').length,
+    blocked: operatorActions.filter((action) => ['blocked', 'rejected', 'scheduled'].includes(String(action.status))).length,
     active: operatorActions.filter((action) => ['planned', 'approved', 'applying', 'applied', 'validating'].includes(String(action.status))).length,
     validated: operatorActions.filter((action) => action.status === 'validated').length,
   };
@@ -1781,6 +1826,8 @@ export default function ScannerDashboard() {
   -e QGUARD_AGENT_ID="${commandAgentId}" \\
   -e QGUARD_AGENT_TOKEN="agent_token_here" \\
   -e QGUARD_API_URL="${apiUrlPlaceholder}" \\
+  -e QGUARD_ENABLE_REMEDIATION="true" \\
+  -e QGUARD_ENABLE_CONFIG_PATCHES="true" \\
   -e QGUARD_NATIVE_RUNTIME_ENABLED="true" \\
   -e QGUARD_NATIVE_CAPTURE_SECONDS="8" \\
   -e QGUARD_SCAN_SYSTEM_CERTS="true" \\
@@ -1794,6 +1841,8 @@ export default function ScannerDashboard() {
       QGUARD_AGENT_ID: "${commandAgentId}"
       QGUARD_AGENT_TOKEN: "agent_token_here"
       QGUARD_API_URL: "${apiUrlPlaceholder}"
+      QGUARD_ENABLE_REMEDIATION: "true"
+      QGUARD_ENABLE_CONFIG_PATCHES: "true"
       QGUARD_NATIVE_RUNTIME_ENABLED: "true"
       QGUARD_NATIVE_CAPTURE_SECONDS: "8"
       QGUARD_SCAN_SYSTEM_CERTS: "true"`;
@@ -1807,6 +1856,8 @@ Environment=QGUARD_TENANT_ID=${tenantId}
 Environment=QGUARD_AGENT_ID=${commandAgentId}
 Environment=QGUARD_AGENT_TOKEN=agent_token_here
 Environment=QGUARD_API_URL=${apiUrlPlaceholder}
+Environment=QGUARD_ENABLE_REMEDIATION=true
+Environment=QGUARD_ENABLE_CONFIG_PATCHES=true
 Environment=QGUARD_NATIVE_RUNTIME_ENABLED=true
 Environment=QGUARD_NATIVE_CAPTURE_SECONDS=8
 Environment=QGUARD_SCAN_SYSTEM_CERTS=true
@@ -1820,6 +1871,8 @@ WantedBy=multi-user.target`;
 $env:QGUARD_AGENT_ID="${commandAgentId}"
 $env:QGUARD_AGENT_TOKEN="agent_token_here"
 $env:QGUARD_API_URL="${apiUrlPlaceholder}"
+$env:QGUARD_ENABLE_REMEDIATION="true"
+$env:QGUARD_ENABLE_CONFIG_PATCHES="true"
 $env:QGUARD_NATIVE_RUNTIME_ENABLED="true"
 $env:QGUARD_NATIVE_CAPTURE_SECONDS="8"
 $env:QGUARD_SCAN_SYSTEM_CERTS="true"
@@ -1829,6 +1882,8 @@ npm run agent:watch`;
   --set agentId="${commandAgentId}" \\
   --set agentToken="agent_token_here" \\
   --set apiUrl="${apiUrlPlaceholder}" \\
+  --set remediation.enabled=true \\
+  --set remediation.configPatches=true \\
   --set nativeRuntime.enabled=true \\
   --set nativeRuntime.captureSeconds=8 \\
   --set nativeRuntime.scanSystemCerts=true`;
@@ -1891,12 +1946,28 @@ npm run agent:watch`;
       snippet: 'POST /api/v1/agent-scanner/agent/evidence',
     },
     {
+      title: 'Approve Remediation Change',
+      description: 'Tenant administrators approve, reject, or schedule operator patch actions before any change is executed.',
+      action: 'Create a patch action and approve it from Operator Patch Workflow.',
+      status: operatorActionStats.active > 0 || operatorActionStats.validated > 0 ? 'Running' : operatorActions.length > 0 ? 'Pending setup' : 'Queued',
+      message: operatorActions.length > 0 ? `${operatorActions.length} change action(s) tracked with RBAC and approval metadata.` : 'No approved remediation action yet.',
+      snippet: 'POST /api/v1/agent-scanner/remediation/operator-actions',
+    },
+    {
+      title: 'Patch, Validate, and Roll Back',
+      description: 'Guarded agents and connectors create snapshots, apply approved changes, validate after state, and roll back failed local patches.',
+      action: 'Run the patcher with remediation enabled and submit validation evidence.',
+      status: operatorActionStats.validated > 0 ? 'Completed' : operatorActionStats.active > 0 ? 'Running' : 'Queued',
+      message: operatorActionStats.validated > 0 ? `${operatorActionStats.validated} action(s) validated.` : 'Waiting for before/after evidence and verification results.',
+      snippet: 'DISCOVER -> ANALYZE -> APPROVE -> PATCH -> VALIDATE -> MONITOR -> REPORT',
+    },
+    {
       title: 'Review Results',
-      description: 'Evidence is normalized into CBOM, assets, exposure, history, and alerts.',
-      action: 'Open CBOM, Assets, Crypto Exposure, and History.',
+      description: 'Evidence is normalized into CBOM, assets, exposure, history, alerts, and remediation audit trails.',
+      action: 'Open CBOM, Assets, Crypto Exposure, History, and PQC Orchestration.',
       status: agentEvidence.length > 0 || agentAlerts.length > 0 ? 'Completed' : 'Queued',
       message: agentAlerts.length > 0 ? `${agentAlerts.length} alert(s) available.` : 'Results appear after evidence is processed.',
-      snippet: '/dashboard/cbom /dashboard/assets /dashboard/crypto-exposure',
+      snippet: '/dashboard/cbom /dashboard/assets /dashboard/crypto-exposure /dashboard/pqc-orchestration',
     },
   ];
 
@@ -1928,10 +1999,10 @@ npm run agent:watch`;
       <header className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-black uppercase tracking-tight text-white">
-            PQC Discovery <span className="text-gold">Scanner</span>
+            PQC Remediation <span className="text-gold">Scanner</span>
           </h1>
           <p className="text-white/50 mt-1 text-sm">
-            Authorized defensive cryptographic inventory, CBOM generation, and PQC readiness assessment.
+            Authorized cryptographic discovery, CBOM generation, approved patch orchestration, validation, rollback, and PQC readiness reporting.
           </p>
         </div>
         <div className="flex gap-3 items-center">
@@ -2468,6 +2539,49 @@ npm run agent:watch`;
             </div>
           )}
 
+          <div className={GLASS_PANEL_CLASSES + " p-5"}>
+            <div className="flex flex-col xl:flex-row xl:items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-black uppercase tracking-tight text-white">
+                  Active PQC Remediation <span className="text-gold">Platform</span>
+                </h2>
+                <p className="mt-2 max-w-4xl text-xs leading-relaxed text-white/45">
+                  Deployed collectors and operator patchers now follow a guarded remediation lifecycle: discover, analyze, approve, patch, validate, monitor, and report with tenant-scoped telemetry.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {REMEDIATION_CONTROL_SUMMARY.map(([label, value]) => (
+                  <div key={label} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                    <div className="text-[8px] font-black uppercase tracking-wider text-white/30">{label}</div>
+                    <div className="mt-1 text-[10px] font-bold leading-snug text-white/65">{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-1.5">
+              {REMEDIATION_WORKFLOW_STAGES.map((stage, index) => (
+                <span key={stage} className="rounded border border-gold/15 bg-gold/[0.06] px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-gold/80">
+                  {index + 1}. {stage}
+                </span>
+              ))}
+            </div>
+            <div className="mt-4 grid md:grid-cols-2 xl:grid-cols-4 gap-3">
+              {REMEDIATION_READINESS_GROUPS.map((group) => (
+                <div key={group.title} className="rounded-lg border border-gold/10 bg-white/[0.02] p-4">
+                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-gold/70">{group.title}</div>
+                  <div className="mt-3 space-y-2">
+                    {group.items.map((item) => (
+                      <div key={item} className="flex items-start gap-2 text-[10px] leading-relaxed text-white/50">
+                        <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-green-400" />
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-6">
             <div className={GLASS_PANEL_CLASSES + " p-5"}>
               <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-5">
@@ -2572,19 +2686,24 @@ npm run agent:watch`;
                       {['low', 'moderate', 'medium', 'high', 'critical'].map((severity) => <option key={severity} value={severity}>{severity}</option>)}
                     </select>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {['tls', 'ssh', 'packages', 'configs'].map((scanType) => (
-                      <label key={scanType} className="flex items-center gap-2 rounded-lg border border-gold/10 bg-white/[0.02] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white/50 cursor-pointer">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    {AGENT_SCAN_TYPE_OPTIONS.map((scanType) => (
+                      <label key={scanType.id} className="flex items-start gap-2 rounded-lg border border-gold/10 bg-white/[0.02] px-3 py-2 text-white/50 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={agentForm.scanTypes.includes(scanType)}
+                          checked={agentForm.scanTypes.includes(scanType.id)}
                           onChange={(e) => setAgentForm((prev) => ({
                             ...prev,
-                            scanTypes: e.target.checked ? [...prev.scanTypes, scanType] : prev.scanTypes.filter((item) => item !== scanType),
+                            scanTypes: e.target.checked
+                              ? Array.from(new Set([...prev.scanTypes, scanType.id]))
+                              : prev.scanTypes.filter((item) => item !== scanType.id),
                           }))}
-                          className="accent-[#D4AF37]"
+                          className="mt-0.5 accent-[#D4AF37]"
                         />
-                        {scanType}
+                        <span>
+                          <span className="block text-[10px] font-black uppercase tracking-wider text-white/60">{scanType.label}</span>
+                          <span className="mt-0.5 block text-[9px] normal-case leading-snug tracking-normal text-white/35">{scanType.detail}</span>
+                        </span>
                       </label>
                     ))}
                   </div>
@@ -2835,6 +2954,21 @@ npm run agent:watch`;
                     <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
                       <div className="text-xs font-bold text-white/75">{selectedPatchOption.summary}</div>
                       <div className="mt-2 text-[10px] text-white/40">{selectedPatchOption.validation}</div>
+                      {selectedPatchOption.executionContract && (
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-[9px]">
+                          {[
+                            ['Approval', selectedPatchOption.executionContract.approvalRequired ? 'Required' : 'Optional'],
+                            ['RBAC', selectedPatchOption.executionContract.rbacRequired ? 'Required' : 'Optional'],
+                            ['Rollback', selectedPatchOption.executionContract.rollback?.automaticOnValidationFailure ? 'Automatic' : 'Manual'],
+                            ['Heartbeat', '30-60s'],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded border border-gold/10 bg-black/20 px-2 py-1.5">
+                              <span className="font-black uppercase tracking-wider text-white/30">{label}: </span>
+                              <span className="font-bold text-white/60">{value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {selectedPatchOption.requiresConnector && (
                         <div className={`mt-2 text-[10px] ${selectedMissingScopes.length ? 'text-yellow-300' : 'text-green-400'}`}>
                           {selectedMissingScopes.length ? `Missing scopes: ${selectedMissingScopes.join(', ')}` : 'Connector scope check passed.'}
@@ -2864,24 +2998,50 @@ npm run agent:watch`;
                       <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-6 text-center text-xs font-bold uppercase tracking-widest text-white/20">
                         No operator patch actions yet
                       </div>
-                    ) : operatorActions.slice(0, 8).map((action) => (
-                      <div key={action.id} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-xs font-bold text-white/80">{action.patch_plan?.optionLabel || action.action_type || 'Patch action'}</div>
-                            <div className="text-[10px] font-mono text-white/30">{action.id}</div>
+                    ) : operatorActions.slice(0, 8).map((action) => {
+                      const workflow = Array.isArray(action.patch_plan?.workflow) ? action.patch_plan.workflow : REMEDIATION_WORKFLOW_STAGES;
+                      const contract = action.patch_plan?.executionContract || action.metadata?.executionContract || {};
+                      const rollbackPlan = action.patch_plan?.rollbackPlan || contract.rollback || {};
+                      const verification = action.metadata?.lastRemediationState?.verification || action.patch_plan?.verification || action.validation || {};
+                      const validationStatus = verification.migrationSuccessful === true || action.validation?.passed === true
+                        ? 'Verification passed'
+                        : verification.rollbackRequired === true || action.validation?.passed === false
+                          ? 'Rollback required'
+                          : 'Awaiting verification';
+                      return (
+                        <div key={action.id} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-bold text-white/80">{action.patch_plan?.optionLabel || action.action_type || 'Patch action'}</div>
+                              <div className="text-[10px] font-mono text-white/30">{action.id}</div>
+                            </div>
+                            <span className={`px-2 py-1 rounded border text-[8px] font-black uppercase tracking-wider ${agentStatusClass(action.status || 'planned')}`}>{action.status || 'planned'}</span>
                           </div>
-                          <span className={`px-2 py-1 rounded border text-[8px] font-black uppercase tracking-wider ${agentStatusClass(action.status || 'planned')}`}>{action.status || 'planned'}</span>
+                          <div className="mt-2 text-[10px] text-white/40">{action.asset_class} {action.patch_plan?.target ? `-> ${action.patch_plan.target}` : ''}</div>
+                          <div className="mt-3 grid grid-cols-2 gap-2 text-[9px]">
+                            {[
+                              ['Workflow', workflow.join(' -> ')],
+                              ['Snapshots', rollbackPlan.configurationSnapshot || contract.snapshotsRequired ? 'Required' : 'Pending'],
+                              ['Rollback', rollbackPlan.automaticRollbackOnValidationFailure || contract.automaticOnValidationFailure ? 'Automatic' : 'Manual'],
+                              ['Verification', validationStatus],
+                            ].map(([label, value]) => (
+                              <div key={label} className="rounded border border-gold/10 bg-black/20 px-2 py-1.5">
+                                <div className="font-black uppercase tracking-wider text-white/25">{label}</div>
+                                <div className="mt-0.5 truncate text-white/55" title={String(value)}>{value}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-1.5">
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'approved')} className="px-2 py-1.5 rounded border border-gold/20 text-[9px] font-black uppercase tracking-wider text-gold hover:bg-gold/10">Approve</button>
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'scheduled')} className="px-2 py-1.5 rounded border border-yellow-400/20 text-[9px] font-black uppercase tracking-wider text-yellow-300 hover:bg-yellow-400/10">Schedule</button>
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'rejected')} className="px-2 py-1.5 rounded border border-white/15 text-[9px] font-black uppercase tracking-wider text-white/55 hover:bg-white/[0.05]">Reject</button>
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'applied')} className="px-2 py-1.5 rounded border border-cyan-400/20 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:bg-cyan-400/10">Applied</button>
+                            <button type="button" onClick={() => handleValidateOperatorAction(action.id)} className="px-2 py-1.5 rounded border border-green-400/20 text-[9px] font-black uppercase tracking-wider text-green-300 hover:bg-green-400/10">Validate</button>
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'failed')} className="px-2 py-1.5 rounded border border-red-400/20 text-[9px] font-black uppercase tracking-wider text-red-300 hover:bg-red-400/10">Fail</button>
+                          </div>
                         </div>
-                        <div className="mt-2 text-[10px] text-white/40">{action.asset_class} {action.patch_plan?.target ? `-> ${action.patch_plan.target}` : ''}</div>
-                        <div className="mt-3 flex flex-wrap gap-1.5">
-                          <button onClick={() => handleUpdateOperatorAction(action.id, 'approved')} className="px-2 py-1.5 rounded border border-gold/20 text-[9px] font-black uppercase tracking-wider text-gold hover:bg-gold/10">Approve</button>
-                          <button onClick={() => handleUpdateOperatorAction(action.id, 'applied')} className="px-2 py-1.5 rounded border border-cyan-400/20 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:bg-cyan-400/10">Applied</button>
-                          <button onClick={() => handleValidateOperatorAction(action.id)} className="px-2 py-1.5 rounded border border-green-400/20 text-[9px] font-black uppercase tracking-wider text-green-300 hover:bg-green-400/10">Validate</button>
-                          <button onClick={() => handleUpdateOperatorAction(action.id, 'failed')} className="px-2 py-1.5 rounded border border-red-400/20 text-[9px] font-black uppercase tracking-wider text-red-300 hover:bg-red-400/10">Fail</button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -3037,7 +3197,7 @@ npm run agent:watch`;
                     'Server-side policy enforcement rejects evidence outside allowed targets and paths.',
                     'The collector skips secrets, private keys, credential stores, .env files, and unapproved directories.',
                     'Every agent, scan, evidence record, alert, CBOM record, asset, and exposure is scoped by tenant user ID.',
-                    'Connector integrations should use read-only scopes and upload observed evidence, not inferred findings.',
+                    'Patch connectors require least-privilege scopes, RBAC, tenant admin approval, change approval, snapshots, validation, and audit logging before execution.',
                   ].map((note) => (
                     <div key={note} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">{note}</div>
                   ))}
@@ -3209,7 +3369,8 @@ npm run agent:watch`;
                   <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Heartbeat Interval</span>
                   <input
                     type="number"
-                    min={60}
+                    min={30}
+                    max={60}
                     step={30}
                     value={agentForm.intervalSeconds}
                     onChange={(event) => setAgentForm((current) => ({ ...current, intervalSeconds: event.target.value }))}
@@ -3233,21 +3394,24 @@ npm run agent:watch`;
 
                 <div className="md:col-span-2 space-y-2">
                   <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Scan Types</span>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                    {['tls', 'ssh', 'packages', 'configs', 'runtime'].map((scanType) => (
-                      <label key={scanType} className="flex items-center gap-2 rounded border border-gold/10 bg-white/[0.02] px-3 py-2 text-xs uppercase tracking-wider text-white/60">
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
+                    {AGENT_SCAN_TYPE_OPTIONS.map((scanType) => (
+                      <label key={scanType.id} className="flex items-start gap-2 rounded border border-gold/10 bg-white/[0.02] px-3 py-2 text-white/60">
                         <input
                           type="checkbox"
-                          checked={agentForm.scanTypes.includes(scanType)}
+                          checked={agentForm.scanTypes.includes(scanType.id)}
                           onChange={(event) => setAgentForm((current) => ({
                             ...current,
                             scanTypes: event.target.checked
-                              ? Array.from(new Set([...current.scanTypes, scanType]))
-                              : current.scanTypes.filter((item) => item !== scanType),
+                              ? Array.from(new Set([...current.scanTypes, scanType.id]))
+                              : current.scanTypes.filter((item) => item !== scanType.id),
                           }))}
-                          className="accent-gold"
+                          className="mt-0.5 accent-gold"
                         />
-                        {scanType}
+                        <span>
+                          <span className="block text-[10px] font-black uppercase tracking-wider text-white/65">{scanType.label}</span>
+                          <span className="mt-0.5 block text-[9px] normal-case leading-snug tracking-normal text-white/35">{scanType.detail}</span>
+                        </span>
                       </label>
                     ))}
                   </div>

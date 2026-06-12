@@ -221,11 +221,21 @@ export type AdminSecurity = {
 }
 
 export type AdminActivity = {
+  id?: string
   source: string
   severity: string
   title: string
   detail?: string
   created_at?: string
+  actorEmail?: string
+  actorId?: string | null
+  administrator?: string
+  action?: string
+  targetType?: string
+  targetId?: string
+  target?: string
+  result?: string
+  ipAddress?: string | null
   row: Record<string, unknown>
 }
 
@@ -578,6 +588,9 @@ export function useAdminDashboard() {
     try {
       const result = await operation()
       await refresh()
+      if (refresh !== refreshAll) {
+        await refreshActivities()
+      }
       return result
     } catch (err) {
       setError(err instanceof Error ? err.message : `${label} failed`)
@@ -585,7 +598,7 @@ export function useAdminDashboard() {
     } finally {
       setMutating(null)
     }
-  }, [refreshAll])
+  }, [refreshActivities, refreshAll])
 
   const createUser = useCallback((payload: Record<string, unknown>) => runMutation('create-user', () =>
     apiFetch('/api/v1/admin/users', { method: 'POST', body: JSON.stringify(payload) })

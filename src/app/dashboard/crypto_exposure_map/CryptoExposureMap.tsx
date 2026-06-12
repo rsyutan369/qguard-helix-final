@@ -149,6 +149,57 @@ function shortTime(value?: string | null) {
   return date.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+function safeNumber(value: unknown, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeMapNode(rawNode: any, index: number, total: number): MapNode {
+  const angle = (Math.PI * 2 * index) / Math.max(1, total) - Math.PI / 2;
+  const fallbackX = 50 + Math.cos(angle) * 32;
+  const fallbackY = 50 + Math.sin(angle) * 32;
+  const rawFindings = Array.isArray(rawNode?.linkedFindings)
+    ? rawNode.linkedFindings
+    : Array.isArray(rawNode?.findings)
+      ? rawNode.findings
+      : [];
+  const assetType = String(rawNode?.assetType || rawNode?.type || rawNode?.category || 'Asset');
+  const algorithm = String(rawNode?.algorithm || rawNode?.primaryAlgorithm || rawNode?.cipher || 'Unknown');
+  const risk = Math.max(0, Math.min(100, safeNumber(rawNode?.risk ?? rawNode?.riskScore, 0)));
+
+  return {
+    id: String(rawNode?.id || rawNode?.assetId || rawNode?.label || `exposure-node-${index}`),
+    label: String(rawNode?.label || rawNode?.name || rawNode?.assetName || rawNode?.target || `Exposure Node ${index + 1}`),
+    x: safeNumber(rawNode?.x, fallbackX),
+    y: safeNumber(rawNode?.y, fallbackY),
+    size: Math.max(8, Math.min(22, safeNumber(rawNode?.size, 10))),
+    type: String(rawNode?.type || assetType),
+    assetType,
+    algorithm,
+    vulnerable: Boolean(rawNode?.vulnerable || rawNode?.isVulnerable || risk >= 60),
+    risk,
+    connections: Array.isArray(rawNode?.connections) ? rawNode.connections.map(String).filter(Boolean) : [],
+    pqcReadiness: String(rawNode?.pqcReadiness || rawNode?.pqc_readiness || (risk >= 60 ? 'Quantum-vulnerable' : 'Unknown / requires manual review')),
+    linkedFindings: rawFindings.map((finding: any, findingIndex: number) => ({
+      id: String(finding?.id || `${rawNode?.id || index}-finding-${findingIndex}`),
+      algorithm: String(finding?.algorithm || algorithm || 'Detected crypto'),
+      category: String(finding?.category || finding?.type || finding?.source || 'Exposure finding'),
+      status: String(finding?.status || finding?.threatLevel || finding?.severity || 'Open'),
+      evidence: finding?.evidence ? String(finding.evidence) : undefined,
+    })),
+    recommendedMigrationPath: rawNode?.recommendedMigrationPath || rawNode?.migrationPath || rawNode?.pqcReplacement || null,
+  };
+}
+
+function normalizeDistribution(rawDistribution: any, nodes: MapNode[]): RiskDistribution {
+  return {
+    critical: Math.max(0, safeNumber(rawDistribution?.critical, nodes.filter((node) => node.risk >= 80).length)),
+    high: Math.max(0, safeNumber(rawDistribution?.high, nodes.filter((node) => node.risk >= 60 && node.risk < 80).length)),
+    medium: Math.max(0, safeNumber(rawDistribution?.medium, nodes.filter((node) => node.risk >= 40 && node.risk < 60).length)),
+    low: Math.max(0, safeNumber(rawDistribution?.low, nodes.filter((node) => node.risk < 40).length)),
+  };
+}
+
 function panelClass(extra = '') {
   return cx(
     'relative overflow-hidden rounded-xl border p-5 transition-all duration-300',
@@ -223,8 +274,13 @@ function EmptyState() {
 
 export default function CryptoExposureMap() {
   const { data, loading, error, connected, refresh } = useScannerIntelligence();
-  const nodes = (data.exposure.nodes || []) as MapNode[];
-  const distribution = (data.exposure.distribution || { critical: 0, high: 0, medium: 0, low: 0 }) as RiskDistribution;
+  const summary = data.summary || {};
+  const rawExposureNodes = Array.isArray(data.exposure?.nodes) ? data.exposure.nodes : [];
+  const findings = Array.isArray(data.findings) ? data.findings : [];
+  const history = Array.isArray(data.history?.history) ? data.history.history : [];
+  const telemetry = Array.isArray(data.telemetry) ? data.telemetry : [];
+  const nodes = useMemo(() => rawExposureNodes.map((node, index) => normalizeMapNode(node, index, rawExposureNodes.length)), [rawExposureNodes]);
+  const distribution = useMemo(() => normalizeDistribution(data.exposure?.distribution, nodes), [data.exposure?.distribution, nodes]);
   const [selectedNode, setSelectedNode] = useState<MapNode | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [riskFilter, setRiskFilter] = useState<RiskBand>('all');
@@ -297,13 +353,13 @@ export default function CryptoExposureMap() {
       blastRadius,
       totalFindings,
       vulnerableAlgorithms: vulnerableAlgorithms.size,
-      pqcReadiness: data.summary.pqcReadiness,
-      qScore: data.summary.qScore,
-      totalAssets: data.summary.totalAssets || nodes.length,
-      totalComponents: data.summary.totalComponents,
-      activeScans: data.summary.activeScans,
+      pqcReadiness: safeNumber(summary.pqcReadiness, 0),
+      qScore: safeNumber(summary.qScore, 0),
+      totalAssets: safeNumber(summary.totalAssets, nodes.length) || nodes.length,
+      totalComponents: safeNumber(summary.totalComponents, 0),
+      activeScans: safeNumber(summary.activeScans, 0),
     };
-  }, [data.summary, nodes]);
+  }, [nodes, summary]);
 
   const algorithmExposure = useMemo(() => {
     const rows = new Map<string, { name: string; count: number; vulnerable: number; maxRisk: number; assets: Set<string> }>();
@@ -340,7 +396,7 @@ export default function CryptoExposureMap() {
         severity: riskLabel(node.risk),
       })),
     );
-    const scannerFindings = (data.findings || []).map((finding: ScannerFinding) => {
+    const scannerFindings = findings.map((finding: ScannerFinding) => {
       const level = normalizeSeverity(finding.threatLevel || finding.severity || finding.status);
       const rank = severityOrder[level] ?? 1;
       return {
@@ -358,16 +414,16 @@ export default function CryptoExposureMap() {
     return [...nodeFindings, ...scannerFindings]
       .sort((a, b) => Number(b.risk || 0) - Number(a.risk || 0))
       .slice(0, 10);
-  }, [data.findings, nodes]);
+  }, [findings, nodes]);
 
   const activity = useMemo(() => {
-    const historyRows = (data.history.history || []).slice(0, 4).map((item: any) => ({
+    const historyRows = history.slice(0, 4).map((item: any) => ({
       id: item.scanId || item.id || item.startedAt,
       title: `Scan ${item.status || 'recorded'}: ${item.target || 'authorized scope'}`,
       detail: `${numberFmt(item.summary?.totalFindings || item.findings?.length || 0)} findings`,
       time: item.completedAt || item.startedAt || item.createdAt,
     }));
-    const telemetryRows = (data.telemetry || []).slice(0, 4).map((item: any, index: number) => ({
+    const telemetryRows = telemetry.slice(0, 4).map((item: any, index: number) => ({
       id: item.id || `${item.type}-${index}`,
       title: item.message || item.type || 'Runtime crypto event',
       detail: item.target || item.asset || item.scanId || 'Telemetry source',
@@ -376,7 +432,7 @@ export default function CryptoExposureMap() {
     return [...historyRows, ...telemetryRows]
       .sort((a, b) => Date.parse(b.time || '') - Date.parse(a.time || ''))
       .slice(0, 6);
-  }, [data.history.history, data.telemetry]);
+  }, [history, telemetry]);
 
   const selectedIcon = selectedNode ? getNodeIcon(selectedNode.assetType || selectedNode.type) : Globe;
   const SelectedIcon = selectedIcon;
@@ -454,7 +510,7 @@ export default function CryptoExposureMap() {
           <MetricCard title="Avg Risk" value={`${stats.averageRisk}/100`} detail={`Q-Score ${numberFmt(stats.qScore)}`} icon={BarChart3} tone="text-amber-400" spark={[30, 45, 52, stats.averageRisk || 1]} />
           <MetricCard title="PQC Readiness" value={pct(stats.pqcReadiness)} detail={`${numberFmt(stats.secured)} monitored protected assets`} icon={ShieldCheck} tone="text-emerald-400" spark={[20, 34, 55, stats.pqcReadiness || 1]} />
           <MetricCard title="Blast Radius" value={numberFmt(stats.blastRadius)} detail="linked trust paths affected" icon={Network} tone="text-cyan-400" spark={[1, 3, 5, stats.blastRadius || 1]} />
-          <MetricCard title="Active Scans" value={numberFmt(stats.activeScans)} detail={`${numberFmt(data.summary.completedScans)} completed`} icon={Activity} tone="text-blue-400" spark={[0, 1, 1, stats.activeScans || 1]} />
+          <MetricCard title="Active Scans" value={numberFmt(stats.activeScans)} detail={`${numberFmt(safeNumber(summary.completedScans, 0))} completed`} icon={Activity} tone="text-blue-400" spark={[0, 1, 1, stats.activeScans || 1]} />
         </div>
 
         <div className={panelClass('p-4')}>

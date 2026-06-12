@@ -99,6 +99,94 @@ function jsonError(res: Response, status: number, code: string, message: string)
   return res.status(status).json({ error: { code, message } })
 }
 
+const DEFAULT_AGENT_SCAN_TYPES = [
+  'tls',
+  'certificates',
+  'pki',
+  'ssh',
+  'packages',
+  'configs',
+  'libraries',
+  'vpn',
+  'kubernetes',
+  'service_mesh',
+  'api_gateway',
+  'load_balancer',
+  'hsm',
+  'runtime',
+]
+
+const REMEDIATION_WORKFLOW_STAGES = ['DISCOVER', 'ANALYZE', 'APPROVE', 'PATCH', 'VALIDATE', 'MONITOR', 'REPORT']
+
+function defaultRemediationCapabilities(overrides: Record<string, unknown> = {}) {
+  return {
+    discover: ['tls', 'certificates', 'pki', 'ssh', 'vpn', 'api-gateway', 'load-balancer', 'hsm', 'kubernetes', 'service-mesh', 'crypto-libraries'],
+    assess: ['quantum-vulnerable-assets', 'nist-readiness', 'fips-status', 'migration-feasibility', 'dependency-chain', 'blast-radius'],
+    remediate: ['tls13-upgrade', 'hybrid-x25519-ml-kem', 'ml-dsa-certificate-migration', 'ssh-ed25519-policy', 'oqs-provider-config', 'vpn-pqc-profile', 'kubernetes-tls-policy'],
+    validation: ['before-state', 'after-state', 'verification', 'service-reachability', 'certificate-chain', 'cipher-negotiation'],
+    rollback: ['configuration-snapshot', 'certificate-backup', 'key-backup-metadata', 'tls-policy-snapshot', 'automatic-restore-on-failed-validation'],
+    monitoring: ['tls-handshakes', 'certificate-changes', 'key-rotations', 'library-updates', 'pqc-adoption', 'drift-detection', 'unauthorized-crypto-changes'],
+    workflow: REMEDIATION_WORKFLOW_STAGES,
+    heartbeatSeconds: { min: 30, max: 60 },
+    executionMode: 'tenant-approved-guarded-agent-or-connector',
+    ...overrides,
+  }
+}
+
+function remediationExecutionContract(option?: Record<string, any>) {
+  return {
+    workflow: REMEDIATION_WORKFLOW_STAGES,
+    approvalRequired: true,
+    rbacRequired: true,
+    tenantAdminApprovalRequired: true,
+    changeApprovalActions: ['approve', 'reject', 'schedule'],
+    snapshotsRequired: ['configuration', 'certificate', 'key-metadata', 'tls-policy'],
+    rollback: {
+      automaticOnValidationFailure: true,
+      restoreOriginalConfiguration: true,
+      preserveBackupMetadata: true,
+    },
+    validation: {
+      beforeStateRequired: true,
+      afterStateRequired: true,
+      verificationRequired: true,
+      requiredVerificationFields: ['migrationSuccessful', 'certificateValid', 'serviceReachable', 'rollbackRequired'],
+    },
+    telemetry: {
+      stream: ['sse', 'websocket-compatible'],
+      heartbeatSeconds: { min: 30, max: 60 },
+    },
+    actionType: option?.actionType || null,
+    requiredScopes: option?.requiredScopes || [],
+  }
+}
+
+function userApprovalRole(user: User | null | undefined) {
+  const metadata = {
+    ...(user?.app_metadata || {}),
+    ...(user?.user_metadata || {}),
+  } as Record<string, unknown>
+  return cleanString(metadata.role || metadata.account_role || metadata.tenantRole || metadata.tenant_role, 80) || 'authenticated_tenant_admin'
+}
+
+async function recordAgentAudit(client: SupabaseClient | null, row: {
+  userId: string
+  action: string
+  entityType: string
+  entityId?: string | null
+  details: Record<string, unknown>
+}) {
+  if (!client) return
+  const { error } = await client.from('audit_logs').insert({
+    user_id: row.userId,
+    action: row.action,
+    entity_type: row.entityType,
+    entity_id: row.entityId || null,
+    details: row.details,
+  })
+  if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] audit log insert failed:', error.message)
+}
+
 async function requireUserAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const token = getToken(req)
   if (!token) {
@@ -161,10 +249,10 @@ async function requireAgentAuth(req: AgentRequest, res: Response, next: NextFunc
 function normalizePolicy(raw: any) {
   return {
     enabled: raw?.enabled !== false,
-    intervalSeconds: Math.max(60, Math.min(86400, Number(raw?.intervalSeconds || raw?.interval_seconds || 300))),
+    intervalSeconds: Math.max(30, Math.min(60, Number(raw?.intervalSeconds || raw?.interval_seconds || 60))),
     allowedTargets: Array.isArray(raw?.allowedTargets) ? raw.allowedTargets : Array.isArray(raw?.allowed_targets) ? raw.allowed_targets : [],
     allowedPaths: Array.isArray(raw?.allowedPaths) ? raw.allowedPaths : Array.isArray(raw?.allowed_paths) ? raw.allowed_paths : [],
-    scanTypes: Array.isArray(raw?.scanTypes) ? raw.scanTypes : Array.isArray(raw?.scan_types) ? raw.scan_types : ['tls', 'ssh', 'packages', 'configs'],
+    scanTypes: Array.isArray(raw?.scanTypes) ? raw.scanTypes : Array.isArray(raw?.scan_types) ? raw.scan_types : DEFAULT_AGENT_SCAN_TYPES,
     alertThreshold: cleanString(raw?.alertThreshold || raw?.alert_threshold, 20) || 'moderate',
   }
 }
@@ -265,6 +353,14 @@ const RUNTIME_EVIDENCE_TYPES = new Set([
   'tls-protocol',
   'tls-cipher',
   'ssh-metadata',
+  'pki-metadata',
+  'vpn-crypto-profile',
+  'api-gateway-crypto-policy',
+  'load-balancer-crypto-policy',
+  'kubernetes-crypto-policy',
+  'service-mesh-crypto-policy',
+  'hsm-integration',
+  'trust-store',
   'package-manifest',
   'config-reference',
   'jwt-algorithm',
@@ -1196,7 +1292,7 @@ function remediationJobAllowedForAgent(job: any, policy: ReturnType<typeof norma
   if (!probe) {
     if (!migrationJobIsAgentExecutable(job)) return policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0
     const scanTypes = new Set(policy.scanTypes.map((item: string) => String(item).toLowerCase()))
-    const migrationAllowed = ['runtime', 'tls', 'ssh', 'packages', 'configs'].some((type) => scanTypes.has(type))
+    const migrationAllowed = DEFAULT_AGENT_SCAN_TYPES.some((type) => scanTypes.has(type))
     return migrationAllowed || (policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0)
   }
   return evidenceAllowedByPolicy(probe, policy, true)
@@ -1448,6 +1544,59 @@ const PATCH_OPTION_GROUPS = {
       validation: 'Agent rescans SSH metadata and uploads observed KEX/host-key algorithms.',
     },
   ],
+  certificate_pki: [
+    {
+      id: 'pki-ml-dsa-certificate-migration',
+      label: 'Migrate Certificate to ML-DSA / Hybrid',
+      actionType: 'patch_pki_certificate_migration',
+      requiresConnector: true,
+      requiredScopes: ['pki:read', 'pki:issue', 'pki:replace-certificate', 'pki:update-trust-store'],
+      summary: 'Generate CSR or certificate material, replace RSA/ECC certificates with ML-DSA or hybrid Ed25519 + ML-DSA where the PKI ecosystem supports it, and update trust stores.',
+      validation: 'Validate certificate chain integrity, served certificate fingerprints, trust store updates, and rollback metadata.',
+    },
+    {
+      id: 'pki-trust-store-update',
+      label: 'Patch Trust Store',
+      actionType: 'patch_pki_trust_store',
+      requiresConnector: true,
+      requiredScopes: ['pki:read', 'pki:update-trust-store'],
+      summary: 'Update authorized trust stores after certificate migration and preserve certificate/key backup metadata before replacement.',
+      validation: 'Upload trust store evidence and rescan the endpoint or application path using the new chain.',
+    },
+  ],
+  vpn: [
+    {
+      id: 'vpn-hybrid-pqc-profile',
+      label: 'Patch Hybrid PQC VPN Profile',
+      actionType: 'patch_vpn_hybrid_profile',
+      requiresConnector: true,
+      requiredScopes: ['vpn:read', 'vpn:patch:profile'],
+      summary: 'Patch IPSec, OpenVPN, WireGuard, or SSL VPN profiles away from RSA/ECDH/ECDSA-only dependencies toward supported hybrid PQC profiles.',
+      validation: 'Upload VPN configuration evidence and handshake telemetry after the approved profile change.',
+    },
+  ],
+  api_gateway: [
+    {
+      id: 'gateway-tls-cipher-profile',
+      label: 'Patch API Gateway TLS / Cipher Profile',
+      actionType: 'patch_api_gateway_tls_profile',
+      requiresConnector: true,
+      requiredScopes: ['gateway:read', 'gateway:patch:tls'],
+      summary: 'Patch API gateways, reverse proxies, and edge gateways to enforce TLS 1.3, approved cipher suites, certificate references, and hybrid KEM groups where supported.',
+      validation: 'Connector uploads gateway policy evidence and QGuard rescans endpoint negotiation.',
+    },
+  ],
+  hsm: [
+    {
+      id: 'hsm-pqc-provider-profile',
+      label: 'Patch HSM / KMS PQC Provider Profile',
+      actionType: 'patch_hsm_pqc_provider_profile',
+      requiresConnector: true,
+      requiredScopes: ['hsm:read', 'hsm:patch:policy', 'hsm:rotate-key-metadata'],
+      summary: 'Patch HSM, KMS, PKCS#11, or key-vault integration profiles and record key backup metadata before rotation or policy change.',
+      validation: 'Upload HSM/KMS policy evidence plus runtime proof that vulnerable RSA/ECC key usage stopped.',
+    },
+  ],
   code_application: [
     {
       id: 'code-crypto-config-toggle',
@@ -1483,11 +1632,15 @@ const PATCH_OPTION_GROUPS = {
 
 function patchOptionsForAssetClass(assetClass: string) {
   const key = assetClass.replace(/-/g, '_').toLowerCase()
-  return (PATCH_OPTION_GROUPS as Record<string, any[]>)[key] || PATCH_OPTION_GROUPS.network_protocol
+  const options = (PATCH_OPTION_GROUPS as Record<string, any[]>)[key] || PATCH_OPTION_GROUPS.network_protocol
+  return options.map((option) => ({
+    ...option,
+    executionContract: remediationExecutionContract(option),
+  }))
 }
 
 function allPatchOptionGroups() {
-  return Object.entries(PATCH_OPTION_GROUPS).map(([assetClass, options]) => ({ assetClass, options }))
+  return Object.keys(PATCH_OPTION_GROUPS).map((assetClass) => ({ assetClass, options: patchOptionsForAssetClass(assetClass) }))
 }
 
 function publicAgent(agent: any) {
@@ -1635,12 +1788,14 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
     hostname: cleanString(req.body?.hostname, 255),
     platform: cleanString(req.body?.platform, 100),
     version: cleanString(req.body?.version, 100) || '0.1.0',
-    capabilities: typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {},
+    capabilities: defaultRemediationCapabilities(typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {}),
     policy,
     metadata: {
       ...(typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}),
       environment: cleanString(req.body?.environment, 80) || cleanString(req.body?.metadata?.environment, 80) || 'production',
       enrolledBy: user.id,
+      remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+      securityGates: ['rbac-validation', 'tenant-admin-approval', 'change-approval', 'snapshot-before-patch', 'post-patch-validation'],
     },
     created_at: now,
     updated_at: now,
@@ -1664,6 +1819,11 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       allowed_paths: policy.allowedPaths,
       scan_types: policy.scanTypes,
       alert_threshold: policy.alertThreshold,
+      metadata: {
+        remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+        heartbeatSeconds: { min: 30, max: 60 },
+        executionContract: remediationExecutionContract(),
+      },
     })
   } else {
     agent = { id: randomId('agent'), ...agentBase }
@@ -1849,6 +2009,11 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
         allowed_paths: policy.allowedPaths,
         scan_types: policy.scanTypes,
         alert_threshold: policy.alertThreshold,
+        metadata: {
+          remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+          heartbeatSeconds: { min: 30, max: 60 },
+          executionContract: remediationExecutionContract(),
+        },
         updated_at: new Date().toISOString(),
       }).eq('id', existing.id).eq('user_id', user.id)
     } else {
@@ -1861,6 +2026,11 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
         allowed_paths: policy.allowedPaths,
         scan_types: policy.scanTypes,
         alert_threshold: policy.alertThreshold,
+        metadata: {
+          remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+          heartbeatSeconds: { min: 30, max: 60 },
+          executionContract: remediationExecutionContract(),
+        },
       })
     }
     await client.from('scanner_agents').update({ policy, updated_at: new Date().toISOString() }).eq('id', req.params.id).eq('user_id', user.id)
@@ -2147,6 +2317,39 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
     missingScopes,
     requestedBy: user.id,
     requestedAt: now,
+    workflow: REMEDIATION_WORKFLOW_STAGES,
+    executionContract: option.executionContract || remediationExecutionContract(option),
+    securityGates: {
+      rbacValidation: true,
+      tenantAdminApproval: true,
+      changeApproval: true,
+      approvalRole: userApprovalRole(user),
+      approvedBy: null,
+      rejectedBy: null,
+      scheduledBy: null,
+    },
+    beforeStateSchema: {
+      tlsVersion: 'TLS1.2',
+      certificate: 'RSA-2048',
+    },
+    afterStateSchema: {
+      tlsVersion: 'TLS1.3',
+      certificate: 'ML-DSA-65',
+      keyExchange: 'Hybrid X25519 + ML-KEM-768',
+    },
+    verificationSchema: {
+      migrationSuccessful: true,
+      certificateValid: true,
+      serviceReachable: true,
+      rollbackRequired: false,
+    },
+    rollbackPlan: {
+      configurationSnapshot: true,
+      certificateBackup: true,
+      keyBackupMetadata: true,
+      tlsPolicySnapshot: true,
+      automaticRollbackOnValidationFailure: true,
+    },
     dryRun: req.body?.dryRun !== false,
     payload: sanitizeAgentMetadata(req.body?.payload),
   })
@@ -2167,6 +2370,8 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
       connectorDisplayName: connector?.display_name || null,
       jobName: job?.name || null,
       source: 'dashboard-operator-workflow',
+      remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+      executionContract: option.executionContract || remediationExecutionContract(option),
     }),
     requested_at: now,
     created_at: now,
@@ -2182,6 +2387,25 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
     }
     action = data || { id: randomId('operator-action'), ...row }
     if (error && isMissingRuntimeTable(error)) memoryStore.operatorActions.unshift(action)
+
+    await recordAgentAudit(client, {
+      userId: user.id,
+      action: 'remediation_operator_action_created',
+      entityType: 'remediation_operator_action',
+      entityId: action.id,
+      details: {
+        actionType,
+        assetClass,
+        status: action.status || row.status,
+        requestedBy: user.id,
+        connectorId: connectorId || null,
+        target,
+        missingScopes,
+        beforeStateRequired: true,
+        afterStateRequired: true,
+        rollbackRequired: true,
+      },
+    })
 
     if (jobId && job) {
       const metadata = remediationJobMetadata(job)
@@ -2234,7 +2458,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
   const user = req.user!
   const now = new Date().toISOString()
   const status = (cleanString(req.body?.status, 50) || 'applied').toLowerCase()
-  const allowedStatuses = new Set(['planned', 'approved', 'blocked', 'applying', 'applied', 'validating', 'validated', 'failed', 'cancelled'])
+  const allowedStatuses = new Set(['planned', 'approved', 'rejected', 'scheduled', 'blocked', 'applying', 'applied', 'validating', 'validated', 'failed', 'cancelled'])
   if (!allowedStatuses.has(status)) {
     jsonError(res, 400, 'INVALID_OPERATOR_ACTION_STATUS', 'Unsupported operator action status')
     return
@@ -2303,11 +2527,36 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
   }
 
   const nextStatus = status === 'validated' && validation.passed !== true ? 'validating' : status
+  const approvalRole = userApprovalRole(user)
+  const previousPatchPlan = asRecord(action.patch_plan)
+  const previousSecurityGates = asRecord(previousPatchPlan.securityGates)
+  const decisionMetadata = {
+    rbacValidation: true,
+    tenantAdminApproval: ['approved', 'scheduled', 'rejected'].includes(nextStatus),
+    changeApproval: ['approved', 'scheduled'].includes(nextStatus),
+    approvalRole,
+    approvedBy: nextStatus === 'approved' ? user.id : previousSecurityGates.approvedBy || null,
+    rejectedBy: nextStatus === 'rejected' ? user.id : previousSecurityGates.rejectedBy || null,
+    scheduledBy: nextStatus === 'scheduled' ? user.id : previousSecurityGates.scheduledBy || null,
+    decisionAt: ['approved', 'scheduled', 'rejected'].includes(nextStatus) ? now : previousSecurityGates.decisionAt || null,
+  }
   const updatePayload: Record<string, unknown> = {
     status: nextStatus,
+    patch_plan: sanitizeAgentMetadata({
+      ...previousPatchPlan,
+      securityGates: {
+        ...previousSecurityGates,
+        ...decisionMetadata,
+      },
+    }),
     evidence: sanitizeAgentMetadata({ ...(action.evidence || {}), submittedAt: now, evidenceCount: evidence.length, payload: sanitizeAgentMetadata(req.body?.evidenceMetadata) }),
     validation,
-    metadata: sanitizeAgentMetadata({ ...(action.metadata || {}), lastStatusMessage: cleanString(req.body?.message, 1000) }),
+    metadata: sanitizeAgentMetadata({
+      ...(action.metadata || {}),
+      lastStatusMessage: cleanString(req.body?.message, 1000),
+      lastDecision: decisionMetadata,
+      rollbackRequired: nextStatus === 'failed' || validation?.rollbackRequired === true || validation?.passed === false,
+    }),
     updated_at: now,
     ...actionStatusTimestamp(nextStatus, now),
   }
@@ -2327,6 +2576,25 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
     action = data || { ...action, ...updatePayload }
     if (error && isMissingRuntimeTable(error)) Object.assign(action, updatePayload)
 
+    await recordAgentAudit(client, {
+      userId: user.id,
+      action: `remediation_operator_action_${nextStatus}`,
+      entityType: 'remediation_operator_action',
+      entityId: action.id,
+      details: {
+        actionType: action.action_type,
+        assetClass: action.asset_class,
+        changedBy: user.id,
+        approvalRole,
+        beforeState: previousPatchPlan.beforeState || null,
+        afterState: previousPatchPlan.afterState || null,
+        validation,
+        evidenceCount: evidence.length,
+        status: nextStatus,
+        rollbackRequired: nextStatus === 'failed' || validation?.rollbackRequired === true || validation?.passed === false,
+      },
+    })
+
     if (action.migration_id) {
       const migrationUpdate: Record<string, unknown> = {
         updated_at: now,
@@ -2337,6 +2605,8 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
             actionType: action.action_type,
             assetClass: action.asset_class,
             status: nextStatus,
+            changedBy: user.id,
+            approvalRole,
             validation,
             updatedAt: now,
           },
@@ -2508,7 +2778,7 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
 
   const policy = normalizePolicy(agent.policy || {})
   const scanTypes = new Set(policy.scanTypes.map((item: string) => String(item).toLowerCase()))
-  const runtimeAllowed = scanTypes.has('runtime') || ['tls', 'ssh', 'packages', 'configs'].some((type) => scanTypes.has(type))
+  const runtimeAllowed = scanTypes.has('runtime') || DEFAULT_AGENT_SCAN_TYPES.some((type) => scanTypes.has(type))
   if (!runtimeAllowed) {
     jsonError(res, 403, 'RUNTIME_TELEMETRY_DISABLED', 'Runtime crypto telemetry is disabled by this agent policy')
     return
@@ -2888,6 +3158,12 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
       evidenceCount: evidence.length,
       rejectedEvidenceCount,
     },
+    lastRemediationState: {
+      beforeState: eventMetadata.beforeState || currentMetadata.lastRemediationState?.beforeState || null,
+      afterState: eventMetadata.afterState || eventMetadata.failedAfterState || currentMetadata.lastRemediationState?.afterState || null,
+      verification: eventMetadata.verification || currentMetadata.lastRemediationState?.verification || null,
+      rollback: eventMetadata.rollback || currentMetadata.lastRemediationState?.rollback || null,
+    },
     lastExecutorEvent: eventRecord,
     lastValidation: validation,
     lastEvidenceResult: evidenceResult ? {
@@ -3015,6 +3291,27 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
       rejectedEvidenceCount,
     },
     created_at: now,
+  })
+
+  await recordAgentAudit(client, {
+    userId: agent.user_id,
+    action: `agent_remediation_${requestedStatus}`,
+    entityType: 'migration_job',
+    entityId: job.id,
+    details: {
+      agentId: agent.id,
+      agentName: agent.name || null,
+      eventType,
+      status: requestedStatus,
+      progress,
+      beforeState: eventMetadata.beforeState || null,
+      afterState: eventMetadata.afterState || eventMetadata.failedAfterState || null,
+      verification: eventMetadata.verification || validation || null,
+      rollback: eventMetadata.rollback || null,
+      validation,
+      evidenceCount: evidence.length,
+      rejectedEvidenceCount,
+    },
   })
 
   res.json({

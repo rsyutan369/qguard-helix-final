@@ -27,7 +27,6 @@ import {
   ShieldCheck,
   Target,
   type LucideIcon,
-  Upload,
   Zap,
 } from 'lucide-react';
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
@@ -784,7 +783,6 @@ export default function CbomExplorer() {
   const distributionTotal = algorithmDistribution.reduce((sum, item) => sum + item.count, 0);
   const trendPoints = useMemo(() => buildTrend(history, readinessScore), [history, readinessScore]);
   const latestScan = latestScanAt(history, data.generatedAt);
-  const debtLevel = atRisk > 0 || readinessScore < 55 ? 'High' : readinessScore < 80 ? 'Medium' : totalComponents > 0 ? 'Low' : 'Awaiting Data';
   const complianceRows = buildComplianceRows(totalComponents, pqcReady, atRisk, Number(data.summary.criticalFindings || 0));
   const hasSynchronizedData = Boolean(entries.length || assets.length || findings.length || history.length || telemetry.length || totalComponents);
   const isInitialSyncing = loading && !hasSynchronizedData;
@@ -1026,18 +1024,6 @@ export default function CbomExplorer() {
             </motion.div>
           );
         })}
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.24 }} className={`${panelClass} p-4`}>
-          <div className="flex items-center gap-3">
-            <div className="grid h-12 w-12 place-items-center rounded-full bg-red-500/20 text-red-300">
-              <Zap className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--qg-text-muted)]">Cryptographic Debt</div>
-              <div className={`text-2xl font-black ${debtLevel === 'High' ? 'text-red-300' : debtLevel === 'Medium' ? 'text-amber-300' : debtLevel === 'Low' ? 'text-emerald-300' : 'text-[var(--qg-text-muted)]'}`}>{debtLevel}</div>
-              <div className="mt-0.5 text-[10px] text-[var(--qg-text-muted)]">{debtLevel === 'High' ? 'Needs Immediate Action' : debtLevel === 'Awaiting Data' ? 'Run a scan to calculate debt' : 'Monitored from scan evidence'}</div>
-            </div>
-          </div>
-        </motion.div>
       </section>
 
       {activeTab === 'Overview' ? (
@@ -1136,7 +1122,7 @@ export default function CbomExplorer() {
                 </div>
               ))}
               <button type="button" onClick={() => setActiveTab('Vulnerabilities')} className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-[var(--qg-amber)]">
-                View All Actions <ExternalLink className="h-3 w-3" />
+                View Vulnerabilities <ExternalLink className="h-3 w-3" />
               </button>
             </div>
           )}
@@ -1147,7 +1133,7 @@ export default function CbomExplorer() {
       )}
 
       <section className="grid gap-3 xl:grid-cols-12">
-        <div className={`${panelClass} xl:col-span-9`}>
+        <div className={`${panelClass} xl:col-span-12`}>
           <div className="border-b border-[var(--qg-card-border)] p-4">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
               <div className="flex items-center gap-2 text-sm font-bold">
@@ -1276,36 +1262,6 @@ export default function CbomExplorer() {
           )}
         </div>
 
-        <aside className="space-y-3 xl:col-span-3">
-          <div className={`${panelClass} p-4`}>
-            <div className="mb-3 flex items-center gap-2 text-sm font-bold">Actions</div>
-            <div className="space-y-2">
-              {[
-                { icon: Activity, label: 'Start New CBOM Scan', detail: 'Discover cryptographic assets', href: '/dashboard/scanner' },
-                { icon: Upload, label: 'Import Inventory', detail: 'Upload existing CBOM data', href: '/dashboard/scanner' },
-                { icon: FileArchive, label: 'Export CBOM Report', detail: 'Generate comprehensive report', action: exportSnapshot },
-                { icon: CalendarClock, label: 'Schedule Scan', detail: 'Automate inventory scans', href: '/dashboard/scanner' },
-              ].map((action) => {
-                const Icon = action.icon;
-                const content = (
-                  <>
-                    <span className="grid h-8 w-8 place-items-center rounded-md border border-[var(--qg-amber)]/25 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)]"><Icon className="h-4 w-4" /></span>
-                    <span>
-                      <span className="block font-bold">{action.label}</span>
-                      <span className="block text-[10px] text-[var(--qg-text-muted)]">{action.detail}</span>
-                    </span>
-                  </>
-                );
-                if (action.action) {
-                  return <button key={action.label} type="button" onClick={action.action} className="flex w-full items-center gap-3 rounded-md border-b border-[var(--qg-card-border)] px-2 py-2 text-left transition hover:bg-[var(--qg-muted-panel)]">{content}</button>;
-                }
-                return <Link key={action.label} to={action.href || '/dashboard/scanner'} className="flex items-center gap-3 rounded-md border-b border-[var(--qg-card-border)] px-2 py-2 transition hover:bg-[var(--qg-muted-panel)]">{content}</Link>;
-              })}
-            </div>
-            <button type="button" onClick={() => setActiveTab('Vulnerabilities')} className="mt-3 inline-flex w-full items-center justify-end gap-1 text-xs font-bold text-[var(--qg-amber)]">View All Actions <ExternalLink className="h-3 w-3" /></button>
-          </div>
-
-        </aside>
       </section>
 
       {activeTab === 'Inventory' && focusedTabDashboard}
