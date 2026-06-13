@@ -16,6 +16,7 @@ import {
   deduplicateAssets,
   type ValidatedAsset
 } from '@/lib/scanner/asset-validator';
+import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
 
 type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled';
 type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history' | 'agents' | 'settings';
@@ -209,6 +210,7 @@ type PatchOption = {
   requiredScopes: string[];
   summary: string;
   validation: string;
+  mandatoryQuantumStack?: Record<string, any>;
   executionContract?: Record<string, any>;
 };
 
@@ -304,6 +306,13 @@ const AGENT_SCAN_TYPE_OPTIONS = [
 
 const DEFAULT_AGENT_SCAN_TYPES = AGENT_SCAN_TYPE_OPTIONS.map((item) => item.id);
 const REMEDIATION_WORKFLOW_STAGES = ['DISCOVER', 'ANALYZE', 'APPROVE', 'PATCH', 'VALIDATE', 'MONITOR', 'REPORT'];
+const MANDATORY_QUANTUM_STACK = mandatoryPqcStackMetadata();
+const MANDATORY_QUANTUM_STACK_GROUPS = [
+  { title: 'Libraries', items: MANDATORY_QUANTUM_STACK.requiredLibraries },
+  { title: 'Key Exchange', items: [MANDATORY_QUANTUM_STACK.keyExchange.primary, MANDATORY_QUANTUM_STACK.keyExchange.hybrid] },
+  { title: 'Signatures', items: [MANDATORY_QUANTUM_STACK.signatures.primary, MANDATORY_QUANTUM_STACK.signatures.hybrid] },
+  { title: 'Data Protection', items: [MANDATORY_QUANTUM_STACK.encryption.symmetric, MANDATORY_QUANTUM_STACK.kdf.primary, ...MANDATORY_QUANTUM_STACK.hashes] },
+];
 const REMEDIATION_READINESS_GROUPS = [
   {
     title: 'Discover',
@@ -315,7 +324,7 @@ const REMEDIATION_READINESS_GROUPS = [
   },
   {
     title: 'Patch',
-    items: ['TLS 1.3 and hybrid X25519 + ML-KEM', 'ML-DSA, SLH-DSA-ready, or hybrid certificates', 'SSH Ed25519, weak cipher removal, key rotation', 'OQS provider, VPN, KMS/HSM, database, CDN, API gateway, ingress policy'],
+    items: ['TLS 1.3 and X25519 + ML-KEM-768 hybrid key exchange', 'ML-DSA-65 and Ed25519 + ML-DSA-65 hybrid certificates', 'SSH Ed25519, weak cipher removal, key rotation', 'OQS Provider/liboqs, VPN, KMS/HSM, database, CDN, API gateway, ingress policy'],
   },
   {
     title: 'Verify',
@@ -1755,6 +1764,7 @@ export default function ScannerDashboard() {
   const unhealthyAgents = agents.filter((agent) => ['degraded', 'unhealthy'].includes(String(agent.status))).length;
   const selectedPatchGroup = patchOptionGroups.find((group) => group.assetClass === operatorPatchForm.assetClass) || patchOptionGroups[0] || { assetClass: 'network_protocol', options: [] };
   const selectedPatchOption = selectedPatchGroup.options.find((option) => option.id === operatorPatchForm.optionId) || selectedPatchGroup.options[0] || null;
+  const selectedMandatoryStack = selectedPatchOption?.mandatoryQuantumStack || selectedPatchOption?.executionContract?.mandatoryQuantumStack || MANDATORY_QUANTUM_STACK;
   const selectedConnector = connectors.find((connector) => connector.id === operatorPatchForm.connectorId) || null;
   const connectorScopeSet = new Set((selectedConnector?.scopes || []).map((scope) => scope.toLowerCase()));
   const selectedMissingScopes = selectedPatchOption?.requiredScopes?.filter((scope) => !connectorScopeSet.has(scope.toLowerCase())) || [];
@@ -2629,6 +2639,31 @@ npm run agent:watch`;
                 </div>
               ))}
             </div>
+            <div className="mt-4 rounded-lg border border-green-400/10 bg-green-400/[0.035] p-4">
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                <div>
+                  <div className="text-[9px] font-black uppercase tracking-[0.18em] text-green-300/80">Mandatory Quantum Stack</div>
+                  <p className="mt-2 max-w-3xl text-[10px] leading-relaxed text-white/48">
+                    Approved agents and operator patchers use this stack for remediation plans, safe config patches, validation evidence, and rollback-aware audit records when the target platform supports the required controls.
+                  </p>
+                </div>
+                <span className="rounded border border-green-400/20 bg-green-400/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-green-300">
+                  {MANDATORY_QUANTUM_STACK.version}
+                </span>
+              </div>
+              <div className="mt-3 grid sm:grid-cols-2 xl:grid-cols-4 gap-2">
+                {MANDATORY_QUANTUM_STACK_GROUPS.map((group) => (
+                  <div key={group.title} className="rounded border border-green-400/10 bg-black/20 p-3">
+                    <div className="text-[9px] font-black uppercase tracking-wider text-white/35">{group.title}</div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {group.items.map((item) => (
+                        <span key={item} className="rounded border border-green-400/10 bg-green-400/[0.06] px-1.5 py-0.5 text-[8px] font-bold text-green-100/70">{item}</span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="mt-4 grid xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)] gap-4">
               <div className="rounded-lg border border-cyan-400/10 bg-cyan-400/[0.035] p-4">
                 <div className="text-[9px] font-black uppercase tracking-[0.18em] text-cyan-300/80">Supported Remediation Environments</div>
@@ -3046,6 +3081,22 @@ npm run agent:watch`;
                           ))}
                         </div>
                       )}
+                      <div className="mt-3 rounded border border-green-400/10 bg-green-400/[0.035] p-2.5">
+                        <div className="text-[9px] font-black uppercase tracking-wider text-green-300/80">Patch Stack</div>
+                        <div className="mt-2 grid grid-cols-2 gap-1.5 text-[8px]">
+                          {[
+                            ['KEX', selectedMandatoryStack?.keyExchange?.hybrid || 'X25519 + ML-KEM-768'],
+                            ['Signature', selectedMandatoryStack?.signatures?.hybrid || 'Ed25519 + ML-DSA-65'],
+                            ['Cipher', selectedMandatoryStack?.encryption?.symmetric || 'AES-256-GCM'],
+                            ['KDF/Hash', `${selectedMandatoryStack?.kdf?.primary || 'HKDF-SHA3-256'} / ${(selectedMandatoryStack?.hashes || ['SHA3-256', 'SHA3-512']).join(', ')}`],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded border border-green-400/10 bg-black/20 px-2 py-1">
+                              <span className="font-black uppercase tracking-wider text-white/30">{label}: </span>
+                              <span className="font-bold text-green-100/70">{value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                       {selectedPatchOption.requiresConnector && (
                         <div className={`mt-2 text-[10px] ${selectedMissingScopes.length ? 'text-yellow-300' : 'text-green-400'}`}>
                           {selectedMissingScopes.length ? `Missing scopes: ${selectedMissingScopes.join(', ')}` : 'Connector scope check passed.'}

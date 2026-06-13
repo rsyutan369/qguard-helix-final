@@ -1,0 +1,137 @@
+Most discussions about Post-Quantum Cryptography (PQC) focus on algorithms.
+
+When I started exploring different PQC migration scenarios, I expected the difficult part to be the cryptography itself.
+
+That wasn't what surprised me.
+
+Replacing a cryptographic component inside a single application was relatively straightforward.
+
+Even when cryptography was spread across multiple files, libraries, and workflows, the problem still felt manageable.
+
+The picture changed when I started looking beyond the application.
+
+Certificates.
+
+Trust chains.
+
+TLS infrastructure.
+
+Third-party integrations.
+
+Legacy systems.
+
+Operational dependencies.
+
+At that point, the questions stopped being purely cryptographic.
+
+They became questions about visibility.
+
+Which systems depend on this certificate?
+
+Which services still rely on older cryptographic libraries?
+
+Which vendors support the migration path?
+
+Which applications can be upgraded immediately?
+
+Which ones cannot?
+
+What breaks if a trust relationship changes?
+
+The deeper the migration scope became, the more the focus shifted toward understanding dependencies rather than thinking about algorithms.
+
+That was probably the most interesting observation.
+
+The challenge wasn't simply replacing cryptography.
+
+The challenge was understanding everything connected to it.
+
+One pattern kept appearing:
+
+**Visibility → Ownership → Dependencies → Risk**
+
+Before changing anything, you need to know what exists.
+
+Then who owns it.
+
+Then what depends on it.
+
+And finally what happens if something fails during migration.
+
+My takeaway is not that algorithms are unimportant.
+
+They are essential.
+
+But at enterprise scale, successful PQC migration may depend just as much on system visibility and dependency management as it does on cryptographic design.
+
+I'm curious whether others working on PQC, infrastructure, or security architecture are seeing similar challenges.
+
+
+========================================
+
+A large enterprise contacted us after an in-flight PQC migration had stalled.
+
+The programme was implementing a hybrid ML-KEM deployment across a complex enterprise estate.
+
+The call came directly from the enterprise CRO and the lead vendor responsible for the migration.
+
+By the time we arrived, the migration had been stalled for six weeks.
+
+Multiple vendors had already investigated the failures.
+Multiple partners had already conducted reviews.
+Internal teams had already exhausted their own analysis.
+
+Despite significant time, cost, and effort, nobody could identify the root cause.
+
+The universal assumption was simple:
+"The problem must be in the PQC."
+
+Reasonable. Wrong.
+
+The theories were predictable:
+Hybrid KEM interoperability. Certificate size increases. TLS negotiation failures. Application incompatibilities. Network degradation.
+
+All plausible. All incorrect.
+
+Every previous review shared the same flaw:
+They were looking for a cryptographic failure.
+The evidence never pointed there.
+
+So we reframed the problem.
+Instead of analysing PQC controls, we mapped trust relationships across the estate and simulated certificate replacement at scale.
+
+The result was immediate.
+
+A hidden trust hierarchy surfaced, embedded in legacy middleware, undocumented, ungoverned, and completely absent from the organisation's cryptographic inventory.
+
+It wasn't in scope.
+It wasn't in the migration plan.
+It wasn't even known to exist.
+
+And it was the single point of failure.
+
+The primary risk was not ML-KEM.
+It was not hybrid certificates.
+It was not post-quantum cryptography.
+
+The primary risk was that the organisation's trust estate was larger than its cryptographic estate. And nobody knew.
+
+This is why the issue survived six weeks of investigation.
+The reviews were examining cryptography.
+The failure was hiding in trust.
+
+The Real Lesson
+
+You cannot migrate what you have not discovered.
+
+In large enterprises, trust is always bigger, older, and more entangled than the inventory claims.
+
+This is why PQC cannot be treated as an algorithm swap or a cyber uplift. It must sit inside a cryptographic modernisation transformation, not a PQC project.
+
+A real programme starts with trust-state discovery and dependency mapping, reconstructs the hierarchy as it actually exists, then layers governance uplift, runtime assurance, supplier verification, and controlled migration sequencing on top. Without that foundation, you are migrating a subset and calling it complete.
+
+PQC is not the risk.
+The undocumented trust you are already running is the risk.
+
+PQC doesn't create that exposure.
+PQC forces you to confront it.

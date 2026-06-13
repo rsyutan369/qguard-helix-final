@@ -56,6 +56,7 @@ Operator Patchers:
 
 - Operator Patchers execute tenant-approved change actions across local, hybrid, cloud, Kubernetes, web, API, SaaS, PKI, database, HSM/KMS, and network-device environments.
 - Supported actions include TLS upgrades, certificate replacement, weak cipher removal, legacy crypto replacement, ML-KEM deployment, ML-DSA deployment, SLH-DSA readiness, hybrid cryptography deployment, key rotation, configuration hardening, and compliance policy enforcement.
+- The mandatory remediation stack is Open Quantum Safe liboqs, OQS-OpenSSL hybrid build compatibility, OQS Provider on OpenSSL 3.x, ML-KEM-768, X25519 + ML-KEM-768 hybrid key exchange, ML-DSA-65, Ed25519 + ML-DSA-65 hybrid signatures, AES-256-GCM, HKDF-SHA3-256, SHA3-256, and SHA3-512.
 - Every action must record before state, snapshots, after state, verification, validation result, and audit metadata.
 - Rollback is required for guarded local patches and must be represented for connector-backed changes through the owning provider's snapshot, backup, version, or restore mechanism.
 

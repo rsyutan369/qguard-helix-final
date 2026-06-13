@@ -1,10 +1,17 @@
 export const MANDATORY_PQC_STACK = {
   version: 'qguard-pqc-stack-v1',
-  libraries: ['liboqs', 'OQS Provider', 'OpenSSL 3.x', 'OQS-OpenSSL hybrid compatibility'],
+  libraries: ['Open Quantum Safe liboqs', 'OQS-OpenSSL Hybrid Builds', 'OQS Provider', 'OpenSSL 3.x provider interface'],
+  referenceUrls: [
+    'https://openquantumsafe.org/liboqs/',
+    'https://github.com/open-quantum-safe/liboqs',
+    'https://github.com/open-quantum-safe/oqs-provider',
+    'https://github.com/open-quantum-safe/openssl',
+  ],
   integration: {
     nativeLibrary: 'Open Quantum Safe liboqs',
     primaryProvider: 'OQS Provider for OpenSSL 3.x',
     compatibilityBuild: 'OQS-OpenSSL hybrid builds',
+    opensslProviderName: 'oqsprovider',
   },
   keyExchange: {
     primary: 'ML-KEM-768',
@@ -78,6 +85,8 @@ export const MANDATORY_PQC_CONFIG_VALUES = {
   integrityHash: 'SHA3-512',
   opensslProvider: 'oqsprovider',
   opensslConf: '/etc/ssl/oqs-openssl.cnf',
+  oqsLibraries: MANDATORY_PQC_STACK.libraries.join(','),
+  oqsProviderModule: 'oqsprovider',
 } as const
 
 function compact(value: unknown) {
@@ -132,6 +141,7 @@ export function mandatoryPqcStackMetadata(sourceAlgorithm?: unknown, context = '
     version: MANDATORY_PQC_STACK.version,
     targetAlgorithm,
     requiredLibraries: MANDATORY_PQC_STACK.libraries,
+    referenceUrls: MANDATORY_PQC_STACK.referenceUrls,
     integration: MANDATORY_PQC_STACK.integration,
     keyExchange: MANDATORY_PQC_STACK.keyExchange,
     tls: MANDATORY_PQC_STACK.tls,

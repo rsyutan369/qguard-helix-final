@@ -1299,6 +1299,8 @@ function patchKnownSafeCryptoToggles(content: string, filePath: string) {
   next = replaceConfigStringValue(next, ['INTEGRITY_HASH'], MANDATORY_PQC_CONFIG_VALUES.integrityHash, filePath)
   next = replaceConfigStringValue(next, ['OPENSSL_PROVIDER'], MANDATORY_PQC_CONFIG_VALUES.opensslProvider, filePath)
   next = replaceConfigStringValue(next, ['OPENSSL_CONF'], MANDATORY_PQC_CONFIG_VALUES.opensslConf, filePath)
+  next = replaceConfigStringValue(next, ['OQS_LIBRARIES', 'PQC_LIBRARIES'], MANDATORY_PQC_CONFIG_VALUES.oqsLibraries, filePath)
+  next = replaceConfigStringValue(next, ['OQS_PROVIDER_MODULE'], MANDATORY_PQC_CONFIG_VALUES.oqsProviderModule, filePath)
   next = next.replace(/(\bssl_protocols\s+)[^;\r\n]+;?/gi, '$1TLSv1.3;')
   next = next.replace(/(\bssl_ecdh_curve\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
   next = next.replace(/(\bssl_conf_command\s+Groups\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
@@ -1329,6 +1331,9 @@ function patchKnownSafeCryptoToggles(content: string, filePath: string) {
       `HASH_ALGORITHM=${MANDATORY_PQC_CONFIG_VALUES.hashAlgorithm}`,
       `INTEGRITY_HASH=${MANDATORY_PQC_CONFIG_VALUES.integrityHash}`,
       `OPENSSL_PROVIDER=${MANDATORY_PQC_CONFIG_VALUES.opensslProvider}`,
+      `OPENSSL_CONF=${MANDATORY_PQC_CONFIG_VALUES.opensslConf}`,
+      `OQS_LIBRARIES=${MANDATORY_PQC_CONFIG_VALUES.oqsLibraries}`,
+      `OQS_PROVIDER_MODULE=${MANDATORY_PQC_CONFIG_VALUES.oqsProviderModule}`,
       '',
     ].join(os.EOL)
   }

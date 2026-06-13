@@ -1,0 +1,96 @@
+QGuard Helix Patent Portfolio
+
+1. Quantum Exposure Graph™
+
+A dynamic graph analytics engine that discovers, maps, and visualizes cryptographic assets, certificates, keys, machine identities, applications, APIs, cloud services, and trust relationships across an enterprise. It identifies hidden dependencies, blast radius, migration impact, and quantum-vulnerable pathways before remediation or PQC migration begins.
+
+2. Harvest Now Risk Engine™
+
+A predictive risk-scoring engine that quantifies the likelihood and business impact of Harvest-Now-Decrypt-Later (HNDL) attacks. The system combines data sensitivity, retention periods, cryptographic exposure, threat actor interest, regulatory impact, and asset criticality to generate a proprietary Harvest Risk Score for prioritizing migration efforts.
+
+3. Autonomous PQC Migration Orchestrator™
+
+An AI-driven orchestration platform that automatically discovers vulnerable cryptographic assets, generates migration plans, validates dependencies, executes phased PQC upgrades, performs rollback protection, and continuously monitors migration outcomes with minimal human intervention.
+
+4. Quantum Transport Orchestrator™
+
+A specialized orchestration engine focused on securing transport-layer cryptography. It manages migration from RSA/ECC-based TLS infrastructures to hybrid and post-quantum protocols, validates middlebox compatibility, monitors handshake negotiations, and ensures secure communications remain uninterrupted during transition.
+
+5. Quantum Trust Fabric™
+
+A trust intelligence platform that creates a continuously updated model of enterprise trust relationships. It maps identities, certificates, services, APIs, workloads, devices, users, and cloud resources to provide a complete view of organizational trust dependencies before, during, and after PQC migration.
+
+6. Runtime Cryptographic Intelligence Engine™
+
+A real-time monitoring and analytics engine that observes live cryptographic operations across applications, services, networks, endpoints, containers, and cloud environments. It identifies algorithm usage, certificate activity, key lifecycles, cryptographic anomalies, and PQC readiness without requiring source code access.
+
+7. Quantum Readiness Digital Twin™
+
+A simulation platform that builds a digital replica of an organization's cryptographic ecosystem. It enables security teams to test PQC migration scenarios, evaluate dependency impacts, forecast operational risks, validate compliance outcomes, and rehearse migrations before making production changes.
+
+8. Crypto Agility Governance Engine™
+
+A policy-driven governance framework that separates cryptographic policies from application logic. It enables centralized management of algorithm standards, certificate lifecycles, key rotations, PQC transitions, compliance controls, and enterprise-wide cryptographic modernization initiatives.
+
+9. CBOM Intelligence Engine™
+
+An advanced Cryptographic Bill of Materials (CBOM) platform that discovers, inventories, enriches, and analyzes cryptographic components throughout the enterprise. The engine correlates cryptographic assets with vulnerabilities, compliance requirements, dependency chains, and quantum migration priorities.
+
+10. Quantum Attack Forecasting Engine™
+
+A predictive analytics system that models future quantum computing capabilities, cryptographic break timelines, emerging attack techniques, and organizational exposure trends. The platform generates risk forecasts and migration urgency scores based on evolving quantum threats.
+
+11. Supply Chain Quantum Risk Engine™
+
+A risk intelligence platform that evaluates quantum-related vulnerabilities across vendors, software dependencies, third-party services, APIs, open-source components, certificates, and digital supply chains. It predicts downstream impacts and identifies ecosystem-wide migration risks.
+
+12. Quantum Attack Simulator™
+
+A controlled simulation environment that emulates quantum-era attack scenarios, including cryptographic compromise, trust-chain failures, certificate replacement events, and Harvest-Now-Decrypt-Later campaigns. The platform allows organizations to measure resilience and validate mitigation strategies.
+
+13. Quantum Entropy Service™
+
+A secure entropy generation and distribution platform that combines hardware, software, and quantum-derived randomness sources to provide high-assurance entropy for key generation, encryption, authentication, digital signatures, and post-quantum cryptographic systems.
+
+14. Quantum Risk Sandbox™
+
+An isolated testing environment where organizations can evaluate cryptographic changes, certificate migrations, PQC implementations, policy modifications, and infrastructure upgrades. The sandbox provides rollback capabilities, compliance validation, and risk scoring before production deployment.
+
+15. Harvest Value Engine™
+
+A strategic intelligence engine that estimates the future value of encrypted data to adversaries. It calculates the potential return on investment for attackers based on data longevity, sensitivity, business importance, regulatory exposure, market value, and anticipated quantum decryption capabilities, helping organizations prioritize protection and migration resources.
+
+16. QKMS — Quantum-Safe Key Lifecycle Manager™
+
+A comprehensive post-quantum key management platform that governs the entire lifecycle of cryptographic keys across on-premises, cloud, hybrid, and multi-cloud environments. The system continuously discovers, inventories, classifies, monitors, rotates, archives, and retires cryptographic keys while maintaining verifiable ownership, policy compliance, auditability, and quantum readiness. By integrating governance controls, automated lifecycle workflows, cryptographic risk analysis, and PQC migration capabilities, the platform enables organizations to transition from legacy cryptography to post-quantum cryptographic standards with reduced operational risk and improved regulatory compliance.
+
+Core Innovations
+Enterprise Key Discovery & Inventory — Automatically identifies cryptographic keys across applications, databases, cloud services, HSMs, certificates, APIs, containers, and machine identities.
+Cryptographic Ownership Intelligence — Maps keys to business owners, applications, services, environments, and operational dependencies.
+Automated Key Lifecycle Governance — Manages generation, distribution, activation, rotation, escrow, archival, recovery, and secure destruction of keys.
+PQC Readiness Assessment — Evaluates whether keys, algorithms, certificates, and cryptographic infrastructures are prepared for post-quantum migration.
+Policy-Driven Crypto Agility — Enables centralized cryptographic policy enforcement and algorithm transitions without requiring application redesign.
+Key Exposure & Risk Analytics — Detects weak, aging, orphaned, overprivileged, duplicated, or improperly managed keys.
+Compliance & Audit Evidence Engine — Generates continuous evidence for regulatory frameworks, security audits, and cryptographic governance requirements.
+Hybrid & PQC Key Management — Supports coexistence and migration between classical, hybrid, and post-quantum cryptographic systems.
+Cryptographic Dependency Mapping — Identifies systems, services, applications, and trust relationships affected by key changes or rotations.
+Continuous Key Health Monitoring — Tracks key usage, lifecycle status, cryptographic strength, expiration risk, and operational integrity in real time.
+Patent Positioning
+
+Unlike traditional KMS platforms that primarily store and distribute keys, QKMS — Quantum-Safe Key Lifecycle Manager™ focuses on key governance, ownership intelligence, lifecycle orchestration, crypto agility, and post-quantum readiness management.
+
+The patentable innovation is not merely key storage, but the ability to:
+
+Discover, govern, map, validate, and continuously orchestrate cryptographic key lifecycles across an enterprise while automatically measuring and enforcing quantum readiness.
+
+This positions QKMS as the key governance and lifecycle control layer of the broader QGuard Helix Quantum Cyber Defense Platform™. 🔐⚛️
+
+Relationship to Other QGuard Helix Patents
+Quantum Exposure Graph™ → Shows where keys are used.
+Quantum Trust Fabric™ → Shows what trusts those keys.
+CBOM Intelligence Engine™ → Shows which cryptographic components depend on those keys.
+Runtime Cryptographic Intelligence Engine™ → Shows how keys are being used in real time.
+Autonomous PQC Migration Orchestrator™ → Migrates systems using those keys.
+QKMS — Quantum-Safe Key Lifecycle Manager™ → Governs and manages the keys themselves.
+
+Together, these create a complete Cryptographic Asset Management and Post-Quantum Migration Ecosystem™ rather than a standalone key vault solution.

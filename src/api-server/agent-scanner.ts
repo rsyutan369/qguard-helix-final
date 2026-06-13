@@ -9,6 +9,11 @@ import { calculateQuantumRiskScore } from '@/lib/scanner/scanner_2/engine/risk-s
 import { analyzeHNDLRisks } from '@/lib/scanner/scanner_2/hndl-analyzer'
 import { buildQuantumRiskAssessment } from '@/lib/scanner/scanner_2/correlation-engine'
 import { calculateQuantumReadiness, getMigrationRecommendation } from '@/lib/scanner/scanner_2/pqc-migration-engine'
+import {
+  MANDATORY_PQC_CONFIG_VALUES,
+  MANDATORY_PQC_STACK,
+  mandatoryPqcStackMetadata,
+} from '@/lib/crypto/mandatory-pqc-stack'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
 
 const router = Router()
@@ -176,13 +181,16 @@ const LOCAL_COLLECTOR_CLARIFICATION = {
   credentialBoundary: 'Collectors and connectors never receive global credentials from QGuard; customers authorize least-privilege access in their own environment.',
 }
 
+const MANDATORY_QUANTUM_STACK_METADATA = mandatoryPqcStackMetadata()
+
 function defaultRemediationCapabilities(overrides: Record<string, unknown> = {}) {
   return {
     scope: SUPPORTED_REMEDIATION_ENVIRONMENTS,
     localCollector: LOCAL_COLLECTOR_CLARIFICATION,
+    mandatoryQuantumStack: MANDATORY_QUANTUM_STACK_METADATA,
     discover: ['asset-inventory', 'tls', 'certificates', 'pki', 'keys', 'trust-relationships', 'ssh', 'vpn', 'api-gateway', 'reverse-proxy', 'cdn', 'load-balancer', 'hsm', 'kms', 'kubernetes', 'containers', 'service-mesh', 'cloud-databases', 'cloud-storage', 'saas-apps', 'crypto-libraries'],
     assess: ['quantum-vulnerable-assets', 'non-compliant-configurations', 'nist-readiness', 'fips-status', 'migration-feasibility', 'dependency-chain', 'blast-radius', 'pqc-readiness'],
-    remediate: ['tls13-upgrade', 'weak-cipher-removal', 'hybrid-x25519-ml-kem', 'ml-kem-deployment', 'ml-dsa-certificate-migration', 'slh-dsa-readiness', 'hybrid-certificate-deployment', 'ssh-ed25519-policy', 'oqs-provider-config', 'vpn-pqc-profile', 'kubernetes-tls-policy', 'cloud-kms-policy', 'cloud-load-balancer-policy', 'cdn-edge-policy', 'saas-crypto-policy', 'database-tls-policy'],
+    remediate: ['tls13-upgrade', 'weak-cipher-removal', 'hybrid-x25519-ml-kem-768', 'ml-kem-768-deployment', 'ml-dsa-65-certificate-migration', 'ed25519-ml-dsa-65-hybrid-certificate', 'slh-dsa-readiness', 'hybrid-certificate-deployment', 'ssh-ed25519-policy', 'oqs-provider-config', 'oqs-openssl-hybrid-build', 'aes-256-gcm-policy', 'hkdf-sha3-256-policy', 'sha3-256-512-integrity', 'vpn-pqc-profile', 'kubernetes-tls-policy', 'cloud-kms-policy', 'cloud-load-balancer-policy', 'cdn-edge-policy', 'saas-crypto-policy', 'database-tls-policy'],
     validation: ['before-state', 'after-state', 'verification', 'functional-testing', 'service-reachability', 'certificate-chain', 'cipher-negotiation', 'dependency-validation', 'rollback-validation', 'compliance-validation'],
     rollback: ['configuration-snapshot', 'certificate-backup', 'key-backup-metadata', 'tls-policy-snapshot', 'automatic-restore-on-failed-validation'],
     monitoring: ['runtime-crypto-intelligence', 'tls-handshakes', 'certificate-health', 'certificate-changes', 'key-rotations', 'trust-fabric', 'library-updates', 'pqc-adoption', 'crypto-agility', 'drift-detection', 'unauthorized-crypto-changes'],
@@ -196,6 +204,9 @@ function defaultRemediationCapabilities(overrides: Record<string, unknown> = {})
 function remediationExecutionContract(option?: Record<string, any>) {
   return {
     workflow: REMEDIATION_WORKFLOW_STAGES,
+    mandatoryQuantumStack: MANDATORY_QUANTUM_STACK_METADATA,
+    mandatoryConfigValues: MANDATORY_PQC_CONFIG_VALUES,
+    mustUseApprovedQuantumStack: true,
     approvalRequired: true,
     rbacRequired: true,
     tenantAdminApprovalRequired: true,
@@ -278,9 +289,10 @@ function connectorProviderCapabilities(providerValue: unknown, scopes: string[],
               ? 'pki-key-management'
               : 'custom',
     supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
+    mandatoryQuantumStack: MANDATORY_QUANTUM_STACK_METADATA,
     discover: ['remote-asset-inventory', 'crypto-asset-inventory', 'certificate-inventory', 'key-inventory', 'trust-relationship-inventory', 'pqc-readiness'],
     assess: ['quantum-vulnerable-assets', 'non-compliant-configurations', 'nist-readiness', 'fips-status', 'migration-feasibility', 'dependency-chain', 'blast-radius'],
-    remediate: ['tls-upgrades', 'certificate-replacement', 'weak-cipher-removal', 'legacy-crypto-replacement', 'ml-kem-deployment', 'ml-dsa-deployment', 'slh-dsa-readiness', 'hybrid-cryptography', 'key-rotation', 'configuration-hardening', 'compliance-policy-enforcement'],
+    remediate: ['tls-upgrades', 'certificate-replacement', 'weak-cipher-removal', 'legacy-crypto-replacement', 'ml-kem-768-deployment', 'x25519-ml-kem-768-hybrid', 'ml-dsa-65-deployment', 'ed25519-ml-dsa-65-hybrid', 'slh-dsa-readiness', 'aes-256-gcm-policy', 'hkdf-sha3-256-policy', 'sha3-256-512-integrity', 'hybrid-cryptography', 'key-rotation', 'configuration-hardening', 'compliance-policy-enforcement'],
     validate: ['post-remediation-verification', 'functional-testing', 'tls-validation', 'certificate-validation', 'dependency-validation', 'rollback-validation', 'compliance-validation'],
     monitor: ['runtime-crypto-intelligence', 'pqc-adoption-tracking', 'certificate-health', 'crypto-agility', 'trust-fabric-monitoring'],
     executionMode: 'authorized-connector-operator-patcher',
@@ -1932,6 +1944,7 @@ function patchOptionsForAssetClass(assetClass: string) {
   const options = (PATCH_OPTION_GROUPS as Record<string, any[]>)[key] || PATCH_OPTION_GROUPS.network_protocol
   return options.map((option) => ({
     ...option,
+    mandatoryQuantumStack: MANDATORY_QUANTUM_STACK_METADATA,
     executionContract: remediationExecutionContract(option),
   }))
 }
@@ -2632,6 +2645,8 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
     requestedBy: user.id,
     requestedAt: now,
     workflow: REMEDIATION_WORKFLOW_STAGES,
+    mandatoryQuantumStack: MANDATORY_QUANTUM_STACK_METADATA,
+    mandatoryConfigValues: MANDATORY_PQC_CONFIG_VALUES,
     executionContract: option.executionContract || remediationExecutionContract(option),
     securityGates: {
       rbacValidation: true,
@@ -2648,8 +2663,12 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
     },
     afterStateSchema: {
       tlsVersion: 'TLS1.3',
-      certificate: 'ML-DSA-65',
-      keyExchange: 'Hybrid X25519 + ML-KEM-768',
+      certificate: MANDATORY_PQC_STACK.signatures.primary,
+      signature: MANDATORY_PQC_STACK.signatures.hybrid,
+      keyExchange: MANDATORY_PQC_STACK.tls.keyExchange,
+      symmetricEncryption: MANDATORY_PQC_STACK.encryption.symmetric,
+      kdf: MANDATORY_PQC_STACK.kdf.primary,
+      hashing: MANDATORY_PQC_STACK.hashes,
     },
     verificationSchema: {
       migrationSuccessful: true,
@@ -2685,6 +2704,7 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
       jobName: job?.name || null,
       source: 'dashboard-operator-workflow',
       remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
+      mandatoryQuantumStack: MANDATORY_QUANTUM_STACK_METADATA,
       executionContract: option.executionContract || remediationExecutionContract(option),
     }),
     requested_at: now,

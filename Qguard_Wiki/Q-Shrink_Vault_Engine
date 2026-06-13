@@ -1,0 +1,137 @@
+The objective of Q-Shrink Vault Engine™ is to reduce the storage footprint of large files and folders before encryption, so encrypted vault objects consume less cloud and local storage. The system must preserve full reversibility: after decryption and rehydration, the user receives the exact original file structure, filenames, metadata, and byte-for-byte file contents.
+
+The pipeline must perform:
+
+Original File/Folder → Chunking → Deduplication → Compression → Manifest + Merkle Integrity → PQC Envelope Encryption → Smaller Encrypted Vault Object
+
+During restore:
+
+Encrypted Vault Object → Decryption → Integrity Verification → Decompression → Deduplication Rehydration → Original File/Folder
+
+Important rule: encrypted data itself cannot be meaningfully compressed because strong encryption produces high-entropy random-looking output. Therefore, Qguard Helix must optimize the plaintext locally first, then encrypt the reduced package using AES-256-GCM/XChaCha20-Poly1305 with hybrid ML-KEM key wrapping.
+
+This is professional and accurate: not “shrinking encrypted data,” but “pre-encryption data reduction with exact post-decryption restoration.”
+
+
+==================================================================
+
+Build a Quantum Vault Data Optimization Algorithm for Qguard Helix
+
+You are a senior security engineer, post-quantum cryptography researcher, compression systems architect, and enterprise cloud storage engineer.
+
+Design and build a professional, enterprise-grade Data Shrinking and Secure Compression Algorithm for Qguard Helix Quantum Vault.
+
+The algorithm must optimize files and folders before encryption, especially when users upload large datasets, documents, images, archives, backups, or encrypted vault containers.
+
+Core Objective
+
+Create an algorithm that reduces storage size and transfer cost without weakening security.
+
+The system must support:
+
+Secure pre-encryption compression
+Chunk-based file optimization
+Duplicate block detection
+Folder-level deduplication
+Metadata-aware compression
+Streaming uploads
+Integrity verification
+Quantum-safe encryption readiness
+Important Security Rule
+
+Compression must happen before encryption.
+
+Once data is encrypted with AES-256-GCM, ChaCha20-Poly1305, or PQC-protected envelope encryption, it should appear random and cannot be meaningfully compressed.
+
+Never compress secrets together with attacker-controlled input to avoid compression side-channel risks similar to CRIME/BREACH.
+
+Proposed Algorithm Name
+
+Q-Shrink Vault Engine™
+
+Quantum-Safe Storage Reduction and Integrity-Native Knowledge Engine
+
+Required Pipeline
+
+Design the full workflow:
+
+File intake and type detection
+Folder traversal and manifest creation
+Chunking using content-defined chunking
+Per-chunk hashing using SHA3-256 or BLAKE3
+Deduplication across files and folders
+Compression selection by file type
+Entropy analysis to skip already-compressed files
+Merkle tree generation for integrity
+PQC-ready envelope preparation
+Encryption using AES-256-GCM or XChaCha20-Poly1305
+Key wrapping using ML-KEM-768 / ML-KEM-1024 hybrid mode
+Secure upload and vault indexing
+Restore, verify, decrypt, and rehydrate workflow
+Compression Strategy
+
+Use adaptive compression:
+
+Text, JSON, CSV, logs: Zstandard high-ratio mode
+Documents: selective compression only when beneficial
+Images and videos: skip or use lossless optimization only
+Archives: skip compression unless entropy test shows benefit
+Source code: Zstandard or Brotli
+Backups: chunk-level deduplication + Zstandard
+Database exports: dictionary compression + chunking
+Security Requirements
+
+Include:
+
+Zero-knowledge design
+Client-side compression and encryption
+No plaintext stored server-side
+Authenticated encryption
+Per-file data encryption keys
+Per-chunk integrity tags
+Merkle root verification
+Secure deletion of plaintext buffers
+Constant-time key operations
+Replay protection
+Tenant isolation
+Audit logs without exposing file contents
+PQC Integration
+
+Use a hybrid quantum-safe envelope:
+
+X25519 + ML-KEM-768 for standard vault encryption
+X25519 + ML-KEM-1024 for high-assurance vault mode
+HKDF-SHA3-256 for key derivation
+AES-256-GCM or XChaCha20-Poly1305 for file encryption
+ML-DSA-65 or Ed25519 + ML-DSA hybrid signatures for manifest signing
+Deliverables
+
+Generate:
+
+Full algorithm design
+Architecture diagram description
+Step-by-step pseudocode
+File format specification
+Chunk manifest format
+Metadata schema
+Encryption envelope format
+Deduplication strategy
+Compression decision tree
+Upload workflow
+Download/decrypt/restore workflow
+Threat model
+Side-channel analysis
+Performance benchmarks
+Rust implementation plan
+Tauri desktop integration plan
+Node.js/FastAPI backend integration plan
+Test cases
+CI/CD security checks
+Important Output Rule
+
+Do not claim this is “quantum compression.”
+
+This is a secure data optimization, deduplication, and pre-encryption compression system designed for a post-quantum encrypted vault.
+
+The final output must be suitable for an enterprise cybersecurity product, cloud vault platform, and secure desktop application.
+

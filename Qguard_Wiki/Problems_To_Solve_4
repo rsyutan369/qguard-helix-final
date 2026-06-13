@@ -1,0 +1,94 @@
+PQC PROBLEMS TO SOLVE:
+
+Most discussions about Post-Quantum Cryptography (PQC) focus entirely on algorithms.
+​When people start planning for PQC, they assume the hardest part is picking the right NIST standard or switching a library.
+​That isn't what surprises you when you actually touch the infrastructure.
+​Replacing a primitive inside an isolated app is straightforward.
+​The real mess begins when you try to achieve enterprise-scale visibility. You realize very quickly that you don't actually know what exists across your perimeter.
+​You aren't just looking at a clean database. The engineering reality is complete chaos.
+​You start digging into the infrastructure and find:
+​Hardcoded cipher suites buried inside legacy internal binaries.
+​Shadow IT services running undocumented API endpoints.
+​Third-party vendor appliances running proprietary, locked-down TLS stacks.
+​Ephemeral container workloads spinning up with custom, unmapped OpenSSL forks.
+​At this stage, you realize that basic network scanning is a joke. It only captures what's active right at that second.
+​To get true visibility, the questions shift from network layers to runtime and static engineering:
+​Can your SAST rules reliably flag non-compliant curves in custom source code without blowing up your triage pipeline?
+​How do you hook into cryptographic providers at the JVM or CLR level to map active handshakes without killing production performance?
+​Can you reliably intercept system calls using eBPF at the kernel level to see what legacy systems are doing in the background?
+​If you try to migrate without solving this visibility puzzle first, you aren't executing a strategy.
+​You are just guessing.
+​And guessing at enterprise scale means introducing massive, unmapped operational risks.
+​Discovery isn't a compliance checklist item. It is the absolute core foundation of cryptographic lifecycle management.
+​I'm curious whether others working on infrastructure architecture are relying on deep runtime instrumentation, or if you're stuck trying to clean up network-level scans.
+
+====================================================================================================
+
+Shor and Grover are not the same quantum threat.
+
+This is where many PQC discussions get confused.
+
+Both are important.
+
+But they impact cryptography in very different ways.
+
+Shor’s algorithm is the bigger threat to today’s public-key cryptography.
+
+It targets the mathematical assumptions behind:
+
+• RSA
+• Diffie-Hellman
+• Elliptic Curve Cryptography
+
+That matters because public-key cryptography is deeply embedded in digital trust:
+
+• TLS
+• certificates
+• digital signatures
+• software updates
+• VPNs
+• identity systems
+• telecom security
+• banking infrastructure
+
+So when people say “quantum computers can break today’s cryptography,” they are mostly referring to Shor’s impact on public-key systems.
+
+Grover’s algorithm is different.
+
+It speeds up brute-force search against symmetric cryptography.
+
+That does not mean AES is dead.
+
+It means key-size planning and security margins become important.
+
+A simple mental model:
+
+Shor threatens public-key trust.
+Grover affects symmetric key-strength planning.
+
+This distinction matters.
+
+Because PQC migration is mainly urgent due to Shor’s impact on RSA, ECC, key exchange, and signatures.
+
+Grover matters too — but it does not create the same kind of public-key trust disruption.
+
+For enterprises, telecom networks, banks, governments, and critical infrastructure, misunderstanding this difference can lead to the wrong migration strategy.
+
+Quantum-safe readiness starts with asking the right question:
+
+Which cryptographic assumptions are at risk — and how deeply are they embedded in our systems?
+
+Shubham: We should worry of the threat of circumventing the cryptology with hashtag#AI-Accelerated Brute-Force search, which is distinct from quantum.
+
+Stronger key-size planning cannot really mitigate it, nor does hashtag#NIST’s hashtag#PQC.
+
+Pattern-Devoid-Cryptography (PDC) is a counter measure.
+
+ The key point is that Shor and Grover create very different migration challenges. Grover mainly affects symmetric key-strength planning and security margins. Shor is more disruptive because it challenges the public-key trust fabric behind PKI, TLS, VPNs, device identity, software signing, and telecom/banking trust chains.
+
+That is why PQC readiness cannot be treated as a simple algorithm swap. It requires crypto discovery, ownership, migration policy, coexistence planning, and a crypto-agile operating model.
+
+Great breakdown — the Shor vs Grover mix-up wrecks real migration plans. People panic over AES while RSA key exchange sits wide open.
+Your closing question is the key one. And to answer "how deeply are they embedded," you have to start with a cryptographic inventory. You can't migrate what you can't see — and RSA/ECC hide everywhere: firmware, vendor appliances, orphaned certs. Worse in OT, where crypto lives in devices with 20-year lifecycles.
+Shor sets the priority. The inventory sets the roadmap.
+
