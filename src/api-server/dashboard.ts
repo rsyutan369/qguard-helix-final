@@ -524,21 +524,13 @@ router.get('/activity', async (req: Request, res: Response) => {
       return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
     }
 
-    // Parallel fetch of recent activities from multiple tables
-    const [
-      { data: scans },
-      { data: migrations },
-      { data: vaultLogs },
-      { data: qrngEvents },
-      { data: compliance },
-      { data: auditLogs }
-    ] = await Promise.all([
-      client.from('pqc_scan_sessions').select('id, status, progress, started_at, completed_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit),
-      client.from('migration_jobs').select('id, name, status, progress, started_at, completed_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit),
-      client.from('vault_audit_logs').select('id, event_type, operation, status, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit),
-      client.from('qrng_events').select('id, event_type, algorithm, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit),
-      client.from('compliance_evidence').select('id, framework, control_id, status, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit),
-      client.from('audit_logs').select('id, action, entity_type, details, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit),
+    const [scans, migrations, vaultLogs, qrngEvents, compliance, auditLogs] = await Promise.all([
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, started_at, completed_at, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
+      safeRows(client, 'migration_jobs', (q) => q.select('id, name, status, progress, started_at, completed_at, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
+      safeRows(client, 'vault_audit_logs', (q) => q.select('id, event_type, operation, status, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
+      safeRows(client, 'qrng_events', (q) => q.select('id, event_type, algorithm, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
+      safeRows(client, 'compliance_evidence', (q) => q.select('id, framework, control_id, status, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
+      safeRows(client, 'audit_logs', (q) => q.select('id, action, entity_type, details, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(limit)),
     ])
 
     const activities = [
@@ -548,7 +540,7 @@ router.get('/activity', async (req: Request, res: Response) => {
         title: `PQC Scan ${s.status}`,
         description: `Scan ${s.status === 'completed' ? 'completed' : `progress: ${s.progress}%`}`,
         status: s.status,
-        timestamp: s.completed_at || s.started_at,
+        timestamp: s.completed_at || s.started_at || s.created_at,
       })),
       ...(migrations || []).map((m: any) => ({
         id: m.id,
@@ -556,7 +548,7 @@ router.get('/activity', async (req: Request, res: Response) => {
         title: m.name,
         description: `Migration ${m.status} — ${m.progress}%`,
         status: m.status,
-        timestamp: m.completed_at || m.started_at,
+        timestamp: m.completed_at || m.started_at || m.created_at,
       })),
       ...(vaultLogs || []).map((v: any) => ({
         id: v.id,
@@ -592,7 +584,7 @@ router.get('/activity', async (req: Request, res: Response) => {
       })),
     ]
 
-    activities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    activities.sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp))
 
     return res.json({ data: { activities: activities.slice(0, limit) } })
   } catch (err) {
@@ -610,8 +602,6 @@ router.get('/health', async (req: Request, res: Response) => {
     const user = (req as any).user
     const token = (req as any).token
     const client = createAuthClient(token)
-    const serviceClient = getServiceClient()
-
     let supabaseStatus = 'unknown'
     if (client) {
       const { error } = await client.from('assets').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
@@ -623,19 +613,27 @@ router.get('/health', async (req: Request, res: Response) => {
     let migrationStatus = 'idle'
 
     if (client) {
-      const { count: activeScans } = await client
-        .from('pqc_scan_sessions')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('status', 'running')
-      if ((activeScans || 0) > 0) scannerStatus = 'scanning'
+      const [scanRows, migrationRows, scannerAgents, heartbeats] = await Promise.all([
+        safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, updated_at, started_at, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50)),
+        safeRows(client, 'migration_jobs', (q) => q.select('id, status, updated_at, started_at, created_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(50)),
+        safeRows(client, 'scanner_agents', (q) => q.select('id, status, last_seen_at, updated_at, revoked_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(100)),
+        safeRows(client, 'agent_heartbeats', (q) => q.select('id, agent_id, status, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(100)),
+      ])
+      const activeScans = (scanRows || []).filter((scan: any) => ['pending', 'queued', 'running', 'in_progress', 'analyzing'].includes(String(scan.status || '').toLowerCase())).length
+      const activeMigrations = (migrationRows || []).filter((job: any) => ['pending', 'queued', 'running', 'in_progress', 'migrating'].includes(String(job.status || '').toLowerCase())).length
+      const heartbeatWindow = Date.now() - 10 * 60 * 1000
+      const onlineAgents = (scannerAgents || []).filter((agent: any) => {
+        if (agent.revoked_at || String(agent.status || '').toLowerCase() === 'revoked') return false
+        const lastSeen = dateMs(agent.last_seen_at || agent.updated_at)
+        return /active|online|healthy|running|connected/.test(String(agent.status || '').toLowerCase()) || lastSeen >= heartbeatWindow
+      }).length
+      const freshHeartbeats = (heartbeats || []).filter((heartbeat: any) => dateMs(heartbeat.observed_at || heartbeat.created_at) >= heartbeatWindow).length
 
-      const { count: activeMigrations } = await client
-        .from('migration_jobs')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('status', 'running')
-      if ((activeMigrations || 0) > 0) migrationStatus = 'migrating'
+      if (activeScans > 0) scannerStatus = 'scanning'
+      else if (onlineAgents > 0 || freshHeartbeats > 0) scannerStatus = 'active'
+      else if ((scannerAgents || []).length > 0) scannerStatus = 'agents_pending'
+
+      if (activeMigrations > 0) migrationStatus = 'migrating'
     }
 
     return res.json({
@@ -664,6 +662,10 @@ router.get('/health', async (req: Request, res: Response) => {
   }
 })
 
+router.get('/stream', (req: Request, res: Response) => {
+  openDashboardSyncStream(req, res, 'dashboard', 'dashboard.overview', 'tenant-dashboard-sync')
+})
+
 /**
  * GET /api/v1/dashboard/recommendations
  * Returns prioritized remediation actions based on actual findings.
@@ -678,92 +680,89 @@ router.get('/recommendations', async (req: Request, res: Response) => {
       return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
     }
 
+    const now = Date.now()
     const recommendations: any[] = []
+    const [assets, cryptoExposures, certificates, migrationJobs, scanResults, scannerAlerts, runtimeEvents, vulnerabilities] = await Promise.all([
+      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, status').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+      safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
+      safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, not_after, algorithm, status, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', user.id).order('not_after', { ascending: true }).limit(300)),
+      safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, progress, updated_at, created_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(300)),
+      safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, finding_type, algorithm, threat_level, description, remediation, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+      safeRows(client, 'scanner_alerts', (q) => q.select('id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(300)),
+      safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, event_type, operation_type, severity, risk_score, asset_name, host, algorithm, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(1000)),
+      safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status, source, metadata, updated_at, created_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
+    ])
 
-    // Check for RSA/ECC exposures
-    const { data: cryptoExposures } = await client
-      .from('crypto_exposures')
-      .select('id, asset_id, exposure_type, severity, assets(name)')
-      .eq('user_id', user.id)
-      .in('exposure_type', ['rsa', 'ecc', 'dh'])
-      .order('severity', { ascending: false })
-      .limit(10)
+    const assetMap = new Map<string, any>((assets || []).map((asset: any) => [asset.id, asset]))
+    const assetName = (assetId: unknown, fallback = 'Unknown asset') => {
+      const asset = typeof assetId === 'string' ? assetMap.get(assetId) : null
+      return textValue(asset?.name, fallback)
+    }
+    const priorityFromSeverity = (severity: unknown) => {
+      const rank = severityRank(String(severity || ''))
+      if (rank >= 4) return 1
+      if (rank >= 3) return 2
+      return 3
+    }
 
-    for (const exp of (cryptoExposures || [])) {
-      const assetName = (exp as any).assets?.name || 'Unknown asset'
+    for (const exp of (cryptoExposures || [])
+      .filter((row: any) => ['rsa', 'ecc', 'dh'].some((token) => String(row.exposure_type || row.detected_value || '').toLowerCase().includes(token)))
+      .slice(0, 10)) {
       recommendations.push({
         id: `exp-${exp.id}`,
-        priority: exp.severity === 'critical' ? 1 : exp.severity === 'high' ? 2 : 3,
+        priority: priorityFromSeverity(exp.severity),
         category: 'cryptography',
-        title: `Replace ${exp.exposure_type.toUpperCase()} on ${assetName}`,
-        description: `Detected quantum-vulnerable ${exp.exposure_type.toUpperCase()} cryptography requiring migration to PQC algorithms (ML-KEM, ML-DSA).`,
+        title: `Replace ${String(exp.exposure_type || exp.detected_value || 'legacy crypto').toUpperCase()} on ${assetName(exp.asset_id)}`,
+        description: exp.description || 'Detected quantum-vulnerable cryptography requiring migration to PQC algorithms such as ML-KEM and ML-DSA.',
         assetId: exp.asset_id,
         action: 'start_migration',
-        estimatedEffort: 'medium',
+        estimatedEffort: severityRank(String(exp.severity || '')) >= 4 ? 'high' : 'medium',
       })
     }
 
-    // Check for weak TLS
-    const { data: tlsExposures } = await client
-      .from('crypto_exposures')
-      .select('id, asset_id, exposure_type, severity, assets(name)')
-      .eq('user_id', user.id)
-      .eq('exposure_type', 'weak_tls')
-      .limit(5)
-
-    for (const exp of (tlsExposures || [])) {
-      const assetName = (exp as any).assets?.name || 'Unknown asset'
+    for (const exp of (cryptoExposures || [])
+      .filter((row: any) => /weak_tls|tls|ssl|cipher|protocol/i.test(`${row.exposure_type || ''} ${row.detected_value || ''} ${row.description || ''}`))
+      .slice(0, 5)) {
       recommendations.push({
         id: `tls-${exp.id}`,
-        priority: exp.severity === 'critical' ? 1 : 2,
+        priority: priorityFromSeverity(exp.severity),
         category: 'protocol',
-        title: `Upgrade TLS configuration on ${assetName}`,
-        description: 'Weak TLS version or cipher suite detected. Enable TLS 1.3 with hybrid post-quantum key exchange.',
+        title: `Upgrade TLS configuration on ${assetName(exp.asset_id)}`,
+        description: exp.description || 'Weak TLS version or cipher suite detected. Enable TLS 1.3 with hybrid post-quantum key exchange.',
         assetId: exp.asset_id,
         action: 'upgrade_tls',
         estimatedEffort: 'low',
       })
     }
 
-    // Check for expiring certificates
-    const { data: expiringCerts } = await client
-      .from('certificates')
-      .select('id, asset_id, name, not_after, algorithm, assets(name)')
-      .eq('user_id', user.id)
-      .eq('status', 'active')
-      .lt('not_after', new Date(Date.now() + 30 * 86400000).toISOString())
-      .order('not_after', { ascending: true })
-      .limit(5)
-
-    for (const cert of (expiringCerts || [])) {
-      const assetName = (cert as any).assets?.name || 'Unknown asset'
-      const daysLeft = Math.ceil((new Date(cert.not_after!).getTime() - Date.now()) / 86400000)
+    for (const cert of (certificates || [])
+      .filter((row: any) => {
+        const expiresAt = dateMs(row.not_after)
+        const active = !['revoked', 'deleted', 'expired'].includes(String(row.status || 'active').toLowerCase())
+        return active && (row.is_expiring_soon || (expiresAt && expiresAt < now + 30 * 86400000) || (!row.is_quantum_safe && !isPqcReadyAlgorithm(`${row.algorithm || ''}`)))
+      })
+      .slice(0, 5)) {
+      const daysLeft = cert.not_after ? Math.ceil((dateMs(cert.not_after) - now) / 86400000) : null
       recommendations.push({
         id: `cert-${cert.id}`,
-        priority: daysLeft <= 7 ? 1 : 2,
+        priority: daysLeft !== null && daysLeft <= 7 ? 1 : 2,
         category: 'certificate',
-        title: `Renew certificate: ${cert.name}`,
-        description: `Certificate expires in ${daysLeft} days on ${assetName}. Transition to ML-DSA or hybrid certificate.`,
+        title: `Renew certificate: ${cert.name || assetName(cert.asset_id, 'Certificate')}`,
+        description: daysLeft !== null
+          ? `Certificate expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} on ${assetName(cert.asset_id)}. Transition to ML-DSA or hybrid certificate.`
+          : `Certificate uses ${cert.algorithm || 'a classical algorithm'} and should be reviewed for PQC readiness.`,
         assetId: cert.asset_id,
         action: 'renew_certificate',
         estimatedEffort: 'medium',
       })
     }
 
-    // Check for failed migrations
-    const { data: failedMigrations } = await client
-      .from('migration_jobs')
-      .select('id, asset_id, name, job_type')
-      .eq('user_id', user.id)
-      .eq('status', 'failed')
-      .limit(5)
-
-    for (const job of (failedMigrations || [])) {
+    for (const job of (migrationJobs || []).filter((row: any) => normalizeJobStatus(row.status) === 'failed').slice(0, 5)) {
       recommendations.push({
         id: `migrate-${job.id}`,
         priority: 2,
         category: 'migration',
-        title: `Review failed migration: ${job.name}`,
+        title: `Review failed migration: ${job.name || titleCase(job.job_type || 'migration job')}`,
         description: `Migration job failed. Review logs and retry with corrected parameters.`,
         assetId: job.asset_id,
         action: 'review_migration',
@@ -771,25 +770,62 @@ router.get('/recommendations', async (req: Request, res: Response) => {
       })
     }
 
-    // Check for unscanned assets
-    const { count: unscannedCount } = await client
-      .from('assets')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('status', 'active')
+    for (const alert of (scannerAlerts || [])
+      .filter((row: any) => !['resolved', 'closed', 'suppressed'].includes(String(row.status || 'open').toLowerCase()))
+      .slice(0, 5)) {
+      const metadata = recordOf(alert.metadata)
+      recommendations.push({
+        id: `scanner-alert-${alert.id}`,
+        priority: priorityFromSeverity(alert.severity),
+        category: 'discovery',
+        title: alert.title || titleCase(alert.category || 'Scanner alert'),
+        description: alert.recommendation || alert.message || 'Scanner alert requires review.',
+        assetId: typeof metadata.assetId === 'string' ? metadata.assetId : null,
+        action: 'review_scanner_alert',
+        estimatedEffort: severityRank(String(alert.severity || '')) >= 4 ? 'high' : 'medium',
+      })
+    }
 
-    const { count: scannedCount } = await client
-      .from('pqc_scan_results')
-      .select('asset_id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
+    for (const event of (runtimeEvents || [])
+      .filter((row: any) => row.is_legacy || row.downgrade_detected || row.shadow_crypto || row.hndl_risk || severityRank(String(row.severity || '')) >= 3 || Number(row.risk_score || 0) >= 68)
+      .slice(0, 5)) {
+      recommendations.push({
+        id: `runtime-${event.id}`,
+        priority: Number(event.risk_score || 0) >= 86 || severityRank(String(event.severity || '')) >= 4 ? 1 : 2,
+        category: 'cryptography',
+        title: `Investigate runtime crypto on ${assetName(event.asset_id, textValue(event.asset_name, textValue(event.host, 'runtime source')))}`,
+        description: `${event.algorithm || event.operation_type || event.event_type || 'Runtime cryptography'} produced a live risk signal that should be validated against PQC policy.`,
+        assetId: event.asset_id,
+        action: 'inspect_runtime_telemetry',
+        estimatedEffort: 'medium',
+      })
+    }
 
-    if ((unscannedCount || 0) > 0 && (scannedCount || 0) === 0) {
+    for (const vuln of (vulnerabilities || [])
+      .filter((row: any) => !['resolved', 'remediated', 'false_positive', 'accepted', 'closed'].includes(String(row.status || 'open').toLowerCase()))
+      .slice(0, 5)) {
+      recommendations.push({
+        id: `vulnerability-${vuln.id}`,
+        priority: priorityFromSeverity(vuln.severity),
+        category: 'cryptography',
+        title: vuln.title || `Resolve vulnerability on ${assetName(vuln.asset_id)}`,
+        description: `Open ${String(vuln.severity || 'security')} vulnerability from ${vuln.source || 'telemetry'} requires remediation tracking.`,
+        assetId: vuln.asset_id,
+        action: 'resolve_vulnerability',
+        estimatedEffort: severityRank(String(vuln.severity || '')) >= 4 ? 'high' : 'medium',
+      })
+    }
+
+    const activeAssets = (assets || []).filter((asset: any) => !['archived', 'deleted', 'retired'].includes(String(asset.status || 'active').toLowerCase()))
+    const scannedAssets = new Set((scanResults || []).map((row: any) => row.asset_id).filter(Boolean))
+
+    if (activeAssets.length > 0 && scannedAssets.size === 0) {
       recommendations.push({
         id: 'scan-assets',
         priority: 1,
         category: 'discovery',
         title: 'Run PQC Discovery Scan',
-        description: `${unscannedCount} assets have not been scanned for quantum vulnerabilities. Start a comprehensive scan to build your CBOM.`,
+        description: `${activeAssets.length} assets have not been scanned for quantum vulnerabilities. Start a comprehensive scan to build your CBOM.`,
         action: 'start_scan',
         estimatedEffort: 'low',
       })

@@ -306,10 +306,12 @@ export function useDashboard() {
 
     const connectSSE = () => {
       closeStreams()
+      const dashboardStream = new EventSource(`/api/v1/dashboard/stream?token=${encodeURIComponent(token)}`)
       const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
       const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`)
+      const agentScannerStream = new EventSource(`/api/v1/agent-scanner/stream?token=${encodeURIComponent(token)}`)
       const vaultStream = new EventSource(`/api/v1/vault/share/events?token=${encodeURIComponent(token)}`)
-      eventSourcesRef.current = [metricsStream, scannerStream, vaultStream]
+      eventSourcesRef.current = [dashboardStream, metricsStream, scannerStream, agentScannerStream, vaultStream]
 
       const markOpen = () => setSseConnected(true)
       const reconnect = () => {
@@ -319,18 +321,26 @@ export function useDashboard() {
         reconnectTimerRef.current = setTimeout(connectSSE, 10000)
       }
 
+      dashboardStream.onopen = markOpen
       metricsStream.onopen = markOpen
       scannerStream.onopen = markOpen
+      agentScannerStream.onopen = markOpen
       vaultStream.onopen = markOpen
+      dashboardStream.onerror = reconnect
       metricsStream.onerror = reconnect
       scannerStream.onerror = reconnect
+      agentScannerStream.onerror = reconnect
       vaultStream.onerror = reconnect
 
+      dashboardStream.addEventListener('dashboard-connected', queueRefreshAll)
+      dashboardStream.addEventListener('dashboard-update', queueRefreshAll)
       metricsStream.addEventListener('metrics-update', queueRefreshAll)
       metricsStream.addEventListener('runtime-crypto-update', queueRefreshAll)
       metricsStream.addEventListener('scan-complete', queueRefreshAll)
       scannerStream.addEventListener('scanner-intelligence', queueRefreshAll)
       scannerStream.addEventListener('scanner-error', queueRefreshAll)
+      agentScannerStream.addEventListener('agent-scanner-sync', queueRefreshAll)
+      agentScannerStream.addEventListener('agent-scanner-error', queueRefreshAll)
       vaultStream.addEventListener('failed_attempt', queueRefreshAll)
       vaultStream.addEventListener('link_destroyed', queueRefreshAll)
     }

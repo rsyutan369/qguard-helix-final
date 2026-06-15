@@ -12,6 +12,7 @@ import { continuousTrustRoutes, identityTrustRoutes, deviceTrustRoutes, trustAna
 import { quantumGovernanceRoutes, cryptoPoliciesRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
 import { runtimeTelemetryRoutes, certificateTelemetryRoutes, keyAnalyticsRoutes, apiEncryptionRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
 import qkmsRoutes from './qkms-dashboard'
+import pqauthRoutes from './pqauth-dashboard'
 import profileRoutes from './profile'
 import billingRoutes from './billing'
 import adminRoutes from './admin'
@@ -738,6 +739,7 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/key-analytics', keyAnalyticsRoutes)
   app.use('/api/v1/dashboard/api-encryption', apiEncryptionRoutes)
   app.use('/api/v1/dashboard/multi-cloud-telemetry', multiCloudTelemetryRoutes)
+  app.use('/api/v1/dashboard/pqauth', pqauthRoutes)
   app.use('/api/v1/dashboard/qkms', qkmsRoutes)
   app.use('/api/qkms', qkmsRoutes)
   app.use('/api/v1/dashboard', dashboardRoutes)

@@ -86,6 +86,23 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    label: 'PQC-Auth Identity Migration Engine',
+    collapsible: true,
+    items: [
+      { name: 'PQAuth Command Center', path: '/dashboard/pqauth', icon: Fingerprint },
+      { name: 'Identity Discovery', path: '/dashboard/pqauth/discovery', icon: ScanSearch },
+      { name: 'Identity Trust Graph', path: '/dashboard/pqauth/trust-graph', icon: Network },
+      { name: 'JWT & Token Intelligence', path: '/dashboard/pqauth/token-intelligence', icon: Key },
+      { name: 'Quantum Exposure Analysis', path: '/dashboard/pqauth/exposure-analysis', icon: ShieldAlert },
+      { name: 'PQC Compatibility', path: '/dashboard/pqauth/compatibility', icon: CheckCircle },
+      { name: 'Identity Digital Twin', path: '/dashboard/pqauth/digital-twin', icon: GitCompare },
+      { name: 'Migration Center', path: '/dashboard/pqauth/migration-center', icon: Workflow },
+      { name: 'Runtime Identity Telemetry', path: '/dashboard/pqauth/runtime-telemetry', icon: Activity },
+      { name: 'Governance & Compliance', path: '/dashboard/pqauth/compliance', icon: Scale },
+      { name: 'QKMS Integration', path: '/dashboard/pqauth/qkms', icon: Database },
+    ],
+  },
+  {
     label: 'Observability',
     collapsible: true,
     items: [
@@ -160,6 +177,7 @@ export default function DashboardLayout() {
     'Operations': false,
     'Ecosystem & Supply-Chain': false,
     'Intelligence': false,
+    'PQC-Auth Identity Migration Engine': false,
     'Observability': false,
     'Qguard Helix QKMS': false,
     'Trust Center': false,

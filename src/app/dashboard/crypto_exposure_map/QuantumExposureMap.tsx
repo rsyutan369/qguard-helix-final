@@ -2,9 +2,10 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Globe, Server, Database, Shield, AlertTriangle,
-  Lock, Unlock, Wifi, Cloud, Radio, Eye, Info, RefreshCw
+  Lock, Unlock, Wifi, Cloud, Radio, Eye, Info, RefreshCw, CheckCircle
 } from 'lucide-react';
 import { ExposureNode, ExposureEdge, dashboardService } from '@/lib/dashboard-service';
+import { useAuth } from '@/contexts/auth-context';
 
 interface Props {
   data: { nodes: ExposureNode[]; edges: ExposureEdge[] };
@@ -344,9 +345,90 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
 
 interface InspectorProps {
   selectedNode: ExposureNode | null;
+  onAgentDeployed?: () => void;
 }
 
-export function NodeInspector({ selectedNode }: InspectorProps) {
+export function NodeInspector({ selectedNode, onAgentDeployed }: InspectorProps) {
+  const { session } = useAuth();
+  const [deployState, setDeployState] = useState<'idle' | 'deploying' | 'deployed' | 'error'>('idle');
+  const [deployMessage, setDeployMessage] = useState<string | null>(null);
+  const [deployToken, setDeployToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDeployState('idle');
+    setDeployMessage(null);
+    setDeployToken(null);
+  }, [selectedNode?.id]);
+
+  const deployAgent = useCallback(async () => {
+    if (!selectedNode) return;
+    if (!session?.access_token) {
+      setDeployState('error');
+      setDeployMessage('Sign in again before deploying an agent.');
+      return;
+    }
+
+    setDeployState('deploying');
+    setDeployMessage(null);
+
+    try {
+      const response = await fetch('/api/v1/agent-scanner/agents/enroll', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          name: `PQC Agent - ${selectedNode.name}`,
+          hostname: selectedNode.name,
+          platform: selectedNode.type || 'asset',
+          environment: selectedNode.environment || 'production',
+          capabilities: {
+            runtime: true,
+            tls: true,
+            certificates: true,
+            pki: true,
+            packages: true,
+            configs: true,
+          },
+          policy: {
+            enabled: true,
+            intervalSeconds: 60,
+            allowedTargets: [selectedNode.name, selectedNode.id].filter(Boolean),
+            allowedPaths: [],
+            scanTypes: ['tls', 'certificates', 'pki', 'packages', 'configs', 'runtime'],
+            alertThreshold: selectedNode.riskScore > 5 ? 'high' : 'moderate',
+          },
+          metadata: {
+            source: 'dashboard-node-inspector',
+            assetId: selectedNode.id,
+            assetName: selectedNode.name,
+            assetType: selectedNode.type,
+            environment: selectedNode.environment,
+            criticality: selectedNode.criticality,
+            riskScore: selectedNode.riskScore,
+            deploymentIntent: 'pqc-agent-runtime-telemetry',
+          },
+        }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(json?.error?.message || `Agent deployment failed with HTTP ${response.status}`);
+      }
+
+      const agentId = json?.data?.enrollment?.agentId || json?.data?.agent?.id;
+      const agentToken = json?.data?.enrollment?.agentToken;
+      setDeployState('deployed');
+      setDeployMessage(agentId ? `Agent enrolled: ${agentId}` : 'Agent enrolled and ready for telemetry.');
+      setDeployToken(typeof agentToken === 'string' ? agentToken : null);
+      onAgentDeployed?.();
+    } catch (error) {
+      setDeployState('error');
+      setDeployMessage(error instanceof Error ? error.message : 'Agent deployment failed.');
+      setDeployToken(null);
+    }
+  }, [onAgentDeployed, selectedNode, session?.access_token]);
+
   return (
     <div className={`p-5 flex flex-col h-full ${GLASS_PANEL_CLASSES}`}>
       {selectedNode ? (
@@ -393,9 +475,31 @@ export function NodeInspector({ selectedNode }: InspectorProps) {
               </div>
           </div>
 
-          <button className="w-full py-2.5 bg-gold/10 border border-gold/30 text-gold text-[10px] font-black uppercase tracking-[0.2em] rounded-lg hover:bg-gold/20 transition-all mt-4">
-              Deploy PQC Agent
+          <button
+            type="button"
+            onClick={deployAgent}
+            disabled={deployState === 'deploying'}
+            className="w-full py-2.5 bg-gold/10 border border-gold/30 text-gold text-[10px] font-black uppercase tracking-[0.2em] rounded-lg hover:bg-gold/20 transition-all mt-4 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+              {deployState === 'deploying' ? 'Deploying Agent...' : deployState === 'deployed' ? 'Agent Deployed' : 'Deploy PQC Agent'}
           </button>
+          {deployMessage && (
+            <div className={`rounded-lg border px-3 py-2 text-[10px] font-bold leading-relaxed ${
+              deployState === 'error'
+                ? 'border-red-500/25 bg-red-500/10 text-red-300'
+                : 'border-green-500/25 bg-green-500/10 text-green-300'
+            }`}>
+              <div className="flex items-start gap-2">
+                {deployState === 'error' ? <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" /> : <CheckCircle className="mt-0.5 h-3 w-3 shrink-0" />}
+                <span>{deployMessage}</span>
+              </div>
+              {deployToken && (
+                <div className="mt-2 rounded border border-white/10 bg-black/30 px-2 py-1.5 font-mono text-[9px] text-white/75 break-all">
+                  {deployToken}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center text-center opacity-30">

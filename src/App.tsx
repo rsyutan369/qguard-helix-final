@@ -76,6 +76,17 @@ import VendorPqcReadinessPage from './app/dashboard/vendor-pqc-readiness/page';
 import TrustChainAnalyzerPage from './app/dashboard/trust-chain-analyzer/page';
 import TrustStateDiscoveryPage from './app/dashboard/trust-state-discovery/page';
 import HybridCryptoCompatibilityLabPage from './app/dashboard/hybrid-crypto-lab/page';
+import PQAuthPage from './app/dashboard/pqauth/page';
+import PQAuthDiscoveryPage from './app/dashboard/pqauth/discovery/page';
+import PQAuthTrustGraphPage from './app/dashboard/pqauth/trust-graph/page';
+import PQAuthTokenIntelligencePage from './app/dashboard/pqauth/token-intelligence/page';
+import PQAuthExposureAnalysisPage from './app/dashboard/pqauth/exposure-analysis/page';
+import PQAuthCompatibilityPage from './app/dashboard/pqauth/compatibility/page';
+import PQAuthDigitalTwinPage from './app/dashboard/pqauth/digital-twin/page';
+import PQAuthMigrationCenterPage from './app/dashboard/pqauth/migration-center/page';
+import PQAuthRuntimeTelemetryPage from './app/dashboard/pqauth/runtime-telemetry/page';
+import PQAuthCompliancePage from './app/dashboard/pqauth/compliance/page';
+import PQAuthQkmsPage from './app/dashboard/pqauth/qkms/page';
 
 export default function App() {
   return (
@@ -181,6 +192,19 @@ export default function App() {
           <Route path="trust-chain-analyzer" element={<TrustChainAnalyzerPage />} />
           <Route path="trust-state-discovery" element={<TrustStateDiscoveryPage />} />
           <Route path="hybrid-crypto-lab" element={<HybridCryptoCompatibilityLabPage />} />
+          <Route path="pqauth" element={<PQAuthPage />} />
+          <Route path="pqc-auth" element={<PQAuthPage />} />
+          <Route path="pqc-auth-identity-migration-engine" element={<PQAuthPage />} />
+          <Route path="pqauth/discovery" element={<PQAuthDiscoveryPage />} />
+          <Route path="pqauth/trust-graph" element={<PQAuthTrustGraphPage />} />
+          <Route path="pqauth/token-intelligence" element={<PQAuthTokenIntelligencePage />} />
+          <Route path="pqauth/exposure-analysis" element={<PQAuthExposureAnalysisPage />} />
+          <Route path="pqauth/compatibility" element={<PQAuthCompatibilityPage />} />
+          <Route path="pqauth/digital-twin" element={<PQAuthDigitalTwinPage />} />
+          <Route path="pqauth/migration-center" element={<PQAuthMigrationCenterPage />} />
+          <Route path="pqauth/runtime-telemetry" element={<PQAuthRuntimeTelemetryPage />} />
+          <Route path="pqauth/compliance" element={<PQAuthCompliancePage />} />
+          <Route path="pqauth/qkms" element={<PQAuthQkmsPage />} />
           <Route path="runtime-crypto-intel" element={<RuntimeCryptoIntelPage />} />
           <Route path="behavioral-analytics" element={<BehavioralAnalyticsPage />} />
           <Route path="telemetry-correlation" element={<TelemetryCorrelationPage />} />

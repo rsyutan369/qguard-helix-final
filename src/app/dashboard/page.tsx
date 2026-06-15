@@ -196,21 +196,13 @@ export default function Dashboard() {
         </div>
         <div className="lg:col-span-1">
           <div className="h-[500px]">
-            <NodeInspector selectedNode={selectedNode} />
+            <NodeInspector selectedNode={selectedNode} onAgentDeployed={refreshAll} />
           </div>
         </div>
 
-        {/* Row 2 Headers (Empty header space for left columns to align with Security Events, keeping the grid balanced) */}
-        <div className="lg:col-span-2">
-          <div className="h-6" /> {/* Symmetrical vertical spacing */}
-        </div>
-        <div className="lg:col-span-1">
-          <div className="h-6" /> {/* Symmetrical vertical spacing */}
-        </div>
-
         {/* Row 2 Cards */}
-        <div className="lg:col-span-2">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 h-full">
+        <div className="lg:col-span-3">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full">
             <RecommendationsPanel recommendations={recommendations} loading={recommendationsState === 'loading' && recommendations.length === 0} />
 
             {/* Quick Actions / Status */}
@@ -268,9 +260,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="lg:col-span-1">
-          {/* Security Events is exactly aligned height-wise and top-wise */}
-          <div className="h-full min-h-[380px]">
+        <div className="lg:col-span-3">
+          <div className="h-[460px]">
             <SecurityEventsPanel events={events} loading={eventsLoading} />
           </div>
         </div>

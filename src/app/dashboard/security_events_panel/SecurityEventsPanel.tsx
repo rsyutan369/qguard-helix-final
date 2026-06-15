@@ -1,8 +1,8 @@
-import { useRef } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Bell, AlertTriangle, Shield, CheckCircle, Info, 
-  ExternalLink, FileSearch, ShieldAlert, History
+  ExternalLink, FileSearch, ShieldAlert, History, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import type { SecurityEvent } from '@/hooks/use-dashboard';
 
@@ -26,6 +26,7 @@ const SEVERITY_ICONS = {
 };
 
 const GLASS_PANEL_CLASSES = 'qg-executive-panel group relative overflow-hidden rounded-lg text-white';
+const EVENTS_PER_PAGE = 5;
 
 function eventHref(event: SecurityEvent) {
   const type = `${event.eventType || ''} ${event.resourceType || ''}`.toLowerCase();
@@ -40,7 +41,23 @@ function eventHref(event: SecurityEvent) {
 }
 
 export default function SecurityEventsPanel({ events, loading }: Props) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(events.length / EVENTS_PER_PAGE));
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, pageCount));
+  }, [pageCount]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [events.length]);
+
+  const pageNumbers = useMemo(() => Array.from({ length: pageCount }, (_, index) => index + 1), [pageCount]);
+  const safeCurrentPage = Math.min(currentPage, pageCount);
+  const pageStart = (safeCurrentPage - 1) * EVENTS_PER_PAGE;
+  const visibleEvents = events.slice(pageStart, pageStart + EVENTS_PER_PAGE);
+  const eventRangeStart = events.length === 0 ? 0 : pageStart + 1;
+  const eventRangeEnd = Math.min(pageStart + visibleEvents.length, events.length);
 
   if (loading && events.length === 0) {
     return (
@@ -63,18 +80,15 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
           <span className="text-[9px] font-black text-gold uppercase tracking-widest">Real-time</span>
         </div>
       </div>
-      <div 
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar"
-      >
-        <AnimatePresence initial={false}>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+        <AnimatePresence initial={false} mode="popLayout">
           {events.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center opacity-30 py-12">
                 <History className="w-10 h-10 mb-4 text-gold/50" />
                 <p className="text-[10px] uppercase font-black tracking-widest">No recent security events</p>
             </div>
           ) : (
-            events.map((event) => {
+            visibleEvents.map((event) => {
               const Icon = SEVERITY_ICONS[event.severity] || Info;
               const colorClass = SEVERITY_COLORS[event.severity];
               
@@ -105,7 +119,7 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
                         {new Date(event.timestamp).toLocaleTimeString()}
                       </div>
                     </div>
-                    <p className="text-[11px] text-white/70 leading-relaxed font-medium">
+                    <p className="text-[11px] text-white/70 leading-relaxed font-medium [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden">
                       {event.message}
                     </p>
                     {event.resourceName && (
@@ -122,10 +136,54 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
         </AnimatePresence>
       </div>
 
-      <div className="p-3 border-t border-gold/10 text-center relative z-20">
+      <div className="flex flex-col gap-3 border-t border-gold/10 p-3 relative z-20">
+        {events.length > EVENTS_PER_PAGE && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-[9px] font-mono uppercase tracking-widest text-white/30">
+              Showing {eventRangeStart}-{eventRangeEnd} of {events.length}
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={safeCurrentPage === 1}
+                className="inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-white/[0.03] text-white/45 transition-colors hover:border-gold/35 hover:text-gold disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Previous security events page"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              {pageNumbers.map((page) => (
+                <button
+                  key={page}
+                  type="button"
+                  onClick={() => setCurrentPage(page)}
+                  aria-current={safeCurrentPage === page ? 'page' : undefined}
+                  className={`h-7 min-w-7 rounded border px-2 text-[10px] font-black transition-colors ${
+                    safeCurrentPage === page
+                      ? 'border-gold/50 bg-gold/15 text-gold'
+                      : 'border-white/10 bg-white/[0.03] text-white/40 hover:border-gold/35 hover:text-gold'
+                  }`}
+                >
+                  {page}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.min(pageCount, page + 1))}
+                disabled={safeCurrentPage === pageCount}
+                className="inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-white/[0.03] text-white/45 transition-colors hover:border-gold/35 hover:text-gold disabled:cursor-not-allowed disabled:opacity-30"
+                aria-label="Next security events page"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="text-center">
         <a href="/dashboard/audit-vault" className="text-[9px] font-black uppercase tracking-[0.2em] text-white/40 hover:text-gold transition-colors no-underline">
             View All Audit Logs
         </a>
+        </div>
       </div>
     </div>
   );

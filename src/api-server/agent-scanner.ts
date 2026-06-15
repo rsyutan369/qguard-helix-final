@@ -270,6 +270,31 @@ async function recordAgentAudit(client: SupabaseClient | null, row: {
   if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] audit log insert failed:', error.message)
 }
 
+async function recordAgentSecurityEvent(client: SupabaseClient | null, row: {
+  userId: string
+  eventType: string
+  severity: string
+  message: string
+  assetId?: string | null
+  resourceName?: string | null
+  resourceType?: string | null
+  metadata: Record<string, unknown>
+}) {
+  if (!client) return
+  const { error } = await client.from('security_events').insert({
+    user_id: row.userId,
+    event_type: row.eventType,
+    severity: row.severity,
+    message: row.message,
+    asset_id: row.assetId || null,
+    resource_name: row.resourceName || null,
+    resource_type: row.resourceType || null,
+    metadata: row.metadata,
+    created_at: new Date().toISOString(),
+  })
+  if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] security event insert failed:', error.message)
+}
+
 function connectorProviderCapabilities(providerValue: unknown, scopes: string[], overrides: Record<string, unknown> = {}) {
   const provider = cleanString(providerValue, 100)?.toLowerCase() || 'custom'
   const cloudProvider = /aws|azure|gcp|google|oracle|oci|alibaba|aliyun/.test(provider)
@@ -2146,7 +2171,7 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       return
     }
     agent = data
-    await client.from('scanner_agent_policies').insert({
+    const policyInsert = await client.from('scanner_agent_policies').insert({
       user_id: user.id,
       agent_id: agent.id,
       name: 'Default scanner policy',
@@ -2164,11 +2189,59 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
         executionContract: remediationExecutionContract(),
       },
     })
+    if (policyInsert.error && !isMissingRuntimeTable(policyInsert.error)) {
+      jsonError(res, 500, 'AGENT_POLICY_CREATE_FAILED', policyInsert.error.message || 'Agent policy creation failed')
+      return
+    }
   } else {
     agent = { id: randomId('agent'), ...agentBase }
     memoryStore.agents.unshift(agent)
     memoryStore.policies.unshift({ id: randomId('policy'), user_id: user.id, agent_id: agent.id, ...policy })
   }
+
+  await recordAgentSecurityEvent(client, {
+    userId: user.id,
+    eventType: 'scanner_agent_enrolled',
+    severity: 'success',
+    message: `${agentBase.name} enrolled for ${agentBase.metadata.environment || 'tenant'} telemetry collection.`,
+    assetId: typeof agentBase.metadata.assetId === 'string' ? agentBase.metadata.assetId : null,
+    resourceName: agentBase.name,
+    resourceType: 'scanner_agent',
+    metadata: {
+      source: agentBase.metadata.source || 'agent-scanner',
+      agentId: agent.id,
+      hostname: agentBase.hostname,
+      platform: agentBase.platform,
+      environment: agentBase.metadata.environment,
+      policy,
+      capabilities: agentBase.capabilities,
+      selectedAsset: {
+        id: agentBase.metadata.assetId || null,
+        name: agentBase.metadata.assetName || agentBase.hostname || null,
+        type: agentBase.metadata.assetType || agentBase.platform || null,
+        criticality: agentBase.metadata.criticality || null,
+        riskScore: agentBase.metadata.riskScore || null,
+      },
+    },
+  })
+  await recordAgentAudit(client, {
+    userId: user.id,
+    action: 'scanner_agent_enrolled',
+    entityType: 'scanner_agent',
+    entityId: agent.id,
+    details: {
+      source: agentBase.metadata.source || 'agent-scanner',
+      agentName: agentBase.name,
+      hostname: agentBase.hostname,
+      platform: agentBase.platform,
+      environment: agentBase.metadata.environment,
+      selectedAssetId: agentBase.metadata.assetId || null,
+      selectedAssetName: agentBase.metadata.assetName || null,
+      ipAddress: req.ip?.replace('::ffff:', '') || null,
+      userAgent: String(req.headers['user-agent'] || '').slice(0, 500),
+      tokenShownOnce: true,
+    },
+  })
 
   res.json({
     data: {
