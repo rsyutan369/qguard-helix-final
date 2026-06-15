@@ -3686,8 +3686,301 @@ function vulnerabilityTitle(value: string) {
   return titleCase(value || 'Quantum Vulnerability Detected')
 }
 
+function vulnerabilityExposureLevel(severity: string) {
+  if (severity === 'critical') return 'Critical'
+  if (severity === 'high') return 'High'
+  if (severity === 'medium') return 'Moderate'
+  if (severity === 'low') return 'Low'
+  return 'Informational'
+}
+
+function vulnerabilityRemediationBase(input: { title: string; description: string; algorithm?: string; type?: string; source?: string; remediation?: string }) {
+  const text = [
+    input.title,
+    input.description,
+    input.algorithm,
+    input.type,
+    input.source,
+    input.remediation,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+
+  if (/hndl|harvest|runtime|shadow|downgrade/.test(text)) return '/dashboard/live-migration'
+  if (/certificate|cert|pki|x509|pinning|issuer|subject/.test(text)) return '/dashboard/certificate-telemetry'
+  if (/tls|ssl|cipher|protocol|handshake/.test(text)) return '/dashboard/tls-orchestrator'
+  if (/library|dependency|component|package|cve|repo|github|source/.test(text)) return '/dashboard/migration-planner'
+  if (/random|rng|entropy/.test(text)) return '/dashboard/qrng'
+  if (/api|gateway/.test(text)) return '/dashboard/api-encryption'
+  if (/cloud|kms|bucket|storage/.test(text)) return '/dashboard/cloud'
+  return '/dashboard/pqc-orchestration'
+}
+
+function vulnerabilityRemediationHref(input: {
+  sourceId: string
+  assetId?: string | null
+  assetName: string
+  title: string
+  description: string
+  severity: string
+  algorithm?: string
+  type?: string
+  source?: string
+  remediation?: string
+}) {
+  const params = new URLSearchParams({
+    source: 'vulnerabilities',
+    action: 'remediate',
+    findingId: input.sourceId,
+    asset: input.assetName,
+    severity: input.severity,
+  })
+  if (input.assetId) params.set('assetId', input.assetId)
+  if (input.algorithm) params.set('algorithm', input.algorithm)
+  if (input.type) params.set('type', input.type)
+  if (input.source) params.set('findingSource', input.source)
+  return `${vulnerabilityRemediationBase(input)}?${params.toString()}`
+}
+
+function vulnerabilityScanTarget(asset: any, metadata: Record<string, unknown>) {
+  const assetMetadata = recordOf(asset?.metadata)
+  const candidates = [
+    metadata.scanTarget,
+    metadata.scan_target,
+    metadata.authorizedTarget,
+    metadata.authorized_target,
+    metadata.target,
+    metadata.url,
+    metadata.endpoint,
+    metadata.host,
+    metadata.hostname,
+    metadata.domain,
+    assetMetadata.authorizedTarget,
+    assetMetadata.authorized_target,
+    assetMetadata.target,
+    assetMetadata.url,
+    assetMetadata.endpoint,
+    assetMetadata.host,
+    assetMetadata.hostname,
+    assetMetadata.domain,
+    asset?.name,
+  ]
+  for (const value of candidates) {
+    const target = typeof value === 'string' ? value.trim() : ''
+    if (target && !/^unassigned asset$/i.test(target)) return target
+  }
+  return null
+}
+
 function isLegacyAlgorithm(value: string) {
   return /rsa|rs256|ecdsa|ecdh|dh-|dsa|sha-1|sha1|md5|des|3des|rc4|aes-128-cbc|tls\s*1\.[012]|ssl/i.test(value)
+}
+
+function fingerprintPart(value: unknown) {
+  return String(value || 'none').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'none'
+}
+
+function vulnerabilityRootCause(row: any) {
+  const text = [
+    row.title,
+    row.description,
+    row.algorithm,
+    row.type,
+    row.source,
+    row.remediation,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+
+  if (/no forward secrecy|forward secrecy|ephemeral key exchange|rsa key exchange|weak key exchange|diffie|dh-?\d|dhe|ecdh|tls_rsa|key exchange/.test(text)) {
+    return {
+      ruleId: 'weak-key-exchange',
+      title: 'Weak Key Exchange Algorithm',
+      type: 'Key Exchange Risk',
+      description: 'No ephemeral key exchange - past traffic can be decrypted if the private key is compromised.',
+      remediation: 'Disable RSA/static DH key exchange and require TLS 1.3 or ECDHE with a PQC/hybrid KEM migration path.',
+    }
+  }
+  if (/tls\s*1\.[01]|tls-?1\.[01]|ssl|legacy protocol/.test(text)) {
+    return {
+      ruleId: 'legacy-tls-protocol',
+      title: 'Legacy TLS Protocol',
+      type: 'Protocol Risk',
+      description: 'Legacy TLS or SSL protocol support was observed on this asset.',
+      remediation: 'Disable SSL, TLS 1.0, and TLS 1.1; enforce TLS 1.2+ with TLS 1.3 preferred.',
+    }
+  }
+  if (/sha-?1|md5|legacy mac|weak hash/.test(text)) {
+    return {
+      ruleId: 'weak-hash-or-mac',
+      title: 'Weak Hash Or MAC Algorithm',
+      type: 'Hash Risk',
+      description: 'A weak hash or MAC primitive was observed in cryptographic telemetry.',
+      remediation: 'Retire SHA-1/MD5 MAC usage and enforce SHA-384, SHA-3, or approved AEAD suites.',
+    }
+  }
+  if (/cbc|3des|des|rc4|weak cipher|legacy cipher/.test(text)) {
+    return {
+      ruleId: 'weak-cipher-suite',
+      title: 'Weak Cipher Suite',
+      type: 'Cipher Suite Risk',
+      description: 'A legacy or non-AEAD cipher suite was observed on this asset.',
+      remediation: 'Disable CBC, RC4, DES, and 3DES suites; prefer AES-256-GCM or ChaCha20-Poly1305.',
+    }
+  }
+  if (/certificate|cert|x509|issuer|subject|pki|pinning/.test(text)) {
+    return {
+      ruleId: 'certificate-risk',
+      title: 'Certificate Risk',
+      type: 'Certificate Risk',
+      description: 'Certificate telemetry indicates a weak, expiring, or non-PQC-ready trust object.',
+      remediation: 'Rotate the certificate and plan ML-DSA or hybrid certificate adoption.',
+    }
+  }
+  if (/random|rng|entropy/.test(text)) {
+    return {
+      ruleId: 'weak-randomness',
+      title: 'Weak Random Number Generator',
+      type: 'Entropy Risk',
+      description: 'Weak or insufficient entropy was observed in cryptographic telemetry.',
+      remediation: 'Move key generation and nonce generation to approved QRNG or CSPRNG sources.',
+    }
+  }
+  if (/hndl|harvest|shadow|downgrade|runtime/.test(text)) {
+    return {
+      ruleId: 'runtime-crypto-exposure',
+      title: 'Runtime Crypto Exposure',
+      type: 'Runtime Exposure',
+      description: 'Runtime telemetry indicates a harvest-now or downgrade-sensitive cryptographic exposure.',
+      remediation: 'Open live migration controls and migrate the affected flow to a PQC or hybrid profile.',
+    }
+  }
+
+  const type = row.type || vulnerabilityType(`${row.title || ''} ${row.description || ''} ${row.algorithm || ''}`)
+  const title = vulnerabilityTitle(row.title || type || row.description)
+  return {
+    ruleId: fingerprintPart(type || title),
+    title,
+    type,
+    description: row.description || 'Cryptographic weakness detected in authenticated telemetry.',
+    remediation: row.remediation || expectedForDrift(`${row.title || ''} ${row.description || ''}`, row.algorithm || ''),
+  }
+}
+
+function vulnerabilityEvidenceLabel(row: any) {
+  const algorithm = textValue(row.algorithm, '')
+  if (algorithm) return algorithm
+  const description = textValue(row.description, '')
+  if (description) return description.replace(/\s+/g, ' ').slice(0, 140)
+  return textValue(row.title, 'Telemetry observation')
+}
+
+function canonicalVulnerabilityRows(rawRows: any[]) {
+  const groups = new Map<string, any>()
+
+  for (const row of rawRows) {
+    const root = vulnerabilityRootCause(row)
+    const assetKey = row.assetId || fingerprintPart(row.asset)
+    const key = `${assetKey}:${root.ruleId}`
+    let group = groups.get(key)
+
+    if (!group) {
+      const id = `finding-${fingerprintPart(key)}`
+      const severity = normalizeDriftSeverity(row.severity)
+      group = {
+        ...row,
+        id,
+        sourceId: row.sourceId || row.id,
+        canonicalFingerprint: key,
+        rootCause: root.ruleId,
+        title: root.title,
+        description: root.description,
+        type: root.type,
+        severity,
+        exposureLevel: vulnerabilityExposureLevel(severity),
+        remediation: root.remediation || row.remediation,
+        evidenceMap: new Map<string, any>(),
+        sourceIds: new Set<string>(),
+        sources: new Set<string>(),
+        algorithms: new Set<string>(),
+      }
+      groups.set(key, group)
+    }
+
+    group.sourceIds.add(row.sourceId || row.id)
+    if (row.source) group.sources.add(row.source)
+    if (row.algorithm) group.algorithms.add(row.algorithm)
+    if (severityRank(row.severity) > severityRank(group.severity)) {
+      group.severity = row.severity
+      group.exposureLevel = vulnerabilityExposureLevel(row.severity)
+    }
+    if (row.status !== 'Remediated') group.status = row.status || 'Open'
+    if (!group.detectedAt || (row.detectedAt && dateMs(row.detectedAt) < dateMs(group.detectedAt))) group.detectedAt = row.detectedAt
+    if (row.scanTarget && !group.scanTarget) group.scanTarget = row.scanTarget
+    if (row.assetId && !group.assetId) group.assetId = row.assetId
+
+    const metadataEvidence = Array.isArray(row.metadataEvidence) ? row.metadataEvidence : []
+    const evidenceSources = metadataEvidence.length ? metadataEvidence : [row]
+    for (const evidenceSource of evidenceSources) {
+      const evidenceRecord = recordOf(evidenceSource)
+      const evidenceLabel = textValue(evidenceRecord.label, textValue(evidenceRecord.algorithm, vulnerabilityEvidenceLabel(row)))
+      const evidenceDescription = textValue(evidenceRecord.description, row.description || '')
+      const evidenceAlgorithm = textValue(evidenceRecord.algorithm, row.algorithm || '')
+      const evidenceSourceName = textValue(evidenceRecord.source, row.source || 'telemetry')
+      const evidenceDetectedAt = textValue(evidenceRecord.detectedAt, row.detectedAt || '')
+      const evidenceKey = fingerprintPart(`${evidenceSourceName}:${evidenceLabel}:${evidenceDescription}:${evidenceRecord.location || ''}`)
+      if (evidenceAlgorithm) group.algorithms.add(evidenceAlgorithm)
+      if (!group.evidenceMap.has(evidenceKey)) {
+        group.evidenceMap.set(evidenceKey, {
+          id: textValue(evidenceRecord.id, row.sourceId || row.id),
+          label: evidenceLabel,
+          description: evidenceDescription,
+          algorithm: evidenceAlgorithm,
+          source: evidenceSourceName,
+          severity: textValue(evidenceRecord.severity, row.severity),
+          detectedAt: evidenceDetectedAt || row.detectedAt,
+        })
+      }
+    }
+  }
+
+  return Array.from(groups.values()).map((group) => {
+    const evidence = Array.from(group.evidenceMap.values())
+      .sort((a: any, b: any) => severityRank(b.severity) - severityRank(a.severity) || String(a.label).localeCompare(String(b.label)))
+    const sourceIds = Array.from(group.sourceIds)
+    const sources = Array.from(group.sources)
+    const algorithms = Array.from(group.algorithms)
+    const primarySourceId = sourceIds[0] || group.sourceId || group.id
+    const remediationHref = vulnerabilityRemediationHref({
+      sourceId: primarySourceId,
+      assetId: group.assetId,
+      assetName: group.asset,
+      title: group.title,
+      description: group.description,
+      severity: group.severity,
+      algorithm: algorithms.join(', '),
+      type: group.type,
+      source: sources.join(', '),
+      remediation: group.remediation,
+    })
+
+    return {
+      ...group,
+      sourceId: primarySourceId,
+      source: sources.join(', ') || group.source,
+      sourceIds,
+      evidence: evidence.slice(0, 50),
+      evidenceCount: evidence.length,
+      algorithm: algorithms.slice(0, 12).join(', '),
+      remediationHref,
+      inspectHref: `/dashboard/crypto-exposure?${new URLSearchParams({
+        source: 'vulnerabilities',
+        findingId: primarySourceId,
+        rootCause: group.rootCause,
+        ...(group.assetId ? { assetId: group.assetId } : {}),
+      }).toString()}`,
+      metadataEvidence: undefined,
+      evidenceMap: undefined,
+      sources: undefined,
+      algorithms: undefined,
+    }
+  })
 }
 
 function startOfDayMs(daysAgo: number) {
@@ -3753,21 +4046,46 @@ router.get('/vulnerabilities', async (req: Request, res: Response) => {
       const text = `${input.title} ${input.description} ${input.algorithm || ''} ${input.type || ''}`
       const severity = normalizeDriftSeverity(input.severity)
       const status = vulnerabilityStatus(input.status || input.metadata?.status)
+      const title = vulnerabilityTitle(input.title || input.type || input.description)
+      const assetName = textValue(asset.name, textValue(input.metadata?.resourceName || input.metadata?.resource_name, 'Unassigned asset'))
+      const type = input.type || vulnerabilityType(text)
+      const remediation = textValue(input.metadata?.remediation || input.metadata?.pqcReplacement || input.metadata?.pqc_replacement, expectedForDrift(text, input.algorithm || ''))
       return {
         id: input.sourceId,
         sourceId: input.sourceId,
-        title: vulnerabilityTitle(input.title || input.type || input.description),
+        assetId: input.assetId || null,
+        source: input.source || 'dashboard_vulnerability',
+        scanTarget: vulnerabilityScanTarget(asset, input.metadata || {}),
+        metadataEvidence: Array.isArray(input.metadata?.evidence) ? input.metadata.evidence : [],
+        title,
         description: input.description || 'Cryptographic weakness detected in authenticated telemetry.',
-        asset: textValue(asset.name, textValue(input.metadata?.resourceName || input.metadata?.resource_name, 'Unassigned asset')),
+        asset: assetName,
         assetType: assetTypeLabel(textValue(asset.type, textValue(input.metadata?.assetType || input.metadata?.asset_type, input.source || 'Other'))),
         environment: textValue(asset.environment, textValue(asset.region, textValue(input.metadata?.environment, 'unassigned'))),
         severity,
-        exposureLevel: severity === 'critical' || severity === 'high' ? 'Moderate' : 'Low',
-        type: input.type || vulnerabilityType(text),
+        exposureLevel: vulnerabilityExposureLevel(severity),
+        type,
         detectedAt: input.detectedAt || null,
         status,
         algorithm: input.algorithm || '',
-        remediation: textValue(input.metadata?.remediation || input.metadata?.pqcReplacement || input.metadata?.pqc_replacement, expectedForDrift(text, input.algorithm || '')),
+        remediation,
+        remediationHref: vulnerabilityRemediationHref({
+          sourceId: input.sourceId,
+          assetId: input.assetId,
+          assetName,
+          title,
+          description: input.description || '',
+          severity,
+          algorithm: input.algorithm || '',
+          type,
+          source: input.source,
+          remediation,
+        }),
+        inspectHref: `/dashboard/crypto-exposure?${new URLSearchParams({
+          source: 'vulnerabilities',
+          findingId: input.sourceId,
+          ...(input.assetId ? { assetId: input.assetId } : {}),
+        }).toString()}`,
       }
     }
 
@@ -3859,37 +4177,38 @@ router.get('/vulnerabilities', async (req: Request, res: Response) => {
       }))
     }
 
+    const canonicalRows = canonicalVulnerabilityRows(rows)
     const remediatedJobs = (migrationJobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'completed')
-    const remediatedRows = rows.filter((row) => row.status === 'Remediated').length
+    const remediatedRows = canonicalRows.filter((row) => row.status === 'Remediated').length
     const remediated = remediatedRows + remediatedJobs.length
-    const openRows = rows.filter((row) => row.status !== 'Remediated')
+    const openRows = canonicalRows.filter((row) => row.status !== 'Remediated')
     const criticalExposure = openRows.filter((row) => row.severity === 'critical').length
-    const legacyAlgorithms = (inventory || []).filter((item: any) => item.is_vulnerable && !item.is_quantum_safe && isLegacyAlgorithm(`${item.algorithm || ''} ${item.protocol || ''}`)).length
+    const legacyAlgorithms = canonicalRows.filter((row) => row.status !== 'Remediated' && isLegacyAlgorithm(`${row.algorithm || ''} ${row.description || ''} ${row.title || ''}`)).length
 
     const now = Date.now()
-    const current7d = rows.filter((row) => dateMs(row.detectedAt) >= now - 7 * 86400000)
-    const previous7d = rows.filter((row) => dateMs(row.detectedAt) < now - 7 * 86400000 && dateMs(row.detectedAt) >= now - 14 * 86400000)
+    const current7d = canonicalRows.filter((row) => dateMs(row.detectedAt) >= now - 7 * 86400000)
+    const previous7d = canonicalRows.filter((row) => dateMs(row.detectedAt) < now - 7 * 86400000 && dateMs(row.detectedAt) >= now - 14 * 86400000)
     const previousCritical = previous7d.filter((row) => row.severity === 'critical' && row.status !== 'Remediated').length
-    const previousLegacy = previous7d.filter((row) => isLegacyAlgorithm(row.algorithm)).length
+    const previousLegacy = previous7d.filter((row) => isLegacyAlgorithm(`${row.algorithm || ''} ${row.description || ''} ${row.title || ''}`)).length
     const previousRemediated = (migrationJobs || []).filter((job: any) => normalizeJobStatus(job.status) === 'completed' && dateMs(job.completed_at || job.updated_at) < now - 7 * 86400000 && dateMs(job.completed_at || job.updated_at) >= now - 14 * 86400000).length
 
     const severityBreakdown = ['critical', 'high', 'medium', 'low', 'info'].map((severity) => {
-      const count = rows.filter((row) => row.severity === severity || (severity === 'info' && !['critical', 'high', 'medium', 'low'].includes(row.severity))).length
-      return { severity, count, percent: percentOf(count, Math.max(1, rows.length)) }
+      const count = canonicalRows.filter((row) => row.severity === severity || (severity === 'info' && !['critical', 'high', 'medium', 'low'].includes(row.severity))).length
+      return { severity, count, percent: percentOf(count, Math.max(1, canonicalRows.length)) }
     })
 
-    const assetTypeBreakdown = Array.from(rows.reduce((map, row) => {
+    const assetTypeBreakdown = Array.from(canonicalRows.reduce((map, row) => {
       map.set(row.assetType, (map.get(row.assetType) || 0) + 1)
       return map
     }, new Map<string, number>()).entries())
-      .map(([label, count]) => ({ label, count, percent: percentOf(count, Math.max(1, rows.length)) }))
+      .map(([label, count]) => ({ label, count, percent: percentOf(count, Math.max(1, canonicalRows.length)) }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 6)
 
     const trend = Array.from({ length: 7 }, (_, index) => {
       const start = startOfDayMs(6 - index)
       const end = start + 86400000
-      const bucket = rows.filter((row) => {
+      const bucket = canonicalRows.filter((row) => {
         const time = dateMs(row.detectedAt)
         return time >= start && time < end
       })
@@ -3904,7 +4223,7 @@ router.get('/vulnerabilities', async (req: Request, res: Response) => {
     })
 
     type VulnerabilityTopAsset = { asset: string; severity: string; count: number }
-    const topAssetMap = rows.reduce((map: Map<string, VulnerabilityTopAsset>, row) => {
+    const topAssetMap = canonicalRows.reduce((map: Map<string, VulnerabilityTopAsset>, row) => {
       const current = map.get(row.asset) || { asset: row.asset, severity: row.severity, count: 0 }
       current.count += 1
       if (severityRank(row.severity) > severityRank(current.severity)) current.severity = row.severity
@@ -3932,15 +4251,15 @@ router.get('/vulnerabilities', async (req: Request, res: Response) => {
           legacyAlgorithmsDelta: legacyAlgorithms - previousLegacy,
           remediated,
           remediatedDelta: remediated - previousRemediated,
-          totalVulnerabilities: rows.length,
+          totalVulnerabilities: canonicalRows.length,
           current7d: current7d.length,
         },
         filters: {
-          environments: Array.from(new Set(rows.map((row) => row.environment).filter(Boolean))).sort(),
-          assetTypes: Array.from(new Set(rows.map((row) => row.assetType).filter(Boolean))).sort(),
-          vulnerabilityTypes: Array.from(new Set(rows.map((row) => row.type).filter(Boolean))).sort(),
+          environments: Array.from(new Set(canonicalRows.map((row) => row.environment).filter(Boolean))).sort(),
+          assetTypes: Array.from(new Set(canonicalRows.map((row) => row.assetType).filter(Boolean))).sort(),
+          vulnerabilityTypes: Array.from(new Set(canonicalRows.map((row) => row.type).filter(Boolean))).sort(),
         },
-        vulnerabilities: rows.sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || dateMs(b.detectedAt) - dateMs(a.detectedAt)),
+        vulnerabilities: canonicalRows.sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || dateMs(b.detectedAt) - dateMs(a.detectedAt)),
         severityBreakdown,
         assetTypeBreakdown,
         trend,

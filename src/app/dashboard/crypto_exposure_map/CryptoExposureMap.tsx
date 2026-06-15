@@ -54,6 +54,10 @@ type MapNode = {
     category: string;
     status: string;
     evidence?: string;
+    source?: string;
+    recommendation?: string;
+    severity?: string;
+    detectedAt?: string;
   }>;
   recommendedMigrationPath: string | null;
 };
@@ -186,6 +190,10 @@ function normalizeMapNode(rawNode: any, index: number, total: number): MapNode {
       category: String(finding?.category || finding?.type || finding?.source || 'Exposure finding'),
       status: String(finding?.status || finding?.threatLevel || finding?.severity || 'Open'),
       evidence: finding?.evidence ? String(finding.evidence) : undefined,
+      source: finding?.source ? String(finding.source) : undefined,
+      recommendation: finding?.recommendation ? String(finding.recommendation) : undefined,
+      severity: finding?.severity ? String(finding.severity) : undefined,
+      detectedAt: finding?.detectedAt || finding?.timestamp ? String(finding.detectedAt || finding.timestamp) : undefined,
     })),
     recommendedMigrationPath: rawNode?.recommendedMigrationPath || rawNode?.migrationPath || rawNode?.pqcReplacement || null,
   };
@@ -327,7 +335,8 @@ export default function CryptoExposureMap() {
     const needle = query.trim().toLowerCase();
     return nodes.filter((node) => {
       const riskMatches = riskFilter === 'all' || riskBandFor(Number(node.risk || 0)) === riskFilter;
-      const text = `${node.label} ${node.type} ${node.assetType} ${node.algorithm} ${node.pqcReadiness}`.toLowerCase();
+      const linkedText = node.linkedFindings.map((finding) => `${finding.algorithm} ${finding.category} ${finding.status} ${finding.evidence || ''}`).join(' ');
+      const text = `${node.label} ${node.type} ${node.assetType} ${node.algorithm} ${node.pqcReadiness} ${linkedText}`.toLowerCase();
       return riskMatches && (!needle || text.includes(needle));
     });
   }, [nodes, query, riskFilter]);
@@ -342,14 +351,17 @@ export default function CryptoExposureMap() {
     const blastRadius = nodes
       .filter((node) => node.risk >= 60 || node.vulnerable)
       .reduce((sum, node) => sum + (Array.isArray(node.connections) ? node.connections.length : 0), 0);
-    const totalFindings = nodes.reduce((sum, node) => sum + node.linkedFindings.length, 0);
+    const nodeFindings = nodes.reduce((sum, node) => sum + node.linkedFindings.length, 0);
+    const totalFindings = Math.max(nodeFindings, findings.length, safeNumber(summary.totalFindings, 0));
     const vulnerableAlgorithms = new Set(nodes.filter((node) => node.vulnerable).map((node) => node.algorithm).filter(Boolean));
+    const summaryRisk = Number.isFinite(Number(summary.riskScore)) ? safeNumber(summary.riskScore, averageRisk) : averageRisk;
 
     return {
       vulnerable,
       secured,
       criticalHigh,
       averageRisk,
+      riskScore: summaryRisk,
       blastRadius,
       totalFindings,
       vulnerableAlgorithms: vulnerableAlgorithms.size,
@@ -357,9 +369,10 @@ export default function CryptoExposureMap() {
       qScore: safeNumber(summary.qScore, 0),
       totalAssets: safeNumber(summary.totalAssets, nodes.length) || nodes.length,
       totalComponents: safeNumber(summary.totalComponents, 0),
+      pqcReadyComponents: safeNumber(summary.pqcReadyComponents, 0),
       activeScans: safeNumber(summary.activeScans, 0),
     };
-  }, [nodes, summary]);
+  }, [findings.length, nodes, summary]);
 
   const algorithmExposure = useMemo(() => {
     const rows = new Map<string, { name: string; count: number; vulnerable: number; maxRisk: number; assets: Set<string> }>();
@@ -392,8 +405,11 @@ export default function CryptoExposureMap() {
         ...finding,
         asset: node.label,
         risk: node.risk,
-        recommendedMigrationPath: node.recommendedMigrationPath,
+        recommendedMigrationPath: finding.recommendation || node.recommendedMigrationPath,
         severity: riskLabel(node.risk),
+        evidence: finding.evidence,
+        detectedAt: finding.detectedAt,
+        source: finding.source || 'exposure-node',
       })),
     );
     const scannerFindings = findings.map((finding: ScannerFinding) => {
@@ -408,10 +424,25 @@ export default function CryptoExposureMap() {
         risk: rank * 24,
         recommendedMigrationPath: String(finding.recommendation || 'Review remediation path'),
         severity: level.toUpperCase(),
+        evidence: finding.evidence ? String(finding.evidence) : undefined,
+        detectedAt: finding.detectedAt || finding.timestamp ? String(finding.detectedAt || finding.timestamp) : undefined,
+        source: String(finding.source || 'scanner-intelligence'),
       };
     });
 
-    return [...nodeFindings, ...scannerFindings]
+    const deduped = new Map<string, any>();
+    for (const finding of [...nodeFindings, ...scannerFindings]) {
+      const key = [
+        finding.asset,
+        finding.algorithm,
+        finding.category,
+        finding.evidence || finding.status,
+      ].map((value) => String(value || '').toLowerCase()).join('|');
+      const current = deduped.get(key);
+      if (!current || Number(finding.risk || 0) > Number(current.risk || 0)) deduped.set(key, finding);
+    }
+
+    return [...deduped.values()]
       .sort((a, b) => Number(b.risk || 0) - Number(a.risk || 0))
       .slice(0, 10);
   }, [findings, nodes]);
@@ -429,10 +460,16 @@ export default function CryptoExposureMap() {
       detail: item.target || item.asset || item.scanId || 'Telemetry source',
       time: item.timestamp,
     }));
-    return [...historyRows, ...telemetryRows]
+    const findingRows = prioritizedFindings.slice(0, 4).map((item: any) => ({
+      id: `finding-${item.id}-${item.asset}`,
+      title: `${item.severity || 'Exposure'}: ${item.algorithm}`,
+      detail: `${item.asset} | ${item.source || item.category || 'scanner evidence'}`,
+      time: item.detectedAt,
+    }));
+    return [...historyRows, ...telemetryRows, ...findingRows]
       .sort((a, b) => Date.parse(b.time || '') - Date.parse(a.time || ''))
       .slice(0, 6);
-  }, [history, telemetry]);
+  }, [history, prioritizedFindings, telemetry]);
 
   const selectedIcon = selectedNode ? getNodeIcon(selectedNode.assetType || selectedNode.type) : Globe;
   const SelectedIcon = selectedIcon;
@@ -506,9 +543,9 @@ export default function CryptoExposureMap() {
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
           <MetricCard title="Assets Mapped" value={numberFmt(stats.totalAssets)} detail={`${numberFmt(stats.totalComponents)} crypto components`} icon={Layers} spark={[2, 4, 6, stats.totalAssets || 1]} />
-          <MetricCard title="Critical / High" value={numberFmt(stats.criticalHigh)} detail="priority exposure nodes" icon={ShieldAlert} tone="text-red-400" spark={[1, distribution.medium, distribution.high, distribution.critical]} />
-          <MetricCard title="Avg Risk" value={`${stats.averageRisk}/100`} detail={`Q-Score ${numberFmt(stats.qScore)}`} icon={BarChart3} tone="text-amber-400" spark={[30, 45, 52, stats.averageRisk || 1]} />
-          <MetricCard title="PQC Readiness" value={pct(stats.pqcReadiness)} detail={`${numberFmt(stats.secured)} monitored protected assets`} icon={ShieldCheck} tone="text-emerald-400" spark={[20, 34, 55, stats.pqcReadiness || 1]} />
+          <MetricCard title="Critical / High" value={numberFmt(stats.criticalHigh)} detail={`${numberFmt(stats.totalFindings)} synchronized findings`} icon={ShieldAlert} tone="text-red-400" spark={[1, distribution.medium, distribution.high, distribution.critical]} />
+          <MetricCard title="Avg Risk" value={`${stats.riskScore}/100`} detail={`Q-Score ${numberFmt(stats.qScore)}`} icon={BarChart3} tone="text-amber-400" spark={[30, 45, 52, stats.riskScore || 1]} />
+          <MetricCard title="PQC Readiness" value={pct(stats.pqcReadiness)} detail={`${numberFmt(stats.pqcReadyComponents)} PQC-ready components`} icon={ShieldCheck} tone="text-emerald-400" spark={[20, 34, 55, stats.pqcReadiness || 1]} />
           <MetricCard title="Blast Radius" value={numberFmt(stats.blastRadius)} detail="linked trust paths affected" icon={Network} tone="text-cyan-400" spark={[1, 3, 5, stats.blastRadius || 1]} />
           <MetricCard title="Active Scans" value={numberFmt(stats.activeScans)} detail={`${numberFmt(safeNumber(summary.completedScans, 0))} completed`} icon={Activity} tone="text-blue-400" spark={[0, 1, 1, stats.activeScans || 1]} />
         </div>
@@ -853,7 +890,14 @@ export default function CryptoExposureMap() {
                 <Activity className="h-4 w-4 text-cyan-500 dark:text-[#FFD36B]" />
                 Live Evidence Feed
               </h2>
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[9px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-300">Synchronized</span>
+              <span className={cx(
+                'rounded-full border px-2 py-1 text-[9px] font-black uppercase tracking-widest',
+                connected
+                  ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-600 dark:text-emerald-300'
+                  : 'border-amber-400/30 bg-amber-400/10 text-amber-600 dark:text-amber-300',
+              )}>
+                {connected ? 'SSE synchronized' : 'Polling snapshot'}
+              </span>
             </div>
             <div className="space-y-3">
               {activity.map((item) => (

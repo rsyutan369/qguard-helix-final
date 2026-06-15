@@ -162,6 +162,10 @@ interface MemoryScanResult {
   created_at: string
 }
 
+type AssetVulnerabilityItem = MemoryInventory & {
+  instances?: number
+}
+
 interface ScannerModuleState {
   id: string
   name: string
@@ -1039,6 +1043,163 @@ function exposureTypeFor(finding: DefensiveFinding) {
   return 'crypto_review'
 }
 
+function scannerRecord(value: unknown): Record<string, any> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {}
+}
+
+function scannerFingerprintPart(value: unknown) {
+  return String(value || 'none').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'none'
+}
+
+function scannerSeverityRank(severity: unknown) {
+  const value = String(severity || '').toLowerCase()
+  if (value === 'critical') return 4
+  if (value === 'high') return 3
+  if (value === 'moderate' || value === 'medium' || value === 'warning') return 2
+  if (value === 'low') return 1
+  return 0
+}
+
+function scannerRootCause(finding: DefensiveFinding) {
+  const text = `${finding.algorithm} ${finding.category} ${finding.status} ${finding.description} ${finding.recommendation}`.toLowerCase()
+  if (/no forward secrecy|forward secrecy|ephemeral key exchange|rsa key exchange|weak key exchange|diffie|dh-?\d|dhe|ecdh|tls_rsa|key exchange/.test(text)) {
+    return {
+      ruleId: 'weak-key-exchange',
+      title: 'Weak Key Exchange Algorithm',
+      type: 'Key Exchange Risk',
+      description: 'No ephemeral key exchange - past traffic can be decrypted if the private key is compromised.',
+      remediation: 'Disable RSA/static DH key exchange and require TLS 1.3 or ECDHE with a PQC/hybrid KEM migration path.',
+    }
+  }
+  if (/tls\s*1\.[01]|tls-?1\.[01]|ssl|legacy protocol/.test(text)) {
+    return {
+      ruleId: 'legacy-tls-protocol',
+      title: 'Legacy TLS Protocol',
+      type: 'Protocol Risk',
+      description: 'Legacy TLS or SSL protocol support was observed on this asset.',
+      remediation: 'Disable SSL, TLS 1.0, and TLS 1.1; enforce TLS 1.2+ with TLS 1.3 preferred.',
+    }
+  }
+  if (/sha-?1|md5|legacy mac|weak hash/.test(text)) {
+    return {
+      ruleId: 'weak-hash-or-mac',
+      title: 'Weak Hash Or MAC Algorithm',
+      type: 'Hash Risk',
+      description: 'A weak hash or MAC primitive was observed in cryptographic telemetry.',
+      remediation: 'Retire SHA-1/MD5 MAC usage and enforce SHA-384, SHA-3, or approved AEAD suites.',
+    }
+  }
+  if (/cbc|3des|des|rc4|weak cipher|legacy cipher/.test(text)) {
+    return {
+      ruleId: 'weak-cipher-suite',
+      title: 'Weak Cipher Suite',
+      type: 'Cipher Suite Risk',
+      description: 'A legacy or non-AEAD cipher suite was observed on this asset.',
+      remediation: 'Disable CBC, RC4, DES, and 3DES suites; prefer AES-256-GCM or ChaCha20-Poly1305.',
+    }
+  }
+  if (/certificate|cert|x509|issuer|subject|pki|pinning/.test(text)) {
+    return {
+      ruleId: 'certificate-risk',
+      title: 'Certificate Risk',
+      type: 'Certificate Risk',
+      description: 'Certificate telemetry indicates a weak, expiring, or non-PQC-ready trust object.',
+      remediation: 'Rotate the certificate and plan ML-DSA or hybrid certificate adoption.',
+    }
+  }
+  const fallback = finding.category || finding.algorithm || 'crypto-review'
+  return {
+    ruleId: scannerFingerprintPart(fallback),
+    title: fallback,
+    type: fallback,
+    description: finding.description || 'Cryptographic weakness detected in authenticated scanner telemetry.',
+    remediation: finding.recommendation,
+  }
+}
+
+async function upsertVulnerabilityFinding(
+  client: any,
+  userId: string,
+  assetId: string,
+  finding: DefensiveFinding,
+  commonMetadata: Record<string, unknown>,
+  now: string
+) {
+  const root = scannerRootCause(finding)
+  const severity = severityFromThreat(finding.threatLevel)
+  const canonicalFingerprint = `${userId}:${assetId}:${root.ruleId}`
+  const evidence = {
+    label: finding.algorithm || finding.category,
+    algorithm: finding.algorithm,
+    description: finding.description,
+    source: finding.source,
+    location: finding.location,
+    severity,
+    detectedAt: now,
+    scanId: commonMetadata.scanId,
+    scanSessionId: commonMetadata.scanSessionId,
+  }
+  const evidenceSignature = scannerFingerprintPart(`${evidence.label}:${evidence.description}:${evidence.location}`)
+
+  const { data: existingRows } = await client
+    .from('vulnerabilities')
+    .select('id, severity, status, metadata, created_at, updated_at')
+    .eq('user_id', userId)
+    .eq('asset_id', assetId)
+    .eq('source', 'authorized_crypto_scan')
+    .limit(100)
+
+  const existing = (existingRows || []).find((row: any) => scannerRecord(row.metadata).canonicalFingerprint === canonicalFingerprint)
+  if (existing?.id) {
+    const metadata = scannerRecord(existing.metadata)
+    const evidenceList = Array.isArray(metadata.evidence) ? metadata.evidence : []
+    const nextEvidence = evidenceList.some((item: any) => scannerFingerprintPart(`${item?.label}:${item?.description}:${item?.location}`) === evidenceSignature)
+      ? evidenceList
+      : [...evidenceList, evidence]
+    const nextSeverity = scannerSeverityRank(severity) > scannerSeverityRank(existing.severity) ? severity : existing.severity
+    await client.from('vulnerabilities').update({
+      title: root.title,
+      description: root.description,
+      severity: nextSeverity,
+      status: ['remediated', 'resolved'].includes(String(existing.status || '').toLowerCase()) ? existing.status : 'open',
+      metadata: {
+        ...metadata,
+        ...commonMetadata,
+        canonicalFingerprint,
+        rootCause: root.ruleId,
+        vulnerabilityType: root.type,
+        remediation: root.remediation || finding.recommendation,
+        evidence: nextEvidence,
+        evidenceCount: nextEvidence.length,
+        lastObservedAt: now,
+      },
+      updated_at: now,
+    }).eq('id', existing.id).eq('user_id', userId)
+    return
+  }
+
+  await client.from('vulnerabilities').insert({
+    user_id: userId,
+    asset_id: assetId,
+    title: root.title,
+    description: root.description,
+    severity,
+    status: 'open',
+    source: 'authorized_crypto_scan',
+    metadata: {
+      ...commonMetadata,
+      canonicalFingerprint,
+      rootCause: root.ruleId,
+      vulnerabilityType: root.type,
+      remediation: root.remediation || finding.recommendation,
+      evidence: [evidence],
+      evidenceCount: 1,
+      firstObservedAt: now,
+      lastObservedAt: now,
+    },
+  })
+}
+
 function persistFindingToMemory(
   userId: string,
   sessionId: string,
@@ -1194,16 +1355,7 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
           .single()
         if (exposureData?.id) exposureIds.push(exposureData.id)
 
-        await client.from('vulnerabilities').insert({
-          user_id: userId,
-          asset_id: assetId,
-          title: `${finding.algorithm} ${finding.status}`,
-          description: finding.description,
-          severity: severityFromThreat(finding.threatLevel),
-          status: 'open',
-          source: 'authorized_crypto_scan',
-          metadata: commonMetadata,
-        })
+        await upsertVulnerabilityFinding(client, userId, assetId, finding, commonMetadata, now)
       }
     } else {
       const memoryIds = persistFindingToMemory(userId, sessionId, assetId, target, result, finding, commonMetadata, now)
@@ -1933,6 +2085,7 @@ async function loadScannerTables(client: any, userId: string) {
     exposures: memoryStore.exposures.filter((item) => item.user_id === userId),
     results: memoryStore.results.filter((item) => item.user_id === userId),
     sessions: memoryStore.sessions.filter((item) => item.user_id === userId),
+    vulnerabilities: [],
   }
 
   if (!client) {
@@ -1943,12 +2096,13 @@ async function loadScannerTables(client: any, userId: string) {
   }
 
   try {
-    const [assets, inventory, exposures, results, sessions] = await Promise.all([
+    const [assets, inventory, exposures, results, sessions, vulnerabilities] = await Promise.all([
       client.from('assets').select('*').eq('user_id', userId).order('updated_at', { ascending: false }),
       client.from('crypto_inventory').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       client.from('crypto_exposures').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       client.from('pqc_scan_results').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
       client.from('pqc_scan_sessions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
+      client.from('vulnerabilities').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000),
     ])
     const mergeRows = <T extends { id: string }>(databaseRows: T[], fallbackRows: T[]) => {
       const seen = new Set(databaseRows.map((item) => item.id))
@@ -1961,7 +2115,8 @@ async function loadScannerTables(client: any, userId: string) {
       exposures: mergeRows(exposures.error ? [] : exposures.data || [], memoryRows.exposures),
       results: mergeRows(results.error ? [] : results.data || [], memoryRows.results),
       sessions: mergeRows(sessions.error ? [] : sessions.data || [], memoryRows.sessions),
-      mode: (assets.error || inventory.error || exposures.error || results.error || sessions.error ? 'memory' : 'database') as PersistenceMode,
+      vulnerabilities: mergeRows(vulnerabilities.error ? [] : vulnerabilities.data || [], memoryRows.vulnerabilities),
+      mode: (assets.error || inventory.error || exposures.error || results.error || sessions.error || vulnerabilities.error ? 'memory' : 'database') as PersistenceMode,
     }
   } catch {
     return {
@@ -2018,11 +2173,417 @@ function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode
   return { mode, entries, stats }
 }
 
-function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], mode: PersistenceMode) {
-  const normalized = assets.map((asset) => {
-    const crypto = inventory.filter((item) => item.asset_id === asset.id)
+function vulnerabilityStatusIsOpen(value: unknown) {
+  const status = String(value || 'open').toLowerCase()
+  return !['resolved', 'remediated', 'fixed', 'false_positive', 'accepted', 'suppressed', 'closed'].includes(status)
+}
+
+function storedSeverityWeight(value: unknown) {
+  const text = String(value || '').toLowerCase()
+  if (text.includes('critical')) return 5
+  if (text.includes('high')) return 4
+  if (text.includes('moderate') || text.includes('medium')) return 3
+  if (text.includes('low')) return 2
+  if (text.includes('safe')) return 0
+  return 1
+}
+
+function itemTimestamp(item: any) {
+  return Date.parse(item?.updated_at || item?.discovered_at || item?.created_at || item?.metadata?.detectedAt || item?.metadata?.timestamp || '') || 0
+}
+
+function dedupeKeyForCryptoItem(item: any) {
+  const metadata = item?.metadata || {}
+  return [
+    item?.asset_id,
+    item?.item_type || metadata.category || metadata.finding_type,
+    item?.algorithm || metadata.algorithm || item?.detected_value || item?.title,
+    item?.key_size || metadata.keySize,
+    item?.protocol || metadata.protocol,
+    item?.name || metadata.name,
+  ]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .join(':')
+}
+
+function groupCryptoInventory(items: any[]) {
+  const grouped = new Map<string, any>()
+
+  for (const item of items) {
+    const key = dedupeKeyForCryptoItem(item)
+    const current = grouped.get(key)
+    if (!current) {
+      grouped.set(key, {
+        ...item,
+        instances: 1,
+        metadata: { ...(item.metadata || {}) },
+      })
+      continue
+    }
+
+    current.instances = Number(current.instances || 1) + 1
+    if (itemTimestamp(item) > itemTimestamp(current)) {
+      grouped.set(key, {
+        ...current,
+        ...item,
+        instances: current.instances,
+        metadata: { ...(current.metadata || {}), ...(item.metadata || {}) },
+      })
+    }
+  }
+
+  return Array.from(grouped.values()).sort((a, b) => {
+    const vulnerableDelta = Number(Boolean(b.is_vulnerable)) - Number(Boolean(a.is_vulnerable))
+    if (vulnerableDelta) return vulnerableDelta
+    const severityDelta = storedSeverityWeight(b.exposure_level || b.metadata?.severity) - storedSeverityWeight(a.exposure_level || a.metadata?.severity)
+    if (severityDelta) return severityDelta
+    return itemTimestamp(b) - itemTimestamp(a)
+  })
+}
+
+function inventoryToVulnerability(item: any): AssetVulnerabilityItem {
+  return {
+    ...item,
+    is_vulnerable: true,
+    is_quantum_safe: false,
+    metadata: {
+      ...(item.metadata || {}),
+      source: item.metadata?.source || 'crypto_inventory',
+      recommendation: item.metadata?.recommendation || replacementFor(item.algorithm || '') || 'Review against NIST PQC migration policy',
+      evidence: item.metadata?.evidence || 'Crypto inventory marked this component as vulnerable.',
+    },
+  }
+}
+
+function resultToVulnerability(row: any, index: number): AssetVulnerabilityItem | null {
+  const finding = normalizeStoredFinding(row, index)
+  if (!['CRITICAL', 'HIGH', 'MEDIUM'].includes(finding.threatLevel)) return null
+
+  const timestamp = finding.detectedAt || finding.timestamp || row.created_at || new Date().toISOString()
+  return {
+    id: `scan-result-${finding.id}`,
+    user_id: row.user_id,
+    asset_id: row.asset_id,
+    item_type: finding.category || row.finding_type || 'scanner-finding',
+    name: `${finding.category || 'Finding'}: ${finding.algorithm}`,
+    algorithm: finding.algorithm,
+    key_size: finding.keySize,
+    protocol: null,
+    exposure_level: severityFromThreat(finding.threatLevel),
+    is_vulnerable: true,
+    is_quantum_safe: false,
+    metadata: {
+      ...(row.metadata || {}),
+      source: 'pqc_scan_results',
+      scanResultId: row.id,
+      status: finding.status,
+      description: finding.description,
+      evidence: finding.evidence,
+      recommendation: finding.recommendation,
+      pqcReplacement: finding.pqcReplacement,
+      detectionMethod: finding.detectionMethod,
+      target: finding.location,
+      threatLevel: finding.threatLevel,
+    },
+    discovered_at: timestamp,
+    created_at: timestamp,
+  }
+}
+
+function exposureToVulnerability(row: any): AssetVulnerabilityItem | null {
+  if (storedSeverityWeight(row.severity) <= 0) return null
+
+  const metadata = row.metadata || {}
+  const timestamp = row.updated_at || row.created_at || new Date().toISOString()
+  return {
+    id: `exposure-${row.id}`,
+    user_id: row.user_id,
+    asset_id: row.asset_id,
+    item_type: row.exposure_type || metadata.category || 'crypto-exposure',
+    name: `${row.exposure_type || 'Exposure'}: ${row.detected_value || metadata.algorithm || 'Detected cryptography'}`,
+    algorithm: row.detected_value || metadata.algorithm || null,
+    key_size: typeof metadata.keySize === 'number' ? metadata.keySize : null,
+    protocol: metadata.protocol || null,
+    exposure_level: row.severity || metadata.severity || 'moderate',
+    is_vulnerable: true,
+    is_quantum_safe: false,
+    metadata: {
+      ...metadata,
+      source: 'crypto_exposures',
+      exposureId: row.id,
+      description: row.description,
+      evidence: metadata.evidence || row.description || 'Crypto exposure record linked to this asset.',
+      recommendation: metadata.recommendation || replacementFor(String(row.detected_value || metadata.algorithm || '')) || 'Create a PQC remediation plan for this exposure.',
+      pqcReplacement: metadata.pqcReplacement || replacementFor(String(row.detected_value || metadata.algorithm || '')),
+    },
+    discovered_at: timestamp,
+    created_at: row.created_at || timestamp,
+  }
+}
+
+function vulnerabilityRowToItem(row: any): AssetVulnerabilityItem | null {
+  if (!vulnerabilityStatusIsOpen(row.status)) return null
+
+  const metadata = row.metadata || {}
+  const timestamp = row.updated_at || row.created_at || new Date().toISOString()
+  const algorithm = metadata.algorithm || row.title || metadata.detected_value || 'Vulnerability'
+  return {
+    id: `vulnerability-${row.id}`,
+    user_id: row.user_id,
+    asset_id: row.asset_id,
+    item_type: metadata.category || row.source || 'vulnerability',
+    name: row.title || `${metadata.category || 'Vulnerability'}: ${algorithm}`,
+    algorithm,
+    key_size: typeof metadata.keySize === 'number' ? metadata.keySize : null,
+    protocol: metadata.protocol || null,
+    exposure_level: row.severity || metadata.severity || 'moderate',
+    is_vulnerable: true,
+    is_quantum_safe: false,
+    metadata: {
+      ...metadata,
+      source: row.source || 'vulnerabilities',
+      vulnerabilityId: row.id,
+      status: row.status || 'open',
+      description: row.description,
+      evidence: metadata.evidence || row.description || 'Open vulnerability record linked to this asset.',
+      recommendation: metadata.recommendation || replacementFor(String(algorithm || '')) || 'Create a PQC remediation plan for this vulnerability.',
+      pqcReplacement: metadata.pqcReplacement || replacementFor(String(algorithm || '')),
+    },
+    discovered_at: timestamp,
+    created_at: row.created_at || timestamp,
+  }
+}
+
+function buildAssetVulnerabilities(assetId: string, crypto: any[], exposures: any[], results: any[], vulnerabilityRows: any[]) {
+  const candidates = [
+    ...crypto.filter((item) => item.is_vulnerable && !item.is_quantum_safe).map(inventoryToVulnerability),
+    ...exposures.map(exposureToVulnerability).filter(Boolean),
+    ...results.map(resultToVulnerability).filter(Boolean),
+    ...vulnerabilityRows.map(vulnerabilityRowToItem).filter(Boolean),
+  ] as AssetVulnerabilityItem[]
+
+  const grouped = new Map<string, AssetVulnerabilityItem>()
+  for (const item of candidates.filter((candidate) => candidate.asset_id === assetId)) {
+    const key = dedupeKeyForCryptoItem(item)
+    const current = grouped.get(key)
+    if (!current) {
+      grouped.set(key, { ...item, instances: Number(item.instances || 1) })
+      continue
+    }
+
+    const nextInstances = Number(current.instances || 1) + Number(item.instances || 1)
+    const currentWeight = storedSeverityWeight(current.exposure_level || current.metadata?.severity)
+    const itemWeight = storedSeverityWeight(item.exposure_level || item.metadata?.severity)
+    const shouldReplace = itemWeight > currentWeight || (itemWeight === currentWeight && itemTimestamp(item) > itemTimestamp(current))
+    grouped.set(key, {
+      ...(shouldReplace ? item : current),
+      instances: nextInstances,
+      metadata: {
+        ...(shouldReplace ? current.metadata : item.metadata || {}),
+        ...((shouldReplace ? item.metadata : current.metadata) || {}),
+      },
+    })
+  }
+
+  return Array.from(grouped.values()).sort((a, b) => {
+    const severityDelta = storedSeverityWeight(b.exposure_level || b.metadata?.severity) - storedSeverityWeight(a.exposure_level || a.metadata?.severity)
+    if (severityDelta) return severityDelta
+    return itemTimestamp(b) - itemTimestamp(a)
+  })
+}
+
+function clampRisk(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.min(100, Math.round(parsed)))
+}
+
+function riskFromStoredSeverity(value: unknown) {
+  const weight = storedSeverityWeight(value)
+  if (weight >= 5) return 92
+  if (weight >= 4) return 76
+  if (weight >= 3) return 54
+  if (weight >= 2) return 32
+  if (weight === 0) return 8
+  return 18
+}
+
+function evidenceAssetLabel(assetId: string, rows: any[]) {
+  for (const row of rows) {
+    const metadata = row?.metadata || {}
+    const target = metadata.authorized_target ||
+      metadata.target ||
+      metadata.location ||
+      metadata.host ||
+      metadata.domain ||
+      row?.target ||
+      row?.name ||
+      row?.title ||
+      row?.detected_value ||
+      row?.exposure_type ||
+      row?.finding_type
+    if (target) return String(target)
+  }
+  return `Scanned asset ${assetId.slice(0, 8)}`
+}
+
+function evidenceAssetType(rows: any[]) {
+  for (const row of rows) {
+    const metadata = row?.metadata || {}
+    const type = row?.type || metadata.assetType || metadata.type || metadata.category || row?.finding_type || row?.exposure_type
+    if (type) return String(type)
+  }
+  return 'scanner-evidence'
+}
+
+function buildEvidenceBackedAssets(assets: any[], inventory: any[], exposures: any[], results: any[], vulnerabilityRows: any[]) {
+  const normalizedAssets = assets.map((asset) => ({ ...asset, metadata: asset.metadata || {} }))
+  const seen = new Set(normalizedAssets.map((asset) => String(asset.id)))
+  const rowsByAsset = new Map<string, any[]>()
+
+  const addEvidenceRows = (rows: any[]) => {
+    for (const row of rows) {
+      const assetId = row?.asset_id
+      if (!assetId || seen.has(String(assetId))) continue
+      const bucket = rowsByAsset.get(String(assetId)) || []
+      bucket.push(row)
+      rowsByAsset.set(String(assetId), bucket)
+    }
+  }
+
+  addEvidenceRows(inventory)
+  addEvidenceRows(exposures)
+  addEvidenceRows(results)
+  addEvidenceRows(vulnerabilityRows)
+
+  const now = new Date().toISOString()
+  for (const [assetId, rows] of rowsByAsset.entries()) {
+    const label = evidenceAssetLabel(assetId, rows)
+    const strongestRisk = rows.reduce((max, row) => {
+      const metadata = row?.metadata || {}
+      const risk = riskFromStoredSeverity(row?.severity || row?.threat_level || row?.exposure_level || metadata.threatLevel || metadata.severity)
+      return Math.max(max, risk)
+    }, 0)
+    normalizedAssets.push({
+      id: assetId,
+      user_id: rows[0]?.user_id,
+      name: label,
+      type: evidenceAssetType(rows),
+      ip_address: null,
+      criticality: strongestRisk >= 76 ? 'high' : strongestRisk >= 54 ? 'medium' : 'normal',
+      status: 'active',
+      metadata: {
+        generatedFromScannerEvidence: true,
+        authorized_target: label,
+        riskScore: strongestRisk,
+      },
+      created_at: rows[0]?.created_at || now,
+      updated_at: rows[0]?.updated_at || rows[0]?.created_at || now,
+    })
+    seen.add(assetId)
+  }
+
+  return normalizedAssets
+}
+
+function assetRiskScore(asset: any, crypto: any[], exposures: any[], vulnerabilities: AssetVulnerabilityItem[]) {
+  const metadataRisk = Number(asset?.metadata?.riskScore)
+  if (Number.isFinite(metadataRisk)) return clampRisk(metadataRisk)
+
+  const vulnerabilityRisk = vulnerabilities.reduce((max, item) => (
+    Math.max(max, riskFromStoredSeverity(item.exposure_level || item.metadata?.threatLevel || item.metadata?.severity))
+  ), 0)
+  const exposureRisk = exposures.reduce((max, exposure) => (
+    Math.max(max, riskFromStoredSeverity(exposure.severity || exposure.metadata?.severity))
+  ), 0)
+  const cryptoRisk = crypto.reduce((max, item) => (
+    Math.max(max, item.is_vulnerable && !item.is_quantum_safe ? riskFromStoredSeverity(item.exposure_level || item.metadata?.severity || 'medium') : 8)
+  ), 0)
+  const densityBonus = Math.min(14, Math.max(0, vulnerabilities.length - 1) * 3 + Math.max(0, crypto.length - 1))
+
+  return clampRisk(Math.max(vulnerabilityRisk, exposureRisk, cryptoRisk) + densityBonus)
+}
+
+function threatFromVulnerabilityItem(item: AssetVulnerabilityItem): ThreatLevel {
+  return directThreatFromStoredSeverity(item.exposure_level || item.metadata?.threatLevel || item.metadata?.severity) ||
+    inferThreatFromStoredFinding({
+      algorithm: String(item.algorithm || item.name || 'Detected crypto'),
+      category: String(item.item_type || item.metadata?.category || item.metadata?.source || 'Scanner evidence'),
+      status: String(item.metadata?.status || ''),
+      rowSeverity: item.exposure_level,
+      rawSeverity: item.metadata?.threatLevel,
+      metadataSeverity: item.metadata?.severity,
+    })
+}
+
+function vulnerabilityItemToFinding(item: AssetVulnerabilityItem, asset?: any): DefensiveFinding {
+  const metadata = item.metadata || {}
+  const algorithm = String(item.algorithm || metadata.algorithm || item.name || 'Detected crypto')
+  const threatLevel = threatFromVulnerabilityItem(item)
+  const timestamp = String(item.discovered_at || item.created_at || metadata.detectedAt || metadata.timestamp || asset?.updated_at || '')
+
+  return {
+    id: String(metadata.scanResultId || metadata.exposureId || metadata.vulnerabilityId || item.id),
+    algorithm,
+    category: String(item.item_type || metadata.category || metadata.source || 'Exposure finding'),
+    location: String(asset?.name || metadata.target || metadata.location || 'Mapped scanner asset'),
+    threatLevel,
+    status: item.is_quantum_safe ? 'PQC-ready' : statusFromThreat(threatLevel, algorithm),
+    description: String(metadata.description || item.name || 'Cryptographic exposure linked to this asset.'),
+    recommendation: String(metadata.recommendation || replacementFor(algorithm) || 'Create a PQC remediation plan for this exposure.'),
+    pqcReplacement: typeof metadata.pqcReplacement === 'string' ? metadata.pqcReplacement : replacementFor(algorithm),
+    keySize: typeof item.key_size === 'number' ? item.key_size : keySizeFromAlgorithm(algorithm),
+    evidence: String(metadata.evidence || metadata.description || 'Scanner evidence linked this exposure to the asset.'),
+    detectionMethod: String(metadata.detectionMethod || metadata.source || 'scanner-evidence'),
+    source: String(metadata.source || 'scanner-evidence'),
+    timestamp: timestamp || undefined,
+    detectedAt: timestamp || undefined,
+    raw: item,
+  }
+}
+
+function mergeScannerFindings(findings: DefensiveFinding[]) {
+  const grouped = new Map<string, DefensiveFinding>()
+
+  for (const finding of findings) {
+    const key = [
+      finding.source,
+      finding.algorithm,
+      finding.location,
+      finding.category,
+      finding.evidence,
+    ].map((value) => String(value || '').toLowerCase()).join('|')
+    const current = grouped.get(key)
+    if (!current) {
+      grouped.set(key, finding)
+      continue
+    }
+    const currentWeight = storedSeverityWeight(current.threatLevel)
+    const nextWeight = storedSeverityWeight(finding.threatLevel)
+    const currentTime = Date.parse(current.detectedAt || current.timestamp || '') || 0
+    const nextTime = Date.parse(finding.detectedAt || finding.timestamp || '') || 0
+    if (nextWeight > currentWeight || (nextWeight === currentWeight && nextTime > currentTime)) {
+      grouped.set(key, finding)
+    }
+  }
+
+  return Array.from(grouped.values()).sort((a, b) => {
+    const severityDelta = storedSeverityWeight(b.threatLevel) - storedSeverityWeight(a.threatLevel)
+    if (severityDelta) return severityDelta
+    return (Date.parse(b.detectedAt || b.timestamp || '') || 0) - (Date.parse(a.detectedAt || a.timestamp || '') || 0)
+  })
+}
+
+function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], results: any[], vulnerabilityRows: any[], mode: PersistenceMode) {
+  const evidenceAssets = buildEvidenceBackedAssets(assets, inventory, exposures, results, vulnerabilityRows)
+  const normalized = evidenceAssets.map((asset) => {
+    const rawCrypto = inventory.filter((item) => item.asset_id === asset.id)
+    const crypto = groupCryptoInventory(rawCrypto)
     const assetExposures = exposures.filter((item) => item.asset_id === asset.id)
-    const riskScore = asset.metadata?.riskScore ?? Math.min(100, assetExposures.length * 20)
+    const assetResults = results.filter((item) => item.asset_id === asset.id)
+    const assetVulnerabilityRows = vulnerabilityRows.filter((item) => item.asset_id === asset.id)
+    const vulnerabilities = buildAssetVulnerabilities(asset.id, crypto, assetExposures, assetResults, assetVulnerabilityRows)
+    const riskScore = assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
     const algorithms = Array.from(new Set(crypto.map((item: any) => item.algorithm).filter(Boolean)))
     return {
       id: asset.id,
@@ -2036,11 +2597,12 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], m
       riskScore,
       qScore: asset.metadata?.qScore ?? Math.max(0, 100 - riskScore),
       riskLevel: asset.metadata?.riskLevel || (riskScore >= 80 ? 'CRITICAL' : riskScore >= 60 ? 'HIGH' : riskScore >= 40 ? 'MEDIUM' : 'LOW'),
-      complianceStatus: crypto.some((item: any) => item.is_vulnerable) ? 'Action required' : crypto.length > 0 ? 'PQC ready / monitored' : 'Manual review',
+      complianceStatus: vulnerabilities.length > 0 ? 'Action required' : crypto.length > 0 ? 'PQC ready / monitored' : 'Manual review',
       lastScanned: asset.metadata?.last_scanned_at || asset.updated_at || asset.created_at,
       status: asset.status,
-      findingsCount: crypto.length,
-      vulnerableCount: crypto.filter((item: any) => item.is_vulnerable).length,
+      findingsCount: Math.max(crypto.length, vulnerabilities.length),
+      vulnerableCount: vulnerabilities.length,
+      vulnerabilities,
       metadata: asset.metadata || {},
     }
   })
@@ -2048,36 +2610,70 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], m
   return { mode, assets: normalized }
 }
 
-function buildExposurePayload(assets: any[], inventory: any[], exposures: any[], mode: PersistenceMode) {
-  const count = Math.max(1, assets.length)
-  const nodes = assets.map((asset, index) => {
+function buildExposurePayload(assets: any[], inventory: any[], exposures: any[], results: any[], vulnerabilityRows: any[], mode: PersistenceMode) {
+  const evidenceAssets = buildEvidenceBackedAssets(assets, inventory, exposures, results, vulnerabilityRows)
+  const count = Math.max(1, evidenceAssets.length)
+  const rows = evidenceAssets.map((asset) => {
+    const crypto = groupCryptoInventory(inventory.filter((item) => item.asset_id === asset.id))
+    const assetExposures = exposures.filter((item) => item.asset_id === asset.id)
+    const assetResults = results.filter((item) => item.asset_id === asset.id)
+    const assetVulnerabilityRows = vulnerabilityRows.filter((item) => item.asset_id === asset.id)
+    const vulnerabilities = buildAssetVulnerabilities(asset.id, crypto, assetExposures, assetResults, assetVulnerabilityRows)
+    const risk = assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
+    const evidenceItems = vulnerabilities.length > 0 ? vulnerabilities : crypto
+    const algorithms = Array.from(new Set(evidenceItems.map((item: any) => item.algorithm || item.metadata?.algorithm).filter(Boolean).map(String)))
+    return { asset, crypto, vulnerabilities, risk, evidenceItems, algorithms }
+  })
+
+  const riskByAssetId = new Map(rows.map((row) => [String(row.asset.id), row.risk]))
+  const algorithmsByAssetId = new Map(rows.map((row) => [String(row.asset.id), new Set(row.algorithms.map((item) => item.toLowerCase()))]))
+
+  const nodes = rows.map((row, index) => {
+    const { asset, crypto, vulnerabilities, risk, evidenceItems, algorithms } = row
     const angle = (Math.PI * 2 * index) / count - Math.PI / 2
     const radius = count <= 2 ? 20 : 32
-    const crypto = inventory.filter((item) => item.asset_id === asset.id)
-    const assetExposures = exposures.filter((item) => item.asset_id === asset.id)
-    const highest = crypto.find((item) => item.is_vulnerable) || crypto[0]
-    const risk = Math.min(100, asset.metadata?.riskScore ?? assetExposures.length * 25 + crypto.filter((item) => item.is_vulnerable).length * 15)
+    const highest = vulnerabilities[0] || crypto.find((item) => item.is_vulnerable) || crypto[0]
+    const sourceAlgorithms = algorithms.length > 0 ? algorithms : ['Unknown']
+    const connections = rows
+      .filter((candidate) => candidate.asset.id !== asset.id)
+      .map((candidate) => {
+        const currentAlgorithms = algorithmsByAssetId.get(String(asset.id)) || new Set<string>()
+        const candidateAlgorithms = algorithmsByAssetId.get(String(candidate.asset.id)) || new Set<string>()
+        const sharedAlgorithms = Array.from(currentAlgorithms).filter((algorithm) => candidateAlgorithms.has(algorithm)).length
+        const sameType = String(candidate.asset.type || '').toLowerCase() === String(asset.type || '').toLowerCase() ? 0.5 : 0
+        const sharedRisk = risk >= 60 && (riskByAssetId.get(String(candidate.asset.id)) || 0) >= 60 ? 1 : 0
+        return { id: candidate.asset.id, score: sharedAlgorithms + sameType + sharedRisk, risk: riskByAssetId.get(String(candidate.asset.id)) || 0 }
+      })
+      .sort((a, b) => b.score - a.score || b.risk - a.risk)
+      .filter((candidate, candidateIndex) => candidate.score > 0 || candidateIndex < Math.min(2, rows.length - 1))
+      .slice(0, Math.min(4, rows.length - 1))
+      .map((candidate) => candidate.id)
+
     return {
       id: asset.id,
       label: asset.name,
       x: 50 + Math.cos(angle) * radius,
       y: 50 + Math.sin(angle) * radius,
-      size: Math.max(8, Math.min(18, 8 + crypto.length)),
+      size: Math.max(8, Math.min(22, 8 + evidenceItems.length + Math.round(risk / 24))),
       type: asset.type,
       assetType: asset.type,
-      algorithm: highest?.algorithm || 'Unknown',
-      vulnerable: crypto.some((item) => item.is_vulnerable),
+      algorithm: highest?.algorithm || highest?.metadata?.algorithm || sourceAlgorithms[0] || 'Unknown',
+      vulnerable: vulnerabilities.length > 0 || crypto.some((item) => item.is_vulnerable && !item.is_quantum_safe),
       risk,
-      connections: assets.filter((other) => other.id !== asset.id).slice(0, Math.min(3, assets.length - 1)).map((other) => other.id),
-      pqcReadiness: crypto.length === 0 ? 'Unknown / requires manual review' : crypto.every((item) => item.is_quantum_safe) ? 'PQC-ready' : 'Quantum-vulnerable',
-      linkedFindings: crypto.map((item) => ({
+      connections,
+      pqcReadiness: evidenceItems.length === 0 ? 'Unknown / requires manual review' : vulnerabilities.length === 0 && crypto.every((item) => item.is_quantum_safe) ? 'PQC-ready' : 'Quantum-vulnerable',
+      linkedFindings: evidenceItems.map((item: any) => ({
         id: item.id,
-        algorithm: item.algorithm || 'Unknown',
+        algorithm: item.algorithm || item.metadata?.algorithm || 'Unknown',
         category: item.item_type || item.name,
-        status: item.is_quantum_safe ? 'PQC-ready' : item.is_vulnerable ? 'Quantum-vulnerable' : 'Unknown / requires manual review',
+        status: item.is_quantum_safe ? 'PQC-ready' : item.is_vulnerable ? statusFromThreat(threatFromVulnerabilityItem(item), String(item.algorithm || '')) : 'Unknown / requires manual review',
         evidence: item.metadata?.evidence,
+        source: item.metadata?.source || 'scanner-evidence',
+        recommendation: item.metadata?.recommendation || replacementFor(String(item.algorithm || '')),
+        severity: item.exposure_level || item.metadata?.severity,
+        detectedAt: item.discovered_at || item.created_at,
       })),
-      recommendedMigrationPath: highest?.metadata?.pqcReplacement || replacementFor(highest?.algorithm || ''),
+      recommendedMigrationPath: highest?.metadata?.pqcReplacement || highest?.metadata?.recommendation || replacementFor(highest?.algorithm || ''),
     }
   })
 
@@ -2142,12 +2738,17 @@ function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceM
 
 async function buildScannerIntelligence(token: string, userId: string) {
   const client = getDbClient(token)
-  const { assets, inventory, exposures, results, sessions, mode } = await loadScannerTables(client, userId)
-  const cbom = buildCbomPayload(assets as any[], inventory as any[], mode)
-  const assetPayload = buildAssetsPayload(assets as any[], inventory as any[], exposures as any[], mode)
-  const exposure = buildExposurePayload(assets as any[], inventory as any[], exposures as any[], mode)
+  const { assets, inventory, exposures, results, sessions, vulnerabilities, mode } = await loadScannerTables(client, userId)
+  const evidenceAssets = buildEvidenceBackedAssets(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[])
+  const cbom = buildCbomPayload(evidenceAssets as any[], inventory as any[], mode)
+  const assetPayload = buildAssetsPayload(evidenceAssets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode)
+  const exposure = buildExposurePayload(evidenceAssets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode)
   const historyPayload = mergeActiveScannerJobs(userId, buildHistoryPayload(sessions as any[], results as any[], mode))
-  const findings = historyPayload.history.flatMap((entry: any) => entry.findings || [])
+  const historyFindings = historyPayload.history.flatMap((entry: any) => entry.findings || [])
+  const assetFindings = assetPayload.assets.flatMap((asset: any) =>
+    (Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : []).map((item: AssetVulnerabilityItem) => vulnerabilityItemToFinding(item, asset)),
+  )
+  const findings = mergeScannerFindings([...historyFindings, ...assetFindings])
   const latest = historyPayload.history[0] || null
   const severityCounts = {
     critical: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'CRITICAL').length,
@@ -2156,11 +2757,11 @@ async function buildScannerIntelligence(token: string, userId: string) {
     low: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'LOW').length,
     safe: findings.filter((finding: DefensiveFinding) => finding.threatLevel === 'SAFE').length,
   }
-  const riskScore = latest?.summary?.riskScore ?? (
-    assetPayload.assets.length
-      ? Math.round(assetPayload.assets.reduce((sum: number, asset: any) => sum + Number(asset.riskScore || 0), 0) / assetPayload.assets.length)
-      : 0
-  )
+  const assetRiskScore = assetPayload.assets.length
+    ? Math.round(assetPayload.assets.reduce((sum: number, asset: any) => sum + Number(asset.riskScore || 0), 0) / assetPayload.assets.length)
+    : 0
+  const liveRiskScore = Number(latest?.summary?.riskScore)
+  const riskScore = clampRisk(Number.isFinite(liveRiskScore) && liveRiskScore > 0 ? Math.max(liveRiskScore, assetRiskScore) : assetRiskScore)
   const pqcReadiness = cbom.stats.totalComponents > 0
     ? Math.round((cbom.stats.pqcReadyComponents / cbom.stats.totalComponents) * 100)
     : 0
@@ -2335,16 +2936,16 @@ router.get('/assets', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const client = getDbClient(token)
-  const { assets, inventory, exposures, mode } = await loadScannerTables(client, user.id)
-  res.json({ data: buildAssetsPayload(assets as any[], inventory as any[], exposures as any[], mode) })
+  const { assets, inventory, exposures, results, vulnerabilities, mode } = await loadScannerTables(client, user.id)
+  res.json({ data: buildAssetsPayload(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode) })
 })
 
 router.get('/exposure-map', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const client = getDbClient(token)
-  const { assets, inventory, exposures, mode } = await loadScannerTables(client, user.id)
-  res.json({ data: { ...buildExposurePayload(assets as any[], inventory as any[], exposures as any[], mode), edges: [] } })
+  const { assets, inventory, exposures, results, vulnerabilities, mode } = await loadScannerTables(client, user.id)
+  res.json({ data: { ...buildExposurePayload(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode), edges: [] } })
 })
 
 export default router

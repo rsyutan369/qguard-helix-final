@@ -126,6 +126,27 @@ Enterprise-grade telemetry and security analytics.
 - OQS-OpenSSL
 - liboqs
 
+## Cloud Operator Patch Adapters
+
+QGuard Helix includes optional AWS, Azure, and GCP SDK patch adapters for approved connector/operator remediation. They are disabled by default and only run when all safety gates pass:
+
+- `QGUARD_ENABLE_CLOUD_SDK_PATCHES=true` in the operator runtime
+- connector metadata `sdkPatchEnabled=true`
+- tenant administrator approval
+- connector target allowlist match
+- least-privilege connector scopes
+- explicit operator execute request
+
+Install only the SDK packages required by the providers you operate:
+
+```bash
+npm install @aws-sdk/client-elastic-load-balancing-v2 @aws-sdk/client-s3 @aws-sdk/client-kms @aws-sdk/client-rds
+npm install @azure/identity @azure/arm-network @azure/arm-storage
+npm install @google-cloud/storage @google-cloud/compute
+```
+
+The adapters use provider default credential chains such as AWS IAM role/instance profile, Azure DefaultAzureCredential, and GCP Application Default Credentials. Do not paste private cloud keys into QGuard connector records.
+
 ---
 
 # 🚀 Local Development

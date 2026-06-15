@@ -14,6 +14,10 @@ import {
   MANDATORY_PQC_STACK,
   mandatoryPqcStackMetadata,
 } from '@/lib/crypto/mandatory-pqc-stack'
+import {
+  cloudSdkPatchAdapterReadiness,
+  executeCloudConnectorPatch,
+} from './cloud-patch-adapters'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
 
 const router = Router()
@@ -296,6 +300,8 @@ function connectorProviderCapabilities(providerValue: unknown, scopes: string[],
     validate: ['post-remediation-verification', 'functional-testing', 'tls-validation', 'certificate-validation', 'dependency-validation', 'rollback-validation', 'compliance-validation'],
     monitor: ['runtime-crypto-intelligence', 'pqc-adoption-tracking', 'certificate-health', 'crypto-agility', 'trust-fabric-monitoring'],
     executionMode: 'authorized-connector-operator-patcher',
+    sdkPatchAdapters: ['aws-sdk', 'azure-sdk', 'gcp-sdk'],
+    sdkPatchExecutionRequires: ['QGUARD_ENABLE_CLOUD_SDK_PATCHES=true', 'connector.metadata.sdkPatchEnabled=true', 'tenant-admin-approval', 'target-allowlist', 'least-privilege-scopes'],
     requiresCustomerAuthorization: true,
     scopes,
     ...overrides,
@@ -496,6 +502,25 @@ function evidenceAllowedByPolicy(evidence: ScannerEvidenceRecord, policy: Return
   }
 
   return false
+}
+
+function patchTargetAllowedByPolicy(target: string | null, policy: ReturnType<typeof normalizePolicy>, allowEmptyPolicy = false) {
+  if (!target) return false
+  return evidenceAllowedByPolicy({
+    sourceType: 'connector',
+    evidenceType: 'cloud-resource',
+    assetName: target,
+    target,
+    host: cleanString(target, 255),
+    rawEvidence: {
+      resourceId: target,
+      cloudResourceId: target,
+      arn: target.startsWith('arn:') ? target : undefined,
+      azureResourceId: target.startsWith('/subscriptions/') ? target : undefined,
+      gcpResourceName: target,
+    },
+    observedAt: new Date().toISOString(),
+  } as ScannerEvidenceRecord, policy, allowEmptyPolicy)
 }
 
 const RUNTIME_FORBIDDEN_KEYS = new Set([
@@ -2633,6 +2658,10 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
   const missingScopes = connector && Array.isArray(option.requiredScopes)
     ? option.requiredScopes.filter((scope: string) => !connectorScopes.has(scope.toLowerCase()))
     : []
+  const connectorPolicy = normalizePolicy(connector?.policy || {})
+  const targetAllowed = connector ? patchTargetAllowedByPolicy(target, connectorPolicy, false) : !connectorRequired
+  const targetPolicyViolation = connector && target ? !targetAllowed : false
+  const sdkPatchReadiness = connector ? cloudSdkPatchAdapterReadiness(connector) : null
 
   const patchPlan = sanitizeAgentMetadata({
     optionId: option.id,
@@ -2642,6 +2671,8 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
     validation: option.validation,
     requiredScopes: option.requiredScopes,
     missingScopes,
+    targetAllowed,
+    targetPolicyViolation,
     requestedBy: user.id,
     requestedAt: now,
     workflow: REMEDIATION_WORKFLOW_STAGES,
@@ -2684,6 +2715,7 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
       automaticRollbackOnValidationFailure: true,
     },
     dryRun: req.body?.dryRun !== false,
+    sdkPatchReadiness,
     payload: sanitizeAgentMetadata(req.body?.payload),
   })
 
@@ -2693,7 +2725,7 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
     connector_account_id: connectorId || null,
     action_type: actionType,
     asset_class: assetClass,
-    status: missingScopes.length > 0 ? 'blocked' : requestedStatus,
+    status: missingScopes.length > 0 || targetPolicyViolation ? 'blocked' : requestedStatus,
     approval_mode: approvalMode,
     patch_plan: patchPlan,
     evidence: {},
@@ -2735,6 +2767,9 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
         connectorId: connectorId || null,
         target,
         missingScopes,
+        targetAllowed,
+        targetPolicyViolation,
+        sdkPatchReadiness,
         beforeStateRequired: true,
         afterStateRequired: true,
         rollbackRequired: true,
@@ -2774,8 +2809,8 @@ router.post('/remediation/operator-actions', requireUserAuth, async (req: Authed
         migration_id: jobId,
         event_type: 'operator-patch-action-created',
         severity: missingScopes.length > 0 ? 'warning' : 'info',
-        message: `${option.label} action ${missingScopes.length > 0 ? 'blocked by missing connector scopes' : 'created'} for ${job.name || 'HNDL remediation'}.`,
-        metadata: { actionId: action.id, assetClass, actionType, option, connectorId, missingScopes },
+        message: `${option.label} action ${missingScopes.length > 0 ? 'blocked by missing connector scopes' : targetPolicyViolation ? 'blocked by target policy' : 'created'} for ${job.name || 'HNDL remediation'}.`,
+        metadata: { actionId: action.id, assetClass, actionType, option, connectorId, missingScopes, targetAllowed, targetPolicyViolation, sdkPatchReadiness },
         created_at: now,
       })
     }
@@ -2827,14 +2862,20 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
   if (client && action.connector_account_id) {
     const { data } = await client.from('connector_accounts').select('*').eq('id', action.connector_account_id).eq('user_id', user.id).limit(1).maybeSingle()
     connector = data || null
+  } else if (!client && action.connector_account_id) {
+    connector = memoryStore.connectors.find((item) => item.id === action.connector_account_id && item.user_id === user.id) || null
   }
+  const previousPatchPlan = asRecord(action.patch_plan)
+  const previousSecurityGates = asRecord(previousPatchPlan.securityGates)
+  const connectorPolicy = normalizePolicy(connector?.policy || {})
+  const actionTarget = cleanString(previousPatchPlan.target, 500)
+  const targetAllowed = connector ? patchTargetAllowedByPolicy(actionTarget, connectorPolicy, false) : true
 
   const payloadEvidence = Array.isArray(req.body?.evidence) ? req.body.evidence : []
   const normalizedEvidence = payloadEvidence
     .slice(0, 300)
     .map((item: any) => normalizeEvidence(item, connector ? 'connector' : 'scanner-api', null, connector))
     .filter(Boolean) as ScannerEvidenceRecord[]
-  const connectorPolicy = normalizePolicy(connector?.policy || {})
   const evidence = normalizedEvidence.filter((item) => evidenceAllowedByPolicy(item, connectorPolicy, true))
   if (normalizedEvidence.length > 0 && evidence.length === 0) {
     jsonError(res, 403, 'OPERATOR_EVIDENCE_OUT_OF_POLICY', 'Submitted validation evidence is outside connector policy')
@@ -2860,10 +2901,68 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
     }
   }
 
-  const nextStatus = status === 'validated' && validation.passed !== true ? 'validating' : status
+  const executeRequested = req.body?.execute === true || req.body?.executeConnector === true
+  const executionDryRun = req.body?.dryRun === undefined ? previousPatchPlan.dryRun !== false : req.body?.dryRun !== false
+  let cloudPatchResult: Awaited<ReturnType<typeof executeCloudConnectorPatch>> | null = null
+  if (executeRequested || (connector && ['applied', 'applying'].includes(status))) {
+    if (!targetAllowed) {
+      cloudPatchResult = {
+        attempted: false,
+        executed: false,
+        blocked: true,
+        dryRun: executionDryRun,
+        provider: cloudSdkPatchAdapterReadiness(connector).provider,
+        adapter: `${connector?.provider || 'connector'}:${action.action_type || 'unknown'}`,
+        status: 'blocked',
+        reason: 'Patch target is outside this connector policy allowlist.',
+        verification: {
+          migrationSuccessful: false,
+          certificateValid: false,
+          serviceReachable: false,
+          rollbackRequired: false,
+          blocked: true,
+        },
+      }
+    } else {
+      cloudPatchResult = await executeCloudConnectorPatch({
+        action,
+        connector,
+        requestedBy: user.id,
+        status,
+        execute: executeRequested || ['applied', 'applying'].includes(status),
+        dryRun: executionDryRun,
+        now,
+      })
+    }
+
+    const cloudEvidence = (cloudPatchResult.evidence || [])
+      .map((item: any) => normalizeEvidence(item, 'connector', null, connector))
+      .filter(Boolean) as ScannerEvidenceRecord[]
+    if (cloudEvidence.length > 0) {
+      evidenceResult = await processEvidenceBatch(client, user.id, cloudEvidence, `connector-sdk-patch:${connector?.provider || 'cloud'}`, {
+        alertThreshold: connectorPolicy.alertThreshold,
+      })
+    }
+    validation = sanitizeAgentMetadata({
+      ...validation,
+      cloudSdkPatch: cloudPatchResult.verification || null,
+      cloudSdkPatchStatus: cloudPatchResult.status,
+      cloudSdkPatchBlocked: cloudPatchResult.blocked,
+      cloudSdkPatchExecuted: cloudPatchResult.executed,
+      cloudSdkDryRun: cloudPatchResult.dryRun,
+      provider: cloudPatchResult.provider,
+      adapter: cloudPatchResult.adapter,
+      passed: validation.passed === true || (cloudPatchResult.executed && cloudPatchResult.verification?.migrationSuccessful === true),
+      validatedAt: validation.validatedAt || now,
+    })
+  }
+
+  let nextStatus = status === 'validated' && validation.passed !== true ? 'validating' : status
+  if (cloudPatchResult?.status === 'blocked') nextStatus = 'blocked'
+  if (cloudPatchResult?.status === 'failed') nextStatus = 'failed'
+  if (cloudPatchResult?.status === 'dry_run') nextStatus = 'approved'
+  if (cloudPatchResult?.executed) nextStatus = 'applied'
   const approvalRole = userApprovalRole(user)
-  const previousPatchPlan = asRecord(action.patch_plan)
-  const previousSecurityGates = asRecord(previousPatchPlan.securityGates)
   const decisionMetadata = {
     rbacValidation: true,
     tenantAdminApproval: ['approved', 'scheduled', 'rejected'].includes(nextStatus),
@@ -2878,17 +2977,31 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
     status: nextStatus,
     patch_plan: sanitizeAgentMetadata({
       ...previousPatchPlan,
+      targetAllowed,
+      sdkPatchReadiness: connector ? cloudSdkPatchAdapterReadiness(connector) : null,
+      cloudSdkPatchResult,
+      beforeState: cloudPatchResult?.beforeState || previousPatchPlan.beforeState || null,
+      afterState: cloudPatchResult?.afterState || previousPatchPlan.afterState || null,
+      snapshot: cloudPatchResult?.snapshot || previousPatchPlan.snapshot || null,
+      rollbackPlan: cloudPatchResult?.rollbackPlan || previousPatchPlan.rollbackPlan || null,
       securityGates: {
         ...previousSecurityGates,
         ...decisionMetadata,
       },
     }),
-    evidence: sanitizeAgentMetadata({ ...(action.evidence || {}), submittedAt: now, evidenceCount: evidence.length, payload: sanitizeAgentMetadata(req.body?.evidenceMetadata) }),
+    evidence: sanitizeAgentMetadata({
+      ...(action.evidence || {}),
+      submittedAt: now,
+      evidenceCount: evidence.length,
+      payload: sanitizeAgentMetadata(req.body?.evidenceMetadata),
+      cloudSdkPatchEvidence: cloudPatchResult?.evidence || null,
+    }),
     validation,
     metadata: sanitizeAgentMetadata({
       ...(action.metadata || {}),
       lastStatusMessage: cleanString(req.body?.message, 1000),
       lastDecision: decisionMetadata,
+      lastCloudSdkPatchResult: cloudPatchResult,
       rollbackRequired: nextStatus === 'failed' || validation?.rollbackRequired === true || validation?.passed === false,
     }),
     updated_at: now,
@@ -2924,6 +3037,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
         afterState: previousPatchPlan.afterState || null,
         validation,
         evidenceCount: evidence.length,
+        cloudSdkPatchResult,
         status: nextStatus,
         rollbackRequired: nextStatus === 'failed' || validation?.rollbackRequired === true || validation?.passed === false,
       },
@@ -2942,6 +3056,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
             changedBy: user.id,
             approvalRole,
             validation,
+            cloudSdkPatchResult,
             updatedAt: now,
           },
         },
@@ -2962,7 +3077,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
         event_type: `operator-patch-action-${nextStatus}`,
         severity: nextStatus === 'failed' ? 'error' : nextStatus === 'validated' ? 'success' : 'info',
         message: cleanString(req.body?.message, 1000) || `Operator patch action ${nextStatus}.`,
-        metadata: { actionId: action.id, status: nextStatus, validation, evidenceResult },
+        metadata: { actionId: action.id, status: nextStatus, validation, evidenceResult, cloudSdkPatchResult },
         created_at: now,
       })
     }
@@ -2974,6 +3089,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
     data: {
       action,
       validation,
+      cloudSdkPatchResult,
       evidence: evidenceResult ? {
         evidenceCount: evidenceResult.evidenceCount,
         findingCount: evidenceResult.findingCount,

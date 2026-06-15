@@ -121,14 +121,17 @@ export const Hero195 = () => {
   const navigate = useNavigate();
 
   return (
-    <section id="command-center" className="relative overflow-hidden bg-transparent py-24 scroll-mt-24">
+    <section
+      id="command-center"
+      className="relative left-1/2 w-screen -translate-x-1/2 overflow-hidden bg-transparent py-24 scroll-mt-24"
+    >
       <div className="absolute left-1/2 top-0 h-full w-full -translate-x-1/2 overflow-hidden pointer-events-none">
         <div className="absolute left-[-10%] top-[-10%] h-[40%] w-[40%] rounded-full bg-gold/5 blur-[120px]" />
         <div className="absolute bottom-[-10%] right-[-10%] h-[40%] w-[40%] rounded-full bg-gold/5 blur-[120px]" />
       </div>
 
-      <TracingBeam className="px-6">
-        <div className="mx-auto max-w-6xl">
+      <TracingBeam className="max-w-none px-3 sm:px-6 xl:px-8">
+        <div className="mx-auto w-full max-w-[94rem]">
           <div className="mb-16 text-center">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -198,10 +201,10 @@ export const Hero195 = () => {
                     value={feature.value}
                     className="mt-0 outline-none focus-visible:ring-0"
                   >
-                    <Card className="group relative overflow-hidden border-gold/20 bg-cyber-navy/40 backdrop-blur-xl">
-                      <BorderBeam size={300} duration={8} delay={2} />
-                      <div className="grid items-stretch gap-4 p-4 md:p-6 lg:grid-cols-[1.45fr_0.9fr]">
-                        <div className="relative min-h-[20rem] overflow-hidden rounded-2xl border border-white/10 bg-black/40 md:min-h-[24rem] lg:h-full lg:min-h-[32rem]">
+                    <Card className="group relative overflow-hidden rounded-2xl border-gold/25 bg-cyber-navy/55 py-0 shadow-[0_34px_120px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+                      <BorderBeam size={360} duration={8} delay={2} />
+                      <div className="grid items-stretch gap-4 p-3 sm:p-4 md:p-6 lg:grid-cols-[minmax(0,1.55fr)_minmax(22rem,0.9fr)] xl:grid-cols-[minmax(0,1.7fr)_minmax(25rem,0.95fr)] xl:gap-6 xl:p-7">
+                        <div className="relative min-h-[22rem] overflow-hidden rounded-2xl border border-white/10 bg-black/40 md:min-h-[28rem] lg:h-full lg:min-h-[34rem] xl:min-h-[40rem]">
                           <img
                             src={feature.image}
                             alt={feature.alt}
@@ -218,7 +221,7 @@ export const Hero195 = () => {
                           </div>
                         </div>
 
-                        <div className="flex h-full min-h-full flex-col justify-between rounded-2xl border border-white/10 bg-black/35 p-5 text-left md:p-6">
+                        <div className="flex h-full min-h-full flex-col justify-between rounded-2xl border border-white/10 bg-black/35 p-5 text-left md:p-7 xl:p-8">
                           <div>
                             <div className="mb-5 flex items-center justify-between gap-4">
                               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-gold/30 bg-gold/10 text-gold">
@@ -234,7 +237,9 @@ export const Hero195 = () => {
                             <h3 className="mb-3 text-2xl font-black uppercase tracking-tight text-white md:text-3xl">
                               {feature.title}
                             </h3>
-                            <p className="text-sm leading-7 text-white/62">{feature.description}</p>
+                            <p className="text-sm leading-7 text-white/62 xl:text-[15px] xl:leading-8">
+                              {feature.description}
+                            </p>
                           </div>
 
                           <div className="mt-6 grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">

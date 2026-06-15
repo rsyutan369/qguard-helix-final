@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -256,6 +256,11 @@ type ConnectorFormState = {
   scopes: string;
   allowedTargets: string;
   allowedPaths: string;
+  sdkPatchEnabled: boolean;
+  credentialMode: string;
+  region: string;
+  subscriptionId: string;
+  projectId: string;
 };
 
 type OperatorPatchFormState = {
@@ -264,6 +269,8 @@ type OperatorPatchFormState = {
   connectorId: string;
   target: string;
   migrationJobId: string;
+  dryRun: boolean;
+  payloadJson: string;
 };
 
 type OneTimeAgentToken = {
@@ -304,7 +311,33 @@ const AGENT_SCAN_TYPE_OPTIONS = [
   { id: 'runtime', label: 'Runtime', detail: 'Handshake and drift events' },
 ];
 
-const DEFAULT_AGENT_SCAN_TYPES = AGENT_SCAN_TYPE_OPTIONS.map((item) => item.id);
+const ALL_AGENT_SCAN_TYPE_IDS = AGENT_SCAN_TYPE_OPTIONS.map((item) => item.id);
+const DEFAULT_AGENT_SCAN_TYPES: string[] = [];
+const QUANTUM_VULNERABILITY_PATTERN = /\b(quantum[-\s]?vulnerable|hndl|non[-\s]?compliant|weak|legacy|rsa|ecdsa|ecc|ecdh|dsa|diffie|dh\b|ssh-rsa|tls[-\s]?1\.[012]|ssl[-\s]?v[23]|sha[-\s]?1|md5|3des|des|rc4|p-?256|p-?384|secp|x25519|curve25519)\b/i;
+const DETECTED_SCOPE_RULES = [
+  { ids: ['tls'], pattern: /\b(tls|ssl|cipher|ciphersuite|handshake|key exchange|kex|x25519|ecdh|rsa key exchange|openssl|nginx|apache|iis|envoy|haproxy|traefik)\b/i },
+  { ids: ['certificates', 'pki'], pattern: /\b(certificate|cert\b|x\.?509|issuer|chain|csr|pki|trust store|ca\b|private ca|ml-dsa|mldsa|ed25519)\b/i },
+  { ids: ['ssh'], pattern: /\b(ssh|ssh-rsa|ssh-dss|authorized_keys|host key|hostkey|sshd|rsa-sha2)\b/i },
+  { ids: ['packages'], pattern: /\b(package|dependency|manifest|package-lock|requirements|pom\.xml|gradle|nuget|composer|gemfile|sbom)\b/i },
+  { ids: ['libraries'], pattern: /\b(openssl|bouncycastle|wolfssl|libsodium|java crypto|\.net crypto|liboqs|oqs|oqs-provider|provider|crypto library)\b/i },
+  { ids: ['configs'], pattern: /\b(config|configuration|policy|openssl\.cnf|ssl_conf|nginx\.conf|httpd\.conf|web\.config|envoy\.yaml|haproxy\.cfg|crypto policy)\b/i },
+  { ids: ['vpn'], pattern: /\b(vpn|ipsec|ikev2|openvpn|wireguard|ssl vpn|strongswan|racoon)\b/i },
+  { ids: ['kubernetes'], pattern: /\b(kubernetes|k8s|ingress|cert-manager|gateway api|clusterissuer|issuer|namespace|helm|kubectl|openshift)\b/i },
+  { ids: ['service_mesh'], pattern: /\b(service mesh|mtls|istio|linkerd|consul|envoy sidecar|workload policy)\b/i },
+  { ids: ['api_gateway', 'api'], pattern: /\b(api gateway|gateway|kong|apigee|reverse proxy|jwt|api signing|mTLS|webhook signature)\b/i },
+  { ids: ['load_balancer'], pattern: /\b(load balancer|alb|nlb|application gateway|front door|https lb|f5|citrix|big-ip)\b/i },
+  { ids: ['hsm', 'cloud_kms', 'cloud_hsm'], pattern: /\b(hsm|kms|key vault|cloudhsm|pkcs#?11|luna|nshield|vault binding)\b/i },
+  { ids: ['cloud'], pattern: /\b(aws|azure|gcp|google cloud|oracle cloud|oci|alibaba|aliyun|cloud)\b/i },
+  { ids: ['cloud_database', 'database'], pattern: /\b(database|db tls|rds|aurora|cloud sql|azure sql|cosmos|spanner|postgres|mysql|mariadb|mongodb|oracle db|sql server)\b/i },
+  { ids: ['cloud_storage'], pattern: /\b(storage|bucket|blob|object store|s3|gcs|azure storage|kms encryption)\b/i },
+  { ids: ['cloud_load_balancer'], pattern: /\b(cloud load balancer|cloud lb|elb|alb|nlb|front door|cloudfront|https lb)\b/i },
+  { ids: ['web_application', 'public_tls'], pattern: /\b(web app|website|portal|e-commerce|public tls|public endpoint|https endpoint|internet-facing|domain)\b/i },
+  { ids: ['cdn'], pattern: /\b(cdn|cloudflare|akamai|fastly|cloudfront|edge tls|edge certificate)\b/i },
+  { ids: ['saas'], pattern: /\b(saas|okta|entra|auth0|saml|oidc|federation|custom domain|tenant api)\b/i },
+  { ids: ['network_device'], pattern: /\b(network device|firewall|router|switch|appliance|vpn concentrator|f5|citrix)\b/i },
+  { ids: ['containers'], pattern: /\b(container|docker|image|registry|pod|sidecar|runtime image)\b/i },
+  { ids: ['runtime'], pattern: /\b(runtime|telemetry|drift|handshake event|key rotation|unauthorized crypto|crypto event)\b/i },
+];
 const REMEDIATION_WORKFLOW_STAGES = ['DISCOVER', 'ANALYZE', 'APPROVE', 'PATCH', 'VALIDATE', 'MONITOR', 'REPORT'];
 const MANDATORY_QUANTUM_STACK = mandatoryPqcStackMetadata();
 const MANDATORY_QUANTUM_STACK_GROUPS = [
@@ -363,6 +396,92 @@ const LOCAL_COLLECTOR_CLARIFICATIONS = [
   ['Remote remediation?', 'Yes. Collectors can trigger workflows; Cloud/Web/SaaS/Kubernetes changes require least-privilege scopes, approval, snapshots, validation, and audit logs.'],
 ];
 const CONNECTOR_PROVIDER_OPTIONS = ['kubernetes', 'aws', 'azure', 'gcp', 'oracle-cloud', 'alibaba-cloud', 'cloudflare', 'akamai', 'fastly', 'pki', 'database', 'network-device', 'saas', 'okta', 'entra-id', 'auth0', 'custom'];
+
+function orderedKnownScanTypes(scanTypes: Iterable<string>) {
+  const selected = new Set(scanTypes);
+  return ALL_AGENT_SCAN_TYPE_IDS.filter((id) => selected.has(id));
+}
+
+function detectedScopeIdsFromText(text: string) {
+  const selected = new Set<string>();
+  DETECTED_SCOPE_RULES.forEach((rule) => {
+    if (rule.pattern.test(text)) {
+      rule.ids.forEach((id) => selected.add(id));
+    }
+  });
+
+  if (selected.size === 0) {
+    if (/\b(rsa|ecdsa|dsa|signature|signing)\b/i.test(text)) {
+      selected.add('certificates');
+      selected.add('pki');
+    }
+    if (/\b(ecdh|x25519|curve25519|diffie|dh\b|key exchange|kex|kem|tls|ssl)\b/i.test(text)) {
+      selected.add('tls');
+    }
+    if (/\b(sha[-\s]?1|md5|3des|des|rc4|cipher|kdf|hash)\b/i.test(text)) {
+      selected.add('configs');
+      selected.add('libraries');
+    }
+  }
+
+  return selected;
+}
+
+function detectedMitigationScanTypesFromData(
+  findingsInput: DefensiveFinding[],
+  evidenceInput: ScannerEvidenceRow[],
+  alertsInput: ScannerAlertRow[],
+) {
+  const selected = new Set<string>();
+
+  findingsInput.forEach((finding) => {
+    if (finding.threatLevel === 'SAFE') return;
+    const text = [
+      finding.algorithm,
+      finding.category,
+      finding.location,
+      finding.status,
+      finding.description,
+      finding.recommendation,
+      finding.pqcReplacement,
+      finding.evidence,
+      finding.detectionMethod,
+      finding.source,
+    ].filter(Boolean).join(' ');
+
+    if (!finding.pqcReplacement && !QUANTUM_VULNERABILITY_PATTERN.test(text)) return;
+    detectedScopeIdsFromText(text).forEach((id) => selected.add(id));
+  });
+
+  evidenceInput.forEach((evidence) => {
+    const text = [
+      evidence.evidence_type,
+      evidence.asset_name,
+      evidence.observed_algorithm,
+      evidence.host,
+      evidence.file_path,
+    ].filter(Boolean).join(' ');
+
+    if (!QUANTUM_VULNERABILITY_PATTERN.test(text)) return;
+    detectedScopeIdsFromText(text).forEach((id) => selected.add(id));
+  });
+
+  alertsInput.forEach((alert) => {
+    const status = String(alert.status || 'open').toLowerCase();
+    if (['resolved', 'closed', 'suppressed'].includes(status)) return;
+    const text = [
+      alert.severity,
+      alert.category,
+      alert.title,
+      alert.message,
+    ].filter(Boolean).join(' ');
+
+    if (!QUANTUM_VULNERABILITY_PATTERN.test(text)) return;
+    detectedScopeIdsFromText(text).forEach((id) => selected.add(id));
+  });
+
+  return orderedKnownScanTypes(selected);
+}
 
 function sevColor(s: string) {
   switch (s.toLowerCase()) {
@@ -770,6 +889,11 @@ export default function ScannerDashboard() {
     scopes: 'kubernetes:read\nkubernetes:patch:ingress\nkubernetes:patch:cert-manager\nkubernetes:patch:service-mesh\ncloud:read\ncloud:patch:load-balancer\ncloud:patch:kms\nweb:patch:tls\nsaas:patch:certificate',
     allowedTargets: 'https://api.customer.com\nnamespace/default/ingress/customer-api\narn:aws:elasticloadbalancing:region:acct:listener/app/app-lb/listener-id\n/subscriptions/sub-id/resourceGroups/rg/providers/Microsoft.Network/applicationGateways/app-gw',
     allowedPaths: '/etc/kubernetes/manifests\n/repos/customer-api\n/opt/customer-api/config',
+    sdkPatchEnabled: false,
+    credentialMode: 'provider-default-chain',
+    region: 'us-east-1',
+    subscriptionId: '',
+    projectId: '',
   });
   const [operatorPatchForm, setOperatorPatchForm] = useState<OperatorPatchFormState>({
     assetClass: 'kubernetes',
@@ -777,10 +901,30 @@ export default function ScannerDashboard() {
     connectorId: '',
     target: 'https://api.customer.com',
     migrationJobId: '',
+    dryRun: true,
+    payloadJson: '{\n  "sslPolicy": "ELBSecurityPolicy-TLS13-1-2-2021-06",\n  "certificateArn": "",\n  "kmsKeyId": "",\n  "caCertificateIdentifier": "",\n  "sslPolicyName": "",\n  "kmsKeyName": ""\n}',
   });
   const [operatorEvidenceJson, setOperatorEvidenceJson] = useState('[\n  {\n    "evidenceType": "tls-protocol",\n    "assetName": "api.customer.com",\n    "target": "https://api.customer.com",\n    "host": "api.customer.com",\n    "port": 443,\n    "protocol": "TLS",\n    "observedAlgorithm": "TLS-1.3",\n    "rawEvidence": { "operatorValidation": true, "hndlRisk": false }\n  }\n]');
+  const detectedMitigationScanTypes = useMemo(() => {
+    const findingSource = findings.length > 0
+      ? findings
+      : history.flatMap((entry) => normalizeDashboardFindings(entry.findings));
+    return detectedMitigationScanTypesFromData(findingSource, agentEvidence, agentAlerts);
+  }, [agentAlerts, agentEvidence, findings, history]);
+  const detectedMitigationScanTypeKey = detectedMitigationScanTypes.join('|');
+  const detectedAgentScanTypeOptions = useMemo(
+    () => AGENT_SCAN_TYPE_OPTIONS.filter((item) => detectedMitigationScanTypes.includes(item.id)),
+    [detectedMitigationScanTypeKey],
+  );
   const abortRef = useRef<AbortController | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setAgentForm((current) => {
+      if (current.scanTypes.join('|') === detectedMitigationScanTypeKey) return current;
+      return { ...current, scanTypes: detectedMitigationScanTypes };
+    });
+  }, [detectedMitigationScanTypeKey]);
 
   const isRunning = status === 'queued' || status === 'running' || status === 'analyzing';
 
@@ -1342,9 +1486,9 @@ export default function ScannerDashboard() {
     intervalSeconds: 60,
     allowedTargets: connectorForm.allowedTargets.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     allowedPaths: connectorForm.allowedPaths.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-    scanTypes: DEFAULT_AGENT_SCAN_TYPES,
+    scanTypes: agentForm.scanTypes,
     alertThreshold: 'moderate',
-  }), [connectorForm.allowedPaths, connectorForm.allowedTargets]);
+  }), [agentForm.scanTypes, connectorForm.allowedPaths, connectorForm.allowedTargets]);
 
   const handleCreateConnector = useCallback(async () => {
     const headers = authHeaders();
@@ -1367,11 +1511,19 @@ export default function ScannerDashboard() {
             ...Object.fromEntries(scopes.map((scope) => [scope, true])),
             localCollectorRelationship: 'Collectors discover and validate local/external assets; remote mutation uses connector credentials and operator approval.',
             supportedEnvironments: SUPPORTED_ENVIRONMENT_GROUPS.map((group) => group.title),
+            sdkPatchEnabled: connectorForm.sdkPatchEnabled,
+            sdkPatchAdapters: ['aws-sdk', 'azure-sdk', 'gcp-sdk'],
           },
           policy: connectorPolicyFromForm(),
           metadata: {
             source: 'dashboard-operator-patch-workflow',
             connectorMode: 'operator-approved',
+            sdkPatchEnabled: connectorForm.sdkPatchEnabled,
+            credentialMode: connectorForm.credentialMode,
+            region: connectorForm.region,
+            awsRegion: connectorForm.region,
+            subscriptionId: connectorForm.subscriptionId,
+            projectId: connectorForm.projectId,
             supportedEnvironments: SUPPORTED_ENVIRONMENT_GROUPS.map((group) => group.title),
             credentialBoundary: 'least-privilege customer-authorized provider credentials',
           },
@@ -1399,6 +1551,12 @@ export default function ScannerDashboard() {
     setAgentsLoading(true);
     setAgentsError(null);
     try {
+      let patchPayload: Record<string, unknown> = {};
+      try {
+        patchPayload = operatorPatchForm.payloadJson.trim() ? JSON.parse(operatorPatchForm.payloadJson) : {};
+      } catch {
+        throw new Error('Operator patch payload must be valid JSON.');
+      }
       const response = await fetch('/api/v1/agent-scanner/remediation/operator-actions', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
@@ -1410,9 +1568,11 @@ export default function ScannerDashboard() {
           jobId: operatorPatchForm.migrationJobId || undefined,
           approvalMode: 'operator_approved',
           status: 'planned',
+          dryRun: operatorPatchForm.dryRun,
           payload: {
             createdFrom: 'Agent Collector Scanners',
             tenant: user?.id,
+            ...patchPayload,
           },
         }),
       });
@@ -1428,7 +1588,7 @@ export default function ScannerDashboard() {
     }
   }, [authHeaders, fetchAgents, operatorPatchForm, showToast, user?.id]);
 
-  const handleUpdateOperatorAction = useCallback(async (actionId: string, nextStatus: string) => {
+  const handleUpdateOperatorAction = useCallback(async (actionId: string, nextStatus: string, options: { execute?: boolean; dryRun?: boolean } = {}) => {
     const headers = authHeaders();
     if (!headers) return;
     setAgentsLoading(true);
@@ -1439,19 +1599,30 @@ export default function ScannerDashboard() {
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           status: nextStatus,
+          execute: options.execute === true,
+          dryRun: options.dryRun ?? operatorPatchForm.dryRun,
           message: `Operator marked patch action as ${nextStatus}.`,
         }),
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error?.message || 'Unable to update operator action');
       await fetchAgents();
-      showToast(`Patch action marked ${nextStatus}.`);
+      const cloudResult = json?.data?.cloudSdkPatchResult;
+      if (cloudResult?.status === 'blocked') {
+        showToast(`Cloud SDK patch blocked: ${cloudResult.reason || 'review connector readiness'}`);
+      } else if (cloudResult?.status === 'dry_run') {
+        showToast('Cloud SDK dry run completed; no provider mutation was applied.');
+      } else if (cloudResult?.executed) {
+        showToast('Cloud SDK patch executed and evidence was recorded.');
+      } else {
+        showToast(`Patch action marked ${nextStatus}.`);
+      }
     } catch (err) {
       setAgentsError(err instanceof Error ? err.message : 'Operator action update failed');
     } finally {
       setAgentsLoading(false);
     }
-  }, [authHeaders, fetchAgents, showToast]);
+  }, [authHeaders, fetchAgents, operatorPatchForm.dryRun, showToast]);
 
   const handleValidateOperatorAction = useCallback(async (actionId: string) => {
     const headers = authHeaders();
@@ -1790,6 +1961,7 @@ export default function ScannerDashboard() {
       return;
     }
     const policy = normalizeAgentPolicy(selectedAgent.policy);
+    const matchingScanTypes = policy.scanTypes.filter((scanType) => detectedMitigationScanTypes.includes(scanType));
     setAgentForm((current) => ({
       ...current,
       name: selectedAgent.name || current.name,
@@ -1798,11 +1970,11 @@ export default function ScannerDashboard() {
       allowedTargets: policy.allowedTargets.join('\n'),
       allowedPaths: policy.allowedPaths.join('\n'),
       intervalSeconds: String(policy.intervalSeconds),
-      scanTypes: policy.scanTypes,
+      scanTypes: matchingScanTypes.length > 0 ? matchingScanTypes : detectedMitigationScanTypes,
       alertThreshold: policy.alertThreshold,
     }));
     showToast('Selected agent policy loaded into settings.');
-  }, [selectedAgent, showToast]);
+  }, [detectedMitigationScanTypeKey, selectedAgent, showToast]);
 
   const handleApplyScannerSettings = useCallback(async () => {
     const headers = authHeaders();
@@ -2798,8 +2970,12 @@ npm run agent:watch`;
                       {['low', 'moderate', 'medium', 'high', 'critical'].map((severity) => <option key={severity} value={severity}>{severity}</option>)}
                     </select>
                   </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {AGENT_SCAN_TYPE_OPTIONS.map((scanType) => (
+                  <div className="rounded-lg border border-gold/10 bg-gold/[0.035] p-3 text-[10px] leading-relaxed text-white/45">
+                    <span className="font-black uppercase tracking-wider text-gold/80">Detected Mitigation Scope:</span> {detectedAgentScanTypeOptions.length > 0 ? detectedAgentScanTypeOptions.map((item) => item.label).join(', ') : 'No quantum-vulnerable findings detected yet.'}
+                  </div>
+                  {detectedAgentScanTypeOptions.length > 0 ? (
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    {detectedAgentScanTypeOptions.map((scanType) => (
                       <label key={scanType.id} className="flex items-start gap-2 rounded-lg border border-gold/10 bg-white/[0.02] px-3 py-2 text-white/50 cursor-pointer">
                         <input
                           type="checkbox"
@@ -2818,7 +2994,12 @@ npm run agent:watch`;
                         </span>
                       </label>
                     ))}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-white/10 bg-white/[0.015] p-5 text-center text-[10px] font-black uppercase tracking-widest text-white/25">
+                      Run or load a scan with quantum-vulnerable findings to auto-select remediation scopes
+                    </div>
+                  )}
                   <button
                     onClick={handleCreateAgent}
                     disabled={agentsLoading || !agentForm.name.trim() || agentForm.scanTypes.length === 0}
@@ -2963,6 +3144,46 @@ npm run agent:watch`;
                 <div className="rounded-lg border border-gold/10 bg-gold/[0.04] p-3 text-[10px] leading-relaxed text-white/45">
                   <span className="font-black uppercase tracking-wider text-gold/80">Connector Credentials:</span> register least-privilege provider scopes for cloud, Kubernetes, web, SaaS, PKI, database, or network device APIs. Do not paste private keys into migration jobs; use the tenant connector or approved operator patch action.
                 </div>
+                <label className="flex items-start gap-3 rounded-lg border border-green-400/10 bg-green-400/[0.035] p-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={connectorForm.sdkPatchEnabled}
+                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, sdkPatchEnabled: e.target.checked }))}
+                    className="mt-1 accent-green-400"
+                  />
+                  <span>
+                    <span className="block text-[9px] font-black uppercase tracking-wider text-green-300/80">Enable Cloud SDK Patch Execution</span>
+                    <span className="mt-1 block text-[10px] leading-relaxed text-white/45">
+                      Uses AWS/Azure/GCP default credential chains in the operator runtime. Requires server env QGUARD_ENABLE_CLOUD_SDK_PATCHES=true, admin approval, connector scopes, and target allowlist.
+                    </span>
+                  </span>
+                </label>
+                <div className="grid md:grid-cols-2 gap-2">
+                  <input
+                    value={connectorForm.region}
+                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, region: e.target.value }))}
+                    placeholder="AWS region, e.g. us-east-1"
+                    className="w-full border rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none glass-panel"
+                  />
+                  <input
+                    value={connectorForm.credentialMode}
+                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, credentialMode: e.target.value }))}
+                    placeholder="credential mode"
+                    className="w-full border rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none glass-panel"
+                  />
+                  <input
+                    value={connectorForm.subscriptionId}
+                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, subscriptionId: e.target.value }))}
+                    placeholder="Azure subscription ID"
+                    className="w-full border rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none glass-panel"
+                  />
+                  <input
+                    value={connectorForm.projectId}
+                    onChange={(e) => setConnectorForm((prev) => ({ ...prev, projectId: e.target.value }))}
+                    placeholder="GCP project ID"
+                    className="w-full border rounded-lg px-3 py-2.5 text-xs text-white focus:outline-none glass-panel"
+                  />
+                </div>
                 <textarea
                   value={connectorForm.allowedTargets}
                   onChange={(e) => setConnectorForm((prev) => ({ ...prev, allowedTargets: e.target.value }))}
@@ -3062,6 +3283,26 @@ npm run agent:watch`;
                     placeholder="Optional migration job ID from PQC Orchestration"
                     className="w-full border rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none glass-panel"
                   />
+                  <label className="flex items-start gap-3 rounded-lg border border-green-400/10 bg-green-400/[0.035] p-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={operatorPatchForm.dryRun}
+                      onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, dryRun: e.target.checked }))}
+                      className="mt-1 accent-green-400"
+                    />
+                    <span>
+                      <span className="block text-[9px] font-black uppercase tracking-wider text-green-300/80">Dry Run First</span>
+                      <span className="mt-1 block text-[10px] leading-relaxed text-white/45">
+                        Keep enabled to verify SDK credentials, snapshots, and target policy without mutating cloud resources. Disable only for an approved change window.
+                      </span>
+                    </span>
+                  </label>
+                  <textarea
+                    value={operatorPatchForm.payloadJson}
+                    onChange={(e) => setOperatorPatchForm((prev) => ({ ...prev, payloadJson: e.target.value }))}
+                    className="w-full h-32 border rounded-lg p-3 text-[10px] font-mono text-white focus:outline-none resize-none glass-panel"
+                    placeholder="Provider-specific patch payload JSON"
+                  />
                   {selectedPatchOption && (
                     <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
                       <div className="text-xs font-bold text-white/75">{selectedPatchOption.summary}</div>
@@ -3159,11 +3400,18 @@ npm run agent:watch`;
                               </div>
                             ))}
                           </div>
+                          {action.patch_plan?.cloudSdkPatchResult && (
+                            <div className="mt-2 rounded border border-cyan-400/10 bg-cyan-400/[0.035] p-2 text-[9px] leading-relaxed text-white/50">
+                              <span className="font-black uppercase tracking-wider text-cyan-300/80">Cloud SDK:</span> {String(action.patch_plan.cloudSdkPatchResult.status || 'pending')} via {String(action.patch_plan.cloudSdkPatchResult.adapter || 'provider adapter')}
+                              {action.patch_plan.cloudSdkPatchResult.reason ? ` - ${String(action.patch_plan.cloudSdkPatchResult.reason)}` : ''}
+                            </div>
+                          )}
                           <div className="mt-3 flex flex-wrap gap-1.5">
                             <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'approved')} className="px-2 py-1.5 rounded border border-gold/20 text-[9px] font-black uppercase tracking-wider text-gold hover:bg-gold/10">Approve</button>
                             <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'scheduled')} className="px-2 py-1.5 rounded border border-yellow-400/20 text-[9px] font-black uppercase tracking-wider text-yellow-300 hover:bg-yellow-400/10">Schedule</button>
                             <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'rejected')} className="px-2 py-1.5 rounded border border-white/15 text-[9px] font-black uppercase tracking-wider text-white/55 hover:bg-white/[0.05]">Reject</button>
-                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'applied')} className="px-2 py-1.5 rounded border border-cyan-400/20 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:bg-cyan-400/10">Applied</button>
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'applying', { execute: true, dryRun: true })} className="px-2 py-1.5 rounded border border-cyan-400/20 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:bg-cyan-400/10">Dry Run</button>
+                            <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'applied', { execute: true, dryRun: false })} className="px-2 py-1.5 rounded border border-green-400/20 text-[9px] font-black uppercase tracking-wider text-green-300 hover:bg-green-400/10">Execute</button>
                             <button type="button" onClick={() => handleValidateOperatorAction(action.id)} className="px-2 py-1.5 rounded border border-green-400/20 text-[9px] font-black uppercase tracking-wider text-green-300 hover:bg-green-400/10">Validate</button>
                             <button type="button" onClick={() => handleUpdateOperatorAction(action.id, 'failed')} className="px-2 py-1.5 rounded border border-red-400/20 text-[9px] font-black uppercase tracking-wider text-red-300 hover:bg-red-400/10">Fail</button>
                           </div>
@@ -3522,8 +3770,12 @@ npm run agent:watch`;
 
                 <div className="md:col-span-2 space-y-2">
                   <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Scan Types</span>
-                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
-                    {AGENT_SCAN_TYPE_OPTIONS.map((scanType) => (
+                  <div className="rounded border border-gold/10 bg-gold/[0.035] p-3 text-[10px] leading-relaxed text-white/45">
+                    <span className="font-black uppercase tracking-wider text-gold/80">Detected Mitigation Scope:</span> {detectedAgentScanTypeOptions.length > 0 ? detectedAgentScanTypeOptions.map((item) => item.label).join(', ') : 'No quantum-vulnerable findings detected yet.'}
+                  </div>
+                  {detectedAgentScanTypeOptions.length > 0 ? (
+                    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2">
+                    {detectedAgentScanTypeOptions.map((scanType) => (
                       <label key={scanType.id} className="flex items-start gap-2 rounded border border-gold/10 bg-white/[0.02] px-3 py-2 text-white/60">
                         <input
                           type="checkbox"
@@ -3542,7 +3794,12 @@ npm run agent:watch`;
                         </span>
                       </label>
                     ))}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="rounded border border-dashed border-white/10 bg-white/[0.015] p-5 text-center text-[10px] font-black uppercase tracking-widest text-white/25">
+                      No detected remediation scopes to apply
+                    </div>
+                  )}
                 </div>
 
                 <label className="space-y-2">

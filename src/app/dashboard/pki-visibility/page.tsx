@@ -1068,15 +1068,15 @@ export default function PkiVisibilityPage() {
           </Panel>
         </section>
 
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-          <Panel className="p-5 xl:col-span-7">
+        <section className="space-y-4">
+          <Panel className="p-5">
             <SectionTitle suffix={<a href="/dashboard/pki" className="text-xs font-bold text-blue-300 transition hover:text-gold">Manage PKI</a>}>
               Certificate Inventory
             </SectionTitle>
             <InventoryTable rows={snapshot.inventory} />
           </Panel>
 
-          <Panel className="p-5 xl:col-span-5">
+          <Panel className="p-5">
             <SectionTitle suffix={<a href="/dashboard/quantum-risk-scoring" className="text-xs font-bold text-blue-300 transition hover:text-gold">Risk scoring</a>}>
               PKI Risk Alerts
             </SectionTitle>

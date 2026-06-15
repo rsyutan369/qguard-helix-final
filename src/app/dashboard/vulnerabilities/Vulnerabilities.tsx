@@ -28,8 +28,25 @@ import { cn } from '@/lib/utils'
 type LoadState = 'loading' | 'success' | 'error'
 type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
 
+type VulnerabilityEvidence = {
+  id: string
+  label: string
+  description?: string
+  algorithm?: string
+  source?: string
+  severity?: Severity
+  detectedAt?: string | null
+}
+
 type VulnerabilityRow = {
   id: string
+  sourceId?: string
+  assetId?: string | null
+  source?: string
+  sourceIds?: string[]
+  scanTarget?: string | null
+  canonicalFingerprint?: string
+  rootCause?: string
   title: string
   description: string
   asset: string
@@ -42,6 +59,10 @@ type VulnerabilityRow = {
   status: string
   algorithm: string
   remediation: string
+  remediationHref?: string
+  inspectHref?: string
+  evidence?: VulnerabilityEvidence[]
+  evidenceCount?: number
 }
 
 type VulnerabilityMetrics = {
@@ -101,6 +122,14 @@ type VulnerabilitySnapshot = {
   scanStatus: ScanStatus
 }
 
+type ScanActionState = {
+  status: 'idle' | 'running' | 'success' | 'error'
+  progress: number
+  message: string
+}
+
+const PAGE_SIZE = 5
+
 const EMPTY_SNAPSHOT: VulnerabilitySnapshot = {
   generatedAt: null,
   metrics: {
@@ -132,6 +161,12 @@ const EMPTY_SNAPSHOT: VulnerabilitySnapshot = {
     latestStatus: 'not_started',
     telemetryEvents: 0,
   },
+}
+
+const IDLE_SCAN_ACTION: ScanActionState = {
+  status: 'idle',
+  progress: 0,
+  message: '',
 }
 
 const RED = '#EF4444'
@@ -198,6 +233,65 @@ function severityRank(severity: string) {
   return 1
 }
 
+function remediationRouteFor(row: VulnerabilityRow) {
+  const text = [
+    row.title,
+    row.description,
+    row.algorithm,
+    row.type,
+    row.source,
+    row.remediation,
+  ].map((value) => String(value || '').toLowerCase()).join(' ')
+
+  if (/hndl|harvest|runtime|shadow|downgrade/.test(text)) return '/dashboard/live-migration'
+  if (/certificate|cert|pki|x509|pinning|issuer|subject/.test(text)) return '/dashboard/certificate-telemetry'
+  if (/tls|ssl|cipher|protocol|handshake/.test(text)) return '/dashboard/tls-orchestrator'
+  if (/library|dependency|component|package|cve|repo|github|source/.test(text)) return '/dashboard/migration-planner'
+  if (/random|rng|entropy/.test(text)) return '/dashboard/qrng'
+  if (/api|gateway/.test(text)) return '/dashboard/api-encryption'
+  if (/cloud|kms|bucket|storage/.test(text)) return '/dashboard/cloud'
+  return '/dashboard/pqc-orchestration'
+}
+
+function remediationHref(row: VulnerabilityRow) {
+  if (row.remediationHref) return row.remediationHref
+  const params = new URLSearchParams({
+    source: 'vulnerabilities',
+    action: 'remediate',
+    findingId: row.sourceId || row.id,
+    asset: row.asset,
+    severity: row.severity,
+  })
+  if (row.assetId) params.set('assetId', row.assetId)
+  if (row.algorithm) params.set('algorithm', row.algorithm)
+  if (row.type) params.set('type', row.type)
+  if (row.source) params.set('findingSource', row.source)
+  return `${remediationRouteFor(row)}?${params.toString()}`
+}
+
+function evidenceHref(row: VulnerabilityRow) {
+  const params = new URLSearchParams({
+    source: 'vulnerabilities',
+    findingId: row.sourceId || row.id,
+    asset: row.asset,
+  })
+  if (row.assetId) params.set('assetId', row.assetId)
+  if (row.algorithm) params.set('algorithm', row.algorithm)
+  return `/dashboard/cbom?${params.toString()}`
+}
+
+function scanTargetForRow(row: VulnerabilityRow) {
+  const candidates = [row.scanTarget, row.asset]
+  for (const value of candidates) {
+    const target = String(value || '').trim()
+    if (!target || /^unassigned asset$/i.test(target)) continue
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return target
+    if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/i.test(target)) return target
+    if (/^[a-z0-9.-]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(target)) return target
+  }
+  return null
+}
+
 function useVulnerabilitySnapshot() {
   const { session, user } = useAuth()
   const token = session?.access_token
@@ -205,8 +299,10 @@ function useVulnerabilitySnapshot() {
   const [state, setState] = useState<LoadState>('loading')
   const [error, setError] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
+  const [scanAction, setScanAction] = useState<ScanActionState>(IDLE_SCAN_ACTION)
   const streamsRef = useRef<EventSource[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scanAbortRef = useRef<AbortController | null>(null)
 
   const closeStreams = useCallback(() => {
     for (const stream of streamsRef.current) stream.close()
@@ -237,6 +333,109 @@ function useVulnerabilitySnapshot() {
     }
   }, [token])
 
+  const runNewScan = useCallback(async (targets: string[]) => {
+    if (!token) {
+      setScanAction({
+        status: 'error',
+        progress: 0,
+        message: 'Sign in again to run a scan.',
+      })
+      return
+    }
+
+    const uniqueTargets = Array.from(new Set(targets.map((target) => target.trim()).filter(Boolean))).slice(0, 25)
+    if (uniqueTargets.length === 0) {
+      setScanAction({
+        status: 'error',
+        progress: 0,
+        message: 'No scannable asset target found on this vulnerability page.',
+      })
+      return
+    }
+
+    scanAbortRef.current?.abort()
+    const controller = new AbortController()
+    scanAbortRef.current = controller
+    setScanAction({
+      status: 'running',
+      progress: 0,
+      message: `Starting scan for ${uniqueTargets.length} asset${uniqueTargets.length === 1 ? '' : 's'}...`,
+    })
+
+    try {
+      const params = new URLSearchParams({
+        authorized: 'true',
+        targets: uniqueTargets.join(','),
+      })
+      const response = await fetch(`/api/v1/scanner/stream?${params.toString()}`, {
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => '')
+        let message = `Scanner returned HTTP ${response.status}`
+        try {
+          const parsed = JSON.parse(errorBody)
+          message = parsed?.error?.message || parsed?.message || message
+        } catch {
+          if (errorBody.trim()) message = errorBody.trim()
+        }
+        throw new Error(message)
+      }
+
+      if (!response.body) throw new Error('Scanner stream did not return a response body.')
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      const processFrame = (frame: string) => {
+        const dataLine = frame.split('\n').find((line) => line.startsWith('data:'))
+        if (!dataLine) return
+        try {
+          const event = JSON.parse(dataLine.slice(5).trim())
+          const progress = typeof event.progress === 'number' ? Math.max(0, Math.min(100, Math.round(event.progress))) : undefined
+          const message = String(event.message || event.type || 'Scanner telemetry received')
+          if (event.type === 'scan-complete' || event.status === 'completed') {
+            setScanAction({ status: 'success', progress: 100, message })
+          } else if (event.type === 'scan-failed' || event.status === 'failed') {
+            setScanAction({ status: 'error', progress: progress ?? 100, message })
+          } else {
+            setScanAction((current) => ({
+              status: 'running',
+              progress: progress ?? current.progress,
+              message,
+            }))
+          }
+        } catch {
+          // Ignore malformed SSE frames; the next persisted snapshot is authoritative.
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() || ''
+        frames.forEach(processFrame)
+      }
+      if (buffer.trim()) processFrame(buffer)
+
+      setScanAction((current) => current.status === 'error'
+        ? current
+        : { status: 'success', progress: 100, message: 'Scan completed and telemetry is refreshing.' })
+      await fetchSnapshot()
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return
+      const message = err instanceof Error ? err.message : 'Unable to start scanner stream.'
+      setScanAction({ status: 'error', progress: 0, message })
+    } finally {
+      if (scanAbortRef.current === controller) scanAbortRef.current = null
+    }
+  }, [fetchSnapshot, token])
+
   const queueRefresh = useCallback(() => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
     refreshTimerRef.current = setTimeout(() => {
@@ -247,6 +446,7 @@ function useVulnerabilitySnapshot() {
 
   useEffect(() => () => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
+    scanAbortRef.current?.abort()
   }, [])
 
   useEffect(() => {
@@ -347,7 +547,7 @@ function useVulnerabilitySnapshot() {
     }
   }, [token, queueRefresh, closeStreams])
 
-  return { snapshot, state, error, sseConnected, refresh: fetchSnapshot }
+  return { snapshot, state, error, sseConnected, refresh: fetchSnapshot, runNewScan, scanAction }
 }
 
 function GlassPanel({ children, className }: { children: ReactNode; className?: string }) {
@@ -513,13 +713,30 @@ function exportJson(name: string, data: unknown) {
   URL.revokeObjectURL(url)
 }
 
+function ActionButton({ href, label, icon: Icon }: { href: string; label: string; icon: LucideIcon }) {
+  return (
+    <a
+      href={href}
+      title={label}
+      aria-label={label}
+      className="group/action relative flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 transition hover:border-gold/40 hover:text-gold"
+    >
+      <Icon className="h-4 w-4" />
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 hidden -translate-x-1/2 whitespace-nowrap rounded border border-gold/25 bg-[#07101D] px-2 py-1 text-[10px] font-black uppercase tracking-[0.08em] text-gold shadow-xl group-hover/action:block">
+        {label}
+      </span>
+    </a>
+  )
+}
+
 export default function Vulnerabilities() {
-  const { snapshot, state, error, sseConnected, refresh } = useVulnerabilitySnapshot()
+  const { snapshot, state, error, sseConnected, refresh, runNewScan, scanAction } = useVulnerabilitySnapshot()
   const [severityFilter, setSeverityFilter] = useState<'all' | Severity>('all')
   const [assetTypeFilter, setAssetTypeFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
 
   const metrics = snapshot.metrics
   const filteredRows = useMemo(() => snapshot.vulnerabilities.filter((row) => {
@@ -527,16 +744,48 @@ export default function Vulnerabilities() {
     if (assetTypeFilter !== 'all' && row.assetType !== assetTypeFilter) return false
     if (typeFilter !== 'all' && row.type !== typeFilter) return false
     if (environmentFilter !== 'all' && row.environment !== environmentFilter) return false
-    const haystack = `${row.title} ${row.description} ${row.asset} ${row.type} ${row.algorithm}`.toLowerCase()
+    const evidenceText = (row.evidence || []).map((item) => `${item.label} ${item.description || ''} ${item.algorithm || ''} ${item.source || ''}`).join(' ')
+    const haystack = `${row.title} ${row.description} ${row.asset} ${row.type} ${row.algorithm} ${row.source || ''} ${evidenceText}`.toLowerCase()
     return haystack.includes(query.toLowerCase())
   }), [assetTypeFilter, environmentFilter, query, severityFilter, snapshot.vulnerabilities, typeFilter])
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const pageStart = filteredRows.length ? (safePage - 1) * PAGE_SIZE : 0
+  const pageEnd = Math.min(pageStart + PAGE_SIZE, filteredRows.length)
+  const pagedRows = useMemo(() => filteredRows.slice(pageStart, pageEnd), [filteredRows, pageEnd, pageStart])
+  const visiblePages = useMemo(() => {
+    return Array.from({ length: totalPages }, (_, index) => index + 1).filter((pageNumber) => (
+      totalPages <= 7 ||
+      pageNumber === 1 ||
+      pageNumber === totalPages ||
+      Math.abs(pageNumber - safePage) <= 1
+    ))
+  }, [safePage, totalPages])
+  const scanTargets = useMemo(() => {
+    const targets = snapshot.vulnerabilities
+      .map(scanTargetForRow)
+      .filter((target): target is string => Boolean(target))
+    return Array.from(new Set(targets)).slice(0, 25)
+  }, [snapshot.vulnerabilities])
 
   const metricTrend = useMemo(() => snapshot.trend.map((point) => point.critical + point.high + point.medium + point.low + point.info), [snapshot.trend])
   const criticalTrend = useMemo(() => snapshot.trend.map((point) => point.critical), [snapshot.trend])
   const legacyTrend = useMemo(() => snapshot.trend.map((point) => point.high + point.medium), [snapshot.trend])
   const generatedAt = snapshot.generatedAt ? new Date(snapshot.generatedAt) : new Date()
 
-  const scanPct = snapshot.scanStatus.latestStatus === 'completed' ? 100 : snapshot.scanStatus.activeScans ? 66 : snapshot.vulnerabilities.length ? 100 : 0
+  const scanPct = scanAction.status === 'running'
+    ? Math.max(5, scanAction.progress)
+    : snapshot.scanStatus.latestStatus === 'completed' ? 100 : snapshot.scanStatus.activeScans ? 66 : snapshot.vulnerabilities.length ? 100 : 0
+  const scanButtonLabel = scanAction.status === 'running' ? `Scanning ${scanAction.progress}%` : 'Run New Scan'
+
+  useEffect(() => {
+    setPage(1)
+  }, [assetTypeFilter, environmentFilter, query, severityFilter, typeFilter])
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   return (
     <main className="min-h-screen space-y-4 bg-[#02070E] p-3 text-white md:p-4">
@@ -617,8 +866,10 @@ export default function Vulnerabilities() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/6">
-                    {filteredRows.slice(0, 5).map((row) => {
+                    {pagedRows.map((row) => {
                       const detected = dateTime(row.detectedAt)
+                      const rowRemediationHref = remediationHref(row)
+                      const rowInspectHref = row.inspectHref || `/dashboard/crypto-exposure?${new URLSearchParams({ source: 'vulnerabilities', findingId: row.sourceId || row.id }).toString()}`
                       return (
                         <tr key={row.id} className="transition hover:bg-gold/[0.04]">
                           <td className="px-4 py-4">
@@ -632,6 +883,27 @@ export default function Vulnerabilities() {
                                   <span className={cn('rounded px-2 py-0.5 font-mono text-[9px] font-black uppercase', severityClass(row.severity))}>{row.severity}</span>
                                 </div>
                                 <div className="mt-1 max-w-xl text-xs leading-relaxed text-white/50">{row.description}</div>
+                                {row.evidenceCount ? (
+                                  <div className="mt-2 flex max-w-xl flex-wrap items-center gap-1.5">
+                                    <span className="rounded border border-white/10 bg-white/[0.035] px-2 py-0.5 font-mono text-[9px] font-black uppercase tracking-[0.08em] text-white/38">
+                                      Evidence
+                                    </span>
+                                    {(row.evidence || []).slice(0, 4).map((item) => (
+                                      <span
+                                        key={item.id || item.label}
+                                        title={item.description || item.label}
+                                        className="max-w-[220px] truncate rounded border border-red-500/18 bg-red-500/[0.06] px-2 py-0.5 font-mono text-[10px] text-red-200/85"
+                                      >
+                                        {item.label}
+                                      </span>
+                                    ))}
+                                    {(row.evidenceCount || 0) > 4 ? (
+                                      <span className="rounded border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-white/42">
+                                        +{numberFmt((row.evidenceCount || 0) - 4)} more
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
                           </td>
@@ -645,21 +917,32 @@ export default function Vulnerabilities() {
                             <div className="mt-1">{detected.time}</div>
                           </td>
                           <td className="px-4 py-4">
-                            <span className={cn('rounded border px-4 py-2 font-mono text-[10px] font-black uppercase', row.status === 'Remediated' ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300' : 'border-red-500/40 bg-red-500/10 text-red-300')}>
+                            {row.status === 'Remediated' ? (
+                              <span
+                                title="Finding fixed"
+                                className="inline-flex rounded border border-emerald-500/35 bg-emerald-500/10 px-4 py-2 font-mono text-[10px] font-black uppercase text-emerald-300"
+                              >
+                                Fixed
+                              </span>
+                            ) : (
+                              <a
+                                href={rowRemediationHref}
+                                title={`Remediate ${row.title}`}
+                                aria-label={`Remediate ${row.title}`}
+                                className="inline-flex rounded border border-red-500/40 bg-red-500/10 px-4 py-2 font-mono text-[10px] font-black uppercase text-red-300 transition hover:border-gold/60 hover:bg-gold/10 hover:text-gold"
+                              >
+                                Remediate
+                              </a>
+                            )}
+                            <span className="sr-only">
                               {row.status === 'Remediated' ? 'Fixed' : 'Remediate'}
                             </span>
                           </td>
                           <td className="px-4 py-4">
                             <div className="flex items-center gap-2">
-                              <a href="/dashboard/crypto-exposure" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`View ${row.title}`}>
-                                <Eye className="h-4 w-4" />
-                              </a>
-                              <a href="/dashboard/pqc-orchestration" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Plan remediation for ${row.title}`}>
-                                <BarChart3 className="h-4 w-4" />
-                              </a>
-                              <button type="button" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 bg-black/20 text-white/55 hover:border-gold/40 hover:text-gold" aria-label={`Actions for ${row.title}`}>
-                                <MoreVertical className="h-4 w-4" />
-                              </button>
+                              <ActionButton href={rowInspectHref} label="View Exposure" icon={Eye} />
+                              <ActionButton href={rowRemediationHref} label="Plan Remediation" icon={BarChart3} />
+                              <ActionButton href={evidenceHref(row)} label="Open Evidence" icon={MoreVertical} />
                             </div>
                           </td>
                         </tr>
@@ -670,15 +953,47 @@ export default function Vulnerabilities() {
               </div>
             )}
             <div className="flex items-center justify-between border-t border-white/6 px-4 py-3 text-sm text-white/45">
-              <span>Showing 1 to {numberFmt(Math.min(5, filteredRows.length))} of {numberFmt(filteredRows.length)} results</span>
-              <div className="flex items-center gap-2">
-                <button type="button" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 text-white/35"><ChevronLeft className="h-4 w-4" /></button>
-                {[1, 2, 3, 4, 5].map((page) => (
-                  <button type="button" key={page} className={cn('h-8 w-8 rounded border text-sm', page === 1 ? 'border-red-500 text-red-300' : 'border-white/10 text-white/35')}>{page}</button>
-                ))}
-                <span className="text-white/35">...</span>
-                <button type="button" className="h-8 w-8 rounded border border-white/10 text-white/35">8</button>
-                <button type="button" className="flex h-8 w-8 items-center justify-center rounded border border-white/10 text-white/35"><ChevronRight className="h-4 w-4" /></button>
+              <span>Showing {filteredRows.length ? numberFmt(pageStart + 1) : '0'} to {numberFmt(pageEnd)} of {numberFmt(filteredRows.length)} results</span>
+              <div className="flex items-center gap-2" aria-label="Vulnerability results pages">
+                <button
+                  type="button"
+                  aria-label="Previous page"
+                  disabled={safePage <= 1}
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  className="flex h-8 w-8 items-center justify-center rounded border border-white/10 text-white/35 transition hover:border-gold/40 hover:text-gold disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                {visiblePages.map((pageNumber, index) => {
+                  const previousPage = visiblePages[index - 1]
+                  const hasGap = previousPage && pageNumber - previousPage > 1
+                  return (
+                    <span key={pageNumber} className="inline-flex items-center gap-2">
+                      {hasGap ? <span className="text-white/35">...</span> : null}
+                      <button
+                        type="button"
+                        aria-label={`Page ${pageNumber}`}
+                        aria-current={safePage === pageNumber ? 'page' : undefined}
+                        onClick={() => setPage(pageNumber)}
+                        className={cn(
+                          'h-8 min-w-8 rounded border px-2 text-sm transition hover:border-gold/40 hover:text-gold',
+                          safePage === pageNumber ? 'border-red-500 text-red-300' : 'border-white/10 text-white/35'
+                        )}
+                      >
+                        {pageNumber}
+                      </button>
+                    </span>
+                  )
+                })}
+                <button
+                  type="button"
+                  aria-label="Next page"
+                  disabled={safePage >= totalPages}
+                  onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  className="flex h-8 w-8 items-center justify-center rounded border border-white/10 text-white/35 transition hover:border-gold/40 hover:text-gold disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
               </div>
             </div>
           </GlassPanel>
@@ -695,7 +1010,27 @@ export default function Vulnerabilities() {
               <div className="space-y-2 text-xs text-white/55">
                 <div><span className="text-white/35">Last Scan</span><br />{relativeTime(snapshot.scanStatus.latestScanAt)}</div>
                 <div><span className="text-white/35">Next Scan</span><br />{relativeTime(snapshot.scanStatus.nextScanAt)}</div>
-                <button type="button" onClick={refresh} className="mt-2 h-9 w-full rounded border border-blue-500/50 bg-blue-500/5 text-xs font-black text-blue-300 hover:bg-blue-500/10">Run New Scan</button>
+                <button
+                  type="button"
+                  onClick={() => void runNewScan(scanTargets)}
+                  disabled={scanAction.status === 'running'}
+                  title={scanTargets.length ? `Run scan for ${scanTargets.length} current asset target${scanTargets.length === 1 ? '' : 's'}` : 'No scannable target found on this page'}
+                  className="mt-2 h-9 w-full rounded border border-blue-500/50 bg-blue-500/5 text-xs font-black text-blue-300 transition hover:bg-blue-500/10 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {scanButtonLabel}
+                </button>
+                {scanAction.message ? (
+                  <div className={cn(
+                    'rounded border px-2 py-1 text-[10px] leading-relaxed',
+                    scanAction.status === 'error'
+                      ? 'border-red-500/35 bg-red-500/10 text-red-200'
+                      : scanAction.status === 'success'
+                        ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+                        : 'border-blue-500/25 bg-blue-500/10 text-blue-100'
+                  )}>
+                    {scanAction.message}
+                  </div>
+                ) : null}
               </div>
             </div>
           </GlassPanel>

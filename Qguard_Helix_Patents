@@ -94,3 +94,82 @@ Autonomous PQC Migration Orchestrator™ → Migrates systems using those keys.
 QKMS — Quantum-Safe Key Lifecycle Manager™ → Governs and manages the keys themselves.
 
 Together, these create a complete Cryptographic Asset Management and Post-Quantum Migration Ecosystem™ rather than a standalone key vault solution.
+
+17. PQAuth™ Identity Migration Engine
+
+Discovers, assesses, simulates, and orchestrates migration of authentication infrastructures from classical cryptography to post-quantum cryptography while maintaining interoperability, performance, and compliance.
+
+PQAuth™ — Post-Quantum Identity & Access Security Platform
+
+A new QGuard Helix module focused on:
+
+OAuth
+OIDC
+SAML
+JWT
+Machine identities
+API authentication
+Zero Trust
+Workforce identities
+Service accounts
+
+= OAuth 2.0 and OIDC will eventually require PQC migration
+
+
+OAuth and OIDC themselves are not cryptographic algorithms.
+
+They rely on underlying cryptography such as:
+
+TLS
+JWT signing
+Client certificates
+Token signatures
+Key exchange
+PKI
+
+When RSA/ECDSA are replaced, OAuth and OIDC infrastructures must adapt.
+
+= Token size becomes a major engineering challenge:
+
+Current JWT example:
+
+ECDSA signature:
+
+~64 bytes
+
+ML-DSA signatures:
+
+~2 KB to 5 KB+
+
+SLH-DSA signatures:
+
+~8 KB to 50 KB+
+
+depending on parameter sets.
+
+This creates issues with:
+
+HTTP headers
+Cookies
+API gateways
+Mobile apps
+Reverse proxies
+WAFs
+Browser storage
+Identity providers
+
+= Many existing systems were never designed for such large authentication artifacts.
+
+= Performance benchmarking is required
+
+
+= Organizations will need to measure:
+
+Authentication latency
+Token generation speed
+Verification speed
+Memory consumption
+Network overhead
+Gateway compatibility
+
+before deploying PQC-enabled identity systems.

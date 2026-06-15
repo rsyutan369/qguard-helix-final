@@ -123,6 +123,7 @@ function hasSnapshotData(snapshot?: ScannerIntelligenceSnapshot | null) {
     snapshot.summary.totalFindings ||
     snapshot.cbom.entries.length ||
     snapshot.assets.assets.length ||
+    snapshot.exposure.nodes.length ||
     snapshot.history.history.length ||
     snapshot.findings.length ||
     snapshot.telemetry.length,
@@ -324,10 +325,30 @@ function normalizeStreamSnapshot(payload: unknown): ScannerIntelligenceSnapshot 
     ...snapshot,
     summary: { ...EMPTY_SNAPSHOT.summary, ...snapshot.summary },
     severityCounts: { ...EMPTY_SNAPSHOT.severityCounts, ...snapshot.severityCounts },
-    cbom: { ...EMPTY_SNAPSHOT.cbom, ...snapshot.cbom },
-    assets: { ...EMPTY_SNAPSHOT.assets, ...snapshot.assets },
-    exposure: { ...EMPTY_SNAPSHOT.exposure, ...snapshot.exposure },
-    history: { ...EMPTY_SNAPSHOT.history, ...snapshot.history },
+    cbom: {
+      ...EMPTY_SNAPSHOT.cbom,
+      ...snapshot.cbom,
+      entries: Array.isArray(snapshot.cbom?.entries) ? snapshot.cbom.entries : [],
+      stats: { ...EMPTY_SNAPSHOT.cbom.stats, ...snapshot.cbom?.stats },
+    },
+    assets: {
+      ...EMPTY_SNAPSHOT.assets,
+      ...snapshot.assets,
+      assets: Array.isArray(snapshot.assets?.assets) ? snapshot.assets.assets : [],
+    },
+    exposure: {
+      ...EMPTY_SNAPSHOT.exposure,
+      ...snapshot.exposure,
+      nodes: Array.isArray(snapshot.exposure?.nodes) ? snapshot.exposure.nodes : [],
+      distribution: { ...EMPTY_SNAPSHOT.exposure.distribution, ...snapshot.exposure?.distribution },
+    },
+    history: {
+      ...EMPTY_SNAPSHOT.history,
+      ...snapshot.history,
+      history: Array.isArray(snapshot.history?.history) ? snapshot.history.history : [],
+    },
+    findings: Array.isArray(snapshot.findings) ? snapshot.findings : [],
+    telemetry: Array.isArray(snapshot.telemetry) ? snapshot.telemetry : [],
     runtime: { ...EMPTY_SNAPSHOT.runtime, ...snapshot.runtime },
   };
 }

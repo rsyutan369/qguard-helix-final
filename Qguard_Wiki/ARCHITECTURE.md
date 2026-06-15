@@ -60,6 +60,14 @@ Operator Patchers:
 - Every action must record before state, snapshots, after state, verification, validation result, and audit metadata.
 - Rollback is required for guarded local patches and must be represented for connector-backed changes through the owning provider's snapshot, backup, version, or restore mechanism.
 
+Cloud SDK Patch Adapters:
+
+- AWS, Azure, and GCP connector patch adapters are optional runtime adapters under `src/api-server/cloud-patch-adapters.ts`.
+- They never run unless `QGUARD_ENABLE_CLOUD_SDK_PATCHES=true`, the connector has `metadata.sdkPatchEnabled=true`, the target is in the connector allowlist, the action has tenant administrator approval, and the operator sends an explicit execute request.
+- The adapters use provider default credential chains instead of storing private keys in QGuard: AWS default credential provider chain, Azure `DefaultAzureCredential`, and GCP Application Default Credentials.
+- Supported initial SDK actions include AWS ELB listener TLS policy/certificate updates, AWS S3 encryption policy updates, AWS KMS key rotation enablement, AWS RDS CA certificate updates, Azure Application Gateway TLS policy updates, Azure Storage encryption updates, GCP Cloud Storage KMS binding updates, and GCP HTTPS load balancer SSL policy binding updates.
+- Production deployments that want direct SDK mutation should install the provider packages used by the selected adapters, such as `@aws-sdk/client-elastic-load-balancing-v2`, `@aws-sdk/client-s3`, `@aws-sdk/client-kms`, `@aws-sdk/client-rds`, `@azure/identity`, `@azure/arm-network`, `@azure/arm-storage`, `@google-cloud/storage`, and `@google-cloud/compute`.
+
 Security Gates:
 
 - RBAC validation.

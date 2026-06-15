@@ -16,8 +16,10 @@ type CryptoInventoryItem = {
   exposure_level?: string | null;
   is_vulnerable?: boolean;
   is_quantum_safe?: boolean;
+  instances?: number;
   discovered_at?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
   metadata?: Record<string, unknown>;
   [key: string]: unknown;
 };
@@ -39,6 +41,7 @@ type AssetRecord = {
   status: string;
   findingsCount: number;
   vulnerableCount: number;
+  vulnerabilities?: CryptoInventoryItem[];
   metadata: Record<string, unknown>;
 };
 
@@ -103,7 +106,9 @@ function labelize(value?: string | null) {
 
 function cryptoLabel(item: CryptoInventoryItem) {
   const algorithm = String(item.algorithm || item.name || 'Unknown cryptography');
-  return item.key_size ? `${algorithm} (${item.key_size})` : algorithm;
+  const baseLabel = item.key_size ? `${algorithm} (${item.key_size})` : algorithm;
+  const instances = Number(item.instances || item.metadata?.instances || 0);
+  return instances > 1 ? `${baseLabel} x${instances}` : baseLabel;
 }
 
 function metadataText(item: CryptoInventoryItem, key: string, fallback: string) {
@@ -115,8 +120,96 @@ function assetTarget(asset: AssetRecord) {
   return asset.url || asset.domain || asset.ipAddress || 'N/A';
 }
 
+function itemSeverityRank(item: CryptoInventoryItem) {
+  const text = String(item.exposure_level || item.metadata?.severity || item.metadata?.threatLevel || '').toLowerCase();
+  if (text.includes('critical')) return 5;
+  if (text.includes('high')) return 4;
+  if (text.includes('moderate') || text.includes('medium')) return 3;
+  if (text.includes('low')) return 2;
+  if (text.includes('safe')) return 0;
+  return item.is_vulnerable ? 3 : 1;
+}
+
+function itemTimestamp(item: CryptoInventoryItem) {
+  return Date.parse(String(item.updated_at || item.discovered_at || item.created_at || item.metadata?.detectedAt || item.metadata?.timestamp || '')) || 0;
+}
+
+function vulnerabilityKey(item: CryptoInventoryItem) {
+  return [
+    item.item_type || item.metadata?.category,
+    item.algorithm || item.metadata?.algorithm || item.name,
+    item.key_size || item.metadata?.keySize,
+    item.protocol || item.metadata?.protocol,
+  ].map((value) => String(value || '').trim().toLowerCase()).join(':');
+}
+
+function mergeVulnerabilityItems(items: CryptoInventoryItem[]) {
+  const grouped = new Map<string, CryptoInventoryItem>();
+
+  for (const item of items) {
+    const key = vulnerabilityKey(item);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, item);
+      continue;
+    }
+
+    const shouldReplace = itemSeverityRank(item) > itemSeverityRank(existing) ||
+      (itemSeverityRank(item) === itemSeverityRank(existing) && itemTimestamp(item) > itemTimestamp(existing));
+    grouped.set(key, {
+      ...(shouldReplace ? item : existing),
+      instances: Number(existing.instances || 1) + Number(item.instances || 1),
+      metadata: {
+        ...(existing.metadata || {}),
+        ...(item.metadata || {}),
+      },
+    });
+  }
+
+  return Array.from(grouped.values()).sort((a, b) => {
+    const severityDelta = itemSeverityRank(b) - itemSeverityRank(a);
+    if (severityDelta) return severityDelta;
+    return itemTimestamp(b) - itemTimestamp(a);
+  });
+}
+
 function vulnerableItems(asset: AssetRecord) {
-  return (Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory : []).filter((item) => Boolean(item.is_vulnerable));
+  const explicit = Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : [];
+  const inventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory.filter((item) => Boolean(item.is_vulnerable && !item.is_quantum_safe)) : [];
+  return mergeVulnerabilityItems([...explicit, ...inventory]);
+}
+
+function remediationRouteFor(item: CryptoInventoryItem) {
+  const text = [
+    item.item_type,
+    item.protocol,
+    item.algorithm,
+    item.name,
+    item.metadata?.source,
+    item.metadata?.description,
+    item.metadata?.evidence,
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+
+  if (/hndl|harvest|runtime|shadow|downgrade/.test(text)) return '/dashboard/live-migration';
+  if (/certificate|pki|x509|issuer|subject/.test(text)) return '/dashboard/certificate-telemetry';
+  if (/tls|ssl|protocol|cipher|handshake|dhe|ecdhe/.test(text)) return '/dashboard/tls-orchestrator';
+  if (/library|dependency|package|source|repo|github|client crypto/.test(text)) return '/dashboard/migration-planner';
+  if (/policy|compliance|regulatory|nist/.test(text)) return '/dashboard/crypto-policies';
+  return '/dashboard/pqc-orchestration';
+}
+
+function remediationHref(asset: AssetRecord, item: CryptoInventoryItem) {
+  const params = new URLSearchParams({
+    source: 'assets',
+    action: 'remediate',
+    assetId: asset.id,
+    asset: asset.name,
+    findingId: String(item.metadata?.scanResultId || item.metadata?.vulnerabilityId || item.metadata?.exposureId || item.id || ''),
+    algorithm: String(item.algorithm || item.name || 'unknown'),
+    severity: labelize(String(item.exposure_level || item.metadata?.severity || 'vulnerable')),
+  });
+
+  return `${remediationRouteFor(item)}?${params.toString()}`;
 }
 
 function assetRiskLevel(asset: AssetRecord): RiskLevel {
@@ -347,6 +440,7 @@ export default function AssetsMap() {
   const [searchQuery, setSearchQuery] = useState('');
   const [riskFilter, setRiskFilter] = useState<RiskLevel | null>(null);
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
+  const [expandedCryptoAssetIds, setExpandedCryptoAssetIds] = useState<Set<string>>(() => new Set());
   const [exportOpen, setExportOpen] = useState(false);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set());
 
@@ -403,6 +497,15 @@ export default function AssetsMap() {
       } else {
         filteredAssets.forEach((asset) => next.add(asset.id));
       }
+      return next;
+    });
+  };
+
+  const toggleCryptoExpansion = (assetId: string) => {
+    setExpandedCryptoAssetIds((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
       return next;
     });
   };
@@ -483,9 +586,9 @@ export default function AssetsMap() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Authorized Assets', value: assets.length, color: 'text-slate-950 dark:text-white', icon: Server },
-          { label: 'Vulnerable Assets', value: assets.filter((asset) => asset.vulnerableCount > 0).length, color: 'text-red-600 dark:text-red-400', icon: AlertTriangle },
+          { label: 'Vulnerable Assets', value: assets.filter((asset) => vulnerableItems(asset).length > 0).length, color: 'text-red-600 dark:text-red-400', icon: AlertTriangle },
           { label: 'Crypto Components', value: assets.reduce((sum, asset) => sum + asset.findingsCount, 0), color: 'text-gold', icon: Shield },
-          { label: 'PQC Ready', value: assets.filter((asset) => asset.findingsCount > 0 && asset.vulnerableCount === 0).length, color: 'text-emerald-600 dark:text-green-400', icon: Shield },
+          { label: 'PQC Ready', value: assets.filter((asset) => asset.findingsCount > 0 && vulnerableItems(asset).length === 0).length, color: 'text-emerald-600 dark:text-green-400', icon: Shield },
         ].map((item) => (
           <div key={item.label} className={GLASS_PANEL_CLASSES + " p-4"}>
             <div className="flex items-center gap-2 mb-2 relative z-10">
@@ -551,6 +654,9 @@ export default function AssetsMap() {
                 const cryptoInventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory : [];
                 const vulnerabilities = vulnerableItems(asset);
                 const isExpanded = expandedAssetId === asset.id;
+                const cryptoListExpanded = expandedCryptoAssetIds.has(asset.id);
+                const visibleCryptoInventory = cryptoListExpanded ? cryptoInventory : cryptoInventory.slice(0, 18);
+                const hiddenCryptoCount = Math.max(0, cryptoInventory.length - 18);
                 return (
                   <Fragment key={asset.id}>
                     <motion.tr
@@ -625,7 +731,7 @@ export default function AssetsMap() {
                         <div className="mt-1 text-[9px] text-slate-400 dark:text-white/25">Q-Score {asset.qScore}/100</div>
                       </td>
                       <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
-                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${asset.vulnerableCount > 0 ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
+                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${vulnerabilities.length > 0 ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                           {asset.complianceStatus}
                         </span>
                       </td>
@@ -696,9 +802,18 @@ export default function AssetsMap() {
                                             <div className="truncate text-sm font-black text-slate-950 dark:text-white">{cryptoLabel(item)}</div>
                                             <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-white/35">{labelize(item.item_type || item.protocol || 'cryptography')}</div>
                                           </div>
-                                          <span className={`shrink-0 rounded border px-2 py-0.5 text-[9px] font-black uppercase ${severityClasses(item.exposure_level, item.is_vulnerable)}`}>
-                                            {labelize(item.exposure_level || 'vulnerable')}
-                                          </span>
+                                          <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                                            <span className={`rounded border px-2 py-0.5 text-[9px] font-black uppercase ${severityClasses(item.exposure_level, item.is_vulnerable)}`}>
+                                              {labelize(item.exposure_level || 'vulnerable')}
+                                            </span>
+                                            <a
+                                              href={remediationHref(asset, item)}
+                                              onClick={(event) => event.stopPropagation()}
+                                              className="inline-flex items-center gap-1 rounded border border-gold/35 bg-gold/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-gold transition hover:border-gold/70 hover:bg-gold/15"
+                                            >
+                                              <ExternalLink className="h-3 w-3" /> Remediate
+                                            </a>
+                                          </div>
                                         </div>
                                         <p className="line-clamp-2 text-xs leading-relaxed text-slate-600 dark:text-white/58">
                                           {metadataText(item, 'evidence', 'Scanner marked this cryptographic component as vulnerable or migration-sensitive.')}
@@ -727,12 +842,24 @@ export default function AssetsMap() {
                               <div className="flex flex-wrap gap-2">
                                 {cryptoInventory.length === 0 ? (
                                   <span className="rounded-md border border-slate-200 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40">Manual review required</span>
-                                ) : cryptoInventory.slice(0, 18).map((item, index) => (
+                                ) : visibleCryptoInventory.map((item, index) => (
                                   <span key={item.id || `${asset.id}-crypto-${index}`} className={`rounded-md border px-3 py-1.5 text-[10px] font-bold ${item.is_vulnerable ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                                     {cryptoLabel(item)}
                                   </span>
                                 ))}
-                                {cryptoInventory.length > 18 && <span className="rounded-md border border-slate-200 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40">+{cryptoInventory.length - 18} more</span>}
+                                {hiddenCryptoCount > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleCryptoExpansion(asset.id);
+                                    }}
+                                    aria-expanded={cryptoListExpanded}
+                                    className="rounded-md border border-slate-300 bg-white/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-600 transition hover:border-gold/45 hover:text-gold dark:border-white/10 dark:bg-white/[0.03] dark:text-white/45 dark:hover:border-gold/45 dark:hover:text-gold"
+                                  >
+                                    {cryptoListExpanded ? 'Show less' : `+${hiddenCryptoCount} more`}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>

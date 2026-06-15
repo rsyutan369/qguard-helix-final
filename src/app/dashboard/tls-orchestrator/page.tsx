@@ -754,7 +754,7 @@ export default function TlsOrchestratorPage() {
               <MetricCard icon={AlertTriangle} title="Downgrade Events" value={numberFmt(downgradeEvents)} sub="Last telemetry window" color={RED} />
             </div>
 
-            <div className="grid gap-3 xl:grid-cols-[1.25fr_1fr]">
+            <div className="space-y-3">
               <Panel className="p-4">
                 <SectionTitle title="Middlebox Tester" suffix={<a href="/dashboard/tls-telemetry" className="text-xs font-black text-[#2563eb]">View full report <ChevronRight className="inline h-4 w-4" /></a>} />
                 <div className="grid gap-4 lg:grid-cols-[170px_1fr]">
@@ -830,24 +830,8 @@ export default function TlsOrchestratorPage() {
               </Panel>
             </div>
 
-            <div className="grid gap-3 xl:grid-cols-[0.72fr_1.08fr_0.9fr_1fr]">
+            <div className="grid gap-3 xl:grid-cols-[0.72fr_1fr]">
               <Panel className="p-4"><SectionTitle title="PQC Readiness Score" /><Gauge value={readiness} label={readiness >= 75 ? 'Ready' : readiness >= 45 ? 'Medium' : 'Low'} color={GREEN} /></Panel>
-              <Panel className="p-4">
-                <SectionTitle title="Hybrid Coverage" />
-                <Donut rows={[
-                  { label: 'Hybrid (ML-KEM)', value: hybridCount, color: PURPLE },
-                  { label: 'Classical Only', value: classicalCount, color: BLUE },
-                  { label: 'Incompatible', value: partialCount, color: ORANGE },
-                  { label: 'Unknown', value: Math.max(0, totalEndpoints - hybridCount - classicalCount - partialCount), color: '#a7adc3' },
-                ]} total={Math.max(1, totalEndpoints)} />
-              </Panel>
-              <Panel className="p-4">
-                <SectionTitle title="Compliance Status" />
-                <div className="grid h-[150px] grid-cols-2 items-center divide-x divide-[#e8edf7] text-center">
-                  <div><div className="text-sm font-black">NIST</div><div className="text-xs font-bold text-[#536192]">PQC Standards</div><ShieldCheck className="mx-auto mt-5 h-10 w-10 text-[#22c55e]" /><div className="mt-2 text-xs font-black text-[#22c55e]">{readiness >= 70 ? 'Compliant' : 'In Progress'}</div></div>
-                  <div><div className="text-sm font-black">CNSA 2.0</div><div className="text-xs font-bold text-[#536192]">Readiness</div><ShieldAlert className="mx-auto mt-5 h-10 w-10 text-[#fb923c]" /><div className="mt-2 text-xs font-black text-[#fb923c]">{snapshot.metrics.weakAlgorithmsPercent === 0 ? 'Compliant' : 'In Progress'}</div></div>
-                </div>
-              </Panel>
               <Panel className="p-4">
                 <SectionTitle title="Top Risk Endpoints" suffix={<a href="/dashboard/assets" className="text-xs font-black text-[#2563eb]">View all <ChevronRight className="inline h-4 w-4" /></a>} />
                 <div className="space-y-3">
