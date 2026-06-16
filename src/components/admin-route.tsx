@@ -1,9 +1,10 @@
+import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { ShieldAlert } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { isOwnerEmail } from '@/lib/admin-access'
 
-export function AdminRoute({ children }: { children: React.ReactNode }) {
+export function AdminRoute({ children }: { children: ReactNode }) {
   const location = useLocation()
   const { user, loading } = useAuth()
 

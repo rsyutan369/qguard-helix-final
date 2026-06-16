@@ -24,6 +24,8 @@ import {
 export type SharePasswordKdfAlgorithm = 'hardened-v2' | 'argon2id' | 'pbkdf2-sha3-256'
 
 export interface PasswordKdfMetadata {
+  // Serialized to JSON / stored as jsonb and passed through Record<string, unknown> share payloads.
+  [key: string]: unknown
   algorithm: SharePasswordKdfAlgorithm
   params?: {
     memoryKiB?: number
@@ -37,6 +39,8 @@ export interface PasswordKdfMetadata {
 }
 
 export interface RecipientWrappedShareKey {
+  // Serialized to JSON / stored as jsonb and passed through Record<string, unknown> share payloads.
+  [key: string]: unknown
   version: 1
   algorithm: `${VaultKemName}+X25519/AES-256-GCM` | `${VaultKemName}/AES-256-GCM`
   kem: VaultKemName

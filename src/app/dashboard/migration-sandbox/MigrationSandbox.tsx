@@ -1516,7 +1516,11 @@ export default function MigrationSandbox() {
   }, [data.history])
 
   const historyAssetTypes = useMemo(() => Array.from(new Set(data.history.map((row) => row.assetType || 'service'))).sort(), [data.history])
-  const historyRisks = useMemo(() => Array.from(new Set(data.history.map((row) => row.riskLevel || 'low'))).sort((a, b) => ['critical', 'high', 'medium', 'low'].indexOf(a) - ['critical', 'high', 'medium', 'low'].indexOf(b)), [data.history])
+  const historyRisks = useMemo(() => {
+    const order = ['critical', 'high', 'medium', 'low']
+    const values = Array.from(new Set(data.history.map((row) => String(row.riskLevel || 'low')))) as string[]
+    return values.sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  }, [data.history])
 
   const filteredHistory = useMemo(() => {
     return data.history.filter((row) => {

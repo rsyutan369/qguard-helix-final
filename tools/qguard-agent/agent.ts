@@ -1,4 +1,4 @@
-import { X509Certificate } from 'node:crypto'
+import { createHash, X509Certificate } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -130,6 +130,8 @@ interface RemediationValidation {
   scanned: boolean
   validatedAt: string
   notes?: string
+  rollbackRequired?: boolean
+  rollbackPerformed?: boolean
 }
 
 interface RemediationAttemptResult {

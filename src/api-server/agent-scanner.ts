@@ -545,7 +545,7 @@ function patchTargetAllowedByPolicy(target: string | null, policy: ReturnType<ty
       gcpResourceName: target,
     },
     observedAt: new Date().toISOString(),
-  } as ScannerEvidenceRecord, policy, allowEmptyPolicy)
+  } as unknown as ScannerEvidenceRecord, policy, allowEmptyPolicy)
 }
 
 const RUNTIME_FORBIDDEN_KEYS = new Set([
@@ -3052,7 +3052,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
       ...previousPatchPlan,
       targetAllowed,
       sdkPatchReadiness: connector ? cloudSdkPatchAdapterReadiness(connector) : null,
-      cloudSdkPatchResult,
+      cloudSdkPatchResult: cloudPatchResult,
       beforeState: cloudPatchResult?.beforeState || previousPatchPlan.beforeState || null,
       afterState: cloudPatchResult?.afterState || previousPatchPlan.afterState || null,
       snapshot: cloudPatchResult?.snapshot || previousPatchPlan.snapshot || null,
@@ -3110,7 +3110,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
         afterState: previousPatchPlan.afterState || null,
         validation,
         evidenceCount: evidence.length,
-        cloudSdkPatchResult,
+        cloudSdkPatchResult: cloudPatchResult,
         status: nextStatus,
         rollbackRequired: nextStatus === 'failed' || validation?.rollbackRequired === true || validation?.passed === false,
       },
@@ -3129,7 +3129,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
             changedBy: user.id,
             approvalRole,
             validation,
-            cloudSdkPatchResult,
+            cloudSdkPatchResult: cloudPatchResult,
             updatedAt: now,
           },
         },
@@ -3150,7 +3150,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
         event_type: `operator-patch-action-${nextStatus}`,
         severity: nextStatus === 'failed' ? 'error' : nextStatus === 'validated' ? 'success' : 'info',
         message: cleanString(req.body?.message, 1000) || `Operator patch action ${nextStatus}.`,
-        metadata: { actionId: action.id, status: nextStatus, validation, evidenceResult, cloudSdkPatchResult },
+        metadata: { actionId: action.id, status: nextStatus, validation, evidenceResult, cloudSdkPatchResult: cloudPatchResult },
         created_at: now,
       })
     }
@@ -3162,7 +3162,7 @@ router.post('/remediation/operator-actions/:id/status', requireUserAuth, async (
     data: {
       action,
       validation,
-      cloudSdkPatchResult,
+      cloudSdkPatchResult: cloudPatchResult,
       evidence: evidenceResult ? {
         evidenceCount: evidenceResult.evidenceCount,
         findingCount: evidenceResult.findingCount,

@@ -18,7 +18,7 @@ const DEFAULT_MODE: ThemeMode = 'dark'
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 function getSystemTheme(): ResolvedTheme {
-  if (typeof window === 'undefined') return DEFAULT_MODE
+  if (typeof window === 'undefined') return 'dark'
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 

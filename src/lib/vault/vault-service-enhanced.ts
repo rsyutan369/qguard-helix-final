@@ -594,7 +594,7 @@ export async function fetchVaultFiles(folderId?: string | null): Promise<VaultFi
     const { data, error } = await query
     if (error) handleSupabaseError(error, 'fetching files')
 
-    return (data || []).map(mapFileToEntry)
+    return ((data ?? []) as unknown as VaultFileRecord[]).map(mapFileToEntry)
   })
 }
 
@@ -621,7 +621,7 @@ export async function fetchAllVaultFiles(): Promise<VaultFileEntry[]> {
 
     if (error) handleSupabaseError(error, 'fetching all files')
 
-    return (data || []).map(mapFileToEntry)
+    return ((data ?? []) as unknown as VaultFileRecord[]).map(mapFileToEntry)
   })
 }
 
@@ -649,7 +649,7 @@ export async function fetchRecentFiles(limit = 10): Promise<VaultFileEntry[]> {
 
     if (error) handleSupabaseError(error, 'fetching recent files')
 
-    return (data || []).map(mapFileToEntry)
+    return ((data ?? []) as unknown as VaultFileRecord[]).map(mapFileToEntry)
   })
 }
 
@@ -689,7 +689,7 @@ export async function fetchVaultFilesWithHealth(): Promise<VaultFileEntry[]> {
 
     if (error) handleSupabaseError(error, 'fetching files with health data')
 
-    return (data || []).map(mapFileToEntry)
+    return ((data ?? []) as unknown as VaultFileRecord[]).map(mapFileToEntry)
   })
 }
 
@@ -1617,7 +1617,7 @@ export async function fetchVaultStats(): Promise<VaultStats> {
       'created_at', 'updated_at',
     ].join(',')
 
-    const { data: profile, error: profileError } = await supabase
+    const { data: profileRow, error: profileError } = await supabase
       .from('vault_user_profiles')
       .select(SAFE_PROFILE_COLS)
       .eq('user_id', user.id)
@@ -1626,6 +1626,8 @@ export async function fetchVaultStats(): Promise<VaultStats> {
     if (profileError && profileError.code !== 'PGRST116') {
       handleSupabaseError(profileError, 'fetching vault profile')
     }
+
+    const profile = (profileRow ?? null) as unknown as VaultProfile | null
 
     // Get file counts
     const { count: fileCount } = await supabase

@@ -947,8 +947,8 @@ async function buildAdminSubscriptionsPayload(db: any, query: Record<string, unk
     safeRows(ctx, db, 'user_devices', (q) => q.select('id,user_id,tenant_id,revoked_at,updated_at,last_seen_at').order('updated_at', { ascending: false }).limit(10000)),
   ])
 
-  const profileMap = new Map(profiles.map((profile: any) => [profile.id, profile]))
-  const tenantMap = new Map(tenants.map((tenant: any) => [tenant.id, tenant]))
+  const profileMap = new Map<string, any>(profiles.map((profile: any) => [profile.id, profile] as [string, any]))
+  const tenantMap = new Map<string, any>(tenants.map((tenant: any) => [tenant.id, tenant] as [string, any]))
   const usersByTenant = latestRowsByKey(profiles, 'tenant_id')
   const devicesByTenant = latestRowsByKey(devices, 'tenant_id')
   const invoicesByUser = latestRowsByKey(invoices, 'user_id')
@@ -1291,7 +1291,7 @@ async function buildAdminRolesPayload(db: any, query: Record<string, unknown> = 
     safeRows(ctx, db, 'organizations', (q) => q.select('*').order('updated_at', { ascending: false }).limit(1000)),
   ])
   const allRoles = buildRoleCatalog(roleRows, profiles, tenants)
-  const filtered = filterRoles(allRoles, query)
+  const filtered = filterRoles(allRoles, query as Request['query'])
   const sort = textValue(query.sort, 'name')
   const order = textValue(query.order, 'asc')
 

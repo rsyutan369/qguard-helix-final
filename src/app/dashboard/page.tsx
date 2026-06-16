@@ -290,7 +290,7 @@ export default function Dashboard() {
         </div>
         <div className="flex gap-6 text-[9px] font-bold text-white/20 uppercase tracking-widest">
             <span>End-to-End PQC Encrypted</span>
-            <span>GDPR / NIST / FIPS 140-3 Compliant</span>
+            <span>GDPR / NIST / FIPS 140-3 Aligned</span>
         </div>
       </footer>
     </div>

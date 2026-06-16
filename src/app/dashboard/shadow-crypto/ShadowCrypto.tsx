@@ -256,6 +256,14 @@ export default function ShadowCrypto() {
     return findings.filter((finding) => finding.policy === activeFindingFilter);
   }, [activeFindingFilter, findings]);
 
+  const hasScanEvidence = data.mode !== 'none' && (
+    data.summary.totalComponents > 0 ||
+    data.summary.totalAssets > 0 ||
+    data.findings.length > 0 ||
+    data.cbom.entries.length > 0 ||
+    data.history.history.length > 0
+  );
+
   const sources = useMemo<Source[]>(() => [
     {
       label: 'Agent Evidence',
@@ -411,10 +419,25 @@ export default function ShadowCrypto() {
               <tbody className="divide-y divide-slate-200/70 dark:divide-white/5">
                 {filteredFindings.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-10 text-center text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">
-                      {activeFindingFilter === 'All'
-                        ? 'No shadow crypto findings have been detected for this tenant.'
-                        : `No ${activeFindingFilter.toLowerCase()} shadow crypto findings match this tenant scan.`}
+                    <td colSpan={6} className="p-10 text-center">
+                      {loading ? (
+                        <span className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">Loading scanner evidence…</span>
+                      ) : !hasScanEvidence ? (
+                        <div className="mx-auto flex max-w-md flex-col items-center gap-3">
+                          <ScanSearch className="h-8 w-8 text-gold/70" />
+                          <div className="text-sm font-black uppercase tracking-widest text-slate-700 dark:text-white/60">No scan evidence yet</div>
+                          <p className="text-xs font-medium normal-case tracking-normal text-slate-500 dark:text-white/40">
+                            Shadow Crypto correlates discovered cryptography from scanner runs, CBOM inventory, and runtime telemetry. Run your first scan to start surfacing undocumented or non-compliant crypto.
+                          </p>
+                          <a href="/dashboard/scanner" className="mt-1 inline-flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-gold transition hover:border-gold/70 hover:bg-gold/20">
+                            <ScanSearch className="h-3.5 w-3.5" /> Run a Scan
+                          </a>
+                        </div>
+                      ) : activeFindingFilter === 'All' ? (
+                        <span className="text-xs font-black uppercase tracking-widest text-emerald-500 dark:text-emerald-300/70">No shadow crypto detected — all discovered cryptography is documented and policy-compliant.</span>
+                      ) : (
+                        <span className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">{`No ${activeFindingFilter.toLowerCase()} shadow crypto findings match this tenant scan.`}</span>
+                      )}
                     </td>
                   </tr>
                 ) : filteredFindings.map((finding) => (

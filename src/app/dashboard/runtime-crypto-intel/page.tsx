@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -1154,7 +1154,7 @@ function DependencyGraph({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdg
       }
     })
   }, [nodes])
-  const nodeById = new Map(positioned.map((node) => [node.id, node]))
+  const nodeById = new Map<string, (typeof positioned)[number]>(positioned.map((node) => [node.id, node] as const))
 
   return (
     <GlassPanel className="p-4">
@@ -1215,7 +1215,7 @@ export default function RuntimeCryptoIntelPage() {
   const trend = snapshot.operationsTrend
   const totalTrend = trend.map((point) => point.encryption + point.decryption + point.keyUsage + point.other)
 
-  const metricCards = [
+  const metricCards: Array<{ label: string; value: string; unit?: string; delta: string; icon: LucideIcon; color: string; spark: number[]; danger?: boolean }> = [
     { label: 'Crypto Operations / Sec', value: numberFmt(metrics.cryptoOpsPerSec), unit: '/s', delta: formatDelta(metrics.cryptoOpsDelta), icon: Activity, color: CYAN, spark: totalTrend },
     { label: 'Encryption Ops / Sec', value: numberFmt(metrics.encryptionOpsPerSec), unit: '/s', delta: formatDelta(metrics.encryptionDelta), icon: Lock, color: BLUE, spark: trend.map((point) => point.encryption) },
     { label: 'Decryption Ops / Sec', value: numberFmt(metrics.decryptionOpsPerSec), unit: '/s', delta: formatDelta(metrics.decryptionDelta), icon: Database, color: PURPLE, spark: trend.map((point) => point.decryption) },
@@ -1281,7 +1281,18 @@ export default function RuntimeCryptoIntelPage() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {metricCards.map((metric) => (
-          <MetricCard key={metric.label} {...metric} />
+          <Fragment key={metric.label}>
+            <MetricCard
+              label={metric.label}
+              value={metric.value}
+              unit={metric.unit}
+              delta={metric.delta}
+              icon={metric.icon}
+              color={metric.color}
+              spark={metric.spark}
+              danger={metric.danger}
+            />
+          </Fragment>
         ))}
       </div>
 

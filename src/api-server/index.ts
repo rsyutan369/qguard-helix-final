@@ -202,7 +202,8 @@ function hardenSetCookieHeader(
 ): number | string | string[] {
   if (Array.isArray(value)) return value.map((cookie) => hardenCookieHeader(String(cookie), req))
   if (typeof value === 'string') return hardenCookieHeader(value, req)
-  return value
+  // Array.isArray() catches all arrays (incl. readonly) at runtime, so only `number` reaches here.
+  return value as number
 }
 
 function installCookieHardening(req: express.Request, res: express.Response, next: express.NextFunction) {

@@ -6,6 +6,8 @@ import type {
   PQAuthAlgorithmExposure,
   PQAuthCompatibilitySurface,
   PQAuthCountRow,
+  PQAuthDigitalTwinScenario,
+  PQAuthMigrationPhase,
   PQAuthMode,
   PQAuthRuntimeMetric,
   PQAuthSignal,
@@ -554,7 +556,7 @@ function buildTrustGraph(input: {
   return { nodes, edges }
 }
 
-function buildPhaseRows(hasEvidence: boolean, readinessScore: number, blockers: number, evidenceRows: any[]) {
+function buildPhaseRows(hasEvidence: boolean, readinessScore: number, blockers: number, evidenceRows: any[]): PQAuthMigrationPhase[] {
   const phaseDefs = [
     ['discovery', 'Discovery', 'Discover providers, gateways, JWT issuers, keys, certificates, and dependencies.', /discover|provider|gateway|asset|scan|evidence/i],
     ['assessment', 'Assessment', 'Score RSA, ECC, ECDSA, EdDSA, DH, ECDH, token flows, and exposed applications.', /risk|vulnerab|exposure|rsa|ecdsa|ecdh|finding/i],
@@ -906,12 +908,12 @@ async function buildPQAuthSnapshot(mode: PQAuthMode, token: string, userId: stri
   })
 
   const phases = buildPhaseRows(hasEvidence, readinessScore, compatibilityBlockers, allEvidenceRows)
-  const digitalTwinScenarios = [
+  const digitalTwinScenarios: PQAuthDigitalTwinScenario[] = [
     { id: 'rsa-ml-dsa', label: 'RSA to ML-DSA', active: algorithms.some((row) => row.id === 'rsa'), detail: 'Token and certificate signature replacement', status: algorithms.some((row) => row.id === 'rsa') ? 'active' : 'waiting', sourceTables: matchedTables(identityRows, /rsa/i), evidence: countMatches(identityRows, /rsa/i) },
     { id: 'ecdsa-ml-dsa', label: 'ECDSA to ML-DSA', active: algorithms.some((row) => row.id === 'ecdsa' || row.id === 'ecc'), detail: 'JWT and identity signature replacement', status: algorithms.some((row) => row.id === 'ecdsa' || row.id === 'ecc') ? 'active' : 'waiting', sourceTables: matchedTables(identityRows, /ecdsa|ecc|p-?256|secp/i), evidence: countMatches(identityRows, /ecdsa|ecc|p-?256|secp/i) },
     { id: 'ecdh-ml-kem', label: 'ECDH to ML-KEM', active: algorithms.some((row) => row.id === 'ecdh' || row.id === 'dh'), detail: 'Hybrid TLS key establishment', status: algorithms.some((row) => row.id === 'ecdh' || row.id === 'dh') ? 'active' : 'waiting', sourceTables: matchedTables(identityRows, /ecdh|diffie|dh\b|x25519/i), evidence: countMatches(identityRows, /ecdh|diffie|dh\b|x25519/i) },
     { id: 'hybrid-deployment', label: 'Hybrid Deployment', active: compatibilityBlockers > 0 || migrationRunning > 0, detail: 'Legacy and PQC verification bridge', status: compatibilityBlockers > 0 ? 'review' : migrationRunning > 0 ? 'active' : 'waiting', sourceTables: ['migration_jobs', 'runtime_crypto_events'], evidence: compatibilityBlockers + migrationRunning },
-  ] as const
+  ]
 
   const failurePredictions = [
     buildSourceCountRow('token-rejection', 'Token Rejection', tokenImpactBlockers, 'JWT size or algorithm compatibility blockers', undefined, ['runtime_crypto_events', 'scanner_evidence']),

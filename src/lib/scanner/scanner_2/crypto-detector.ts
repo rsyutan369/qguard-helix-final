@@ -351,8 +351,8 @@ export const ALGORITHM_PROFILES: AlgorithmProfile[] = [
   },
 ]
 
-/** Map target types to algorithms most likely found in each */
-const TARGET_ALGORITHM_AFFINITY: Record<ScanTargetType, ClassicalAlgorithm[]> = {
+/** Map target types to algorithms most likely found in each (partial — falls back to 'local-file') */
+const TARGET_ALGORITHM_AFFINITY: Partial<Record<ScanTargetType, ClassicalAlgorithm[]>> = {
   'local-file': ['RSA-2048', 'AES-128', 'AES-256', 'SHA-1', '3DES', 'MD5'],
   'local-keystore': ['RSA-2048', 'RSA-1024', 'ECC-P256', 'ECDSA-P256', 'Ed25519'],
   'device-certificate': ['RSA-2048', 'RSA-1024', 'ECC-P256', 'ECDSA-P256', 'ECDSA-P384'],
@@ -442,7 +442,7 @@ function inferPqcReplacement(algorithm: ClassicalAlgorithm): string {
 }
 
 function selectAlgorithmsForTarget(target: ScanTarget): AlgorithmProfile[] {
-  const affinityAlgorithms = TARGET_ALGORITHM_AFFINITY[target.type] || TARGET_ALGORITHM_AFFINITY['local-file']
+  const affinityAlgorithms = TARGET_ALGORITHM_AFFINITY[target.type] || TARGET_ALGORITHM_AFFINITY['local-file'] || []
 
   // Get profiles matching the affinity list for this target type
   const matchingProfiles = ALGORITHM_PROFILES.filter((p) =>

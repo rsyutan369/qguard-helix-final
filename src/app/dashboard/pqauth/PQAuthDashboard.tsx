@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { Fragment, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -873,7 +873,9 @@ function RuntimeLayout({ snapshot }: { snapshot: PQAuthSnapshot }) {
     <>
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
         {snapshot.runtimeMetrics.map((metric) => (
-          <MetricTile key={metric.id} icon={runtimeIcons[metric.id] || Activity} label={metric.label} value={compactFmt(metric.value)} detail={metric.detail} color={metric.id === 'trust-failures' ? ORANGE : metric.id === 'identity-drift' ? RED : GOLD} />
+          <Fragment key={metric.id}>
+            <MetricTile icon={runtimeIcons[metric.id] || Activity} label={metric.label} value={compactFmt(metric.value)} detail={metric.detail} color={metric.id === 'trust-failures' ? ORANGE : metric.id === 'identity-drift' ? RED : GOLD} />
+          </Fragment>
         ))}
       </section>
       <Panel className="p-5">

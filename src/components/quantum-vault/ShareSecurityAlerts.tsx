@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 import { useShareLinkEvents, type ShareLinkSecurityEvent } from '@/hooks/use-share-link-events'
 
 /**
@@ -51,7 +51,9 @@ export default function ShareSecurityAlerts({ onLinkDestroyed }: { onLinkDestroy
       )}
 
       {events.slice(0, 5).map((event, index) => (
-        <AlertToast key={`${event.linkId}-${event.timestamp}`} event={event} onDismiss={() => dismissEvent(index)} />
+        <Fragment key={`${event.linkId}-${event.timestamp}`}>
+          <AlertToast event={event} onDismiss={() => dismissEvent(index)} />
+        </Fragment>
       ))}
     </div>
   )

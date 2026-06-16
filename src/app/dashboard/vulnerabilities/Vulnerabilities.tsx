@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
@@ -1003,7 +1003,7 @@ export default function Vulnerabilities() {
           <GlassPanel className="p-4">
             <SectionTitle icon={Activity}>Scan Status</SectionTitle>
             <div className="grid gap-4 sm:grid-cols-[90px_minmax(0,1fr)]">
-              <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-[conic-gradient(#3B82F6_var(--scan),rgba(255,255,255,0.08)_0)]" style={{ '--scan': `${scanPct}%` } as React.CSSProperties}>
+              <div className="relative flex h-24 w-24 items-center justify-center rounded-full bg-[conic-gradient(#3B82F6_var(--scan),rgba(255,255,255,0.08)_0)]" style={{ '--scan': `${scanPct}%` } as CSSProperties}>
                 <div className="absolute inset-3 rounded-full bg-[#07101D]" />
                 <Activity className="relative h-6 w-6 text-blue-400" />
               </div>

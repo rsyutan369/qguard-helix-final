@@ -766,13 +766,20 @@ function KpiBar({ metrics }: { metrics: OnboardingMetrics }) {
 export default function PqcOnboarding() {
   const { snapshot, state, error, live, refresh } = usePqcOnboardingSnapshot()
   const data = snapshot || EMPTY_SNAPSHOT
-  const steps = data.steps.length ? data.steps : Array.from({ length: 6 }, (_, index) => ({
+  const steps = data.steps.length ? data.steps : ([
+    { title: 'Awareness & Preparation', href: '/dashboard/pqc-onboarding' },
+    { title: 'Discovery & Inventory', href: '/dashboard/scanner' },
+    { title: 'Risk Assessment & Planning', href: '/dashboard/migration-planner' },
+    { title: 'Migration Execution', href: '/dashboard/live-migration' },
+    { title: 'Migration Testing', href: '/dashboard/migration-sandbox' },
+    { title: 'Validation & Monitoring', href: '/dashboard/compliance' },
+  ].map((phase, index) => ({
     id: index + 1,
-    title: ['Awareness & Preparation', 'Discovery & Inventory', 'Risk Assessment & Planning', 'Migration Execution', 'Migration Testing', 'Validation & Monitoring'][index],
-    href: '/dashboard/pqc-onboarding',
+    title: phase.title,
+    href: phase.href,
     status: index === 0 ? 'current' as const : 'pending' as const,
-    progress: index === 0 ? 0 : 0,
-  }))
+    progress: 0,
+  })))
 
   const sourceCount = useMemo(() => Object.values(data.sync.sourceTables || {}).reduce((sum: number, value: unknown) => sum + Number(value || 0), 0), [data.sync.sourceTables])
 

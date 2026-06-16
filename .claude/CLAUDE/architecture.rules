@@ -1,0 +1,338 @@
+# architecture.rules
+
+# Qguard Helix Architecture Rules
+
+## Purpose
+
+These rules define the architectural boundaries for the Qguard Helix platform.
+
+All agents, Claude Code sessions, Codex sessions, and automation loops must follow these rules before making changes.
+
+---
+
+## Platform Identity
+
+Qguard Helix is an enterprise Post-Quantum Cryptography migration, discovery, telemetry, governance, and crypto-agility platform.
+
+Its primary lifecycle is:
+
+DISCOVER
+→ ASSESS
+→ PLAN
+→ MIGRATE
+→ VALIDATE
+→ MONITOR
+→ GOVERN
+
+The system must help users identify cryptographic risk, understand affected assets, migrate safely to PQC, validate readiness, and continuously monitor trust posture.
+
+---
+
+## Runtime Boundaries
+
+### Frontend
+
+Browser application code lives in:
+
+* `src/main.tsx`
+* `src/App.tsx`
+* `src/app/**`
+* `src/components/**`
+* `src/pages/**`
+* `src/hooks/**`
+* `src/lib/**`
+
+Frontend responsibilities:
+
+* UI rendering
+* User workflows
+* Dashboard visualization
+* Client-side state
+* API consumption
+* SSE/WebSocket subscriptions
+
+Frontend must not:
+
+* Own privileged security decisions
+* Access service-role keys
+* Bypass backend authorization
+* Fabricate production telemetry
+* Hardcode production risk scores
+
+---
+
+### Backend
+
+Active backend API code lives in:
+
+* `src/api-server/**`
+
+Backend responsibilities:
+
+* Authentication enforcement
+* Authorization enforcement
+* Tenant isolation
+* Supabase server-side operations
+* Scan orchestration
+* Telemetry aggregation
+* Migration workflow execution
+* Compliance evidence generation
+* Audit logging
+
+Sensitive operations must go through backend APIs.
+
+---
+
+### Legacy Routes
+
+Files under:
+
+* `src/app/api/**/route.ts`
+
+are legacy Next-style route files unless the current stack explicitly serves them.
+
+Do not treat them as the active backend path unless verified.
+
+Prefer the Express backend under:
+
+* `src/api-server/**`
+
+---
+
+## Supabase Rules
+
+Supabase is the system of record for:
+
+* Users
+* Tenants
+* Assets
+* CBOM records
+* Scan sessions
+* Scan results
+* Certificates
+* Keys
+* Telemetry
+* Migration plans
+* Migration events
+* Compliance evidence
+* Audit logs
+
+Rules:
+
+* Never bypass RLS without explicit backend justification.
+* Never expose service-role keys to browser code.
+* Always filter by tenant/user ownership.
+* Always validate authenticated user context.
+* Never display cross-tenant data.
+* Treat database writes as security-sensitive.
+
+---
+
+## Data Accuracy Rules
+
+All displayed values must come from real sources:
+
+* Real scans
+* Real assets
+* Real CBOM records
+* Real certificates
+* Real keys
+* Real runtime telemetry
+* Real cloud integrations
+* Real backend APIs
+* Real Supabase records
+* Real SSE/WebSocket events
+
+Never fabricate:
+
+* Production KPIs
+* Risk scores
+* Asset counts
+* Compliance status
+* Migration readiness
+* Telemetry events
+* Validation results
+
+If real data is unavailable, show:
+
+* Empty state
+* Setup instructions
+* Required integration
+* Required scanner/agent
+* Next recommended action
+
+---
+
+## Telemetry Rules
+
+Real-time telemetry must be verified end-to-end.
+
+Required checks:
+
+* Backend event source exists
+* API or stream exists
+* SSE/WebSocket emits real events
+* Frontend hook subscribes correctly
+* UI updates live
+* Stale state is labeled
+* Reconnect logic exists
+* Tenant isolation is preserved
+
+No simulated operational telemetry in production mode.
+
+---
+
+## PQC Architecture Rules
+
+Use correct terminology:
+
+* ML-KEM / FIPS 203 = key establishment
+* ML-DSA / FIPS 204 = digital signatures
+* SLH-DSA / FIPS 205 = stateless hash-based signatures
+* AES-256-GCM = symmetric encryption
+* SHA3-256 / SHA3-512 = hashing
+* Hybrid TLS = transition pattern using classical + PQC key establishment
+* CBOM = cryptographic bill of materials
+
+Never describe ML-KEM as a signature algorithm.
+
+Never mark an asset PQC-ready unless validation evidence exists.
+
+---
+
+## Module Architecture
+
+Core modules:
+
+* Overview
+* Migration Planner
+* PQC Onboarding & Migration Process
+
+Discovery modules:
+
+* PQC Scanner
+* CBOM Explorer
+* Crypto Exposure
+* Assets & CBOM
+* Shadow Crypto
+* Harvest Now, Decrypt Later
+
+Operations modules:
+
+* Migration Timeline
+* Migration Phases
+* Live Migration Ops
+* Crypto-Agility Engine
+* PQC Orchestration
+* Migration Sandbox
+
+Identity modules:
+
+* PQAuth Command Center
+* Identity Discovery
+* Identity Trust Graph
+* JWT & Token Intelligence
+* Quantum Exposure Analysis
+* PQC Compatibility
+* Identity Digital Twin
+* Migration Center
+* Runtime Identity Telemetry
+* Governance & Compliance
+* QKMS Integration
+
+Trust modules:
+
+* Trust-State Discovery
+* Ecosystem Dependency Map
+* Vendor PQC Readiness Center
+* Trust Chain Analyzer
+* Hybrid Crypto Compatibility Lab
+* Trust Center
+
+Observability modules:
+
+* TLS Telemetry
+* TLS Orchestrator
+* PKI Visibility
+* Protocol Analytics
+* Encryption Monitoring
+* Runtime Telemetry
+* Certificate Telemetry
+* Key Analytics
+* API Encryption Monitoring
+* Multi-Cloud Telemetry
+
+Governance modules:
+
+* Compliance
+* Quantum Governance
+* Crypto Policies
+* Audit Vault
+* Regulatory Mapping
+
+QKMS modules:
+
+* QKMS Overview
+* QKMS Key Inventory
+* QKMS Governance
+* QKMS PQC Readiness
+
+---
+
+## UX Architecture Rules
+
+Every page must answer:
+
+1. What is affected?
+2. Why is it risky?
+3. How urgent is it?
+4. What should the user do next?
+5. Has remediation started?
+6. Has remediation completed?
+7. Has remediation been validated?
+8. Is the asset PQC-ready?
+
+Avoid dashboard theater.
+
+Every card, chart, table, and graph must support a user decision.
+
+---
+
+## Security Rules
+
+Always enforce:
+
+* Authentication
+* Authorization
+* RBAC
+* Tenant isolation
+* Audit logging
+* Input validation
+* Least privilege
+* Secure secret handling
+
+Never allow:
+
+* Cross-tenant data leakage
+* Browser-side privileged operations
+* Exposed secrets
+* Hardcoded credentials
+* Unsafe direct database access from UI
+* Silent authorization failures
+
+---
+
+## Build Rules
+
+Before marking work complete:
+
+* Run TypeScript checks when available
+* Run build when available
+* Run tests when available
+* Verify no console errors
+* Verify no fake production data remains
+* Verify critical user flows manually when possible
+
+Implementation is not success.
+
+Verification is success.

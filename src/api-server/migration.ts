@@ -2909,14 +2909,14 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
       })),
     ]
     if (eventRows.length) {
-      await client.from('migration_events').insert(eventRows).then(({ error: eventError }: any) => {
+      await Promise.resolve(client.from('migration_events').insert(eventRows)).then(({ error: eventError }: any) => {
         if (eventError && !isMissingTable(eventError)) console.warn('[migration-planner] Plan event insert failed:', eventError.message)
       }).catch((error: any) => {
         console.warn('[migration-planner] Plan event insert crashed:', error?.message || error)
       })
     }
 
-    await client.from('migration_events').insert({
+    await Promise.resolve(client.from('migration_events').insert({
       user_id: req.user!.id,
       migration_id: null,
       event_type: action === 'start' ? 'plan-agent-dispatch-queued' : 'plan-created',
@@ -2946,13 +2946,13 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
         ],
       },
       created_at: now,
-    }).then(({ error: planEventError }: any) => {
+    })).then(({ error: planEventError }: any) => {
       if (planEventError && !isMissingTable(planEventError)) console.warn('[migration-planner] Plan lifecycle event failed:', planEventError.message)
     }).catch((error: any) => {
       console.warn('[migration-planner] Plan lifecycle event crashed:', error?.message || error)
     })
 
-    await client.from('security_events').insert({
+    await Promise.resolve(client.from('security_events').insert({
       user_id: req.user!.id,
       event_type: action === 'start' ? 'migration-plan-approved' : `migration-plan-${action}`,
       severity: 'info',
@@ -2973,7 +2973,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
         range: snapshot.range.key,
       },
       created_at: now,
-    }).then(({ error: securityError }: any) => {
+    })).then(({ error: securityError }: any) => {
       if (securityError && !isMissingTable(securityError)) console.warn('[migration-planner] Security event insert failed:', securityError.message)
     }).catch((error: any) => {
       console.warn('[migration-planner] Security event insert crashed:', error?.message || error)

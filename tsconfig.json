@@ -23,7 +23,19 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
+  "include": [
+    "src",
+    "tools"
+  ],
   "exclude": [
-    "src/app/api/**/*"
+    "src/app/api/**/*",
+    "src/app/docs/api/**/*",
+    "src/app/layout.tsx",
+    "src/app/page.tsx",
+    "src/app/not-found.tsx",
+    "src/app/AuthLayout.tsx",
+    "qguard-messaging",
+    "dist",
+    "node_modules"
   ]
 }

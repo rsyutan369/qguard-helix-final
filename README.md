@@ -6,7 +6,7 @@
 
 ### Enterprise-Grade Post-Quantum Cybersecurity, Threat Detection, PQC Migration & Quantum Readiness
 
-[![Next.js](https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
+[![Vite](https://img.shields.io/badge/Vite-8-646cff?style=for-the-badge&logo=vite)](https://vite.dev/)
 [![React](https://img.shields.io/badge/React-19-61dafb?style=for-the-badge&logo=react)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-3178c6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 [![Post Quantum](https://img.shields.io/badge/Post--Quantum-Security-gold?style=for-the-badge)](#)
@@ -106,25 +106,31 @@ Enterprise-grade telemetry and security analytics.
 # 🧠 Technology Stack
 
 ## Frontend
-- Next.js
-- React
+- Vite 8 (build & dev server)
+- React 19
 - TypeScript
-- Tailwind CSS
-- Framer Motion
-- ShadCN UI
+- React Router 7 (SPA routing)
+- Tailwind CSS v4
+- ShadCN UI / Radix UI
+- Framer Motion / Motion
+- Zustand (state management)
+- Three.js & GSAP (visualization)
 
 ## Backend
 - Node.js
-- FastAPI
-- Python
-- SSE / WebSockets
+- Express 4 (API server, mounted into Vite in dev via a custom plugin; run standalone in production)
+- tsx (TypeScript execution)
+- Server-Sent Events (SSE) for real-time streams
+- Supabase (Postgres, Auth, Storage) with primary + fallback project failover
 
 ## Security & PQC
-- ML-KEM (Kyber)
-- ML-DSA (Dilithium)
-- AES-256-GCM
-- OQS-OpenSSL
-- liboqs
+- ML-KEM (Kyber) & ML-DSA (Dilithium) via [`@noble/post-quantum`](https://github.com/paulmillr/noble-post-quantum)
+- AES-256-GCM (Web Crypto API)
+- Google Gemini (`@google/genai`) for AI features
+
+## AI / Cloud
+- `@google/genai` (Gemini)
+- AWS / Azure / GCP SDKs (optional, gated cloud operator patch adapters)
 
 ## Cloud Operator Patch Adapters
 
@@ -178,18 +184,33 @@ npm install
 
 ## 3. Configure Environment Variables
 
-Create:
+Copy the example file and fill in your values:
 
 ```bash
-.env.local
+cp .env.example .env
 ```
 
-Example:
+Key variables (see `.env.example` for the full list):
 
 ```env
+# Gemini AI
 GEMINI_API_KEY=your_api_key_here
-NEXT_PUBLIC_API_URL=http://localhost:4000
+
+# Supabase (primary project)
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+# Optional fallback Supabase project (used when primary is unavailable
+# or when *_USE_FALLBACK=true)
+VITE_SUPABASE_FALLBACK_URL=
+VITE_SUPABASE_FALLBACK_ANON_KEY=
+SUPABASE_FALLBACK_SERVICE_ROLE_KEY=
+VITE_SUPABASE_USE_FALLBACK=false
+SUPABASE_USE_FALLBACK=false
 ```
+
+> The frontend and the Express API run together from a single dev server — there is no separate API port.
 
 ---
 
@@ -199,10 +220,17 @@ NEXT_PUBLIC_API_URL=http://localhost:4000
 npm run dev
 ```
 
-Application will run on:
+The app and its `/api/v1` backend both run on:
 
 ```bash
 http://localhost:3000
+```
+
+For a production-style run (serves the built `dist/` plus the API):
+
+```bash
+npm run build
+npm start
 ```
 
 ---

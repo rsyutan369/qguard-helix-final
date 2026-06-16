@@ -781,6 +781,7 @@ export function useAdminDashboard() {
     refreshRoles,
     refreshTenants,
     refreshSubscriptions,
+    refreshSecurity,
     createUser,
     inspectUser,
     updateUser,
