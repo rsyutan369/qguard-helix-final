@@ -57,16 +57,24 @@ export function parseCertificateFromPeer(
       // Format the algorithm name
       publicKeyAlgorithm = formatPublicKeyAlgorithm(publicKeyAlgorithm, publicKeySize)
 
-      // Extract signature algorithm
-      // Node.js X509Certificate doesn't directly expose sigAlgName, parse from toString()
-      const certText = x509.toString()
-      signatureAlgorithm = extractSignatureAlgorithmFromText(certText)
-
-      // Classify the signature algorithm
-      const sigOidEntry = classifySignatureAlgorithm(signatureAlgorithm)
-      if (sigOidEntry) {
-        signatureOid = sigOidEntry.oid
-        detectedOids.push(sigOidEntry)
+      // Extract signature algorithm by reading the signatureAlgorithm OID directly from the
+      // certificate DER. Node's X509Certificate.toString() returns PEM (base64) — NOT OpenSSL
+      // text — so it carries no "Signature Algorithm:" line; we parse the real cert bytes.
+      const sigOid = extractSignatureAlgorithmOidFromDer(peerCert.raw)
+      if (sigOid) {
+        const sigEntry = lookupOid(sigOid)
+        signatureAlgorithm = sigEntry?.name || sigOid
+        signatureOid = sigOid
+        if (sigEntry && !detectedOids.some((o) => o.oid === sigEntry.oid)) {
+          detectedOids.push(sigEntry)
+        }
+      } else {
+        signatureAlgorithm = extractSignatureAlgorithmFromBasic(peerCert)
+        const sigOidEntry = classifySignatureAlgorithm(signatureAlgorithm)
+        if (sigOidEntry) {
+          signatureOid = sigOidEntry.oid
+          if (!detectedOids.some((o) => o.oid === sigOidEntry.oid)) detectedOids.push(sigOidEntry)
+        }
       }
 
       // Detect public key algorithm OID
@@ -214,6 +222,57 @@ function detectEcCurveOid(pubKey: crypto.KeyObject): string | null {
   }
 }
 
+/** Read a DER TLV length at `pos`; returns the content length and the header byte count. */
+function readDerLen(buf: Buffer, pos: number): { length: number; headerLen: number } {
+  const first = buf[pos]
+  if (first < 0x80) return { length: first, headerLen: 1 }
+  const numBytes = first & 0x7f
+  let length = 0
+  for (let i = 0; i < numBytes; i++) length = length * 256 + buf[pos + 1 + i]
+  return { length, headerLen: 1 + numBytes }
+}
+
+/** Decode DER OBJECT IDENTIFIER content bytes into dotted-decimal string. */
+function decodeDerOid(bytes: Buffer): string {
+  if (bytes.length === 0) return ''
+  const first = bytes[0]
+  const arcs: number[] = first < 40 ? [0, first] : first < 80 ? [1, first - 40] : [2, first - 80]
+  let value = 0
+  for (let i = 1; i < bytes.length; i++) {
+    value = value * 128 + (bytes[i] & 0x7f)
+    if ((bytes[i] & 0x80) === 0) {
+      arcs.push(value)
+      value = 0
+    }
+  }
+  return arcs.join('.')
+}
+
+/**
+ * Parse the certificate's `signatureAlgorithm` OID straight from the DER bytes.
+ * X.509 = SEQUENCE { tbsCertificate SEQUENCE, signatureAlgorithm AlgorithmIdentifier, signatureValue }.
+ * We skip tbsCertificate and read the OID from the second AlgorithmIdentifier — evidence-based,
+ * unlike Node's X509Certificate which exposes no signature-algorithm getter.
+ */
+function extractSignatureAlgorithmOidFromDer(raw: Buffer): string | null {
+  try {
+    let pos = 0
+    if (raw[pos] !== 0x30) return null // outer Certificate SEQUENCE
+    pos += 1 + readDerLen(raw, pos + 1).headerLen
+    if (raw[pos] !== 0x30) return null // tbsCertificate SEQUENCE
+    const tbs = readDerLen(raw, pos + 1)
+    pos += 1 + tbs.headerLen + tbs.length // skip the entire tbsCertificate
+    if (raw[pos] !== 0x30) return null // signatureAlgorithm AlgorithmIdentifier SEQUENCE
+    pos += 1 + readDerLen(raw, pos + 1).headerLen
+    if (raw[pos] !== 0x06) return null // OBJECT IDENTIFIER
+    const oid = readDerLen(raw, pos + 1)
+    const start = pos + 1 + oid.headerLen
+    return decodeDerOid(raw.subarray(start, start + oid.length))
+  } catch {
+    return null
+  }
+}
+
 /**
  * Extract signature algorithm from X509Certificate toString() output
  */
@@ -234,13 +293,7 @@ function extractSignatureAlgorithmFromBasic(
   // Some Node.js versions expose sigalg
   if (peerCert.sigalg) return peerCert.sigalg
 
-  // Try to infer from other fields
-  const infoAccess = (peerCert as unknown as Record<string, unknown>).infoAccess
-  if (typeof infoAccess === 'object' && infoAccess) {
-    // Certificate has info access — likely a proper CA-issued cert
-    return 'sha256WithRSAEncryption' // Most common default
-  }
-
+  // No reliable signature-algorithm source. Do NOT assume a default (evidence-based only).
   return 'unknown'
 }
 
