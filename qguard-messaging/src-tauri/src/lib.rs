@@ -15,6 +15,7 @@ pub mod security;
 pub mod state;
 pub mod telemetry;
 pub mod vault;
+pub mod vault_stream;
 
 use commands::auth::*;
 use commands::devices::*;
@@ -38,6 +39,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = dirs_fallback().join("qguard-messaging");
             let state = AppState::new(data_dir)?;
@@ -73,6 +75,10 @@ pub fn run() {
             vault_share_file,
             vault_revoke_file_access,
             vault_verify_metadata,
+            vault_encrypt_path,
+            vault_decrypt_path,
+            vault_encrypt_folder_path,
+            vault_decrypt_folder_path,
             security_verify_fingerprint,
             security_report_key_change,
             security_export_report,

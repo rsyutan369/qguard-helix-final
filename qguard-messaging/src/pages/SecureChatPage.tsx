@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, ArchiveRestore, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { byteaToBytes, bytesToBytea } from "@/lib/encoding";
@@ -784,6 +784,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [searching, setSearching] = useState(false);
   const [searchFeedback, setSearchFeedback] = useState<string | null>(null);
   const [contactAction, setContactAction] = useState<string | null>(null);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [newChatBusyId, setNewChatBusyId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messageAction, setMessageAction] = useState<string | null>(null);
@@ -1077,7 +1079,21 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   function describeMessageError(error: unknown): string {
     if (error instanceof Error) return error.message;
-    return String(error);
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object") {
+      const record = error as Record<string, unknown>;
+      const message = record.message ?? record.error_description ?? record.error ?? record.details ?? record.hint;
+      if (typeof message === "string" && message.trim()) {
+        return typeof record.code === "string" && record.code ? `${message} (${record.code})` : message;
+      }
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== "{}") return serialized;
+      } catch {
+        // fall through to the generic message
+      }
+    }
+    return "Unexpected error";
   }
 
   async function syncMissingDeviceEnvelopes(
@@ -1648,7 +1664,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setChatMessages(hydrated);
       persistMessageUserStates(hydrated).catch(() => undefined);
     } catch (error) {
-      setMessageAction(describeMessageError(error));
+      // The realtime subscription reloads on every envelope change, so a transient
+      // reload failure must not flash a banner over an already-rendered conversation;
+      // the next realtime tick retries. Surface it only when there is nothing to show.
+      console.error("[secure-chat] Failed to load conversation messages:", error);
+      if (decryptedMessageCacheRef.current.size === 0 && decryptedControlCacheRef.current.size === 0) {
+        setMessageAction(describeMessageError(error));
+      }
     } finally {
       setMessagesLoading(false);
     }
@@ -2193,6 +2215,64 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setContactAction(detail);
     } finally {
       setContactChatBusyId(null);
+    }
+  }
+
+  function openNewChat() {
+    setQuery("");
+    setSearchResults([]);
+    setSearchFeedback(null);
+    setContactAction(null);
+    setNewChatBusyId(null);
+    setShowNewChat(true);
+  }
+
+  function closeNewChat() {
+    setShowNewChat(false);
+    setQuery("");
+    setSearchResults([]);
+    setSearchFeedback(null);
+  }
+
+  // One-motion "New Chat": add the person as a contact (so RLS lets us read
+  // their published PQC prekeys) and immediately open the encrypted thread.
+  async function startChatWithUser(result: UserSearchResult) {
+    if (newChatBusyId) return;
+    setNewChatBusyId(result.user_id);
+    setContactAction(null);
+    try {
+      await ensureCurrentUserProfile();
+      const { data, error } = await supabase
+        .from("messaging_contacts")
+        .upsert({
+          owner_user_id: userId,
+          contact_user_id: result.user_id,
+          alias: result.display_name,
+          trust_state: "added",
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "owner_user_id,contact_user_id" })
+        .select("id,contact_user_id,alias,trust_state,created_at,updated_at")
+        .single();
+      if (error) throw error;
+
+      const contact: ContactSummary = {
+        id: String(data.id),
+        contact_user_id: result.user_id,
+        alias: result.display_name,
+        display_name: result.display_name,
+        username: result.username,
+        trust_state: "added",
+        created_at: String(data.created_at ?? new Date().toISOString()),
+        updated_at: String(data.updated_at ?? new Date().toISOString()),
+      };
+
+      await Promise.resolve(onSent());
+      closeNewChat();
+      await startPrivateChat(contact);
+    } catch (error) {
+      setContactAction(describeMessageError(error));
+    } finally {
+      setNewChatBusyId(null);
     }
   }
 
@@ -2820,8 +2900,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-bold text-ink-950">Secure Conversations</h2>
-            <span className="status-pill bg-ink-50 text-ink-600">{visibleConversations.length}</span>
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="truncate text-sm font-bold text-ink-950">Secure Conversations</h2>
+              <span className="status-pill bg-ink-50 text-ink-600">{visibleConversations.length}</span>
+            </div>
+            <button
+              type="button"
+              onClick={openNewChat}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-violet-700"
+              title="Start a new encrypted chat"
+            >
+              <MessageSquarePlus size={15} />
+              New Chat
+            </button>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1">
             {conversationViews.map((view) => {
@@ -2850,7 +2941,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         </div>
         <div className="divide-y divide-line">
           {visibleConversations.length === 0 && (
-            <div className="p-4 text-sm text-ink-600">{emptyConversationText}</div>
+            <div className="px-4 py-8 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-violet-50 text-violet-600">
+                <MessageSquarePlus size={22} />
+              </div>
+              <p className="mx-auto mt-3 max-w-[220px] text-sm text-ink-600">{emptyConversationText}</p>
+              {conversationView === "active" && (
+                <button
+                  type="button"
+                  onClick={openNewChat}
+                  className="mx-auto mt-4 flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white hover:bg-violet-700"
+                >
+                  <MessageSquarePlus size={14} />
+                  New Chat
+                </button>
+              )}
+            </div>
           )}
           {visibleConversations.map((thread) => {
             const threadBusy = conversationBusyId?.startsWith(`${thread.id}:`) ?? false;
@@ -3468,6 +3574,98 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             </button>
           </div>
         </form>
+      </div>
+    )}
+    {showNewChat && (
+      <div
+        className="fixed inset-0 z-50 flex items-start justify-center bg-ink-950/40 p-4 pt-[12vh] backdrop-blur-sm"
+        onClick={closeNewChat}
+      >
+        <div
+          className="w-full max-w-lg overflow-hidden rounded-xl border border-white/30 bg-white/95 shadow-soft backdrop-blur-xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-line p-5">
+            <div>
+              <h2 className="text-base font-bold text-ink-950">New encrypted chat</h2>
+              <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-cyan-700">
+                <ShieldCheck size={14} />
+                Hybrid PQC · ML-KEM-1024 · end-to-end encrypted
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={closeNewChat}
+              className="icon-button h-8 w-8 shrink-0 bg-white/80"
+              aria-label="Close new chat"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="p-5 pb-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-3 text-ink-400" size={18} />
+              <input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search by name, username, email, or user ID"
+                className="w-full rounded-lg border border-line bg-canvas py-3 pl-10 pr-10 text-sm outline-none focus:border-violet-300"
+                aria-label="Search for a user to chat with"
+              />
+              {searching && <Loader2 className="absolute right-3 top-3 animate-spin text-violet-500" size={18} />}
+            </div>
+            {contactAction && (
+              <div className="mt-3 rounded-lg border border-line bg-canvas px-3 py-2 text-xs font-semibold text-ink-600">
+                {contactAction}
+              </div>
+            )}
+          </div>
+
+          <div className="max-h-[46vh] overflow-y-auto px-3 pb-2">
+            {query.trim().length < 2 && (
+              <div className="px-2 py-10 text-center text-sm text-ink-500">
+                Start typing to find someone on QGuard.
+              </div>
+            )}
+            {query.trim().length >= 2 && !searching && searchResults.length === 0 && (
+              <div className="px-2 py-10 text-center text-sm text-ink-500">
+                {searchFeedback ?? `No users found for "${query.trim()}".`}
+              </div>
+            )}
+            <div className="space-y-1">
+              {searchResults.map((result) => {
+                const busy = newChatBusyId === result.user_id;
+                return (
+                  <button
+                    key={result.user_id}
+                    type="button"
+                    disabled={Boolean(newChatBusyId)}
+                    onClick={() => startChatWithUser(result)}
+                    className="group flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-left transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-sm font-bold text-white">
+                      {(result.display_name || result.username || "QG").slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-bold text-ink-950">{result.display_name}</div>
+                      <div className="truncate font-mono text-xs text-ink-400">{result.username || result.user_id}</div>
+                    </div>
+                    <span className="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-bold text-white transition group-hover:bg-violet-700">
+                      {busy ? <Loader2 className="animate-spin" size={14} /> : <MessageSquarePlus size={14} />}
+                      {busy ? "Opening" : "Message"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="border-t border-line bg-canvas/60 px-5 py-3 text-xs text-ink-500">
+            The person you message must have opened QGuard Messaging on desktop at least once so their quantum-safe keys are published.
+          </div>
+        </div>
       </div>
     )}
     </>

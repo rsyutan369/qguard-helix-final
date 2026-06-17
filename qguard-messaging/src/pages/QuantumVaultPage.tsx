@@ -36,9 +36,24 @@ import {
   validateDecryptionSession,
   type DecryptionStatus,
 } from "@/lib/secure-decryption";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { TelemetryEvent, VaultFileSummary } from "@/lib/types";
+
+interface VaultLocalStreamSummary {
+  file_id: string;
+  kind: "file" | "folder";
+  name: string;
+  content_type: string;
+  original_size: number;
+  total_chunks: number;
+  source_path: string;
+  output_path: string;
+  suite: Record<string, string>;
+}
+
+type LocalVaultAction = "encrypt-file" | "encrypt-folder" | "decrypt-file" | "decrypt-folder";
 
 interface QuantumVaultPageProps {
   userId: string;
@@ -572,6 +587,8 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [localDecryptBusy, setLocalDecryptBusy] = useState(false);
+  const [localVaultBusy, setLocalVaultBusy] = useState<LocalVaultAction | null>(null);
+  const [localVaultResult, setLocalVaultResult] = useState<string | null>(null);
   const [pipelineControl, setPipelineControl] = useState<VaultPipelineControl>({ state: "idle", operationId: null, label: null });
   const [terminalLogs, setTerminalLogs] = useState<VaultTerminalLog[]>([]);
   const [activeVaultTab, setActiveVaultTab] = useState<VaultPanelTab>("operations");
@@ -2101,6 +2118,108 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
     );
   }
 
+  function pathBasename(value: string): string {
+    return value.split(/[\\/]/).filter(Boolean).pop() ?? value;
+  }
+
+  const localSuiteLine =
+    "Crypto suite: X25519+ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256 / Ed25519+ML-DSA-65 (streaming, on-device)";
+
+  async function runLocalVault(action: LocalVaultAction, task: () => Promise<void>) {
+    if (localVaultBusy) {
+      appendLog("error", "A local vault operation is already running. Let it finish first.");
+      return;
+    }
+    setLocalVaultBusy(action);
+    setLocalVaultResult(null);
+    try {
+      await task();
+    } catch (error) {
+      const message = describeError(error);
+      setStatus(message);
+      appendLog("error", `Local vault operation failed: ${message}`);
+    } finally {
+      setLocalVaultBusy(null);
+    }
+  }
+
+  async function localEncryptFile() {
+    await runLocalVault("encrypt-file", async () => {
+      const source = await openDialog({ multiple: false, directory: false, title: "Select a file to encrypt" });
+      if (typeof source !== "string") return;
+      const dest = await saveDialog({ title: "Save encrypted vault file", defaultPath: `${pathBasename(source)}.qvault` });
+      if (!dest) return;
+      appendLog("info", localSuiteLine);
+      appendLog("info", `Encrypting ${pathBasename(source)} → ${pathBasename(dest)}`);
+      setStatus("Encrypting to a local quantum-safe vault file");
+      const summary = await safeInvoke<VaultLocalStreamSummary>("vault_encrypt_path", { sourcePath: source, destPath: dest });
+      const line = `Encrypted ${summary.name} (${formatBytes(summary.original_size)}, ${summary.total_chunks} chunk${summary.total_chunks === 1 ? "" : "s"}) → ${dest}`;
+      appendLog("success", line);
+      setStatus("Local encrypted vault file saved");
+      setLocalVaultResult(line);
+    });
+  }
+
+  async function localEncryptFolder() {
+    await runLocalVault("encrypt-folder", async () => {
+      const source = await openDialog({ multiple: false, directory: true, title: "Select a folder to encrypt" });
+      if (typeof source !== "string") return;
+      const dest = await saveDialog({ title: "Save encrypted folder archive", defaultPath: `${pathBasename(source)}.qguard-folder.qvault` });
+      if (!dest) return;
+      appendLog("info", localSuiteLine);
+      appendLog("info", `Archiving and encrypting folder ${pathBasename(source)} → ${pathBasename(dest)}`);
+      setStatus("Encrypting folder into a single local archive");
+      const summary = await safeInvoke<VaultLocalStreamSummary>("vault_encrypt_folder_path", { sourceDir: source, destPath: dest });
+      const line = `Encrypted folder ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      appendLog("success", line);
+      setStatus("Local encrypted folder archive saved");
+      setLocalVaultResult(line);
+    });
+  }
+
+  async function localDecryptFile() {
+    await runLocalVault("decrypt-file", async () => {
+      const source = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Select an encrypted vault file",
+        filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
+      });
+      if (typeof source !== "string") return;
+      const suggested = pathBasename(source).replace(/\.qvault$/i, "") || "restored-file";
+      const dest = await saveDialog({ title: "Save decrypted file", defaultPath: suggested });
+      if (!dest) return;
+      appendLog("info", `Decrypting ${pathBasename(source)} on this device`);
+      setStatus("Decrypting local vault file");
+      const summary = await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_path", { sourcePath: source, destPath: dest });
+      const line = `Decrypted ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      appendLog("success", line);
+      setStatus("Local file decrypted");
+      setLocalVaultResult(line);
+    });
+  }
+
+  async function localDecryptFolder() {
+    await runLocalVault("decrypt-folder", async () => {
+      const source = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Select an encrypted folder archive",
+        filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
+      });
+      if (typeof source !== "string") return;
+      const dest = await openDialog({ multiple: false, directory: true, title: "Choose a folder to restore into" });
+      if (typeof dest !== "string") return;
+      appendLog("info", `Decrypting folder archive ${pathBasename(source)} into ${dest}`);
+      setStatus("Restoring encrypted folder archive locally");
+      const summary = await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_folder_path", { sourcePath: source, destDir: dest });
+      const line = `Restored folder ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      appendLog("success", line);
+      setStatus("Local folder archive restored");
+      setLocalVaultResult(line);
+    });
+  }
+
   return (
     <div className="grid gap-4">
       <section className="shell-card grid gap-4 p-5 xl:grid-cols-[1fr_1fr_320px]">
@@ -2358,6 +2477,84 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
             ))}
           </div>
         </div>
+      </section>
+
+      <section className="shell-card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-ink-950">Local Vault</h2>
+              <span className="status-pill bg-emerald-50 text-emerald-600"><ShieldCheck size={12} /> Offline · any size</span>
+            </div>
+            <p className="mt-1 max-w-2xl text-sm text-ink-600">
+              Encrypt and decrypt files and folders straight to a location you choose on this device — no upload, no capacity limit. A folder is sealed into one archive and restores its full structure. Decryptable anytime on this device while you stay signed in.
+            </p>
+            <p className="mt-1 text-xs font-semibold text-cyan-700">{localSuiteLine}</p>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <button
+            type="button"
+            disabled={localVaultBusy !== null}
+            onClick={localEncryptFile}
+            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-cyan-600 text-white">
+              {localVaultBusy === "encrypt-file" ? <Loader2 className="animate-spin" size={18} /> : <LockKeyhole size={18} />}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-ink-950">Encrypt file</div>
+              <div className="mt-0.5 text-xs text-ink-600">Seal any file to a .qvault on disk</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            disabled={localVaultBusy !== null}
+            onClick={localEncryptFolder}
+            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-cyan-600 text-white">
+              {localVaultBusy === "encrypt-folder" ? <Loader2 className="animate-spin" size={18} /> : <FileArchive size={18} />}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-ink-950">Encrypt folder</div>
+              <div className="mt-0.5 text-xs text-ink-600">Pack a folder into one encrypted archive</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            disabled={localVaultBusy !== null}
+            onClick={localDecryptFile}
+            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white">
+              {localVaultBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={18} /> : <UnlockKeyhole size={18} />}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-ink-950">Decrypt file</div>
+              <div className="mt-0.5 text-xs text-ink-600">Restore a .qvault file on this device</div>
+            </div>
+          </button>
+          <button
+            type="button"
+            disabled={localVaultBusy !== null}
+            onClick={localDecryptFolder}
+            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white">
+              {localVaultBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={18} /> : <FolderOpen size={18} />}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-ink-950">Decrypt folder</div>
+              <div className="mt-0.5 text-xs text-ink-600">Restore an encrypted folder archive</div>
+            </div>
+          </button>
+        </div>
+        {localVaultResult && (
+          <div className="mt-3 break-words rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
+            {localVaultResult}
+          </div>
+        )}
       </section>
 
       <section className="shell-card overflow-hidden">

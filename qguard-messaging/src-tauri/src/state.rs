@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use base64::Engine as _;
 use chrono::Utc;
 use keyring::Error as KeyringError;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,19 @@ use crate::ratchet::RatchetSession;
 use crate::telemetry::TelemetryEvent;
 
 const KEYRING_SERVICE: &str = "QGuard Messaging Device Keys";
+const KEY_MATERIAL_AAD: &[u8] = b"QGuard-Messaging-Device-Key-Material-v1";
+
+/// On-disk container for the AES-256-GCM-encrypted device key material.
+///
+/// The full key material (ML-KEM-1024 secrets + one-time prekeys) is far larger
+/// than the OS keychain blob limit (Windows Credential Manager caps a credential
+/// at 2560 bytes), so it lives in an encrypted file. Only the 32-byte data
+/// encryption key is held in the OS keychain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EncryptedKeyMaterialFile {
+    version: u8,
+    envelope: crate::crypto::EncryptedEnvelope,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PersistedDeviceKeyMaterial {
@@ -299,33 +313,79 @@ impl AppState {
             .join(format!("{safe_user_id}.device-key-material.json"))
     }
 
+    fn encrypted_key_material_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.device-key-material.enc"))
+    }
+
     fn key_material_entry(&self, user_id: &str) -> Result<keyring::Entry> {
         keyring::Entry::new(KEYRING_SERVICE, &Self::safe_user_key(user_id))
             .map_err(|e| QGuardError::Storage(format!("open OS keychain entry: {e}")))
+    }
+
+    /// Returns the per-user 32-byte data encryption key, creating and persisting
+    /// one in the OS keychain on first use. The keychain only ever holds this
+    /// small key, never the (much larger) key material itself.
+    fn device_storage_key(
+        &self,
+        user_id: &str,
+    ) -> Result<[u8; crate::crypto::symmetric::KEY_SIZE]> {
+        let entry = self.key_material_entry(user_id)?;
+        match entry.get_password() {
+            Ok(encoded) => {
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(encoded.trim())
+                    .map_err(|e| {
+                        QGuardError::Storage(format!("decode device storage key: {e}"))
+                    })?;
+                if decoded.len() != crate::crypto::symmetric::KEY_SIZE {
+                    return Err(QGuardError::Storage(
+                        "device storage key has unexpected length".to_string(),
+                    ));
+                }
+                let mut key = [0u8; crate::crypto::symmetric::KEY_SIZE];
+                key.copy_from_slice(&decoded);
+                Ok(key)
+            }
+            Err(KeyringError::NoEntry) => {
+                let key = crate::crypto::symmetric::random_key();
+                let encoded = base64::engine::general_purpose::STANDARD.encode(key);
+                entry.set_password(&encoded).map_err(|e| {
+                    QGuardError::Storage(format!(
+                        "write device storage key to OS keychain: {e}"
+                    ))
+                })?;
+                Ok(key)
+            }
+            Err(error) => Err(QGuardError::Storage(format!(
+                "read device storage key from OS keychain: {error}"
+            ))),
+        }
     }
 
     fn load_device_key_material(
         &self,
         user_id: &str,
     ) -> Result<Option<PersistedDeviceKeyMaterial>> {
-        let entry = self.key_material_entry(user_id)?;
-        match entry.get_secret() {
-            Ok(mut bytes) => {
-                let material = Self::decode_device_key_material(user_id, &bytes)?;
-                bytes.zeroize();
-                return Ok(Some(material));
-            }
-            Err(KeyringError::NoEntry) => {}
-            Err(error) => {
-                if let Some(material) = self.load_legacy_device_key_material(user_id)? {
-                    return Ok(Some(material));
-                }
-                return Err(QGuardError::Storage(format!(
-                    "read OS keychain device key material: {error}"
-                )));
-            }
+        let encrypted_path = self.encrypted_key_material_path(user_id);
+        if encrypted_path.exists() {
+            let bytes = std::fs::read(&encrypted_path).map_err(|e| {
+                QGuardError::Storage(format!("read encrypted device key material: {e}"))
+            })?;
+            let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes).map_err(|e| {
+                QGuardError::Storage(format!("decode encrypted device key material: {e}"))
+            })?;
+            let key = self.device_storage_key(user_id)?;
+            let mut plaintext =
+                crate::crypto::symmetric::decrypt(&key, &file.envelope, KEY_MATERIAL_AAD)?;
+            let material = Self::decode_device_key_material(user_id, &plaintext);
+            plaintext.zeroize();
+            return Ok(Some(material?));
         }
 
+        // Migrate any legacy plaintext key material written by older builds.
         if let Some(material) = self.load_legacy_device_key_material(user_id)? {
             self.persist_device_key_material(
                 user_id,
@@ -403,14 +463,20 @@ impl AppState {
         };
         let mut encoded = serde_json::to_vec(&material)
             .map_err(|e| QGuardError::Storage(format!("encode device key material: {e}")))?;
-        let result = self
-            .key_material_entry(user_id)?
-            .set_secret(&encoded)
-            .map_err(|e| {
-                QGuardError::Storage(format!("write OS keychain device key material: {e}"))
-            });
+        let key = self.device_storage_key(user_id)?;
+        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, KEY_MATERIAL_AAD);
         encoded.zeroize();
-        result?;
+        let file = EncryptedKeyMaterialFile {
+            version: 1,
+            envelope: envelope?,
+        };
+        let serialized = serde_json::to_vec(&file).map_err(|e| {
+            QGuardError::Storage(format!("encode encrypted device key material: {e}"))
+        })?;
+        std::fs::write(self.encrypted_key_material_path(user_id), &serialized).map_err(|e| {
+            QGuardError::Storage(format!("write encrypted device key material: {e}"))
+        })?;
+        // Remove any legacy plaintext material now that the encrypted copy is authoritative.
         let _ = std::fs::remove_file(self.key_material_path(user_id));
         Ok(())
     }
@@ -685,5 +751,69 @@ impl AppState {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("qguard-msg-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn cleanup(user_id: &str, dir: &PathBuf) {
+        if let Ok(entry) =
+            keyring::Entry::new(KEYRING_SERVICE, &AppState::safe_user_key(user_id))
+        {
+            let _ = entry.delete_credential();
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Regression test for the keyring mock-store bug: a brand-new `AppState`
+    /// over the same data directory (i.e. an app restart) must restore the same
+    /// device identity and signed prekey instead of regenerating them. Before the
+    /// fix, every restart minted a new device + prekeys, orphaning every prior
+    /// message ("not found: local signed prekey").
+    #[test]
+    fn device_identity_persists_across_restart() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+
+        let first = {
+            let state = AppState::new(dir.clone()).expect("create state");
+            let bundle = state.ensure_identity(&user_id, "Test Device").expect("ensure 1");
+            let prekey = state
+                .signed_prekey
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .public
+                .prekey_id
+                .clone();
+            (bundle.device_id, prekey)
+        };
+
+        let second = {
+            let state = AppState::new(dir.clone()).expect("create state");
+            let bundle = state.ensure_identity(&user_id, "Test Device").expect("ensure 2");
+            let prekey = state
+                .signed_prekey
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .public
+                .prekey_id
+                .clone();
+            (bundle.device_id, prekey)
+        };
+
+        cleanup(&user_id, &dir);
+
+        assert_eq!(first.0, second.0, "device id must survive a restart");
+        assert_eq!(first.1, second.1, "signed prekey must survive a restart");
     }
 }

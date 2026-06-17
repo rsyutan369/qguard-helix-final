@@ -49,6 +49,28 @@ function folderRootName(files: File[]): string {
   return root || 'Selected Folder'
 }
 
+// ─── Q-Shrink Vault Engine integration ─────────────────────
+// Pre-encryption data reduction (content-defined chunking → deduplication →
+// adaptive compression → manifest + Merkle) runs on the PLAINTEXT before the
+// zero-knowledge envelope seals it. The engine emits a self-describing QSHRN1
+// container that is transparently rehydrated on download (restore decides on the
+// container magic, never on this metadata). Optimization is best-effort and must
+// never block a secure upload — on any failure we seal the original bytes.
+async function optimizeForVault(
+  data: Uint8Array,
+  fileName: string,
+  mimeType?: string,
+): Promise<{ package: Uint8Array; report: Record<string, unknown> | null }> {
+  try {
+    const { optimizeFile } = await import('@/lib/vault/q-shrink')
+    const result = await optimizeFile(data, { path: fileName, mime: mimeType })
+    return { package: result.package, report: result.report as unknown as Record<string, unknown> }
+  } catch (err) {
+    console.warn('[q-shrink] optimization skipped, sealing raw bytes:', err)
+    return { package: data, report: null }
+  }
+}
+
 export default function VaultUploadPanel({
   encPublicKey,
   x25519Public,
@@ -84,15 +106,19 @@ export default function VaultUploadPanel({
   const encryptAndUploadOne = async (targetFile: File, folderId: string | null, progressBase = 0, progressSpan = 100) => {
     const pct = (local: number) => Math.min(99, Math.round(progressBase + (local / 100) * progressSpan))
     const fileData = new Uint8Array(await targetFile.arrayBuffer())
+    let optimized: { package: Uint8Array; report: Record<string, unknown> | null } | null = null
 
     try {
       setEncStage({ stage: 'encrypting', percent: pct(10), message: `Loading PQC engine for ${targetFile.name}...` })
       const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
 
-      setEncStage({ stage: 'encrypting', percent: pct(24), message: `Computing SHA3 + Merkle proof context for ${targetFile.name}...` })
+      // Q-Shrink: reduce the plaintext (chunk → dedup → compress) BEFORE sealing.
+      // Best-effort — on any failure the original bytes are sealed unchanged.
+      setEncStage({ stage: 'encrypting', percent: pct(24), message: `Optimizing ${targetFile.name} with Q-Shrink (chunk → dedup → compress)...` })
+      optimized = await optimizeForVault(fileData, relativePath(targetFile), targetFile.type)
 
       setEncStage({ stage: 'encrypting', percent: pct(42), message: `Encrypting ${targetFile.name} with AES-256-GCM...` })
-      const result = encryptFileLocal(fileData, encPublicKey, x25519Public)
+      const result = encryptFileLocal(optimized.package, encPublicKey, x25519Public)
 
       setEncStage({ stage: 'encrypting', percent: pct(64), message: `Signing ${targetFile.name} with ML-DSA-65...` })
       const signedMetadata = JSON.stringify({
@@ -104,6 +130,7 @@ export default function VaultUploadPanel({
         merkleProof: result.merkleIntegrity.proof,
         encryptionAlgorithm: result.algorithm,
         envelope: result.envelopeMeta,
+        qshrink: optimized.report,
         timestamp: new Date().toISOString(),
       })
       const signature = signData(new TextEncoder().encode(signedMetadata), sigSecretKey, ed25519SecretKey)
@@ -123,6 +150,7 @@ export default function VaultUploadPanel({
             ...result.envelopeMeta,
             merkle: result.merkleIntegrity,
             signedMetadata,
+            qshrink: optimized.report,
           },
           keyDerivationMeta: {
             kdf: 'HKDF-SHA3-256',
@@ -137,6 +165,8 @@ export default function VaultUploadPanel({
       })
     } finally {
       fileData.fill(0)
+      // Zero the optimized container too when it's a distinct buffer.
+      if (optimized && optimized.package !== fileData) optimized.package.fill(0)
     }
   }
 

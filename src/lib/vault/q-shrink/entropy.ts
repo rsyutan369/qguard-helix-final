@@ -70,13 +70,19 @@ export function looksIncompressible(data: Uint8Array): boolean {
  * MIME / extension families that are already entropy-coded. Used as a fast,
  * type-aware pre-filter before the (more expensive) entropy sample.
  */
+// Only types that are DEFINITELY already entropy-coded belong here. Note the
+// deliberate absence of 'application/octet-stream': that is the generic "type
+// unknown" fallback browsers assign to folder (webkitdirectory) and drag-drop
+// uploads — and that vault uploads default to — so it overwhelmingly covers
+// ordinary, compressible files (text, logs, CSV/JSON, source). Such unknown-type
+// inputs must fall through to the entropy gate, which measures the real data and
+// still skips genuinely random/encrypted blobs (entropy ≥ threshold).
 const PRECOMPRESSED_MIME = [
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/heic',
   'video/', 'audio/',
   'application/zip', 'application/x-7z-compressed', 'application/x-rar-compressed',
   'application/gzip', 'application/x-bzip2', 'application/x-xz', 'application/zstd',
   'application/pdf',
-  'application/octet-stream',
 ]
 
 const PRECOMPRESSED_EXT = [
