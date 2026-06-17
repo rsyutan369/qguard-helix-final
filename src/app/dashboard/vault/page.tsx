@@ -6,6 +6,7 @@ import QuantumVault, { type VaultCardTelemetry, type VaultHeroMetrics } from '@/
 import ShareLinkModal from '@/components/quantum-vault/ShareLinkModal'
 import ShareSecurityAlerts from '@/components/quantum-vault/ShareSecurityAlerts'
 import VaultFolderExplorer from '@/components/quantum-vault/VaultFolderExplorer'
+import QShrinkEnginePanel from '@/components/quantum-vault/QShrinkEnginePanel'
 import PortableIdentityCard from '@/components/quantum-vault/PortableIdentityCard'
 import MoveToModal from '@/components/quantum-vault/MoveToModal'
 import VaultAlertDialog, {
@@ -14,6 +15,7 @@ import VaultAlertDialog, {
 } from '@/components/quantum-vault/VaultAlertDialog'
 import type { ZKMasterKeys } from '@/lib/vault/client-crypto'
 import { CURRENT_VAULT_KEM, CURRENT_VAULT_SECURITY_LEVEL } from '@/lib/vault/kem-profile'
+import { optimizeFile as qsOptimizeFile, restoreFile as qsRestoreFile } from '@/lib/vault/q-shrink'
 import * as vaultSvc from '@/lib/vault/vault-service-enhanced'
 
 // ─── Desktop Download Manifest ─────────────────────────────
@@ -347,6 +349,38 @@ function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(pairs.map((byte) => parseInt(byte, 16)))
 }
 
+// ─── Q-Shrink Vault Engine integration ─────────────────────
+// Pre-encryption data reduction (content-defined chunking → deduplication →
+// adaptive compression → manifest + Merkle) with exact post-decryption
+// restoration. Optimization runs on the PLAINTEXT before the zero-knowledge
+// envelope seals it; the engine emits a self-describing QSHRN1 container that is
+// transparently rehydrated on download. Old (pre-Q-Shrink) files are detected
+// and pass through unchanged.
+
+async function optimizeForVault(
+  data: Uint8Array,
+  fileName: string,
+  mimeType?: string,
+): Promise<{ package: Uint8Array; report: Record<string, unknown> | null }> {
+  try {
+    const result = await qsOptimizeFile(data, { path: fileName, mime: mimeType })
+    return {
+      package: result.package,
+      report: result.report as unknown as Record<string, unknown>,
+    }
+  } catch (err) {
+    // Optimization is best-effort and must never block a secure upload —
+    // on any failure we seal the original bytes unchanged.
+    console.warn('[q-shrink] optimization skipped, sealing raw bytes:', err)
+    return { package: data, report: null }
+  }
+}
+
+async function restoreFromVault(bytes: Uint8Array, envelopeMeta: unknown): Promise<Uint8Array> {
+  const qshrink = asRecord(envelopeMeta)?.qshrink as { applied?: boolean } | undefined
+  return qsRestoreFile(bytes, qshrink ?? null)
+}
+
 export default function VaultPage() {
   const { session } = useAuth()
 
@@ -543,7 +577,9 @@ export default function VaultPage() {
     try {
       const fileData = new Uint8Array(await file.arrayBuffer())
       const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
-      const result = encryptFileLocal(fileData, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
+      // Q-Shrink: reduce the plaintext (chunk → dedup → compress) BEFORE sealing.
+      const optimized = await optimizeForVault(fileData, file.name, file.type)
+      const result = encryptFileLocal(optimized.package, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
       const signedMetadata = JSON.stringify({
         fileName: file.name,
         fileSize: result.originalSize,
@@ -553,6 +589,7 @@ export default function VaultPage() {
         merkleProof: result.merkleIntegrity.proof,
         encryptionAlgorithm: result.algorithm,
         envelope: result.envelopeMeta,
+        qshrink: optimized.report,
         timestamp: new Date().toISOString(),
       })
       const signature = signData(new TextEncoder().encode(signedMetadata), currentZkKeys.signSecretKey, currentZkKeys.ed25519Secret)
@@ -567,7 +604,7 @@ export default function VaultPage() {
           contentHash: result.integrityHash,
           encryptedContentHash: result.encryptedIntegrityHash,
           aadHash: result.aadHash,
-          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata },
+          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata, qshrink: optimized.report },
           keyDerivationMeta: {
             kdf: 'HKDF-SHA3-256',
             hash: 'SHA3-256',
@@ -580,6 +617,7 @@ export default function VaultPage() {
         },
       })
       fileData.fill(0)
+      if (optimized.package !== fileData) optimized.package.fill(0)
       setFiles((prev) => [uploaded, ...prev])
       pushTelemetry('file_upload_completed', `File upload completed: ${file.name}`)
     } catch (err) {
@@ -620,8 +658,10 @@ export default function VaultPage() {
       }
 
       const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
+      setEncryptProgress({ stage: 'encrypting', percent: 45, message: 'Optimizing with Q-Shrink (chunk → dedup → compress)...' })
+      const optimized = await optimizeForVault(fileData, filename, mimeType)
       setEncryptProgress({ stage: 'encrypting', percent: 50, message: 'Encrypting with X25519 + ML-KEM-1024 + AES-256-GCM and Merkle proof...' })
-      const result = encryptFileLocal(fileData, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
+      const result = encryptFileLocal(optimized.package, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
       const signedMetadata = JSON.stringify({
         fileName: filename,
         fileSize: result.originalSize,
@@ -631,6 +671,7 @@ export default function VaultPage() {
         merkleProof: result.merkleIntegrity.proof,
         encryptionAlgorithm: result.algorithm,
         envelope: result.envelopeMeta,
+        qshrink: optimized.report,
         timestamp: new Date().toISOString(),
       })
       const signature = signData(new TextEncoder().encode(signedMetadata), currentZkKeys.signSecretKey, currentZkKeys.ed25519Secret)
@@ -650,7 +691,7 @@ export default function VaultPage() {
           contentHash: result.integrityHash,
           encryptedContentHash: result.encryptedIntegrityHash,
           aadHash: result.aadHash,
-          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata },
+          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata, qshrink: optimized.report },
           keyDerivationMeta: {
             kdf: 'HKDF-SHA3-256',
             hash: 'SHA3-256',
@@ -663,6 +704,7 @@ export default function VaultPage() {
         }
       })
 
+      if (optimized.package !== fileData) optimized.package.fill(0)
       setFiles((prev) => [uploaded, ...prev.filter((f) => f.id !== fileId)])
       setEncryptProgress({ stage: 'complete', percent: 100, message: 'File encrypted with X25519 + ML-KEM-1024 + AES-256-GCM and Merkle proof' })
       pushTelemetry('encryption_completed', `Encryption completed: ${filename}`)
@@ -714,14 +756,17 @@ export default function VaultPage() {
           file.envelope_meta,
           currentZkKeys.x25519Secret,
         )
+        // Q-Shrink: rehydrate the original file from the reduced package.
+        const restored = await restoreFromVault(decrypted, file.envelope_meta)
 
-        const blob = new Blob([decrypted.slice()], { type: file.mime_type || 'application/octet-stream' })
+        const blob = new Blob([restored.slice()], { type: file.mime_type || 'application/octet-stream' })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
         a.download = file.name
         a.click()
         URL.revokeObjectURL(url)
+        if (restored !== decrypted) restored.fill(0)
         decrypted.fill(0)
         pushTelemetry('decryption_completed', `Decryption completed: ${file.name}`)
         await vaultSvc.logAudit('decryption_completed', 'info', 'file', fileId, `Decryption completed: ${file.name}`)
@@ -919,12 +964,14 @@ export default function VaultPage() {
           throw new Error('Open the vault with your passphrase before sharing this encrypted file.')
         }
         const { decryptFileLocal } = await import('@/lib/vault/client-crypto')
-        return decryptFileLocal(
+        const decrypted = decryptFileLocal(
           rawData, file.kem_ciphertext!, file.aes_nonce!,
           currentZkKeys.encSecretKey, file.integrity_hash || undefined,
           file.envelope_meta,
           currentZkKeys.x25519Secret,
         )
+        // Q-Shrink: share the original file bytes, not the reduced package.
+        return restoreFromVault(decrypted, file.envelope_meta)
       }
 
       if (isEncrypted) {
@@ -1528,6 +1575,9 @@ export default function VaultPage() {
       {/* ── Files Tab ────────────────────────────────────── */}
       {activeTab === 'files' && (
         <>
+          {/* Q-Shrink Vault Engine — pre-encryption data optimization */}
+          <QShrinkEnginePanel files={files} />
+
           {/* Verify Result Banner */}
           {verifyResult && (
             <div className="q-card animate-fade-in-up" style={{
