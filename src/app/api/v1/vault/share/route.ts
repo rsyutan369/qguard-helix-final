@@ -38,12 +38,23 @@ export async function POST(request: NextRequest) {
       originalFilename,
       originalSize,
       mimeType,
-      expiresIn,       // seconds from now (optional)
-      maxDownloads,    // integer (optional)
+      expiresIn,        // seconds from now (legacy callers)
+      expiresAt: expiresAtInput, // ISO string (current client)
+      maxDownloads,     // integer (optional)
+      isOneTime,
       isPasswordProtected,
-      passwordSalt,
       passwordHash,
+      encryptionMetadata,
     } = body
+
+    // Crypto material (passwordSalt / passwordKdf / recipientWrap / sharingMode)
+    // arrives nested under encryptionMetadata, not at the top level.
+    const clientMeta: Record<string, unknown> =
+      encryptionMetadata && typeof encryptionMetadata === 'object' ? encryptionMetadata : {}
+    const passwordSalt = clientMeta.passwordSalt ?? body.passwordSalt ?? null
+    const passwordKdf = clientMeta.passwordKdf ?? null
+    const recipientWrap = clientMeta.recipientWrap ?? null
+    const sharingMode = clientMeta.sharingMode ?? null
 
     // Validate required fields
     if (!fileId || !encryptedPayload || !iv || !integrityHash || !originalFilename || !originalSize) {
@@ -68,9 +79,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Calculate expiration
+    // Calculate expiration — accept an ISO string (current client) or a seconds offset.
     let expiresAt: string | null = null
-    if (expiresIn && typeof expiresIn === 'number' && expiresIn > 0) {
+    if (typeof expiresAtInput === 'string' && expiresAtInput) {
+      expiresAt = expiresAtInput
+    } else if (expiresIn && typeof expiresIn === 'number' && expiresIn > 0) {
       expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
     }
 
@@ -82,21 +95,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Insert shared link
+    // Insert shared link. The schema stores share crypto material in the
+    // encryption_metadata JSONB column (payload, iv, integrity hash, recipient
+    // wrap, password KDF) and keys the row by user_id (RLS: user_id = auth.uid()).
     const insertData: Record<string, unknown> = {
+      user_id: user.id,
       file_id: fileId,
-      owner_id: user.id,
-      encrypted_payload: encryptedPayload,
-      iv,
-      integrity_hash: integrityHash,
       original_filename: originalFilename,
       original_size: originalSize,
       mime_type: mimeType || 'application/octet-stream',
       expires_at: expiresAt,
-      max_downloads: maxDownloads && typeof maxDownloads === 'number' ? maxDownloads : null,
+      max_downloads: typeof maxDownloads === 'number' ? maxDownloads : null,
+      is_one_time: !!isOneTime,
       is_password_protected: !!isPasswordProtected,
-      password_salt: isPasswordProtected ? passwordSalt : null,
-      password_hash: isPasswordProtected ? passwordHash : null,
+      password_hash: isPasswordProtected ? (passwordHash ?? null) : null,
+      encryption_metadata: {
+        payload: encryptedPayload,
+        iv,
+        integrityHash,
+        ...(recipientWrap ? { recipientWrap } : {}),
+        ...(isPasswordProtected && passwordSalt ? { passwordSalt } : {}),
+        ...(isPasswordProtected && passwordKdf ? { passwordKdf } : {}),
+        ...(sharingMode ? { sharingMode } : {}),
+      },
     }
 
     const { data: link, error: dbError } = await client
@@ -107,8 +128,20 @@ export async function POST(request: NextRequest) {
 
     if (dbError) {
       console.error('Share link creation error:', dbError)
+      const isDev = process.env.NODE_ENV === 'development'
       return NextResponse.json(
-        { error: { code: 'DB_ERROR', message: 'Failed to create shared link' } },
+        {
+          error: {
+            code: 'DB_ERROR',
+            message: 'Failed to create shared link',
+            // Surface the real Postgres error in dev so schema/RLS issues are visible.
+            ...(isDev && {
+              _debug: [dbError.code, dbError.message, dbError.details, dbError.hint]
+                .filter(Boolean)
+                .join(' | '),
+            }),
+          },
+        },
         { status: 500 }
       )
     }
@@ -147,7 +180,7 @@ export async function GET(request: NextRequest) {
     const { data: links } = await client
       .from('vault_shared_links')
       .select('id, file_id, original_filename, original_size, mime_type, expires_at, max_downloads, download_count, is_revoked, is_password_protected, is_destroyed, failed_password_attempts, created_at, last_accessed_at')
-      .eq('owner_id', user.id)
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false })
 
     return NextResponse.json({ data: { links: links || [] } })
@@ -198,7 +231,7 @@ export async function DELETE(request: NextRequest) {
         .from('vault_shared_links')
         .update({ is_revoked: true })
         .eq('id', linkId)
-        .eq('owner_id', user.id)
+        .eq('user_id', user.id)
 
       if (error) {
         return NextResponse.json(
@@ -214,7 +247,7 @@ export async function DELETE(request: NextRequest) {
         .from('vault_shared_links')
         .delete()
         .eq('id', linkId)
-        .eq('owner_id', user.id)
+        .eq('user_id', user.id)
 
       if (error) {
         return NextResponse.json(

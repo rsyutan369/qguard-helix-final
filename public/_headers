@@ -1,0 +1,23 @@
+# QGuard Helix — HTTP security headers
+# Format: Netlify and Cloudflare Pages both read this file from the publish dir.
+# Vite copies public/ -> dist/, so this ships automatically with every build.
+#
+# NOTE: the full Content-Security-Policy (script-src hash, your Supabase
+# connect-src, etc.) is injected into index.html as a <meta> at build time and is
+# always correct for the deployed build. These headers add what a <meta> CANNOT:
+# HSTS, frame-ancestors (clickjacking), and the other transport/isolation headers.
+
+/*
+  Strict-Transport-Security: max-age=63072000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), magnetometer=(), gyroscope=(), accelerometer=()
+  Cross-Origin-Opener-Policy: same-origin-allow-popups
+  Content-Security-Policy: frame-ancestors 'none'
+
+# Share links carry the decryption key in the URL #fragment — never leak it via
+# Referer, and never cache the response.
+/vault/shared/*
+  Referrer-Policy: no-referrer
+  Cache-Control: no-store, max-age=0

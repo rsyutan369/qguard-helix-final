@@ -62,6 +62,7 @@ interface RecipientPublicKeys {
 }
 
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 const ARGON2ID_PARAMS = {
   memoryKiB: 65536,
   iterations: 3,
@@ -298,21 +299,87 @@ export function parseRecipientPublicKeys(input: string): RecipientPublicKeys {
   return { mlkemPublic, x25519Public, fingerprint }
 }
 
+// ─── Embedded share metadata (zero-knowledge filename/MIME in the token) ──────
+// The filename + MIME are sealed *inside* the encrypted share payload — under the
+// fragment key, derived password key, or recipient-wrapped key — so the server
+// never stores them in cleartext. The recipient, who holds the key, recovers them
+// on decrypt. Backward compatible: legacy payloads have no envelope header and are
+// returned as raw bytes (filename falls back to the server-provided value).
+
+const SHARE_ENVELOPE_MAGIC = new Uint8Array([0x51, 0x47, 0x53, 0x46, 0x31]) // "QGSF1"
+const SHARE_ENVELOPE_VERSION = 1
+const SHARE_ENVELOPE_HEADER = SHARE_ENVELOPE_MAGIC.length + 1 + 4
+
+export interface ShareMeta {
+  filename: string
+  mime?: string
+}
+
+export interface UnpackedShare {
+  data: Uint8Array
+  filename?: string
+  mimeType?: string
+}
+
+function packShareEnvelope(meta: ShareMeta, data: Uint8Array): Uint8Array {
+  const header = textEncoder.encode(JSON.stringify({ filename: meta.filename, mime: meta.mime ?? '' }))
+  const out = new Uint8Array(SHARE_ENVELOPE_HEADER + header.length + data.length)
+  out.set(SHARE_ENVELOPE_MAGIC, 0)
+  out[SHARE_ENVELOPE_MAGIC.length] = SHARE_ENVELOPE_VERSION
+  new DataView(out.buffer).setUint32(SHARE_ENVELOPE_MAGIC.length + 1, header.length, true)
+  out.set(header, SHARE_ENVELOPE_HEADER)
+  out.set(data, SHARE_ENVELOPE_HEADER + header.length)
+  return out
+}
+
+/**
+ * Split a decrypted share payload into {data, filename, mime}. Only treats the
+ * bytes as an envelope when the magic, a sane header length, AND a valid JSON
+ * header with a filename are all present — so a legacy raw file that merely
+ * begins with the magic bytes can never be mis-parsed.
+ */
+export function unpackShareEnvelope(bytes: Uint8Array): UnpackedShare {
+  if (bytes.length < SHARE_ENVELOPE_HEADER) return { data: bytes }
+  for (let i = 0; i < SHARE_ENVELOPE_MAGIC.length; i++) {
+    if (bytes[i] !== SHARE_ENVELOPE_MAGIC[i]) return { data: bytes }
+  }
+  if (bytes[SHARE_ENVELOPE_MAGIC.length] !== SHARE_ENVELOPE_VERSION) return { data: bytes }
+  try {
+    const headerLen = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      .getUint32(SHARE_ENVELOPE_MAGIC.length + 1, true)
+    const headerStart = SHARE_ENVELOPE_HEADER
+    if (headerStart + headerLen > bytes.length) return { data: bytes }
+    const header = JSON.parse(textDecoder.decode(bytes.subarray(headerStart, headerStart + headerLen))) as {
+      filename?: string
+      mime?: string
+    }
+    if (typeof header.filename !== 'string') return { data: bytes }
+    return {
+      data: bytes.slice(headerStart + headerLen),
+      filename: header.filename || undefined,
+      mimeType: typeof header.mime === 'string' && header.mime ? header.mime : undefined,
+    }
+  } catch {
+    return { data: bytes }
+  }
+}
+
 /**
  * Encrypts data for a standard share link.
- * Generates a random 256-bit key.
+ * Generates a random 256-bit key. When `meta` is supplied, the filename + MIME
+ * are sealed inside the payload so the server stores no cleartext name.
  */
-export async function encryptForSharing(fileData: Uint8Array) {
+export async function encryptForSharing(fileData: Uint8Array, meta?: ShareMeta) {
   const shareKey = randomBytes(32)
   const iv = randomBytes(12)
 
-  const aes = gcm(shareKey, iv)
-  const encrypted = aes.encrypt(fileData)
+  const plain = meta ? packShareEnvelope(meta, fileData) : fileData
+  const encrypted = gcm(shareKey, iv).encrypt(plain)
 
   return {
     encryptedPayload: toBase64(encrypted),
     iv: toHex(iv),
-    integrityHash: toHex(sha3_256(fileData)),
+    integrityHash: toHex(sha3_256(plain)),
     shareKey: toHex(shareKey)
   }
 }
@@ -321,7 +388,7 @@ export async function encryptForSharing(fileData: Uint8Array) {
  * Encrypts data for a password-protected share link.
  * Derives the key from the password using the current hardened profile.
  */
-export async function encryptForSharingWithPassword(fileData: Uint8Array, password: string) {
+export async function encryptForSharingWithPassword(fileData: Uint8Array, password: string, meta?: ShareMeta) {
   const salt = randomBytes(32)
   const passwordKdf = CURRENT_PASSWORD_KDF
   const shareKey = await deriveShareKey(password, salt, passwordKdf)
@@ -330,8 +397,8 @@ export async function encryptForSharingWithPassword(fileData: Uint8Array, passwo
   const passwordHashBytes = await derivePasswordHash(password, salt, passwordKdf)
 
   const iv = randomBytes(12)
-  const aes = gcm(shareKey, iv)
-  const encrypted = aes.encrypt(fileData)
+  const plain = meta ? packShareEnvelope(meta, fileData) : fileData
+  const encrypted = gcm(shareKey, iv).encrypt(plain)
   const passwordHash = toHex(passwordHashBytes)
 
   shareKey.fill(0)
@@ -340,18 +407,19 @@ export async function encryptForSharingWithPassword(fileData: Uint8Array, passwo
   return {
     encryptedPayload: toBase64(encrypted),
     iv: toHex(iv),
-    integrityHash: toHex(sha3_256(fileData)),
+    integrityHash: toHex(sha3_256(plain)),
     passwordSalt: toHex(salt),
     passwordHash,
     passwordKdf,
   }
 }
 
-export async function encryptForRecipientSharing(fileData: Uint8Array, recipientPublicKeyInput: string) {
+export async function encryptForRecipientSharing(fileData: Uint8Array, recipientPublicKeyInput: string, meta?: ShareMeta) {
   const recipient = parseRecipientPublicKeys(recipientPublicKeyInput)
   const shareKey = randomBytes(32)
   const iv = randomBytes(12)
-  const encrypted = gcm(shareKey, iv).encrypt(fileData)
+  const plain = meta ? packShareEnvelope(meta, fileData) : fileData
+  const encrypted = gcm(shareKey, iv).encrypt(plain)
   const { name: kemName, kem } = kemForPublicKey(recipient.mlkemPublic)
   const { sharedSecret, cipherText } = kem.encapsulate(recipient.mlkemPublic)
   const wrapNonce = randomBytes(12)
@@ -397,7 +465,7 @@ export async function encryptForRecipientSharing(fileData: Uint8Array, recipient
   return {
     encryptedPayload: toBase64(encrypted),
     iv: toHex(iv),
-    integrityHash: toHex(sha3_256(fileData)),
+    integrityHash: toHex(sha3_256(plain)),
     recipientWrap,
   }
 }
@@ -467,12 +535,12 @@ export async function decryptSharedFile(
   iv: string,
   shareKey: string,
   integrityHash?: string,
-): Promise<Uint8Array> {
+): Promise<UnpackedShare> {
   const key = fromHex(shareKey)
   try {
     const decrypted = gcm(key, fromHex(iv)).decrypt(fromPayload(encryptedPayload))
     verifyIntegrity(decrypted, integrityHash)
-    return decrypted
+    return unpackShareEnvelope(decrypted)
   } finally {
     key.fill(0)
   }
@@ -486,7 +554,7 @@ export async function decryptSharedFileWithPassword(
   passwordSalt: string,
   integrityHash?: string,
   passwordKdf?: PasswordKdfMetadata | null,
-): Promise<Uint8Array> {
+): Promise<UnpackedShare> {
   const localKey = await deriveShareKey(password, fromHex(passwordSalt), passwordKdf)
   const fragmentKey = shareKey ? fromHex(shareKey) : null
 
@@ -497,7 +565,7 @@ export async function decryptSharedFileWithPassword(
 
     const decrypted = gcm(localKey, fromHex(iv)).decrypt(fromPayload(encryptedPayload))
     verifyIntegrity(decrypted, integrityHash)
-    return decrypted
+    return unpackShareEnvelope(decrypted)
   } finally {
     fragmentKey?.fill(0)
     localKey.fill(0)

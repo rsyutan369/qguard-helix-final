@@ -576,10 +576,13 @@ export default function VaultPage() {
     pushTelemetry('file_upload_started', `File upload started: ${file.name}`)
     try {
       const fileData = new Uint8Array(await file.arrayBuffer())
-      const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
+      const { encryptFileLocal, signData, sealFileMeta } = await import('@/lib/vault/client-crypto')
       // Q-Shrink: reduce the plaintext (chunk → dedup → compress) BEFORE sealing.
       const optimized = await optimizeForVault(fileData, file.name, file.type)
       const result = encryptFileLocal(optimized.package, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
+      // Zero-knowledge filename/MIME: store an encrypted copy so the name no longer
+      // depends on the cleartext column. Only the vault owner's key can open it.
+      const sealedMeta = sealFileMeta({ filename: file.name, mime: file.type || undefined }, currentZkKeys.encSecretKey)
       const signedMetadata = JSON.stringify({
         fileName: file.name,
         fileSize: result.originalSize,
@@ -604,7 +607,7 @@ export default function VaultPage() {
           contentHash: result.integrityHash,
           encryptedContentHash: result.encryptedIntegrityHash,
           aadHash: result.aadHash,
-          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata, qshrink: optimized.report },
+          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata, qshrink: optimized.report, sealedMeta },
           keyDerivationMeta: {
             kdf: 'HKDF-SHA3-256',
             hash: 'SHA3-256',
@@ -657,11 +660,12 @@ export default function VaultPage() {
         return
       }
 
-      const { encryptFileLocal, signData } = await import('@/lib/vault/client-crypto')
+      const { encryptFileLocal, signData, sealFileMeta } = await import('@/lib/vault/client-crypto')
       setEncryptProgress({ stage: 'encrypting', percent: 45, message: 'Optimizing with Q-Shrink (chunk → dedup → compress)...' })
       const optimized = await optimizeForVault(fileData, filename, mimeType)
       setEncryptProgress({ stage: 'encrypting', percent: 50, message: 'Encrypting with X25519 + ML-KEM-1024 + AES-256-GCM and Merkle proof...' })
       const result = encryptFileLocal(optimized.package, currentZkKeys.encPublicKey, currentZkKeys.x25519Public)
+      const sealedMeta = sealFileMeta({ filename, mime: mimeType || undefined }, currentZkKeys.encSecretKey)
       const signedMetadata = JSON.stringify({
         fileName: filename,
         fileSize: result.originalSize,
@@ -691,7 +695,7 @@ export default function VaultPage() {
           contentHash: result.integrityHash,
           encryptedContentHash: result.encryptedIntegrityHash,
           aadHash: result.aadHash,
-          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata, qshrink: optimized.report },
+          envelopeMeta: { ...result.envelopeMeta, merkle: result.merkleIntegrity, signedMetadata, qshrink: optimized.report, sealedMeta },
           keyDerivationMeta: {
             kdf: 'HKDF-SHA3-256',
             hash: 'SHA3-256',

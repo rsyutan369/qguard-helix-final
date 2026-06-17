@@ -2,6 +2,7 @@ import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
 import { ed25519, x25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { pbkdf2Async } from '@noble/hashes/pbkdf2.js'
+import { argon2idAsync } from '@noble/hashes/argon2.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { sha3_256, sha3_512 } from '@noble/hashes/sha3.js'
 import { gcm } from '@noble/ciphers/aes.js'
@@ -153,6 +154,33 @@ function normalizeEnvelopeMeta(meta?: VaultEnvelopeMeta | Record<string, unknown
   return meta as VaultEnvelopeMeta
 }
 
+/**
+ * Argon2id KEK profile. Memory-hard key stretching resists GPU/ASIC and quantum
+ * (Grover) brute-force of a *harvested* wrapped-key bundle far better than PBKDF2.
+ * Tuned for an interactive browser unlock: ~19 MiB, 2 passes (OWASP-balanced).
+ * Params are persisted in the bundle so they can be raised later without breaking
+ * already-wrapped vaults.
+ */
+export const ARGON2_KEK_PROFILE = { t: 2, m: 19456, p: 1 } as const
+
+async function deriveArgon2Material(
+  passphrase: string,
+  salt: Uint8Array,
+  params: { t: number; m: number; p: number },
+): Promise<Uint8Array> {
+  return argon2idAsync(passphrase, salt, { t: params.t, m: params.m, p: params.p, dkLen: 32 })
+}
+
+/** True if a stored bundle predates the Argon2id KEK and should be re-wrapped on unlock. */
+export function bundleNeedsKdfUpgrade(wrappedBundleB64: string): boolean {
+  try {
+    const bundle = JSON.parse(atob(wrappedBundleB64))
+    return !String(bundle?.kdf ?? '').includes('Argon2id')
+  } catch {
+    return false
+  }
+}
+
 async function derivePassphraseMaterial(
   passphrase: string,
   salt: Uint8Array,
@@ -212,7 +240,7 @@ export async function generateMasterKeys(): Promise<ZKMasterKeys> {
 export async function wrapMasterKeys(keys: ZKMasterKeys, passphrase: string): Promise<string> {
   const salt = randomBytes(32)
   const iv = randomBytes(12)
-  const stretchedBits = await derivePassphraseMaterial(passphrase, salt, 600000, 'PBKDF2-SHA3-256')
+  const stretchedBits = await deriveArgon2Material(passphrase, salt, ARGON2_KEK_PROFILE)
 
   const wrappingMaterial = hkdf(
     sha3_256,
@@ -221,6 +249,7 @@ export async function wrapMasterKeys(keys: ZKMasterKeys, passphrase: string): Pr
     new TextEncoder().encode('qguard-vault-master-key-wrap'),
     32,
   )
+  stretchedBits.fill(0)
 
   const wrappingKey = await window.crypto.subtle.importKey(
     'raw',
@@ -229,7 +258,7 @@ export async function wrapMasterKeys(keys: ZKMasterKeys, passphrase: string): Pr
     false,
     ['encrypt']
   )
-  
+
   const payload = JSON.stringify({
     encSecretKey: toHex(keys.encSecretKey),
     signSecretKey: toHex(keys.signSecretKey),
@@ -240,22 +269,22 @@ export async function wrapMasterKeys(keys: ZKMasterKeys, passphrase: string): Pr
     ed25519Secret: keys.ed25519Secret ? toHex(keys.ed25519Secret) : undefined,
     ed25519Public: keys.ed25519Public ? toHex(keys.ed25519Public) : undefined,
   })
-  
+
   const encrypted = await window.crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     wrappingKey,
     new TextEncoder().encode(payload)
   )
-  
+
   const bundle = {
-    v: 2,
-    kdf: 'PBKDF2-SHA3-256+HKDF-SHA3-256',
-    iterations: 600000,
+    v: 3,
+    kdf: 'Argon2id+HKDF-SHA3-256',
+    argon2: { ...ARGON2_KEK_PROFILE },
     salt: toHex(salt),
     iv: toHex(iv),
     data: toHex(new Uint8Array(encrypted))
   }
-  
+
   return btoa(JSON.stringify(bundle))
 }
 
@@ -267,12 +296,17 @@ export async function unwrapMasterKeys(wrappedBundleB64: string, passphrase: str
   const salt = fromHex(bundle.salt)
   const iv = fromHex(bundle.iv)
   const data = fromHex(bundle.data)
-  const stretchedBits = await derivePassphraseMaterial(
-    passphrase,
-    salt,
-    bundle.iterations || 600000,
-    bundle.kdf || 'PBKDF2-SHA-256'
-  )
+  const kdf: string = bundle.kdf || 'PBKDF2-SHA-256'
+
+  // Dispatch on the stored KDF so existing bundles keep unwrapping after the
+  // Argon2id upgrade: v3 uses Argon2id; v1/v2 fall back to PBKDF2.
+  const stretchedBits = kdf.includes('Argon2id')
+    ? await deriveArgon2Material(passphrase, salt, {
+        t: bundle.argon2?.t ?? ARGON2_KEK_PROFILE.t,
+        m: bundle.argon2?.m ?? ARGON2_KEK_PROFILE.m,
+        p: bundle.argon2?.p ?? ARGON2_KEK_PROFILE.p,
+      })
+    : await derivePassphraseMaterial(passphrase, salt, bundle.iterations || 600000, kdf)
 
   const wrappingMaterial = bundle.v >= 2
     ? hkdf(
@@ -283,6 +317,7 @@ export async function unwrapMasterKeys(wrappedBundleB64: string, passphrase: str
         32,
       )
     : stretchedBits
+  stretchedBits.fill(0)
 
   const wrappingKey = await window.crypto.subtle.importKey(
     'raw',
@@ -447,6 +482,71 @@ export function encryptFileLocal(
     merkleIntegrity,
     originalSize: data.length,
     algorithm: envelopeMeta.kex + '+AES-256-GCM',
+  }
+}
+
+// ─── Encrypted file metadata (zero-knowledge filename / MIME protection) ──────
+// Filenames and MIME types must never sit in cleartext columns. We derive a
+// stable per-vault metadata key from the user's ML-KEM secret key (which never
+// leaves the client) and seal the sensitive fields with AES-256-GCM. Only the
+// ciphertext is stored; recovering it requires the passphrase-gated master key —
+// the same trust tier as the file content itself. A random nonce per seal means
+// identical filenames never produce identical ciphertext (no equality leakage).
+
+export interface SealedFileMeta {
+  v: 1
+  alg: 'AES-256-GCM'
+  kdf: 'HKDF-SHA3-256'
+  nonce: string
+  data: string
+}
+
+export interface FileMetaPlain {
+  filename: string
+  mime?: string
+}
+
+function deriveMetadataKey(encSecretKey: Uint8Array): Uint8Array {
+  return hkdf(
+    sha3_256,
+    encSecretKey,
+    new TextEncoder().encode('qguard-vault-metadata-salt'),
+    new TextEncoder().encode('qguard-vault-metadata-key'),
+    32,
+  )
+}
+
+/** Seal a file's name + MIME into an AES-256-GCM blob bound to the vault keys. */
+export function sealFileMeta(meta: FileMetaPlain, encSecretKey: Uint8Array): SealedFileMeta {
+  const metaKey = deriveMetadataKey(encSecretKey)
+  const nonce = randomBytes(12)
+  const plaintext = new TextEncoder().encode(
+    JSON.stringify({ filename: meta.filename, mime: meta.mime ?? '' }),
+  )
+  const ciphertext = gcm(metaKey, nonce).encrypt(plaintext)
+  metaKey.fill(0)
+  plaintext.fill(0)
+  return { v: 1, alg: 'AES-256-GCM', kdf: 'HKDF-SHA3-256', nonce: toHex(nonce), data: toHex(ciphertext) }
+}
+
+/** Open a sealed metadata blob; returns null if absent, malformed, or wrong key. */
+export function openFileMeta(
+  sealed: SealedFileMeta | Record<string, unknown> | null | undefined,
+  encSecretKey: Uint8Array,
+): FileMetaPlain | null {
+  if (!sealed || typeof sealed !== 'object') return null
+  const s = sealed as Partial<SealedFileMeta>
+  if (typeof s.nonce !== 'string' || typeof s.data !== 'string') return null
+  const metaKey = deriveMetadataKey(encSecretKey)
+  try {
+    const plaintext = gcm(metaKey, fromHex(s.nonce)).decrypt(fromHex(s.data))
+    const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as { filename?: string; mime?: string }
+    if (typeof parsed.filename !== 'string') return null
+    return { filename: parsed.filename, mime: parsed.mime || undefined }
+  } catch {
+    return null
+  } finally {
+    metaKey.fill(0)
   }
 }
 

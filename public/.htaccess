@@ -1,0 +1,33 @@
+# QGuard Helix — Apache config (Hostinger, cPanel, shared hosting, Apache 2.4+)
+# Vite copies public/ -> dist/. Upload the contents of dist/ to your web root;
+# this .htaccess then applies. (If your build pipeline strips dotfiles, copy this
+# file into the deployed web root manually.)
+#
+# The full Content-Security-Policy ships inside index.html as a <meta> at build
+# time. These headers add HSTS, clickjacking protection, and isolation headers.
+
+<IfModule mod_headers.c>
+  Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains"
+  Header always set X-Frame-Options "DENY"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), magnetometer=(), gyroscope=(), accelerometer=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin-allow-popups"
+  Header always set Content-Security-Policy "frame-ancestors 'none'"
+
+  # Share links: the decryption key is in the URL #fragment — protect it.
+  <If "%{REQUEST_URI} =~ m#^/vault/shared#">
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Cache-Control "no-store, max-age=0"
+  </If>
+</IfModule>
+
+# SPA fallback so client-side routes (e.g. /vault/shared/<id>) resolve on reload.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>

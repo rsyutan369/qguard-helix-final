@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
 
     const { data: linkData, error: queryError } = await db
       .from('vault_shared_links')
-      .select('id, owner_id, encrypted_payload, iv, integrity_hash, original_filename, original_size, mime_type, expires_at, max_downloads, download_count, is_revoked, is_password_protected, password_salt, password_hash, failed_password_attempts, is_destroyed, destroyed_reason')
+      .select('id, user_id, encryption_metadata, original_filename, original_size, mime_type, expires_at, max_downloads, download_count, is_revoked, is_password_protected, password_hash, failed_password_attempts, is_destroyed')
       .eq('id', linkId)
       .single()
 
@@ -98,6 +98,12 @@ export async function POST(request: NextRequest) {
         { status: 404 }
       ))
     }
+
+    // Share crypto material lives in the encryption_metadata JSONB column.
+    const meta: Record<string, unknown> =
+      linkData.encryption_metadata && typeof linkData.encryption_metadata === 'object'
+        ? (linkData.encryption_metadata as Record<string, unknown>)
+        : {}
 
     // ── Check destroyed (auto-destroyed after failed password attempts) ──
     if (linkData.is_destroyed) {
@@ -145,7 +151,8 @@ export async function POST(request: NextRequest) {
             originalFilename: linkData.original_filename,
             originalSize: linkData.original_size,
             mimeType: linkData.mime_type,
-            passwordSalt: linkData.password_salt,
+            passwordSalt: meta.passwordSalt ?? null,
+            passwordKdf: meta.passwordKdf ?? null,
             remainingAttempts: remaining,
           }
         }))
@@ -178,7 +185,7 @@ export async function POST(request: NextRequest) {
           emitShareLinkEvent({
             type: 'link_destroyed',
             linkId,
-            ownerId: linkData.owner_id,
+            ownerId: linkData.user_id,
             fileName: linkData.original_filename,
             attemptsUsed: 3,
             remainingAttempts: 0,
@@ -204,7 +211,7 @@ export async function POST(request: NextRequest) {
         emitShareLinkEvent({
           type: 'failed_attempt',
           linkId,
-          ownerId: linkData.owner_id,
+          ownerId: linkData.user_id,
           fileName: linkData.original_filename,
           attemptsUsed,
           remainingAttempts: remaining,
@@ -235,17 +242,20 @@ export async function POST(request: NextRequest) {
       p_user_agent: userAgent || null,
     })
 
-    // Return encrypted payload (decryption key is NOT here — it's in the URL fragment)
+    // Return encrypted payload (decryption key is NOT here — it's in the URL fragment
+    // for link shares, the password-derived key, or the recipient's private key).
     return withSecurityHeaders(NextResponse.json({
       data: {
-        encryptedPayload: linkData.encrypted_payload,
-        iv: linkData.iv,
-        integrityHash: linkData.integrity_hash,
+        encryptedPayload: meta.payload ?? null,
+        iv: meta.iv ?? null,
+        integrityHash: meta.integrityHash ?? null,
         originalFilename: linkData.original_filename,
         originalSize: linkData.original_size,
         mimeType: linkData.mime_type,
         isPasswordProtected: linkData.is_password_protected,
-        passwordSalt: linkData.password_salt,
+        passwordSalt: meta.passwordSalt ?? null,
+        passwordKdf: meta.passwordKdf ?? null,
+        recipientWrap: meta.recipientWrap ?? null,
       }
     }))
   } catch (err) {

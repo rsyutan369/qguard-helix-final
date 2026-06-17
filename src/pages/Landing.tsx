@@ -64,6 +64,21 @@ const ASSETS = {
   roadmap: roadmapImage
 };
 
+/**
+ * Local, deterministic initials avatar as an inline SVG data URI. Replaces the
+ * former third-party placeholder-face URLs (randomuser.me / loremfaces.net),
+ * which leaked visitor IPs to those services and are blocked by the app's
+ * Content-Security-Policy (img-src 'self' blob: data:). No network request.
+ */
+function initialsAvatar(name: string): string {
+  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? '').join('');
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  const hue = hash % 360;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="88" height="88" viewBox="0 0 88 88"><rect width="88" height="88" rx="44" fill="hsl(${hue} 45% 22%)"/><text x="50%" y="50%" dy=".35em" text-anchor="middle" font-family="system-ui,sans-serif" font-size="34" font-weight="600" fill="hsl(${hue} 70% 76%)">${initials}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
 const HERO_ACCESSIBLE_TITLE = 'The Quantum Clock is Ticking';
 const HERO_LINE_ONE = 'The Quantum';
 const HERO_LINE_TWO_PREFIX = 'Clock is ';
@@ -1605,7 +1620,7 @@ function TestimonialsColumn({
             </p>
             <div className="mt-6 flex items-center gap-3 border-t border-gold/10 pt-4">
               <img
-                src={testimonial.image}
+                src={initialsAvatar(testimonial.name)}
                 alt={testimonial.name}
                 className="h-11 w-11 shrink-0 rounded-full border border-gold/25 object-cover shadow-[0_0_18px_rgba(212,175,55,0.14)]"
                 loading="lazy"

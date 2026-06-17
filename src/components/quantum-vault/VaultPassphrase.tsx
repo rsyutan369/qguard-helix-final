@@ -5,6 +5,7 @@ import type { FormEvent } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { ZKMasterKeys, WrappedMasterKeys } from '@/lib/vault/client-crypto'
 import { fetchUserKeys, storeUserKeys } from '@/lib/vault/vault-service-enhanced'
+import { estimatePassphraseStrength, MIN_PASSPHRASE_LENGTH } from '@/lib/vault/passphrase-strength'
 
 interface VaultPassphraseProps {
   mode: 'create' | 'unlock'
@@ -12,8 +13,6 @@ interface VaultPassphraseProps {
   onKeysReady: (keys: ZKMasterKeys) => void
   onCancel: () => void
 }
-
-const MIN_PASSPHRASE_LENGTH = 12
 
 export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCancel }: VaultPassphraseProps) {
   const [passphrase, setPassphrase] = useState('')
@@ -23,8 +22,11 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
   const [stage, setStage] = useState('')
 
   const isCreate = mode === 'create'
+  const strength = estimatePassphraseStrength(passphrase)
+  // Create mode enforces a genuinely strong passphrase — it is the root of trust
+  // that gates the Argon2id-wrapped master keys. Unlock only needs a non-empty value.
   const isValid = isCreate
-    ? passphrase.length >= MIN_PASSPHRASE_LENGTH && passphrase === confirmPassphrase
+    ? strength.acceptable && passphrase === confirmPassphrase
     : passphrase.length > 0
 
   const handleSubmit = async (e: FormEvent) => {
@@ -40,6 +42,7 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
         generateMasterKeys,
         wrapMasterKeys,
         unwrapMasterKeys,
+        bundleNeedsKdfUpgrade,
       } = await import('@/lib/vault/client-crypto')
 
       if (isCreate) {
@@ -75,6 +78,24 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
         setStage('Unwrapping secret keys...')
         const masterKeys = await unwrapMasterKeys(wrappedData.wrapped_bundle, passphrase)
 
+        // Transparent KDF upgrade: bundles created before Argon2id are re-wrapped
+        // with the memory-hard KEK on a successful unlock. Non-fatal — a failure
+        // here must never block the user from opening their vault.
+        if (bundleNeedsKdfUpgrade(wrappedData.wrapped_bundle)) {
+          try {
+            setStage('Upgrading key protection to Argon2id...')
+            const toHex = (bytes: Uint8Array) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+            const upgraded = await wrapMasterKeys(masterKeys, passphrase)
+            await storeUserKeys(upgraded, toHex(masterKeys.encPublicKey), toHex(masterKeys.signPublicKey), {
+              salt: 'stored-in-wrapped-bundle',
+              algorithm: 'vault-passphrase-hardening-v1',
+              params: { profile: 'argon2id-kek-v1' },
+            })
+          } catch {
+            // Keep the vault openable even if the upgrade write fails.
+          }
+        }
+
         onKeysReady(masterKeys)
       }
     } catch (err) {
@@ -93,18 +114,10 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
     }
   }
 
-  const strengthScore = (() => {
-    let score = 0
-    if (passphrase.length >= 12) score++
-    if (passphrase.length >= 16) score++
-    if (/[A-Z]/.test(passphrase) && /[a-z]/.test(passphrase)) score++
-    if (/[0-9]/.test(passphrase)) score++
-    if (/[^A-Za-z0-9]/.test(passphrase)) score++
-    return score
-  })()
-
-  const strengthLabel = ['', 'Weak', 'Fair', 'Good', 'Strong', 'Excellent'][strengthScore] || ''
-  const strengthColor = ['', 'var(--qg-red, #ef4444)', 'var(--qg-amber)', 'var(--qg-cyan)', 'var(--qg-green)', 'var(--qg-green)'][strengthScore] || ''
+  // 0–4 estimator score mapped onto the 5-bar meter (bars filled = score + 1).
+  const strengthBars = strength.score + 1
+  const strengthColor = ['var(--qg-red, #ef4444)', 'var(--qg-red, #ef4444)', 'var(--qg-amber)', 'var(--qg-green)', 'var(--qg-green)'][strength.score]
+  const strengthHint = strength.warnings[0] || strength.suggestions[0] || ''
 
   return (
     <motion.div
@@ -174,15 +187,29 @@ export default function VaultPassphrase({ mode, sessionToken, onKeysReady, onCan
                 {[1, 2, 3, 4, 5].map((i) => (
                   <div key={i} style={{
                     flex: 1, height: 3, borderRadius: 2,
-                    background: i <= strengthScore ? strengthColor : 'rgba(255,255,255,0.08)',
+                    background: i <= strengthBars ? strengthColor : 'rgba(255,255,255,0.08)',
                     transition: 'background 0.2s',
                   }} />
                 ))}
               </div>
-              <div style={{ fontSize: 10, color: strengthColor, fontFamily: 'var(--font-mono)' }}>
-                {strengthLabel}
-                {passphrase.length < MIN_PASSPHRASE_LENGTH && ` · ${MIN_PASSPHRASE_LENGTH - passphrase.length} more characters needed`}
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, fontFamily: 'var(--font-mono)' }}>
+                <span style={{ color: strengthColor }}>
+                  {strength.label}
+                  {strength.acceptable && ' ✓'}
+                </span>
+                <span style={{ color: 'var(--qg-text-muted)' }}>~{strength.entropyBits} bits</span>
               </div>
+              {!strength.acceptable && strengthHint && (
+                <div style={{ fontSize: 10, color: 'var(--qg-amber)', marginTop: 3, fontFamily: 'var(--font-mono)' }}>
+                  {strengthHint}
+                </div>
+              )}
+              {!strength.acceptable && (
+                <div style={{ fontSize: 9, color: 'var(--qg-text-muted)', marginTop: 3, lineHeight: 1.5 }}>
+                  A strong passphrase is required — it is the only thing protecting your master keys against
+                  offline and quantum brute-force. Tip: 4+ random, unrelated words.
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -246,7 +246,7 @@ export default function SharedFilePage() {
     setState('decrypting')
 
     try {
-      let decryptedData: Uint8Array
+      let decrypted: { data: Uint8Array; filename?: string; mimeType?: string }
 
       if (fileInfo.recipientWrap) {
         const { decryptSharedFile, unwrapRecipientShareKey } = await import('@/lib/vault/sharing-crypto')
@@ -255,7 +255,7 @@ export default function SharedFilePage() {
           recipientKeyBundle,
           recipientKeyPassphrase,
         )
-        decryptedData = await decryptSharedFile(
+        decrypted = await decryptSharedFile(
           fileInfo.encryptedPayload,
           fileInfo.iv,
           unwrappedShareKey,
@@ -263,7 +263,7 @@ export default function SharedFilePage() {
         )
       } else if (fileInfo.isPasswordProtected && fileInfo.passwordSalt) {
         const { decryptSharedFileWithPassword } = await import('@/lib/vault/sharing-crypto')
-        decryptedData = await decryptSharedFileWithPassword(
+        decrypted = await decryptSharedFileWithPassword(
           fileInfo.encryptedPayload,
           fileInfo.iv,
           shareKey,
@@ -274,7 +274,7 @@ export default function SharedFilePage() {
         )
       } else {
         const { decryptSharedFile } = await import('@/lib/vault/sharing-crypto')
-        decryptedData = await decryptSharedFile(
+        decrypted = await decryptSharedFile(
           fileInfo.encryptedPayload,
           fileInfo.iv,
           shareKey,
@@ -282,8 +282,13 @@ export default function SharedFilePage() {
         )
       }
 
-      const resolvedMimeType = resolveMimeType(fileInfo.originalFilename, fileInfo.mimeType)
-      const blob = new Blob([decryptedData.slice()], { type: resolvedMimeType })
+      // Prefer the name/MIME sealed inside the token; fall back to the
+      // server-provided values for legacy shares created before embedding.
+      const resolvedName = decrypted.filename || fileInfo.originalFilename
+      const resolvedMimeType = resolveMimeType(resolvedName, decrypted.mimeType || fileInfo.mimeType)
+      setFileInfo((prev) => (prev ? { ...prev, originalFilename: resolvedName, mimeType: resolvedMimeType } : prev))
+
+      const blob = new Blob([decrypted.data.slice()], { type: resolvedMimeType })
       setDecryptedBlob(blob)
 
       // Generate preview for supported types

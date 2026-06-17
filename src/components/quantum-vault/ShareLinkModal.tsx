@@ -83,10 +83,13 @@ export default function ShareLinkModal({
   // Options
   const [expiresIn, setExpiresIn] = useState<number | null>(900) // secure default: 15 minutes
   const [maxDownloads, setMaxDownloads] = useState<number | null>(1) // secure default: one-time
-  const [usePassword, setUsePassword] = useState(false)
+  // Sensitive shares default to recipient-bound: the file key is wrapped to the
+  // recipient's ML-KEM-1024 public key, so an intercepted link cannot decrypt it.
+  const [shareMode, setShareMode] = useState<'recipient' | 'password' | 'link'>('recipient')
   const [password, setPassword] = useState('')
-  const [useRecipientBinding, setUseRecipientBinding] = useState(false)
   const [recipientPublicKey, setRecipientPublicKey] = useState('')
+  const usePassword = shareMode === 'password'
+  const useRecipientBinding = shareMode === 'recipient'
 
   if (!isOpen) return null
 
@@ -124,26 +127,32 @@ export default function ShareLinkModal({
         recipientWrap?: Record<string, unknown>
       }
 
+      // The real filename + MIME are sealed inside the encrypted payload (the
+      // "token"), so the server stores only a placeholder. The recipient recovers
+      // the name on decrypt with the fragment / password / recipient key.
+      const shareMeta = { filename: fileName, mime: fileMimeType || inferMimeType(fileName) }
+
       if (isRecipientBound) {
         const { encryptForRecipientSharing } = await import('@/lib/vault/sharing-crypto')
-        result = await encryptForRecipientSharing(fileData, recipientPublicKey)
+        result = await encryptForRecipientSharing(fileData, recipientPublicKey, shareMeta)
       } else if (isPasswordProtected) {
         const { encryptForSharingWithPassword } = await import('@/lib/vault/sharing-crypto')
-        result = await encryptForSharingWithPassword(fileData, password)
+        result = await encryptForSharingWithPassword(fileData, password, shareMeta)
       } else {
         const { encryptForSharing } = await import('@/lib/vault/sharing-crypto')
-        result = await encryptForSharing(fileData)
+        result = await encryptForSharing(fileData, shareMeta)
       }
 
-      // 3. Create the share record (key NEVER leaves browser)
+      // 3. Create the share record (key NEVER leaves browser). Name + MIME are
+      //    placeholders here — the real values live encrypted in the payload.
       const expiresAt = expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : undefined
 
       setStep('creating')
       const created = await createSharedLink({
         fileId,
-        originalFilename: fileName,
+        originalFilename: 'Encrypted share',
         originalSize: fileData.length,
-        mimeType: fileMimeType || inferMimeType(fileName),
+        mimeType: 'application/octet-stream',
         encryptionMetadata: {
           iv: result.iv,
           integrityHash: result.integrityHash,
@@ -206,7 +215,7 @@ export default function ShareLinkModal({
     setCopied(false)
     setErrorMsg('')
     setPassword('')
-    setUseRecipientBinding(false)
+    setShareMode('recipient')
     setRecipientPublicKey('')
     onClose()
   }
@@ -293,88 +302,103 @@ export default function ShareLinkModal({
               </select>
             </div>
 
-            {/* Password Protection */}
-            <div style={{ marginBottom: 20 }}>
-              <label style={{
-                fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
-                marginBottom: 8, color: 'var(--qg-text-muted)', cursor: 'pointer',
-              }}>
-                <input
-                  type="checkbox"
-                checked={usePassword}
-                  disabled={useRecipientBinding}
-                  onChange={(e) => setUsePassword(e.target.checked)}
-                  style={{ accentColor: 'var(--qg-cyan)' }}
-                />
-                Password Protection (enhanced, link + password)
+            {/* Security level — sensitive shares default to recipient-bound */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 8, color: 'var(--qg-text-muted)' }}>
+                Security Level
               </label>
-              {useRecipientBinding && (
-                <div style={{ margin: '-4px 0 10px', fontSize: 11, color: 'var(--qg-text-muted)' }}>
-                  Recipient-bound sharing already removes the URL key and requires the recipient private key.
-                </div>
-              )}
-              {usePassword && (
-                <>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => { setPassword(e.target.value); setErrorMsg('') }}
-                    placeholder={`Enter at least ${MIN_SHARE_PASSWORD_LENGTH} characters`}
-                    style={{
-                      width: '100%', padding: '8px 12px', fontSize: 13,
-                      background: 'var(--qg-bg, #010409)', color: 'var(--qg-text, #e6edf3)',
-                      border: `1px solid ${password && !isSharePasswordStrong(password) ? 'rgba(245,158,11,0.55)' : 'var(--qg-border, #1e293b)'}`,
-                      borderRadius: 'var(--radius-md, 8px)',
-                    }}
-                  />
-                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--qg-text-muted)' }}>
-                    Use at least {MIN_SHARE_PASSWORD_LENGTH} characters with 3 character types. Enhanced local hardening is applied before the password proof is sent to the server.
-                  </div>
-                </>
-              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {([
+                  { mode: 'recipient', icon: '🛡️', title: 'Recipient-bound', tag: 'Recommended', tagColor: 'green',
+                    desc: 'Quantum-safe & interception-proof. The file key is wrapped to the recipient’s ML-KEM-1024 public key; the link carries no key.' },
+                  { mode: 'password', icon: '🔑', title: 'Password-protected', tag: 'Strong', tagColor: 'green',
+                    desc: 'Link + password (sent separately). Argon2id-hardened; the link carries no key.' },
+                  { mode: 'link', icon: '🔗', title: 'Link only', tag: 'Convenience', tagColor: 'amber',
+                    desc: 'Anyone with the full link can decrypt. Use only for non-sensitive files over trusted channels.' },
+                ] as const).map((opt) => {
+                  const active = shareMode === opt.mode
+                  return (
+                    <button
+                      key={opt.mode}
+                      type="button"
+                      onClick={() => { setShareMode(opt.mode); setErrorMsg('') }}
+                      style={{
+                        textAlign: 'left', padding: '10px 12px', borderRadius: 'var(--radius-md, 8px)',
+                        background: active ? 'rgba(0,212,255,0.07)' : 'var(--qg-bg, #010409)',
+                        border: `1px solid ${active ? 'var(--qg-cyan, #22d3ee)' : 'var(--qg-border, #1e293b)'}`,
+                        cursor: 'pointer', color: 'var(--qg-text, #e6edf3)', width: '100%',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                        <span>{opt.icon}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{opt.title}</span>
+                        <span style={{
+                          fontSize: 9, padding: '1px 6px', borderRadius: 6, marginLeft: 'auto',
+                          background: opt.tagColor === 'amber' ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)',
+                          color: opt.tagColor === 'amber' ? 'var(--qg-amber, #f59e0b)' : 'var(--qg-green, #10b981)',
+                        }}>
+                          {opt.tag}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--qg-text-muted)', lineHeight: 1.5 }}>{opt.desc}</div>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
-            {/* Recipient-bound sharing */}
-            <div style={{ marginBottom: 20 }}>
-              <label style={{
-                fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8,
-                marginBottom: 8, color: 'var(--qg-text-muted)', cursor: 'pointer',
+            {/* Link-only warning */}
+            {shareMode === 'link' && (
+              <div style={{
+                marginBottom: 20, padding: '10px 14px', borderRadius: 'var(--radius-md, 8px)',
+                background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+                fontSize: 12, color: 'var(--qg-amber, #f59e0b)', lineHeight: 1.5,
               }}>
+                ⚠️ The decryption key is embedded in the link. Anyone who intercepts the full link can decrypt this file. For sensitive data, choose recipient-bound or password protection.
+              </div>
+            )}
+
+            {/* Password input */}
+            {shareMode === 'password' && (
+              <div style={{ marginBottom: 20 }}>
                 <input
-                  type="checkbox"
-                  checked={useRecipientBinding}
-                  onChange={(e) => {
-                    setUseRecipientBinding(e.target.checked)
-                    if (e.target.checked) {
-                      setUsePassword(false)
-                      setPassword('')
-                    }
+                  type="password"
+                  value={password}
+                  onChange={(e) => { setPassword(e.target.value); setErrorMsg('') }}
+                  placeholder={`Enter at least ${MIN_SHARE_PASSWORD_LENGTH} characters`}
+                  style={{
+                    width: '100%', padding: '8px 12px', fontSize: 13,
+                    background: 'var(--qg-bg, #010409)', color: 'var(--qg-text, #e6edf3)',
+                    border: `1px solid ${password && !isSharePasswordStrong(password) ? 'rgba(245,158,11,0.55)' : 'var(--qg-border, #1e293b)'}`,
+                    borderRadius: 'var(--radius-md, 8px)', boxSizing: 'border-box',
                   }}
-                  style={{ accentColor: 'var(--qg-cyan)' }}
                 />
-                Recipient Public-Key Binding
-              </label>
-              {useRecipientBinding && (
-                <>
-                  <textarea
-                    value={recipientPublicKey}
-                    onChange={(e) => { setRecipientPublicKey(e.target.value); setErrorMsg('') }}
-                    placeholder="Paste recipient public JSON or raw ML-KEM public key"
-                    spellCheck={false}
-                    style={{
-                      width: '100%', minHeight: 92, resize: 'vertical', padding: '8px 12px', fontSize: 12,
-                      background: 'var(--qg-bg, #010409)', color: 'var(--qg-text, #e6edf3)',
-                      border: '1px solid var(--qg-border, #1e293b)',
-                      borderRadius: 'var(--radius-md, 8px)',
-                      fontFamily: 'var(--font-mono)',
-                    }}
-                  />
-                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--qg-text-muted)' }}>
-                    Ask the recipient for their public recipient JSON. Never ask for their private .qgkey bundle.
-                  </div>
-                </>
-              )}
-            </div>
+                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--qg-text-muted)' }}>
+                  Use at least {MIN_SHARE_PASSWORD_LENGTH} characters with 3 character types. Send the password to the recipient through a separate, trusted channel.
+                </div>
+              </div>
+            )}
+
+            {/* Recipient public key input */}
+            {shareMode === 'recipient' && (
+              <div style={{ marginBottom: 20 }}>
+                <textarea
+                  value={recipientPublicKey}
+                  onChange={(e) => { setRecipientPublicKey(e.target.value); setErrorMsg('') }}
+                  placeholder="Paste recipient public JSON or raw ML-KEM public key"
+                  spellCheck={false}
+                  style={{
+                    width: '100%', minHeight: 92, resize: 'vertical', padding: '8px 12px', fontSize: 12,
+                    background: 'var(--qg-bg, #010409)', color: 'var(--qg-text, #e6edf3)',
+                    border: '1px solid var(--qg-border, #1e293b)',
+                    borderRadius: 'var(--radius-md, 8px)', fontFamily: 'var(--font-mono)', boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ marginTop: 6, fontSize: 11, color: 'var(--qg-text-muted)' }}>
+                  Ask the recipient for their public recipient JSON. Never ask for their private .qgkey bundle.
+                </div>
+              </div>
+            )}
 
             {errorMsg && (
               <div style={{
