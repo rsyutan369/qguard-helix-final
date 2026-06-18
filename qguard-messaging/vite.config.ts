@@ -11,13 +11,8 @@ const workspaceRoot = path.resolve(appRoot, "..");
 const clientSupabaseEnvKeys = [
   "VITE_SUPABASE_URL",
   "VITE_SUPABASE_ANON_KEY",
-  "VITE_SUPABASE_FALLBACK_URL",
-  "VITE_SUPABASE_FALLBACK_ANON_KEY",
-  "VITE_SUPABASE_USE_FALLBACK",
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-  "NEXT_PUBLIC_SUPABASE_FALLBACK_URL",
-  "NEXT_PUBLIC_SUPABASE_FALLBACK_ANON_KEY",
 ] as const;
 
 type ClientSupabaseEnvKey = (typeof clientSupabaseEnvKeys)[number];
@@ -35,7 +30,6 @@ function isUsableEnvValue(key: ClientSupabaseEnvKey, value: string | undefined):
   const cleaned = cleanEnvValue(value);
   if (!cleaned) return false;
   if (/^(your-|my_|change-me|placeholder)/i.test(cleaned)) return false;
-  if (key === "VITE_SUPABASE_USE_FALLBACK") return /^(true|false)$/i.test(cleaned);
   if (key.endsWith("_URL")) return /^https:\/\/[^.]+\.supabase\.co$/i.test(cleaned);
   return cleaned.length > 20;
 }

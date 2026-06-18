@@ -6,21 +6,11 @@ export const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefi
 export const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)
   || (import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string | undefined)
   || "";
-export const supabaseFallbackUrl = (import.meta.env.VITE_SUPABASE_FALLBACK_URL as string | undefined)
-  || (import.meta.env.NEXT_PUBLIC_SUPABASE_FALLBACK_URL as string | undefined)
-  || "";
-export const supabaseFallbackAnonKey = (import.meta.env.VITE_SUPABASE_FALLBACK_ANON_KEY as string | undefined)
-  || (import.meta.env.NEXT_PUBLIC_SUPABASE_FALLBACK_ANON_KEY as string | undefined)
-  || "";
-export const useSupabaseFallback = String(import.meta.env.VITE_SUPABASE_USE_FALLBACK ?? "").toLowerCase() === "true";
 
 const baseSupabaseAuthStorageKey = "qguard-messaging-auth";
 const supabaseRequestTimeoutMs = 30_000;
 const placeholderSupabaseUrl = "https://qguard-messaging-placeholder.supabase.co";
 const placeholderSupabaseAnonKey = "missing-supabase-anon-key";
-
-const selectedSupabaseUrl = useSupabaseFallback ? supabaseFallbackUrl : supabaseUrl;
-const selectedSupabaseAnonKey = useSupabaseFallback ? supabaseFallbackAnonKey : supabaseAnonKey;
 
 function getWindowSessionId(): string {
   if (typeof window === "undefined") return "server";
@@ -44,19 +34,14 @@ function getProjectRef(url: string): string | null {
   }
 }
 
-export const isSupabaseConfigured = Boolean(selectedSupabaseUrl && selectedSupabaseAnonKey);
-export const supabaseProjectRef = getProjectRef(selectedSupabaseUrl);
-export const supabaseProjectMode = useSupabaseFallback ? "fallback" : "primary";
-export const supabaseAuthTarget = supabaseProjectRef
-  ? `${supabaseProjectMode} project ${supabaseProjectRef}`
-  : `${supabaseProjectMode} project`;
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+export const supabaseProjectRef = getProjectRef(supabaseUrl);
+export const supabaseAuthTarget = supabaseProjectRef ? `project ${supabaseProjectRef}` : "Supabase project";
 
 export function getSupabaseConfigError(): Error | null {
   if (isSupabaseConfigured) return null;
   return new Error(
-    useSupabaseFallback
-      ? "QGUARD_SUPABASE_CONFIG_REQUIRED: VITE_SUPABASE_USE_FALLBACK is true, so set VITE_SUPABASE_FALLBACK_URL and VITE_SUPABASE_FALLBACK_ANON_KEY in qguard-messaging/.env.local, then restart QGuard Messaging."
-      : "QGUARD_SUPABASE_CONFIG_REQUIRED: Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in qguard-messaging/.env.local, then restart QGuard Messaging.",
+    "QGUARD_SUPABASE_CONFIG_REQUIRED: Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in qguard-messaging/.env.local, then restart QGuard Messaging.",
   );
 }
 
@@ -90,8 +75,8 @@ const sharedSupabaseOptions = {
 };
 
 export const supabase: SupabaseClient = createClient(
-  isSupabaseConfigured ? selectedSupabaseUrl : placeholderSupabaseUrl,
-  isSupabaseConfigured ? selectedSupabaseAnonKey : placeholderSupabaseAnonKey,
+  isSupabaseConfigured ? supabaseUrl : placeholderSupabaseUrl,
+  isSupabaseConfigured ? supabaseAnonKey : placeholderSupabaseAnonKey,
   {
     ...sharedSupabaseOptions,
     auth: {
@@ -113,7 +98,7 @@ export function requireSupabase(): SupabaseClient {
 export function createEphemeralSupabaseClient(): SupabaseClient {
   const configError = getSupabaseConfigError();
   if (configError) throw configError;
-  return createClient(selectedSupabaseUrl, selectedSupabaseAnonKey, {
+  return createClient(supabaseUrl, supabaseAnonKey, {
     ...sharedSupabaseOptions,
     auth: {
       persistSession: false,
