@@ -1,5 +1,5 @@
 import { AlertTriangle, Archive, ArchiveRestore, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { byteaToBytes, bytesToBytea } from "@/lib/encoding";
 import {
@@ -786,12 +786,12 @@ async function loadTrustedDevicesForUsers(userIds: string[]): Promise<TrustedDev
   const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
   if (uniqueUserIds.length === 0) return [];
 
-  const { data: deviceRows, error: deviceError } = await supabase
+  const { data: deviceRows, error: deviceError } = await withFetchRetry(() => Promise.resolve(supabase
     .from("messaging_devices")
     .select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature")
     .in("user_id", uniqueUserIds)
     .neq("trust_state", "revoked")
-    .order("last_seen_at", { ascending: false });
+    .order("last_seen_at", { ascending: false })));
   if (deviceError) throw deviceError;
 
   const rows = (deviceRows ?? []) as Array<Record<string, unknown>>;
@@ -799,12 +799,12 @@ async function loadTrustedDevicesForUsers(userIds: string[]): Promise<TrustedDev
   const signedPrekeysByDevice = new Map<string, SignedPrekeySummary>();
 
   if (deviceIds.length > 0) {
-    const { data: prekeyRows, error: prekeyError } = await supabase
+    const { data: prekeyRows, error: prekeyError } = await withFetchRetry(() => Promise.resolve(supabase
       .from("messaging_signed_prekeys")
       .select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at")
       .in("device_id", deviceIds)
       .eq("is_active", true)
-      .order("expires_at", { ascending: true });
+      .order("expires_at", { ascending: true })));
     if (prekeyError) throw prekeyError;
 
     ((prekeyRows ?? []) as Array<Record<string, unknown>>)
@@ -858,6 +858,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [newChatBusyId, setNewChatBusyId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [sending, setSending] = useState(false);
   const [messageAction, setMessageAction] = useState<string | null>(null);
   const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
@@ -905,6 +906,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const syncInFlightRef = useRef<Set<string>>(new Set());
   const syncedEnvelopeTargetsRef = useRef<Set<string>>(new Set());
   const searchRequestRef = useRef(0);
+  const messageLoadSeqRef = useRef(0);
   const threatTelemetryRef = useRef<Set<string>>(new Set());
   const typingPulseRef = useRef<number>(0);
 
@@ -1610,31 +1612,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             can_delete: failedRowSenderUserId === userId,
           });
       } else if (isMine) {
-        hydrated.push({
-          id: displayRow.id,
-          client_message_id: groupId,
-          row_ids: orderedRows.map((row) => row.id),
-          conversation_id: displayRow.conversation_id,
-          sender_user_id: originalSenderUserId(displayRow),
-          recipient_user_id: displayRow.recipient_user_id,
-          kind: displayRow.message_kind,
-          plaintext: "Sent encrypted message",
-          attachment: null,
-          reply_to: null,
-          edited_at: null,
-          reactions: [],
-          expires_at: null,
-          available_at: null,
-          read_once: false,
-          view_once: false,
-          threat: emptyThreat(),
-          status: "sealed",
-          authenticated: true,
-          replay_protected: true,
-          created_at: displayRow.created_at,
-          error: "Syncing this older sent message to the current trusted device.",
-          can_delete: true,
-        });
+        // Suppress the noisy "Sent encrypted message — Syncing…" stub for our own
+        // older messages that have no envelope sealed for this device yet.
+        // Trusted-device sync rewraps a decryptable copy, after which the real
+        // message renders normally; until then we render nothing rather than a
+        // confusing placeholder bubble.
       } else if (userRow) {
         const sealedReason = decryptDeviceId
           ? "Waiting for trusted-device synchronization. No sender resend is required once a device with message access comes online."
@@ -1762,10 +1744,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   const loadConversationMessages = useCallback(async () => {
     if (!activeConversation) {
+      messageLoadSeqRef.current += 1;
       setChatMessages([]);
       return;
     }
 
+    const loadSeq = ++messageLoadSeqRef.current;
     setMessagesLoading(true);
     setMessageAction(null);
     try {
@@ -1818,20 +1802,37 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         threat_flags: Array.isArray(row.threat_flags) ? row.threat_flags.map(String) : [],
       } satisfies MessageUserState]));
       const hydrated = await hydrateMessageRows(rows, userStates);
+      // Ignore a load that has been superseded by a newer conversation switch,
+      // so a slow earlier load can never overwrite the conversation now on screen.
+      if (messageLoadSeqRef.current !== loadSeq) return;
       setChatMessages(hydrated);
       persistMessageUserStates(hydrated).catch(() => undefined);
     } catch (error) {
       // The realtime subscription reloads on every envelope change, so a transient
       // reload failure must not flash a banner over an already-rendered conversation;
       // the next realtime tick retries. Surface it only when there is nothing to show.
+      if (messageLoadSeqRef.current !== loadSeq) return;
       console.error("[secure-chat] Failed to load conversation messages:", error);
       if (decryptedMessageCacheRef.current.size === 0 && decryptedControlCacheRef.current.size === 0) {
         setMessageAction(describeMessageError(error));
       }
     } finally {
-      setMessagesLoading(false);
+      if (messageLoadSeqRef.current === loadSeq) setMessagesLoading(false);
     }
   }, [activeConversation, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId]);
+
+  // Switching conversations must instantly show a clean slate. Clearing in a
+  // layout effect (keyed on the conversation id, so it only fires on a real
+  // switch — not on the realtime reloads of the same chat) wipes the previous
+  // chat's messages before the browser paints, so no other user's history is
+  // ever shown in a different conversation.
+  useLayoutEffect(() => {
+    setChatMessages([]);
+    setMessageAction(null);
+    decryptInFlightRef.current.clear();
+    setMessagesLoading(Boolean(activeConversation));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation?.id]);
 
   useEffect(() => {
     loadConversationMessages();
@@ -2034,7 +2035,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       if (fallbackResults.length > 0) {
         setSearchFeedback(null);
       } else {
-        setSearchFeedback(isTransientNetworkError(err) ? DIRECTORY_UNREACHABLE_MESSAGE : (err instanceof Error ? err.message : String(err)));
+        setSearchFeedback(isTransientNetworkError(err) ? DIRECTORY_UNREACHABLE_MESSAGE : describeMessageError(err));
       }
     } finally {
       if (searchRequestRef.current === requestId) setSearching(false);
@@ -2925,24 +2926,34 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }
 
   async function sendMessage() {
+    // Re-entry guard: a single in-flight send at a time. This is what stops the
+    // "click Send, nothing happens, click again, message sent twice" bug.
+    if (sending) return;
     if (!activeConversation || !message.trim()) return;
     const senderDevice = currentDevice;
+    const text = message.trim();
+    const editing = editingMessage;
+    const replyTo = replyToMessage;
+    // Clear the composer immediately so the action feels instant and the same
+    // text cannot be queued twice while the encrypt + relay round-trip runs.
+    setSending(true);
+    setMessage("");
     setStatus("Securing message");
     try {
-      if (editingMessage) {
+      if (editing) {
         await sendEncryptedPayload(serializeSecureControl({
           type: "edit",
-          target_client_message_id: editingMessage.client_message_id,
-          body: message.trim(),
+          target_client_message_id: editing.client_message_id,
+          body: text,
         }), {
-          parentClientMessageId: editingMessage.client_message_id,
+          parentClientMessageId: editing.client_message_id,
           controlType: "edit",
         });
         setEditingMessage(null);
       } else {
         const lifecycle = buildComposeLifecycle();
-        await sendEncryptedPayload(serializeSecureMessage(message.trim(), replyToMessage?.client_message_id ?? null, lifecycle), {
-          parentClientMessageId: replyToMessage?.client_message_id ?? null,
+        await sendEncryptedPayload(serializeSecureMessage(text, replyTo?.client_message_id ?? null, lifecycle), {
+          parentClientMessageId: replyTo?.client_message_id ?? null,
           lifecycle,
         });
       }
@@ -2952,7 +2963,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       await loadConversationMessages();
       onSent();
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      // Restore the text so a failed send never silently loses the message,
+      // and surface a readable reason (Supabase errors are plain objects, so
+      // String(err) would render the useless "[object Object]").
+      setMessage(text);
+      const detail = describeMessageError(err);
       setStatus(detail.includes("desktop app") ? "Open the desktop app to send securely" : detail);
       if (senderDevice) {
         await recordCryptoTelemetry({
@@ -2966,6 +2981,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           metadata: { conversation_id: activeConversation.id },
         });
       }
+    } finally {
+      setSending(false);
     }
   }
 
@@ -3526,16 +3543,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 setMessage(event.target.value);
                 pulseTyping().catch(() => undefined);
               }}
+              onKeyDown={(event) => {
+                // Enter sends, Shift+Enter inserts a newline.
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (!sending && message.trim() && !attachmentBusy && recordingState === "idle") {
+                    void sendMessage();
+                  }
+                }
+              }}
               className="min-h-10 flex-1 resize-none rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-violet-300"
               aria-label={activeConversation ? "Message composer" : "No conversation selected"}
             />
             <button
-              disabled={!activeConversation || !message.trim() || Boolean(attachmentBusy) || recordingState !== "idle"}
+              disabled={!activeConversation || !message.trim() || sending || Boolean(attachmentBusy) || recordingState !== "idle"}
               onClick={sendMessage}
               className="flex h-10 items-center gap-2 rounded-lg bg-violet-600 px-4 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Send size={17} />
-              {editingMessage ? "Update" : "Send"}
+              {sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />}
+              {sending ? "Sending" : editingMessage ? "Update" : "Send"}
             </button>
           </div>
         </div>
