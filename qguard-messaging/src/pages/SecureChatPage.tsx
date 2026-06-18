@@ -1,5 +1,5 @@
-import { AlertTriangle, Archive, ArchiveRestore, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Archive, ArchiveRestore, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { byteaToBytes, bytesToBytea } from "@/lib/encoding";
 import {
@@ -490,6 +490,76 @@ function visibleContactName(contact: ContactSummary): string {
   return contact.alias || contact.display_name || contact.username || contact.contact_user_id.slice(0, 8);
 }
 
+// --- Resizable chat columns ---------------------------------------------------
+// Lightweight, dependency-free panel resizing. Widths are clamped, persisted per
+// user, and updated directly on the DOM while dragging so we never trigger a
+// React re-render per pointer move (keeps the UI snappy with no hangs).
+const CHAT_COLUMN_DEFAULTS = { left: 300, right: 330 };
+const CHAT_COLUMN_LIMITS = {
+  left: { min: 220, max: 480 },
+  right: { min: 260, max: 540 },
+  centerMin: 360,
+};
+
+interface ChatColumnWidths {
+  left: number;
+  right: number;
+}
+
+function chatColumnsStorageKey(userId: string): string {
+  return `qguard-chat-columns:${userId}`;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+function readChatColumnWidths(userId: string): ChatColumnWidths {
+  if (typeof window === "undefined") return { ...CHAT_COLUMN_DEFAULTS };
+  try {
+    const raw = window.localStorage.getItem(chatColumnsStorageKey(userId));
+    if (!raw) return { ...CHAT_COLUMN_DEFAULTS };
+    const parsed = JSON.parse(raw) as Partial<ChatColumnWidths>;
+    return {
+      left: clampNumber(Number(parsed.left ?? CHAT_COLUMN_DEFAULTS.left), CHAT_COLUMN_LIMITS.left.min, CHAT_COLUMN_LIMITS.left.max),
+      right: clampNumber(Number(parsed.right ?? CHAT_COLUMN_DEFAULTS.right), CHAT_COLUMN_LIMITS.right.min, CHAT_COLUMN_LIMITS.right.max),
+    };
+  } catch {
+    return { ...CHAT_COLUMN_DEFAULTS };
+  }
+}
+
+function chatGridTemplate(widths: ChatColumnWidths): string {
+  return `${widths.left}px 10px minmax(0, 1fr) 10px ${widths.right}px`;
+}
+
+// --- Network resilience -------------------------------------------------------
+// Supabase only throws (rather than returning { error }) when the request never
+// reaches the server: "Failed to fetch", a timeout, or a dropped connection.
+// Free-tier projects in particular can fail the first request while they wake,
+// so retrying transient failures once or twice recovers the common case.
+function isTransientNetworkError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+  return /failed to fetch|networkerror|network error|load failed|timed out|timeout|connection|fetch failed|err_/i.test(message);
+}
+
+async function withFetchRetry<T>(task: () => Promise<T>, attempts = 3, delayMs = 600): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientNetworkError(error) || attempt === attempts - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+const DIRECTORY_UNREACHABLE_MESSAGE = "Couldn't reach the directory service. Check your connection and try again in a moment.";
+
 function mapDeviceTrustState(value: string): TrustedDevice["trust_state"] {
   const normalized = value.toLowerCase();
   if (value === "ThisDevice" || normalized === "this_device") return "ThisDevice";
@@ -809,6 +879,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
   const [conversationAction, setConversationAction] = useState<string | null>(null);
   const [contactChatBusyId, setContactChatBusyId] = useState<string | null>(null);
+  const [chatColumnWidths, setChatColumnWidths] = useState<ChatColumnWidths>(() => readChatColumnWidths(userId));
+  const [contactOverrides, setContactOverrides] = useState<Record<string, ContactSummary["trust_state"]>>({});
+  const [rightTab, setRightTab] = useState<"contacts" | "files" | "terminal">("contacts");
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
   const [localSignedPrekeyId, setLocalSignedPrekeyId] = useState<string | null>(null);
   const [conversationStateOverrides, setConversationStateOverrides] = useState<Record<string, Pick<ConversationSummary, "archived_at" | "hidden_at" | "deleted_at">>>({});
@@ -820,6 +893,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [protectionBusy, setProtectionBusy] = useState(false);
   const [protectionError, setProtectionError] = useState<string | null>(null);
   const messageViewportRef = useRef<HTMLDivElement | null>(null);
+  const chatGridRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const voiceChunksRef = useRef<Blob[]>([]);
@@ -833,6 +907,89 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const searchRequestRef = useRef(0);
   const threatTelemetryRef = useRef<Set<string>>(new Set());
   const typingPulseRef = useRef<number>(0);
+
+  // Contacts shown in the panel: apply optimistic overrides on top of the live
+  // props so block/unblock/delete feel instant, then hide soft-removed entries.
+  const displayedContacts = useMemo(() => contacts
+    .map((contact) => (contactOverrides[contact.id] ? { ...contact, trust_state: contactOverrides[contact.id] } : contact))
+    .filter((contact) => contact.trust_state !== "removed"), [contacts, contactOverrides]);
+  const blockedContactCount = useMemo(() => displayedContacts.filter((contact) => contact.trust_state === "blocked").length, [displayedContacts]);
+
+  // Drop optimistic overrides once the refreshed server state confirms them, so
+  // we never keep a stale local value after the realtime refresh lands.
+  useEffect(() => {
+    setContactOverrides((previous) => {
+      if (Object.keys(previous).length === 0) return previous;
+      const next: Record<string, ContactSummary["trust_state"]> = {};
+      for (const [id, state] of Object.entries(previous)) {
+        const fresh = contacts.find((contact) => contact.id === id);
+        if (state === "removed") {
+          if (fresh) next[id] = state;
+        } else if (fresh && fresh.trust_state !== state) {
+          next[id] = state;
+        }
+      }
+      return next;
+    });
+  }, [contacts]);
+
+  const persistChatColumnWidths = useCallback((widths: ChatColumnWidths) => {
+    try {
+      window.localStorage.setItem(chatColumnsStorageKey(userId), JSON.stringify(widths));
+    } catch {
+      // Persisting layout is best-effort; in-memory widths still apply.
+    }
+  }, [userId]);
+
+  const startColumnResize = useCallback((side: "left" | "right", event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const grid = chatGridRef.current;
+    if (!grid) return;
+    const handle = event.currentTarget;
+    const startX = event.clientX;
+    const startWidths = { ...chatColumnWidths };
+    let nextWidths = { ...startWidths };
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is an optimization; dragging still works without it.
+    }
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const gridWidth = grid.getBoundingClientRect().width;
+      const delta = moveEvent.clientX - startX;
+      if (side === "left") {
+        const max = Math.min(CHAT_COLUMN_LIMITS.left.max, gridWidth - startWidths.right - CHAT_COLUMN_LIMITS.centerMin - 20);
+        nextWidths = { ...nextWidths, left: clampNumber(startWidths.left + delta, CHAT_COLUMN_LIMITS.left.min, max) };
+      } else {
+        const max = Math.min(CHAT_COLUMN_LIMITS.right.max, gridWidth - startWidths.left - CHAT_COLUMN_LIMITS.centerMin - 20);
+        nextWidths = { ...nextWidths, right: clampNumber(startWidths.right - delta, CHAT_COLUMN_LIMITS.right.min, max) };
+      }
+      // Update the DOM directly during the drag — no React re-render per frame.
+      grid.style.gridTemplateColumns = chatGridTemplate(nextWidths);
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      try {
+        handle.releasePointerCapture(event.pointerId);
+      } catch {
+        // ignore
+      }
+      setChatColumnWidths(nextWidths);
+      persistChatColumnWidths(nextWidths);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [chatColumnWidths, persistChatColumnWidths]);
+
   const effectiveConversations = useMemo(() => conversations
     .map((conversation) => ({ ...conversation, ...(conversationStateOverrides[conversation.id] ?? {}) }))
     .filter((conversation) => !conversation.deleted_at), [conversationStateOverrides, conversations]);
@@ -1835,15 +1992,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (normalized.length < 2) return [];
     const escaped = normalized.replace(/[%_]/g, "\\$&");
     const columns = "id,email,name,username";
-    const queries = [
-      supabase.from("profiles").select(columns).neq("id", userId).ilike("username", `${escaped}%`).limit(10),
-      supabase.from("profiles").select(columns).neq("id", userId).ilike("name", `${escaped}%`).limit(10),
-      supabase.from("profiles").select(columns).neq("id", userId).ilike("email", `${escaped}%`).limit(10),
+    const runners: Array<() => PromiseLike<{ data: unknown; error: unknown }>> = [
+      () => supabase.from("profiles").select(columns).neq("id", userId).ilike("username", `${escaped}%`).limit(10),
+      () => supabase.from("profiles").select(columns).neq("id", userId).ilike("name", `${escaped}%`).limit(10),
+      () => supabase.from("profiles").select(columns).neq("id", userId).ilike("email", `${escaped}%`).limit(10),
     ];
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)) {
-      queries.unshift(supabase.from("profiles").select(columns).eq("id", normalized).limit(1));
+      runners.unshift(() => supabase.from("profiles").select(columns).eq("id", normalized).limit(1));
     }
-    const results = await Promise.allSettled(queries);
+    const results = await Promise.allSettled(runners.map((run) => withFetchRetry(() => Promise.resolve(run()))));
     const rows = results.flatMap((result) => result.status === "fulfilled" && !result.value.error ? (result.value.data ?? []) as Array<Record<string, unknown>> : []);
     return mapProfileSearchRows(rows);
   }
@@ -1861,7 +2018,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setContactAction(null);
     try {
       const normalized = normalizeUserSearchQuery(trimmed);
-      const { data, error } = await supabase.rpc("search_messaging_users", { p_query: normalized });
+      const { data, error } = await withFetchRetry(() => Promise.resolve(supabase.rpc("search_messaging_users", { p_query: normalized })));
       let results = error ? [] : (data ?? []) as UserSearchResult[];
       if (results.length === 0) {
         const fallbackResults = await fallbackSearchProfiles(trimmed);
@@ -1872,9 +2029,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setSearchFeedback(results.length === 0 ? `No users found for "${trimmed}".` : null);
     } catch (err) {
       if (searchRequestRef.current !== requestId) return;
-      const fallbackResults = await fallbackSearchProfiles(trimmed);
+      const fallbackResults = await fallbackSearchProfiles(trimmed).catch(() => [] as UserSearchResult[]);
       setSearchResults(fallbackResults);
-      setSearchFeedback(fallbackResults.length > 0 ? null : (err instanceof Error ? err.message : String(err)));
+      if (fallbackResults.length > 0) {
+        setSearchFeedback(null);
+      } else {
+        setSearchFeedback(isTransientNetworkError(err) ? DIRECTORY_UNREACHABLE_MESSAGE : (err instanceof Error ? err.message : String(err)));
+      }
     } finally {
       if (searchRequestRef.current === requestId) setSearching(false);
     }
@@ -1924,20 +2085,20 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   async function addContact(result: UserSearchResult) {
     setContactAction(null);
     try {
-      await ensureCurrentUserProfile();
+      await withFetchRetry(() => ensureCurrentUserProfile());
+      const { error } = await withFetchRetry(() => Promise.resolve(supabase.from("messaging_contacts").upsert({
+        owner_user_id: userId,
+        contact_user_id: result.user_id,
+        alias: result.display_name,
+        trust_state: "added",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "owner_user_id,contact_user_id" })));
+      if (error) {
+        setContactAction(error.message);
+        return;
+      }
     } catch (error) {
-      setContactAction(describeMessageError(error));
-      return;
-    }
-    const { error } = await supabase.from("messaging_contacts").upsert({
-      owner_user_id: userId,
-      contact_user_id: result.user_id,
-      alias: result.display_name,
-      trust_state: "added",
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "owner_user_id,contact_user_id" });
-    if (error) {
-      setContactAction(error.message);
+      setContactAction(isTransientNetworkError(error) ? DIRECTORY_UNREACHABLE_MESSAGE : describeMessageError(error));
       return;
     }
     setContactAction(`${result.display_name} added`);
@@ -1949,11 +2110,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   async function updateContact(contact: ContactSummary, trustState: "blocked" | "removed" | "added") {
     setContactAction(null);
+    // Apply the change to the panel immediately, then reconcile with the server.
+    setContactOverrides((previous) => ({ ...previous, [contact.id]: trustState }));
     const { error } = await supabase
       .from("messaging_contacts")
       .update({ trust_state: trustState, updated_at: new Date().toISOString() })
       .eq("id", contact.id);
     if (error) {
+      // Roll back the optimistic change so the panel reflects real server state.
+      setContactOverrides((previous) => {
+        const next = { ...previous };
+        delete next[contact.id];
+        return next;
+      });
       setContactAction(error.message);
       return;
     }
@@ -2896,7 +3065,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   return (
     <>
-    <div className="grid h-[calc(100vh-124px)] grid-cols-[300px_1fr_330px] gap-4">
+    <div
+      ref={chatGridRef}
+      className="grid h-[calc(100vh-124px)] gap-0"
+      style={{ gridTemplateColumns: chatGridTemplate(chatColumnWidths) }}
+    >
       <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">
           <div className="flex items-center justify-between gap-3">
@@ -3049,6 +3222,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           })}
         </div>
       </section>
+
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize conversations panel"
+        onPointerDown={(event) => startColumnResize("left", event)}
+        onDoubleClick={() => {
+          const reset = { ...chatColumnWidths, left: CHAT_COLUMN_DEFAULTS.left };
+          setChatColumnWidths(reset);
+          persistChatColumnWidths(reset);
+        }}
+        className="group flex cursor-col-resize touch-none items-center justify-center"
+        title="Drag to resize · double-click to reset"
+      >
+        <div className="h-16 w-1 rounded-full bg-line transition group-hover:bg-violet-400 group-active:bg-violet-500" />
+      </div>
 
       <section className="shell-card flex min-h-0 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b border-line p-4">
@@ -3352,56 +3541,115 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         </div>
       </section>
 
-      <section className="shell-card overflow-hidden">
-        <div className="border-b border-line p-4">
-          <h2 className="text-sm font-bold text-ink-950">Contacts</h2>
-          <div className="mt-3 flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-2.5 text-ink-400" size={16} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") searchUsers();
-                }}
-                className="w-full rounded-lg border border-line bg-canvas py-2 pl-9 pr-3 text-sm outline-none focus:border-violet-300"
-                placeholder="User ID, username, or QR payload"
-              />
-            </div>
-            <button onClick={searchUsers} className="icon-button" title="Search"><QrCode size={16} /></button>
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize contacts panel"
+        onPointerDown={(event) => startColumnResize("right", event)}
+        onDoubleClick={() => {
+          const reset = { ...chatColumnWidths, right: CHAT_COLUMN_DEFAULTS.right };
+          setChatColumnWidths(reset);
+          persistChatColumnWidths(reset);
+        }}
+        className="group flex cursor-col-resize touch-none items-center justify-center"
+        title="Drag to resize · double-click to reset"
+      >
+        <div className="h-16 w-1 rounded-full bg-line transition group-hover:bg-violet-400 group-active:bg-violet-500" />
+      </div>
+
+      <section className="shell-card flex min-h-0 flex-col overflow-hidden">
+        <div className="border-b border-line p-2">
+          <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1">
+            <button
+              type="button"
+              onClick={() => setRightTab("contacts")}
+              className={`flex min-w-0 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold transition ${rightTab === "contacts" ? "conversation-segment-active" : "text-ink-600 hover:bg-white/70"}`}
+              title="Contacts"
+            >
+              <Users size={13} />
+              <span className="truncate">Contacts</span>
+              <span className="rounded-full bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-600">{displayedContacts.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRightTab("files")}
+              className={`flex min-w-0 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold transition ${rightTab === "files" ? "conversation-segment-active" : "text-ink-600 hover:bg-white/70"}`}
+              title="Downloaded files"
+            >
+              <Download size={13} />
+              <span className="truncate">Files</span>
+              <span className="rounded-full bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-600">{downloadedFiles.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRightTab("terminal")}
+              className={`flex min-w-0 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold transition ${rightTab === "terminal" ? "conversation-segment-active" : "text-ink-600 hover:bg-white/70"}`}
+              title="Cyber terminal"
+            >
+              <Terminal size={13} />
+              <span className="truncate">Terminal</span>
+              {suspiciousCount > 0 && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">{suspiciousCount}</span>}
+            </button>
           </div>
         </div>
 
-          <div className="max-h-64 overflow-y-auto border-b border-line p-3">
-          {searching && <div className="py-3 text-sm text-ink-600">Searching...</div>}
-          {!searching && searchFeedback && (
-            <div className="py-3 text-sm text-ink-600">{searchFeedback}</div>
-          )}
-          {!searching && !searchFeedback && searchResults.length === 0 && (
-            <div className="py-3 text-sm text-ink-600">Search by user ID, username, email, or QR payload.</div>
-          )}
-          <div className="space-y-2">
-            {searchResults.map((result) => (
-              <div key={result.user_id} className="rounded-lg border border-line p-3">
-                <div className="text-sm font-bold text-ink-950">{result.display_name}</div>
-                <div className="mt-1 truncate font-mono text-xs text-ink-400">{result.username || result.user_id}</div>
-                <button onClick={() => addContact(result)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 py-2 text-sm font-bold text-white hover:bg-violet-700">
-                  <UserPlus size={16} />
-                  Add Contact
-                </button>
+        {rightTab === "contacts" && (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="border-b border-line p-3">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-2.5 text-ink-400" size={16} />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") searchUsers();
+                    }}
+                    className="w-full rounded-lg border border-line bg-canvas py-2 pl-9 pr-3 text-sm outline-none focus:border-violet-300"
+                    placeholder="Search a user to add"
+                  />
+                </div>
+                <button onClick={searchUsers} className="icon-button" title="Search"><QrCode size={16} /></button>
               </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="max-h-[calc(100vh-430px)] overflow-y-auto p-3">
-          {contactAction && <div className="mb-3 rounded-lg bg-canvas p-3 text-sm text-ink-600">{contactAction}</div>}
-          {contacts.length === 0 && <div className="py-3 text-sm text-ink-600">No contacts added yet.</div>}
-          <div className="space-y-2">
-            {contacts.map((contact) => {
+              {blockedContactCount > 0 && (
+                <div className="mt-2 text-[11px] font-semibold text-rose-500">{blockedContactCount} blocked contact{blockedContactCount === 1 ? "" : "s"}</div>
+              )}
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {(searching || searchFeedback || searchResults.length > 0) && (
+                <div className="mb-3 rounded-lg border border-line bg-canvas/60 p-2">
+                  <div className="flex items-center justify-between gap-2 px-1 pb-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Directory search</span>
+                    {(searchResults.length > 0 || searchFeedback) && (
+                      <button type="button" onClick={() => { setQuery(""); setSearchResults([]); setSearchFeedback(null); }} className="text-[11px] font-semibold text-violet-600 hover:underline">Clear</button>
+                    )}
+                  </div>
+                  {searching && <div className="px-1 py-2 text-sm text-ink-600">Searching...</div>}
+                  {!searching && searchFeedback && (
+                    <div className="px-1 py-2 text-sm text-ink-600">{searchFeedback}</div>
+                  )}
+                  <div className="space-y-2">
+                    {searchResults.map((result) => (
+                      <div key={result.user_id} className="rounded-lg border border-line bg-white p-3">
+                        <div className="text-sm font-bold text-ink-950">{result.display_name}</div>
+                        <div className="mt-1 truncate font-mono text-xs text-ink-400">{result.username || result.user_id}</div>
+                        <button onClick={() => addContact(result)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 py-2 text-sm font-bold text-white hover:bg-violet-700">
+                          <UserPlus size={16} />
+                          Add Contact
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {contactAction && <div className="mb-3 rounded-lg bg-canvas p-3 text-sm text-ink-600">{contactAction}</div>}
+              {displayedContacts.length === 0 && <div className="py-3 text-sm text-ink-600">No contacts yet. Search above and press Add Contact.</div>}
+              <div className="space-y-2">
+            {displayedContacts.map((contact) => {
               const contactDevices = devices.filter((device) => device.user_id === contact.contact_user_id && isTrustedDeviceForDelivery(device));
               const readyDeviceCount = selectDeliveryDevicesForUsers(contactDevices, [contact.contact_user_id], localDeviceId).length;
               const isOpeningChat = contactChatBusyId === contact.id;
+              const isBlocked = contact.trust_state === "blocked";
               return (
                 <div key={contact.id} className="rounded-lg border border-line p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -3419,34 +3667,51 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                   <div className="mt-3 grid grid-cols-3 gap-2">
                     <button
                       type="button"
-                      disabled={isOpeningChat}
+                      disabled={isOpeningChat || isBlocked}
                       onClick={() => startPrivateChat(contact)}
+                      title={isBlocked ? "Unblock this contact to chat" : "Open private encrypted chat"}
                       className="flex items-center justify-center gap-1 rounded-lg bg-violet-600 px-2 py-2 text-xs font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {isOpeningChat && <Loader2 className="animate-spin" size={13} />}
+                      {isOpeningChat ? <Loader2 className="animate-spin" size={13} /> : <MessageSquarePlus size={13} />}
                       {isOpeningChat ? "Opening" : "Chat"}
                     </button>
-                    <button type="button" onClick={() => updateContact(contact, contact.trust_state === "blocked" ? "added" : "blocked")} className="flex items-center justify-center rounded-lg border border-line px-2 py-2 text-xs font-bold text-ink-700 hover:bg-canvas">
-                      <Ban size={14} />
+                    <button
+                      type="button"
+                      onClick={() => updateContact(contact, isBlocked ? "added" : "blocked")}
+                      title={isBlocked ? "Unblock contact" : "Block contact"}
+                      className={`flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-xs font-bold transition ${isBlocked ? "border-emerald-200 text-emerald-600 hover:bg-emerald-50" : "border-line text-ink-700 hover:bg-canvas"}`}
+                    >
+                      {isBlocked ? <ShieldCheck size={14} /> : <Ban size={14} />}
+                      {isBlocked ? "Unblock" : "Block"}
                     </button>
-                    <button type="button" onClick={() => updateContact(contact, "removed")} className="flex items-center justify-center rounded-lg border border-line px-2 py-2 text-xs font-bold text-ink-700 hover:bg-canvas">
+                    <button
+                      type="button"
+                      onClick={() => updateContact(contact, "removed")}
+                      title="Delete contact"
+                      className="flex items-center justify-center gap-1 rounded-lg border border-line px-2 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50"
+                    >
                       <Trash2 size={14} />
+                      Delete
                     </button>
                   </div>
                 </div>
               );
             })}
-          </div>
-        </div>
-        <div className="border-t border-line p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
-              <Download size={16} />
-              Downloaded Files
+              </div>
             </div>
-            <span className="status-pill bg-ink-50 text-ink-600">{downloadedFiles.length}</span>
           </div>
-          <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+        )}
+
+        {rightTab === "files" && (
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                <Download size={16} />
+                Downloaded Files
+              </div>
+              <span className="status-pill bg-ink-50 text-ink-600">{downloadedFiles.length}</span>
+            </div>
+            <div className="mt-3 space-y-2">
             {downloadedFiles.length === 0 && (
               <div className="rounded-lg bg-canvas p-3 text-xs text-ink-500">No decrypted downloads yet.</div>
             )}
@@ -3465,19 +3730,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 </div>
               </div>
             ))}
-          </div>
-        </div>
-        <div className="border-t border-line p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
-              <Terminal size={16} />
-              Cyber Terminal
             </div>
-            <span className={`status-pill ${suspiciousCount > 0 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-600"}`}>
-              {suspiciousCount > 0 ? `${suspiciousCount} risk` : "Clean"}
-            </span>
           </div>
-          <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+        )}
+
+        {rightTab === "terminal" && (
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                <Terminal size={16} />
+                Cyber Terminal
+              </div>
+              <span className={`status-pill ${suspiciousCount > 0 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-600"}`}>
+                {suspiciousCount > 0 ? `${suspiciousCount} risk` : "Clean"}
+              </span>
+            </div>
+            <div className="mt-3 space-y-2">
             {chatTelemetry.length === 0 && (
               <div className="rounded-lg bg-canvas p-3 text-xs text-ink-500">No message telemetry yet.</div>
             )}
@@ -3493,8 +3761,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 </div>
               </div>
             ))}
+            </div>
           </div>
-        </div>
+        )}
       </section>
     </div>
     {protectionDialog && (

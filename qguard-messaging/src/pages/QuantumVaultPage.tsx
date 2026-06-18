@@ -2445,7 +2445,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
           </div>
           <div className="mt-4 grid gap-2 text-sm text-ink-600">
             <div>{visibleFiles.length} encrypted files available</div>
-            <div>{visibleFiles.length} active vault records</div>
+            <div>{panelRows.length} active vault records</div>
             <div>{activeOperations.length} active realtime vault operation rows</div>
           </div>
           <label className="mt-4 flex items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-xs font-semibold text-ink-600">

@@ -35,19 +35,22 @@ pub struct QuantumSecurityReport {
 }
 
 impl Default for QuantumSecurityReport {
+    /// Zero-evidence baseline. This is intentionally NOT a "healthy" posture:
+    /// a real report must be derived from runtime evidence (loaded identity,
+    /// prekeys, active ratchet sessions, device trust state, and the verified
+    /// audit chain). Returning fabricated scores or status here would put
+    /// untraceable metrics into exported security reports.
     fn default() -> Self {
         Self {
-            hybrid_session_status: "Hybrid Active".to_string(),
-            pqc_algorithm: "ML-KEM-1024 + ML-DSA-65".to_string(),
-            forward_secrecy: "Per-message ratchet keys active".to_string(),
-            hndl_protection: "Enabled".to_string(),
-            quantum_safe_score: 98,
-            key_rotation_history: vec![
-                "Identity generated".to_string(),
-                "Signed prekey prepared".to_string(),
-                "One-time prekey batch available".to_string(),
+            hybrid_session_status: "No Active Session".to_string(),
+            pqc_algorithm: "No active device keys".to_string(),
+            forward_secrecy: "Awaiting prekey material".to_string(),
+            hndl_protection: "Not Ready".to_string(),
+            quantum_safe_score: 0,
+            key_rotation_history: Vec::new(),
+            warnings: vec![
+                "Quantum posture has not been evaluated from runtime evidence".to_string(),
             ],
-            warnings: Vec::new(),
         }
     }
 }
