@@ -45,6 +45,31 @@ async function withTimeout<T>(task: PromiseLike<T>, timeoutMs: number, label: st
   }
 }
 
+// A "Failed to fetch" / timeout means the request never reached the auth server
+// (e.g. a free-tier project that is still waking up). These are safe to retry —
+// unlike an "Invalid login credentials" response, which is returned as data and
+// never thrown, so it is never retried here.
+function isTransientAuthError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+  return /failed to fetch|networkerror|network error|load failed|timed out|timeout|connection|fetch failed|err_/i.test(message);
+}
+
+async function retryOnTransient<T>(task: () => Promise<T>, attempts = 3, delayMs = 600): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientAuthError(error) || attempt === attempts - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
+const AUTH_UNREACHABLE_MESSAGE = "Couldn't reach the secure sign-in service. Check your connection and try again in a moment.";
+
 function getEmailRedirectTo(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const origin = window.location.origin;
@@ -289,7 +314,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
       const { data, error: signInError } = await withTimeout(
-        client.auth.signInWithPassword({ email: cleanEmail, password }),
+        retryOnTransient(() => Promise.resolve(client.auth.signInWithPassword({ email: cleanEmail, password }))),
         signInRequestTimeoutMs,
         "Secure sign in",
       );
@@ -303,7 +328,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await auditAuthEvent("login_failed", "warning", cleanEmail);
-      if (message.toLowerCase().includes("email not confirmed")) {
+      if (isTransientAuthError(err)) {
+        setError(AUTH_UNREACHABLE_MESSAGE);
+      } else if (message.toLowerCase().includes("email not confirmed")) {
         const redirectTo = getEmailRedirectTo();
         await requireSupabase().auth.resend({
           type: "signup",
