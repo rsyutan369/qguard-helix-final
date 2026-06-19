@@ -1,7 +1,9 @@
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
+  Copy,
   Download,
   FileArchive,
   FileAudio,
@@ -15,6 +17,7 @@ import {
   Folder,
   FolderOpen,
   History,
+  KeyRound,
   Loader2,
   LockKeyhole,
   Pause,
@@ -80,6 +83,7 @@ interface EncryptedFilePackage {
   };
   encrypted_chunks: EncryptedEnvelope[];
   wrapped_keys: Array<{ recipient_device_id: string; [key: string]: unknown }>;
+  recovery_wrapped_key?: EncryptedEnvelope | null;
   metadata_signature: Record<string, unknown>;
   signer_ed25519_public: number[];
   signer_mldsa_public: number[];
@@ -106,6 +110,7 @@ interface VaultManifest {
   version: number;
   metadata: EncryptedFilePackage["metadata"];
   wrapped_keys: EncryptedFilePackage["wrapped_keys"];
+  recovery_wrapped_key?: EncryptedEnvelope | null;
   metadata_signature: Record<string, unknown>;
   signer_ed25519_public: number[];
   signer_mldsa_public: number[];
@@ -589,6 +594,15 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
   const [localDecryptBusy, setLocalDecryptBusy] = useState(false);
   const [localVaultBusy, setLocalVaultBusy] = useState<LocalVaultAction | null>(null);
   const [localVaultResult, setLocalVaultResult] = useState<string | null>(null);
+  const [recoveryStatus, setRecoveryStatus] = useState<{ enabled: boolean; mode: string | null; recipientKeyId: string | null; configuredAt: string | null } | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState<"setup" | "enable" | "decrypt-file" | "decrypt-folder" | "rewrap" | "rewrap-uploaded" | null>(null);
+  const [recoveryMode, setRecoveryMode] = useState<"personal" | "enterprise" | "hybrid">("personal");
+  const [recoveryKeyInput, setRecoveryKeyInput] = useState("");
+  const [enterpriseKeyInput, setEnterpriseKeyInput] = useState("");
+  const [generatedRecoveryKey, setGeneratedRecoveryKey] = useState<string | null>(null);
+  const [generatedEnterpriseKey, setGeneratedEnterpriseKey] = useState<string | null>(null);
+  const [recoverySaved, setRecoverySaved] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [pipelineControl, setPipelineControl] = useState<VaultPipelineControl>({ state: "idle", operationId: null, label: null });
   const [terminalLogs, setTerminalLogs] = useState<VaultTerminalLog[]>([]);
   const [activeVaultTab, setActiveVaultTab] = useState<VaultPanelTab>("operations");
@@ -1237,6 +1251,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
       metadata: manifest.metadata,
       encrypted_chunks: encryptedChunks,
       wrapped_keys: manifest.wrapped_keys,
+      recovery_wrapped_key: manifest.recovery_wrapped_key ?? null,
       metadata_signature: manifest.metadata_signature,
       signer_ed25519_public: manifest.signer_ed25519_public,
       signer_mldsa_public: manifest.signer_mldsa_public,
@@ -1321,6 +1336,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
         version: 1,
         metadata: encryptedPackage.metadata,
         wrapped_keys: encryptedPackage.wrapped_keys,
+        recovery_wrapped_key: encryptedPackage.recovery_wrapped_key ?? null,
         metadata_signature: encryptedPackage.metadata_signature,
         signer_ed25519_public: encryptedPackage.signer_ed25519_public,
         signer_mldsa_public: encryptedPackage.signer_mldsa_public,
@@ -1519,7 +1535,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
         level: "info",
       });
       await updateOperation(operationId, { current_operation: "Decrypting locally", progress: 86 });
-      const plaintextBase64 = await safeInvoke<string>("vault_download_decrypt", { package: packageData });
+      const plaintextBase64 = await downloadDecryptWithRecoveryFallback(packageData);
       stream.emit({
         stage: "integrity_verification",
         detail: "Ed25519 + ML-DSA-65 signatures and AES-GCM tags verified",
@@ -1639,7 +1655,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
         level: "info",
       });
       await updateOperation(operationId, { current_operation: "Decrypting local package", progress: 82 });
-      const plaintextBase64 = await safeInvoke<string>("vault_download_decrypt", { package: packageData });
+      const plaintextBase64 = await downloadDecryptWithRecoveryFallback(packageData);
       const plaintextBlob = blobFromBase64(plaintextBase64, restoredContentType);
       const restoredName = localDecryptedDownloadName(restoredDisplayName, fileId, preservePath);
       downloadBlob(restoredName, plaintextBlob);
@@ -2220,6 +2236,324 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
     });
   }
 
+  const loadRecoveryStatus = useCallback(async () => {
+    const status = await safeInvoke<{ enabled: boolean; mode: string | null; recipientKeyId: string | null; configuredAt: string | null }>(
+      "vault_recovery_status",
+      undefined,
+      { enabled: false, mode: null, recipientKeyId: null, configuredAt: null },
+    );
+    setRecoveryStatus(status);
+  }, []);
+
+  useEffect(() => {
+    void loadRecoveryStatus();
+  }, [loadRecoveryStatus]);
+
+  async function setupRecovery() {
+    if (recoveryBusy) return;
+    setRecoveryBusy("setup");
+    setRecoveryNotice(null);
+    try {
+      const result = await safeInvoke<{ mode: string; recoveryKey: string | null; enterprisePrivateKey: string | null; enterpriseFingerprint: string | null }>(
+        "vault_setup_recovery",
+        { mode: recoveryMode },
+      );
+      setGeneratedRecoveryKey(result.recoveryKey ?? null);
+      setGeneratedEnterpriseKey(result.enterprisePrivateKey ?? null);
+      setRecoverySaved(false);
+      appendLog("success", `Quantum-safe vault recovery configured (${result.mode}). Save the key material offline now.`);
+      await loadRecoveryStatus();
+    } catch (error) {
+      const message = describeError(error);
+      setRecoveryNotice(message);
+      appendLog("error", `Recovery setup failed: ${message}`);
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
+  async function enableRecoveryWithKey() {
+    if (recoveryBusy) return;
+    const key = recoveryKeyInput.trim();
+    if (!key) {
+      setRecoveryNotice("Enter your recovery key first.");
+      return;
+    }
+    setRecoveryBusy("enable");
+    setRecoveryNotice(null);
+    try {
+      await safeInvoke("vault_enable_recovery_with_phrase", { recoveryKey: key });
+      setRecoveryKeyInput("");
+      setRecoveryNotice("Recovery key enabled on this device. New vault files are protected by it.");
+      appendLog("success", "Recovery key enabled on this device.");
+      await loadRecoveryStatus();
+    } catch (error) {
+      const message = describeError(error);
+      setRecoveryNotice(message);
+      appendLog("error", `Enabling recovery key failed: ${message}`);
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
+  function copyGeneratedRecoveryKey() {
+    if (!generatedRecoveryKey) return;
+    navigator.clipboard
+      .writeText(generatedRecoveryKey)
+      .then(() => setRecoveryNotice("Recovery key copied to clipboard."))
+      .catch(() => setRecoveryNotice("Could not copy automatically — select and copy it manually."));
+  }
+
+  function downloadGeneratedRecoveryKey() {
+    if (!generatedRecoveryKey) return;
+    const body = `QGuard Quantum Vault — Recovery Key\n\nKeep this safe and OFFLINE. Anyone who has this key can decrypt your vault\nfiles, and QGuard cannot recover it for you if it is lost. Store it in a\npassword manager or print it and lock it away.\n\nRecovery key:\n${generatedRecoveryKey}\n`;
+    const blob = new Blob([body], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "qguard-vault-recovery-key.txt";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setRecoverySaved(true);
+  }
+
+  function downloadGeneratedEnterpriseKey() {
+    if (!generatedEnterpriseKey) return;
+    const body = `QGuard Quantum Vault — Enterprise Recovery Key (ML-KEM-1024)\n\nThis is the enterprise recovery PRIVATE key. Store it offline under enterprise\nadmin control. Anyone with this key (and, for hybrid, the recovery key) can\nrecover protected vault material. QGuard never receives or stores it.\n\nEnterprise recovery key:\n${generatedEnterpriseKey}\n`;
+    const blob = new Blob([body], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "qguard-vault-enterprise-recovery-key.txt";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setRecoverySaved(true);
+  }
+
+  async function recoverDecryptFile() {
+    if (recoveryBusy) return;
+    const recoveryKey = recoveryKeyInput.trim();
+    const enterpriseKey = enterpriseKeyInput.trim();
+    if (!recoveryKey && !enterpriseKey) {
+      setRecoveryNotice("Enter your recovery key (or enterprise recovery key) first.");
+      return;
+    }
+    setRecoveryBusy("decrypt-file");
+    setRecoveryNotice(null);
+    try {
+      const source = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Select an encrypted vault file",
+        filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
+      });
+      if (typeof source !== "string") return;
+      const suggested = pathBasename(source).replace(/\.qvault$/i, "") || "recovered-file";
+      const dest = await saveDialog({ title: "Save recovered file", defaultPath: suggested });
+      if (!dest) return;
+      setStatus("Recovering vault file");
+      const summary = enterpriseKey
+        ? await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_path_with_enterprise", {
+            sourcePath: source,
+            destPath: dest,
+            enterpriseKey,
+            recoveryKey: recoveryKey || null,
+          })
+        : await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_path_with_recovery", {
+            sourcePath: source,
+            destPath: dest,
+            recoveryKey,
+          });
+      const line = `Recovered ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      appendLog("success", line);
+      setStatus("File recovered");
+      setRecoveryNotice(line);
+    } catch (error) {
+      const message = describeError(error);
+      setStatus(message);
+      setRecoveryNotice(message);
+      appendLog("error", `Recovery failed: ${message}`);
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
+  async function recoverDecryptFolder() {
+    if (recoveryBusy) return;
+    const recoveryKey = recoveryKeyInput.trim();
+    const enterpriseKey = enterpriseKeyInput.trim();
+    if (!recoveryKey && !enterpriseKey) {
+      setRecoveryNotice("Enter your recovery key (or enterprise recovery key) first.");
+      return;
+    }
+    setRecoveryBusy("decrypt-folder");
+    setRecoveryNotice(null);
+    try {
+      const source = await openDialog({
+        multiple: false,
+        directory: false,
+        title: "Select an encrypted folder archive",
+        filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
+      });
+      if (typeof source !== "string") return;
+      const dest = await openDialog({ multiple: false, directory: true, title: "Choose a folder to restore into" });
+      if (typeof dest !== "string") return;
+      setStatus("Recovering vault folder");
+      const summary = enterpriseKey
+        ? await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_folder_path_with_enterprise", {
+            sourcePath: source,
+            destDir: dest,
+            enterpriseKey,
+            recoveryKey: recoveryKey || null,
+          })
+        : await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_folder_path_with_recovery", {
+            sourcePath: source,
+            destDir: dest,
+            recoveryKey,
+          });
+      const line = `Recovered folder ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      appendLog("success", line);
+      setStatus("Folder recovered");
+      setRecoveryNotice(line);
+    } catch (error) {
+      const message = describeError(error);
+      setStatus(message);
+      setRecoveryNotice(message);
+      appendLog("error", `Recovery failed: ${message}`);
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
+  async function reprotectExistingFiles() {
+    if (recoveryBusy) return;
+    setRecoveryBusy("rewrap");
+    setRecoveryNotice(null);
+    try {
+      const selected = await openDialog({
+        multiple: true,
+        directory: false,
+        title: "Select encrypted vault files to re-protect",
+        filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
+      });
+      const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+      if (paths.length === 0) return;
+      setStatus(`Re-protecting ${paths.length} vault file${paths.length === 1 ? "" : "s"} with your recovery key`);
+      let protectedCount = 0;
+      const failures: string[] = [];
+      for (const path of paths) {
+        try {
+          const summary = await safeInvoke<VaultLocalStreamSummary>("vault_rewrap_path", { sourcePath: path });
+          protectedCount += 1;
+          appendLog("success", `Re-protected ${summary.name}`);
+        } catch (error) {
+          failures.push(`${pathBasename(path)}: ${describeError(error)}`);
+          appendLog("error", `Re-protect failed for ${pathBasename(path)}: ${describeError(error)}`);
+        }
+      }
+      const summaryLine = `Re-protected ${protectedCount}/${paths.length} file${paths.length === 1 ? "" : "s"} with your recovery key.${failures.length ? ` Failed: ${failures.join("; ")}` : ""}`;
+      setStatus(failures.length ? "Some files could not be re-protected" : "Existing files re-protected");
+      setRecoveryNotice(summaryLine);
+    } catch (error) {
+      const message = describeError(error);
+      setStatus(message);
+      setRecoveryNotice(message);
+      appendLog("error", `Re-protect failed: ${message}`);
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
+  // Device decrypt first; if it fails (e.g. on a brand-new device) and the user
+  // has entered their recovery key, recover the uploaded file with it instead.
+  async function downloadDecryptWithRecoveryFallback(packageData: EncryptedFilePackage): Promise<string> {
+    try {
+      return await safeInvoke<string>("vault_download_decrypt", { package: packageData });
+    } catch (deviceError) {
+      const key = recoveryKeyInput.trim();
+      if (!key) throw deviceError;
+      appendLog("info", "Device decrypt unavailable; recovering this file with your recovery key");
+      return await safeInvoke<string>("vault_download_decrypt_with_recovery", { package: packageData, recoveryKey: key });
+    }
+  }
+
+  async function fetchUploadedPackage(file: VaultFileSummary): Promise<EncryptedFilePackage> {
+    const manifest = await readStorageJson<VaultManifest>(file.storage_path);
+    const encryptedChunks: EncryptedEnvelope[] = [];
+    for (const chunkPath of manifest.chunk_paths) {
+      encryptedChunks.push(await readStorageJson<EncryptedEnvelope>(chunkPath));
+    }
+    return {
+      metadata: manifest.metadata,
+      encrypted_chunks: encryptedChunks,
+      wrapped_keys: manifest.wrapped_keys,
+      recovery_wrapped_key: manifest.recovery_wrapped_key ?? null,
+      metadata_signature: manifest.metadata_signature,
+      signer_ed25519_public: manifest.signer_ed25519_public,
+      signer_mldsa_public: manifest.signer_mldsa_public,
+      suite: manifest.suite,
+    };
+  }
+
+  async function reprotectUploadedFiles() {
+    if (recoveryBusy) return;
+    const targets = visibleFiles;
+    if (targets.length === 0) {
+      setRecoveryNotice("No uploaded vault files to protect.");
+      return;
+    }
+    setRecoveryBusy("rewrap-uploaded");
+    setRecoveryNotice(null);
+    setStatus(`Re-protecting ${targets.length} uploaded vault file${targets.length === 1 ? "" : "s"}`);
+    let protectedCount = 0;
+    let alreadyCount = 0;
+    const failures: string[] = [];
+    try {
+      for (const file of targets) {
+        try {
+          const pkg = await fetchUploadedPackage(file);
+          if (pkg.recovery_wrapped_key) {
+            alreadyCount += 1;
+            continue;
+          }
+          const updated = await safeInvoke<EncryptedFilePackage>("vault_rewrap_package", { package: pkg });
+          const manifest = await readStorageJson<VaultManifest>(file.storage_path);
+          const newManifest: VaultManifest = {
+            ...manifest,
+            wrapped_keys: updated.wrapped_keys,
+            recovery_wrapped_key: updated.recovery_wrapped_key ?? null,
+            metadata_signature: updated.metadata_signature,
+            signer_ed25519_public: updated.signer_ed25519_public,
+            signer_mldsa_public: updated.signer_mldsa_public,
+          };
+          await uploadWithRetry(file.storage_path, jsonBlob(newManifest), "application/qguard-vault-manifest+json");
+          const { error } = await supabase
+            .from("messaging_vault_files")
+            .update({ encrypted_metadata: newManifest, metadata_signature: updated.metadata_signature })
+            .eq("id", file.id);
+          if (error) throw error;
+          protectedCount += 1;
+          appendLog("success", `Re-protected uploaded ${fileActionDisplayName(file)}`);
+        } catch (error) {
+          failures.push(`${fileActionDisplayName(file)}: ${describeError(error)}`);
+          appendLog("error", `Re-protect failed for ${fileActionDisplayName(file)}: ${describeError(error)}`);
+        }
+      }
+      const parts = [`Re-protected ${protectedCount}/${targets.length} uploaded file${targets.length === 1 ? "" : "s"}`];
+      if (alreadyCount > 0) parts.push(`${alreadyCount} already protected`);
+      if (failures.length) parts.push(`Failed: ${failures.join("; ")}`);
+      setStatus(failures.length ? "Some uploaded files could not be re-protected" : "Uploaded files re-protected");
+      setRecoveryNotice(`${parts.join(". ")}.`);
+      onUploaded();
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
   return (
     <div className="grid gap-4">
       <section className="shell-card grid gap-4 p-5 xl:grid-cols-[1fr_1fr_320px]">
@@ -2391,7 +2725,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
               Decrypt Folder
             </button>
           </div>
-          <div className="vault-dropzone-note mt-3 text-xs">Only packages wrapped for this device key can be decrypted.</div>
+          <div className="vault-dropzone-note mt-3 text-xs">Decryptable on this device, or on any device with your recovery key (see Recovery Key below).</div>
           <input
             ref={localDecryptFileInputRef}
             type="file"
@@ -2556,6 +2890,197 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
           </div>
         )}
       </section>
+
+      <section className="shell-card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-ink-950">Recovery Key</h2>
+              <span className={`status-pill ${recoveryStatus?.enabled ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"}`}>
+                {recoveryStatus?.enabled ? <><ShieldCheck size={12} /> Enabled</> : <><AlertTriangle size={12} /> Not set up</>}
+              </span>
+            </div>
+            <p className="mt-1 max-w-2xl text-sm text-ink-600">
+              A quantum-safe recovery key (AES-256-GCM / HKDF-SHA3-256) lets you decrypt your vault files on a brand-new device if this one is lost, stolen, or damaged — just install QGuard, sign in, and enter the key. It is one-way and zero-knowledge: never sent to or stored on the server, and it cannot be reverse-engineered or recreated.
+            </p>
+            {recoveryStatus?.enabled && (
+              <p className="mt-1 text-xs text-ink-500">
+                Mode: <span className="font-semibold capitalize text-ink-700">{recoveryStatus.mode ?? "personal"}</span>
+                {recoveryStatus.recipientKeyId ? ` · Enterprise key ${recoveryStatus.recipientKeyId}` : ""}
+                {recoveryStatus.configuredAt ? ` · configured ${new Date(recoveryStatus.configuredAt).toLocaleString()}` : ""}. New vault files are automatically protected.
+              </p>
+            )}
+          </div>
+          {recoveryStatus?.enabled ? (
+            (recoveryStatus.mode ?? "personal") === "personal" ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={recoveryBusy !== null}
+                  onClick={reprotectExistingFiles}
+                  title="Add the recovery key to local .qvault files you encrypted before setting it up"
+                  className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {recoveryBusy === "rewrap" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+                  Protect local files
+                </button>
+                <button
+                  type="button"
+                  disabled={recoveryBusy !== null}
+                  onClick={reprotectUploadedFiles}
+                  title="Add the recovery key to vault files you uploaded before setting it up"
+                  className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {recoveryBusy === "rewrap-uploaded" ? <Loader2 className="animate-spin" size={16} /> : <UploadCloud size={16} />}
+                  Protect uploaded files
+                </button>
+              </div>
+            ) : (
+              <span className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">New files are protected automatically.</span>
+            )
+          ) : (
+            <div className="flex w-full max-w-xs flex-col gap-2">
+              <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1" role="radiogroup" aria-label="Recovery mode">
+                {([
+                  { id: "personal", label: "Personal" },
+                  { id: "enterprise", label: "Enterprise" },
+                  { id: "hybrid", label: "Hybrid" },
+                ] as const).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={recoveryMode === m.id}
+                    onClick={() => setRecoveryMode(m.id)}
+                    className={`rounded-md px-2 py-1.5 text-xs font-bold transition ${recoveryMode === m.id ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-white/70"}`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] leading-snug text-ink-500">
+                {recoveryMode === "personal" && "Recovery key only — HKDF-SHA3-256 → AES-256-GCM."}
+                {recoveryMode === "enterprise" && "Enterprise ML-KEM-1024 recipient only — for admin-held post-quantum recovery."}
+                {recoveryMode === "hybrid" && "Requires BOTH the recovery key and the ML-KEM-1024 key. For high-security tenants."}
+              </p>
+              <button
+                type="button"
+                disabled={recoveryBusy !== null}
+                onClick={setupRecovery}
+                className="flex items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {recoveryBusy === "setup" ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
+                Set up {recoveryMode} recovery
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 rounded-lg border border-line p-4">
+          <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+            <UnlockKeyhole size={16} /> Recover on a device
+          </div>
+          <p className="mt-1 text-xs text-ink-600">
+            Enter your recovery key, then decrypt a .qvault file or folder straight from your external drive. With the key entered here, your uploaded vault files below also fall back to recovery automatically when this device can't decrypt them. You can also enable the key on this device so new files are protected by it too.
+          </p>
+          <input
+            value={recoveryKeyInput}
+            onChange={(event) => setRecoveryKeyInput(event.target.value)}
+            placeholder="XXXX-XXXX-XXXX-…  (personal recovery key; required for personal & hybrid)"
+            spellCheck={false}
+            autoComplete="off"
+            className="mt-3 w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm outline-none focus:border-cyan-300"
+          />
+          <textarea
+            value={enterpriseKeyInput}
+            onChange={(event) => setEnterpriseKeyInput(event.target.value)}
+            placeholder="QG-EK1-…  (enterprise ML-KEM-1024 recovery key; for enterprise & hybrid)"
+            spellCheck={false}
+            autoComplete="off"
+            rows={2}
+            className="mt-2 w-full resize-none rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-xs outline-none focus:border-cyan-300"
+          />
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            <button
+              type="button"
+              disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
+              onClick={recoverDecryptFile}
+              className="flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {recoveryBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />}
+              Recover file
+            </button>
+            <button
+              type="button"
+              disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
+              onClick={recoverDecryptFolder}
+              className="flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {recoveryBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />}
+              Recover folder
+            </button>
+            <button
+              type="button"
+              disabled={recoveryBusy !== null || !recoveryKeyInput.trim()}
+              onClick={enableRecoveryWithKey}
+              className="flex items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-bold text-ink-700 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {recoveryBusy === "enable" ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
+              Enable on this device
+            </button>
+          </div>
+          {recoveryNotice && (
+            <div className="mt-3 break-words rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-700">{recoveryNotice}</div>
+          )}
+        </div>
+      </section>
+
+      {(generatedRecoveryKey || generatedEnterpriseKey) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-white/30 bg-white p-5 shadow-soft">
+            <div className="flex items-center gap-2 text-base font-bold text-ink-950">
+              <KeyRound size={18} className="text-cyan-600" /> Save your recovery key material
+            </div>
+            <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              Save this now and keep it offline — it is shown only once. QGuard cannot recover it for you if it is lost. Anyone with this key material and access to your encrypted vault data may be able to recover protected files.
+            </div>
+            {generatedRecoveryKey && (
+              <div className="mt-3">
+                <div className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Recovery key</div>
+                <div className="mt-1 select-all break-words rounded-lg border border-line bg-canvas p-3 text-center font-mono text-sm tracking-wide text-ink-950">{generatedRecoveryKey}</div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={copyGeneratedRecoveryKey} className="flex items-center justify-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-bold text-ink-700 hover:bg-canvas"><Copy size={16} /> Copy</button>
+                  <button type="button" onClick={downloadGeneratedRecoveryKey} className="flex items-center justify-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-bold text-ink-700 hover:bg-canvas"><Download size={16} /> Download</button>
+                </div>
+              </div>
+            )}
+            {generatedEnterpriseKey && (
+              <div className="mt-3">
+                <div className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Enterprise ML-KEM-1024 recovery key</div>
+                <div className="mt-1 max-h-24 overflow-y-auto break-all rounded-lg border border-line bg-canvas p-3 font-mono text-[11px] text-ink-700">{generatedEnterpriseKey}</div>
+                <button type="button" onClick={downloadGeneratedEnterpriseKey} className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-bold text-ink-700 hover:bg-canvas"><Download size={16} /> Download enterprise key</button>
+              </div>
+            )}
+            <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+              <input type="checkbox" checked={recoverySaved} onChange={(event) => setRecoverySaved(event.currentTarget.checked)} className="h-4 w-4 rounded border-line text-cyan-600 focus:ring-cyan-400" />
+              I have saved my recovery key material in a safe place.
+            </label>
+            <button
+              type="button"
+              disabled={!recoverySaved}
+              onClick={() => {
+                setGeneratedRecoveryKey(null);
+                setGeneratedEnterpriseKey(null);
+                setRecoveryNotice("Recovery is active. New vault files are now protected.");
+              }}
+              className="mt-4 w-full rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">

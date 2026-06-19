@@ -1,0 +1,550 @@
+Implement an enterprise-grade zero-knowledge recovery system for QGuard Messaging and Quantum Vault.
+
+Users must be able to recover locally encrypted vault files and secure messaging data on a new trusted device if their original device is lost, stolen, or damaged.
+
+The system must support:
+
+Recovery Key
++
+ML-KEM-1024
++
+AES-256-GCM
++
+SHA3-256
+
+Enterprise wrapping model:
+
+Vault Master Key wrapped by:
+1. AES-256-GCM using a key derived from the user recovery key
+2. ML-KEM-1024 recipient encapsulation for enterprise/post-quantum recovery
+
+The recovery system must remain zero-knowledge:
+- Recovery key must never be sent to the server
+- Recovery key must never be stored plaintext
+- Server must never be able to decrypt vault data
+- Server may only store encrypted recovery metadata, public keys, ciphertexts, verifiers, and audit events
+
+---
+
+# Security Architecture
+
+## Key Hierarchy
+
+Implement this hierarchy:
+
+User Recovery Key
+    ↓
+HKDF-SHA3-256
+    ↓
+Recovery Wrap Key
+    ↓
+AES-256-GCM wraps Vault Master Key
+
+ML-KEM-1024 Public Key
+    ↓
+Encapsulation
+    ↓
+Shared Secret
+    ↓
+HKDF-SHA3-256
+    ↓
+PQC Wrap Key
+    ↓
+AES-256-GCM wraps Vault Master Key
+
+Vault Master Key
+    ↓
+Folder Keys
+    ↓
+File Keys / Message Keys
+    ↓
+AES-256-GCM encrypts data
+
+---
+
+# Required Cryptographic Controls
+
+## 1. Recovery Key Generation
+
+Create a recovery key using a CSPRNG:
+
+- 256-bit random root secret
+- Encode as Base32 or Base64URL
+- Display once to the user
+- Never store the raw recovery key
+- Never send the raw recovery key to backend
+- Require user confirmation: "I saved my recovery key"
+
+Example format:
+
+QG-RK1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX
+
+Add checksum to prevent typo errors.
+
+---
+
+## 2. Recovery Key Derivation
+
+Derive the recovery wrap key using:
+
+HKDF-SHA3-256(
+  input_key_material = recovery_key_bytes,
+  salt = vault_recovery_salt,
+  info = "qguard-vault-recovery-wrap-v1",
+  length = 32
+)
+
+Use separate HKDF info labels for:
+
+- vault recovery
+- messaging recovery
+- verifier generation
+- fingerprint generation
+
+Never reuse one derived key for multiple purposes.
+
+---
+
+## 3. AES-256-GCM Recovery Wrapping
+
+Wrap the Vault Master Key with AES-256-GCM.
+
+Store:
+
+```json
+{
+  "version": 1,
+  "algorithm": "AES-256-GCM",
+  "kdf": "HKDF-SHA3-256",
+  "salt": "...",
+  "nonce": "...",
+  "ciphertext": "...",
+  "tag": "...",
+  "created_at": "...",
+  "key_fingerprint": "..."
+}
+
+Rules:
+
+Generate a unique 96-bit nonce for every AES-GCM encryption
+Never reuse nonce with the same key
+Authenticate metadata using AAD
+AAD must include user_id, vault_id, algorithm version, and created_at
+4. ML-KEM-1024 Enterprise Recovery Wrapping
+
+Add optional enterprise post-quantum wrapping using ML-KEM-1024.
+
+Flow:
+
+Generate or import ML-KEM-1024 enterprise recovery public key
+Encapsulate shared secret to the ML-KEM-1024 public key
+Derive PQC wrap key using HKDF-SHA3-256
+Wrap the same Vault Master Key with AES-256-GCM
+Store ML-KEM ciphertext and wrapped key metadata
+
+Structure:
+
+{
+  "version": 1,
+  "kem": "ML-KEM-1024",
+  "kdf": "HKDF-SHA3-256",
+  "wrap_cipher": "AES-256-GCM",
+  "kem_ciphertext": "...",
+  "salt": "...",
+  "nonce": "...",
+  "wrapped_vault_master_key": "...",
+  "aad": "...",
+  "created_at": "...",
+  "recipient_key_id": "..."
+}
+
+Important:
+
+ML-KEM is used for key encapsulation only
+AES-256-GCM still encrypts/wraps the Vault Master Key
+SHA3-256 / HKDF-SHA3-256 derives wrapping keys and fingerprints
+Do not use ML-KEM directly to encrypt files
+Recovery Modes
+
+Implement three recovery modes:
+
+Personal Recovery
+
+Recovery Key only:
+
+Recovery Key
+→ HKDF-SHA3-256
+→ AES-256-GCM unwraps Vault Master Key
+
+Enterprise Recovery
+
+Enterprise ML-KEM-1024 only:
+
+Enterprise ML-KEM private key
+→ Decapsulate shared secret
+→ HKDF-SHA3-256
+→ AES-256-GCM unwraps Vault Master Key
+
+Hybrid Recovery
+
+Require both:
+
+Recovery Key
++
+ML-KEM-1024
+
+Derive final wrap key using:
+
+HKDF-SHA3-256(
+input_key_material = recovery_key_secret || mlkem_shared_secret,
+salt = recovery_salt,
+info = "qguard-hybrid-enterprise-recovery-v1",
+length = 32
+)
+
+Use this for high-security tenants.
+
+Enterprise Admin Controls
+
+Add tenant policy settings:
+
+{
+  "recovery_enabled": true,
+  "allow_personal_recovery": true,
+  "allow_enterprise_recovery": true,
+  "require_hybrid_recovery": false,
+  "require_mfa_before_recovery": true,
+  "require_device_trust_before_decrypt": true,
+  "allow_recovery_key_rotation": true,
+  "allow_rewrap_existing_files": true
+}
+Required Features
+1. Recovery Key Fingerprint
+
+Generate a safe fingerprint:
+
+SHA3-256("qguard-recovery-fingerprint-v1" || recovery_key)
+
+Display only first 12–16 characters:
+
+Example:
+
+A7C3-E921-5D8F-90AA
+
+Never display or log the full key after initial setup.
+
+2. Recovery Verifier
+
+Create a verifier so the app can detect wrong recovery keys without decrypting real data.
+
+Use:
+
+HKDF-SHA3-256(
+input_key_material = recovery_key,
+salt = verifier_salt,
+info = "qguard-recovery-verifier-v1",
+length = 32
+)
+
+Then store only:
+
+SHA3-256(verifier_key)
+
+Never store the recovery key or recovery wrap key.
+
+3. Rewrap Existing Files
+
+Add command/function:
+
+reprotect_existing_vault_files_with_recovery()
+
+Flow:
+
+Find existing vault files that only have device-key wrapping
+Decrypt file key using device key
+Rewrap file key or vault master key using recovery wrap
+Add recovery metadata
+Verify recovery unwrap succeeds
+Do not re-encrypt file content unless necessary
+
+Required UI label:
+
+"Protect existing vault files with recovery key"
+
+4. Recovery Key Rotation
+
+Add:
+
+rotate_recovery_key()
+
+Flow:
+
+User enters old recovery key
+Validate old verifier
+Generate new recovery key
+Derive new recovery wrap key
+Rewrap Vault Master Key
+Update recovery metadata
+Revoke old recovery wrap
+Log audit event
+5. Recovery Audit Events
+
+Never log secrets.
+
+Log only:
+
+recovery_enabled
+recovery_disabled
+recovery_attempt_started
+recovery_attempt_failed
+recovery_success
+recovery_key_rotated
+enterprise_recovery_key_added
+enterprise_recovery_key_removed
+existing_files_rewrapped
+
+Each event should include:
+
+{
+  "event_type": "recovery_success",
+  "user_id": "...",
+  "tenant_id": "...",
+  "device_id": "...",
+  "vault_id": "...",
+  "timestamp": "...",
+  "ip_hash": "...",
+  "user_agent_hash": "...",
+  "result": "success"
+}
+UI Requirements
+
+Add a Recovery Key panel in Quantum Vault and QGuard Messaging.
+
+Sections:
+
+Recovery Status
+
+Show:
+
+Recovery enabled / disabled
+Recovery mode: Personal / Enterprise / Hybrid
+Protected files count
+Unprotected legacy files count
+Last recovery metadata update
+Recovery key fingerprint
+Setup Recovery
+
+Button:
+
+Generate Recovery Key
+
+Flow:
+
+Explain recovery responsibility
+Generate key locally
+Show key once
+Allow copy/download/print
+Require confirmation checkbox
+Enable recovery wrapping
+Offer to rewrap existing files
+
+Warning text:
+
+"QGuard cannot recover this key. If you lose it, QGuard cannot decrypt your vault."
+
+Recover on New Device
+
+Flow:
+
+Sign in
+Pass MFA
+Register new trusted device
+Enter recovery key
+Validate verifier locally
+Unwrap Vault Master Key
+Decrypt local USB/external vault files
+Rebind vault access to new device key
+Enterprise Recovery
+
+Admin panel:
+
+Upload/import ML-KEM-1024 enterprise recovery public key
+View recipient key fingerprint
+Enable enterprise recovery
+Require hybrid recovery
+Rotate enterprise recovery key
+Disable enterprise recovery
+Backend Requirements
+
+Backend may store:
+
+recovery metadata
+encrypted wrapped keys
+ML-KEM public key
+ML-KEM ciphertext
+recovery verifier hash
+key fingerprints
+audit events
+
+Backend must never store:
+
+raw recovery key
+derived recovery wrap key
+Vault Master Key plaintext
+ML-KEM private key
+decrypted file keys
+decrypted message keys
+
+Add API endpoints:
+
+POST /api/v1/vault/recovery/setup
+GET  /api/v1/vault/recovery/status
+POST /api/v1/vault/recovery/verify
+POST /api/v1/vault/recovery/rewrap-existing
+POST /api/v1/vault/recovery/rotate
+POST /api/v1/vault/recovery/enterprise-key
+DELETE /api/v1/vault/recovery/enterprise-key
+GET /api/v1/vault/recovery/audit
+
+All APIs must enforce:
+
+authenticated user
+tenant isolation
+Supabase RLS
+MFA requirement for sensitive recovery actions
+audit logging
+rate limiting
+Local Commands / Rust Functions
+
+Add or update commands:
+
+vault_recovery_status()
+vault_setup_recovery()
+vault_enable_recovery_with_phrase()
+vault_decrypt_path_with_recovery()
+vault_rewrap_existing_files_with_recovery()
+vault_rotate_recovery_key()
+vault_add_enterprise_mlkem_recovery_key()
+vault_remove_enterprise_mlkem_recovery_key()
+vault_test_recovery_roundtrip()
+File Metadata Format
+
+Each encrypted file or vault object should support multiple wrapping recipients:
+
+{
+  "file_id": "...",
+  "vault_id": "...",
+  "encryption": {
+    "cipher": "AES-256-GCM",
+    "content_nonce": "...",
+    "content_hash": "SHA3-256..."
+  },
+  "key_wrapping": [
+    {
+      "type": "device",
+      "version": 1,
+      "wrapped_key": "..."
+    },
+    {
+      "type": "recovery_key",
+      "version": 1,
+      "kdf": "HKDF-SHA3-256",
+      "cipher": "AES-256-GCM",
+      "salt": "...",
+      "nonce": "...",
+      "wrapped_key": "...",
+      "fingerprint": "..."
+    },
+    {
+      "type": "mlkem_1024_enterprise",
+      "version": 1,
+      "kem": "ML-KEM-1024",
+      "kem_ciphertext": "...",
+      "kdf": "HKDF-SHA3-256",
+      "cipher": "AES-256-GCM",
+      "salt": "...",
+      "nonce": "...",
+      "wrapped_key": "...",
+      "recipient_key_id": "..."
+    }
+  ]
+}
+Security Tests Required
+
+Add tests for:
+
+Recovery key generation produces 256-bit entropy
+Recovery key is never logged
+Recovery key is never sent to backend
+AES-GCM nonce uniqueness
+Wrong recovery key fails
+Correct recovery key decrypts
+Recovery works without old device key
+Existing files can be rewrapped
+Legacy files remain detectable
+Recovery key rotation invalidates old key
+ML-KEM-1024 wrapping works
+Hybrid recovery requires both recovery key and ML-KEM secret
+Server cannot decrypt vault data
+Supabase RLS blocks cross-tenant access
+Audit events do not contain secrets
+Verification Commands
+
+Run:
+
+cargo check
+cargo test --lib vault
+cargo test recovery
+npm run typecheck
+npm run test
+npm run build
+
+Success criteria:
+
+All tests pass
+No recovery secrets appear in logs
+Recovery works on a simulated new device
+Existing files can be rewrapped
+Enterprise ML-KEM-1024 wrap/unwrap passes round-trip test
+UI clearly warns that QGuard cannot recover lost recovery keys
+Important Product Wording
+
+Use this text in the UI:
+
+"A high-entropy recovery key lets you recover vault files on a new trusted device if the original device is lost, stolen, or damaged. The key is generated locally, never sent to QGuard servers, and cannot be reconstructed by QGuard. Keep it offline and private. Anyone with this recovery key and access to your encrypted vault data may be able to recover protected files."
+
+For enterprise mode:
+
+"Enterprise recovery adds ML-KEM-1024 post-quantum recipient wrapping so an authorized enterprise recovery key can recover protected vault material without exposing user recovery secrets to QGuard."
+
+Avoid saying:
+
+"Impossible to decrypt"
+"Unbreakable"
+"Irreversible key"
+"Quantum proof"
+
+Use:
+
+"Zero-knowledge"
+"Post-quantum-strength symmetric encryption"
+"ML-KEM-1024 recipient wrapping"
+"Not recoverable by QGuard"
+"Crypto-agile recovery metadata"
+Final Requirement
+
+Do not weaken existing encryption.
+
+Do not remove device-key wrapping.
+
+Add recovery wrapping as an additional recipient.
+
+Every vault object should support:
+
+Device key wrapping
++
+Recovery key wrapping
++
+Optional ML-KEM-1024 enterprise wrapping
+
+The final implementation must preserve local-first zero-knowledge recovery while adding enterprise-grade post-quantum recovery support.

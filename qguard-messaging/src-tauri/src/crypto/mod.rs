@@ -2,6 +2,7 @@ pub mod hybrid_kex;
 pub mod kdf;
 pub mod signatures;
 pub mod symmetric;
+pub mod vault_recovery;
 
 use serde::{Deserialize, Serialize};
 

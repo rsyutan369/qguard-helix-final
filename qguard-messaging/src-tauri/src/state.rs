@@ -21,6 +21,7 @@ use crate::telemetry::TelemetryEvent;
 
 const KEYRING_SERVICE: &str = "QGuard Messaging Device Keys";
 const KEY_MATERIAL_AAD: &[u8] = b"QGuard-Messaging-Device-Key-Material-v1";
+const VAULT_RECOVERY_AAD: &[u8] = b"QGuard-Messaging-Vault-Recovery-Material-v1";
 
 /// On-disk container for the AES-256-GCM-encrypted device key material.
 ///
@@ -53,6 +54,53 @@ enum KeyMaterialStatus {
     Generated,
     Restored,
     Upgraded,
+}
+
+/// Device-local, encrypted-at-rest copy of the vault recovery material. Stores
+/// only the derived AES wrapping key + a verifier — never the recovery root,
+/// which lives solely with the user. Lets this device keep adding the recovery
+/// wrap to new files without re-prompting for the recovery key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedVaultRecovery {
+    pub version: u8,
+    /// Personal-mode AES wrap key (zeros/unused for enterprise mode).
+    pub wrap_key: [u8; crate::crypto::symmetric::KEY_SIZE],
+    pub verifier: String,
+    pub configured_at: chrono::DateTime<Utc>,
+    /// "personal" | "enterprise" | "hybrid" (None on legacy records => personal).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Hybrid mode: the recovery root, kept device-local (encrypted at rest) so
+    /// this device can keep wrapping new files; never sent to the server.
+    #[serde(default)]
+    pub recovery_root: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
+    /// Enterprise/hybrid: the enterprise recovery public key used to wrap files.
+    #[serde(default)]
+    pub enterprise_x25519_public: Option<Vec<u8>>,
+    #[serde(default)]
+    pub enterprise_mlkem_public: Option<Vec<u8>>,
+    #[serde(default)]
+    pub recipient_key_id: Option<String>,
+}
+
+impl PersistedVaultRecovery {
+    pub fn personal(wrap_key: [u8; crate::crypto::symmetric::KEY_SIZE], verifier: String) -> Self {
+        Self {
+            version: 1,
+            wrap_key,
+            verifier,
+            configured_at: Utc::now(),
+            mode: Some("personal".to_string()),
+            recovery_root: None,
+            enterprise_x25519_public: None,
+            enterprise_mlkem_public: None,
+            recipient_key_id: None,
+        }
+    }
+
+    pub fn recovery_mode(&self) -> &str {
+        self.mode.as_deref().unwrap_or("personal")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -523,6 +571,51 @@ impl AppState {
             &legacy_signed_prekeys,
             &legacy_one_time_prekeys,
         )
+    }
+
+    fn vault_recovery_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.vault-recovery.enc"))
+    }
+
+    /// Persist the derived recovery wrapping key + verifier for this user,
+    /// encrypted at rest under the same OS-keychain-held DEK as the device keys.
+    pub fn save_vault_recovery(&self, user_id: &str, material: &PersistedVaultRecovery) -> Result<()> {
+        let mut encoded = serde_json::to_vec(material)
+            .map_err(|e| QGuardError::Storage(format!("encode vault recovery material: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, VAULT_RECOVERY_AAD);
+        encoded.zeroize();
+        let file = EncryptedKeyMaterialFile {
+            version: 1,
+            envelope: envelope?,
+        };
+        let serialized = serde_json::to_vec(&file).map_err(|e| {
+            QGuardError::Storage(format!("encode encrypted vault recovery: {e}"))
+        })?;
+        std::fs::write(self.vault_recovery_path(user_id), &serialized)
+            .map_err(|e| QGuardError::Storage(format!("write vault recovery material: {e}")))?;
+        Ok(())
+    }
+
+    pub fn load_vault_recovery(&self, user_id: &str) -> Result<Option<PersistedVaultRecovery>> {
+        let path = self.vault_recovery_path(user_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| QGuardError::Storage(format!("read vault recovery material: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode vault recovery material: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let mut plaintext =
+            crate::crypto::symmetric::decrypt(&key, &file.envelope, VAULT_RECOVERY_AAD)?;
+        let material: PersistedVaultRecovery = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode vault recovery payload: {e}")))?;
+        plaintext.zeroize();
+        Ok(Some(material))
     }
 
     pub fn set_auth_session(&self, session: AuthSession) -> Result<()> {

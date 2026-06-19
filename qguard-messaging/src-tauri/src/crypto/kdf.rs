@@ -26,6 +26,19 @@ pub fn derive_32(ikm: &[u8], info: &[u8]) -> Result<[u8; 32]> {
     Ok(out)
 }
 
+/// HKDF-SHA3-256 with an explicit caller-supplied salt (instead of the fixed
+/// module salt). Used by recovery wrapping where each wrap carries its own salt.
+pub fn derive_32_with_salt(salt: &[u8], ikm: &[u8], info: &[u8]) -> Result<[u8; 32]> {
+    if ikm.is_empty() {
+        return Err(QGuardError::Crypto("invalid HKDF input".to_string()));
+    }
+    let hk = Hkdf::<Sha3_256>::new(Some(salt), ikm);
+    let mut out = [0u8; 32];
+    hk.expand(info, &mut out)
+        .map_err(|e| QGuardError::Crypto(format!("HKDF expand failed: {e}")))?;
+    Ok(out)
+}
+
 pub fn sha3_256(data: &[u8]) -> [u8; 32] {
     let digest = Sha3_256::digest(data);
     let mut out = [0u8; 32];
