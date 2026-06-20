@@ -15,6 +15,10 @@ import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
+import { useSecureCall } from "@/lib/use-secure-call";
+import { CallButton } from "@/components/call/CallButton";
+import { IncomingCallModal } from "@/components/call/IncomingCallModal";
+import { InCallOverlay } from "@/components/call/InCallOverlay";
 
 interface SecureChatPageProps {
   userId: string;
@@ -1052,6 +1056,20 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   );
   const recipientDevicesMissingPrekeys = activeRecipientUserIds.length > 0 && sendableRecipientDevices.length === 0 && recipientDevices.length > 0;
   const recipientDevicesReady = sendableRecipientDevices.length > 0;
+
+  const callPeer = useMemo(() => {
+    if (activeConversation?.conversation_type !== "direct") return null;
+    const device = sendableRecipientDevices[0];
+    if (!device) return null;
+    return {
+      userId: device.user_id, deviceId: device.device_id,
+      x25519: Array.from(device.x25519_identity_public),
+      mlkem: Array.from(device.mlkem_identity_public),
+      displayName: activeConversation ? conversationTitle(activeConversation) : "Contact",
+    };
+  }, [activeConversation, sendableRecipientDevices]);
+
+  const call = useSecureCall({ userId, deviceId: localDeviceId ?? "", conversationId: activeConversation?.id ?? null, peer: callPeer });
 
   useEffect(() => {
     setProtectionConfig(readChatProtectionConfig(userId));
@@ -3265,7 +3283,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               E2EE active - ML-KEM-1024 - Forward secrecy
             </div>
           </div>
-          <span className="status-pill bg-emerald-50 text-emerald-600">{status}</span>
+          <div className="flex items-center gap-2">
+            <CallButton
+              disabled={!call.supported || !callPeer || call.state.phase !== "idle" && call.state.phase !== "ended"}
+              title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
+              onClick={() => void call.startCall()}
+            />
+            <span className="status-pill bg-emerald-50 text-emerald-600">{status}</span>
+          </div>
         </div>
         <div ref={messageViewportRef} className="flex-1 space-y-4 overflow-y-auto bg-canvas p-5">
           <div className="rounded-lg border border-line bg-white p-4 text-sm text-ink-600">
@@ -3962,6 +3987,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           </div>
         </div>
       </div>
+    )}
+    {call.state.phase === "ringing" && (
+      <IncomingCallModal callerName={callPeer?.displayName ?? "Contact"} onAccept={() => void call.accept()} onReject={() => call.reject()} />
+    )}
+    {["calling", "connecting", "connected"].includes(call.state.phase) && (
+      <InCallOverlay state={call.state} localStream={call.localStream} remoteStream={call.remoteStream}
+        micEnabled={call.micEnabled} cameraEnabled={call.cameraEnabled} peerName={callPeer?.displayName ?? "Contact"}
+        onHangup={() => call.hangup()} onToggleMic={() => call.toggleMic()} onToggleCamera={() => call.toggleCamera()} />
     )}
     </>
   );
