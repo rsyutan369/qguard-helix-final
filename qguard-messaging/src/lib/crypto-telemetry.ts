@@ -1,6 +1,6 @@
 import { supabase } from "@/lib/supabase";
 
-type TelemetryScope = "message" | "vault" | "key" | "upload" | "download" | "verification";
+type TelemetryScope = "message" | "vault" | "key" | "upload" | "download" | "verification" | "call";
 
 interface CryptoTelemetryInput {
   userId: string;

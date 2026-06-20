@@ -2,7 +2,7 @@
 // Wire format: [header (headerLength, unencrypted)][ciphertext+16B tag][8B BE counter].
 
 export async function importAesGcmKey(raw: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return crypto.subtle.importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
 function nonce(contextTag: Uint8Array, counter: bigint): Uint8Array {
@@ -19,7 +19,7 @@ export async function sealFrame(
   const header = frame.subarray(0, headerLength);
   const payload = frame.subarray(headerLength);
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce(contextTag, counter) }, key, payload),
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce(contextTag, counter) as BufferSource }, key, payload as BufferSource),
   );
   const out = new Uint8Array(headerLength + ct.length + 8);
   out.set(header, 0);
@@ -36,7 +36,7 @@ export async function openFrame(
   const header = frame.subarray(0, headerLength);
   const ct = frame.subarray(headerLength, frame.length - 8);
   const pt = new Uint8Array(
-    await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce(contextTag, counter) }, key, ct),
+    await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce(contextTag, counter) as BufferSource }, key, ct as BufferSource),
   );
   const out = new Uint8Array(headerLength + pt.length);
   out.set(header, 0);
