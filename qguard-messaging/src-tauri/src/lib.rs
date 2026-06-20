@@ -58,11 +58,24 @@ pub fn run() {
                         if let Ok(core) = unsafe { controller.CoreWebView2() } {
                             let handler = PermissionRequestedEventHandler::create(
                                 Box::new(|_sender, args| {
+                                    use webview2_com::Microsoft::Web::WebView2::Win32::{
+                                        COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                                        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                                    };
                                     if let Some(args) = args {
                                         unsafe {
-                                            let _ = args.SetState(
-                                                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-                                            );
+                                            // Only auto-grant the call's microphone + camera. All
+                                            // other permission kinds fall through to the default
+                                            // (prompt/deny) so we don't silently widen the surface.
+                                            let mut kind = Default::default();
+                                            if args.PermissionKind(&mut kind).is_ok()
+                                                && (kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                                                    || kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA)
+                                            {
+                                                let _ = args.SetState(
+                                                    COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                                                );
+                                            }
                                         }
                                     }
                                     Ok(())

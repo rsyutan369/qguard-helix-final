@@ -24,7 +24,11 @@ async function run(transformer: any, opts: XfOptions) {
           : await openFrame(key, ctx, hl, data);
         controller.enqueue(frame);
       } catch {
-        // Drop frames that fail auth (do not forward plaintext or corrupt media).
+        // Drop frames that fail AES-GCM auth (never forward plaintext or corrupt media).
+        // GCM provides per-frame integrity/authenticity only. Out-of-order frames are
+        // accepted as-is; there is no strict replay/sequence window in v1, so a frame
+        // could in principle be replayed within the call. This is acceptable for live
+        // RTP media and may be tightened later with a sliding receive window.
       }
     },
   });

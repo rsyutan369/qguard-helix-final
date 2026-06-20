@@ -36,6 +36,11 @@ DROP POLICY IF EXISTS messaging_call_signals_member_delete ON public.messaging_c
 CREATE POLICY messaging_call_signals_member_delete ON public.messaging_call_signals
   FOR DELETE USING (auth.uid() = from_user_id);
 
+-- Removes call signals older than 1 hour. NOTE: no scheduler is wired here; this
+-- must be scheduled manually (e.g. via pg_cron:
+--   SELECT cron.schedule('prune-call-signals', '*/15 * * * *',
+--     $$SELECT public.prune_expired_messaging_call_signals()$$);
+-- ) or invoked periodically by the backend. Without that, rows are not pruned.
 CREATE OR REPLACE FUNCTION public.prune_expired_messaging_call_signals()
 RETURNS VOID AS $$
 BEGIN

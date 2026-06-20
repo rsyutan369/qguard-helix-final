@@ -27,6 +27,9 @@ export function useSecureCall(args: {
   const workerRef = useRef<Worker | null>(null);
   const setupRef = useRef<CallSetup | null>(null);
   const pendingOfferRef = useRef<CallSignalRow | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const phaseRef = useRef(state.phase);
+  const timeoutRef = useRef<number | undefined>(undefined);
   const supported = useMemo(callSupported, []);
 
   const worker = useCallback(() => {
@@ -45,6 +48,13 @@ export function useSecureCall(args: {
     });
   }, [worker]);
 
+  const flushPendingCandidates = useCallback(() => {
+    const pc = pcRef.current;
+    if (!pc) return;
+    for (const c of pendingCandidatesRef.current) void pc.addIceCandidate(c);
+    pendingCandidatesRef.current = [];
+  }, []);
+
   const cleanup = useCallback(() => {
     pcRef.current?.getSenders().forEach((s) => s.track?.stop());
     pcRef.current?.close();
@@ -53,10 +63,23 @@ export function useSecureCall(args: {
     workerRef.current = null;
     setupRef.current = null;
     pendingOfferRef.current = null;
+    pendingCandidatesRef.current = [];
+    if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
     localStream?.getTracks().forEach((t) => t.stop());
     setLocalStream(null);
     setRemoteStream(null);
   }, [localStream]);
+
+  const armTimeout = useCallback((ms: number) => {
+    if (timeoutRef.current !== undefined) window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = undefined;
+      if (phaseRef.current !== "connected") {
+        dispatch({ type: "failed", error: "Call timed out" });
+        cleanup();
+      }
+    }, ms);
+  }, [cleanup]);
 
   const buildPeerConnection = useCallback((callId: string, peer: Peer) => {
     const pc = new RTCPeerConnection(buildRtcConfiguration());
@@ -81,6 +104,7 @@ export function useSecureCall(args: {
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected" && setupRef.current) {
+        if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
         dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber });
         void recordCryptoTelemetry({ userId: args.userId, scope: "call", stage: "call_connected", detail: "Quantum-encrypted call connected", progress: 100, status: "complete", metadata: { call_id: callId } });
       }
@@ -101,6 +125,7 @@ export function useSecureCall(args: {
     const peer = args.peer;
     const callId = crypto.randomUUID();
     dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.deviceId });
+    armTimeout(45000);
     try {
       const setup = await safeInvoke<CallSetup>("call_caller_setup", { peerX25519Public: peer.x25519, peerMlkemPublic: peer.mlkem, callId });
       setupRef.current = setup;
@@ -116,12 +141,13 @@ export function useSecureCall(args: {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Call failed" });
       cleanup();
     }
-  }, [args, attachSenderTransforms, buildPeerConnection, cleanup, getMedia, supported]);
+  }, [args, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, getMedia, supported]);
 
   const accept = useCallback(async () => {
     const offer = pendingOfferRef.current;
     if (!offer || !args.peer || !args.conversationId) return;
     dispatch({ type: "accept" });
+    armTimeout(45000);
     try {
       const setup = await safeInvoke<CallSetup>("call_callee_setup", { hybridCiphertext: (offer.payload as { hybridCiphertext: unknown }).hybridCiphertext, callId: offer.call_id });
       setupRef.current = setup;
@@ -130,6 +156,7 @@ export function useSecureCall(args: {
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       attachSenderTransforms(pc, setup);
       await pc.setRemoteDescription({ type: "offer", sdp: String((offer.payload as { sdp: string }).sdp) });
+      flushPendingCandidates();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await sendCallSignal({ call_id: offer.call_id, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: offer.from_user_id, to_device_id: offer.from_device_id, signal_type: "answer", payload: { sdp: answer.sdp } });
@@ -137,7 +164,7 @@ export function useSecureCall(args: {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Accept failed" });
       cleanup();
     }
-  }, [args, attachSenderTransforms, buildPeerConnection, cleanup, getMedia]);
+  }, [args, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia]);
 
   const endCall = useCallback((notify: boolean) => {
     if (notify && state.callId && state.peerUserId && state.peerDeviceId && args.conversationId) {
@@ -167,16 +194,38 @@ export function useSecureCall(args: {
       onSignal: (row) => {
         if (row.from_user_id === args.userId) return;
         switch (row.signal_type) {
-          case "offer":
+          case "offer": {
+            const busy = ["ringing", "calling", "connecting", "connected"].includes(phaseRef.current);
+            if (busy) {
+              if (args.conversationId) {
+                void sendCallSignal({
+                  call_id: row.call_id, conversation_id: args.conversationId,
+                  from_user_id: args.userId, from_device_id: args.deviceId,
+                  to_user_id: row.from_user_id, to_device_id: row.from_device_id,
+                  signal_type: "busy", payload: {},
+                });
+              }
+              return;
+            }
             pendingOfferRef.current = row;
             dispatch({ type: "incoming", callId: row.call_id, peerUserId: row.from_user_id, peerDeviceId: row.from_device_id });
             break;
+          }
           case "answer":
-            if (pcRef.current && state.role === "caller") { void pcRef.current.setRemoteDescription({ type: "answer", sdp: String(row.payload.sdp) }); dispatch({ type: "remote-answered" }); }
+            if (pcRef.current && state.role === "caller") {
+              void pcRef.current
+                .setRemoteDescription({ type: "answer", sdp: String(row.payload.sdp) })
+                .then(() => flushPendingCandidates());
+              dispatch({ type: "remote-answered" });
+            }
             break;
-          case "ice":
-            if (pcRef.current && row.payload.candidate) void pcRef.current.addIceCandidate(row.payload.candidate as RTCIceCandidateInit);
+          case "ice": {
+            if (!row.payload.candidate) break;
+            const candidate = row.payload.candidate as RTCIceCandidateInit;
+            if (pcRef.current?.remoteDescription) void pcRef.current.addIceCandidate(candidate);
+            else pendingCandidatesRef.current.push(candidate);
             break;
+          }
           case "reject": case "hangup": case "busy":
             endCall(false);
             break;
@@ -185,7 +234,11 @@ export function useSecureCall(args: {
       },
     });
     return unsub;
-  }, [args.deviceId, args.userId, endCall, state.role]);
+  }, [args.conversationId, args.deviceId, args.userId, endCall, flushPendingCandidates, state.role]);
+
+  // Keep a synchronous mirror of the current phase for ref-based decisions
+  // (busy detection, timeouts) inside callbacks that must not re-subscribe.
+  useEffect(() => { phaseRef.current = state.phase; }, [state.phase]);
 
   useEffect(() => () => cleanup(), [cleanup]);
 

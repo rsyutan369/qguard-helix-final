@@ -71,10 +71,11 @@ pub fn call_caller_setup(
     let info = format!("{KEM_INFO_PREFIX}{call_id}");
     let (ciphertext, mut shared) =
         encapsulate(&peer_x25519_public, &peer_mlkem_public, info.as_bytes())?;
-    let setup = derive_call_setup(&shared, "caller", Some(ciphertext));
+    let result = derive_call_setup(&shared, "caller", Some(ciphertext));
     shared.zeroize();
+    let setup = result?;
     state.audit_info("call_caller_setup", "Quantum-safe call media key established (caller)");
-    setup
+    Ok(setup)
 }
 
 #[tauri::command]
@@ -100,11 +101,12 @@ pub fn call_callee_setup(
         &hybrid_ciphertext,
         info.as_bytes(),
     )?;
-    let setup = derive_call_setup(&shared, "callee", None);
+    let result = derive_call_setup(&shared, "callee", None);
     shared.zeroize();
     drop(guard);
+    let setup = result?;
     state.audit_info("call_callee_setup", "Quantum-safe call media key established (callee)");
-    setup
+    Ok(setup)
 }
 
 #[cfg(test)]
