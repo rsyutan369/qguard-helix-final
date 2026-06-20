@@ -48,6 +48,10 @@ pqcrypto-kyber = "0.8"
 pqcrypto-mldsa = "0.1"
 pqcrypto-traits = "0.3"
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation"] }
+
 [features]
 default = ["custom-protocol", "pure-rust-pqc"]
 custom-protocol = ["tauri/custom-protocol"]

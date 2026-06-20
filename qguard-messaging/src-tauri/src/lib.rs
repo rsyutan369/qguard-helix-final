@@ -45,6 +45,38 @@ pub fn run() {
             let data_dir = dirs_fallback().join("qguard-messaging");
             let state = AppState::new(data_dir)?;
             app.manage(state);
+
+            // Task 9: Grant WebView2 camera + microphone permission on Windows
+            // so getUserMedia works without a user-facing OS prompt blocking the call.
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        use webview2_com::PermissionRequestedEventHandler;
+                        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_STATE_ALLOW;
+                        let controller = webview.controller();
+                        if let Ok(core) = unsafe { controller.CoreWebView2() } {
+                            let handler = PermissionRequestedEventHandler::create(
+                                Box::new(|_sender, args| {
+                                    if let Some(args) = args {
+                                        unsafe {
+                                            let _ = args.SetState(
+                                                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                                            );
+                                        }
+                                    }
+                                    Ok(())
+                                }),
+                            );
+                            let mut token: i64 = 0;
+                            unsafe {
+                                let _ = core.add_PermissionRequested(&handler, &mut token);
+                            }
+                        }
+                    });
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

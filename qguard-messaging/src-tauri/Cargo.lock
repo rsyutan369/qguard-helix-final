@@ -2911,6 +2911,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "webview2-com",
+ "windows",
  "x25519-dalek",
  "zeroize",
 ]
