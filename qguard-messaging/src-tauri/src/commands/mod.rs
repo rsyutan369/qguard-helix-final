@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod calls;
 pub mod devices;
 pub mod keys;
 pub mod messaging;

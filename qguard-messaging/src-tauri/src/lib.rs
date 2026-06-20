@@ -23,6 +23,7 @@ use commands::keys::*;
 use commands::messaging::*;
 use commands::security::*;
 use commands::telemetry::*;
+use commands::calls::*;
 use commands::vault::*;
 use state::AppState;
 use tauri::Manager;
@@ -95,6 +96,8 @@ pub fn run() {
             security_hardening_status,
             security_quantum_report,
             telemetry_dashboard_snapshot,
+            call_caller_setup,
+            call_callee_setup,
             telemetry_recent_events
         ])
         .run(tauri::generate_context!())
