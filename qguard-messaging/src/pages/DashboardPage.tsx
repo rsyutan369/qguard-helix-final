@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Users,
 } from "lucide-react";
+import { isAdminEmail } from "@/lib/admin";
 import type { CSSProperties } from "react";
 import MetricCard from "@/components/MetricCard";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
@@ -102,6 +103,7 @@ function telemetryTone(event: TelemetryEvent): string {
 
 export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate }: DashboardPageProps) {
   const { snapshot, devices, conversations, modules, report, keyInventory, telemetry, securityEvents } = data;
+  const isAdmin = isAdminEmail(data.profile?.email);
   const myDevices = devices.filter((device) => device.user_id === data.profile?.id);
   const activeMyDevices = myDevices.filter((device) => device.trust_state !== "Revoked");
   const trustedDevices = activeMyDevices.filter(isTrustedDevice);
@@ -159,6 +161,7 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
         <MetricCard icon={LockKeyhole} label="Vault Usage" value={snapshot.vault_storage} caption={`${data.vaultFiles.length} encrypted vault objects`} tone="emerald" />
       </div>
 
+      {isAdmin && (
       <section className="shell-card p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -231,6 +234,7 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
           </div>
         </div>
       </section>
+      )}
 
       <div className="grid grid-cols-[1.2fr_1fr_0.85fr] gap-4">
         <section className="shell-card p-4">

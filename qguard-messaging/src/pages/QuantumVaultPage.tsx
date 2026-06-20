@@ -22,11 +22,13 @@ import {
   LockKeyhole,
   Pause,
   Play,
+  Search,
   ShieldCheck,
   Terminal,
   Trash2,
   UnlockKeyhole,
   UploadCloud,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
@@ -42,7 +44,7 @@ import {
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
-import type { TelemetryEvent, VaultFileSummary } from "@/lib/types";
+import type { QuantumSecurityReport, TelemetryEvent, VaultFileSummary } from "@/lib/types";
 
 interface VaultLocalStreamSummary {
   file_id: string;
@@ -190,6 +192,18 @@ const archiveExtensions = new Set(["zip", "rar", "7z", "tar", "gz", "tgz", "bz2"
 const codeExtensions = new Set(["c", "cpp", "css", "go", "html", "java", "js", "json", "jsx", "py", "rs", "sql", "tsx", "ts", "xml", "yaml", "yml"]);
 const spreadsheetExtensions = new Set(["csv", "ods", "tsv", "xls", "xlsx"]);
 
+type VaultStatusTone = "ok" | "warn" | "pending";
+
+const vaultSecurityFallback: QuantumSecurityReport = {
+  hybrid_session_status: "Unavailable",
+  pqc_algorithm: "Status unavailable",
+  forward_secrecy: "Status unavailable",
+  hndl_protection: "Unavailable",
+  quantum_safe_score: 0,
+  key_rotation_history: [],
+  warnings: ["Desktop security report is unavailable in this context"],
+};
+
 function describeError(error: unknown): string {
   if (!error) return "Unknown error";
   if (error instanceof Error) return error.message;
@@ -272,6 +286,12 @@ function suiteLabel(suite?: Record<string, unknown> | null): string {
     suite.pq_signature ?? "ML-DSA-65",
     suite.classical_signature ?? "Ed25519",
   ].map(String).join(" + ");
+}
+
+function shortSuiteLabel(suite?: Record<string, unknown> | null): string {
+  if (!suite) return "ML-KEM-1024";
+  const kem = suite.pq_kem;
+  return typeof kem === "string" && kem ? kem : "ML-KEM-1024";
 }
 
 function formatBytes(bytes: number): string {
@@ -605,7 +625,12 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [pipelineControl, setPipelineControl] = useState<VaultPipelineControl>({ state: "idle", operationId: null, label: null });
   const [terminalLogs, setTerminalLogs] = useState<VaultTerminalLog[]>([]);
-  const [activeVaultTab, setActiveVaultTab] = useState<VaultPanelTab>("operations");
+  const [activeVaultTab, setActiveVaultTab] = useState<VaultPanelTab>("explorer");
+  const [workspaceMode, setWorkspaceMode] = useState<"encrypt" | "decrypt">("encrypt");
+  const [explorerQuery, setExplorerQuery] = useState("");
+  const [recoveryModalOpen, setRecoveryModalOpen] = useState(false);
+  const [vaultStatusModalOpen, setVaultStatusModalOpen] = useState(false);
+  const [securityReport, setSecurityReport] = useState<QuantumSecurityReport | null>(null);
   const [resaveDecryptedToVault, setResaveDecryptedToVault] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [selectedExplorerNodeId, setSelectedExplorerNodeId] = useState<string | null>(null);
@@ -975,6 +1000,16 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
       .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
       .slice(0, 120);
   }, [activeOperations, telemetry, terminalLogs]);
+
+  const explorerSearch = explorerQuery.trim().toLowerCase();
+  const filteredExplorerNodes = useMemo(() => {
+    if (!explorerSearch) return visibleExplorerNodes;
+    return allExplorerNodes.filter(
+      (node) =>
+        node.type === "file" &&
+        (node.name.toLowerCase().includes(explorerSearch) || node.path.toLowerCase().includes(explorerSearch)),
+    );
+  }, [allExplorerNodes, explorerSearch, visibleExplorerNodes]);
 
   function fileActionDisplayName(file: VaultFileSummary): string {
     const resolvedName = resolvedFileNames[file.id];
@@ -2070,7 +2105,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
     const deleteBusy = Boolean(file && actionBusy === `delete-${file.id}`);
     const disabled = !file || Boolean(actionBusy);
     return (
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-nowrap items-center gap-2">
         {isLiveUploadRow && (
           <>
             <button
@@ -2117,7 +2152,7 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
     const decryptBusy = actionBusy === `folder-decrypt-${node.path}`;
     const deleteBusy = actionBusy === `folder-delete-${node.path}`;
     return (
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-nowrap items-center gap-2">
         <button type="button" disabled={disabled} onClick={() => runFolderAction(node, "verify")} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Verify folder">
           {verifyBusy ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
         </button>
@@ -2248,6 +2283,19 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
   useEffect(() => {
     void loadRecoveryStatus();
   }, [loadRecoveryStatus]);
+
+  const loadVaultSecurity = useCallback(async () => {
+    const report = await safeInvoke<QuantumSecurityReport>(
+      "security_quantum_report",
+      undefined,
+      vaultSecurityFallback,
+    );
+    setSecurityReport(report);
+  }, []);
+
+  useEffect(() => {
+    void loadVaultSecurity();
+  }, [loadVaultSecurity, vaultStatusModalOpen, operations.length, recoveryStatus?.enabled]);
 
   async function setupRecovery() {
     if (recoveryBusy) return;
@@ -2554,486 +2602,723 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
     }
   }
 
+  const identityActive = securityReport === null
+    ? null
+    : securityReport.pqc_algorithm !== "No active device keys" && securityReport.pqc_algorithm !== "Status unavailable";
+  const deviceTone: VaultStatusTone = identityActive === null ? "pending" : identityActive ? "ok" : "warn";
+  const vaultTotalBytes = visibleFiles.reduce((sum, file) => sum + file.size_bytes, 0);
+  const vaultInFlightOps = activeOperations.filter((operation) => operation.status === "processing" || operation.status === "queued");
+  const vaultLastActivityAt = panelRows[0]?.updated_at ?? visibleFiles[0]?.created_at ?? null;
+  const vaultStatusRows: Array<{ tone: VaultStatusTone; title: string; detail: string }> = [
+    {
+      tone: pipelineControl.state === "paused" || pipelineControl.state === "stop_requested" ? "warn" : "ok",
+      title: "Vault Ready",
+      detail:
+        pipelineControl.state === "paused"
+          ? "Operation paused"
+          : pipelineControl.state === "stop_requested"
+            ? "Stopping current operation"
+            : vaultInFlightOps.length > 0
+              ? `${vaultInFlightOps.length} operation${vaultInFlightOps.length === 1 ? "" : "s"} in progress`
+              : "All systems operational",
+    },
+    {
+      tone: recoveryStatus?.enabled ? "ok" : "warn",
+      title: "Recovery Key Active",
+      detail: recoveryStatus?.enabled
+        ? `${recoveryStatus.mode ?? "personal"} mode${recoveryStatus.configuredAt ? ` - ${new Date(recoveryStatus.configuredAt).toLocaleDateString()}` : ""}`
+        : "Not set up yet - open Recovery Key",
+    },
+    {
+      tone: deviceTone,
+      title: "Device Keys Active",
+      detail: securityReport === null
+        ? "Checking device key material..."
+        : identityActive
+          ? securityReport.pqc_algorithm
+          : "No active device keys on this device",
+    },
+    {
+      tone: deviceTone,
+      title: "Signature Verification",
+      detail: securityReport === null
+        ? "Checking signing identity..."
+        : identityActive
+          ? "ML-DSA-65 + Ed25519 signing active"
+          : "Signing identity unavailable",
+    },
+  ];
+
+  function vaultStatusIcon(tone: VaultStatusTone) {
+    if (tone === "ok") return <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-500" size={18} />;
+    if (tone === "pending") return <Loader2 className="mt-0.5 shrink-0 animate-spin text-ink-400" size={18} />;
+    return <AlertTriangle className="mt-0.5 shrink-0 text-amber-500" size={18} />;
+  }
+
   return (
     <div className="grid gap-4">
-      <section className="shell-card grid gap-4 p-5 xl:grid-cols-[1fr_1fr_320px]">
-        <div
-          onDragOver={(event) => {
-            event.preventDefault();
-          }}
-          onClick={() => {
-            if (!uploadBusy) fileInputRef.current?.click();
-          }}
-          onKeyDown={(event) => {
-            if (uploadBusy || (event.key !== "Enter" && event.key !== " ")) return;
-            event.preventDefault();
-            fileInputRef.current?.click();
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const selected = Array.from(event.dataTransfer.files ?? []);
+      {/* Panel 1 — Quantum Vault Workspace */}
+      <section className="shell-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-violet-600 text-sm font-bold text-white shadow-tight">1</span>
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-ink-950">Quantum Vault Workspace</h2>
+              <p className="mt-0.5 text-sm text-ink-600">
+                {workspaceMode === "encrypt"
+                  ? "Drop files or folders to seal them with quantum-safe encryption."
+                  : "Drop encrypted packages to restore them on this device or with your recovery key."}
+              </p>
+            </div>
+          </div>
+          <div className="inline-flex rounded-lg border border-line bg-canvas p-1" role="tablist" aria-label="Workspace mode">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceMode === "encrypt"}
+              onClick={() => setWorkspaceMode("encrypt")}
+              className={`flex items-center gap-2 rounded-md px-4 py-1.5 text-sm font-bold transition ${workspaceMode === "encrypt" ? "bg-cyan-600 text-white shadow-tight" : "text-ink-600 hover:text-cyan-700"}`}
+            >
+              <LockKeyhole size={15} /> Encrypt
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceMode === "decrypt"}
+              onClick={() => setWorkspaceMode("decrypt")}
+              className={`flex items-center gap-2 rounded-md px-4 py-1.5 text-sm font-bold transition ${workspaceMode === "decrypt" ? "bg-violet-600 text-white shadow-tight" : "text-ink-600 hover:text-violet-700"}`}
+            >
+              <UnlockKeyhole size={15} /> Decrypt
+            </button>
+          </div>
+        </div>
+
+        {workspaceMode === "encrypt" ? (
+          <div
+            onDragOver={(event) => {
+              event.preventDefault();
+            }}
+            onClick={() => {
+              if (!uploadBusy) fileInputRef.current?.click();
+            }}
+            onKeyDown={(event) => {
+              if (uploadBusy || (event.key !== "Enter" && event.key !== " ")) return;
+              event.preventDefault();
+              fileInputRef.current?.click();
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              const selected = Array.from(event.dataTransfer.files ?? []);
+              handleSelectedFiles(selected).catch((error) => {
+                const message = describeError(error);
+                setStatus(message);
+                appendLog("error", message);
+                setUploadBusy(false);
+              });
+            }}
+            role="button"
+            tabIndex={uploadBusy ? -1 : 0}
+            className="vault-upload-dropzone mt-4 flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
+          >
+            {uploadBusy ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={44} /> : <UploadCloud className="vault-dropzone-icon mb-3" size={44} />}
+            <div className="vault-dropzone-title text-lg font-bold">{uploadBusy ? "Encryption pipeline running" : "Drag and drop files or folders here"}</div>
+            <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Sealed with X25519 + ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256, then stored in your vault</div>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                disabled={uploadBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+                className="flex items-center gap-2 rounded-lg bg-cyan-600 px-5 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <UploadCloud size={16} /> Choose File
+              </button>
+              <button
+                type="button"
+                disabled={uploadBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  folderInputRef.current?.click();
+                }}
+                className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-5 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FolderOpen size={16} /> Choose Folder
+              </button>
+              <button
+                type="button"
+                disabled={!uploadBusy || pipelineControl.state === "paused" || pipelineControl.state === "stop_requested"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  requestPipelineStop();
+                }}
+                className="flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Pause size={16} /> Stop
+              </button>
+              <button
+                type="button"
+                disabled={pipelineControl.state !== "paused"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  resumePipeline();
+                }}
+                className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-white px-4 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Play size={16} /> Resume
+              </button>
+            </div>
+            <div className="vault-dropzone-note mt-3 text-xs">
+              Or seal to this device — offline, any size:
+              <button type="button" disabled={localVaultBusy !== null} onClick={(event) => { event.stopPropagation(); localEncryptFile(); }} className="mx-1 font-bold text-cyan-700 underline-offset-2 hover:underline disabled:opacity-60">{localVaultBusy === "encrypt-file" ? "encrypting…" : "Encrypt file"}</button>
+              ·
+              <button type="button" disabled={localVaultBusy !== null} onClick={(event) => { event.stopPropagation(); localEncryptFolder(); }} className="mx-1 font-bold text-cyan-700 underline-offset-2 hover:underline disabled:opacity-60">{localVaultBusy === "encrypt-folder" ? "encrypting…" : "Encrypt folder"}</button>
+            </div>
+          </div>
+        ) : (
+          <div
+            onDragOver={(event) => {
+              event.preventDefault();
+            }}
+            onClick={() => {
+              if (!localDecryptBusy) localDecryptFileInputRef.current?.click();
+            }}
+            onKeyDown={(event) => {
+              if (localDecryptBusy || (event.key !== "Enter" && event.key !== " ")) return;
+              event.preventDefault();
+              localDecryptFileInputRef.current?.click();
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              const selected = Array.from(event.dataTransfer.files ?? []);
+              handleLocalEncryptedFiles(selected).catch((error) => {
+                const message = normalizeDecryptionError(error);
+                setStatus(message);
+                appendLog("error", message);
+                setLocalDecryptBusy(false);
+              });
+            }}
+            role="button"
+            tabIndex={localDecryptBusy ? -1 : 0}
+            className="vault-upload-dropzone mt-4 flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition focus:outline-none focus:ring-2 focus:ring-violet-400/60"
+          >
+            {localDecryptBusy ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={44} /> : <UnlockKeyhole className="vault-dropzone-icon mb-3" size={44} />}
+            <div className="vault-dropzone-title text-lg font-bold">{localDecryptBusy ? "Decryption pipeline running" : "Drop encrypted packages to decrypt"}</div>
+            <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Restore downloaded .qguard file or folder packages — on this device, or with your recovery key</div>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                disabled={localDecryptBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  localDecryptFileInputRef.current?.click();
+                }}
+                className="flex items-center gap-2 rounded-lg bg-violet-600 px-5 py-2 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <UnlockKeyhole size={16} /> Decrypt File
+              </button>
+              <button
+                type="button"
+                disabled={localDecryptBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  localDecryptFolderInputRef.current?.click();
+                }}
+                className="flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-5 py-2 text-sm font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <FolderOpen size={16} /> Decrypt Folder
+              </button>
+            </div>
+            <div className="vault-dropzone-note mt-3 text-xs">
+              Or restore a .qvault from this device:
+              <button type="button" disabled={localVaultBusy !== null} onClick={(event) => { event.stopPropagation(); localDecryptFile(); }} className="mx-1 font-bold text-violet-700 underline-offset-2 hover:underline disabled:opacity-60">{localVaultBusy === "decrypt-file" ? "decrypting…" : "Decrypt file"}</button>
+              ·
+              <button type="button" disabled={localVaultBusy !== null} onClick={(event) => { event.stopPropagation(); localDecryptFolder(); }} className="mx-1 font-bold text-violet-700 underline-offset-2 hover:underline disabled:opacity-60">{localVaultBusy === "decrypt-folder" ? "decrypting…" : "Decrypt folder"}</button>
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-xs font-semibold text-ink-600" onClick={(event) => event.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={resaveDecryptedToVault}
+                onChange={(event) => setResaveDecryptedToVault(event.currentTarget.checked)}
+                className="h-4 w-4 rounded border-line text-cyan-600 focus:ring-cyan-400"
+              />
+              Re-save decrypted output into Vault
+            </label>
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold text-emerald-600">{status}</span>
+          {pipelineControl.state !== "idle" && (
+            <span className={`status-pill ${pipelineControl.state === "running" ? "bg-cyan-50 text-cyan-700" : "bg-amber-50 text-amber-700"}`}>{pipelineControl.state.replace("_", " ")}</span>
+          )}
+          {pipelineControl.label && <span className="status-pill max-w-full truncate bg-white text-ink-600">{pipelineControl.label}</span>}
+          {localVaultResult && <span className="status-pill bg-emerald-50 text-emerald-600"><CheckCircle2 size={12} /> {localVaultResult}</span>}
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          {[
+            { algo: "ML-KEM-1024", label: "Key encapsulation", sub: "Hybrid · X25519", Icon: KeyRound, tone: "text-cyan-600" },
+            { algo: "AES-256-GCM", label: "Symmetric cipher", sub: "Authenticated", Icon: LockKeyhole, tone: "text-cyan-600" },
+            { algo: "HKDF-SHA3-256", label: "Key derivation", sub: "Per-file keys", Icon: Terminal, tone: "text-cyan-600" },
+            { algo: "ML-DSA-65", label: "Signature", sub: "Hybrid · Ed25519", Icon: FileCheck2, tone: "text-cyan-600" },
+            { algo: "Quantum Safe", label: "FIPS 203 / 204", sub: "NIST PQC", Icon: ShieldCheck, tone: "text-emerald-600" },
+          ].map((card) => (
+            <div key={card.algo} className="rounded-lg border border-line bg-white p-3">
+              <card.Icon className={card.tone} size={18} />
+              <div className="mt-2 truncate font-mono text-sm font-bold text-ink-950">{card.algo}</div>
+              <div className="text-xs font-semibold text-ink-600">{card.label}</div>
+              <div className="text-[11px] text-ink-400">{card.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const selected = Array.from(event.currentTarget.files ?? []);
             handleSelectedFiles(selected).catch((error) => {
               const message = describeError(error);
               setStatus(message);
               appendLog("error", message);
               setUploadBusy(false);
             });
+            event.currentTarget.value = "";
           }}
-          role="button"
-          tabIndex={uploadBusy ? -1 : 0}
-          className="vault-upload-dropzone flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed p-4 text-center transition focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
-        >
-          {uploadBusy ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={42} /> : <UploadCloud className="vault-dropzone-icon mb-3" size={42} />}
-          <div className="vault-dropzone-title text-base font-bold">{uploadBusy ? "Encryption pipeline running" : "Click to select a file to Encrypt"}</div>
-          <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Files are encrypted with X25519+ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256</div>
-          <div className="mt-4 flex flex-wrap justify-center gap-2">
-            <button
-              type="button"
-              disabled={uploadBusy}
-              onClick={(event) => {
-                event.stopPropagation();
-                fileInputRef.current?.click();
-              }}
-              className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <UploadCloud size={16} />
-              Choose File
-            </button>
-            <button
-              type="button"
-              disabled={uploadBusy}
-              onClick={(event) => {
-                event.stopPropagation();
-                folderInputRef.current?.click();
-              }}
-              className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <FolderOpen size={16} />
-              Choose Folder
-            </button>
-            <button
-              type="button"
-              disabled={!uploadBusy || pipelineControl.state === "paused" || pipelineControl.state === "stop_requested"}
-              onClick={(event) => {
-                event.stopPropagation();
-                requestPipelineStop();
-              }}
-              className="flex items-center gap-2 rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Pause size={16} />
-              Stop
-            </button>
-            <button
-              type="button"
-              disabled={pipelineControl.state !== "paused"}
-              onClick={(event) => {
-                event.stopPropagation();
-                resumePipeline();
-              }}
-              className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-white px-4 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Play size={16} />
-              Resume
-            </button>
-          </div>
-          <div className="vault-dropzone-note mt-3 text-xs">Drag files here or use the buttons. Status appears immediately below.</div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              const selected = Array.from(event.currentTarget.files ?? []);
-              handleSelectedFiles(selected).catch((error) => {
-                const message = describeError(error);
-                setStatus(message);
-                appendLog("error", message);
-                setUploadBusy(false);
-              });
-              event.currentTarget.value = "";
-            }}
-          />
-          <input
-            ref={folderInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              const selected = Array.from(event.currentTarget.files ?? []);
-              handleSelectedFiles(selected).catch((error) => {
-                const message = describeError(error);
-                setStatus(message);
-                appendLog("error", message);
-                setUploadBusy(false);
-              });
-              event.currentTarget.value = "";
-            }}
-          />
-        </div>
-        <div
-          onDragOver={(event) => {
-            event.preventDefault();
+        />
+        <input
+          ref={folderInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const selected = Array.from(event.currentTarget.files ?? []);
+            handleSelectedFiles(selected).catch((error) => {
+              const message = describeError(error);
+              setStatus(message);
+              appendLog("error", message);
+              setUploadBusy(false);
+            });
+            event.currentTarget.value = "";
           }}
-          onClick={() => {
-            if (!localDecryptBusy) localDecryptFileInputRef.current?.click();
-          }}
-          onKeyDown={(event) => {
-            if (localDecryptBusy || (event.key !== "Enter" && event.key !== " ")) return;
-            event.preventDefault();
-            localDecryptFileInputRef.current?.click();
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const selected = Array.from(event.dataTransfer.files ?? []);
+        />
+        <input
+          ref={localDecryptFileInputRef}
+          type="file"
+          multiple
+          accept=".json,.qguard"
+          className="hidden"
+          onChange={(event) => {
+            const selected = Array.from(event.currentTarget.files ?? []);
             handleLocalEncryptedFiles(selected).catch((error) => {
               const message = normalizeDecryptionError(error);
               setStatus(message);
               appendLog("error", message);
               setLocalDecryptBusy(false);
             });
+            event.currentTarget.value = "";
           }}
-          role="button"
-          tabIndex={localDecryptBusy ? -1 : 0}
-          className="vault-upload-dropzone flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed p-4 text-center transition focus:outline-none focus:ring-2 focus:ring-violet-400/60"
-        >
-          {localDecryptBusy ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={42} /> : <UnlockKeyhole className="vault-dropzone-icon mb-3" size={42} />}
-          <div className="vault-dropzone-title text-base font-bold">{localDecryptBusy ? "Decryption pipeline running" : "Click to upload encrypted files to Decrypt"}</div>
-          <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Upload downloaded .qguard encrypted file or folder JSON packages for local restore</div>
-          <div className="mt-4 flex flex-wrap justify-center gap-2">
-            <button
-              type="button"
-              disabled={localDecryptBusy}
-              onClick={(event) => {
-                event.stopPropagation();
-                localDecryptFileInputRef.current?.click();
-              }}
-              className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <UnlockKeyhole size={16} />
-              Decrypt File
-            </button>
-            <button
-              type="button"
-              disabled={localDecryptBusy}
-              onClick={(event) => {
-                event.stopPropagation();
-                localDecryptFolderInputRef.current?.click();
-              }}
-              className="flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <FolderOpen size={16} />
-              Decrypt Folder
-            </button>
+        />
+        <input
+          ref={localDecryptFolderInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const selected = Array.from(event.currentTarget.files ?? []);
+            handleLocalEncryptedFiles(selected).catch((error) => {
+              const message = normalizeDecryptionError(error);
+              setStatus(message);
+              appendLog("error", message);
+              setLocalDecryptBusy(false);
+            });
+            event.currentTarget.value = "";
+          }}
+        />
+      </section>
+
+      {/* Panel 2 — Vault Crypto Terminal */}
+      <section className="overflow-hidden rounded-lg border border-line bg-ink-950 shadow-soft">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-bold text-white">
+            <Terminal size={16} />
+            Vault Crypto Terminal
           </div>
-          <div className="vault-dropzone-note mt-3 text-xs">Decryptable on this device, or on any device with your recovery key (see Recovery Key below).</div>
-          <input
-            ref={localDecryptFileInputRef}
-            type="file"
-            multiple
-            accept=".json,.qguard"
-            className="hidden"
-            onChange={(event) => {
-              const selected = Array.from(event.currentTarget.files ?? []);
-              handleLocalEncryptedFiles(selected).catch((error) => {
-                const message = normalizeDecryptionError(error);
-                setStatus(message);
-                appendLog("error", message);
-                setLocalDecryptBusy(false);
-              });
-              event.currentTarget.value = "";
-            }}
-          />
-          <input
-            ref={localDecryptFolderInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              const selected = Array.from(event.currentTarget.files ?? []);
-              handleLocalEncryptedFiles(selected).catch((error) => {
-                const message = normalizeDecryptionError(error);
-                setStatus(message);
-                appendLog("error", message);
-                setLocalDecryptBusy(false);
-              });
-              event.currentTarget.value = "";
-            }}
-          />
+          <span className="text-xs font-semibold text-cyan-200">User-scoped live vault logs</span>
         </div>
-        <div className="rounded-lg border border-line p-4">
-          <div className="text-sm font-bold text-ink-950">Vault Activity</div>
-          <div className="mt-3 text-sm font-semibold text-emerald-600">{status}</div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <span className={`status-pill ${
-              pipelineControl.state === "paused"
-                ? "bg-amber-50 text-amber-700"
-                : pipelineControl.state === "stop_requested"
-                  ? "bg-amber-50 text-amber-700"
-                  : pipelineControl.state === "running"
-                    ? "bg-cyan-50 text-cyan-700"
-                    : "bg-ink-50 text-ink-600"
-            }`}>
-              {pipelineControl.state.replace("_", " ")}
-            </span>
-            {pipelineControl.label && <span className="status-pill max-w-full truncate bg-white text-ink-600">{pipelineControl.label}</span>}
-          </div>
-          <div className="mt-4 grid gap-2 text-sm text-ink-600">
-            <div>{visibleFiles.length} encrypted files available</div>
-            <div>{panelRows.length} active vault records</div>
-            <div>{activeOperations.length} active realtime vault operation rows</div>
-          </div>
-          <label className="mt-4 flex items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-xs font-semibold text-ink-600">
-            <input
-              type="checkbox"
-              checked={resaveDecryptedToVault}
-              onChange={(event) => setResaveDecryptedToVault(event.currentTarget.checked)}
-              className="h-4 w-4 rounded border-line text-cyan-600 focus:ring-cyan-400"
-            />
-            Re-save decrypted output into Vault
-          </label>
-        </div>
-        <div className="overflow-hidden rounded-lg border border-line bg-ink-950 xl:col-span-3">
-          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-            <div className="flex items-center gap-2 text-sm font-bold text-white">
-              <Terminal size={16} />
-              Vault Crypto Terminal
+        <div ref={terminalRef} className="max-h-56 space-y-2 overflow-y-auto p-4 font-mono text-xs">
+          {terminalLogs.length === 0 && (
+            <div className="text-cyan-100/70">Waiting for file selection or decrypt action...</div>
+          )}
+          {terminalLogs.map((log) => (
+            <div key={log.id} className={log.level === "error" ? "text-rose-300" : log.level === "success" ? "text-emerald-300" : "text-cyan-100"}>
+              <span className="text-white/40">[{new Date(log.at).toLocaleTimeString()}]</span> {log.message}
             </div>
-            <span className="text-xs font-semibold text-cyan-200">User-scoped live vault logs</span>
+          ))}
+        </div>
+      </section>
+
+      {/* Panel 2 — Vault Status & Recovery */}
+      <section className="shell-card p-5">
+        <div className="flex items-center gap-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-violet-600 text-sm font-bold text-white shadow-tight">2</span>
+          <div className="min-w-0">
+            <h2 className="text-base font-bold text-ink-950">Vault Status &amp; Recovery</h2>
+            <p className="mt-0.5 text-sm text-ink-600">Your vault security and recovery configuration.</p>
           </div>
-          <div ref={terminalRef} className="max-h-56 space-y-2 overflow-y-auto p-4 font-mono text-xs">
-            {terminalLogs.length === 0 && (
-              <div className="text-cyan-100/70">Waiting for file selection or decrypt action...</div>
-            )}
-            {terminalLogs.map((log) => (
-              <div key={log.id} className={log.level === "error" ? "text-rose-300" : log.level === "success" ? "text-emerald-300" : "text-cyan-100"}>
-                <span className="text-white/40">[{new Date(log.at).toLocaleTimeString()}]</span> {log.message}
+        </div>
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          {/* Vault Status */}
+          <div className="flex flex-col rounded-lg border border-line bg-white p-4">
+            <div className="text-sm font-bold text-ink-950">Vault Status</div>
+            <div className="mt-4 grid gap-4">
+              {vaultStatusRows.map((row) => (
+                <div key={row.title} className="flex items-start gap-3">
+                  {vaultStatusIcon(row.tone)}
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-ink-950">{row.title}</div>
+                    <div className="text-xs text-ink-500">{row.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setVaultStatusModalOpen(true)}
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 py-2 text-sm font-bold text-ink-700 transition hover:border-cyan-200 hover:bg-cyan-50 hover:text-cyan-700"
+            >
+              View Details
+            </button>
+          </div>
+
+          {/* Recovery Key */}
+          <div className="flex flex-col rounded-lg border border-line bg-white p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                <KeyRound size={16} className="text-cyan-600" /> Recovery Key
               </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="shell-card p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold text-ink-950">Local Vault</h2>
-              <span className="status-pill bg-emerald-50 text-emerald-600"><ShieldCheck size={12} /> Offline · any size</span>
-            </div>
-            <p className="mt-1 max-w-2xl text-sm text-ink-600">
-              Encrypt and decrypt files and folders straight to a location you choose on this device — no upload, no capacity limit. A folder is sealed into one archive and restores its full structure. Decryptable anytime on this device while you stay signed in.
-            </p>
-            <p className="mt-1 text-xs font-semibold text-cyan-700">{localSuiteLine}</p>
-          </div>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <button
-            type="button"
-            disabled={localVaultBusy !== null}
-            onClick={localEncryptFile}
-            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-cyan-600 text-white">
-              {localVaultBusy === "encrypt-file" ? <Loader2 className="animate-spin" size={18} /> : <LockKeyhole size={18} />}
-            </div>
-            <div className="min-w-0">
-              <div className="text-sm font-bold text-ink-950">Encrypt file</div>
-              <div className="mt-0.5 text-xs text-ink-600">Seal any file to a .qvault on disk</div>
-            </div>
-          </button>
-          <button
-            type="button"
-            disabled={localVaultBusy !== null}
-            onClick={localEncryptFolder}
-            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-cyan-600 text-white">
-              {localVaultBusy === "encrypt-folder" ? <Loader2 className="animate-spin" size={18} /> : <FileArchive size={18} />}
-            </div>
-            <div className="min-w-0">
-              <div className="text-sm font-bold text-ink-950">Encrypt folder</div>
-              <div className="mt-0.5 text-xs text-ink-600">Pack a folder into one encrypted archive</div>
-            </div>
-          </button>
-          <button
-            type="button"
-            disabled={localVaultBusy !== null}
-            onClick={localDecryptFile}
-            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white">
-              {localVaultBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={18} /> : <UnlockKeyhole size={18} />}
-            </div>
-            <div className="min-w-0">
-              <div className="text-sm font-bold text-ink-950">Decrypt file</div>
-              <div className="mt-0.5 text-xs text-ink-600">Restore a .qvault file on this device</div>
-            </div>
-          </button>
-          <button
-            type="button"
-            disabled={localVaultBusy !== null}
-            onClick={localDecryptFolder}
-            className="flex items-start gap-3 rounded-lg border border-cyan-200 bg-white p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white">
-              {localVaultBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={18} /> : <FolderOpen size={18} />}
-            </div>
-            <div className="min-w-0">
-              <div className="text-sm font-bold text-ink-950">Decrypt folder</div>
-              <div className="mt-0.5 text-xs text-ink-600">Restore an encrypted folder archive</div>
-            </div>
-          </button>
-        </div>
-        {localVaultResult && (
-          <div className="mt-3 break-words rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
-            {localVaultResult}
-          </div>
-        )}
-      </section>
-
-      <section className="shell-card p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold text-ink-950">Recovery Key</h2>
               <span className={`status-pill ${recoveryStatus?.enabled ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"}`}>
                 {recoveryStatus?.enabled ? <><ShieldCheck size={12} /> Enabled</> : <><AlertTriangle size={12} /> Not set up</>}
               </span>
             </div>
-            <p className="mt-1 max-w-2xl text-sm text-ink-600">
-              A quantum-safe recovery key (AES-256-GCM / HKDF-SHA3-256) lets you decrypt your vault files on a brand-new device if this one is lost, stolen, or damaged — just install QGuard, sign in, and enter the key. It is one-way and zero-knowledge: never sent to or stored on the server, and it cannot be reverse-engineered or recreated.
+            <p className="mt-2 text-xs leading-relaxed text-ink-600">
+              Quantum-safe, zero-knowledge recovery (HKDF-SHA3-256 / AES-256-GCM). Decrypt your vault on a new device if this one is lost — the key never leaves your hands.
             </p>
             {recoveryStatus?.enabled && (
-              <p className="mt-1 text-xs text-ink-500">
+              <p className="mt-2 text-[11px] text-ink-500">
                 Mode: <span className="font-semibold capitalize text-ink-700">{recoveryStatus.mode ?? "personal"}</span>
-                {recoveryStatus.recipientKeyId ? ` · Enterprise key ${recoveryStatus.recipientKeyId}` : ""}
-                {recoveryStatus.configuredAt ? ` · configured ${new Date(recoveryStatus.configuredAt).toLocaleString()}` : ""}. New vault files are automatically protected.
+                {recoveryStatus.configuredAt ? ` · ${new Date(recoveryStatus.configuredAt).toLocaleDateString()}` : ""}
               </p>
             )}
+            <button
+              type="button"
+              onClick={() => setRecoveryModalOpen(true)}
+              className="mt-auto flex items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700"
+            >
+              <KeyRound size={16} /> {recoveryStatus?.enabled ? "Manage recovery" : "Set up recovery"}
+            </button>
+            {recoveryNotice && (
+              <div className="mt-2 break-words rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-[11px] font-semibold text-cyan-700">{recoveryNotice}</div>
+            )}
           </div>
-          {recoveryStatus?.enabled ? (
-            (recoveryStatus.mode ?? "personal") === "personal" ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={recoveryBusy !== null}
-                  onClick={reprotectExistingFiles}
-                  title="Add the recovery key to local .qvault files you encrypted before setting it up"
-                  className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {recoveryBusy === "rewrap" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
-                  Protect local files
-                </button>
-                <button
-                  type="button"
-                  disabled={recoveryBusy !== null}
-                  onClick={reprotectUploadedFiles}
-                  title="Add the recovery key to vault files you uploaded before setting it up"
-                  className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {recoveryBusy === "rewrap-uploaded" ? <Loader2 className="animate-spin" size={16} /> : <UploadCloud size={16} />}
-                  Protect uploaded files
-                </button>
+
+          {/* Security Profile */}
+          <div className="rounded-lg border border-line bg-white p-4">
+            <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+              <ShieldCheck size={16} className="text-emerald-600" /> Security Profile
+            </div>
+            <dl className="mt-4 grid gap-2 text-xs">
+              {([
+                ["Profile", "High security (Quantum Vault)"],
+                ["Key exchange", "X25519 + ML-KEM-1024"],
+                ["Signature", "Ed25519 + ML-DSA-65"],
+                ["Cipher", "AES-256-GCM"],
+                ["Key derivation", "HKDF-SHA3-256"],
+                ["Zero-knowledge", "Keys never leave device"],
+              ] as const).map(([term, value]) => (
+                <div key={term} className="flex items-center justify-between gap-2 border-b border-line pb-2 last:border-0 last:pb-0">
+                  <dt className="font-semibold text-ink-500">{term}</dt>
+                  <dd className="text-right font-semibold text-ink-800">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      {/* Vault Status modal */}
+      {vaultStatusModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm" onClick={() => setVaultStatusModalOpen(false)}>
+          <div className="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-white/30 bg-white p-5 shadow-soft" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-base font-bold text-ink-950">
+                <ShieldCheck size={18} className="text-emerald-600" /> Vault Status
               </div>
-            ) : (
-              <span className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">New files are protected automatically.</span>
-            )
-          ) : (
-            <div className="flex w-full max-w-xs flex-col gap-2">
-              <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1" role="radiogroup" aria-label="Recovery mode">
-                {([
-                  { id: "personal", label: "Personal" },
-                  { id: "enterprise", label: "Enterprise" },
-                  { id: "hybrid", label: "Hybrid" },
-                ] as const).map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={recoveryMode === m.id}
-                    onClick={() => setRecoveryMode(m.id)}
-                    className={`rounded-md px-2 py-1.5 text-xs font-bold transition ${recoveryMode === m.id ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-white/70"}`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
+              <button type="button" onClick={() => setVaultStatusModalOpen(false)} className="icon-button" title="Close"><X size={18} /></button>
+            </div>
+            <p className="mt-2 text-sm text-ink-600">
+              Live security posture and inventory for your quantum vault on this device. Every value is derived from real device key material, vault operations, and telemetry.
+            </p>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {vaultStatusRows.map((row) => (
+                <div key={row.title} className="flex items-start gap-3 rounded-lg border border-line bg-canvas p-3">
+                  {vaultStatusIcon(row.tone)}
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-ink-950">{row.title}</div>
+                    <div className="text-xs text-ink-500">{row.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {([
+                ["Files", String(explorerFileCount)],
+                ["Folders", String(explorerFolderCount)],
+                ["Encrypted", formatBytes(vaultTotalBytes)],
+                ["In progress", String(vaultInFlightOps.length)],
+              ] as const).map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-line bg-white p-3">
+                  <div className="text-lg font-bold text-ink-950">{value}</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">{label}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-lg border border-line p-4">
+              <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                <ShieldCheck size={16} className="text-cyan-600" /> Device &amp; cryptographic posture
               </div>
-              <p className="text-[11px] leading-snug text-ink-500">
-                {recoveryMode === "personal" && "Recovery key only — HKDF-SHA3-256 → AES-256-GCM."}
-                {recoveryMode === "enterprise" && "Enterprise ML-KEM-1024 recipient only — for admin-held post-quantum recovery."}
-                {recoveryMode === "hybrid" && "Requires BOTH the recovery key and the ML-KEM-1024 key. For high-security tenants."}
+              {securityReport ? (
+                <dl className="mt-3 grid gap-2 text-xs">
+                  {([
+                    ["Hybrid session", securityReport.hybrid_session_status],
+                    ["PQC algorithms", securityReport.pqc_algorithm],
+                    ["Forward secrecy", securityReport.forward_secrecy],
+                    ["HNDL protection", securityReport.hndl_protection],
+                    ["Quantum-safe score", `${securityReport.quantum_safe_score}/100`],
+                  ] as const).map(([term, value]) => (
+                    <div key={term} className="flex items-center justify-between gap-2 border-b border-line pb-2 last:border-0 last:pb-0">
+                      <dt className="font-semibold text-ink-500">{term}</dt>
+                      <dd className="text-right font-semibold text-ink-800">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <div className="mt-3 flex items-center gap-2 text-xs text-ink-500">
+                  <Loader2 className="animate-spin" size={14} /> Reading device key material...
+                </div>
+              )}
+              {securityReport && securityReport.warnings.length > 0 && (
+                <div className="mt-3 space-y-1">
+                  {securityReport.warnings.map((warning) => (
+                    <div key={warning} className="flex items-start gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">
+                      <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {warning}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 rounded-lg border border-line p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                  <KeyRound size={16} className="text-cyan-600" /> Recovery configuration
+                </div>
+                <span className={`status-pill ${recoveryStatus?.enabled ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"}`}>
+                  {recoveryStatus?.enabled ? <><ShieldCheck size={12} /> Enabled</> : <><AlertTriangle size={12} /> Not set up</>}
+                </span>
+              </div>
+              <p className="mt-2 text-xs text-ink-600">
+                {recoveryStatus?.enabled
+                  ? `Mode ${recoveryStatus.mode ?? "personal"}${recoveryStatus.recipientKeyId ? ` - enterprise key ${recoveryStatus.recipientKeyId}` : ""}${recoveryStatus.configuredAt ? ` - configured ${new Date(recoveryStatus.configuredAt).toLocaleString()}` : ""}. New vault files are protected automatically.`
+                  : "No recovery key is configured. Set one up so you can decrypt your vault on a new device if this one is lost."}
               </p>
               <button
                 type="button"
-                disabled={recoveryBusy !== null}
-                onClick={setupRecovery}
-                className="flex items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => { setVaultStatusModalOpen(false); setRecoveryModalOpen(true); }}
+                className="mt-3 flex items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50"
               >
-                {recoveryBusy === "setup" ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
-                Set up {recoveryMode} recovery
+                <KeyRound size={16} /> {recoveryStatus?.enabled ? "Manage recovery" : "Set up recovery"}
               </button>
             </div>
-          )}
-        </div>
 
-        <div className="mt-4 rounded-lg border border-line p-4">
-          <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
-            <UnlockKeyhole size={16} /> Recover on a device
+            <div className="mt-4 rounded-lg border border-line p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                  <History size={16} className="text-ink-500" /> Recent vault activity
+                </div>
+                <span className="text-[11px] font-semibold text-ink-400">{vaultLastActivityAt ? `Last activity ${new Date(vaultLastActivityAt).toLocaleString()}` : "No activity yet"}</span>
+              </div>
+              {historyEntries.length > 0 ? (
+                <ul className="mt-3 space-y-2">
+                  {historyEntries.slice(0, 6).map((entry) => (
+                    <li key={entry.id} className="flex items-start gap-2 text-xs">
+                      <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold capitalize text-ink-800">{entry.title}</div>
+                        <div className="truncate text-ink-500">{entry.detail}</div>
+                      </div>
+                      <span className="shrink-0 text-[10px] text-ink-400">{new Date(entry.at).toLocaleTimeString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-3 text-xs text-ink-500">No vault telemetry recorded yet. Encrypt a file to see live activity here.</div>
+              )}
+            </div>
           </div>
-          <p className="mt-1 text-xs text-ink-600">
-            Enter your recovery key, then decrypt a .qvault file or folder straight from your external drive. With the key entered here, your uploaded vault files below also fall back to recovery automatically when this device can't decrypt them. You can also enable the key on this device so new files are protected by it too.
-          </p>
-          <input
-            value={recoveryKeyInput}
-            onChange={(event) => setRecoveryKeyInput(event.target.value)}
-            placeholder="XXXX-XXXX-XXXX-…  (personal recovery key; required for personal & hybrid)"
-            spellCheck={false}
-            autoComplete="off"
-            className="mt-3 w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm outline-none focus:border-cyan-300"
-          />
-          <textarea
-            value={enterpriseKeyInput}
-            onChange={(event) => setEnterpriseKeyInput(event.target.value)}
-            placeholder="QG-EK1-…  (enterprise ML-KEM-1024 recovery key; for enterprise & hybrid)"
-            spellCheck={false}
-            autoComplete="off"
-            rows={2}
-            className="mt-2 w-full resize-none rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-xs outline-none focus:border-cyan-300"
-          />
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-            <button
-              type="button"
-              disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
-              onClick={recoverDecryptFile}
-              className="flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {recoveryBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />}
-              Recover file
-            </button>
-            <button
-              type="button"
-              disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
-              onClick={recoverDecryptFolder}
-              className="flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {recoveryBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />}
-              Recover folder
-            </button>
-            <button
-              type="button"
-              disabled={recoveryBusy !== null || !recoveryKeyInput.trim()}
-              onClick={enableRecoveryWithKey}
-              className="flex items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-bold text-ink-700 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {recoveryBusy === "enable" ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
-              Enable on this device
-            </button>
-          </div>
-          {recoveryNotice && (
-            <div className="mt-3 break-words rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-700">{recoveryNotice}</div>
-          )}
         </div>
-      </section>
+      )}
+      {/* Recovery management modal */}
+      {recoveryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm" onClick={() => setRecoveryModalOpen(false)}>
+          <div className="max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-xl border border-white/30 bg-white p-5 shadow-soft" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-base font-bold text-ink-950">
+                <KeyRound size={18} className="text-cyan-600" /> Recovery Key
+              </div>
+              <button type="button" onClick={() => setRecoveryModalOpen(false)} className="icon-button" title="Close"><X size={18} /></button>
+            </div>
+            <p className="mt-2 text-sm text-ink-600">
+              A quantum-safe recovery key (AES-256-GCM / HKDF-SHA3-256) lets you decrypt your vault files on a brand-new device if this one is lost, stolen, or damaged — install QGuard, sign in, and enter the key. It is one-way and zero-knowledge: never sent to or stored on the server, and it cannot be reverse-engineered or recreated.
+            </p>
+
+            {recoveryStatus?.enabled ? (
+              <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50 p-3">
+                <div className="text-xs font-semibold text-emerald-700">
+                  Recovery is active — mode <span className="capitalize">{recoveryStatus.mode ?? "personal"}</span>
+                  {recoveryStatus.recipientKeyId ? ` · Enterprise key ${recoveryStatus.recipientKeyId}` : ""}
+                  {recoveryStatus.configuredAt ? ` · configured ${new Date(recoveryStatus.configuredAt).toLocaleString()}` : ""}. New vault files are protected automatically.
+                </div>
+                {(recoveryStatus.mode ?? "personal") === "personal" && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={recoveryBusy !== null}
+                      onClick={reprotectExistingFiles}
+                      title="Add the recovery key to local .qvault files you encrypted before setting it up"
+                      className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {recoveryBusy === "rewrap" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+                      Protect local files
+                    </button>
+                    <button
+                      type="button"
+                      disabled={recoveryBusy !== null}
+                      onClick={reprotectUploadedFiles}
+                      title="Add the recovery key to vault files you uploaded before setting it up"
+                      className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {recoveryBusy === "rewrap-uploaded" ? <Loader2 className="animate-spin" size={16} /> : <UploadCloud size={16} />}
+                      Protect uploaded files
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="mt-4">
+                <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1" role="radiogroup" aria-label="Recovery mode">
+                  {([
+                    { id: "personal", label: "Personal" },
+                    { id: "enterprise", label: "Enterprise" },
+                    { id: "hybrid", label: "Hybrid" },
+                  ] as const).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={recoveryMode === m.id}
+                      onClick={() => setRecoveryMode(m.id)}
+                      className={`rounded-md px-2 py-1.5 text-xs font-bold transition ${recoveryMode === m.id ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-white/70"}`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[11px] leading-snug text-ink-500">
+                  {recoveryMode === "personal" && "Recovery key only — HKDF-SHA3-256 → AES-256-GCM."}
+                  {recoveryMode === "enterprise" && "Enterprise ML-KEM-1024 recipient only — for admin-held post-quantum recovery."}
+                  {recoveryMode === "hybrid" && "Requires BOTH the recovery key and the ML-KEM-1024 key. For high-security tenants."}
+                </p>
+                <button
+                  type="button"
+                  disabled={recoveryBusy !== null}
+                  onClick={setupRecovery}
+                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {recoveryBusy === "setup" ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
+                  Set up {recoveryMode} recovery
+                </button>
+              </div>
+            )}
+
+            <div className="mt-4 rounded-lg border border-line p-4">
+              <div className="flex items-center gap-2 text-sm font-bold text-ink-950">
+                <UnlockKeyhole size={16} /> Recover on a device
+              </div>
+              <p className="mt-1 text-xs text-ink-600">
+                Enter your recovery key, then decrypt a .qvault file or folder straight from your external drive. With the key entered here, your uploaded vault files also fall back to recovery automatically when this device can't decrypt them. You can also enable the key on this device so new files are protected by it too.
+              </p>
+              <input
+                value={recoveryKeyInput}
+                onChange={(event) => setRecoveryKeyInput(event.target.value)}
+                placeholder="XXXX-XXXX-XXXX-…  (personal recovery key; required for personal & hybrid)"
+                spellCheck={false}
+                autoComplete="off"
+                className="mt-3 w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm outline-none focus:border-cyan-300"
+              />
+              <textarea
+                value={enterpriseKeyInput}
+                onChange={(event) => setEnterpriseKeyInput(event.target.value)}
+                placeholder="QG-EK1-…  (enterprise ML-KEM-1024 recovery key; for enterprise & hybrid)"
+                spellCheck={false}
+                autoComplete="off"
+                rows={2}
+                className="mt-2 w-full resize-none rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-xs outline-none focus:border-cyan-300"
+              />
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <button
+                  type="button"
+                  disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
+                  onClick={recoverDecryptFile}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {recoveryBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />}
+                  Recover file
+                </button>
+                <button
+                  type="button"
+                  disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
+                  onClick={recoverDecryptFolder}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {recoveryBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />}
+                  Recover folder
+                </button>
+                <button
+                  type="button"
+                  disabled={recoveryBusy !== null || !recoveryKeyInput.trim()}
+                  onClick={enableRecoveryWithKey}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-bold text-ink-700 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {recoveryBusy === "enable" ? <Loader2 className="animate-spin" size={16} /> : <KeyRound size={16} />}
+                  Enable on this device
+                </button>
+              </div>
+              {recoveryNotice && (
+                <div className="mt-3 break-words rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-700">{recoveryNotice}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {(generatedRecoveryKey || generatedEnterpriseKey) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm">
@@ -3082,17 +3367,32 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
         </div>
       )}
 
+      {/* Panel 4 — Vault Explorer */}
       <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-bold text-ink-950">Real-Time Telemetry & File Operations</h2>
-              <div className="mt-1 text-xs text-ink-600">User-scoped Supabase Realtime updates for encryption, upload, verification, download, decrypt, and delete operations.</div>
+            <div className="flex items-center gap-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-violet-600 text-sm font-bold text-white shadow-tight">3</span>
+              <div>
+                <h2 className="text-sm font-bold text-ink-950">Vault Explorer</h2>
+                <div className="mt-1 text-xs text-ink-600">Your encrypted files and folders.</div>
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {activeVaultTab === "explorer" && (
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400" size={15} />
+                  <input
+                    value={explorerQuery}
+                    onChange={(event) => setExplorerQuery(event.currentTarget.value)}
+                    placeholder="Search files…"
+                    className="h-9 w-44 rounded-lg border border-line bg-canvas pl-8 pr-3 text-sm outline-none focus:border-cyan-300"
+                  />
+                </div>
+              )}
               {[
-                { id: "operations" as const, label: "Operations", icon: ShieldCheck },
                 { id: "explorer" as const, label: "Files & Folders", icon: FolderOpen },
+                { id: "operations" as const, label: "Operations", icon: ShieldCheck },
                 { id: "history" as const, label: "History", icon: History },
               ].map((tab) => {
                 const Icon = tab.icon;
@@ -3163,30 +3463,20 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
         )}
 
         {activeVaultTab === "explorer" && (
-          <div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-ink-500">
-                <span className="status-pill bg-ink-50 text-ink-600">{explorerFileCount} files</span>
-                <span className="status-pill bg-ink-50 text-ink-600">{explorerFolderCount} folders</span>
-                <span className="status-pill bg-cyan-50 text-cyan-700">{visibleExplorerNodes.length} visible</span>
-              </div>
-              {selectedExplorerNodeId && (
-                <span className="status-pill max-w-full bg-white text-ink-600">
-                  Selected {allExplorerNodes.find((node) => node.id === selectedExplorerNodeId)?.name ?? "item"}
-                </span>
-              )}
+          <div className="overflow-x-auto">
+            <div className="min-w-[1020px]">
+            <div className="grid grid-cols-[minmax(180px,1.4fr)_120px_120px_90px_140px_110px_180px] gap-3 border-b border-line px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
+              <span>Name</span><span>Status</span><span>Integrity</span><span>Size</span><span>Algorithm</span><span>Date</span><span>Actions</span>
             </div>
-            <div className="grid grid-cols-[minmax(280px,1.4fr)_120px_150px_150px_180px] border-b border-line px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
-              <span>File Explorer</span><span>Status</span><span>Progress</span><span>Integrity</span><span>Actions</span>
-            </div>
-            {allExplorerNodes.length === 0 && (
-              <div className="p-6 text-center text-sm text-ink-600">No encrypted files or folders yet.</div>
+            {filteredExplorerNodes.length === 0 && (
+              <div className="p-6 text-center text-sm text-ink-600">{explorerSearch ? "No files match your search." : "No encrypted files or folders yet."}</div>
             )}
-            {allExplorerNodes.length > 0 && (
+            {filteredExplorerNodes.length > 0 && (
               <div role="tree" aria-label="Quantum Vault file explorer" className="max-h-[620px] overflow-y-auto">
-                {visibleExplorerNodes.map((node) => {
+                {filteredExplorerNodes.map((node) => {
                   const expanded = Boolean(expandedFolders[node.path]);
                   const selected = selectedExplorerNodeId === node.id;
+                  const indent = explorerSearch ? 0 : node.depth;
                   return (
                     <div
                       key={node.id}
@@ -3197,15 +3487,15 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
                       tabIndex={0}
                       onClick={() => selectExplorerNode(node)}
                       onKeyDown={(event) => handleExplorerNodeKeyDown(event, node)}
-                      className={`vault-tree-row grid min-h-[64px] grid-cols-[minmax(280px,1.4fr)_120px_150px_150px_180px] items-center gap-3 border-b border-line px-4 py-3 text-sm outline-none transition ${
+                      className={`vault-tree-row grid min-h-[60px] grid-cols-[minmax(180px,1.4fr)_120px_120px_90px_140px_110px_180px] items-center gap-3 border-b border-line px-4 py-3 text-sm outline-none transition ${
                         selected
                           ? "bg-cyan-50 shadow-[inset_3px_0_0_#0891b2]"
                           : "bg-white hover:bg-cyan-50/50 focus:bg-cyan-50/60"
                       }`}
                     >
                       <div className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-2 font-semibold text-ink-950" style={{ paddingLeft: `${node.depth * 20}px` }}>
-                          {node.type === "folder" ? (
+                        <div className="flex min-w-0 items-center gap-2 font-semibold text-ink-950" style={{ paddingLeft: `${indent * 20}px` }}>
+                          {node.type === "folder" && !explorerSearch ? (
                             <button
                               type="button"
                               onClick={(event) => {
@@ -3227,32 +3517,49 @@ export default function QuantumVaultPage({ userId, files, telemetry, onUploaded 
                             : renderFileTypeIcon(node)}
                           <span className="truncate">{node.name}</span>
                         </div>
-                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-ink-400" style={{ paddingLeft: `${node.depth * 20 + 32}px` }}>
-                          <span className="truncate">{node.path}</span>
-                          <span className="font-sans font-semibold text-ink-500">{nodeItemText(node)}</span>
-                          {node.row?.file && renderDecryptionStatusPill(node.row.file, node.row)}
-                        </div>
-                        {node.row?.error_message && <div className="mt-1 truncate text-xs font-semibold text-rose-600" style={{ paddingLeft: `${node.depth * 20 + 32}px` }}>{node.row.error_message}</div>}
+                        {(explorerSearch || node.depth > 0) && (
+                          <div className="mt-0.5 truncate font-mono text-[11px] text-ink-400" style={{ paddingLeft: `${indent * 20 + 32}px` }}>{node.path}</div>
+                        )}
+                        {node.row?.error_message && <div className="mt-1 truncate text-xs font-semibold text-rose-600" style={{ paddingLeft: `${indent * 20 + 32}px` }}>{node.row.error_message}</div>}
                       </div>
-                      <span className={`status-pill justify-center ${operationTone(node.status)}`}>{node.status}</span>
-                      <div>
-                        <div className="h-2 overflow-hidden rounded-full bg-canvas">
-                          <div className="h-full rounded-full bg-cyan-500 transition-all duration-300" style={{ width: `${node.progress}%` }} />
-                        </div>
-                        <div className="mt-1 text-xs font-semibold text-ink-600">{node.progress}%</div>
+                      <div className="min-w-0">
+                        {node.row?.file
+                          ? renderDecryptionStatusPill(node.row.file, node.row)
+                          : <span className={`status-pill justify-center ${operationTone(node.status)}`}>{node.status}</span>}
                       </div>
                       <span className={`status-pill justify-center ${node.integrity_status === "verified" ? "bg-emerald-50 text-emerald-600" : node.integrity_status === "failed" ? "bg-rose-50 text-rose-600" : "bg-ink-50 text-ink-600"}`}>
                         <FileCheck2 size={13} />
                         {integrityText(node.integrity_status)}
                       </span>
+                      <div className="text-xs font-semibold text-ink-600">{nodeItemText(node)}</div>
+                      <div className="truncate font-mono text-[11px] text-ink-500">
+                        {node.type === "file" ? shortSuiteLabel(node.row?.file?.suite ?? null) : "—"}
+                      </div>
+                      <div className="text-xs text-ink-500">{new Date(node.updated_at).toLocaleDateString()}</div>
                       <div onClick={(event) => event.stopPropagation()}>
-                        {renderExplorerActions(node)}
+                        {node.type === "folder"
+                          ? renderExplorerActions(node)
+                          : node.row
+                            ? renderActionButtons(node.row)
+                            : null}
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-3 text-xs text-ink-500">
+              <span>{explorerFileCount} files · {explorerFolderCount} folders</span>
+              <div className="flex items-center gap-2">
+                {selectedExplorerNodeId && (
+                  <span className="status-pill max-w-full bg-white text-ink-600">
+                    Selected {allExplorerNodes.find((node) => node.id === selectedExplorerNodeId)?.name ?? "item"}
+                  </span>
+                )}
+                <span className="status-pill bg-ink-50 text-ink-600">{filteredExplorerNodes.length} shown</span>
+              </div>
+            </div>
           </div>
         )}
 

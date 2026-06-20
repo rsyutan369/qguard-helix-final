@@ -1,0 +1,191 @@
+QGuard Helix Onboarding Flow
+
+Create a separate onboarding workflow.
+
+Step 1
+
+Organization Setup
+
+Collect:
+
+Organization Name
+Industry
+Tenant Settings
+Step 2
+
+Connect Assets
+
+Connect:
+
+Domains
+Cloud Accounts
+Kubernetes
+APIs
+Repositories
+
+Step 3
+
+Run First Discovery Scan
+
+Demonstrate:
+
+PQC Scanner
+CBOM Explorer
+Crypto Exposure
+
+Step 4
+
+Review Findings
+
+Explain:
+
+Quantum Risk
+Shadow Crypto
+Harvest Now Decrypt Later
+
+Step 5
+
+Generate Migration Plan
+
+Walk through:
+
+Migration Planner
+
+Step 6
+
+Configure Trust Fabric
+
+Introduce:
+
+Machine Identities
+Certificates
+Trust Chains
+SPIFFE/SPIRE
+
+Step 7
+
+Configure Notifications
+
+Email
+Slack
+Teams
+Webhooks
+
+Step 8
+
+Completion
+
+Show:
+
+Quantum Readiness Score
+
+Next Recommended Actions
+
+Go To Dashboard
+
+Interactive Product Tour Features
+
+Support:
+
+Spotlight highlighting
+Element targeting
+Floating tooltips
+Side panels
+Modal walkthroughs
+Keyboard navigation
+Mobile support
+
+Automatically scroll to target elements.
+
+Pause if target component is unavailable.
+
+Resume once loaded.
+
+Onboarding Checklist Widget
+
+Persistent checklist.
+
+Display:
+
+Getting Started
+
+✓ Complete Profile
+✓ Generate Recovery Key
+✓ Enable MFA
+✓ Trust Device
+✓ Upload First File
+✓ Send First Message
+
+Progress:
+
+4 of 6 completed
+
+66%
+
+Resume Later Capability
+
+Store progress in database.
+
+Users can:
+
+Continue later
+Restart onboarding
+View completed steps
+
+Never lose onboarding state.
+
+Role-Based Onboarding
+
+Different onboarding flows for:
+
+Individual Users
+Administrators
+Security Teams
+Compliance Teams
+Enterprise Owners
+
+Only display relevant steps.
+
+Analytics & Telemetry
+
+Track:
+
+Step completion rate
+Drop-off rate
+Average completion time
+Skipped steps
+Most failed steps
+Security setup completion rate
+
+Display onboarding metrics to administrators.
+
+Security Requirements
+
+Mandatory security steps cannot be skipped:
+
+QGuard Helix:
+
+Tenant Setup
+Asset Connection
+Initial Discovery Scan
+
+Block critical workflows until mandatory steps are completed.
+
+UX Principles
+
+Every onboarding step must answer:
+
+What is this?
+Why is it important?
+What should I do?
+What happens next?
+
+Use plain language.
+
+Avoid security jargon when possible.
+
+Reduce cognitive load.
+
+Focus on action-driven guidance.
+
+The onboarding experience should feel like a security concierge guiding users to a successful and secure setup, not a tutorial they are forced to endure.

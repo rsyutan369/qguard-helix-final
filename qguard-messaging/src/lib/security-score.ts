@@ -5,6 +5,7 @@ import type {
   Profile,
   QuantumSecurityReport,
   SecurityEvent,
+  SecurityHardeningCheck,
   SecurityHardeningStatus,
   TelemetryEvent,
   TrustedDevice,
@@ -98,8 +99,25 @@ function scoreRatio(active: number, total: number, weight: number): number {
   return Math.round((active / total) * weight);
 }
 
-function hardeningWarnings(hardening: SecurityHardeningStatus): string[] {
-  return hardening.checks
+// Release/runtime evidence gates (binary pinning, code signing, obfuscation,
+// control-flow flattening, string encryption) are produced only by a hardened
+// release build. They must NOT drag the live security posture score or surface
+// as dashboard warnings -- they are tracked separately on the Quantum Security
+// page (admin only). The live posture reflects the cryptographic stack.
+const RELEASE_ONLY_HARDENING_IDS = new Set([
+  "binary_integrity_verification",
+  "signed_build_verification",
+  "code_obfuscation",
+  "control_flow_flattening",
+  "string_encryption",
+]);
+
+function liveHardeningChecks(hardening: SecurityHardeningStatus): SecurityHardeningCheck[] {
+  return hardening.checks.filter((check) => !RELEASE_ONLY_HARDENING_IDS.has(check.id));
+}
+
+function hardeningWarnings(checks: SecurityHardeningCheck[]): string[] {
+  return checks
     .filter((check) => check.status !== "active")
     .map((check) => `${check.label}: ${check.detail}`);
 }
@@ -129,8 +147,9 @@ export function buildSecurityPosture({
   const forwardSecrecyReady = signedPrekeysReady && (oneTimePrekeysReady || conversations.length > 0);
   const allActiveDevicesTrusted = activeMyDevices.length > 0 && trustedMyDevices.length === activeMyDevices.length;
   const recentHeartbeatReady = activeMyDevices.some(isRecentDevice);
-  const hardeningActiveCount = hardening.checks.filter((check) => check.status === "active").length;
-  const hardeningScore = scoreRatio(hardeningActiveCount, hardening.checks.length, 35);
+  const liveHardening = liveHardeningChecks(hardening);
+  const hardeningActiveCount = liveHardening.filter((check) => check.status === "active").length;
+  const hardeningScore = scoreRatio(hardeningActiveCount, liveHardening.length, 35);
   const warningEvents = securityEvents.filter((event) => event.severity === "warning");
   const criticalEvents = securityEvents.filter((event) => event.severity === "critical");
   const cryptoTelemetryActive = telemetry.some((event) => /crypto|identity|key|vault|encrypt|decrypt|integrity/i.test(`${event.stage} ${event.detail}`));
@@ -164,7 +183,7 @@ export function buildSecurityPosture({
     ...(!oneTimePrekeysReady ? [`One-time prekeys below readiness target (${keyInventory.available_one_time_prekeys}/${oneTimePrekeysNeeded})`] : []),
     ...(!forwardSecrecyReady ? ["Forward secrecy ratchet material is not ready"] : []),
     ...(!allActiveDevicesTrusted ? ["One or more active devices are pending or suspicious"] : []),
-    ...hardeningWarnings(hardening),
+    ...hardeningWarnings(liveHardening),
     ...warningEvents.map((event) => `Security warning: ${event.event_type}`),
     ...criticalEvents.map((event) => `Critical security event: ${event.event_type}`),
   ];

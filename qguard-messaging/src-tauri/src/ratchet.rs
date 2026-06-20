@@ -48,9 +48,9 @@ impl RatchetSession {
     pub fn new(session_id: impl Into<String>, shared_secret: [u8; 32]) -> Result<Self> {
         Ok(Self {
             session_id: session_id.into(),
-            root_key: derive_32(&shared_secret, b"QGuard-Messaging-RootKey-v1")?,
-            sending_chain_key: derive_32(&shared_secret, b"QGuard-Messaging-Chain-v1")?,
-            receiving_chain_key: derive_32(&shared_secret, b"QGuard-Messaging-Chain-v1")?,
+            root_key: derive_32(&shared_secret, &crate::security::obf::ratchet_root_key())?,
+            sending_chain_key: derive_32(&shared_secret, &crate::security::obf::ratchet_chain())?,
+            receiving_chain_key: derive_32(&shared_secret, &crate::security::obf::ratchet_chain())?,
             send_counter: 0,
             receive_counter: 0,
             skipped_message_keys: HashMap::new(),
@@ -106,7 +106,7 @@ impl RatchetSession {
         let mut material = Vec::with_capacity(self.root_key.len() + entropy.len());
         material.extend_from_slice(&self.root_key);
         material.extend_from_slice(entropy);
-        self.root_key = derive_32(&material, b"QGuard-Messaging-Root-Rotation-v1")?;
+        self.root_key = derive_32(&material, &crate::security::obf::ratchet_root_rotation())?;
         self.sending_chain_key = derive_32(&self.root_key, b"rotated-send")?;
         self.receiving_chain_key = derive_32(&self.root_key, b"rotated-receive")?;
         material.zeroize();

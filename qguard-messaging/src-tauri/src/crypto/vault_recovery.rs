@@ -37,8 +37,6 @@ pub const RECOVERY_MODE_ENTERPRISE: &str = "enterprise";
 pub const RECOVERY_MODE_HYBRID: &str = "hybrid";
 
 pub const RECOVERY_ROOT_SIZE: usize = 32;
-const WRAP_INFO: &[u8] = b"QGuard-Vault-Recovery-Wrap-v1";
-const VERIFIER_INFO: &[u8] = b"QGuard-Vault-Recovery-Verifier-v1";
 /// Crockford Base32 alphabet (excludes I, L, O, U to avoid transcription errors).
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const BODY_CHARS: usize = 52; // ceil(256 bits / 5)
@@ -145,14 +143,14 @@ pub fn decode_recovery_key(input: &str) -> Result<[u8; RECOVERY_ROOT_SIZE]> {
 
 /// AES-256-GCM wrapping key derived one-way from the recovery root.
 pub fn derive_wrap_key(root: &[u8; RECOVERY_ROOT_SIZE]) -> Result<[u8; KEY_SIZE]> {
-    kdf::derive_32(root, WRAP_INFO)
+    kdf::derive_32(root, &crate::security::obf::vault_recovery_wrap_info())
 }
 
 /// Public verifier (a hash of an independent HKDF output) used to confirm a
 /// re-entered recovery key matches the configured one, without exposing the
 /// wrapping key.
 pub fn derive_verifier(root: &[u8; RECOVERY_ROOT_SIZE]) -> Result<String> {
-    let mut material = kdf::derive_32(root, VERIFIER_INFO)?;
+    let mut material = kdf::derive_32(root, &crate::security::obf::vault_recovery_verifier_info())?;
     let verifier = kdf::sha3_hex(&material);
     material.zeroize();
     Ok(verifier)
@@ -198,8 +196,6 @@ pub fn unwrap_file_key(
 // never encrypts file content directly.
 
 const KEM_ENCAPS_INFO: &[u8] = b"qguard-vault-recovery-pqc-kem-v1";
-const ENTERPRISE_WRAP_INFO: &[u8] = b"qguard-vault-recovery-pqc-wrap-v1";
-const HYBRID_WRAP_INFO: &[u8] = b"qguard-hybrid-enterprise-recovery-v1";
 const ENTERPRISE_KEY_PREFIX: &str = "QG-EK1-";
 
 /// One ML-KEM recovery recipient stored alongside a vault object (enterprise or
@@ -270,7 +266,7 @@ fn derive_kem_wrap_key(
     recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>,
 ) -> Result<[u8; KEY_SIZE]> {
     match mode {
-        RECOVERY_MODE_ENTERPRISE => kdf::derive_32_with_salt(salt, shared, ENTERPRISE_WRAP_INFO),
+        RECOVERY_MODE_ENTERPRISE => kdf::derive_32_with_salt(salt, shared, &crate::security::obf::enterprise_wrap_info()),
         RECOVERY_MODE_HYBRID => {
             let secret = recovery_secret.ok_or_else(|| {
                 QGuardError::InvalidInput(
@@ -281,7 +277,7 @@ fn derive_kem_wrap_key(
             let mut ikm = Vec::with_capacity(RECOVERY_ROOT_SIZE + KEY_SIZE);
             ikm.extend_from_slice(secret);
             ikm.extend_from_slice(shared);
-            let key = kdf::derive_32_with_salt(salt, &ikm, HYBRID_WRAP_INFO);
+            let key = kdf::derive_32_with_salt(salt, &ikm, &crate::security::obf::hybrid_wrap_info());
             ikm.zeroize();
             key
         }

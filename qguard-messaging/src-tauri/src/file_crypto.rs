@@ -100,7 +100,7 @@ pub fn encrypt_file_for_device(
     let (hybrid_ciphertext, wrapping_secret) = encapsulate(
         recipient_kem_public.0,
         recipient_kem_public.1,
-        b"QGuard-Messaging-FileKey-Wrap-v1",
+        &crate::security::obf::file_key_wrap_info(),
     )?;
     let wrapped_key = symmetric::encrypt(
         &wrapping_secret,
@@ -255,7 +255,7 @@ fn decrypt_file_name_with_wrapped_key(
         &recipient_keys.x25519_secret,
         &recipient_keys.mlkem_secret,
         &wrapped.hybrid_ciphertext,
-        b"QGuard-Messaging-FileKey-Wrap-v1",
+        &crate::security::obf::file_key_wrap_info(),
     )?;
     let mut file_key_bytes = symmetric::decrypt(
         &wrapping_secret,
@@ -312,7 +312,7 @@ fn unwrap_file_key_with_device(
         &recipient_keys.x25519_secret,
         &recipient_keys.mlkem_secret,
         &wrapped.hybrid_ciphertext,
-        b"QGuard-Messaging-FileKey-Wrap-v1",
+        &crate::security::obf::file_key_wrap_info(),
     )?;
     let mut file_key_bytes = symmetric::decrypt(
         &wrapping_secret,
@@ -492,7 +492,7 @@ fn file_signable(
     // produce the same bytes as before, so existing signatures still verify, and
     // stripping or altering a recovery wrap on a v2 package breaks the signature.
     if let Some(env) = recovery_wrapped_key {
-        data.extend_from_slice(b"QGuard-recovery-wrap-v1");
+        data.extend_from_slice(&crate::security::obf::file_recovery_wrap());
         data.extend_from_slice(&env.nonce);
         data.extend_from_slice(&env.ciphertext);
         data.extend_from_slice(&env.tag);

@@ -1,0 +1,578 @@
+# Build QGuard Helix Quantum Encryption Verification Engine™ (QEVE)
+
+## Mission
+
+Design and build an enterprise-grade cryptographic intelligence platform capable of inspecting files, folders, archives, certificates, keys, containers, encrypted artifacts, and cryptographic metadata to determine:
+
+* Whether encryption is present
+* Which cryptographic technologies are being used
+* Whether cryptography is quantum-safe
+* Whether cryptography is vulnerable to future quantum computers
+* Cryptographic risk exposure
+* PQC migration readiness
+* NIST compliance status
+* Crypto-agility readiness
+
+The engine must be privacy-first.
+
+Files must never leave the user's device unless explicitly authorized.
+
+All analysis should be performed locally whenever possible.
+
+---
+
+# Product Name
+
+QGuard Helix Encryption Verifier™
+
+Powered by:
+
+Quantum Encryption Verification Engine™ (QEVE)
+
+---
+
+# Core Objectives
+
+The platform must answer:
+
+1. Is this encrypted?
+2. What encryption is being used?
+3. Is it quantum-safe?
+4. Is it NIST compliant?
+5. What is the quantum risk?
+6. What should be migrated?
+7. How should it be remediated?
+
+---
+
+# Architecture
+
+QEVE consists of multiple analysis layers.
+
+---
+
+# Layer 1
+
+## File Format Intelligence Engine
+
+Purpose:
+
+Identify file structures, containers, and known cryptographic formats.
+
+Supported Types:
+
+### Documents
+
+* PDF
+* DOCX
+* XLSX
+* PPTX
+* ODT
+* ODS
+* ODP
+
+### Archives
+
+* ZIP
+* 7Z
+* RAR
+* TAR
+* GZIP
+
+### Security Containers
+
+* PGP
+* GPG
+* OpenSSL
+* Age
+* VeraCrypt
+* LUKS
+* BitLocker
+
+### Certificates
+
+* X509
+* PEM
+* DER
+* PKCS7
+* PKCS12
+
+### Keys
+
+* RSA
+* ECC
+* Ed25519
+* X25519
+* ML-KEM
+* ML-DSA
+* SLH-DSA
+
+Capabilities:
+
+* Magic byte analysis
+* Header inspection
+* ASN.1 parsing
+* Container recognition
+* Metadata extraction
+
+Output:
+
+File Format Report
+
+---
+
+# Layer 2
+
+## Encryption Detection Engine
+
+Purpose:
+
+Determine whether content is encrypted.
+
+Capabilities:
+
+* Entropy analysis
+* Statistical randomness testing
+* Shannon entropy
+* Byte distribution analysis
+* Compression detection
+* Obfuscation detection
+
+Output:
+
+Status:
+
+* Not Encrypted
+* Possibly Encrypted
+* Encrypted
+* Unknown
+
+Confidence:
+
+* High
+* Medium
+* Low
+
+---
+
+# Layer 3
+
+## Cryptographic Metadata Engine
+
+Purpose:
+
+Extract cryptographic indicators.
+
+Detect:
+
+### Symmetric
+
+* AES
+* AES-GCM
+* AES-CBC
+* ChaCha20
+* ChaCha20-Poly1305
+* Twofish
+* Serpent
+
+### Key Exchange
+
+* RSA
+* DH
+* ECDH
+* X25519
+* ML-KEM-512
+* ML-KEM-768
+* ML-KEM-1024
+
+### Signatures
+
+* RSA
+* ECDSA
+* Ed25519
+* ML-DSA-44
+* ML-DSA-65
+* ML-DSA-87
+* SLH-DSA
+
+### Hashing
+
+* SHA1
+* SHA2
+* SHA3
+* BLAKE2
+* BLAKE3
+
+### KDF
+
+* PBKDF2
+* HKDF
+* HKDF-SHA256
+* HKDF-SHA3-256
+* Argon2
+
+Output:
+
+Cryptographic Inventory
+
+---
+
+# Layer 4
+
+## Crypto Fingerprint Engine™
+
+Purpose:
+
+Generate a unique cryptographic fingerprint.
+
+Analyze:
+
+* Headers
+* ASN.1 structures
+* Certificates
+* Trust chains
+* Containers
+* Metadata
+* Key structures
+* Signature structures
+
+Classify:
+
+* Classical
+* Hybrid
+* Post-Quantum
+* Unknown
+* Proprietary
+
+Output:
+
+Crypto Fingerprint Profile
+
+---
+
+# Layer 5
+
+## Quantum Safety Evaluation Engine™
+
+Purpose:
+
+Determine PQC readiness.
+
+Evaluate:
+
+### Quantum Safe
+
+* ML-KEM
+* ML-DSA
+* SLH-DSA
+
+### Quantum Vulnerable
+
+* RSA
+* DSA
+* DH
+* ECC
+* ECDSA
+
+### Quantum Resistant Symmetric
+
+* AES-256
+* SHA3-256
+* SHA3-512
+
+Output:
+
+Quantum Safety Status
+
+Values:
+
+* Quantum Safe
+* Hybrid PQC
+* Classical Only
+* Unknown
+
+---
+
+# Layer 6
+
+## NIST Compliance Engine™
+
+Purpose:
+
+Validate compliance.
+
+Standards:
+
+* FIPS 203
+* FIPS 204
+* FIPS 205
+* NIST SP 800-57
+* NIST SP 800-131A
+* CNSA 2.0
+
+Output:
+
+Compliance Report
+
+---
+
+# Layer 7
+
+## Quantum Risk Scoring Engine™
+
+Purpose:
+
+Calculate migration priority.
+
+Inputs:
+
+* Algorithms
+* Key sizes
+* Signatures
+* Data lifetime
+* Business impact
+
+Scoring:
+
+0-100
+
+### 0-25
+
+Critical Risk
+
+### 26-50
+
+High Risk
+
+### 51-75
+
+Moderate Risk
+
+### 76-100
+
+Quantum Ready
+
+Output:
+
+Quantum Risk Score™
+
+---
+
+# Layer 8
+
+## Harvest Now Decrypt Later Engine™
+
+Purpose:
+
+Estimate future exposure.
+
+Analyze:
+
+* Long-lived data
+* Archives
+* Backups
+* Intellectual property
+* Financial records
+
+Output:
+
+HNDL Exposure Score™
+
+---
+
+# Layer 9
+
+## Remediation Recommendation Engine™
+
+Purpose:
+
+Generate actionable guidance.
+
+Examples:
+
+Detected:
+
+RSA-2048
+
+Recommendation:
+
+Migrate to:
+
+* ML-KEM-768
+* ML-DSA-65
+* AES-256-GCM
+* SHA3-256
+
+Priority:
+
+High
+
+---
+
+# Layer 10
+
+## QGuard Native Format Verification
+
+Supported:
+
+* .qvault
+* .qguard
+* .qmsg
+
+Embedded Metadata:
+
+* Cipher
+* KEM
+* Signature
+* KDF
+* Version
+* Creation Date
+
+Verify:
+
+* ML-DSA signatures
+* Integrity tags
+* Metadata authenticity
+
+Output:
+
+QGuard Verified™
+
+QGuard Quantum Safe™
+
+---
+
+# Landing Page Workflow
+
+Step 1
+
+User uploads:
+
+* File
+* Folder
+* ZIP
+* Certificate
+* Key
+* Archive
+
+Step 2
+
+Local browser analysis begins.
+
+Step 3
+
+QEVE performs:
+
+* Header Analysis
+* Entropy Analysis
+* Crypto Detection
+* PQC Assessment
+* Risk Scoring
+
+Step 4
+
+Display:
+
+Encryption Status
+
+Detected Algorithms
+
+Quantum Safety
+
+Compliance
+
+Risk Score
+
+Recommendations
+
+Step 5
+
+Generate downloadable report.
+
+PDF
+JSON
+CSV
+
+---
+
+# Result Example
+
+Encryption Status
+
+Encrypted
+
+Confidence
+
+97%
+
+Detected Cryptography
+
+* RSA-2048
+* AES-256-CBC
+* SHA256
+
+Quantum Safety
+
+Classical Only
+
+Quantum Risk Score
+
+34/100
+
+HNDL Risk
+
+High
+
+Recommendation
+
+Migrate to:
+
+* ML-KEM-768
+* ML-DSA-65
+* AES-256-GCM
+* SHA3-256
+
+Status
+
+Migration Recommended
+
+---
+
+# Advanced Future Capabilities
+
+Phase 2
+
+* TLS Certificate Scanner
+* Website Encryption Verifier
+* API Encryption Analyzer
+* JWT Cryptography Analyzer
+* PKI Trust Chain Analyzer
+
+Phase 3
+
+* CBOM Correlation
+* Trust Fabric Correlation
+* Machine Identity Correlation
+* Runtime Crypto Intelligence
+
+Phase 4
+
+* AI-Assisted Crypto Forensics
+* Crypto Drift Detection
+* Autonomous PQC Migration Recommendations
+* Enterprise Quantum Readiness Dashboard
+
+---
+
+# Success Criteria
+
+The Encryption Verifier must become the industry's first public-facing tool that combines:
+
+* Encryption Detection
+* Cryptographic Intelligence
+* Quantum Safety Assessment
+* NIST Validation
+* HNDL Analysis
+* PQC Migration Guidance
+
+into a single unified user experience powered by QGuard Helix.

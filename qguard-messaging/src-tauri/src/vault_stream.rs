@@ -36,7 +36,6 @@ const MAGIC: &[u8; 8] = b"QGUARDVS";
 /// files survive total device loss. Both versions are accepted on decrypt.
 pub const STREAM_VERSION: u8 = 2;
 pub const CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB plaintext per chunk
-const WRAP_INFO: &[u8] = b"QGuard-Vault-Stream-FileKey-Wrap-v1";
 const MAX_HEADER_LEN: usize = 1024 * 1024; // signed header is a few KB; cap defensively
 const MAX_FRAME_CIPHERTEXT: usize = CHUNK_SIZE + 64;
 
@@ -115,7 +114,7 @@ fn wrap_aad_bytes(file_id: &str, owner_user_id: &str, owner_device_id: &str) -> 
 
 fn chunk_aad(file_id: &str, index: u64, total_chunks: u64, is_last: bool) -> Vec<u8> {
     let mut aad = Vec::with_capacity(file_id.len() + 32);
-    aad.extend_from_slice(b"QGuard-Vault-Stream-Chunk-v1:");
+    aad.extend_from_slice(&crate::security::obf::vault_stream_chunk_aad_prefix());
     aad.extend_from_slice(file_id.as_bytes());
     aad.push(b':');
     aad.extend_from_slice(&index.to_be_bytes());
@@ -271,7 +270,7 @@ pub fn encrypt_stream<R: Read, W: Write>(
 
     let mut file_key = symmetric::random_key();
     let (hybrid_ciphertext, mut wrapping_secret) =
-        encapsulate(recipient_x25519_public, recipient_mlkem_public, WRAP_INFO)?;
+        encapsulate(recipient_x25519_public, recipient_mlkem_public, &crate::security::obf::vault_stream_wrap_info())?;
     let wrap_aad = wrap_aad_bytes(&file_id, owner_user_id, owner_device_id);
     let wrapped_key = symmetric::encrypt(&wrapping_secret, &file_key, &wrap_aad)?;
     wrapping_secret.zeroize();
@@ -434,7 +433,7 @@ pub fn decrypt_stream<R: Read, W: Write>(
         &recipient.x25519_secret,
         &recipient.mlkem_secret,
         &header.hybrid_ciphertext,
-        WRAP_INFO,
+        &crate::security::obf::vault_stream_wrap_info(),
     )?;
     let wrap_aad = wrap_aad_bytes(&header.file_id, &header.owner_user_id, &header.owner_device_id);
     let mut file_key_bytes = symmetric::decrypt(&wrapping_secret, &header.wrapped_key, &wrap_aad)?;
@@ -524,7 +523,7 @@ pub fn rewrap_stream_with_recovery<R: Read, W: Write>(
             &kem.x25519_secret,
             &kem.mlkem_secret,
             &header.hybrid_ciphertext,
-            WRAP_INFO,
+            &crate::security::obf::vault_stream_wrap_info(),
         ) {
             Ok(secret) => secret,
             Err(_) => continue,

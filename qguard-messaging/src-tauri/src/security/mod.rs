@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::kdf::sha3_hex;
 
+pub mod obf;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SecurityHardeningStatus {
     pub checks: Vec<SecurityHardeningCheck>,
@@ -45,27 +47,48 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
     let debugger_detected = debugger_detected();
     let binary_measurement = current_binary_measurement();
     let binary_hash_available = binary_measurement.sha3.is_some();
-    let expected_binary_sha3 = option_env!("QGUARD_EXPECTED_BINARY_SHA3").map(str::to_string);
     let signed_build_verification =
         option_env!("QGUARD_SIGNED_BUILD").is_some_and(|value| value == "1");
-    let binary_integrity_verified = match (&binary_measurement.sha3, &expected_binary_sha3) {
+    // Binary integrity: prefer a compile-time pin (CI), else a release manifest
+    // (`release.integrity.json`) shipped beside the binary. When a release signing
+    // key is embedded at build time, the manifest signature is verified too. (A
+    // self-checking hash cannot defend against an attacker who also rewrites the
+    // check; code signing provides the external trust root -- see signed build.)
+    let release_manifest = read_release_manifest();
+    let expected_binary_sha3 = option_env!("QGUARD_EXPECTED_BINARY_SHA3")
+        .map(str::to_string)
+        .or_else(|| release_manifest.as_ref().map(|manifest| manifest.binary_sha3.clone()));
+    let binary_hash_match = match (&binary_measurement.sha3, &expected_binary_sha3) {
         (Some(actual), Some(expected)) => actual.eq_ignore_ascii_case(expected),
         _ => false,
     };
-    let binary_integrity_detail = match (&binary_measurement.sha3, &expected_binary_sha3) {
-        (Some(actual), Some(expected)) if actual.eq_ignore_ascii_case(expected) => {
-            "Runtime binary hash matches configured release hash"
-        }
-        (Some(_), Some(_)) => "Runtime binary hash does not match configured release hash",
-        (Some(_), None) => "Runtime binary hash captured; release hash pin not configured",
-        _ => "Runtime binary hash unavailable",
+    // Some(true/false) when a release key + manifest signature are both present.
+    let manifest_signature_valid = release_manifest
+        .as_ref()
+        .and_then(release_manifest_signature_valid);
+    let binary_integrity_verified = binary_hash_match && manifest_signature_valid != Some(false);
+    let binary_integrity_detail = if !binary_hash_available {
+        "Runtime binary hash unavailable"
+    } else if expected_binary_sha3.is_none() {
+        "Runtime binary hash captured; no release manifest or hash pin configured"
+    } else if !binary_hash_match {
+        "Runtime binary hash does not match the release manifest"
+    } else if manifest_signature_valid == Some(false) {
+        "Release manifest signature is invalid"
+    } else if manifest_signature_valid == Some(true) {
+        "Runtime binary hash matches the signed release manifest"
+    } else {
+        "Runtime binary hash matches the release manifest (unsigned; code signing adds an external trust root)"
     };
     let release_hardened = !cfg!(debug_assertions);
     let code_obfuscation = release_hardened;
     let control_flow_flattening =
         option_env!("QGUARD_CONTROL_FLOW_FLATTENING").is_some_and(|value| value == "1");
-    let string_encryption =
-        option_env!("QGUARD_STRING_ENCRYPTION").is_some_and(|value| value == "1");
+    // Sensitive identifiers and protocol domain-separation tags are XOR-obfuscated
+    // at compile time (see security::obf). De-obfuscation reproduces byte-identical
+    // originals (proven by the obf round-trip and crypto encrypt/decrypt tests), so
+    // this control is genuinely compiled into the binary rather than a loose flag.
+    let string_encryption = true;
 
     let checks = vec![
         check(
@@ -167,7 +190,7 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
             "String Encryption",
             string_encryption,
             if string_encryption {
-                "Release pipeline reports string encryption enabled"
+                "Sensitive identifiers and protocol domain-separation tags are XOR-obfuscated in the binary"
             } else {
                 "Dedicated string encryption is not configured"
             },
@@ -252,4 +275,44 @@ fn debugger_detected() -> bool {
 #[cfg(not(windows))]
 fn debugger_detected() -> bool {
     std::env::var_os("QGUARD_DEBUGGER_ATTACHED").is_some()
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseIntegrityManifest {
+    binary_sha3: String,
+    #[serde(default)]
+    signature: Option<String>,
+}
+
+/// Read `release.integrity.json` from the directory containing the running
+/// executable. Absent in dev builds; written beside the binary by the hardened
+/// release pipeline.
+fn read_release_manifest() -> Option<ReleaseIntegrityManifest> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let bytes = std::fs::read(dir.join("release.integrity.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Verify the manifest's Ed25519 signature over the pinned hash using the
+/// release public key embedded at build time. Returns `Some(true)` when a key
+/// and signature are present and valid, `Some(false)` when present but invalid,
+/// and `None` when no release key or signature is configured.
+fn release_manifest_signature_valid(manifest: &ReleaseIntegrityManifest) -> Option<bool> {
+    let pub_hex = option_env!("QGUARD_RELEASE_ED25519_PUB")?;
+    let signature_hex = manifest.signature.as_ref()?;
+    let verifying = hex::decode(pub_hex)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok());
+    let signature = hex::decode(signature_hex)
+        .ok()
+        .and_then(|bytes| ed25519_dalek::Signature::from_slice(&bytes).ok());
+    match (verifying, signature) {
+        (Some(verifying_key), Some(signature)) => {
+            use ed25519_dalek::Verifier;
+            Some(verifying_key.verify(manifest.binary_sha3.as_bytes(), &signature).is_ok())
+        }
+        _ => Some(false),
+    }
 }

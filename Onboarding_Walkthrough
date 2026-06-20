@@ -1,0 +1,290 @@
+Build an Enterprise-Grade Guided Onboarding & Product Tour System for QGuard Messaging and QGuard Helix
+Objective
+
+Design and implement a modern, enterprise-grade onboarding experience that guides new users through the platform step-by-step, ensuring they complete critical security, identity, encryption, and configuration tasks before using advanced features.
+
+The onboarding experience must be interactive, intelligent, resumable, secure, role-aware, and measurable.
+
+This is not simply a tooltip system.
+
+This is a complete onboarding framework consisting of:
+
+Welcome Experience
+Guided Product Tours
+Security Setup Wizards
+Progress Tracking
+Onboarding Checklists
+Contextual Walkthroughs
+Success Validation
+Role-Based Flows
+Re-engagement Reminders
+Core Requirements
+First Login Detection
+
+When a user logs in for the first time:
+
+Determine:
+
+Is this a new account?
+Has onboarding been completed?
+Has security setup been completed?
+Has a recovery key been generated?
+Has MFA been configured?
+Has profile information been completed?
+Has device trust been established?
+
+If onboarding is incomplete:
+
+Display onboarding modal automatically.
+
+Prevent critical actions until mandatory security requirements are completed.
+
+Welcome Modal
+
+Display immediately after first login.
+
+Example:
+
+Welcome to QGuard Messaging
+
+Your secure quantum-safe workspace is ready.
+
+Before you begin, let's secure your account and configure your encrypted environment.
+
+Estimated setup time:
+3–5 minutes
+
+Progress:
+0% Complete
+
+Buttons:
+
+Start Setup
+Learn More
+Skip Non-Critical Steps
+
+Do not allow mandatory security steps to be skipped.
+
+Guided Onboarding Framework
+
+Provide:
+
+Previous
+Next
+Skip
+Resume Later
+
+Show:
+
+Step Number
+Progress Bar
+Estimated Time Remaining
+
+Example:
+
+Step 2 of 8
+
+25% Complete
+
+QGuard Messaging Onboarding Flow
+Step 1: Complete Profile
+
+Purpose:
+
+Establish account ownership.
+
+Collect:
+
+Full Name
+Organization
+Job Title
+Timezone
+Profile Photo
+
+Validate:
+
+Profile completion status.
+
+Success Condition:
+
+Profile completeness = 100%
+
+Step 2: Generate Quantum Recovery Key
+
+Critical Security Step
+
+Purpose:
+
+Ensure encrypted vault and messages can be recovered if a device is lost, stolen, damaged, or replaced.
+
+Explain:
+
+Your Recovery Key allows you to restore encrypted data on a new trusted device.
+
+The key is:
+
+Quantum-safe
+Generated locally
+Never transmitted
+Never stored by QGuard
+Cannot be recovered if lost
+
+Generate:
+
+Recovery Key using:
+
+ML-KEM-1024
+AES-256-GCM
+HKDF-SHA3-256
+SHA3-256
+
+Display:
+
+Copy Key
+Download Key
+Print Key
+
+Require:
+
+User confirmation.
+
+Checkbox:
+
+I have securely stored my recovery key.
+
+Success Condition:
+
+Recovery key generated and acknowledged.
+
+Mandatory:
+
+User cannot proceed to encrypted storage until completed.
+
+Step 3: Device Trust Registration
+
+Purpose:
+
+Register trusted device.
+
+Display:
+
+Device Name
+Operating System
+Browser
+Location
+Device Fingerprint
+
+Actions:
+
+Trust This Device
+
+Generate:
+
+Trusted Device Certificate
+
+Success Condition:
+
+Device registered.
+
+Step 4: Enable Multi-Factor Authentication
+
+Purpose:
+
+Strengthen account security.
+
+Supported:
+
+TOTP
+Authenticator Apps
+Security Keys
+
+Recommended:
+
+Security Key + TOTP
+
+Success Condition:
+
+MFA Enabled
+
+Step 5: Configure Quantum Vault
+
+Purpose:
+
+Prepare encrypted storage.
+
+Explain:
+
+Quantum Vault protects files using post-quantum cryptography.
+
+Demonstrate:
+
+Upload File
+Encrypt File
+Share File
+Recover File
+
+Success Condition:
+
+Vault initialized.
+
+Step 6: Secure Messaging Tour
+
+Purpose:
+
+Introduce secure communications.
+
+Highlight:
+
+New Message
+Contacts
+Channels
+Attachments
+Quantum Encryption Status
+
+Show:
+
+Encrypted Message Indicator
+
+Success Condition:
+
+First message sent.
+
+Step 7: Security Dashboard Tour
+
+Highlight:
+
+Security Score
+Device Trust
+Encryption Status
+Recovery Status
+Activity Logs
+
+Explain:
+
+What each metric means.
+
+Success Condition:
+
+Dashboard viewed.
+
+Step 8: Completion
+
+Display:
+
+Congratulations.
+
+Your secure messaging environment is ready.
+
+Checklist:
+
+✓ Profile Completed
+✓ Recovery Key Generated
+✓ Device Trusted
+✓ MFA Enabled
+✓ Vault Initialized
+✓ Messaging Configured
+✓ Dashboard Reviewed
+
+Button:
+
+Go To Dashboard

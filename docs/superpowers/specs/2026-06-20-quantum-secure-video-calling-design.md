@@ -1,0 +1,204 @@
+# Quantum-Secure 1:1 Video Calling - Design Spec
+
+- Date: 2026-06-20
+- Status: Approved (design); pending spec review
+- Module: qguard-messaging / Secure Chat
+- Approach: A - P2P WebRTC + PQC frame encryption + existing hybrid-PQC channel for setup
+
+## 1. Summary
+
+Add end-to-end, quantum-safe 1:1 video + audio calling to the Secure Chat page.
+Media is encrypted per frame with AES-256-GCM using keys derived from the
+existing hybrid post-quantum key agreement (X25519 + ML-KEM-1024) via
+HKDF-SHA3-256, on top of WebRTC DTLS-SRTP. No server, TURN relay, or network
+party can intercept, decrypt, or record the media. Built peer-to-peer, reusing
+the audited Rust crypto and the existing Supabase realtime patterns.
+
+## 2. Goals
+
+- 1:1 audio + video calling inside a direct conversation.
+- Quantum-safe media: AES-256-GCM per frame, keys from hybrid X25519 + ML-KEM-1024 and HKDF-SHA3-256.
+- Confidentiality against server, TURN relay, and on-path network attackers.
+- Mic mute, camera toggle, incoming-call ring / accept / reject, call timer, hang up.
+- MITM-resistant via a human-verifiable call safety number (SAS).
+- Reuse existing Rust crypto commands and Supabase realtime (postgres_changes) patterns.
+- TURN-ready ICE configuration (STUN works now; TURN addable via config/env).
+
+## 3. Non-goals (v1)
+
+- Group calls (3+ participants) - needs an SFU and group key management.
+- Screen sharing.
+- Persistent call history / missed-call records beyond ephemeral signaling rows.
+- Recording or transcription features.
+- macOS / Linux parity. Windows + WebView2 first (WKWebView WebRTC is limited).
+
+## 4. Honest security boundaries (must be stated in UI/docs)
+
+- E2EE stops the server, the TURN relay, and any network attacker from
+  intercepting, decrypting, or recording media. It does NOT stop the *other
+  participant* from recording their own screen/feed at the OS level - that is
+  unavoidable for any video call (Signal, FaceTime, Zoom share this limit).
+- DTLS-SRTP underneath uses classical key exchange; the PQC frame layer is what
+  makes the media itself quantum-safe (immune to harvest-now-decrypt-later).
+- STUN-only connectivity can fail on symmetric / strict corporate NAT until a
+  TURN relay is configured.
+- The server still learns call metadata: who called whom and when, plus IP/port
+  pairs exposed by ICE. Call content is fully protected; this timing/peer
+  metadata is a documented limitation.
+
+## 5. Architecture
+
+Data flow (1:1):
+
+    Caller device  <--- Supabase messaging_call_signals (realtime) --->  Callee device
+         |                  (ring / offer / answer / ice / control)            |
+         |  getUserMedia + RTCPeerConnection (ICE: STUN, optional TURN)        |
+         +================== DTLS-SRTP media (P2P or via TURN) ===============+
+                    + per-frame AES-256-GCM (PQC-derived keys) on top
+
+### 5.1 Frontend modules (qguard-messaging/src)
+
+- lib/use-secure-call.ts - call state machine + RTCPeerConnection + getUserMedia
+  + ICE config. One owner of call lifecycle. Exposes start/accept/reject/hangup,
+  local/remote streams, mute/camera toggles, connection + crypto state.
+- lib/call-signaling.ts - send/subscribe signals via messaging_call_signals.
+- lib/call-crypto-worker.ts - Web Worker; Encoded Transform (RTCRtpScriptTransform)
+  doing per-frame AES-256-GCM encrypt (sender) / decrypt (receiver) via WebCrypto.
+- lib/call-ice.ts - builds RTCConfiguration from defaults + configurable TURN.
+- components/call/IncomingCallModal.tsx, components/call/InCallOverlay.tsx,
+  components/call/CallButton.tsx.
+- Integrate into pages/SecureChatPage.tsx (header call button + render overlay/modal).
+- Types added to lib/types.ts.
+
+### 5.2 Backend (src-tauri)
+
+- New command call_derive_media_keys(rootKeyB64, role) -> { sendKeyB64, recvKeyB64 }
+  using crypto::kdf::hkdf_sha3_256 with directional info labels. Pure, unit-tested.
+- Reuse messaging_send_encrypted_message / messaging_receive_encrypted_message to
+  encrypt/decrypt the call-setup bundle (SDP + media root key) for the peer device.
+- WebView2 camera/microphone permission handling in the Tauri webview setup so
+  getUserMedia is granted for the app origin (with a denied-permission fallback UI).
+
+### 5.3 Signaling table (new Supabase migration)
+
+messaging_call_signals:
+- id            uuid primary key default gen_random_uuid()
+- call_id       uuid not null            -- groups all signals of one call
+- conversation_id uuid not null
+- from_user_id  uuid not null, from_device_id uuid not null
+- to_user_id    uuid not null, to_device_id uuid not null
+- signal_type   text not null check in ('ring','offer','answer','ice','accept','reject','hangup','busy')
+- payload       jsonb not null           -- encrypted bundle for offer/answer; plaintext for ice/control
+- created_at    timestamptz not null default now()
+
+RLS: a row is insertable/selectable only by authenticated users who are members
+of conversation_id (reuse the existing conversation-membership policy pattern).
+Realtime publication enabled on the table. A periodic cleanup (or TTL) removes
+rows older than a short window; signals are ephemeral.
+
+## 6. Crypto design
+
+### 6.1 Key establishment
+
+1. Caller generates a 32-byte random media_root_key.
+2. Caller builds setup bundle = { sdp_offer, media_root_key_b64, caller_device_fingerprint }.
+3. Bundle JSON is encrypted to the callee device via messaging_send_encrypted_message
+   (hybrid X25519 + ML-KEM-1024), producing an EncryptedMessageEnvelope stored as
+   the 'offer' signal payload. This authenticates the DTLS fingerprints + media key.
+4. Callee decrypts via messaging_receive_encrypted_message -> recovers media_root_key
+   and sdp_offer.
+5. Callee returns an 'answer' signal: encrypted bundle { sdp_answer, callee_device_fingerprint }.
+6. Both sides call call_derive_media_keys(media_root_key, role).
+
+Fresh media_root_key per call provides per-call forward secrecy.
+
+### 6.2 Directional key derivation (Rust)
+
+- info_c2a = "qguard-call-media-v1:caller-to-callee"
+- info_a2c = "qguard-call-media-v1:callee-to-caller"
+- send/recv 32-byte AES-256-GCM keys = HKDF-SHA3-256(media_root_key, info).
+- role (caller|callee) maps the two derived keys to (send, recv).
+
+### 6.3 Frame encryption (worker)
+
+- RTCRtpScriptTransform on each sender: AES-256-GCM encrypt the encoded frame
+  payload with sendKey. Nonce (12 bytes) = [4-byte context tag | 8-byte
+  big-endian monotonic frame counter]. 16-byte GCM tag appended.
+- Codec metadata bytes required by the packetizer (e.g. the first bytes of a
+  VP8/H264/Opus frame, keyframe markers) are left in the clear; only the payload
+  is encrypted - standard insertable-streams practice.
+- Receiver transform decrypts with recvKey; rejects frames failing auth or
+  outside the replay window.
+- Capability check at call start: if RTCRtpScriptTransform (or the legacy
+  createEncodedStreams) is unavailable, abort the call with a clear message
+  rather than fall back to non-PQC media.
+
+### 6.4 Call safety number (SAS)
+
+- sas = first 60 bits of SHA3-256(media_root_key || sort(caller_fp, callee_fp)),
+  rendered as five 4-digit groups. Shown in-call for verbal verification; matching
+  values on both ends rule out a MITM.
+
+## 7. Call state machine
+
+- Caller: idle -> (createOffer; send ring+offer) calling -> (on answer; set remote;
+  ICE) connecting -> (ICE connected + media) connected -> ended.
+- Callee: idle -> (incoming ring/offer) ringing -> (accept; createAnswer) connecting
+  -> connected -> ended.
+- reject / hangup / busy -> ended. Timeouts: ring 45s -> missed; connecting 30s -> failed.
+- Only one active call at a time; a second incoming call replies 'busy'.
+
+## 8. UX
+
+- Direct-conversation header gains a Video call button (and optional voice button),
+  enabled only when the peer has a trusted PQC device and the desktop runtime is present.
+- IncomingCallModal: caller name/avatar, accept (green) / reject (red), ringing animation.
+- InCallOverlay: full remote video, local picture-in-picture, controls (mute mic,
+  toggle camera, hang up), call timer, connection-state pill, "Quantum-encrypted"
+  badge, and an expandable safety number. Distinct states for permission-denied and
+  connection-failed with guidance.
+- Lifecycle events recorded via recordCryptoTelemetry (scope "call") for the
+  user-scoped terminal/telemetry (no media content logged).
+
+## 9. Tauri / WebView2 permissions
+
+- Add a webview permission handler so camera + microphone are granted for the app
+  origin on Windows (WebView2). Provide a clear denied-permission UI path. Verify
+  getUserMedia prompt behavior in the packaged app.
+
+## 10. Security analysis
+
+- Confidentiality: media frames AES-256-GCM with PQC-derived keys; key transported
+  over the hybrid-PQC E2EE message channel. Server / TURN / network see only ciphertext.
+- Authenticity / anti-MITM: setup bundle authenticated by the existing encrypted/
+  signed message channel; human-verifiable safety number.
+- Forward secrecy: fresh root key per call.
+- Replay: per-sender monotonic frame counter + unique GCM nonce; call-scoped signals.
+- Metadata: server learns call timing + participants and ICE IP/port pairs (documented).
+- Abuse: ring rate-limiting; RLS rejects signals from non-members.
+
+## 11. Testing strategy
+
+- Rust unit tests: call_derive_media_keys determinism, directional distinctness,
+  and that caller.send == callee.recv and vice versa.
+- Worker crypto tests: frame encrypt -> decrypt round-trip, tamper rejection,
+  nonce/counter uniqueness.
+- Frontend unit tests: call state-machine transitions; signaling encode/decode.
+- Integration (manual): two app instances on a LAN complete a call; mute/camera/
+  hangup; permission-denied path; safety numbers match on both ends; verify (via
+  the worker) that frames on the wire are ciphertext.
+- Build gates: tsc + vite build pass; cargo test + cargo check pass.
+
+## 12. Migration & rollout
+
+- New migration: messaging_call_signals + RLS + realtime publication (+ cleanup).
+- Additive feature, gated on a trusted PQC peer device + desktop runtime.
+- Honest-limits note surfaced in the call UI.
+
+## 13. Open risks
+
+- Insertable-streams API shape in the shipped WebView2 (RTCRtpScriptTransform vs
+  legacy createEncodedStreams) - mitigated by a capability check + abort, never a
+  silent non-PQC fallback.
+- getUserMedia permission UX in Tauri WebView2.
+- NAT traversal reliability without TURN (mitigated by TURN-ready config).

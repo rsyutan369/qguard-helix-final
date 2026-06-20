@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
@@ -124,6 +125,7 @@ async function sha256Hex(value: string): Promise<string> {
 }
 
 export default function AuditLogsPage({ userId, events, securityEvents, liveEvents, liveStatus, onRefresh }: AuditLogsPageProps) {
+  const isAdmin = useIsAdmin();
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<StatusState>(null);
 
@@ -331,6 +333,7 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
         </section>
       </div>
 
+      {isAdmin && (
       <section className="shell-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -429,6 +432,7 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
           </div>
         </div>
       </section>
+      )}
 
       <section className="shell-card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">

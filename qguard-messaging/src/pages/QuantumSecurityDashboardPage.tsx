@@ -18,6 +18,7 @@ import type { LucideIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { isAdminEmail } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import type { DashboardData, SecurityHardeningCheck, TelemetryEvent, TrustedDevice, VaultFileSummary } from "@/lib/types";
 
@@ -102,11 +103,6 @@ function statusText(status: SecurityHardeningCheck["status"]): string {
   return "Review";
 }
 
-function textTone(value: string): string {
-  if (/failed|critical|tampered|revoked|error|blocked/i.test(value)) return "text-rose-500";
-  if (/inactive|missing|not ready|warning|review|required|debug|pending/i.test(value)) return "text-amber-600";
-  return "text-emerald-600";
-}
 
 function liveTone(state: QGuardLiveStatus["state"]): string {
   if (state === "live") return "bg-emerald-50 text-emerald-600";
@@ -205,6 +201,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusState>(null);
   const { report, hardening, devices, keyInventory, telemetry, securityEvents, vaultFiles } = data;
+  const isAdmin = isAdminEmail(data.profile?.email);
   const hardeningChecks = hardening.checks;
   const activeCount = hardeningChecks.filter((check) => check.status === "active").length;
   const totalCount = hardeningChecks.length;
@@ -232,14 +229,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
     latestSecurityEvent?.created_at,
     ...activeMyDevices.map((device) => device.last_seen_at),
   ]);
-  const scoreRingStyle = {
-    "--score-color": scoreColor(report.quantum_safe_score),
-    background: `conic-gradient(var(--score-color) ${report.quantum_safe_score * 3.6}deg, rgba(148, 163, 184, 0.28) 0deg)`,
-  } as CSSProperties;
-  const scoreStatus = report.quantum_safe_score === 100 && allHardeningActive
-    ? "100% Quantum Security Protection"
-    : `${report.warnings.length + inactiveChecks.length} validation item${report.warnings.length + inactiveChecks.length === 1 ? "" : "s"} need review`;
-  const releaseGateStatus = allHardeningActive ? "All Active" : "Release Gates Pending";
+
   const stackEvidence: StackEvidenceRow[] = [
     {
       label: "Hybrid Key Exchange",
@@ -279,8 +269,18 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
     },
   ];
   const activeStackEvidence = stackEvidence.filter((row) => row.active).length;
+  const quantumStackScore = stackEvidence.length > 0 ? Math.round((activeStackEvidence / stackEvidence.length) * 100) : 0;
+  const quantumStackComplete = stackEvidence.length > 0 && activeStackEvidence === stackEvidence.length;
+  const quantumStackStatus = quantumStackComplete ? "All Active" : `${activeStackEvidence}/${stackEvidence.length} Active`;
+  const scoreRingStyle = {
+    "--score-color": scoreColor(quantumStackScore),
+    background: `conic-gradient(var(--score-color) ${quantumStackScore * 3.6}deg, rgba(148, 163, 184, 0.28) 0deg)`,
+  } as CSSProperties;
+  const scoreStatus = quantumStackComplete
+    ? "100% Quantum Security Protection"
+    : `${stackEvidence.length - activeStackEvidence} stack check${stackEvidence.length - activeStackEvidence === 1 ? "" : "s"} need review`;
   const cards: { icon: LucideIcon; label: string; value: string; caption: string; tone: "emerald" | "violet" | "cyan" | "amber" }[] = [
-    { icon: Gauge, label: "Quantum-safe Score", value: `${report.quantum_safe_score}%`, caption: scoreStatus, tone: report.quantum_safe_score >= 95 ? "emerald" : "amber" },
+    { icon: Gauge, label: "Quantum-safe Score", value: `${quantumStackScore}%`, caption: scoreStatus, tone: quantumStackScore >= 95 ? "emerald" : "amber" },
     { icon: ShieldCheck, label: "Hybrid Session", value: report.hybrid_session_status, caption: `${trustedMyDevices.length}/${Math.max(1, activeMyDevices.length)} trusted active devices`, tone: hybridKexReady && hybridSignatureReady ? "violet" : "amber" },
     { icon: Zap, label: "HNDL Protection", value: report.hndl_protection, caption: deviceSuiteReady ? "Hybrid non-decrypt-later posture enabled" : "Awaiting full suite evidence", tone: report.hndl_protection === "Enabled" ? "cyan" : "amber" },
     { icon: RefreshCcw, label: "Forward Secrecy", value: report.forward_secrecy, caption: `${keyInventory.available_one_time_prekeys}/${oneTimePrekeyTarget} one-time prekeys ready`, tone: signedPrekeysReady && oneTimePrekeysReady ? "emerald" : "amber" },
@@ -310,10 +310,10 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
       try {
         await recordQuantumTelemetry("quantum_posture_refresh_started", "Quantum security refresh requested", 10, "started");
         await Promise.resolve(onRefresh());
-        await recordQuantumTelemetry("quantum_posture_refreshed", allHardeningActive ? "All hardening checks are active" : `${inactiveChecks.length} production hardening gates require review`, 100, allHardeningActive ? "verified" : "progress");
+        await recordQuantumTelemetry("quantum_posture_refreshed", quantumStackComplete ? "Quantum Security Stack is fully active" : `${stackEvidence.length - activeStackEvidence} stack checks require live evidence`, 100, quantumStackComplete ? "verified" : "progress");
         setStatus({
-          tone: allHardeningActive ? "success" : "warning",
-          message: allHardeningActive ? "Quantum Security is fully active from current runtime evidence." : "Quantum Security refreshed. Release-only hardening gates still need real build/runtime evidence.",
+          tone: quantumStackComplete ? "success" : "warning",
+          message: quantumStackComplete ? "Quantum Security Stack is fully active from live runtime evidence." : `Quantum Security refreshed. ${stackEvidence.length - activeStackEvidence} stack check${stackEvidence.length - activeStackEvidence === 1 ? "" : "s"} still need live evidence.`,
         });
       } catch (error) {
         const message = describeDataError(error);
@@ -349,7 +349,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
         <div className="flex aspect-square items-center justify-center rounded-full p-3" style={scoreRingStyle}>
           <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-center">
             <div>
-              <div className="text-4xl font-bold text-emerald-600">{report.quantum_safe_score}</div>
+              <div className="text-4xl font-bold text-emerald-600">{quantumStackScore}</div>
               <div className="text-sm font-semibold text-ink-600">Quantum Score</div>
               <div className="mt-1 px-6 text-xs font-semibold text-ink-500">{scoreStatus}</div>
             </div>
@@ -390,6 +390,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
         </div>
       </section>
 
+      {isAdmin && (
       <section className="shell-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -416,8 +417,8 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
             <div className="mt-1 text-sm font-semibold text-ink-950">{quantumTelemetry.length} recent records</div>
           </div>
           <div>
-            <div className="text-[11px] font-bold uppercase text-ink-400">Hardening Gate</div>
-            <div className={`mt-1 text-sm font-semibold ${textTone(releaseGateStatus)}`}>{releaseGateStatus}</div>
+            <div className="text-[11px] font-bold uppercase text-ink-400">Quantum Stack</div>
+            <div className={`mt-1 text-sm font-semibold ${quantumStackComplete ? "text-emerald-600" : "text-amber-600"}`}>{quantumStackStatus}</div>
           </div>
         </div>
 
@@ -488,7 +489,9 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
           </div>
         </div>
       </section>
+      )}
 
+      {isAdmin && (
       <section className="security-hardening-panel rounded-lg border p-5 shadow-tight">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -519,8 +522,9 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
           })}
         </div>
       </section>
+      )}
 
-      {inactiveChecks.length > 0 && (
+      {isAdmin && inactiveChecks.length > 0 && (
         <section className="shell-card border-amber-200 bg-amber-50 p-4">
           <div className="flex items-center gap-2 text-sm font-bold text-amber-700">
             <LockKeyhole size={18} />

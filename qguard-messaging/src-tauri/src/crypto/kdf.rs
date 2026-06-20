@@ -4,14 +4,14 @@ use zeroize::Zeroize;
 
 use crate::error::{QGuardError, Result};
 
-const SALT: &[u8] = b"QGuard-Messaging-HKDF-SHA3-256-v1";
 
 pub fn hkdf_sha3_256(ikm: &[u8], info: &[u8], len: usize) -> Result<Vec<u8>> {
     if ikm.is_empty() || len == 0 || len > 8160 {
         return Err(QGuardError::Crypto("invalid HKDF input".to_string()));
     }
 
-    let hk = Hkdf::<Sha3_256>::new(Some(SALT), ikm);
+    let salt = crate::security::obf::hkdf_salt();
+    let hk = Hkdf::<Sha3_256>::new(Some(salt.as_slice()), ikm);
     let mut out = vec![0u8; len];
     hk.expand(info, &mut out)
         .map_err(|e| QGuardError::Crypto(format!("HKDF expand failed: {e}")))?;

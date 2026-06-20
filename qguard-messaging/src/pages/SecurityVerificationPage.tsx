@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
@@ -323,6 +324,7 @@ export default function SecurityVerificationPage({
   liveStatus,
   onRefresh,
 }: SecurityVerificationPageProps) {
+  const isAdmin = useIsAdmin();
   const ownDevices = useMemo(() => {
     return devices
       .filter((device) => device.user_id === userId)
@@ -654,6 +656,7 @@ export default function SecurityVerificationPage({
         </section>
       </div>
 
+      {isAdmin && (
       <section className="shell-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -752,6 +755,7 @@ export default function SecurityVerificationPage({
           </div>
         </div>
       </section>
+      )}
 
       <section className="shell-card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">

@@ -15,6 +15,7 @@ import {
 import { useMemo, useState } from "react";
 import { bytesToBytea } from "@/lib/encoding";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import type { PublicIdentityBundle } from "@/lib/messaging-bootstrap";
@@ -184,6 +185,7 @@ export default function KeyManagementPage({
   liveStatus,
   onRefresh,
 }: KeyManagementPageProps) {
+  const isAdmin = useIsAdmin();
   const [unlockStatus, setUnlockStatus] = useState("Private keys remain device-bound");
   const [busy, setBusy] = useState<KeyAction | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
@@ -410,6 +412,7 @@ export default function KeyManagementPage({
         </section>
       </div>
 
+      {isAdmin && (
       <section className="shell-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -486,6 +489,7 @@ export default function KeyManagementPage({
           </div>
         </div>
       </section>
+      )}
 
       <section className="shell-card overflow-hidden" aria-busy={Boolean(busy)}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line p-4">

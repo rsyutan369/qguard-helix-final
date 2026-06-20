@@ -1,0 +1,430 @@
+# QGuard Helix Enterprise Crypto Runtime Layer
+
+## Production Cryptography Providers
+
+QGuard Helix must support multiple cryptographic runtime providers and automatically select the best available implementation for the target environment.
+
+Priority Order:
+
+1. Native Platform Cryptography
+2. Certified HSM/KMS
+3. Cloud Provider PQC Services
+4. Browser Runtime Native PQC
+5. OQS Compatibility Layer
+
+---
+
+# OpenSSL 3.5+
+
+Purpose:
+
+Production TLS, X.509, ML-KEM, ML-DSA, SLH-DSA support.
+
+Official Website:
+
+https://www.openssl.org
+
+Documentation:
+
+https://docs.openssl.org
+
+Source Code:
+
+https://github.com/openssl/openssl
+
+Recommended Usage:
+
+* TLS 1.3
+* Hybrid TLS
+* ML-KEM
+* ML-DSA
+* SLH-DSA
+* Certificate management
+
+---
+
+# Go Standard Library Crypto
+
+Purpose:
+
+Native Post-Quantum Cryptography support for Go services.
+
+Official Website:
+
+https://go.dev
+
+Documentation:
+
+https://pkg.go.dev
+
+Release Notes:
+
+https://go.dev/doc
+
+Source Code:
+
+https://github.com/golang/go
+
+Relevant Packages:
+
+* crypto/mlkem
+* crypto/mldsa
+* crypto/x509
+* crypto/tls
+* crypto/hpke
+
+Recommended Usage:
+
+* Backend APIs
+* Agents
+* Orchestration Services
+* Quantum Vault Services
+* PQAuth Services
+
+---
+
+# BoringSSL
+
+Purpose:
+
+Modern TLS stack used by Google infrastructure.
+
+Official Website:
+
+https://boringssl.googlesource.com/boringssl
+
+Source Code:
+
+https://github.com/google/boringssl
+
+Recommended Usage:
+
+* High-performance TLS
+* Cloud-native services
+* Browser integrations
+
+---
+
+# Open Quantum Safe (OQS)
+
+Purpose:
+
+PQC testing, validation, interoperability, migration labs.
+
+Official Website:
+
+https://openquantumsafe.org
+
+Documentation:
+
+https://openquantumsafe.org/documentation
+
+---
+
+## liboqs
+
+Purpose:
+
+Core PQC algorithm library.
+
+Repository:
+
+https://github.com/open-quantum-safe/liboqs
+
+Documentation:
+
+https://github.com/open-quantum-safe/liboqs/blob/main/README.md
+
+Recommended Usage:
+
+* PQC testing
+* Benchmarking
+* Algorithm validation
+* Research environments
+
+---
+
+## OQS Provider
+
+Purpose:
+
+OpenSSL 3 Provider integration.
+
+Repository:
+
+https://github.com/open-quantum-safe/oqs-provider
+
+Recommended Usage:
+
+* OpenSSL PQC testing
+* Hybrid TLS validation
+* Migration laboratories
+
+---
+
+## OQS OpenSSL
+
+Purpose:
+
+Legacy hybrid OpenSSL builds.
+
+Repository:
+
+https://github.com/open-quantum-safe/openssl
+
+Recommended Usage:
+
+* Compatibility testing
+* Legacy PQC interoperability
+
+---
+
+# AWS KMS
+
+Purpose:
+
+Enterprise key management.
+
+Official Website:
+
+https://aws.amazon.com/kms
+
+Documentation:
+
+https://docs.aws.amazon.com/kms
+
+Recommended Usage:
+
+* Key lifecycle management
+* Enterprise key governance
+* Cloud key storage
+
+---
+
+# AWS CloudHSM
+
+Purpose:
+
+Dedicated FIPS-certified HSM.
+
+Official Website:
+
+https://aws.amazon.com/cloudhsm
+
+Documentation:
+
+https://docs.aws.amazon.com/cloudhsm
+
+Recommended Usage:
+
+* Regulated environments
+* Banking
+* Government workloads
+
+---
+
+# Azure Key Vault
+
+Purpose:
+
+Enterprise cloud key management.
+
+Official Website:
+
+https://azure.microsoft.com/products/key-vault
+
+Documentation:
+
+https://learn.microsoft.com/azure/key-vault
+
+Recommended Usage:
+
+* Certificate lifecycle
+* Key management
+* Secrets management
+
+---
+
+# Azure Managed HSM
+
+Purpose:
+
+Dedicated FIPS-certified HSM.
+
+Official Website:
+
+https://azure.microsoft.com/products/key-vault/managed-hsm
+
+Documentation:
+
+https://learn.microsoft.com/azure/key-vault/managed-hsm
+
+Recommended Usage:
+
+* Enterprise PKI
+* High assurance signing
+* Key protection
+
+---
+
+# Google Cloud KMS
+
+Purpose:
+
+Enterprise cloud key management.
+
+Official Website:
+
+https://cloud.google.com/kms
+
+Documentation:
+
+https://cloud.google.com/kms/docs
+
+Recommended Usage:
+
+* Key lifecycle
+* Encryption services
+* Certificate management
+
+---
+
+# Google Cloud HSM
+
+Purpose:
+
+FIPS-certified cloud HSM.
+
+Official Website:
+
+https://cloud.google.com/kms/docs/hsm
+
+Documentation:
+
+https://cloud.google.com/kms/docs
+
+Recommended Usage:
+
+* Enterprise signing
+* Key protection
+* Compliance workloads
+
+---
+
+# PKCS#11
+
+Purpose:
+
+Universal HSM integration layer.
+
+Official Website:
+
+https://www.oasis-open.org/standards#pkcs11v3.1
+
+Recommended Usage:
+
+* HSM abstraction
+* Vendor-neutral integrations
+
+Supported Vendors:
+
+* Thales
+* Entrust
+* Utimaco
+* Futurex
+* IBM
+* AWS CloudHSM
+
+---
+
+# WebCrypto API
+
+Purpose:
+
+Browser-native cryptography.
+
+Official Website:
+
+https://www.w3.org/TR/WebCryptoAPI
+
+Documentation:
+
+https://developer.mozilla.org/docs/Web/API/Web_Crypto_API
+
+Recommended Usage:
+
+* Browser encryption
+* Quantum Vault browser client
+* Client-side cryptographic operations
+
+---
+
+# WebAssembly Runtime
+
+Purpose:
+
+Portable cryptographic execution.
+
+Official Website:
+
+https://webassembly.org
+
+Documentation:
+
+https://developer.mozilla.org/docs/WebAssembly
+
+Recommended Usage:
+
+* Browser PQC modules
+* Cross-platform cryptography
+* Client-side PQC acceleration
+
+---
+
+# QGuard Helix Approved Cryptographic Algorithms Stacks
+
+## Key Exchange
+
+* ML-KEM-768
+* X25519 + ML-KEM-768 Hybrid
+
+For High Security Profile like Quantum Vault:
+
+* ML-KEM-1024
+
+## Signatures
+
+* ML-DSA-65
+* Ed25519 + ML-DSA-65 Hybrid
+
+Optional High Security Profile: Like Quantum Vault
+
+* ML-DSA-87
+* SLH-DSA
+
+## Symmetric Encryption
+
+* AES-256-GCM
+
+## KDF
+
+* HKDF-SHA3-256
+
+Compatibility Fallback:
+
+* HKDF-SHA-256
+
+## Hashing
+
+* SHA3-256
+* SHA3-512
+
+## TLS
+
+* TLS 1.3
+* X25519MLKEM768 Preferred
+* Hybrid TLS Enabled
+* Classical Fallback Controlled By Policy
+
+```
+```

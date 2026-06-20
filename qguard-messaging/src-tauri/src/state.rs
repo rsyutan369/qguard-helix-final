@@ -19,9 +19,6 @@ use crate::prekeys::{
 use crate::ratchet::RatchetSession;
 use crate::telemetry::TelemetryEvent;
 
-const KEYRING_SERVICE: &str = "QGuard Messaging Device Keys";
-const KEY_MATERIAL_AAD: &[u8] = b"QGuard-Messaging-Device-Key-Material-v1";
-const VAULT_RECOVERY_AAD: &[u8] = b"QGuard-Messaging-Vault-Recovery-Material-v1";
 
 /// On-disk container for the AES-256-GCM-encrypted device key material.
 ///
@@ -369,7 +366,7 @@ impl AppState {
     }
 
     fn key_material_entry(&self, user_id: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(KEYRING_SERVICE, &Self::safe_user_key(user_id))
+        keyring::Entry::new(&crate::security::obf::keyring_service(), &Self::safe_user_key(user_id))
             .map_err(|e| QGuardError::Storage(format!("open OS keychain entry: {e}")))
     }
 
@@ -427,7 +424,7 @@ impl AppState {
             })?;
             let key = self.device_storage_key(user_id)?;
             let mut plaintext =
-                crate::crypto::symmetric::decrypt(&key, &file.envelope, KEY_MATERIAL_AAD)?;
+                crate::crypto::symmetric::decrypt(&key, &file.envelope, &crate::security::obf::key_material_aad())?;
             let material = Self::decode_device_key_material(user_id, &plaintext);
             plaintext.zeroize();
             return Ok(Some(material?));
@@ -512,7 +509,7 @@ impl AppState {
         let mut encoded = serde_json::to_vec(&material)
             .map_err(|e| QGuardError::Storage(format!("encode device key material: {e}")))?;
         let key = self.device_storage_key(user_id)?;
-        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, KEY_MATERIAL_AAD);
+        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, &crate::security::obf::key_material_aad());
         encoded.zeroize();
         let file = EncryptedKeyMaterialFile {
             version: 1,
@@ -586,7 +583,7 @@ impl AppState {
         let mut encoded = serde_json::to_vec(material)
             .map_err(|e| QGuardError::Storage(format!("encode vault recovery material: {e}")))?;
         let key = self.device_storage_key(user_id)?;
-        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, VAULT_RECOVERY_AAD);
+        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, &crate::security::obf::vault_recovery_material_aad());
         encoded.zeroize();
         let file = EncryptedKeyMaterialFile {
             version: 1,
@@ -611,7 +608,7 @@ impl AppState {
             .map_err(|e| QGuardError::Storage(format!("decode vault recovery material: {e}")))?;
         let key = self.device_storage_key(user_id)?;
         let mut plaintext =
-            crate::crypto::symmetric::decrypt(&key, &file.envelope, VAULT_RECOVERY_AAD)?;
+            crate::crypto::symmetric::decrypt(&key, &file.envelope, &crate::security::obf::vault_recovery_material_aad())?;
         let material: PersistedVaultRecovery = serde_json::from_slice(&plaintext)
             .map_err(|e| QGuardError::Storage(format!("decode vault recovery payload: {e}")))?;
         plaintext.zeroize();
@@ -836,7 +833,7 @@ impl AppState {
                     Utc::now().timestamp()
                 )
                 .as_bytes(),
-                b"QGuard-local-ratchet",
+                &crate::security::obf::local_ratchet_info(),
             )?;
             ratchets.insert(
                 conversation_id.to_string(),
@@ -857,7 +854,7 @@ mod tests {
 
     fn cleanup(user_id: &str, dir: &PathBuf) {
         if let Ok(entry) =
-            keyring::Entry::new(KEYRING_SERVICE, &AppState::safe_user_key(user_id))
+            keyring::Entry::new(&crate::security::obf::keyring_service(), &AppState::safe_user_key(user_id))
         {
             let _ = entry.delete_credential();
         }
