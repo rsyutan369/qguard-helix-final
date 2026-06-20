@@ -1,5 +1,4 @@
-Build an Enterprise-Grade Guided Onboarding & Product Tour System for QGuard Messaging and QGuard Helix
-Objective
+Build an Enterprise-Grade Guided Onboarding & Product Tour System for QGuard Messaging
 
 Design and implement a modern, enterprise-grade onboarding experience that guides new users through the platform step-by-step, ensuring they complete critical security, identity, encryption, and configuration tasks before using advanced features.
 
@@ -16,7 +15,6 @@ Progress Tracking
 Onboarding Checklists
 Contextual Walkthroughs
 Success Validation
-Role-Based Flows
 Re-engagement Reminders
 Core Requirements
 First Login Detection
@@ -87,6 +85,7 @@ Step 2 of 8
 25% Complete
 
 QGuard Messaging Onboarding Flow
+
 Step 1: Complete Profile
 
 Purpose:
