@@ -440,3 +440,15 @@ Provide a concise reason.
 Deliver a secure, scalable, observable, tenant-safe, production-grade backend for QGuard Helix.
 
 Every API, event, metric, scan result, migration state, and compliance record must be traceable to real backend logic and real persisted data.
+
+A lesson becomes valuable only when it changes behavior.
+
+Every lesson must eventually become one of:
+
+- Skill Rule
+- Verification Rule
+- Security Standard
+- Architecture Rule
+- Automation
+
+Otherwise it is merely documentation.

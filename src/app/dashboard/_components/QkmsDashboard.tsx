@@ -32,7 +32,7 @@ import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import { QKMS_TABLES } from '../_lib/telemetry-sync';
 
-type QkmsMode = 'overview' | 'inventory' | 'governance' | 'readiness';
+type QkmsMode = 'overview' | 'inventory' | 'governance' | 'readiness' | 'lifecycle' | 'rotation' | 'risk-analysis';
 type LoadState = 'loading' | 'success' | 'error';
 
 type KeyRecord = {
@@ -256,6 +256,8 @@ const EMPTY_SNAPSHOT: QkmsSnapshot = {
   sourceHealth: [],
 };
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
 const BLUE = '#2478FF';
 const GREEN = '#22C55E';
 const RED = '#EF4444';
@@ -293,13 +295,34 @@ const MODE_COPY: Record<QkmsMode, { segment: string; label: string; subtitle: st
     subtitle: 'ML-KEM, ML-DSA, SLH-DSA, hybrid TLS, migration gate decisions, and audit evidence.',
     Icon: ShieldCheck,
   },
+  lifecycle: {
+    segment: 'lifecycle',
+    label: 'Key Lifecycle',
+    subtitle: 'Full key lifecycle control plane — creation, classification, ownership, age, expiry, and decommission posture.',
+    Icon: GitBranch,
+  },
+  rotation: {
+    segment: 'rotation',
+    label: 'Rotation Center',
+    subtitle: 'Rotation health, due/overdue detection, rotation jobs, and expiry automation with audit evidence.',
+    Icon: RefreshCw,
+  },
+  'risk-analysis': {
+    segment: 'risk-analysis',
+    label: 'Key Risk Analysis',
+    subtitle: 'Key risk scoring, weak/deprecated algorithm exposure, custody gaps, and prioritized remediation.',
+    Icon: ShieldAlert,
+  },
 };
 
 const WORKFLOW: Array<{ mode: QkmsMode; href: string }> = [
   { mode: 'overview', href: '/dashboard/qkms/overview' },
   { mode: 'inventory', href: '/dashboard/qkms/inventory' },
+  { mode: 'lifecycle', href: '/dashboard/qkms/lifecycle' },
   { mode: 'governance', href: '/dashboard/qkms/governance' },
+  { mode: 'rotation', href: '/dashboard/qkms/rotation' },
   { mode: 'readiness', href: '/dashboard/qkms/readiness' },
+  { mode: 'risk-analysis', href: '/dashboard/qkms/risk-analysis' },
 ];
 
 function integerFmt(value: number) {
@@ -625,7 +648,7 @@ function Header({ mode, snapshot, state, sseConnected, refresh }: { mode: QkmsMo
           </button>
         </div>
       </div>
-      <div className="grid gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
         {WORKFLOW.map((step, index) => {
           const active = mode === step.mode;
           const copy = MODE_COPY[step.mode];
@@ -1262,10 +1285,752 @@ function ReportList({ rows }: { rows: Row[] }) {
   );
 }
 
+function KeyRowsTable({ rows, columns, empty, actions, onRowClick, selectedId }: { rows: KeyRecord[]; columns: Array<{ label: string; render: (key: KeyRecord) => ReactNode }>; empty: string; actions?: (key: KeyRecord) => ReactNode; onRowClick?: (key: KeyRecord) => void; selectedId?: string | null }) {
+  if (!rows.length) return <div className="grid min-h-[160px] place-items-center text-xs text-white/38">{empty}</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-xs">
+        <thead className="border-b border-white/10 text-[10px] uppercase tracking-[0.08em] text-white/38">
+          <tr>
+            {columns.map((column) => <th key={column.label} className="py-3 pr-3">{column.label}</th>)}
+            {actions ? <th className="py-3 text-right">Actions</th> : null}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-white/6">
+          {rows.map((key) => (
+            <tr key={key.id} onClick={onRowClick ? () => onRowClick(key) : undefined} className={cn('hover:bg-white/[0.035]', onRowClick && 'cursor-pointer', selectedId === key.id && 'bg-gold/8')}>
+              {columns.map((column) => <td key={column.label} className="py-3 pr-3 align-top">{column.render(key)}</td>)}
+              {actions ? <td className="py-3 text-right">{actions(key)}</td> : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function expiryMs(value: string | null) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
+}
+
+function ageDays(value: string | null) {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(0, Math.round((Date.now() - ms) / ONE_DAY_MS));
+}
+
+function distributionRows(values: string[], total: number) {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+  return Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count, percent: total ? (count / total) * 100 : 0 }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/* ---------------- Shared lifecycle / rotation / risk derivations ---------------- */
+
+function lifecycleState(key: KeyRecord): string {
+  const s = (key.status || '').toLowerCase();
+  const rot = (key.rotationStatus || '').toLowerCase();
+  if (s.includes('destroy')) return 'Destroyed';
+  if (s.includes('archiv')) return 'Archived';
+  if (s.includes('revok')) return 'Revoked';
+  if (rot.includes('complete') || s.includes('rotated')) return 'Rotated';
+  if (key.rotationRequired || /due|overdue|rotating|blocked/.test(rot)) return 'Pending Rotation';
+  if (expiryMs(key.expiresAt) < Date.now() || key.weak || s.includes('deprecat') || s.includes('expired')) return 'Deprecated';
+  if (s.includes('suspend') || s.includes('inactive') || s.includes('disabled')) return 'Suspended';
+  if (s.includes('pending')) return 'Pending Activation';
+  if (s.includes('generat')) return 'Generated';
+  return 'Active';
+}
+
+const LIFECYCLE_STATES = ['Generated', 'Pending Activation', 'Active', 'Suspended', 'Deprecated', 'Pending Rotation', 'Rotated', 'Revoked', 'Destroyed', 'Archived'];
+
+function rotationReason(key: KeyRecord): string {
+  if (/compromis/i.test(key.status || '')) return 'Compromise Suspected';
+  if (expiryMs(key.expiresAt) < Date.now()) return 'Key Expiration';
+  if (key.weak) return 'Algorithm Deprecation';
+  if (/classical|unknown/i.test(key.pqcReadiness || '') && !key.quantumReady) return 'PQC Migration';
+  if (key.orphaned) return 'Owner Change';
+  if (key.exportable) return 'Policy Violation';
+  if (key.nearExpiry) return 'Key Expiration';
+  if ((key.certificateLinks || 0) > 0) return 'Certificate Renewal';
+  return 'Scheduled Rotation';
+}
+
+function quantumFamily(algorithm: string): string {
+  const a = (algorithm || '').toUpperCase();
+  if (/ML-KEM|KYBER/.test(a)) return 'ML-KEM';
+  if (/ML-DSA|DILITHIUM|SLH-DSA|SPHINCS|FALCON/.test(a)) return 'ML-DSA / SLH-DSA';
+  if (/HYBRID|X25519\+|ED25519\+/.test(a)) return 'Hybrid';
+  if (/RSA/.test(a)) return 'RSA';
+  if (/ECDSA/.test(a)) return 'ECDSA';
+  if (/ECDH/.test(a)) return 'ECDH';
+  if (/\bDSA\b/.test(a)) return 'DSA';
+  if (/\bDH\b|DIFFIE/.test(a)) return 'DH';
+  if (/ECC|P-256|P-384|P-521|SECP/.test(a)) return 'ECC';
+  if (/AES/.test(a)) return 'AES (Symmetric)';
+  if (/SHA3|HKDF/.test(a)) return 'SHA3 / HKDF';
+  if (/X25519|ED25519|CURVE25519/.test(a)) return 'Curve25519';
+  return 'Other / Unknown';
+}
+
+function quantumExposureStatus(key: KeyRecord): string {
+  const p = (key.pqcReadiness || '').toLowerCase();
+  if (key.quantumReady || p.includes('quantum-ready') || (p.includes('ready') && !p.includes('not'))) return 'PQC-Ready';
+  if (p.includes('hybrid')) return 'Hybrid-Protected';
+  if (p.includes('classical')) return 'Classical-Only';
+  const fam = quantumFamily(key.algorithm);
+  if (['RSA', 'ECDSA', 'ECDH', 'ECC', 'DSA', 'DH'].includes(fam)) return 'Classical-Only';
+  if (fam === 'Hybrid') return 'Hybrid-Protected';
+  if (fam === 'ML-KEM' || fam === 'ML-DSA / SLH-DSA') return 'PQC-Ready';
+  return 'Unknown';
+}
+
+const RISK_WEIGHTS: Array<{ key: 'algorithm' | 'quantum' | 'lifecycle' | 'rotation' | 'ownership' | 'access' | 'dependency'; label: string; weight: number }> = [
+  { key: 'algorithm', label: 'Algorithm Risk', weight: 0.25 },
+  { key: 'quantum', label: 'Quantum Exposure', weight: 0.2 },
+  { key: 'lifecycle', label: 'Lifecycle State', weight: 0.15 },
+  { key: 'rotation', label: 'Rotation Compliance', weight: 0.15 },
+  { key: 'ownership', label: 'Ownership & Governance', weight: 0.1 },
+  { key: 'access', label: 'Access Pattern', weight: 0.1 },
+  { key: 'dependency', label: 'Dependency Criticality', weight: 0.05 },
+];
+
+function keyRiskFactors(key: KeyRecord) {
+  const algorithm = key.weak ? 90 : /rsa|ecc|ecdsa|ecdh|dsa|dh|sha-1|sha1|md5|3des|rc4/i.test(key.algorithm || '') ? 72 : key.quantumReady ? 8 : 32;
+  const exposure = quantumExposureStatus(key);
+  const quantum = exposure === 'PQC-Ready' ? 8 : exposure === 'Hybrid-Protected' ? 22 : exposure === 'Classical-Only' ? 85 : 55;
+  const lifecycle = expiryMs(key.expiresAt) < Date.now() ? 90 : key.nearExpiry ? 58 : /deprecat|revok|suspend/i.test(key.status || '') ? 70 : key.orphaned ? 48 : 14;
+  const rotation = /overdue|failed/i.test(key.rotationStatus || '') ? 88 : key.rotationRequired ? 78 : !key.lastRotatedAt ? 52 : 14;
+  const ownership = key.orphaned ? 90 : /unassigned|unknown/i.test(key.owner || '') ? 68 : 10;
+  const access = key.exportable ? 82 : (key.runtimeUsage || 0) > 1000 ? 56 : (key.runtimeUsage || 0) > 200 ? 34 : 12;
+  const dependency = Math.min(100, (key.certificateLinks || 0) * 16 + (key.linkedAssets?.length || 0) * 10 + (key.environment === 'production' ? 28 : 0));
+  const factors = { algorithm, quantum, lifecycle, rotation, ownership, access, dependency };
+  const weighted = Math.round(algorithm * 0.25 + quantum * 0.2 + lifecycle * 0.15 + rotation * 0.15 + ownership * 0.1 + access * 0.1 + dependency * 0.05);
+  return { factors, weighted };
+}
+
+function riskLevelLabel(score: number): string {
+  if (score >= 75) return 'Critical';
+  if (score >= 50) return 'High';
+  if (score >= 25) return 'Medium';
+  return 'Low';
+}
+
+function riskLevelColor(score: number): string {
+  if (score >= 75) return RED;
+  if (score >= 50) return ORANGE;
+  if (score >= 25) return GOLD;
+  return GREEN;
+}
+
+/* ---------------- Shared lifecycle / rotation / risk components ---------------- */
+
+function LifecycleTimeline({ keyRecord }: { keyRecord: KeyRecord }) {
+  const events = useMemo(() => {
+    const list: Array<{ when: string; label: string; tone: string }> = [];
+    const push = (when: unknown, label: string, tone: string) => { if (when) list.push({ when: String(when), label, tone }); };
+    push(keyRecord.createdAt, 'Created / Generated', BLUE);
+    push((keyRecord.metadata as Row)?.activated_at, 'Activated', GREEN);
+    (keyRecord.rotationHistory || []).slice(0, 6).forEach((row) => push(row.created_at || row.timestamp || row.startedAt, row.reason || 'Rotation event', CYAN));
+    push(keyRecord.lastRotatedAt, 'Last Rotated', TEAL);
+    (keyRecord.runtimeEvents || []).slice(0, 4).forEach((row) => push(row.observed_at || row.created_at, 'Runtime usage observed', PURPLE));
+    (keyRecord.auditTrail || []).slice(0, 6).forEach((row) => push(row.created_at || row.timestamp, row.event_type || row.summary || 'Audit event', GOLD));
+    push(keyRecord.expiresAt, expiryMs(keyRecord.expiresAt) < Date.now() ? 'Expired' : 'Scheduled expiry', expiryMs(keyRecord.expiresAt) < Date.now() ? RED : GOLD);
+    return list.filter((event) => Number.isFinite(new Date(event.when).getTime())).sort((a, b) => new Date(a.when).getTime() - new Date(b.when).getTime());
+  }, [keyRecord]);
+  if (!events.length) return <div className="grid min-h-[120px] place-items-center text-xs text-white/38">No lifecycle events recorded yet.</div>;
+  return (
+    <div className="space-y-3 border-l border-white/10 pl-4">
+      {events.map((event, index) => (
+        <div key={`${event.when}-${index}`} className="relative">
+          <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: event.tone, boxShadow: `0 0 10px ${event.tone}99` }} />
+          <div className="text-xs font-semibold text-white/80">{event.label}</div>
+          <div className="text-[10px] text-white/38">{longDate(event.when)} · {shortTime(event.when)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function KeyActions({ keyRecord, request, onNotice }: { keyRecord: KeyRecord; request: QkmsAction; onNotice: (message: string) => void }) {
+  const [pending, setPending] = useState<string | null>(null);
+  const run = useCallback(async (action: 'assign-owner' | 'rotate' | 'revoke', confirmText?: string) => {
+    if (confirmText && !window.confirm(confirmText)) return;
+    setPending(action);
+    try {
+      if (action === 'assign-owner') {
+        const owner = window.prompt('Assign owner / team for this key', /unassigned|unknown/i.test(keyRecord.owner || '') ? '' : keyRecord.owner);
+        if (!owner) { setPending(null); return; }
+        await request(`/keys/${encodeURIComponent(keyRecord.id)}/assign-owner`, { method: 'POST', body: JSON.stringify({ owner }) });
+        onNotice(`Owner assigned to ${keyRecord.keyAlias || keyRecord.name}`);
+      } else if (action === 'rotate') {
+        await request(`/keys/${encodeURIComponent(keyRecord.id)}/rotate`, { method: 'POST', body: JSON.stringify({ reason: `Schedule rotation — ${rotationReason(keyRecord)}`, priority: keyRecord.riskScore >= 60 ? 'high' : 'medium' }) });
+        onNotice(`Rotation scheduled for ${keyRecord.keyAlias || keyRecord.name}`);
+      } else {
+        await request(`/keys/${encodeURIComponent(keyRecord.id)}/revoke`, { method: 'POST', body: JSON.stringify({ reason: 'Revoked from QKMS lifecycle action' }) });
+        onNotice(`${keyRecord.keyAlias || keyRecord.name} marked for revocation`);
+      }
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'QKMS action failed');
+    } finally {
+      setPending(null);
+    }
+  }, [keyRecord, onNotice, request]);
+  const base = 'inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-[10px] font-bold transition disabled:opacity-40';
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      <button type="button" disabled={pending === 'assign-owner'} onClick={() => void run('assign-owner')} className={cn(base, 'border-white/10 bg-white/[0.025] text-white/62 hover:border-gold/50 hover:text-gold')}><BadgeCheck className="h-3.5 w-3.5" />Assign Owner</button>
+      <button type="button" disabled={pending === 'rotate'} onClick={() => void run('rotate')} className={cn(base, 'border-white/10 bg-white/[0.025] text-white/62 hover:border-gold/50 hover:text-gold')}><RefreshCw className={cn('h-3.5 w-3.5', pending === 'rotate' && 'animate-spin')} />Schedule Rotation</button>
+      <a href="/dashboard/qkms/risk-analysis" className={cn(base, 'border-white/10 bg-white/[0.025] text-white/62 no-underline hover:border-gold/50 hover:text-gold')}><ShieldAlert className="h-3.5 w-3.5" />Risk Analysis</a>
+      <button type="button" disabled={pending === 'revoke'} onClick={() => void run('revoke', `Revoke ${keyRecord.keyAlias || keyRecord.name}? This is a governed, audited action.`)} className={cn(base, 'border-red-500/20 bg-red-500/10 text-red-200 hover:border-red-300')}><ShieldAlert className="h-3.5 w-3.5" />Revoke</button>
+    </div>
+  );
+}
+
+function KeyDetailDrawer({ keyRecord, request, onNotice, variant }: { keyRecord: KeyRecord; request: QkmsAction; onNotice: (message: string) => void; variant: 'lifecycle' | 'risk' }) {
+  const state = lifecycleState(keyRecord);
+  const { factors, weighted } = keyRiskFactors(keyRecord);
+  const lastUsed = (keyRecord.runtimeEvents?.[0]?.observed_at as string) || (keyRecord.runtimeEvents?.[0]?.created_at as string) || keyRecord.updatedAt;
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1.05fr_2fr]">
+      <div className="rounded-md border border-white/8 bg-white/[0.025] p-4">
+        <div className="text-lg font-semibold text-white">{keyRecord.keyAlias || keyRecord.name}</div>
+        <div className="mt-1 break-all font-mono text-[10px] text-white/42">{keyRecord.source} / {keyRecord.id}</div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <StatusPill value={state} />
+          <StatusPill value={quantumExposureStatus(keyRecord)} />
+          <StatusPill value={keyRecord.complianceStatus || 'Evidence needed'} />
+        </div>
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.08em] text-white/38">Weighted risk</div>
+            <div className="mt-1 font-mono text-4xl" style={{ color: riskLevelColor(weighted) }}>{integerFmt(weighted)}</div>
+            <div className="text-[10px] font-bold" style={{ color: riskLevelColor(weighted) }}>{riskLevelLabel(weighted)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.08em] text-white/38">Trust score</div>
+            <div className="mt-1 font-mono text-4xl text-white">{integerFmt(keyRecord.trustScore)}</div>
+          </div>
+        </div>
+        <div className="mt-4 rounded-md border border-white/8 bg-black/20 p-3 text-xs leading-5 text-white/62">{keyRecord.riskExplanation || 'No risk explanation evidence recorded.'}</div>
+        <div className="mt-3 rounded-md border border-gold/20 bg-gold/10 p-3 text-xs leading-5 text-gold">{keyRecord.recommendedAction || 'No recommended action.'}</div>
+        <div className="mt-4"><KeyActions keyRecord={keyRecord} request={request} onNotice={onNotice} /></div>
+      </div>
+      <div className="grid gap-4">
+        <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+          {([
+            ['Algorithm', keyRecord.algorithm || 'Unknown'],
+            ['Key Type', keyRecord.keyType || 'Cryptographic key'],
+            ['Owner', keyRecord.owner],
+            ['Environment', keyRecord.environment],
+            ['Purpose', keyRecord.purpose],
+            ['Backend', keyRecord.backend],
+            ['Quantum Exposure', quantumExposureStatus(keyRecord)],
+            ['Entropy Source', keyRecord.entropySource],
+            ['Created', longDate(keyRecord.createdAt)],
+            ['Last Rotated', keyRecord.lastRotatedAt ? longDate(keyRecord.lastRotatedAt) : 'Never'],
+            ['Expires', keyRecord.expiresAt ? longDate(keyRecord.expiresAt) : 'No expiry'],
+            ['Last Used', lastUsed ? shortTime(lastUsed) : 'No usage'],
+          ] as Array<[string, string]>).map(([label, value]) => (
+            <div key={label} className="rounded-md border border-white/8 bg-white/[0.025] p-3">
+              <div className="text-[10px] uppercase tracking-[0.08em] text-white/38">{label}</div>
+              <div className="mt-2 break-words text-white/76">{value}</div>
+            </div>
+          ))}
+        </div>
+        {variant === 'risk' ? (
+          <div className="rounded-md border border-white/8 bg-white/[0.025] p-4">
+            <div className="mb-3 text-[10px] uppercase tracking-[0.08em] text-white/38">Weighted Risk Factor Breakdown</div>
+            <Bars rows={RISK_WEIGHTS.map((weight) => ({ label: `${weight.label} (${Math.round(weight.weight * 100)}%)`, count: factors[weight.key], percent: factors[weight.key] }))} empty="No risk factors." />
+          </div>
+        ) : (
+          <div className="rounded-md border border-white/8 bg-white/[0.025] p-4">
+            <div className="mb-3 text-[10px] uppercase tracking-[0.08em] text-white/38">Lifecycle Timeline</div>
+            <LifecycleTimeline keyRecord={keyRecord} />
+          </div>
+        )}
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <EvidenceMiniList title="Linked Certificates" rows={keyRecord.linkedCertificates} empty="No linked certificates." />
+          <EvidenceMiniList title="Workloads / Migration" rows={keyRecord.linkedMigrationJobs} empty="No linked workloads." />
+          <EvidenceMiniList title="Runtime / Access" rows={keyRecord.runtimeEvents} empty="No usage / access events." />
+          <EvidenceMiniList title="Audit History" rows={keyRecord.auditTrail} empty="No audit history." />
+        </div>
+        <div className="rounded-md border border-white/8 bg-white/[0.025] p-4">
+          <div className="text-[10px] uppercase tracking-[0.08em] text-white/38">PQC readiness explanation</div>
+          <div className="mt-2 text-sm leading-6 text-white/68">{keyRecord.pqcExplanation || 'No PQC readiness explanation recorded.'}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ROTATION_WORKFLOW = ['Select key', 'Analyze dependencies', 'Validate compatibility', 'Generate replacement key', 'Update linked assets', 'Validate trust chains', 'Monitor usage', 'Retire old key', 'Confirm completion'];
+
+function WorkflowStepper({ keyRecord, jobs }: { keyRecord: KeyRecord | null; jobs: Row[] }) {
+  const job = keyRecord ? jobs.find((row) => String(row.key_id || row.keyId || '').includes(keyRecord.id) || String(row.title || '').includes(keyRecord.keyAlias || keyRecord.name)) : null;
+  const status = String(job?.status || '').toLowerCase();
+  const completedSteps = !keyRecord ? 0 : /complete|done/.test(status) ? 9 : /progress|rotating/.test(status) ? 6 : /pending/.test(status) || keyRecord.rotationRequired ? 2 : 1;
+  return (
+    <ol className="grid gap-2 md:grid-cols-3">
+      {ROTATION_WORKFLOW.map((step, index) => {
+        const done = index < completedSteps;
+        const active = index === completedSteps;
+        return (
+          <li key={step} className={cn('flex items-center gap-2 rounded-md border px-3 py-2 text-xs', done ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100' : active ? 'border-gold/40 bg-gold/10 text-gold' : 'border-white/8 bg-white/[0.025] text-white/45')}>
+            <span className={cn('grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-black', done ? 'bg-emerald-400 text-black' : active ? 'bg-gold text-black' : 'bg-white/10 text-white/50')}>{done ? '✓' : index + 1}</span>
+            {step}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function RotationImpactPanel({ keyRecord }: { keyRecord: KeyRecord | null }) {
+  if (!keyRecord) return <div className="grid min-h-[160px] place-items-center text-xs text-white/38">Select a key from the rotation queue to analyze impact.</div>;
+  const certs = keyRecord.linkedCertificates?.length || keyRecord.certificateLinks || 0;
+  const assets = keyRecord.linkedAssets?.length || 0;
+  const workloads = keyRecord.linkedMigrationJobs?.length || 0;
+  const runtime = keyRecord.runtimeUsage || keyRecord.runtimeEvents?.length || 0;
+  const blast = certs + assets + workloads;
+  const downtime = keyRecord.environment === 'production' && blast > 2 ? 'High' : blast > 0 ? 'Medium' : 'Low';
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        {([['Certificates', certs], ['Assets', assets], ['Workloads', workloads], ['Runtime usage', runtime]] as Array<[string, number]>).map(([label, value]) => (
+          <div key={label} className="rounded-md border border-white/8 bg-white/[0.025] p-3"><div className="font-mono text-2xl text-white">{compactFmt(value)}</div><div className="text-[10px] uppercase tracking-[0.08em] text-white/38">{label}</div></div>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-md border border-white/8 bg-black/20 p-3"><div className="text-[10px] uppercase tracking-[0.08em] text-white/38">Blast radius</div><div className="mt-1 font-mono text-xl text-white">{integerFmt(blast)} dependents</div></div>
+        <div className="rounded-md border border-white/8 bg-black/20 p-3"><div className="text-[10px] uppercase tracking-[0.08em] text-white/38">Downtime risk</div><div className="mt-1 text-xl font-bold" style={{ color: gateColor(downtime === 'High' ? 'block' : downtime === 'Medium' ? 'warn' : 'allow') }}>{downtime}</div></div>
+      </div>
+      <div className="rounded-md border border-gold/20 bg-gold/10 p-3 text-xs leading-5 text-gold">Rollback plan: retain the previous key in deprecated state until the replacement is validated across all {integerFmt(blast)} dependents and trust chains; auto-rollback on failed crypto operations or trust-chain breakage.</div>
+    </div>
+  );
+}
+
+function RotationValidationPanel({ keyRecord }: { keyRecord: KeyRecord | null }) {
+  if (!keyRecord) return <div className="grid min-h-[120px] place-items-center text-xs text-white/38">Select a key to view post-rotation validation.</div>;
+  const checks = [
+    { label: 'New key active', ok: !keyRecord.rotationRequired },
+    { label: 'Old key deprecated / retired', ok: Boolean(keyRecord.lastRotatedAt) },
+    { label: 'Linked certificates valid', ok: (keyRecord.linkedCertificates?.length || 0) === 0 || !keyRecord.weak },
+    { label: 'Trust chains intact', ok: keyRecord.trustScore >= 50 },
+    { label: 'No failed crypto operations', ok: !/failed/i.test(keyRecord.rotationStatus || '') },
+    { label: 'Telemetry confirms usage', ok: (keyRecord.runtimeUsage || 0) > 0 },
+  ];
+  return (
+    <div className="space-y-2">
+      {checks.map((check) => (
+        <div key={check.label} className="flex items-center justify-between gap-3 rounded-md border border-white/8 bg-white/[0.025] px-3 py-2 text-xs">
+          <span className="text-white/72">{check.label}</span>
+          <StatusPill value={check.ok ? 'validated' : 'review'} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- Lifecycle layout ---------------- */
+
+function LifecycleLayout({ snapshot, request, onNotice }: { snapshot: QkmsSnapshot; request: QkmsAction; onNotice: (message: string) => void }) {
+  const inventory = snapshot.inventory;
+  const total = inventory.length;
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] = useState<string>('all');
+
+  const stateOf = useCallback((key: KeyRecord) => lifecycleState(key), []);
+  const stateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const key of inventory) counts.set(stateOf(key), (counts.get(stateOf(key)) || 0) + 1);
+    return counts;
+  }, [inventory, stateOf]);
+
+  const counts = useMemo(() => {
+    const get = (state: string) => stateCounts.get(state) || 0;
+    return {
+      active: get('Active'),
+      pending: get('Pending Activation') + get('Generated'),
+      deprecated: get('Deprecated'),
+      expired: inventory.filter((key) => expiryMs(key.expiresAt) < Date.now()).length,
+      revoked: get('Revoked') + get('Destroyed'),
+      orphaned: snapshot.metrics.orphanedKeys,
+      noPolicy: inventory.filter((key) => !key.lastRotatedAt && !key.rotationStatus).length,
+    };
+  }, [stateCounts, inventory, snapshot.metrics.orphanedKeys]);
+
+  const filtered = useMemo(() => (stateFilter === 'all' ? inventory : inventory.filter((key) => stateOf(key) === stateFilter)), [inventory, stateFilter, stateOf]);
+  const selected = filtered.find((key) => key.id === selectedId) || filtered[0] || null;
+  const typeRows = distributionRows(inventory.map((key) => key.keyType || 'Cryptographic key'), total).slice(0, 8);
+
+  return (
+    <>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricTile icon={KeyRound} label="Total Keys" value={compactFmt(total)} detail="under lifecycle control" color={PURPLE} />
+        <MetricTile icon={ShieldCheck} label="Active Keys" value={compactFmt(counts.active)} detail={`${percentFmt(total ? (counts.active / total) * 100 : 0)} of inventory`} color={GREEN} />
+        <MetricTile icon={Sparkles} label="Pending Activation" value={compactFmt(counts.pending)} detail="generated / awaiting activation" color={BLUE} />
+        <MetricTile icon={AlertTriangle} label="Deprecated Keys" value={compactFmt(counts.deprecated)} detail="weak or end-of-life" color={GOLD} />
+        <MetricTile icon={CircleGauge} label="Expired Keys" value={compactFmt(counts.expired)} detail="past expiry date" color={RED} />
+        <MetricTile icon={ShieldAlert} label="Revoked / Destroyed" value={compactFmt(counts.revoked)} detail="terminated key material" color={RED} />
+        <MetricTile icon={Fingerprint} label="Orphaned Keys" value={compactFmt(counts.orphaned)} detail="no owner mapping" color={ORANGE} />
+        <MetricTile icon={RefreshCw} label="No Rotation Policy" value={compactFmt(counts.noPolicy)} detail="missing rotation governance" color={CYAN} />
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-7">
+          <SectionTitle suffix={<span className="text-[10px] text-white/38">Discover → Classify → Own → Enforce → Rotate → Validate → Prove</span>}>Key Lifecycle Control Plane</SectionTitle>
+          <LifecycleWorkflow snapshot={snapshot} />
+        </Panel>
+        <Panel className="p-5 xl:col-span-5">
+          <SectionTitle suffix={<button type="button" onClick={() => setStateFilter('all')} className="text-[10px] text-white/45 hover:text-gold">Clear filter</button>}>Lifecycle State Distribution</SectionTitle>
+          <div className="grid grid-cols-2 gap-2">
+            {LIFECYCLE_STATES.map((state) => {
+              const count = stateCounts.get(state) || 0;
+              const active = stateFilter === state;
+              return (
+                <button key={state} type="button" onClick={() => setStateFilter(active ? 'all' : state)} className={cn('flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs transition', active ? 'border-gold/55 bg-gold/12' : 'border-white/8 bg-white/[0.025] hover:border-gold/35')}>
+                  <span className="flex items-center gap-2 truncate text-white/70"><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: gateColor(state.toLowerCase().includes('revok') || state.toLowerCase().includes('destroy') ? 'block' : state.toLowerCase().includes('deprecat') || state.toLowerCase().includes('suspend') || state.toLowerCase().includes('pending rotation') ? 'warn' : state === 'Active' || state === 'Rotated' ? 'allow' : 'info') }} />{state}</span>
+                  <span className="font-mono text-white/80">{compactFmt(count)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Panel>
+      </section>
+
+      <section>
+        <Panel className="p-5">
+          <SectionTitle suffix={<span className="text-[10px] text-white/38">{compactFmt(filtered.length)} / {compactFmt(total)} keys{stateFilter !== 'all' ? ` · ${stateFilter}` : ''}</span>}>Key Inventory & Lifecycle State</SectionTitle>
+          <KeyRowsTable
+            rows={filtered.slice(0, 14)}
+            empty="No keys discovered for this lifecycle filter."
+            onRowClick={(key) => setSelectedId(key.id)}
+            selectedId={selected?.id}
+            columns={[
+              { label: 'Key / Alias', render: (key) => <div><div className="font-semibold text-white">{key.keyAlias || key.name}</div><div className="font-mono text-[10px] text-white/38">{key.algorithm || 'Unknown'}</div></div> },
+              { label: 'Owner', render: (key) => <span className="text-white/62">{key.owner}</span> },
+              { label: 'Env', render: (key) => <StatusPill value={key.environment || 'unknown'} /> },
+              { label: 'Created', render: (key) => <span className="text-white/55">{longDate(key.createdAt)}</span> },
+              { label: 'Expiry', render: (key) => <span className="text-white/55">{key.expiresAt ? longDate(key.expiresAt) : 'No expiry'}</span> },
+              { label: 'Lifecycle State', render: (key) => <StatusPill value={stateOf(key)} /> },
+              { label: 'PQC', render: (key) => <StatusPill value={quantumExposureStatus(key)} /> },
+              { label: 'Risk', render: (key) => <span className="font-mono font-bold" style={{ color: riskLevelColor(keyRiskFactors(key).weighted) }}>{integerFmt(keyRiskFactors(key).weighted)}</span> },
+            ]}
+          />
+        </Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-9">
+          <SectionTitle>Key Detail & Lifecycle Timeline</SectionTitle>
+          {selected ? <KeyDetailDrawer keyRecord={selected} request={request} onNotice={onNotice} variant="lifecycle" /> : <div className="grid min-h-[200px] place-items-center text-xs text-white/38">No keys discovered yet.</div>}
+        </Panel>
+        <Panel className="p-5 xl:col-span-3">
+          <SectionTitle>Key Type Portfolio</SectionTitle>
+          <Bars rows={typeRows} empty="No key categories classified yet." />
+        </Panel>
+      </section>
+    </>
+  );
+}
+
+/* ---------------- Rotation layout ---------------- */
+
+function RotationLayout({ snapshot, request, onNotice }: { snapshot: QkmsSnapshot; request: QkmsAction; onNotice: (message: string) => void }) {
+  const inventory = snapshot.inventory;
+  const total = inventory.length;
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [workflowBusy, setWorkflowBusy] = useState<string | null>(null);
+
+  const statusOf = useCallback((key: KeyRecord) => (key.rotationStatus || (key.rotationRequired ? 'Due Soon' : 'Healthy')).toString(), []);
+  const grouped = useMemo(() => distributionRows(inventory.map((key) => statusOf(key)), total), [inventory, total, statusOf]);
+
+  const overdue = inventory.filter((key) => /overdue|expired|failed/i.test(statusOf(key)));
+  const dueSoon = inventory.filter((key) => /due|rotating|blocked/i.test(statusOf(key)));
+  const healthy = inventory.filter((key) => /healthy|completed/i.test(statusOf(key)));
+  const noPolicy = inventory.filter((key) => !key.lastRotatedAt && !key.rotationStatus).length;
+  const appsImpacted = inventory.reduce((sum, key) => sum + (key.linkedMigrationJobs?.length || 0) + (key.linkedAssets?.length || 0), 0);
+
+  const dueForRotation = useMemo(
+    () => [...inventory].filter((key) => key.rotationRequired || /due|overdue|blocked|failed/i.test(statusOf(key))).sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0)).slice(0, 14),
+    [inventory, statusOf],
+  );
+  const selected = dueForRotation.find((key) => key.id === selectedId) || dueForRotation[0] || null;
+
+  const activeJobs = snapshot.rotationJobs.filter((row) => !/completed|failed|done/i.test(String(row.status || ''))).length;
+  const completedJobs = snapshot.rotationJobs.filter((row) => /completed|done/i.test(String(row.status || ''))).length;
+  const failedJobs = snapshot.rotationJobs.filter((row) => /failed/i.test(String(row.status || ''))).length;
+  const rotationHealth = total ? Math.round((healthy.length / total) * 100) : 0;
+
+  const rotateKey = useCallback(async (key: KeyRecord) => {
+    setPendingId(key.id);
+    try {
+      await request(`/keys/${encodeURIComponent(key.id)}/rotate`, { method: 'POST', body: JSON.stringify({ reason: `Rotate ${key.keyAlias || key.name} — ${rotationReason(key)}`, priority: key.riskScore >= 60 ? 'high' : 'medium' }) });
+      onNotice(`Rotation job created for ${key.keyAlias || key.name}`);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Rotation failed');
+    } finally {
+      setPendingId(null);
+    }
+  }, [onNotice, request]);
+
+  const runWorkflowAction = useCallback(async (action: 'precheck' | 'dry-run' | 'start' | 'export') => {
+    if (!selected && action !== 'precheck') { onNotice('Select a key from the rotation queue first.'); return; }
+    setWorkflowBusy(action);
+    try {
+      if (action === 'precheck' || action === 'dry-run') {
+        const payload = await request('/precheck', { method: 'POST', body: JSON.stringify({ scope: action === 'dry-run' ? 'rotation-dry-run' : 'rotation-precheck', keyId: selected?.id }) });
+        onNotice(`${action === 'dry-run' ? 'Dry run' : 'Precheck'}: ${payload?.data?.decision || snapshot.metrics.migrationGateStatus}`);
+      } else if (action === 'start' && selected) {
+        await rotateKey(selected);
+      } else if (action === 'export') {
+        await request('/export', { method: 'POST', body: JSON.stringify({ format: 'json', scope: 'rotation-evidence' }) });
+        onNotice('Rotation evidence exported by QKMS API');
+      }
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Rotation workflow action failed');
+    } finally {
+      setWorkflowBusy(null);
+    }
+  }, [selected, request, onNotice, rotateKey, snapshot.metrics.migrationGateStatus]);
+
+  return (
+    <>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricTile icon={RefreshCw} label="Keys Due For Rotation" value={compactFmt(dueSoon.length + overdue.length)} detail="due or overdue" color={CYAN} />
+        <MetricTile icon={AlertTriangle} label="Overdue Rotations" value={compactFmt(overdue.length)} detail="past rotation deadline" color={RED} />
+        <MetricTile icon={Workflow} label="In Progress" value={compactFmt(activeJobs)} detail="rotation jobs in flight" color={BLUE} />
+        <MetricTile icon={BadgeCheck} label="Successful Rotations" value={compactFmt(completedJobs)} detail="rotation evidence recorded" color={GREEN} />
+        <MetricTile icon={ShieldAlert} label="Failed Rotations" value={compactFmt(failedJobs)} detail="require retry / rollback" color={RED} />
+        <MetricTile icon={CircleGauge} label="No Rotation Policy" value={compactFmt(noPolicy)} detail="missing rotation governance" color={GOLD} />
+        <MetricTile icon={Network} label="Apps / Assets Impacted" value={compactFmt(appsImpacted)} detail="rotation blast radius" color={PURPLE} />
+        <MetricTile icon={ShieldCheck} label="Rotation Health" value={percentFmt(rotationHealth)} detail="healthy of inventory" color={rotationHealth >= 70 ? GREEN : rotationHealth >= 40 ? GOLD : RED} />
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-4"><SectionTitle>Rotation Health</SectionTitle><ScoreDial value={rotationHealth} label="Healthy" color={rotationHealth >= 70 ? GREEN : rotationHealth >= 40 ? GOLD : RED} /></Panel>
+        <Panel className="p-5 xl:col-span-4"><SectionTitle>Rotation Status Distribution</SectionTitle><Bars rows={grouped} empty="No rotation statuses available yet." /></Panel>
+        <Panel className="p-5 xl:col-span-4"><SectionTitle>Rotation Jobs & Expiry Automation</SectionTitle><JobList rows={snapshot.rotationJobs} empty="No rotation jobs are queued right now." /></Panel>
+      </section>
+
+      <section>
+        <Panel className="p-5">
+          <SectionTitle suffix={<span className="text-[10px] text-white/38">Highest risk first · select a key to plan rotation</span>}>Rotation Queue</SectionTitle>
+          <KeyRowsTable
+            rows={dueForRotation}
+            empty="No keys currently require rotation."
+            onRowClick={(key) => setSelectedId(key.id)}
+            selectedId={selected?.id}
+            actions={(key) => (
+              <button type="button" disabled={pendingId === key.id} onClick={(event) => { event.stopPropagation(); void rotateKey(key); }} className="inline-flex h-8 items-center gap-1 rounded-md border border-white/10 bg-white/[0.025] px-2 text-[10px] font-bold text-white/62 transition hover:border-gold/50 hover:text-gold disabled:opacity-40">
+                <RefreshCw className={cn('h-3.5 w-3.5', pendingId === key.id && 'animate-spin')} />Rotate
+              </button>
+            )}
+            columns={[
+              { label: 'Key / Alias', render: (key) => <div><div className="font-semibold text-white">{key.keyAlias || key.name}</div><div className="font-mono text-[10px] text-white/38">{key.algorithm || 'Unknown'}</div></div> },
+              { label: 'Owner', render: (key) => <span className="text-white/62">{key.owner}</span> },
+              { label: 'Env', render: (key) => <StatusPill value={key.environment || 'unknown'} /> },
+              { label: 'Reason', render: (key) => <span className="text-white/60">{rotationReason(key)}</span> },
+              { label: 'Due', render: (key) => <span className="text-white/55">{key.expiresAt ? longDate(key.expiresAt) : 'Policy-driven'}</span> },
+              { label: 'Dependencies', render: (key) => <span className="font-mono text-white/70">{integerFmt((key.certificateLinks || 0) + (key.linkedAssets?.length || 0) + (key.linkedMigrationJobs?.length || 0))}</span> },
+              { label: 'Compatibility', render: (key) => <StatusPill value={quantumExposureStatus(key) === 'Classical-Only' ? 'review' : 'compatible'} /> },
+              { label: 'Approval', render: (key) => <StatusPill value={key.environment === 'production' || key.riskScore >= 60 ? 'required' : 'auto'} /> },
+              { label: 'Rotation', render: (key) => <StatusPill value={statusOf(key)} /> },
+            ]}
+          />
+        </Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-8">
+          <SectionTitle suffix={selected ? <span className="text-[10px] text-white/38">{selected.keyAlias || selected.name}</span> : undefined}>Rotation Workflow</SectionTitle>
+          <WorkflowStepper keyRecord={selected} jobs={snapshot.rotationJobs} />
+          <div className="mt-4 flex flex-wrap gap-2">
+            {([['precheck', 'Run Precheck', ShieldCheck], ['dry-run', 'Start Dry Run', Radar], ['start', 'Start Rotation', RefreshCw], ['export', 'Export Evidence', Download]] as Array<['precheck' | 'dry-run' | 'start' | 'export', string, LucideIcon]>).map(([action, label, Icon]) => (
+              <button key={action} type="button" disabled={workflowBusy === action} onClick={() => void runWorkflowAction(action)} className={cn('inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs font-bold transition disabled:opacity-45', action === 'start' ? 'border-blue-400/40 bg-blue-500 text-white hover:border-gold hover:bg-gold hover:text-black' : 'border-white/10 bg-white/[0.025] text-white/70 hover:border-gold/50 hover:text-gold')}>
+                <Icon className={cn('h-4 w-4', workflowBusy === action && 'animate-spin')} />{label}
+              </button>
+            ))}
+          </div>
+        </Panel>
+        <Panel className="p-5 xl:col-span-4">
+          <SectionTitle>Post-Rotation Validation</SectionTitle>
+          <RotationValidationPanel keyRecord={selected} />
+        </Panel>
+      </section>
+
+      <section>
+        <Panel className="p-5"><SectionTitle>Rotation Impact Analysis</SectionTitle><RotationImpactPanel keyRecord={selected} /></Panel>
+      </section>
+    </>
+  );
+}
+
+/* ---------------- Risk analysis layout ---------------- */
+
+function RiskAnalysisLayout({ snapshot, request, onNotice }: { snapshot: QkmsSnapshot; request: QkmsAction; onNotice: (message: string) => void }) {
+  const inventory = snapshot.inventory;
+  const total = inventory.length;
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const riskOf = useCallback((key: KeyRecord) => keyRiskFactors(key).weighted, []);
+
+  const buckets = useMemo(() => {
+    const scored = inventory.map((key) => riskOf(key));
+    const critical = scored.filter((value) => value >= 75).length;
+    const high = scored.filter((value) => value >= 50 && value < 75).length;
+    const medium = scored.filter((value) => value >= 25 && value < 50).length;
+    const low = scored.filter((value) => value < 25).length;
+    const avg = scored.length ? Math.round(scored.reduce((sum, value) => sum + value, 0) / scored.length) : 0;
+    return { critical, high, medium, low, avg, highRisk: critical + high };
+  }, [inventory, riskOf]);
+
+  const categoryRows = useMemo(() => {
+    if (!inventory.length) return [];
+    const sums = { algorithm: 0, quantum: 0, lifecycle: 0, rotation: 0, ownership: 0, access: 0, dependency: 0 };
+    for (const key of inventory) {
+      const { factors } = keyRiskFactors(key);
+      sums.algorithm += factors.algorithm; sums.quantum += factors.quantum; sums.lifecycle += factors.lifecycle;
+      sums.rotation += factors.rotation; sums.ownership += factors.ownership; sums.access += factors.access; sums.dependency += factors.dependency;
+    }
+    const n = inventory.length;
+    return [
+      { label: 'Algorithm Risk', count: Math.round(sums.algorithm / n), percent: Math.round(sums.algorithm / n) },
+      { label: 'Quantum Exposure Risk', count: Math.round(sums.quantum / n), percent: Math.round(sums.quantum / n) },
+      { label: 'Lifecycle Risk', count: Math.round(sums.lifecycle / n), percent: Math.round(sums.lifecycle / n) },
+      { label: 'Rotation Risk', count: Math.round(sums.rotation / n), percent: Math.round(sums.rotation / n) },
+      { label: 'Ownership Risk', count: Math.round(sums.ownership / n), percent: Math.round(sums.ownership / n) },
+      { label: 'Access Risk', count: Math.round(sums.access / n), percent: Math.round(sums.access / n) },
+      { label: 'Dependency Risk', count: Math.round(sums.dependency / n), percent: Math.round(sums.dependency / n) },
+    ];
+  }, [inventory]);
+
+  const riskRows = [
+    { label: 'Critical (75-100)', count: buckets.critical, percent: total ? (buckets.critical / total) * 100 : 0 },
+    { label: 'High (50-74)', count: buckets.high, percent: total ? (buckets.high / total) * 100 : 0 },
+    { label: 'Medium (25-49)', count: buckets.medium, percent: total ? (buckets.medium / total) * 100 : 0 },
+    { label: 'Low (0-24)', count: buckets.low, percent: total ? (buckets.low / total) * 100 : 0 },
+  ];
+
+  const quantumFamilyRows = distributionRows(inventory.map((key) => quantumFamily(key.algorithm)), total).slice(0, 8);
+  const exposureRows = distributionRows(inventory.map((key) => quantumExposureStatus(key)), total);
+
+  const topRisk = useMemo(() => [...inventory].sort((a, b) => riskOf(b) - riskOf(a)).slice(0, 14), [inventory, riskOf]);
+  const selected = topRisk.find((key) => key.id === selectedId) || topRisk[0] || null;
+
+  const remediation = useMemo(() => {
+    return [...inventory].sort((a, b) => riskOf(b) - riskOf(a)).slice(0, 10).map((key) => {
+      let action = 'Validate trust chain';
+      if (key.weak) action = 'Replace weak algorithm';
+      else if (quantumExposureStatus(key) === 'Classical-Only') action = 'Migrate to PQC / hybrid';
+      else if (key.orphaned) action = 'Assign owner';
+      else if (key.rotationRequired) action = 'Rotate key';
+      else if (key.exportable) action = 'Reduce excessive access';
+      else if (!key.lastRotatedAt) action = 'Attach rotation policy';
+      else if (expiryMs(key.expiresAt) < Date.now()) action = 'Revoke / replace expired key';
+      return { key, action, score: riskOf(key) };
+    });
+  }, [inventory, riskOf]);
+
+  const exportRiskReport = useCallback(async () => {
+    setExporting(true);
+    try {
+      await request('/export', { method: 'POST', body: JSON.stringify({ format: 'csv', scope: 'key-risk-report' }) });
+      onNotice('Key risk report exported by QKMS API');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Risk export failed');
+    } finally {
+      setExporting(false);
+    }
+  }, [request, onNotice]);
+
+  return (
+    <>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricTile icon={ShieldAlert} label="Critical-Risk Keys" value={compactFmt(buckets.critical)} detail="weighted risk >= 75" color={RED} />
+        <MetricTile icon={AlertTriangle} label="High-Risk Keys" value={compactFmt(buckets.high)} detail="weighted risk 50-74" color={ORANGE} />
+        <MetricTile icon={Layers} label="Medium-Risk Keys" value={compactFmt(buckets.medium)} detail="weighted risk 25-49" color={GOLD} />
+        <MetricTile icon={ShieldCheck} label="Low-Risk Keys" value={compactFmt(buckets.low)} detail="weighted risk 0-24" color={GREEN} />
+        <MetricTile icon={Sparkles} label="Weak Algorithms" value={compactFmt(snapshot.metrics.weakAlgorithms)} detail="classical or deprecated" color={ORANGE} />
+        <MetricTile icon={Fingerprint} label="Orphaned Keys" value={compactFmt(snapshot.metrics.orphanedKeys)} detail="missing owner / asset" color={GOLD} />
+        <MetricTile icon={Download} label="Exportable Production" value={compactFmt(snapshot.metrics.exportableProductionKeys)} detail="excessive access exposure" color={RED} />
+        <MetricTile icon={CircleGauge} label="Average Risk" value={integerFmt(buckets.avg)} detail={riskLevelLabel(buckets.avg)} color={riskLevelColor(buckets.avg)} />
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-3"><SectionTitle>Risk Posture</SectionTitle><ScoreDial value={buckets.avg} label="Avg Risk" color={riskLevelColor(buckets.avg)} /></Panel>
+        <Panel className="p-5 xl:col-span-4"><SectionTitle>Risk Score Distribution</SectionTitle><Bars rows={riskRows} empty="No key risk telemetry yet." /></Panel>
+        <Panel className="p-5 xl:col-span-5"><SectionTitle suffix={<span className="text-[10px] text-white/38">Weighted model avg</span>}>Risk Categories</SectionTitle><Bars rows={categoryRows} empty="No risk categories yet." /></Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-6"><SectionTitle>Quantum Exposure — Algorithm Family</SectionTitle><Bars rows={quantumFamilyRows} empty="No key algorithms discovered yet." /></Panel>
+        <Panel className="p-5 xl:col-span-6"><SectionTitle>Quantum Exposure — Readiness</SectionTitle><Bars rows={exposureRows} empty="No PQC readiness telemetry yet." /></Panel>
+      </section>
+
+      <section>
+        <Panel className="p-5">
+          <SectionTitle suffix={<button type="button" disabled={exporting} onClick={() => void exportRiskReport()} className="inline-flex h-8 items-center gap-1 rounded-md border border-white/10 bg-white/[0.025] px-2.5 text-[10px] font-bold text-white/62 transition hover:border-gold/50 hover:text-gold disabled:opacity-45"><Download className="h-3.5 w-3.5" />Export Risk Report</button>}>Key Risk Table</SectionTitle>
+          <KeyRowsTable
+            rows={topRisk}
+            empty="No key risk records have been discovered yet."
+            onRowClick={(key) => setSelectedId(key.id)}
+            selectedId={selected?.id}
+            columns={[
+              { label: 'Key / Alias', render: (key) => <div><div className="font-semibold text-white">{key.keyAlias || key.name}</div><div className="font-mono text-[10px] text-white/38">{key.algorithm || 'Unknown'}</div></div> },
+              { label: 'Owner', render: (key) => <span className="text-white/62">{key.owner}</span> },
+              { label: 'Env', render: (key) => <StatusPill value={key.environment || 'unknown'} /> },
+              { label: 'Quantum Exposure', render: (key) => <StatusPill value={quantumExposureStatus(key)} /> },
+              { label: 'Risk Factors', render: (key) => <span className="block max-w-[240px] truncate text-white/60" title={key.riskExplanation}>{key.riskExplanation || (key.weak ? 'Deprecated algorithm' : key.orphaned ? 'No owner assigned' : 'Rotation / custody gap')}</span> },
+              { label: 'Recommended', render: (key) => <span className="text-white/60">{key.recommendedAction ? (key.recommendedAction.length > 28 ? `${key.recommendedAction.slice(0, 28)}…` : key.recommendedAction) : 'Review key'}</span> },
+              { label: 'Risk', render: (key) => <span className="font-mono text-sm font-bold" style={{ color: riskLevelColor(riskOf(key)) }}>{integerFmt(riskOf(key))}</span> },
+              { label: 'Level', render: (key) => <StatusPill value={riskLevelLabel(riskOf(key))} /> },
+            ]}
+          />
+        </Panel>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <Panel className="p-5 xl:col-span-8">
+          <SectionTitle>Risk Detail & Evidence</SectionTitle>
+          {selected ? <KeyDetailDrawer keyRecord={selected} request={request} onNotice={onNotice} variant="risk" /> : <div className="grid min-h-[200px] place-items-center text-xs text-white/38">No key risk records yet.</div>}
+        </Panel>
+        <Panel className="p-5 xl:col-span-4">
+          <SectionTitle suffix={<span className="text-[10px] text-white/38">Prioritized</span>}>Remediation Queue</SectionTitle>
+          {remediation.length ? (
+            <div className="space-y-2">
+              {remediation.map(({ key, action, score }) => (
+                <button key={key.id} type="button" onClick={() => setSelectedId(key.id)} className="flex w-full items-center justify-between gap-3 rounded-md border border-white/8 bg-white/[0.025] p-3 text-left transition hover:border-gold/45">
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-semibold text-white/82">{action}</div>
+                    <div className="truncate text-[10px] text-white/42">{key.keyAlias || key.name}</div>
+                  </div>
+                  <span className="shrink-0 font-mono text-sm font-bold" style={{ color: riskLevelColor(score) }}>{integerFmt(score)}</span>
+                </button>
+              ))}
+            </div>
+          ) : <div className="grid min-h-[160px] place-items-center text-xs text-white/38">No remediation items.</div>}
+        </Panel>
+      </section>
+    </>
+  );
+}
+
 function Body({ mode, snapshot, request, onNotice }: { mode: QkmsMode; snapshot: QkmsSnapshot; request: QkmsAction; onNotice: (message: string) => void }) {
   if (mode === 'overview') return <OverviewLayout snapshot={snapshot} />;
   if (mode === 'inventory') return <InventoryLayout snapshot={snapshot} request={request} onNotice={onNotice} />;
+  if (mode === 'lifecycle') return <LifecycleLayout snapshot={snapshot} request={request} onNotice={onNotice} />;
   if (mode === 'governance') return <GovernanceLayout snapshot={snapshot} request={request} onNotice={onNotice} />;
+  if (mode === 'rotation') return <RotationLayout snapshot={snapshot} request={request} onNotice={onNotice} />;
+  if (mode === 'risk-analysis') return <RiskAnalysisLayout snapshot={snapshot} request={request} onNotice={onNotice} />;
   return <ReadinessLayout snapshot={snapshot} request={request} onNotice={onNotice} />;
 }
 

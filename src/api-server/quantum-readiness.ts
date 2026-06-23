@@ -113,7 +113,7 @@ function isInternetFacing(asset: Record<string, unknown>): boolean {
   return exposure.includes('internet') || exposure.includes('public') || exposure.includes('external')
 }
 
-async function buildSnapshot(token: string, userId: string) {
+export async function buildSnapshot(token: string, userId: string) {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
 

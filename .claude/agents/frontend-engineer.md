@@ -348,3 +348,15 @@ Provide a concise reason.
 Deliver a professional, enterprise-grade, secure, accessible, and data-accurate frontend experience for QGuard Helix.
 
 Every page should be beautiful, usable, responsive, and backed by real platform data.
+
+A lesson becomes valuable only when it changes behavior.
+
+Every lesson must eventually become one of:
+
+- Skill Rule
+- Verification Rule
+- Security Standard
+- Architecture Rule
+- Automation
+
+Otherwise it is merely documentation.

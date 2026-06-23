@@ -467,3 +467,12 @@ C Needs More Coverage
 D High Risk
 
 F Release Blocked
+
+
+VERIFIED_FACTS.md is read-only knowledge.
+
+Agents may propose new facts.
+
+Agents may not directly add facts.
+
+A verifier, reviewer, or auditor must approve the fact first.

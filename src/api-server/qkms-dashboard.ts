@@ -2,14 +2,14 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildTenantTelemetrySync } from './tenant-telemetry-sync'
 
-type QkmsMode = 'overview' | 'inventory' | 'governance' | 'readiness'
+type QkmsMode = 'overview' | 'inventory' | 'governance' | 'readiness' | 'lifecycle' | 'rotation' | 'risk-analysis'
 
 type AuthedRequest = Request & {
   user?: { id: string; email?: string | null }
   token?: string
 }
 
-const MODES = new Set<QkmsMode>(['overview', 'inventory', 'governance', 'readiness'])
+const MODES = new Set<QkmsMode>(['overview', 'inventory', 'governance', 'readiness', 'lifecycle', 'rotation', 'risk-analysis'])
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const SOURCE_STALE_MS = ONE_DAY_MS
 const EXPIRY_WARNING_MS = 45 * ONE_DAY_MS

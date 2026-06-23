@@ -1,0 +1,495 @@
+Enterprise Quantum Readiness Assessment Report Engine™
+Objective
+
+Build an enterprise-grade report generation system for QGuard Helix that transforms scan results, CBOM inventories, trust graphs, telemetry, and PQC assessments into professional board-level and technical reports.
+
+Reports must be suitable for:
+
+Executive Leadership
+Board Members
+CISOs
+Security Teams
+Compliance Auditors
+Regulators
+Government Agencies
+Banking Institutions
+Critical Infrastructure Operators
+Supported Export Formats
+
+Generate reports in:
+
+PDF
+DOCX (Microsoft Word)
+JSON
+CSV
+XLSX
+HTML
+PowerPoint (PPTX)
+
+Reports must be downloadable and digitally signed.
+
+Report Branding
+
+Allow customers to customize:
+
+Company Logo
+
+Upload:
+
+PNG
+SVG
+JPEG
+
+Display on:
+
+Cover Page
+Header
+Footer
+Company Information
+Company Name
+Business Unit
+Department
+Industry
+Assessment Owner
+Reviewer
+Report Version
+Custom Notes
+
+Allow:
+
+Executive Notes
+
+Assessment Scope
+
+Internal Comments
+
+Compliance Notes
+
+Risk Acceptance Statements
+
+Cover Page
+
+Include:
+
+Company Logo
+
+QGuard Helix Logo
+
+Report Name:
+
+Quantum Readiness Assessment Report™
+
+Generated Date
+
+Report ID
+
+Assessment Scope
+
+Classification
+
+Examples:
+
+PUBLIC
+
+INTERNAL
+
+CONFIDENTIAL
+
+RESTRICTED
+
+TOP SECRET
+
+Table of Contents
+
+Auto-generated.
+
+Clickable links.
+
+Page numbering.
+
+Executive Summary
+
+Provide:
+
+Overall Quantum Readiness Score
+
+Overall Quantum Risk Score
+
+HNDL Score
+
+PQC Adoption %
+
+Critical Findings
+
+Business Impact
+
+Migration Forecast
+
+Executive Summary Narrative
+
+Example:
+
+"QGuard Helix identified 2,482 cryptographic assets across 37 business systems. 61% rely on quantum-vulnerable algorithms including RSA-2048 and ECDSA P-256. Current readiness score is 42/100, indicating significant migration work is required before CRQC-capable adversaries emerge."
+
+Executive KPI Dashboard
+
+Display:
+
+KPI Cards
+Quantum Readiness
+Quantum Risk
+HNDL Risk
+PQC Adoption
+Vulnerable Assets
+Total Assets
+High Risk Assets
+Critical Risk Assets
+Certificates
+Keys
+TLS Services
+Applications
+APIs
+Cloud Assets
+Visual Charts
+Quantum Readiness Gauge
+
+Speedometer style.
+
+0–100
+
+Zones:
+
+Red
+Amber
+Green
+Risk Distribution Pie Chart
+
+Categories:
+
+Critical
+High
+Medium
+Low
+Asset Type Breakdown
+
+Pie Chart
+
+Examples:
+
+Certificates
+Keys
+Applications
+APIs
+Containers
+Databases
+Cloud Services
+Algorithm Exposure
+
+Pie Chart
+
+Examples:
+
+RSA
+ECC
+AES
+SHA2
+PQC
+Unknown
+PQC Adoption
+
+Donut Chart
+
+Shows:
+
+PQC Enabled
+Hybrid
+Classical Only
+HNDL Exposure Chart
+
+Heatmap
+
+Show:
+
+Data Lifetime vs Quantum Risk
+
+Trust Relationship Graph
+
+Visual graph showing:
+
+Users
+Applications
+APIs
+Services
+Certificates
+Migration Readiness Trend
+
+Timeline chart
+
+Assessment Findings
+
+For every finding include:
+
+Finding ID
+
+Example:
+
+QRA-001
+
+Title
+Severity
+Risk Score
+Affected Assets
+Business Impact
+Technical Impact
+Evidence
+Recommendation
+Remediation Plan
+Cryptographic Inventory
+
+Include:
+
+Certificates
+CN
+Issuer
+Expiry
+Key Size
+Algorithm
+PQC Readiness
+Keys
+Type
+Length
+Location
+Usage
+TLS Endpoints
+Host
+Cipher Suites
+TLS Version
+PQC Support
+APIs
+Authentication Method
+Signature Algorithms
+CBOM Analysis
+
+Include:
+
+Crypto Bill of Materials
+
+For each asset:
+
+Algorithm
+Library
+Vendor
+Version
+Status
+
+Categories:
+
+Approved
+Legacy
+Vulnerable
+Deprecated
+Harvest Now Decrypt Later Analysis
+
+Display:
+
+Data Classes
+Financial
+Healthcare
+Intellectual Property
+Customer Data
+Data Retention
+Estimated Confidentiality Lifetime
+Quantum Exposure Window
+HNDL Risk
+Recommended Action
+Quantum Vulnerability Analysis
+
+Identify:
+
+RSA
+RSA 1024
+RSA 2048
+RSA 3072
+ECC
+P256
+P384
+P521
+DH
+DSA
+Legacy TLS
+Legacy PKI
+Unsupported Algorithms
+PQC Readiness Assessment
+
+Assess:
+
+ML-KEM Readiness
+ML-DSA Readiness
+SLH-DSA Readiness
+Hybrid TLS Readiness
+PKI Readiness
+Application Readiness
+Identity Readiness
+Vendor Readiness
+Compliance Mapping
+
+Map findings to:
+
+NIST
+FIPS 203
+FIPS 204
+FIPS 205
+CNSA 2.0
+NIST CSF
+ISO 27001
+PCI DSS
+SOC 2
+Migration Roadmap
+
+Phase 1
+
+Discovery
+
+Phase 2
+
+Assessment
+
+Phase 3
+
+Hybrid Deployment
+
+Phase 4
+
+Pilot Migration
+
+Phase 5
+
+Production Rollout
+
+Phase 6
+
+Optimization
+
+Each phase includes:
+
+Duration
+Dependencies
+Estimated Cost
+Resources Required
+Cost Forecasting
+
+Display:
+
+Estimated Budget
+Infrastructure Costs
+HSM Costs
+PKI Costs
+Labor Costs
+Consulting Costs
+Training Costs
+Remediation Center
+
+Prioritized table:
+
+Priority	Finding	Severity	Effort	Impact
+
+Include:
+
+Quick Wins
+
+30 Days
+
+90 Days
+
+180 Days
+
+1 Year
+
+Quantum Risk Score Explanation
+
+Explain:
+
+Why score was assigned.
+
+Factors:
+
+Algorithm Exposure
+HNDL Risk
+Asset Criticality
+Data Sensitivity
+Trust Relationships
+PQC Adoption
+
+Provide human-readable explanations.
+
+Technical Evidence Appendix
+
+Include:
+
+Scan Results
+
+Telemetry
+
+CBOM Data
+
+Trust Graph Data
+
+API Findings
+
+Certificate Findings
+
+Asset Findings
+
+Timestamped Evidence
+
+Digital Signatures
+
+Support:
+
+ML-DSA-65
+
+or
+
+Enterprise PKI Signing
+
+Embed verification information into PDF and DOCX exports.
+
+AI Executive Narrative
+
+Generate a professional narrative:
+
+What Was Found
+Why It Matters
+Business Impact
+Quantum Risk
+Recommended Actions
+Estimated Timeline
+Expected Outcomes
+
+Written for executives, not engineers.
+
+QGuard Helix Report Quality Rules
+
+The report must NEVER show:
+
+Fake data
+Placeholder values
+Hardcoded metrics
+Random risk scores
+
+Every metric, chart, score, and recommendation must be derived from:
+
+Actual scanned assets
+Actual CBOM findings
+Actual telemetry
+Actual trust relationships
+Actual crypto inventory
+Actual PQC assessments
+
+If evidence is unavailable:
+
+Display:
+
+"Evidence Not Available"
+
+instead of generating synthetic data.

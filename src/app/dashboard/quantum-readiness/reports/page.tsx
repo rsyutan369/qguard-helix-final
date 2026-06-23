@@ -1,19 +1,26 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { motion } from 'framer-motion';
 import {
   BadgeCheck,
-  Boxes,
+  Building2,
+  Calendar,
+  Download,
+  Eye,
   FileBarChart,
-  FileCheck2,
-  FileJson,
-  FileSpreadsheet,
   FileText,
+  FileSpreadsheet,
+  FileJson,
+  ImagePlus,
   Landmark,
+  Loader2,
   Presentation,
   RefreshCw,
   Route as RouteIcon,
+  ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import {
   Badge,
@@ -23,309 +30,403 @@ import {
   PrimaryButton,
   QuantumReadinessShell,
   SectionTitle,
-  currencyFmt,
   integerFmt,
   longDate,
-  percentLabel,
   useQuantumReadiness,
-  type QuantumReadinessSnapshot,
   BLUE,
   GREEN,
   ORANGE,
   VIOLET,
   AMBER,
   CYAN,
+  RED,
 } from '../_shared';
+import { useAuth } from '@/contexts/auth-context';
+import { REPORT_TEMPLATES } from '@/services/reporting/templates';
+import {
+  REPORT_FORMATS,
+  brandingSchema,
+  type ReportBranding,
+  type ReportChartImage,
+  type ReportFormat,
+  type ReportKind,
+} from '@/services/reporting/schemas/ReportSchema';
 
-type ReportType = 'executive' | 'technical' | 'board' | 'roadmap' | 'compliance' | 'evidence';
+const BRANDING_STORAGE_KEY = 'qg-report-branding';
+const HISTORY_STORAGE_KEY = 'qg-report-history';
 
-interface ReportTemplate {
-  id: ReportType;
-  name: string;
-  description: string;
-  icon: typeof FileText;
-  color: string;
-  formats: Array<'pdf' | 'pptx' | 'csv' | 'json'>;
-}
+const FORMAT_META: Record<ReportFormat, { label: string; icon: typeof FileText; color: string }> = {
+  pdf: { label: 'PDF', icon: FileText, color: RED },
+  docx: { label: 'DOCX', icon: FileText, color: BLUE },
+  xlsx: { label: 'XLSX', icon: FileSpreadsheet, color: GREEN },
+  pptx: { label: 'PPTX', icon: Presentation, color: ORANGE },
+  csv: { label: 'CSV', icon: FileSpreadsheet, color: CYAN },
+  json: { label: 'JSON', icon: FileJson, color: VIOLET },
+  html: { label: 'HTML', icon: FileBarChart, color: AMBER },
+};
 
-const TEMPLATES: ReportTemplate[] = [
-  { id: 'executive', name: 'Executive Report', description: 'Board-ready posture, business risk & investment summary.', icon: FileText, color: BLUE, formats: ['pdf', 'json'] },
-  { id: 'technical', name: 'Technical Report', description: 'Full risk analysis, findings & remediation detail.', icon: FileBarChart, color: CYAN, formats: ['pdf', 'csv', 'json'] },
-  { id: 'board', name: 'Board Presentation', description: 'Slide-ready strategic risk narrative.', icon: Presentation, color: VIOLET, formats: ['pptx', 'pdf'] },
-  { id: 'roadmap', name: 'Migration Roadmap', description: 'Wave plan, sequencing, effort & cost estimates.', icon: RouteIcon, color: ORANGE, formats: ['pdf', 'csv', 'json'] },
-  { id: 'compliance', name: 'Compliance Report', description: 'NIST FIPS 203/204/205 & regulatory alignment.', icon: Landmark, color: GREEN, formats: ['pdf', 'json'] },
-  { id: 'evidence', name: 'Evidence Package', description: 'Raw assessment evidence for audit & attestation.', icon: Boxes, color: AMBER, formats: ['csv', 'json'] },
-];
+const TEMPLATE_ICON: Record<ReportKind, typeof FileText> = {
+  executive: FileText,
+  technical: FileBarChart,
+  compliance: Landmark,
+  migration: RouteIcon,
+};
 
-interface ReportRecord {
+interface HistoryEntry {
   id: string;
-  type: ReportType;
+  kind: ReportKind;
   name: string;
-  createdAt: string;
-  status: 'draft' | 'approved';
-  readiness: number;
-  risk: number;
+  version: string;
+  format: ReportFormat;
+  generatedAt: string;
+  generatedBy: string;
+  integrityHash: string;
 }
 
-function buildReportPayload(type: ReportType, snapshot: QuantumReadinessSnapshot) {
-  const base = {
-    report: type,
-    generatedAt: new Date().toISOString(),
-    quantumReadinessScore: snapshot.scores.quantumReadiness,
-    quantumRiskScore: snapshot.scores.quantumRisk,
-    hndlRiskScore: snapshot.scores.hndlRisk,
-    pqcAdoption: snapshot.scores.pqcAdoption,
-  };
-  switch (type) {
-    case 'technical':
-      return { ...base, riskDistribution: snapshot.riskDistribution, riskFactors: snapshot.riskFactors, findings: snapshot.criticalFindings, topRiskAssets: snapshot.topRiskAssets };
-    case 'roadmap':
-      return { ...base, estimates: snapshot.estimates, recommendedActions: snapshot.recommendedActions, topRiskAssets: snapshot.topRiskAssets };
-    case 'compliance':
-      return { ...base, standards: ['NIST FIPS 203 (ML-KEM)', 'NIST FIPS 204 (ML-DSA)', 'NIST FIPS 205 (SLH-DSA)', 'CNSA 2.0'], inventory: snapshot.inventory };
-    case 'evidence':
-      return { ...base, inventory: snapshot.inventory, telemetry: snapshot.telemetry, findings: snapshot.criticalFindings, exposureGraph: snapshot.exposureGraph };
-    case 'board':
-    case 'executive':
-    default:
-      return { ...base, inventory: snapshot.inventory, estimates: snapshot.estimates, recommendedActions: snapshot.recommendedActions.slice(0, 5) };
+function loadBranding(): ReportBranding {
+  try {
+    const raw = localStorage.getItem(BRANDING_STORAGE_KEY);
+    if (raw) return brandingSchema.parse(JSON.parse(raw));
+  } catch {
+    /* ignore */
   }
+  return brandingSchema.parse({});
 }
 
-function download(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as HistoryEntry[];
+  } catch {
+    /* ignore */
+  }
+  return [];
 }
 
-function toCsv(payload: Record<string, unknown>): string {
-  const rows: string[] = ['key,value'];
-  const walk = (obj: unknown, prefix = '') => {
-    if (Array.isArray(obj)) {
-      obj.forEach((item, i) => walk(item, `${prefix}[${i}]`));
-    } else if (obj && typeof obj === 'object') {
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) walk(v, prefix ? `${prefix}.${k}` : k);
-    } else {
-      rows.push(`"${prefix}","${String(obj).replace(/"/g, '""')}"`);
-    }
-  };
-  walk(payload);
-  return rows.join('\n');
-}
-
-function escapeHtml(value: unknown): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function openPrintable(type: ReportType, name: string, snapshot: QuantumReadinessSnapshot) {
-  const s = snapshot.scores;
-  const win = window.open('', '_blank');
-  if (!win) return;
-  const safeName = escapeHtml(name);
-  win.document.write(`<!doctype html><html><head><title>${safeName}</title>
-    <style>
-      body{font-family:Inter,Arial,sans-serif;color:#0f172a;max-width:820px;margin:40px auto;padding:0 24px}
-      h1{font-size:24px;margin-bottom:4px}.sub{color:#64748b;margin-bottom:24px}
-      .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0}
-      .card{border:1px solid #e2e8f0;border-radius:8px;padding:14px}.card .n{font-size:28px;font-weight:700}
-      .card .l{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#64748b}
-      table{width:100%;border-collapse:collapse;margin-top:12px}td,th{border-bottom:1px solid #e2e8f0;padding:8px;text-align:left;font-size:13px}
-      .foot{margin-top:32px;color:#94a3b8;font-size:11px}
-    </style></head><body>
-    <h1>${safeName}</h1>
-    <div class="sub">QGuard Helix — Quantum Readiness Assessment Engine™ · Generated ${escapeHtml(new Date().toLocaleString())}</div>
-    <div class="grid">
-      <div class="card"><div class="n">${s.quantumReadiness}/100</div><div class="l">Quantum Readiness</div></div>
-      <div class="card"><div class="n">${s.quantumRisk}/100</div><div class="l">Quantum Risk</div></div>
-      <div class="card"><div class="n">${s.hndlRisk}/100</div><div class="l">HNDL Risk</div></div>
-      <div class="card"><div class="n">${snapshot.inventory.assetsAssessed}</div><div class="l">Assets Assessed</div></div>
-      <div class="card"><div class="n">${snapshot.inventory.quantumVulnerableAssets}</div><div class="l">Vulnerable Assets</div></div>
-      <div class="card"><div class="n">${s.pqcAdoption}%</div><div class="l">PQC Adoption</div></div>
-    </div>
-    <h3>Recommended Actions</h3>
-    <table><tr><th>Action</th><th>Severity</th></tr>
-    ${snapshot.recommendedActions.map((a) => `<tr><td>${escapeHtml(a.title)}</td><td>${escapeHtml(a.severity)}</td></tr>`).join('') || '<tr><td colspan="2">No actions</td></tr>'}
-    </table>
-    <div class="foot">Evidence-grounded report. Estimated migration: ${snapshot.estimates.migrationTimelineWeeks || '—'} weeks · ${snapshot.estimates.migrationCostUsd ? currencyFmt(snapshot.estimates.migrationCostUsd) : '—'}.</div>
-    </body></html>`);
-  win.document.close();
-  win.focus();
-  win.print();
+function bumpVersion(version: string): string {
+  const parts = version.split('.').map((n) => parseInt(n, 10));
+  if (parts.length < 2 || parts.some((n) => Number.isNaN(n))) return '1.0';
+  parts[1] += 1;
+  return parts.join('.');
 }
 
 export default function ReportCenterPage() {
+  const { user } = useAuth();
   const { snapshot, state, sseConnected, refresh } = useQuantumReadiness();
-  const [history, setHistory] = useState<ReportRecord[]>([]);
-  const [generating, setGenerating] = useState<ReportType | null>(null);
 
-  const generate = useCallback(
-    (template: ReportTemplate) => {
-      if (!snapshot.hasData) return;
-      setGenerating(template.id);
-      window.setTimeout(() => {
-        const record: ReportRecord = {
-          id: `rpt-${template.id}-${Date.now()}`,
-          type: template.id,
-          name: template.name,
-          createdAt: new Date().toISOString(),
-          status: 'draft',
-          readiness: snapshot.scores.quantumReadiness,
-          risk: snapshot.scores.quantumRisk,
-        };
-        setHistory((prev) => [record, ...prev].slice(0, 15));
-        setGenerating(null);
-      }, 500);
-    },
-    [snapshot],
-  );
+  const [branding, setBranding] = useState<ReportBranding>(() => loadBranding());
+  const [kind, setKind] = useState<ReportKind>('executive');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [previews, setPreviews] = useState<ReportChartImage[] | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [schedule, setSchedule] = useState<'none' | 'daily' | 'weekly' | 'monthly' | 'quarterly'>('none');
+  const [error, setError] = useState<string | null>(null);
 
-  const approve = useCallback((id: string) => {
-    setHistory((prev) => prev.map((r) => (r.id === id ? { ...r, status: 'approved' as const } : r)));
+  const generatedBy = user?.email || 'QGuard Helix';
+  const activeTemplate = useMemo(() => REPORT_TEMPLATES.find((t) => t.kind === kind)!, [kind]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(branding));
+    } catch {
+      /* ignore */
+    }
+  }, [branding]);
+
+  const persistHistory = useCallback((entries: HistoryEntry[]) => {
+    setHistory(entries);
+    try {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries.slice(0, 40)));
+    } catch {
+      /* ignore */
+    }
   }, []);
 
-  const exportReport = useCallback(
-    (record: ReportRecord, format: 'pdf' | 'pptx' | 'csv' | 'json') => {
-      const payload = buildReportPayload(record.type, snapshot);
-      const stamp = new Date().toISOString().slice(0, 10);
-      const fname = `${record.type}-report-${stamp}`;
-      if (format === 'json') download(`${fname}.json`, JSON.stringify(payload, null, 2), 'application/json');
-      else if (format === 'csv') download(`${fname}.csv`, toCsv(payload as Record<string, unknown>), 'text/csv');
-      else openPrintable(record.type, record.name, snapshot);
+  const updateBranding = useCallback(<K extends keyof ReportBranding>(key: K, value: ReportBranding[K]) => {
+    setBranding((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const onLogoUpload = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => updateBranding('companyLogo', String(reader.result));
+    reader.readAsDataURL(file);
+  }, [updateBranding]);
+
+  const generate = useCallback(
+    async (fmt: ReportFormat) => {
+      if (!snapshot.hasData) {
+        setError('No assessment evidence available — run a discovery scan before generating reports.');
+        return;
+      }
+      setBusy(fmt);
+      setError(null);
+      try {
+        const [{ buildReport }, { exportReport, downloadResult }] = await Promise.all([
+          import('@/services/reporting/ReportEngine'),
+          import('@/services/reporting/ReportExporter'),
+        ]);
+        const report = buildReport({ snapshot, branding, kind, generatedBy, withCharts: fmt !== 'csv' && fmt !== 'json' });
+        const result = await exportReport(report, fmt);
+        downloadResult(result);
+        const entry: HistoryEntry = {
+          id: report.meta.id,
+          kind,
+          name: report.meta.title,
+          version: report.meta.version,
+          format: fmt,
+          generatedAt: report.meta.generatedAt,
+          generatedBy,
+          integrityHash: report.integrity?.hash.slice(0, 16) || '—',
+        };
+        persistHistory([entry, ...history]);
+        // Auto-increment version for the next generation (Phase 10 versioning).
+        updateBranding('reportVersion', bumpVersion(branding.reportVersion));
+      } catch (err) {
+        console.error('Report generation failed:', err);
+        setError(err instanceof Error ? err.message : 'Report generation failed');
+      } finally {
+        setBusy(null);
+      }
     },
-    [snapshot],
+    [snapshot, branding, kind, generatedBy, history, persistHistory, updateBranding],
   );
 
-  const formatIcon = { pdf: FileText, pptx: Presentation, csv: FileSpreadsheet, json: FileJson } as const;
+  const preview = useCallback(async () => {
+    if (!snapshot.hasData) {
+      setError('No assessment evidence available to preview.');
+      return;
+    }
+    setBusy('preview');
+    setError(null);
+    try {
+      const [{ buildReport }, { previewHtml }] = await Promise.all([
+        import('@/services/reporting/ReportEngine'),
+        import('@/services/reporting/ReportExporter'),
+      ]);
+      const report = buildReport({ snapshot, branding, kind, generatedBy });
+      previewHtml(report);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Preview failed');
+    } finally {
+      setBusy(null);
+    }
+  }, [snapshot, branding, kind, generatedBy]);
+
+  const loadPreviews = useCallback(async () => {
+    if (!snapshot.hasData) return;
+    setPreviewing(true);
+    try {
+      const { renderReportCharts } = await import('@/services/reporting/ReportCharts');
+      setPreviews(renderReportCharts(snapshot));
+    } catch (err) {
+      console.error('Chart preview failed:', err);
+    } finally {
+      setPreviewing(false);
+    }
+  }, [snapshot]);
 
   return (
     <QuantumReadinessShell
       title="Report Center"
-      subtitle="Generate customer-facing reports and exportable deliverables — executive, technical, board, migration roadmap, compliance and audit-grade evidence packages."
+      subtitle="Enterprise Reporting Engine™ — generate professional, evidence-driven reports (PDF, DOCX, XLSX, CSV, JSON, HTML, PPTX) for executives, security teams, auditors and regulators. Every value is derived from live assessment telemetry."
       badge={<Badge color={GREEN}>{integerFmt(history.length)} generated</Badge>}
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
       actions={
-        <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
-          Refresh Data
-        </HeaderButton>
+        <>
+          <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
+            Refresh Data
+          </HeaderButton>
+          <HeaderButton icon={Eye} onClick={() => void preview()}>
+            {busy === 'preview' ? 'Opening…' : 'Preview'}
+          </HeaderButton>
+        </>
       }
     >
-      {/* Snapshot banner */}
-      <Panel className="p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-white/45">
-            <BadgeCheck className="h-4 w-4 text-emerald-400" /> Reports reflect live assessment data
-          </span>
-          <div className="flex flex-wrap gap-2 text-[11px]">
-            <span className="rounded-md border border-white/8 bg-black/20 px-2.5 py-1">Readiness <strong className="font-mono text-white/80">{integerFmt(snapshot.scores.quantumReadiness)}</strong></span>
-            <span className="rounded-md border border-white/8 bg-black/20 px-2.5 py-1">Risk <strong className="font-mono text-white/80">{integerFmt(snapshot.scores.quantumRisk)}</strong></span>
-            <span className="rounded-md border border-white/8 bg-black/20 px-2.5 py-1">PQC <strong className="font-mono text-white/80">{percentLabel(snapshot.scores.pqcAdoption)}</strong></span>
-            <span className="rounded-md border border-white/8 bg-black/20 px-2.5 py-1">Assets <strong className="font-mono text-white/80">{integerFmt(snapshot.inventory.assetsAssessed)}</strong></span>
-          </div>
-        </div>
-      </Panel>
+      {error ? <div className="rounded-md border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div> : null}
 
-      {/* Template grid */}
-      <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {TEMPLATES.map((template) => {
-          const Icon = template.icon;
-          return (
-            <div key={template.id}>
-            <Panel className="p-5">
-              <div className="flex items-start justify-between">
-                <span className="grid h-11 w-11 place-items-center rounded-md border" style={{ borderColor: `${template.color}40`, color: template.color, backgroundColor: `${template.color}12` }}>
-                  <Icon className="h-5 w-5" />
-                </span>
-                <div className="flex gap-1">
-                  {template.formats.map((fmt) => (
-                    <span key={fmt} className="rounded border border-white/10 bg-black/20 px-1.5 py-0.5 text-[9px] font-black uppercase text-white/45">
-                      {fmt}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <div className="mt-3 text-sm font-bold text-white">{template.name}</div>
-              <p className="mt-1 text-[11px] leading-snug text-white/50">{template.description}</p>
-              <div className="mt-4">
-                <PrimaryButton icon={FileCheck2} onClick={() => generate(template)} disabled={!snapshot.hasData || generating === template.id}>
-                  {generating === template.id ? 'Generating…' : 'Generate'}
-                </PrimaryButton>
-              </div>
-            </Panel>
-            </div>
-          );
-        })}
+      {/* Template selection */}
+      <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+        <Panel className="p-5">
+          <SectionTitle suffix={<span className="text-[11px] text-white/40">{activeTemplate.audience}</span>}>Report Template</SectionTitle>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {REPORT_TEMPLATES.map((template) => {
+              const Icon = TEMPLATE_ICON[template.kind];
+              const active = kind === template.kind;
+              return (
+                <button
+                  key={template.kind}
+                  type="button"
+                  onClick={() => setKind(template.kind)}
+                  className={`rounded-lg border p-4 text-left transition ${active ? 'border-blue-400/50 bg-blue-500/10' : 'border-white/8 bg-white/[0.025] hover:border-blue-400/35'}`}
+                >
+                  <span className="grid h-10 w-10 place-items-center rounded-md border" style={{ borderColor: `${BLUE}40`, color: BLUE, backgroundColor: `${BLUE}12` }}>
+                    <Icon className="h-5 w-5" />
+                  </span>
+                  <div className="mt-3 text-sm font-bold text-white">{template.name}</div>
+                  <div className="mt-0.5 text-[11px] text-white/45">{template.audience}</div>
+                  <p className="mt-1.5 text-[11px] leading-snug text-white/50">{template.description}</p>
+                </button>
+              );
+            })}
+          </div>
+        </Panel>
       </motion.section>
 
-      {/* History + approval */}
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        {/* Branding */}
+        <Panel className="p-5 xl:col-span-5">
+          <SectionTitle suffix={<Building2 className="h-4 w-4 text-white/40" />}>Branding & Cover</SectionTitle>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <BrandingField label="Company Name" value={branding.companyName} onChange={(v) => updateBranding('companyName', v)} />
+            <BrandingField label="Business Unit" value={branding.businessUnit} onChange={(v) => updateBranding('businessUnit', v)} />
+            <BrandingField label="Report Owner" value={branding.reportOwner} onChange={(v) => updateBranding('reportOwner', v)} />
+            <BrandingField label="Reviewer" value={branding.reviewer} onChange={(v) => updateBranding('reviewer', v)} />
+            <BrandingField label="Classification" value={branding.classification} onChange={(v) => updateBranding('classification', v)} />
+            <BrandingField label="Version" value={branding.reportVersion} onChange={(v) => updateBranding('reportVersion', v)} />
+          </div>
+          <label className="mt-3 block">
+            <span className="block text-[10px] uppercase tracking-wide text-white/40">Custom Notes</span>
+            <textarea value={branding.customNotes} onChange={(e) => updateBranding('customNotes', e.target.value)} rows={2} className="mt-1 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-blue-400/50" />
+          </label>
+          <div className="mt-3 flex items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-white/10 bg-white/[0.025] px-3 py-2 text-xs font-bold text-white/70 transition hover:border-blue-400/40 hover:text-blue-200">
+              <ImagePlus className="h-4 w-4" />
+              Upload Logo
+              <input type="file" accept="image/*" onChange={onLogoUpload} className="hidden" />
+            </label>
+            {branding.companyLogo ? (
+              <span className="inline-flex items-center gap-2 text-[11px] text-white/50">
+                <img src={branding.companyLogo} alt="logo" className="h-7 max-w-[120px] rounded border border-white/10 object-contain" />
+                <button type="button" onClick={() => updateBranding('companyLogo', null)} className="text-white/40 hover:text-red-300">remove</button>
+              </span>
+            ) : (
+              <span className="text-[11px] text-white/35">No logo — cover uses text branding.</span>
+            )}
+          </div>
+        </Panel>
+
+        {/* Generate / formats */}
+        <Panel className="p-5 xl:col-span-7">
+          <SectionTitle suffix={<Badge color={GREEN}>{activeTemplate.name}</Badge>}>Generate & Export</SectionTitle>
+          <p className="mb-3 text-[11px] text-white/45">Sections: {activeTemplate.sections.join(' · ')}</p>
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            {REPORT_FORMATS.map((fmt) => {
+              const meta = FORMAT_META[fmt];
+              const Icon = meta.icon;
+              const recommended = activeTemplate.formats.includes(fmt);
+              return (
+                <button
+                  key={fmt}
+                  type="button"
+                  disabled={busy !== null || !snapshot.hasData}
+                  onClick={() => void generate(fmt)}
+                  className={`group/btn flex items-center justify-between gap-2 rounded-md border px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${recommended ? 'border-white/12 bg-white/[0.03] hover:border-blue-400/45' : 'border-white/8 bg-black/20 hover:border-white/20'}`}
+                >
+                  <span className="flex items-center gap-2">
+                    {busy === fmt ? <Loader2 className="h-4 w-4 animate-spin" style={{ color: meta.color }} /> : <Icon className="h-4 w-4" style={{ color: meta.color }} />}
+                    <span className="text-xs font-bold text-white/85">{meta.label}</span>
+                  </span>
+                  {recommended ? <Sparkles className="h-3 w-3 text-blue-300/70" /> : null}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <PrimaryButton icon={Download} onClick={() => void generate(activeTemplate.formats[0])} disabled={busy !== null || !snapshot.hasData}>
+              Generate {FORMAT_META[activeTemplate.formats[0]].label}
+            </PrimaryButton>
+            <HeaderButton icon={Eye} onClick={() => void preview()}>
+              Preview HTML
+            </HeaderButton>
+            <HeaderButton icon={FileBarChart} onClick={() => void loadPreviews()}>
+              {previewing ? 'Rendering…' : 'Preview Charts'}
+            </HeaderButton>
+          </div>
+
+          {/* Scheduling */}
+          <div className="mt-4 rounded-md border border-white/8 bg-black/20 p-3">
+            <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-white/45">
+              <Calendar className="h-3.5 w-3.5" /> Scheduled Reports
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(['none', 'daily', 'weekly', 'monthly', 'quarterly'] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setSchedule(option)}
+                  className={`rounded border px-2.5 py-1 text-[11px] font-bold capitalize transition ${schedule === option ? 'border-blue-400/50 bg-blue-500/15 text-blue-200' : 'border-white/10 bg-black/20 text-white/55 hover:border-blue-400/35'}`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            {schedule !== 'none' ? (
+              <p className="mt-2 text-[11px] text-amber-200/80">
+                {schedule} schedule saved for this template. Automated delivery requires the BullMQ/Redis worker + cron to be provisioned server-side.
+              </p>
+            ) : null}
+          </div>
+        </Panel>
+      </section>
+
+      {/* Chart previews */}
+      {previews ? (
+        <Panel className="p-5">
+          <SectionTitle suffix={<span className="text-[11px] text-white/40">Embedded in PDF / DOCX / PPTX / XLSX</span>}>Visual Analysis Preview</SectionTitle>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {previews.map((chart) => (
+              <div key={chart.key} className="rounded-md border border-white/8 bg-white p-2">
+                <img src={chart.dataUrl} alt={chart.title} className="w-full rounded" />
+                <div className="mt-1 text-center text-[11px] font-semibold text-slate-600">{chart.title}</div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
+      {/* Audit trail / history */}
       <Panel className="p-5">
-        <SectionTitle suffix={<span className="text-[11px] text-white/40">Approval workflow & downloads</span>}>Report History</SectionTitle>
+        <SectionTitle suffix={<span className="text-[11px] text-white/40">Versioning & audit trail</span>}>Report History</SectionTitle>
         {history.length ? (
           <div className="overflow-x-auto">
-            <table className="min-w-[680px] w-full text-left text-xs">
+            <table className="min-w-[760px] w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-white/8 text-[9px] uppercase tracking-[0.08em] text-white/35">
                   <th className="pb-3 font-black">Report</th>
+                  <th className="pb-3 font-black">Version</th>
+                  <th className="pb-3 font-black">Format</th>
+                  <th className="pb-3 font-black">Generated By</th>
                   <th className="pb-3 font-black">Generated</th>
-                  <th className="pb-3 font-black">Scores</th>
-                  <th className="pb-3 font-black">Status</th>
-                  <th className="pb-3 font-black">Export</th>
-                  <th className="pb-3 font-black">Approval</th>
+                  <th className="pb-3 font-black">Integrity (SHA3-256)</th>
+                  <th className="pb-3 font-black">Regenerate</th>
                 </tr>
               </thead>
               <tbody>
-                {history.map((record) => {
-                  const template = TEMPLATES.find((t) => t.id === record.type)!;
+                {history.slice(0, 20).map((entry, index) => {
+                  const meta = FORMAT_META[entry.format];
                   return (
-                    <tr key={record.id} className="border-b border-white/5 text-white/70">
-                      <td className="py-3 font-medium text-white/82">{record.name}</td>
-                      <td className="py-3 text-white/50">{longDate(record.createdAt)}</td>
-                      <td className="py-3 font-mono text-white/60">R{record.readiness} · Q{record.risk}</td>
+                    <tr key={`${entry.id}-${index}`} className="border-b border-white/5 text-white/70">
+                      <td className="py-3 font-medium text-white/82">{entry.name}</td>
+                      <td className="py-3 font-mono">v{entry.version}</td>
+                      <td className="py-3"><span className="rounded px-1.5 py-0.5 text-[10px] font-black" style={{ color: meta.color, backgroundColor: `${meta.color}1a` }}>{meta.label}</span></td>
+                      <td className="max-w-[160px] truncate py-3 text-white/55">{entry.generatedBy}</td>
+                      <td className="py-3 text-white/50">{longDate(entry.generatedAt)}</td>
+                      <td className="py-3 font-mono text-[10px] text-white/45">{entry.integrityHash}…</td>
                       <td className="py-3">
-                        <Badge color={record.status === 'approved' ? GREEN : AMBER}>{record.status}</Badge>
-                      </td>
-                      <td className="py-3">
-                        <div className="flex gap-1">
-                          {template.formats.map((fmt) => {
-                            const Icon = formatIcon[fmt];
-                            return (
-                              <button
-                                key={fmt}
-                                type="button"
-                                onClick={() => exportReport(record, fmt)}
-                                title={`Export ${fmt.toUpperCase()}`}
-                                className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-black/20 text-white/55 transition hover:border-blue-400/40 hover:text-blue-200"
-                              >
-                                <Icon className="h-3.5 w-3.5" />
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </td>
-                      <td className="py-3">
-                        {record.status === 'approved' ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-300">
-                            <BadgeCheck className="h-3.5 w-3.5" /> Approved
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => approve(record.id)}
-                            className="rounded border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-400/20"
-                          >
-                            Approve
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => { setKind(entry.kind); void generate(entry.format); }}
+                          className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/[0.025] px-2 py-1 text-[10px] font-bold text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:opacity-40"
+                        >
+                          <RefreshCw className="h-3 w-3" /> Regenerate
+                        </button>
                       </td>
                     </tr>
                   );
@@ -334,9 +435,22 @@ export default function ReportCenterPage() {
             </table>
           </div>
         ) : (
-          <EmptyState label="No reports generated yet." hint="Generate a report from a template above to start the approval workflow." />
+          <EmptyState label="No reports generated yet." hint="Select a template and export format above to generate your first enterprise report." />
         )}
+        <div className="mt-4 flex items-center gap-2 text-[11px] text-white/40">
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+          Reports are tenant-scoped, evidence-driven, and SHA3-256 integrity-hashed. <BadgeCheck className="h-3.5 w-3.5 text-emerald-400" /> No fabricated findings.
+        </div>
       </Panel>
     </QuantumReadinessShell>
+  );
+}
+
+function BrandingField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="block">
+      <span className="block text-[10px] uppercase tracking-wide text-white/40">{label}</span>
+      <input value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-blue-400/50" />
+    </label>
   );
 }

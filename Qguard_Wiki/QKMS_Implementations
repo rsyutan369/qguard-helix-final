@@ -1,0 +1,719 @@
+# Build QKMS™ Key Lifecycle, Rotation, and Risk Analysis Pages
+
+## Objective
+
+Create and implement the following QGuard Helix QKMS™ pages:
+
+```txt
+/dashboard/qkms/lifecycle
+/dashboard/qkms/rotation
+/dashboard/qkms/risk-analysis
+```
+
+These pages must extend the existing **QGuard Helix QKMS™** module and provide enterprise-grade key lifecycle management, cryptographic key rotation workflows, and key risk analysis.
+
+All pages must use real tenant-scoped data from Supabase, QKMS inventory, cryptographic assets, certificates, workloads, identities, telemetry, and audit logs.
+
+Do not use mock data, fake metrics, hardcoded key counts, placeholder risks, or simulated production results unless explicitly marked as demo mode.
+
+---
+
+# Shared QKMS Requirements
+
+## Shared Data Sources
+
+Integrate with existing QGuard Helix data sources:
+
+* QKMS key inventory
+* Certificates
+* Cryptographic assets
+* CBOM records
+* TLS endpoints
+* Machine identities
+* Application identities
+* Service accounts
+* Workload identities
+* Vault records
+* Rotation policies
+* Key usage telemetry
+* Key access events
+* Audit logs
+* Governance policies
+* PQC readiness scores
+* Supabase tenant data
+
+## Shared Hooks
+
+Create or reuse:
+
+```ts
+useQkmsKeys()
+useQkmsKeyInventory()
+useQkmsLifecycle()
+useQkmsRotation()
+useQkmsRiskAnalysis()
+useQkmsPolicies()
+useQkmsAuditLogs()
+useQkmsTelemetry()
+useQkmsPqcReadiness()
+```
+
+## Shared Backend Services
+
+Create or extend:
+
+```ts
+qkmsKeyService
+qkmsLifecycleService
+qkmsRotationService
+qkmsRiskAnalysisService
+qkmsPolicyService
+qkmsTelemetryService
+qkmsAuditService
+qkmsPqcReadinessService
+```
+
+## Shared KPI Cards
+
+Use these QKMS KPI cards where relevant:
+
+* Total Keys
+* Active Keys
+* Expired Keys
+* Deprecated Keys
+* Orphaned Keys
+* Keys Due for Rotation
+* Keys Rotated This Month
+* Failed Rotations
+* High-Risk Keys
+* Critical-Risk Keys
+* PQC-Ready Keys
+* Hybrid-Protected Keys
+* Classical-Only Keys
+* Keys Without Owners
+* Keys Without Rotation Policy
+* Keys With Excessive Access
+
+---
+
+# 1. QKMS Key Lifecycle Page
+
+## Route
+
+```txt
+/dashboard/qkms/lifecycle
+```
+
+## Purpose
+
+Provide full visibility and governance across the complete cryptographic key lifecycle.
+
+This page answers:
+
+1. What keys exist?
+2. Who owns them?
+3. Where are they used?
+4. What stage are they in?
+5. Are they properly governed?
+
+## Required Features
+
+### Lifecycle Dashboard
+
+Display:
+
+* Total keys
+* Active keys
+* Pending activation keys
+* Deprecated keys
+* Expired keys
+* Revoked keys
+* Destroyed keys
+* Orphaned keys
+* Keys without owner
+* Keys without rotation policy
+
+### Key Lifecycle Stages
+
+Support and display lifecycle states:
+
+```txt
+Generated
+Pending Activation
+Active
+Suspended
+Deprecated
+Pending Rotation
+Rotated
+Revoked
+Destroyed
+Archived
+```
+
+### Key Inventory Table
+
+Columns:
+
+* Key ID / Alias
+* Algorithm
+* Key Type
+* Owner
+* Tenant
+* Environment
+* Application
+* Created Date
+* Activation Date
+* Expiration Date
+* Lifecycle State
+* Rotation Policy
+* PQC Readiness
+* Risk Level
+* Last Used
+* Actions
+
+### Key Detail Drawer
+
+When selecting a key, show:
+
+* Key metadata
+* Algorithm
+* Strength
+* Purpose
+* Owner
+* Linked certificates
+* Linked workloads
+* Linked identities
+* Linked applications
+* Usage history
+* Access history
+* Lifecycle timeline
+* Rotation policy
+* Risk findings
+* Audit history
+
+### Lifecycle Timeline
+
+Show chronological key events:
+
+* Created
+* Activated
+* Used
+* Accessed
+* Rotated
+* Deprecated
+* Revoked
+* Destroyed
+
+### Lifecycle Actions
+
+Support controlled actions:
+
+* Assign owner
+* Update lifecycle state
+* Attach rotation policy
+* Mark as deprecated
+* Schedule rotation
+* Revoke key
+* Archive key
+* Open risk analysis
+* View audit trail
+
+## Required Functions
+
+```ts
+getQkmsLifecycleSummary()
+getQkmsLifecycleStates()
+getKeysByLifecycleState(state)
+getKeyLifecycleTimeline(keyId)
+getKeyLifecycleDetails(keyId)
+assignKeyOwner(keyId, ownerId)
+updateKeyLifecycleState(keyId, state)
+attachRotationPolicy(keyId, policyId)
+markKeyDeprecated(keyId)
+scheduleKeyRotation(keyId, schedule)
+revokeKey(keyId, reason)
+archiveKey(keyId)
+getKeyAuditTrail(keyId)
+```
+
+## Guardrails
+
+* Never expose raw key material.
+* Never display private keys.
+* Never allow key export unless explicitly supported by policy.
+* All lifecycle changes must create audit logs.
+* Destructive actions such as revoke, destroy, or archive must require confirmation.
+* RBAC must control all key actions.
+
+---
+
+# 2. QKMS Key Rotation Center
+
+## Route
+
+```txt
+/dashboard/qkms/rotation
+```
+
+## Purpose
+
+Provide enterprise-grade key rotation planning, execution, validation, rollback, and monitoring.
+
+This page answers:
+
+1. Which keys need rotation?
+2. Why do they need rotation?
+3. What depends on them?
+4. Can rotation be safely executed?
+5. Did rotation succeed?
+
+## Required Features
+
+### Rotation Dashboard
+
+Display:
+
+* Keys due for rotation
+* Overdue rotations
+* Scheduled rotations
+* Rotations in progress
+* Successful rotations
+* Failed rotations
+* Emergency rotations
+* Keys with no rotation policy
+* Applications impacted
+* Certificates impacted
+* Trust chains impacted
+
+### Rotation Queue
+
+Columns:
+
+* Key ID / Alias
+* Algorithm
+* Owner
+* Environment
+* Rotation Reason
+* Rotation Policy
+* Due Date
+* Risk Level
+* Dependencies
+* Compatibility Status
+* Approval Status
+* Rotation Status
+* Actions
+
+### Rotation Reasons
+
+Support:
+
+```txt
+Scheduled Rotation
+Policy Violation
+Key Expiration
+Algorithm Deprecation
+Compromise Suspected
+Owner Change
+Environment Change
+Certificate Renewal
+PQC Migration
+Emergency Rotation
+```
+
+### Rotation Workflow
+
+Implement step-by-step workflow:
+
+```txt
+1. Select key
+2. Analyze dependencies
+3. Validate compatibility
+4. Generate replacement key
+5. Update linked assets
+6. Validate trust chains
+7. Monitor usage
+8. Retire old key
+9. Confirm completion
+```
+
+### Rotation Impact Analysis
+
+Before rotation, show:
+
+* Linked certificates
+* Linked applications
+* Linked APIs
+* Linked identities
+* Linked workloads
+* Dependent services
+* Trust chains affected
+* Blast radius
+* Downtime risk
+* Rollback plan
+
+### Rotation Execution
+
+Support:
+
+* Manual rotation
+* Scheduled rotation
+* Bulk rotation
+* Emergency rotation
+* PQC migration rotation
+* Dry-run rotation
+* Approval-required rotation
+
+### Rotation Validation
+
+After rotation, verify:
+
+* New key is active
+* Old key is deprecated or retired
+* Linked certificates are valid
+* Trust chains are intact
+* Applications still function
+* No failed crypto operations
+* No unexpected access errors
+* Telemetry confirms successful usage
+
+### Rotation Actions
+
+Support:
+
+* Create rotation policy
+* Assign rotation policy
+* Schedule rotation
+* Run precheck
+* Start dry run
+* Start rotation
+* Approve rotation
+* Pause rotation
+* Retry failed rotation
+* Rollback rotation
+* Export rotation evidence
+
+## Required Functions
+
+```ts
+getQkmsRotationSummary()
+getKeysDueForRotation()
+getOverdueRotations()
+getScheduledRotations()
+getRotationQueue()
+getRotationPolicy(keyId)
+createRotationPolicy(policy)
+assignRotationPolicy(keyId, policyId)
+scheduleRotation(keyId, schedule)
+runRotationPrecheck(keyId)
+analyzeRotationImpact(keyId)
+validateRotationCompatibility(keyId)
+startRotationDryRun(keyId)
+startKeyRotation(keyId)
+approveRotation(rotationId)
+pauseRotation(rotationId)
+retryRotation(rotationId)
+rollbackRotation(rotationId)
+validateRotationSuccess(rotationId)
+getRotationEvidence(rotationId)
+exportRotationEvidence(rotationId)
+```
+
+## Guardrails
+
+* Rotation must never expose raw key material.
+* Rotation must validate dependencies before execution.
+* Emergency rotation must require elevated RBAC.
+* Failed rotations must preserve previous working state.
+* Rollback plan must be generated before execution.
+* All rotation events must be audit logged.
+
+---
+
+# 3. QKMS Key Risk Analysis Page
+
+## Route
+
+```txt
+/dashboard/qkms/risk-analysis
+```
+
+## Purpose
+
+Analyze cryptographic key risk, quantum exposure, governance gaps, excessive access, lifecycle problems, and migration priority.
+
+This page answers:
+
+1. Which keys are risky?
+2. Why are they risky?
+3. What systems depend on them?
+4. What is the quantum exposure?
+5. What should be remediated first?
+
+## Required Features
+
+### Risk Dashboard
+
+Display:
+
+* Critical-risk keys
+* High-risk keys
+* Medium-risk keys
+* Low-risk keys
+* Orphaned keys
+* Expired keys
+* Weak algorithm keys
+* Classical-only keys
+* Overused keys
+* Keys with excessive access
+* Keys without rotation policy
+* Keys with unknown owners
+
+### Risk Categories
+
+Analyze:
+
+```txt
+Algorithm Risk
+Quantum Exposure Risk
+Lifecycle Risk
+Rotation Risk
+Ownership Risk
+Access Risk
+Usage Risk
+Certificate Dependency Risk
+Application Dependency Risk
+Compliance Risk
+```
+
+### Key Risk Table
+
+Columns:
+
+* Key ID / Alias
+* Algorithm
+* Key Type
+* Owner
+* Environment
+* Risk Level
+* Risk Score
+* Risk Factors
+* Quantum Exposure
+* Last Used
+* Dependencies
+* Recommended Action
+* Status
+
+### Risk Detail Drawer
+
+For each risky key, show:
+
+* Risk explanation
+* Evidence
+* Algorithm weakness
+* Quantum-vulnerable status
+* Linked assets
+* Linked certificates
+* Linked identities
+* Access patterns
+* Usage anomalies
+* Rotation history
+* Compliance gaps
+* Recommended remediation
+* Priority level
+
+### Quantum Exposure Analysis
+
+Identify keys using:
+
+* RSA
+* ECC
+* ECDSA
+* ECDH
+* DH
+* DSA
+* Deprecated algorithms
+* Weak key sizes
+* Non-compliant algorithms
+
+Identify keys that are:
+
+* PQC-ready
+* Hybrid-protected
+* Classical-only
+* Unknown readiness
+
+### Remediation Queue
+
+Create prioritized remediation queue:
+
+* Rotate key
+* Assign owner
+* Attach policy
+* Replace weak algorithm
+* Migrate to PQC/hybrid
+* Revoke unused key
+* Reduce excessive access
+* Update linked certificates
+* Validate trust chain
+
+### Risk Trends
+
+Show:
+
+* Key risk over time
+* Algorithm risk over time
+* Rotation compliance over time
+* PQC readiness over time
+* Access anomaly trend
+
+## Required Functions
+
+```ts
+getQkmsRiskSummary()
+getKeyRiskDistribution()
+getHighRiskKeys()
+getCriticalRiskKeys()
+getKeyRiskDetails(keyId)
+calculateKeyRiskScore(keyId)
+getKeyRiskFactors(keyId)
+getQuantumExposureForKey(keyId)
+getKeysByQuantumExposureStatus(status)
+getWeakAlgorithmKeys()
+getOrphanedKeys()
+getExpiredKeys()
+getKeysWithoutRotationPolicy()
+getKeysWithExcessiveAccess()
+getKeyUsageAnomalies()
+getKeyDependencyRisk(keyId)
+getKeyComplianceGaps(keyId)
+getKeyRemediationQueue()
+prioritizeKeyRemediation()
+markKeyRiskAccepted(keyId, reason)
+createKeyRemediationTask(keyId, action)
+exportKeyRiskReport()
+```
+
+## Suggested Risk Scoring Model
+
+Calculate key risk using weighted factors:
+
+```txt
+Algorithm Risk: 25%
+Quantum Exposure: 20%
+Lifecycle State: 15%
+Rotation Compliance: 15%
+Ownership & Governance: 10%
+Access Pattern Risk: 10%
+Dependency Criticality: 5%
+```
+
+Risk levels:
+
+```txt
+0-24    Low
+25-49   Medium
+50-74   High
+75-100  Critical
+```
+
+## Guardrails
+
+* Risk scoring must be evidence-based.
+* Risk findings must link to real source data.
+* AI-generated risk explanations must not invent unsupported issues.
+* Accepted risks must require reason and audit log.
+* Remediation actions must be tracked.
+* RBAC must control risk acceptance and remediation actions.
+
+---
+
+# Real-Time Requirements
+
+Use existing QGuard Helix realtime systems:
+
+* SSE
+* WebSockets
+* Supabase Realtime
+
+Realtime should update:
+
+* Key status
+* Rotation progress
+* Rotation failures
+* Lifecycle events
+* Risk score changes
+* Access anomalies
+* Audit events
+* Policy violations
+
+---
+
+# Data Integrity Requirements
+
+Ensure:
+
+* KPI cards match backend data.
+* Charts match source tables.
+* Risk scores match scoring model.
+* Rotation queue matches policy due dates.
+* Lifecycle states match key metadata.
+* Audit logs are created for all actions.
+* Tenant isolation is enforced.
+* No production page uses mock data.
+
+---
+
+# UI/UX Requirements
+
+Use the existing QGuard Helix enterprise light theme.
+
+Each QKMS page must answer:
+
+1. What key is affected?
+2. Why is it risky?
+3. What should I do next?
+4. Has it been fixed?
+
+Use:
+
+* KPI cards
+* Risk badges
+* Lifecycle timelines
+* Rotation workflow steppers
+* Dependency drawers
+* Evidence panels
+* Action buttons
+* Audit trail panels
+* Empty states
+* Loading states
+* Error states
+
+---
+
+# Validation Checklist
+
+Before completion, verify:
+
+* `/dashboard/qkms/lifecycle` renders correctly.
+* `/dashboard/qkms/rotation` renders correctly.
+* `/dashboard/qkms/risk-analysis` renders correctly.
+* Navigation links work.
+* Hooks are connected.
+* Backend services are wired.
+* Supabase queries are tenant-scoped.
+* RBAC permissions are enforced.
+* No raw key material is displayed.
+* No mock values remain in production mode.
+* KPI cards match backend data.
+* Rotation workflow has precheck, execution, validation, and rollback.
+* Lifecycle actions generate audit logs.
+* Risk scoring is evidence-based.
+* Reports and exports match visible data.
+* SSE/WebSocket updates work.
+* Empty, loading, and error states are handled.
+
+---
+
+# Final Expected Result
+
+The QKMS™ Lifecycle, Rotation, and Risk Analysis pages must provide enterprise-grade key lifecycle governance, safe key rotation workflows, and evidence-based cryptographic key risk analysis while integrating with QGuard Helix discovery, telemetry, trust, governance, PQC readiness, and migration systems.

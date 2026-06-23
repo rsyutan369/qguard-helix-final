@@ -70,6 +70,9 @@ import QkmsOverviewPage from './app/dashboard/qkms/overview/page';
 import QkmsInventoryPage from './app/dashboard/qkms/inventory/page';
 import QkmsGovernancePage from './app/dashboard/qkms/governance/page';
 import QkmsReadinessPage from './app/dashboard/qkms/readiness/page';
+import QkmsLifecyclePage from './app/dashboard/qkms/lifecycle/page';
+import QkmsRotationPage from './app/dashboard/qkms/rotation/page';
+import QkmsRiskAnalysisPage from './app/dashboard/qkms/risk-analysis/page';
 import QFeaturesPage from './app/dashboard/q-features/page';
 import EcosystemDependencyMapPage from './app/dashboard/ecosystem-dependency-map/page';
 import VendorPqcReadinessPage from './app/dashboard/vendor-pqc-readiness/page';
@@ -249,8 +252,11 @@ export default function App() {
 
           <Route path="qkms/overview" element={<QkmsOverviewPage />} />
           <Route path="qkms/inventory" element={<QkmsInventoryPage />} />
+          <Route path="qkms/lifecycle" element={<QkmsLifecyclePage />} />
           <Route path="qkms/governance" element={<QkmsGovernancePage />} />
+          <Route path="qkms/rotation" element={<QkmsRotationPage />} />
           <Route path="qkms/readiness" element={<QkmsReadinessPage />} />
+          <Route path="qkms/risk-analysis" element={<QkmsRiskAnalysisPage />} />
           <Route path="q-features" element={<QFeaturesPage />} />
           </Route>
         </Routes>

@@ -1,0 +1,797 @@
+# QGuard Helix Migration Planner™ Refactor & Enterprise Enhancement
+
+## Objective
+
+Refactor and redesign:
+
+http://localhost:3000/dashboard/migration-planner
+
+Transform the current page from a dashboard-centric experience into a true Enterprise Post-Quantum Migration Management Platform.
+
+The goal is to provide CISOs, Security Architects, Infrastructure Teams, Compliance Officers, and Executive Leadership with a complete migration planning, simulation, orchestration, and decision-support experience.
+
+The page should answer four primary questions:
+
+1. What must be migrated?
+2. Why must it be migrated?
+3. What is the safest migration path?
+4. What business risk remains if no action is taken?
+
+The Migration Planner must become one of the flagship capabilities of QGuard Helix.
+
+---
+
+# Design Goals
+
+Current UI is visually attractive but behaves primarily as a telemetry dashboard.
+
+Refactor toward:
+
+* Executive-friendly
+* Action-oriented
+* Enterprise-grade
+* Decision-support driven
+* Evidence-backed
+* Migration-focused
+
+The page should feel similar in maturity to:
+
+* ServiceNow Change Management
+* Microsoft Project Portfolio Management
+* DigiCert Trust Lifecycle Manager
+* Venafi TLS Protect
+* Wiz Security Graph
+* CrowdStrike Exposure Management
+
+while remaining specialized for Post-Quantum Cryptography migration.
+
+---
+
+# Data Integrity Requirements
+
+All metrics, scores, charts, recommendations, roadmaps, and simulations must be generated from:
+
+* Actual scanned assets
+* Actual CBOM inventories
+* Actual certificate inventories
+* Actual cryptographic telemetry
+* Actual trust relationships
+* Actual PQC assessments
+* Actual compliance findings
+* Actual migration jobs
+
+Never use:
+
+* Mock data
+* Placeholder values
+* Hardcoded percentages
+* Static recommendations
+
+If evidence is unavailable:
+
+Display:
+
+"Evidence Not Available"
+
+instead of generating assumptions.
+
+---
+
+# New Migration Workflow
+
+Replace:
+
+DISCOVER → ASSESS → PLAN → EXECUTE → VALIDATE → COMPLETE
+
+With:
+
+DISCOVER
+↓
+ANALYZE
+↓
+PRIORITIZE
+↓
+SIMULATE
+↓
+PLAN
+↓
+APPROVE
+↓
+EXECUTE
+↓
+VALIDATE
+↓
+OPTIMIZE
+
+Each stage must display:
+
+* Progress
+* Asset Count
+* Risk Reduction
+* Dependencies
+* Estimated Duration
+* Status
+* Evidence
+
+---
+
+# Hero Section Redesign
+
+Replace current KPI layout with executive metrics.
+
+Display:
+
+Migration Readiness Score
+
+Example:
+
+68 / 100
+
+Assets Requiring Migration
+
+Example:
+
+2,481
+
+Estimated Migration Duration
+
+Example:
+
+18 Months
+
+Estimated Migration Cost
+
+Example:
+
+$1.4M
+
+Potential Risk Reduction
+
+Example:
+
+82%
+
+HNDL Exposure
+
+Example:
+
+HIGH
+
+PQC Adoption
+
+Example:
+
+21%
+
+Critical Assets Remaining
+
+Example:
+
+432
+
+---
+
+# AI Migration Advisor™
+
+Create a dedicated section.
+
+Route:
+
+/quantum-readiness/ai-migration-advisor
+
+Allow deep linking and navigation.
+
+The AI Advisor should continuously analyze:
+
+* Assets
+* Risks
+* CBOM
+* Trust Fabric
+* Compliance
+* Telemetry
+
+and generate recommendations.
+
+Example:
+
+TOP RECOMMENDATION
+
+Migrate External TLS Infrastructure First
+
+Reason:
+
+82% of HNDL exposure originates from internet-facing services using RSA-2048.
+
+Estimated Risk Reduction:
+
+34%
+
+Estimated Cost:
+
+$120,000
+
+Estimated Timeline:
+
+4 Weeks
+
+Confidence:
+
+91%
+
+Actions:
+
+Create Migration Wave
+
+Generate Playbook
+
+Simulate Outcome
+
+Generate Executive Report
+
+---
+
+# Migration Waves
+
+Introduce Wave-Based Migration Planning.
+
+Group assets into migration waves.
+
+Example:
+
+Wave 1
+
+Internet Facing Assets
+
+Wave 2
+
+PKI Infrastructure
+
+Wave 3
+
+Applications
+
+Wave 4
+
+Identity Systems
+
+Wave 5
+
+Vendor Integrations
+
+Each wave must display:
+
+* Asset Count
+* Risk Reduction
+* Estimated Cost
+* Estimated Duration
+* Dependencies
+* Readiness Score
+* Status
+
+---
+
+# Migration Dependency Graph
+
+Build an interactive dependency visualization.
+
+Show:
+
+Certificates
+↓
+Load Balancers
+↓
+API Gateways
+↓
+Applications
+↓
+Databases
+↓
+Users
+
+Allow users to identify:
+
+* Trust Chains
+* Dependencies
+* Blast Radius
+* Failure Impact
+
+Before migration.
+
+---
+
+# Business Impact Analysis
+
+Create a dedicated panel.
+
+Display:
+
+Customer Facing Systems
+
+Revenue Generating Systems
+
+Mission Critical Applications
+
+Regulatory Impact
+
+Vendor Impact
+
+Operational Impact
+
+For every migration decision display:
+
+Business Risk
+
+Downtime Risk
+
+Compliance Risk
+
+Customer Impact
+
+Revenue Impact
+
+---
+
+# Migration Readiness Breakdown
+
+Display readiness by domain.
+
+TLS Readiness
+
+PKI Readiness
+
+Identity Readiness
+
+Application Readiness
+
+API Readiness
+
+Cloud Readiness
+
+Vendor Readiness
+
+Trust Fabric Readiness
+
+Each domain receives:
+
+* Score
+* Risk Level
+* Migration Complexity
+* Recommended Actions
+
+---
+
+# Migration Strategy Simulator™
+
+Replace the current Scenario Builder.
+
+Provide:
+
+Conservative Strategy
+
+Hybrid TLS
+Hybrid PKI
+Minimal Risk
+
+Balanced Strategy
+
+Hybrid + Selective PQC
+
+Recommended
+
+Aggressive Strategy
+
+Maximum PQC Adoption
+
+Highest Risk Reduction
+
+Custom Strategy
+
+User-defined
+
+Display outcomes:
+
+Estimated Cost
+
+Estimated Timeline
+
+Expected Risk Reduction
+
+Operational Risk
+
+Downtime Probability
+
+Compliance Impact
+
+Success Probability
+
+---
+
+# What-If Analysis Engine
+
+Allow simulation of migration scenarios.
+
+Examples:
+
+If TLS Infrastructure Migrates
+
+Risk Reduction:
+
+32%
+
+Cost:
+
+$120,000
+
+Timeline:
+
+4 Weeks
+
+---
+
+If PKI Migrates
+
+Risk Reduction:
+
+18%
+
+Cost:
+
+$300,000
+
+Timeline:
+
+3 Months
+
+---
+
+If Full Hybrid TLS Is Enabled
+
+Risk Reduction:
+
+48%
+
+Compliance Increase:
+
++23%
+
+---
+
+# Migration Blockers
+
+Create a dedicated blocker panel.
+
+Examples:
+
+Legacy HSM
+
+Unsupported Vendors
+
+TLS 1.0 Services
+
+Expired Certificates
+
+RSA 1024
+
+Unsupported Applications
+
+Missing Ownership
+
+Show:
+
+Severity
+
+Impact
+
+Recommended Resolution
+
+Affected Assets
+
+---
+
+# Readiness Heatmap
+
+Display assets by state.
+
+Ready
+
+Needs Validation
+
+Needs Upgrade
+
+Blocked
+
+Unknown
+
+Color coded.
+
+Allow filtering by:
+
+Asset Type
+
+Business Unit
+
+Cloud Provider
+
+Environment
+
+Compliance Framework
+
+---
+
+# Migration Timeline
+
+Enhance timeline view.
+
+Display:
+
+Discovery
+
+Assessment
+
+Planning
+
+Pilot
+
+Core Migration
+
+Validation
+
+Optimization
+
+For each phase show:
+
+Start Date
+
+End Date
+
+Dependencies
+
+Owners
+
+Completion %
+
+Risk Level
+
+---
+
+# Auto-Generated Migration Playbook™
+
+Automatically generate:
+
+Phase-by-phase migration instructions.
+
+Include:
+
+Pre-checks
+
+Backup Requirements
+
+Rollback Plan
+
+Validation Procedures
+
+Change Management Tasks
+
+Success Criteria
+
+Export formats:
+
+PDF
+
+DOCX
+
+JSON
+
+HTML
+
+---
+
+# Executive Reporting Integration
+
+Integrate with Enterprise Reporting Engine™
+
+Generate:
+
+Executive Migration Report™
+
+Technical Migration Report™
+
+Board Presentation™
+
+Compliance Impact Report™
+
+Budget Forecast™
+
+Migration Playbook™
+
+Roadmap Summary™
+
+---
+
+# Compliance Impact Center
+
+Show migration readiness against:
+
+FIPS 203
+
+FIPS 204
+
+FIPS 205
+
+NIST SP 800-208
+
+CNSA 2.0
+
+ISO 27001
+
+SOC 2
+
+PCI DSS
+
+Map migration progress to compliance improvements.
+
+---
+
+# Cost Forecasting
+
+Display:
+
+Infrastructure Cost
+
+Certificate Cost
+
+PKI Cost
+
+HSM Cost
+
+Cloud Cost
+
+Training Cost
+
+Consulting Cost
+
+Operational Cost
+
+Show:
+
+Current Cost
+
+Projected Cost
+
+Migration Cost
+
+Savings
+
+---
+
+# Migration Risk Engine™
+
+Calculate:
+
+Technical Risk
+
+Operational Risk
+
+Business Risk
+
+Compliance Risk
+
+Vendor Risk
+
+Quantum Risk
+
+Provide overall Migration Risk Score.
+
+Explain:
+
+Why the score exists.
+
+What contributes to it.
+
+How to reduce it.
+
+---
+
+# Multi-Tenant Requirements
+
+Ensure:
+
+Tenant A cannot see Tenant B assets.
+
+Apply:
+
+Supabase RLS
+
+Tenant isolation
+
+Role-based permissions
+
+Audit logging
+
+---
+
+# Observability Requirements
+
+All widgets must be backed by:
+
+Real telemetry
+
+Real API responses
+
+Real SSE streams
+
+Real migration jobs
+
+Real Supabase data
+
+Verify:
+
+No stale data
+
+No duplicated findings
+
+No inconsistent metrics
+
+No disconnected charts
+
+---
+
+# UI/UX Requirements
+
+Reduce dashboard clutter.
+
+Prioritize:
+
+Decision making
+
+Actionability
+
+Clarity
+
+Executive readability
+
+Every panel must answer:
+
+What is affected?
+
+Why is it risky?
+
+What should happen next?
+
+How much effort is required?
+
+What is the expected outcome?
+
+---
+
+# Final Success Criteria
+
+Migration Planner must become:
+
+A complete Post-Quantum Migration Management Platform.
+
+Not merely a dashboard.
+
+Users should be able to:
+
+Discover assets
+
+Understand quantum risk
+
+Simulate migration strategies
+
+Create migration waves
+
+Analyze dependencies
+
+Generate playbooks
+
+Track execution
+
+Validate outcomes
+
+Generate executive reports
+
+Measure risk reduction
+
+All from a single unified workflow.

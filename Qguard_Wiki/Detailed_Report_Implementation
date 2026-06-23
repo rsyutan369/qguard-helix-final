@@ -1,0 +1,617 @@
+QGuard Helix Enterprise Reporting Engine™ Installation & Implementation Prompt
+Objective
+
+Build and integrate a production-grade Enterprise Reporting Engine™ into QGuard Helix.
+
+The system must generate professional reports suitable for:
+
+Executive Leadership
+CISOs
+Security Teams
+Compliance Auditors
+Regulators
+Government Agencies
+Banking Institutions
+Critical Infrastructure Organizations
+
+The reporting system must support:
+
+PDF
+DOCX
+JSON
+CSV
+XLSX
+HTML
+PPTX
+
+All reports must be generated from actual evidence and telemetry.
+
+Never use hardcoded values.
+
+Never generate synthetic findings.
+
+Environment
+
+Current Platform
+
+Frontend:
+
+React
+TypeScript
+Vite
+
+Backend:
+
+Express API
+
+Database:
+
+Supabase
+
+Realtime:
+
+SSE
+WebSockets
+
+Storage:
+
+Supabase Storage
+
+Deployment:
+
+Cloudflare
+Phase 1 — Install Dependencies
+Charting Engine
+
+Install:
+
+npm install echarts echarts-for-react
+
+Purpose:
+
+Pie Charts
+Donut Charts
+Gauge Charts
+Risk Distribution
+HNDL Heatmaps
+Trust Relationship Visualizations
+Migration Timelines
+Readiness Trends
+
+Requirements:
+
+Responsive
+Exportable
+SVG Support
+PDF Compatible
+PDF Generation
+
+Install:
+
+npm install @react-pdf/renderer pdf-lib
+
+Requirements:
+
+Generate:
+
+Cover Pages
+Executive Reports
+Technical Reports
+Auditor Reports
+
+Support:
+
+Headers
+Footers
+Page Numbers
+Watermarks
+Company Branding
+Digital Signatures
+Word Export
+
+Install:
+
+npm install docx docxtemplater
+
+Requirements:
+
+Generate:
+
+Executive Reports
+Compliance Reports
+Technical Findings Reports
+
+Support:
+
+Templates
+Logos
+Tables
+Charts
+Appendices
+Excel Export
+
+Install:
+
+npm install exceljs
+
+Generate:
+
+Asset Inventory
+Certificate Inventory
+CBOM Inventory
+Vulnerability Listings
+Compliance Findings
+
+Support:
+
+Multiple Sheets
+Filters
+Conditional Formatting
+CSV Export
+
+Install:
+
+npm install papaparse
+
+Generate:
+
+Raw Findings
+Asset Exports
+Scan Results
+Image Processing
+
+Install:
+
+npm install sharp html-to-image
+
+Requirements:
+
+Convert:
+
+Charts
+Company Logos
+Dashboard Visuals
+
+Into:
+
+PNG
+SVG
+
+For PDF and DOCX embedding.
+
+Queue Processing
+
+Install:
+
+npm install bullmq ioredis
+
+Requirements:
+
+Support:
+
+Background Report Generation
+Large Reports
+Scheduled Reports
+Report Retry Logic
+
+Prevent:
+
+UI Blocking
+API Timeouts
+Validation
+
+Install:
+
+npm install zod
+
+Requirements:
+
+Validate:
+
+Report Payloads
+Findings
+Telemetry
+Chart Data
+Utility Packages
+
+Install:
+
+npm install uuid date-fns
+
+Used For:
+
+Report IDs
+Timestamps
+Versioning
+Integrity & Signing
+
+Install:
+
+npm install jose @noble/hashes
+
+Requirements:
+
+Generate:
+
+Report Hashes
+Verification Tokens
+Integrity Metadata
+
+Future:
+
+ML-DSA Signing
+Enterprise PKI Signing
+
+Phase 2 — Create Report Service
+
+Create:
+
+src/
+└── services/
+    └── reporting/
+
+Structure:
+
+reporting/
+│
+├── ReportEngine.ts
+├── ReportBuilder.ts
+├── ReportEvidence.ts
+├── ReportCharts.ts
+├── ReportScoring.ts
+├── ReportExporter.ts
+│
+├── exporters/
+│   ├── PdfExporter.ts
+│   ├── DocxExporter.ts
+│   ├── ExcelExporter.ts
+│   ├── JsonExporter.ts
+│   ├── CsvExporter.ts
+│   ├── HtmlExporter.ts
+│   └── PptExporter.ts
+│
+├── templates/
+│   ├── executive/
+│   ├── technical/
+│   ├── compliance/
+│   └── auditor/
+│
+└── schemas/
+    └── ReportSchema.ts
+
+Phase 3 — Build Unified Report Model
+
+Every report must be generated from:
+
+EnterpriseAssessmentReport
+
+Containing:
+
+{
+  executiveSummary,
+  kpis,
+  findings,
+  assets,
+  certificates,
+  keys,
+  tlsEndpoints,
+  cbom,
+  hndl,
+  trustRelationships,
+  pqcReadiness,
+  compliance,
+  roadmap,
+  remediation,
+  evidence
+}
+
+This becomes the single source of truth.
+
+Every exporter uses this model.
+
+Phase 4 — Build Report Templates
+
+Create templates:
+
+Executive Report™
+
+Audience:
+
+CEO
+Board
+CISO
+
+Include:
+
+KPI Cards
+Risk Scores
+Findings Summary
+Roadmap
+Executive Narrative
+Technical Assessment™
+
+Audience:
+
+Security Engineers
+
+Include:
+
+Asset Inventory
+TLS Analysis
+Certificates
+CBOM
+Vulnerabilities
+Compliance Report™
+
+Audience:
+
+Auditors
+
+Include:
+
+NIST
+FIPS 203
+FIPS 204
+FIPS 205
+ISO 27001
+PCI DSS
+SOC 2
+
+Mappings
+
+PQC Migration Report™
+
+Audience:
+
+Migration Teams
+
+Include:
+
+Readiness
+Risk
+Timeline
+Cost Forecast
+Migration Waves
+Phase 5 — Branding System
+
+Allow users to upload:
+
+Company Logo
+
+Business Unit Logo
+
+Store in:
+
+Supabase Storage
+
+Add:
+
+companyName
+companyLogo
+businessUnit
+reportOwner
+reviewer
+classification
+reportVersion
+customNotes
+
+Display in:
+
+Cover Page
+Header
+Footer
+
+Phase 6 — Advanced Visualizations
+
+Generate:
+
+Readiness Gauge
+
+0–100
+
+Risk Pie Chart
+
+Critical
+
+High
+
+Medium
+
+Low
+
+Asset Distribution
+
+Certificates
+
+Keys
+
+Applications
+
+APIs
+
+Containers
+
+Cloud
+
+Algorithm Exposure
+
+RSA
+
+ECC
+
+AES
+
+SHA
+
+PQC
+
+Unknown
+
+HNDL Heatmap
+
+Data Lifetime
+
+vs
+
+Quantum Risk
+
+Trust Graph
+
+People
+
+Applications
+
+Services
+
+Certificates
+
+Trust Relationships
+
+Migration Timeline
+
+Discovery
+
+Assessment
+
+Hybrid
+
+Pilot
+
+Production
+
+Optimization
+
+Phase 7 — Evidence Engine
+
+Every finding must include:
+
+{
+  id,
+  title,
+  severity,
+  evidence,
+  affectedAssets,
+  recommendation,
+  remediationPlan
+}
+
+Evidence Sources:
+
+Scanner
+CBOM
+Telemetry
+Trust Fabric
+APIs
+Asset Inventory
+
+If evidence missing:
+
+Evidence Not Available
+
+Never fabricate findings.
+
+Phase 8 — Export API
+
+Create:
+
+POST /api/v1/reports/generate
+
+Request:
+
+{
+  "assessmentId": "uuid",
+  "format": "pdf"
+}
+
+Supported:
+
+pdf
+docx
+xlsx
+csv
+json
+html
+pptx
+Phase 9 — Report Dashboard
+
+Create:
+
+/dashboard/reports
+
+Capabilities:
+
+Generate Report
+Preview Report
+Download
+Share
+Regenerate
+Schedule Reports
+Phase 10 — Enterprise Features
+
+Implement:
+
+Report Versioning
+
+v1.0
+
+v1.1
+
+v2.0
+
+Audit Trail
+
+Track:
+
+Generated By
+Generated Date
+Version
+Export Format
+Scheduled Reports
+
+Daily
+
+Weekly
+
+Monthly
+
+Quarterly
+
+Multi-Tenant Isolation
+
+Ensure:
+
+Tenant A never sees Tenant B reports.
+
+Apply Supabase RLS.
+
+Final Verification Checklist
+
+Verify:
+
+✓ PDF generation works
+
+✓ DOCX generation works
+
+✓ XLSX generation works
+
+✓ JSON export works
+
+✓ Charts render correctly
+
+✓ Logos upload correctly
+
+✓ Large reports generate successfully
+
+✓ Queue processing works
+
+✓ No hardcoded metrics
+
+✓ All findings derived from evidence
+
+✓ Multi-tenant isolation enforced
+
+✓ Exported reports match dashboard data
+
+✓ Reports suitable for enterprise executives and auditors
+
+The final result should resemble platforms such as DigiCert Trust Lifecycle Manager, Keyfactor Command, Venafi TLS Protect, ServiceNow GRC, and enterprise audit-reporting suites—but specialized for Post-Quantum Readiness, CBOM Intelligence, HNDL Exposure Analysis, Trust Fabric Mapping, and PQC Migration Orchestration within QGuard Helix.
