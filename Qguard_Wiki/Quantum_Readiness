@@ -1,0 +1,673 @@
+# Build Quantum Readiness Assessment Engine™ Pages
+
+## Objective
+
+Create and implement the **Quantum Readiness Assessment Engine™** under:
+
+```txt
+/dashboard/quantum-readiness
+```
+
+This module must provide executive, technical, AI advisory, simulation, and reporting capabilities for Post-Quantum Cryptography readiness assessment.
+
+All pages must use real QGuard Helix data from existing assets, CBOM, TLS, PKI, identity, trust, telemetry, migration, and risk-scoring sources.
+
+Do not use mock data, fake KPIs, hardcoded percentages, placeholder reports, or simulated production metrics unless explicitly marked as demo mode.
+
+---
+
+# Primary Routes
+
+ following routes:
+
+
+/dashboard/quantum-readiness
+/dashboard/quantum-readiness/command-center
+/dashboard/quantum-readiness/executive
+/dashboard/quantum-readiness/exposure-graph
+/dashboard/quantum-readiness/risk-analysis
+/dashboard/quantum-readiness/ai-executive-advisor
+/dashboard/quantum-readiness/ai-migration-advisor
+/dashboard/quantum-readiness/digital-twin
+/dashboard/quantum-readiness/reports
+
+
+---
+
+# Shared Module Requirements
+
+## Shared Data Sources
+
+Integrate with existing QGuard Helix data sources:
+
+* Assets
+* CBOM records
+* TLS endpoints
+* Certificates
+* Keys
+* Identity systems
+* Trust relationships
+* Runtime crypto telemetry
+* Vulnerability findings
+* Quantum risk scoring
+* HNDL analysis
+* Migration planner data
+* Supabase tenant data
+
+## Shared APIs / Hooks
+
+Create or reuse hooks such as:
+
+```ts
+useQuantumReadinessSummary()
+useQuantumReadinessScores()
+useQuantumRiskFindings()
+useCryptoInventory()
+useQuantumExposureGraph()
+useHndlAssessment()
+useAiExecutiveAdvisor()
+useAiMigrationAdvisor()
+useQuantumReadinessDigitalTwin()
+useQuantumReadinessReports()
+```
+
+## Shared Backend Services
+
+Create or extend backend services:
+
+```ts
+quantumReadinessService
+quantumRiskScoringService
+hndlAssessmentService
+cryptoInventoryService
+quantumExposureGraphService
+aiExecutiveAdvisorService
+aiMigrationAdvisorService
+digitalTwinSimulationService
+reportGenerationService
+```
+
+## Shared KPI Cards
+
+Every page may consume these shared KPIs where relevant:
+
+* Quantum Readiness Score
+* Quantum Risk Score
+* HNDL Risk Score
+* Crypto Exposure Score
+* Migration Complexity Score
+* Migration Effort Score
+* Assets Assessed
+* Certificates Analyzed
+* Keys Discovered
+* Trust Relationships
+* Critical Risks
+* High Risks
+* PQC Ready Assets
+* Hybrid Assets
+* Quantum Vulnerable Assets
+
+---
+
+# 1. Main Landing Page
+
+## Route
+
+```txt
+/dashboard/quantum-readiness
+```
+
+## Purpose
+
+Serve as the landing page and navigation hub for the entire Quantum Readiness Assessment Engine™.
+
+## Required Features
+
+* Module overview
+* Current assessment status
+* Last assessment date
+* Assessment progress
+* Quick access cards to all subpages
+* High-level KPI snapshot
+* Latest AI recommendation
+* Latest critical risks
+* “Start New Assessment” button
+* “Continue Assessment” button
+* “Generate Report” button
+
+## Required Functions
+
+```ts
+startQuantumReadinessAssessment()
+continueQuantumReadinessAssessment()
+getLatestAssessmentSummary()
+getAssessmentProgress()
+getAssessmentModules()
+navigateToAssessmentPage(route)
+```
+
+---
+
+# 2. Assessment Command Center
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/command-center
+```
+
+## Purpose
+
+Primary operational dashboard for the assessment engine.
+
+## Required Features
+
+* Quantum Readiness Score
+* Quantum Risk Score
+* HNDL Risk Score
+* Crypto Exposure Score
+* Migration Complexity
+* Migration Effort
+* Assessment health
+* Assessment scope
+* Assets scanned
+* Domains scanned
+* Certificates analyzed
+* Identities analyzed
+* Cloud accounts analyzed
+* Data repositories assessed
+* Active telemetry feed
+* Assessment timeline
+* Critical findings table
+* Recommended next actions
+* Real-time update indicator
+
+## Required Functions
+
+```ts
+getAssessmentCommandCenterSummary()
+getAssessmentScope()
+getAssessmentTimeline()
+getAssessmentHealth()
+getCriticalFindings()
+getRecommendedNextActions()
+refreshAssessmentTelemetry()
+subscribeToAssessmentTelemetry()
+```
+
+---
+
+# 3. Executive Dashboard
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/executive
+```
+
+## Purpose
+
+Business-friendly executive view for CISOs, CIOs, CEOs, board members, and non-technical stakeholders.
+
+## Required Features
+
+* Executive readiness score
+* Business risk level
+* HNDL exposure summary
+* Strategic risk forecast
+* Estimated migration timeline
+* Estimated migration cost
+* Business impact analysis
+* Top 5 executive findings
+* Top 5 recommended actions
+* Board summary
+* Risk trend over time
+* Report export button
+
+## Required Functions
+
+```ts
+getExecutiveReadinessSummary()
+getBusinessImpactAnalysis()
+getStrategicRiskForecast()
+getEstimatedMigrationTimeline()
+getEstimatedMigrationCost()
+getExecutiveFindings()
+getExecutiveRecommendedActions()
+generateBoardSummary()
+exportExecutiveReport()
+```
+
+---
+
+# 4. Quantum Exposure Graph™
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/exposure-graph
+```
+
+## Purpose
+
+Show visual dependency relationships between assets, cryptographic primitives, certificates, keys, identities, services, APIs, and trust chains.
+
+## Required Features
+
+* Interactive graph visualization
+* Asset nodes
+* Algorithm nodes
+* Certificate nodes
+* Key nodes
+* Service nodes
+* Identity nodes
+* Trust relationship edges
+* Blast radius analysis
+* Quantum vulnerable highlighting
+* PQC-ready highlighting
+* Hybrid/in-progress highlighting
+* Filters by tenant, risk, algorithm, asset type, owner, environment
+* Node details panel
+* Export graph snapshot
+
+## Required Functions
+
+```ts
+getQuantumExposureGraph()
+getGraphNodes()
+getGraphEdges()
+getNodeDetails(nodeId)
+getBlastRadius(nodeId)
+filterExposureGraph(filters)
+highlightQuantumVulnerableNodes()
+highlightPqcReadyNodes()
+exportExposureGraph()
+```
+
+---
+
+# 5. Quantum Risk Analysis Center
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/risk-analysis
+```
+
+## Purpose
+
+Technical risk analysis center for prioritizing cryptographic exposure and HNDL risks.
+
+## Required Features
+
+* Risk severity distribution
+* Critical/high/medium/low findings
+* HNDL assessment summary
+* Crypto exposure breakdown
+* TLS risk breakdown
+* PKI risk breakdown
+* Identity risk breakdown
+* Cloud risk breakdown
+* Supply chain risk breakdown
+* Top-risk assets
+* Remediation priority queue
+* Risk trend chart
+* Evidence table
+
+## Required Functions
+
+```ts
+getQuantumRiskSummary()
+getRiskSeverityDistribution()
+getHndlRiskSummary()
+getCryptoExposureBreakdown()
+getTlsRiskBreakdown()
+getPkiRiskBreakdown()
+getIdentityRiskBreakdown()
+getCloudRiskBreakdown()
+getSupplyChainRiskBreakdown()
+getTopRiskAssets()
+getRemediationPriorityQueue()
+getRiskEvidence(findingId)
+```
+
+---
+
+# 6. AI Executive Advisor™
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/ai-executive-advisor
+```
+
+## Purpose
+
+Generate business-level explanations, recommendations, and executive-ready advisory output.
+
+## Required Features
+
+* AI-generated executive summary
+* Business impact explanation
+* Financial impact explanation
+* Regulatory risk summary
+* Strategic recommendation summary
+* Board-level risk statement
+* Investment recommendation
+* “Generate Advisory” button
+* “Regenerate” button
+* “Approve for Report” button
+* Audit trail of generated advisories
+
+## Required Functions
+
+```ts
+generateExecutiveAdvisory()
+regenerateExecutiveAdvisory()
+getLatestExecutiveAdvisory()
+approveExecutiveAdvisoryForReport(advisoryId)
+getExecutiveAdvisoryHistory()
+getExecutiveAdvisoryInputs()
+validateExecutiveAdvisoryAgainstEvidence()
+```
+
+## Guardrails
+
+The AI advisor must not invent unsupported findings.
+
+Every generated statement must be traceable to:
+
+* Assessment data
+* Risk findings
+* CBOM records
+* TLS/PKI evidence
+* Identity evidence
+* Runtime telemetry
+* Governance/compliance mappings
+
+---
+
+# 7. AI Migration Advisor™
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/ai-migration-advisor
+```
+
+## Purpose
+
+Generate migration strategy, asset prioritization, migration waves, and rollback guidance.
+
+## Required Features
+
+* AI-generated migration roadmap
+* Migration wave planner
+* Asset prioritization table
+* Dependency-aware sequencing
+* Hybrid migration recommendations
+* Rollback strategy
+* Estimated effort
+* Estimated timeline
+* Estimated cost
+* Compatibility warnings
+* “Send to Migration Planner” button
+* “Open in Migration Sandbox” button
+
+## Required Functions
+
+```ts
+generateMigrationAdvisory()
+getMigrationWaves()
+getPrioritizedAssets()
+getDependencyAwareSequence()
+getHybridMigrationRecommendations()
+getRollbackStrategy()
+estimateMigrationEffort()
+estimateMigrationTimeline()
+estimateMigrationCost()
+sendToMigrationPlanner(planId)
+openInMigrationSandbox(planId)
+```
+
+---
+
+# 8. Quantum Readiness Digital Twin™
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/digital-twin
+```
+
+## Purpose
+
+Simulate PQC migration impact before real-world execution.
+
+## Required Features
+
+* Simulation selector
+* ML-KEM migration simulation
+* ML-DSA migration simulation
+* Hybrid TLS simulation
+* PKI modernization simulation
+* Identity migration simulation
+* Compatibility impact
+* Performance impact
+* Trust chain impact
+* Risk reduction estimate
+* Failure prediction
+* Rollback recommendation
+* Simulation history
+* Compare simulations
+
+## Required Functions
+
+```ts
+runDigitalTwinSimulation(type, scope)
+simulateMlKemMigration(scope)
+simulateMlDsaMigration(scope)
+simulateHybridTls(scope)
+simulatePkiModernization(scope)
+simulateIdentityMigration(scope)
+getCompatibilityImpact(simulationId)
+getPerformanceImpact(simulationId)
+getTrustChainImpact(simulationId)
+getRiskReductionEstimate(simulationId)
+getFailurePrediction(simulationId)
+getRollbackRecommendation(simulationId)
+compareSimulations(simulationIds)
+```
+
+---
+
+# 9. Report Center
+
+## Route
+
+```txt
+/dashboard/quantum-readiness/reports
+```
+
+## Purpose
+
+Generate customer-facing reports and exportable deliverables.
+
+## Required Features
+
+* Executive report generator
+* Technical report generator
+* Board presentation generator
+* Migration roadmap export
+* Compliance report export
+* Assessment evidence package
+* Report templates
+* Report approval workflow
+* Download history
+* Report status
+* Export as PDF
+* Export as PowerPoint
+* Export as CSV/JSON evidence
+
+## Required Functions
+
+```ts
+generateExecutiveReport()
+generateTechnicalReport()
+generateBoardPresentation()
+generateMigrationRoadmap()
+generateComplianceReport()
+generateEvidencePackage()
+getReportTemplates()
+approveReport(reportId)
+downloadReport(reportId, format)
+getReportHistory()
+getReportStatus(reportId)
+```
+
+---
+
+# Scoring Model Requirements
+
+Implement consistent scoring across the module.
+
+## Quantum Readiness Score
+
+Factors:
+
+* PQC-ready assets
+* Hybrid crypto adoption
+* TLS maturity
+* PKI maturity
+* Identity migration maturity
+* Crypto agility readiness
+* Governance maturity
+* Runtime visibility
+
+## Quantum Risk Score
+
+Factors:
+
+* RSA/ECC exposure
+* Legacy crypto
+* HNDL exposure
+* Internet-facing exposure
+* Critical asset dependency
+* Long-term data sensitivity
+* Broken trust chains
+* Weak certificates
+
+## Migration Complexity Score
+
+Factors:
+
+* Asset count
+* Dependency depth
+* PKI complexity
+* Identity complexity
+* Cloud footprint
+* Legacy systems
+* Third-party dependencies
+* Operational criticality
+
+## HNDL Risk Score
+
+Factors:
+
+* Data sensitivity
+* Data lifetime
+* Retention period
+* Adversary interest
+* Business value
+* Encryption strength
+* Exposure surface
+
+---
+
+# Data Integrity Requirements
+
+Every page must show accurate and synchronized data.
+
+Ensure:
+
+* KPI values match source tables
+* Charts match KPI values
+* Reports match dashboard values
+* AI advisories match evidence
+* Migration recommendations match risk findings
+* Digital twin simulations match selected scope
+* Exported files match visible assessment results
+
+---
+
+# Real-Time Requirements
+
+Use existing QGuard Helix realtime systems where available:
+
+* SSE
+* WebSockets
+* Supabase Realtime
+
+Realtime should update:
+
+* Assessment status
+* Asset discovery progress
+* Risk findings
+* Telemetry events
+* Report generation status
+* Simulation status
+
+---
+
+# UI/UX Requirements
+
+Use the existing QGuard Helix enterprise light theme.
+
+Each page must answer:
+
+1. What is affected?
+2. Why is it risky?
+3. What should I do next?
+4. Has it been fixed?
+
+Use:
+
+* KPI cards
+* Evidence panels
+* Risk tables
+* Interactive graphs
+* AI summary cards
+* Action buttons
+* Status badges
+* Drill-down drawers
+* Export buttons
+
+---
+
+# Validation Checklist
+
+Before completion, verify:
+
+* All routes render correctly.
+* Navigation links work.
+* All hooks are connected.
+* All backend services are wired.
+* Supabase queries are tenant-scoped.
+* No mock values remain in production mode.
+* KPI cards match backend data.
+* Charts match source data.
+* Reports match assessment data.
+* AI outputs are evidence-grounded.
+* Digital twin outputs are scoped correctly.
+* SSE/WebSocket updates work.
+* Empty states are handled.
+* Loading states are handled.
+* Error states are handled.
+* RBAC permissions are respected.
+* Audit logs are created for generated reports and AI advisories.
+
+---
+
+# Final Expected Result
+
+The Quantum Readiness Assessment Engine™ must operate as the central QGuard Helix assessment layer that transforms raw cryptographic inventory, runtime telemetry, trust relationships, and migration intelligence into executive-ready quantum readiness scoring, technical risk analysis, AI-powered advisory guidance, migration planning, digital twin simulation, and customer-facing reports.

@@ -1,0 +1,297 @@
+Recommended Module Structure
+
+CORE MODULES
+
+These are the modules executives and engineers use daily.
+
+CORE MODULES:
+
+Overview
+
+Quantum Readiness Assessment Engine™
+
+Migration Planner
+
+Migration Sandbox
+
+Live Migration Ops
+
+Remove:
+
+PQC Onboarding & Migration Process
+
+Convert it into a workflow wizard inside Migration Planner.
+
+QUANTUM READINESS ASSESSMENT ENGINE™
+
+This becomes the executive assessment layer.
+
+Quantum Readiness Assessment Engine™:
+
+Assessment Command Center
+
+Executive Dashboard
+
+Quantum Exposure Graph™
+
+Quantum Risk Analysis
+
+HNDL Assessment
+
+AI Executive Advisor™
+
+AI Migration Advisor™
+
+Quantum Readiness Digital Twin™
+
+Report Center
+
+DISCOVERY
+
+Discovery should only answer:
+
+What cryptography exists?
+
+DISCOVERY:
+
+PQC Scanner
+
+Assets & CBOM
+
+CBOM Explorer
+
+Shadow Crypto
+
+Crypto Exposure
+
+Remove:
+
+Harvest Now Decrypt Later
+
+Move it into:
+
+Quantum Readiness Assessment Engine
+
+because HNDL is risk analysis, not discovery.
+
+OPERATIONS
+
+Keep focused on migration execution.
+
+OPERATIONS:
+
+Migration Timeline
+
+Migration Phases
+
+Live Migration Ops
+
+PQC Orchestration
+
+Crypto Agility Engine
+
+Remove:
+
+Migration Sandbox
+
+Move to Core Modules.
+
+It is one of your strongest differentiators.
+
+ECOSYSTEM & SUPPLY CHAIN
+
+Keep only external ecosystem analysis.
+
+ECOSYSTEM & SUPPLY CHAIN:
+
+Vendor PQC Readiness Center
+
+Ecosystem Dependency Map
+
+Trust Chain Analyzer
+
+Hybrid Crypto Compatibility Lab
+
+Remove:
+
+Trust-State Discovery
+
+Move to Trust Center.
+
+INTELLIGENCE
+
+This becomes your continuous analytics layer.
+
+INTELLIGENCE:
+
+Runtime Cryptographic Intelligence
+
+Behavioral Analytics
+
+Telemetry Correlation
+
+Drift Detection
+
+Quantum Risk Scoring
+
+Vulnerabilities
+
+This section is good.
+
+PQAUTH IDENTITY MIGRATION ENGINE
+
+Identity-focused only.
+
+PQAuth™:
+
+PQAuth Command Center
+
+Identity Discovery
+
+Identity Trust Graph
+
+JWT & Token Intelligence
+
+PQC Compatibility
+
+Migration Center
+
+Identity Digital Twin
+
+Runtime Identity Telemetry
+
+Remove:
+
+Quantum Exposure Analysis
+
+Already exists in Quantum Readiness Assessment.
+
+Remove:
+
+Governance & Compliance
+
+Move to Governance.
+
+Remove:
+
+QKMS Integration
+
+Should be automatic backend integration.
+
+Not a page.
+
+OBSERVABILITY
+
+This becomes crypto observability.
+
+OBSERVABILITY:
+
+TLS Telemetry
+
+PKI Visibility
+
+Protocol Analytics
+
+Encryption Monitoring
+
+TLS Orchestrator
+
+Good as-is.
+
+QGUARD HELIX QKMS
+
+This should evolve into a full product.
+
+QKMS™:
+
+QKMS Overview
+
+Key Inventory
+
+Key Lifecycle
+
+Key Governance
+
+PQC Readiness
+
+Key Rotation Center
+
+Key Risk Analysis
+
+Add:
+
+Key Lifecycle
+
+Key Rotation Center
+
+These are expected in a KMS.
+
+TRUST CENTER
+
+Trust should focus on trust.
+
+TRUST CENTER:
+
+Trust Dashboard
+
+Trust-State Discovery
+
+Identity Trust
+
+Device Trust
+
+Continuous Trust Validation
+
+Trust Analytics
+
+Move:
+
+Trust-State Discovery
+
+from Ecosystem here.
+
+This is its natural home.
+
+GOVERNANCE
+
+Everything compliance-related.
+
+GOVERNANCE:
+
+Compliance Center
+
+Quantum Governance
+
+Crypto Policies
+
+Audit Vault
+
+Regulatory Mapping
+
+Standards Mapping
+
+Move:
+
+Compliance & Standards Center
+
+from Quantum Readiness Assessment.
+
+Assessment should consume governance data, not own it.
+
+TELEMETRY
+
+Runtime telemetry only.
+
+TELEMETRY:
+
+Runtime Telemetry
+
+Certificate Telemetry
+
+Key Analytics
+
+API Encryption Monitoring
+
+Multi-Cloud Telemetry
+
+Good as-is.

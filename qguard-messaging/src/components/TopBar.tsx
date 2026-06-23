@@ -1,4 +1,4 @@
-import { Bell, CircleHelp, LogOut, Moon, Search, Sun } from "lucide-react";
+import { Bell, CircleHelp, LogOut, Moon, Search, Sparkles, Sun } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { useMemo, useState } from "react";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
@@ -13,6 +13,7 @@ interface TopBarProps {
   lastLiveEvent: QGuardLiveEvent | null;
   onToggleTheme: () => void;
   onSignOut: () => void;
+  onStartTour: () => void;
 }
 
 function initials(user: User): string {
@@ -25,7 +26,7 @@ function initials(user: User): string {
     .join("") || "U";
 }
 
-export default function TopBar({ title, subtitle, user, theme, liveStatus, lastLiveEvent, onToggleTheme, onSignOut }: TopBarProps) {
+export default function TopBar({ title, subtitle, user, theme, liveStatus, lastLiveEvent, onToggleTheme, onSignOut, onStartTour }: TopBarProps) {
   const [panel, setPanel] = useState<"search" | "notifications" | "help" | null>(null);
   const [search, setSearch] = useState("");
   const liveTone = liveStatus.state === "live"
@@ -62,7 +63,7 @@ export default function TopBar({ title, subtitle, user, theme, liveStatus, lastL
         <button className="icon-button" title="Notifications" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>
           <Bell size={18} />
         </button>
-        <button className="icon-button" title="Security help" onClick={() => setPanel(panel === "help" ? null : "help")}>
+        <button data-tour="help" className="icon-button" title="Security help" onClick={() => setPanel(panel === "help" ? null : "help")}>
           <CircleHelp size={18} />
         </button>
         <button className="icon-button" title="Toggle theme" onClick={onToggleTheme}>
@@ -106,6 +107,17 @@ export default function TopBar({ title, subtitle, user, theme, liveStatus, lastL
                 <div>Live status reflects SSE-formatted backend events with fallback polling.</div>
                 <div>Plaintext and private keys stay on this client.</div>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPanel(null);
+                  onStartTour();
+                }}
+                className="focus-ring mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-600 transition hover:bg-violet-100"
+              >
+                <Sparkles size={14} />
+                Replay product tour
+              </button>
             </div>
           )}
         </div>

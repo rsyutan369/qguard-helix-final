@@ -1,0 +1,79 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - img [ref=e7]
+        - generic [ref=e10]:
+          - generic [ref=e11]: QGUARD
+          - generic [ref=e12]: Quantum Messaging
+      - navigation [ref=e13]:
+        - button "Dashboard" [ref=e14] [cursor=pointer]:
+          - img [ref=e15]
+          - generic [ref=e20]: Dashboard
+        - button "Secure Chat" [ref=e21] [cursor=pointer]:
+          - img [ref=e22]
+          - generic [ref=e24]: Secure Chat
+        - button "Quantum Vault" [ref=e25] [cursor=pointer]:
+          - img [ref=e26]
+          - generic [ref=e30]: Quantum Vault
+        - button "Key Management" [ref=e31] [cursor=pointer]:
+          - img [ref=e32]
+          - generic [ref=e35]: Key Management
+        - button "Device Trust" [ref=e36] [cursor=pointer]:
+          - img [ref=e37]
+          - generic [ref=e40]: Device Trust
+        - button "Verification" [ref=e41] [cursor=pointer]:
+          - img [ref=e42]
+          - generic [ref=e48]: Verification
+        - button "Quantum Security" [ref=e49] [cursor=pointer]:
+          - img [ref=e50]
+          - generic [ref=e53]: Quantum Security
+        - button "Settings" [ref=e54] [cursor=pointer]:
+          - img [ref=e55]
+          - generic [ref=e58]: Settings
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - img [ref=e61]
+          - text: Protected
+        - generic [ref=e64]: "PQC: ML-KEM-1024 - HNDL: Protected"
+    - generic [ref=e65]:
+      - banner [ref=e66]:
+        - generic [ref=e67]:
+          - heading "Dashboard" [level=1] [ref=e68]
+          - paragraph [ref=e69]: Preview shell for the onboarding product tour.
+        - generic [ref=e70]:
+          - button "Search secure workspace" [ref=e71] [cursor=pointer]:
+            - img [ref=e72]
+            - generic [ref=e75]: Search secure workspace
+          - generic "Realtime connected" [ref=e76]: live
+          - button "Notifications" [ref=e77] [cursor=pointer]:
+            - img [ref=e78]
+          - button "Security help" [ref=e81] [cursor=pointer]:
+            - img [ref=e82]
+          - button "Toggle theme" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+          - button "Sign out" [ref=e88] [cursor=pointer]:
+            - img [ref=e89]
+          - generic [ref=e92]: AL
+      - main [ref=e93]:
+        - generic [ref=e94]: Preview workspace content — the tour spotlights the sidebar and top bar around this area.
+  - generic [ref=e97]:
+    - generic [ref=e98]:
+      - img [ref=e100]
+      - generic [ref=e103]:
+        - generic [ref=e104]: QGuard Messaging
+        - generic [ref=e105]: Welcome, Ada
+    - generic [ref=e106]:
+      - paragraph [ref=e107]: Your secure, quantum-safe workspace is ready. Take a short guided tour to see how messaging, encryption, device trust, and recovery fit together — so your data stays protected from day one.
+      - generic [ref=e108]:
+        - generic [ref=e109]:
+          - img [ref=e110]
+          - text: 3 min walkthrough
+        - generic [ref=e113]:
+          - img [ref=e114]
+          - text: 9 quick stops
+      - generic [ref=e117]:
+        - button "Skip for now" [ref=e118] [cursor=pointer]
+        - button "Start tour" [ref=e119] [cursor=pointer]:
+          - text: Start tour
+          - img [ref=e120]

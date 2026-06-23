@@ -59,6 +59,7 @@ export default function Sidebar({ activePage, modules, snapshot, onNavigate }: S
             <button
               key={item.module_id}
               type="button"
+              data-tour={`nav-${item.route}`}
               onClick={() => onNavigate(item.route)}
               className={`focus-ring flex h-10 w-full items-center gap-3 rounded-lg px-3 text-sm font-semibold transition ${
                 active

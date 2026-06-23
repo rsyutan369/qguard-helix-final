@@ -87,6 +87,15 @@ import PQAuthMigrationCenterPage from './app/dashboard/pqauth/migration-center/p
 import PQAuthRuntimeTelemetryPage from './app/dashboard/pqauth/runtime-telemetry/page';
 import PQAuthCompliancePage from './app/dashboard/pqauth/compliance/page';
 import PQAuthQkmsPage from './app/dashboard/pqauth/qkms/page';
+import QuantumReadinessLandingPage from './app/dashboard/quantum-readiness/page';
+import QuantumReadinessCommandCenterPage from './app/dashboard/quantum-readiness/command-center/page';
+import QuantumReadinessExecutivePage from './app/dashboard/quantum-readiness/executive/page';
+import QuantumReadinessExposureGraphPage from './app/dashboard/quantum-readiness/exposure-graph/page';
+import QuantumReadinessRiskAnalysisPage from './app/dashboard/quantum-readiness/risk-analysis/page';
+import QuantumReadinessAiExecutiveAdvisorPage from './app/dashboard/quantum-readiness/ai-executive-advisor/page';
+import QuantumReadinessAiMigrationAdvisorPage from './app/dashboard/quantum-readiness/ai-migration-advisor/page';
+import QuantumReadinessDigitalTwinPage from './app/dashboard/quantum-readiness/digital-twin/page';
+import QuantumReadinessReportsPage from './app/dashboard/quantum-readiness/reports/page';
 
 export default function App() {
   return (
@@ -227,6 +236,17 @@ export default function App() {
           <Route path="key-analytics" element={<KeyAnalyticsPage />} />
           <Route path="api-encryption" element={<ApiEncryptionPage />} />
           <Route path="multi-cloud-telemetry" element={<MultiCloudTelemetryPage />} />
+          {/* Quantum Readiness Assessment Engine™ */}
+          <Route path="quantum-readiness" element={<QuantumReadinessLandingPage />} />
+          <Route path="quantum-readiness/command-center" element={<QuantumReadinessCommandCenterPage />} />
+          <Route path="quantum-readiness/executive" element={<QuantumReadinessExecutivePage />} />
+          <Route path="quantum-readiness/exposure-graph" element={<QuantumReadinessExposureGraphPage />} />
+          <Route path="quantum-readiness/risk-analysis" element={<QuantumReadinessRiskAnalysisPage />} />
+          <Route path="quantum-readiness/ai-executive-advisor" element={<QuantumReadinessAiExecutiveAdvisorPage />} />
+          <Route path="quantum-readiness/ai-migration-advisor" element={<QuantumReadinessAiMigrationAdvisorPage />} />
+          <Route path="quantum-readiness/digital-twin" element={<QuantumReadinessDigitalTwinPage />} />
+          <Route path="quantum-readiness/reports" element={<QuantumReadinessReportsPage />} />
+
           <Route path="qkms/overview" element={<QkmsOverviewPage />} />
           <Route path="qkms/inventory" element={<QkmsInventoryPage />} />
           <Route path="qkms/governance" element={<QkmsGovernancePage />} />

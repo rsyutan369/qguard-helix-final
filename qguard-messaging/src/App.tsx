@@ -1,7 +1,9 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
+import OnboardingTour from "@/components/onboarding/OnboardingTour";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useTheme } from "@/lib/use-theme";
 import LoginPage from "@/pages/LoginPage";
@@ -53,6 +55,14 @@ function ProtectedMessagingApp() {
       setPage(data.modules[0].route);
     }
   }, [data.modules, page]);
+
+  const tourSteps = useMemo(() => buildTourSteps(data.modules), [data.modules]);
+  const tourChecklist = useMemo(
+    () => (auth.user ? buildChecklist(data, auth.user.id) : []),
+    [data, auth.user],
+  );
+  const onboardingReady = Boolean(auth.user && auth.session) && !loading && !error && data.modules.length > 0;
+  const onboarding = useOnboarding(auth.user?.id ?? null, tourSteps.length, onboardingReady);
 
   if (auth.loading) {
     return (
@@ -149,11 +159,19 @@ function ProtectedMessagingApp() {
           lastLiveEvent={liveEvents[0] ?? null}
           onToggleTheme={toggleTheme}
           onSignOut={auth.signOut}
+          onStartTour={onboarding.replay}
         />
         <main className="min-h-0 flex-1 overflow-y-auto p-5">
           <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
         </main>
       </div>
+      <OnboardingTour
+        controller={onboarding}
+        steps={tourSteps}
+        checklist={tourChecklist}
+        userName={String(auth.user.user_metadata?.full_name ?? auth.user.email ?? "")}
+        onNavigate={setPage}
+      />
     </div>
   );
 }
