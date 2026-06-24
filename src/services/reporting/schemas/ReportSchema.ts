@@ -31,8 +31,158 @@ export const findingSchema = z.object({
   remediationPlan: z.string(),
   source: z.string().default('QGuard Helix'),
   detectedAt: z.string().nullable().optional(),
+  // Actionable enrichment (Enhancement #1)
+  currentState: z.string().default(EVIDENCE_UNAVAILABLE),
+  recommendedState: z.string().default(EVIDENCE_UNAVAILABLE),
+  businessImpact: z.string().default(EVIDENCE_UNAVAILABLE),
+  technicalImpact: z.string().default(EVIDENCE_UNAVAILABLE),
+  migrationComplexity: z.enum(['Low', 'Medium', 'High']).default('Medium'),
+  dependencies: z.array(z.string()).default([]),
+  owner: z.string().default('Security Engineering'),
+  targetDate: z.string().default(EVIDENCE_UNAVAILABLE),
+  validation: z.string().default(EVIDENCE_UNAVAILABLE),
+  riskReductionPct: z.number().default(0),
+  estimatedCostUsd: z.number().default(0),
+  estimatedEffort: z.string().default(EVIDENCE_UNAVAILABLE),
 });
 export type ReportFinding = z.infer<typeof findingSchema>;
+
+/* ---- Board-level program sections (Report Enhancement 1 & 2) ---- */
+
+export const executiveBlockSchema = z.object({
+  currentReadiness: z.number(),
+  targetReadiness: z.number(),
+  currentRisk: z.number(),
+  targetRisk: z.number(),
+  currentHndl: z.number(),
+  targetHndl: z.number(),
+  estimatedDurationWeeks: z.number(),
+  estimatedCostUsd: z.number(),
+  expectedRiskReductionPct: z.number(),
+  expectedComplianceImprovementPct: z.number(),
+  quantumExposureWindow: z.string(),
+  topRisks: z.array(z.string()),
+  topActions: z.array(z.string()),
+  executiveRecommendation: z.string(),
+});
+export type ExecutiveBlock = z.infer<typeof executiveBlockSchema>;
+
+export const businessImpactSchema = z.object({
+  customerFacingSystems: z.number(),
+  missionCriticalSystems: z.number(),
+  revenueImpact: z.string(),
+  operationalImpact: z.string(),
+  complianceImpact: z.string(),
+  reputationalImpact: z.string(),
+  financialImpact: z.string(),
+  thirdPartyDependencies: z.number(),
+  hndlExposure: z.string(),
+  quantumExposureWindow: z.string(),
+});
+export type BusinessImpact = z.infer<typeof businessImpactSchema>;
+
+export const readinessDomainSchema = z.object({
+  domain: z.string(),
+  score: z.number(),
+  riskLevel: z.string(),
+  owner: z.string(),
+  actions: z.string(),
+});
+export type ReadinessDomain = z.infer<typeof readinessDomainSchema>;
+
+export const migrationAdvisorSchema = z.object({
+  recommendation: z.string(),
+  reason: z.string(),
+  affectedAssets: z.array(z.string()),
+  riskReductionPct: z.number(),
+  costUsd: z.number(),
+  timelineWeeks: z.number(),
+  complexity: z.string(),
+  successProbabilityPct: z.number(),
+  confidencePct: z.number(),
+});
+export type MigrationAdvisor = z.infer<typeof migrationAdvisorSchema>;
+
+export const migrationWaveSchema = z.object({
+  wave: z.number(),
+  name: z.string(),
+  assets: z.array(z.string()),
+  owner: z.string(),
+  durationWeeks: z.number(),
+  costUsd: z.number(),
+  dependencies: z.array(z.string()),
+  riskReductionPct: z.number(),
+  status: z.string(),
+  priority: z.string(),
+});
+export type MigrationWave = z.infer<typeof migrationWaveSchema>;
+
+export const playbookStageSchema = z.object({
+  wave: z.string(),
+  prerequisites: z.string(),
+  preparation: z.string(),
+  execution: z.string(),
+  rollback: z.string(),
+  validation: z.string(),
+  successCriteria: z.string(),
+});
+export type PlaybookStage = z.infer<typeof playbookStageSchema>;
+
+export const riskCategorySchema = z.object({
+  category: z.string(),
+  currentScore: z.number(),
+  targetScore: z.number(),
+  reductionPotentialPct: z.number(),
+});
+export type RiskCategory = z.infer<typeof riskCategorySchema>;
+
+export const hndlCategorySchema = z.object({
+  category: z.string(),
+  retention: z.string(),
+  currentProtection: z.string(),
+  hndlRisk: z.string(),
+  recommendedProtection: z.string(),
+});
+export type HndlCategory = z.infer<typeof hndlCategorySchema>;
+
+export const costLineSchema = z.object({ category: z.string(), costUsd: z.number() });
+export const costForecastSchema = z.object({
+  lines: z.array(costLineSchema),
+  totalUsd: z.number(),
+  projectedRiskReductionValueUsd: z.number(),
+});
+export type CostForecast = z.infer<typeof costForecastSchema>;
+
+export const riskForecastSchema = z.object({
+  currentRisk: z.number(),
+  targetRisk: z.number(),
+  reductionPct: z.number(),
+  residualRisk: z.number(),
+  month12: z.number(),
+  month24: z.number(),
+  month36: z.number(),
+});
+export type RiskForecast = z.infer<typeof riskForecastSchema>;
+
+export const governanceRoleSchema = z.object({ role: z.string(), owner: z.string(), responsibility: z.string() });
+export type GovernanceRole = z.infer<typeof governanceRoleSchema>;
+
+export const remediationItemSchema = z.object({
+  priority: z.number(),
+  action: z.string(),
+  owner: z.string(),
+  affectedAssets: z.array(z.string()),
+  costUsd: z.number(),
+  effort: z.string(),
+  riskReductionPct: z.number(),
+  targetDate: z.string(),
+  status: z.string(),
+  dependencies: z.array(z.string()),
+  validation: z.string(),
+});
+export type RemediationItem = z.infer<typeof remediationItemSchema>;
+
+export const dependencyChainSchema = z.object({ path: z.string(), blastRadius: z.number(), complexity: z.string() });
 
 export const kpiSchema = z.object({
   label: z.string(),
@@ -109,18 +259,31 @@ export const enterpriseAssessmentReportSchema = z.object({
   meta: reportMetaSchema,
   branding: brandingSchema,
   executiveSummary: z.string(),
+  executiveBlock: executiveBlockSchema,
   kpis: z.array(kpiSchema),
+  businessImpact: businessImpactSchema,
+  readinessDomains: z.array(readinessDomainSchema),
+  migrationAdvisor: migrationAdvisorSchema,
+  migrationReadiness: z.array(z.object({ category: z.string(), score: z.number(), recommendation: z.string() })),
+  migrationWaves: z.array(migrationWaveSchema),
+  dependencyAnalysis: z.object({ chains: z.array(dependencyChainSchema), failurePoints: z.array(z.string()), summary: z.string() }),
+  riskCategories: z.array(riskCategorySchema),
   findings: z.array(findingSchema),
   assets: tableSchema,
   certificates: tableSchema,
   keys: tableSchema,
   tlsEndpoints: tableSchema,
   cbom: tableSchema,
-  hndl: z.object({ summary: z.string(), table: tableSchema }),
+  hndl: z.object({ summary: z.string(), table: tableSchema, categories: z.array(hndlCategorySchema) }),
   trustRelationships: tableSchema,
   pqcReadiness: z.object({ summary: z.string(), table: tableSchema }),
   compliance: z.array(complianceMappingSchema),
+  remediationProgram: z.array(remediationItemSchema),
   roadmap: z.array(roadmapPhaseSchema),
+  playbook: z.array(playbookStageSchema),
+  costForecast: costForecastSchema,
+  riskForecast: riskForecastSchema,
+  governance: z.array(governanceRoleSchema),
   remediation: tableSchema,
   evidence: z.object({ sources: z.array(z.string()), notes: z.string() }),
   charts: z.array(chartImageSchema),

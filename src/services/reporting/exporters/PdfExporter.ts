@@ -191,12 +191,13 @@ class PdfLayout {
       this.paragraph('Evidence Not Available — no findings recorded.', 9.5, MUTED);
       return;
     }
-    for (const finding of report.findings.slice(0, 14)) {
+    for (const finding of report.findings.slice(0, 12)) {
       const lines = [
-        ...this.wrap(`Evidence: ${finding.evidence}`, 8.5, this.font, this.contentW - 16),
-        ...this.wrap(`Affected: ${finding.affectedAssets.join(', ') || 'Evidence Not Available'}`, 8.5, this.font, this.contentW - 16),
-        ...this.wrap(`Recommendation: ${finding.recommendation}`, 8.5, this.font, this.contentW - 16),
-        ...this.wrap(`Remediation: ${finding.remediationPlan}`, 8.5, this.font, this.contentW - 16),
+        ...this.wrap(`Asset: ${finding.affectedAssets.join(', ') || 'Evidence Not Available'}   |   Owner: ${finding.owner}   |   Target: ${finding.targetDate}`, 8.5, this.font, this.contentW - 16),
+        ...this.wrap(`Current: ${finding.currentState}  ->  Recommended: ${finding.recommendedState}`, 8.5, this.font, this.contentW - 16),
+        ...this.wrap(`Business Impact: ${finding.businessImpact}`, 8.5, this.font, this.contentW - 16),
+        ...this.wrap(`Complexity: ${finding.migrationComplexity}  |  Effort: ${finding.estimatedEffort}  |  Cost: $${(finding.estimatedCostUsd || 0).toLocaleString()}  |  Risk Reduction: ${finding.riskReductionPct}%`, 8.5, this.font, this.contentW - 16),
+        ...this.wrap(`Dependencies: ${finding.dependencies.join(', ') || '-'}   |   Validation: ${finding.validation}`, 8.5, this.font, this.contentW - 16),
       ];
       const boxH = 24 + lines.length * 11;
       this.ensure(boxH + 6);
@@ -269,44 +270,100 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   }
   cover.drawLine({ start: { x: MARGIN, y: 90 }, end: { x: A4[0] - MARGIN, y: 90 }, thickness: 2, color: BRAND });
 
-  // ---- Body ----
+  // ---- Body (board-level migration program structure) ----
+  const ex = report.executiveBlock;
+  const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
   const layout = new PdfLayout(doc, font, bold);
+
   layout.heading('Executive Summary');
   layout.paragraph(report.executiveSummary);
   if (branding.customNotes) layout.paragraph(`Notes: ${branding.customNotes}`, 9, MUTED);
+  layout.table({ title: 'Current vs Target', columns: ['Metric', 'Current', 'Target', 'Improvement'], rows: [
+    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, `+${Math.max(0, ex.targetReadiness - ex.currentReadiness)}`],
+    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, `-${ex.expectedRiskReductionPct}%`],
+    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, `-${Math.max(0, ex.currentHndl - ex.targetHndl)}`],
+    ['Migration Timeline', '—', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
+    ['Migration Budget', '—', usd(ex.estimatedCostUsd), ''],
+    ['Quantum Exposure Window', '—', ex.quantumExposureWindow, ''],
+  ] }, [34, 22, 22, 22]);
+  layout.heading('Top Risks & Recommended Actions');
+  layout.table({ title: 'Top 5', columns: ['# ', 'Top Risk', 'Recommended Action'], rows: Array.from({ length: Math.max(ex.topRisks.length, ex.topActions.length) }).map((_, i) => [i + 1, ex.topRisks[i] || '—', ex.topActions[i] || '—']) }, [6, 47, 47]);
+  layout.paragraph(`Executive Recommendation: ${ex.executiveRecommendation}`, 9.5, INK);
 
-  layout.heading('Key Performance Indicators');
+  layout.heading('Executive Dashboard');
   layout.kpiGrid(report.kpis);
+
+  layout.heading('Business Impact Analysis');
+  layout.table({ title: 'Business Impact', columns: ['Dimension', 'Value'], rows: [
+    ['Customer-Facing Systems', report.businessImpact.customerFacingSystems],
+    ['Mission-Critical Systems', report.businessImpact.missionCriticalSystems],
+    ['Third-Party Dependencies', report.businessImpact.thirdPartyDependencies],
+    ['Revenue Impact', report.businessImpact.revenueImpact],
+    ['Compliance Impact', report.businessImpact.complianceImpact],
+    ['Financial Impact', report.businessImpact.financialImpact],
+    ['HNDL Exposure', report.businessImpact.hndlExposure],
+    ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
+  ] }, [50, 50]);
+
+  layout.heading('Quantum Readiness Breakdown');
+  layout.table({ title: 'Domains', columns: ['Domain', 'Score', 'Risk', 'Owner', 'Recommended Action'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}`, d.riskLevel, d.owner, d.actions]) }, [16, 8, 10, 18, 48]);
+
+  layout.heading('AI Migration Advisor');
+  layout.paragraph(`Recommendation: ${report.migrationAdvisor.recommendation}`, 11, INK);
+  layout.paragraph(report.migrationAdvisor.reason);
+  layout.table({ title: 'Advisor', columns: ['Risk Reduction', 'Est. Cost', 'Timeline', 'Complexity', 'Confidence'], rows: [[`${report.migrationAdvisor.riskReductionPct}%`, usd(report.migrationAdvisor.costUsd), `${report.migrationAdvisor.timelineWeeks}w`, report.migrationAdvisor.complexity, `${report.migrationAdvisor.confidencePct}%`]] }, [20, 22, 16, 20, 22]);
+
+  layout.heading('Migration Readiness Assessment');
+  layout.table({ title: 'Readiness', columns: ['Category', 'Score', 'Recommendation'], rows: report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]) }, [26, 12, 62]);
+
+  layout.heading('Migration Wave Planning');
+  layout.table({ title: 'Waves', columns: ['Wave', 'Focus', 'Pri', 'Owner', 'Dur', 'Cost', 'Risk-', 'Status'], rows: report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]) }, [7, 22, 11, 20, 8, 14, 8, 10]);
+
+  layout.heading('Migration Dependency Analysis');
+  layout.paragraph(report.dependencyAnalysis.summary, 9, MUTED);
+  layout.table({ title: 'Dependencies', columns: ['Dependency Chain', 'Blast Radius', 'Complexity'], rows: report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]) }, [64, 18, 18]);
+
+  layout.heading('Quantum Risk Analysis');
+  layout.table({ title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, `${r.currentScore}`, `${r.targetScore}`, `${r.reductionPotentialPct}%`]) }, [40, 18, 18, 24]);
+
+  layout.heading('HNDL Exposure Analysis');
+  layout.paragraph(report.hndl.summary);
+  layout.table({ title: 'HNDL', columns: ['Data Category', 'Retention', 'Current', 'Risk', 'Recommended'], rows: report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]) }, [22, 18, 22, 10, 28]);
 
   layout.heading('Visual Analysis');
   for (const chart of report.charts) await layout.image(chart.dataUrl, layout.contentW * 0.62, 200, chart.title);
 
-  layout.heading('Findings');
+  layout.heading('Findings & Evidence');
   layout.findings(report);
 
-  layout.heading('PQC Readiness');
-  layout.paragraph(report.pqcReadiness.summary);
-  layout.table(report.pqcReadiness.table, [60, 40]);
-
-  layout.heading('HNDL Exposure');
-  layout.paragraph(report.hndl.summary);
-  layout.table(report.hndl.table, [60, 40]);
-
-  layout.heading('Asset & CBOM Inventory');
+  layout.heading('Cryptographic & Asset Inventory');
   layout.table(report.assets, [26, 14, 16, 20, 12, 12]);
   layout.table(report.cbom, [60, 40]);
+  layout.table(report.pqcReadiness.table, [60, 40]);
 
   layout.heading('Compliance Mapping');
-  layout.table({ title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Detail'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]) }, [16, 32, 14, 38]);
+  layout.table({ title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current -> Target / Gap'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]) }, [16, 28, 12, 44]);
 
-  layout.heading('Remediation Plan');
-  layout.table(report.remediation, [8, 28, 48, 16]);
+  layout.heading('Remediation Program');
+  layout.table({ title: 'Remediation', columns: ['Pri', 'Action', 'Owner', 'Cost', 'Risk-', 'Target'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, usd(r.costUsd), `${r.riskReductionPct}%`, r.targetDate]) }, [6, 40, 18, 14, 8, 14]);
 
   layout.heading('Migration Roadmap');
-  layout.table({ title: 'Roadmap', columns: ['Phase', 'Description', 'Status', 'Weeks'], rows: report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]) }, [16, 54, 18, 12]);
+  layout.table({ title: 'Roadmap', columns: ['Phase', 'Description', 'Status', 'Weeks'], rows: report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]) }, [26, 48, 14, 12]);
+
+  layout.heading('Cost Forecast');
+  layout.table({ title: 'Cost', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] }, [60, 40]);
+
+  layout.heading('Risk Reduction Forecast');
+  layout.table({ title: 'Forecast', columns: ['Metric', 'Value'], rows: [
+    ['Current Risk', `${report.riskForecast.currentRisk}/100`], ['Target Risk', `${report.riskForecast.targetRisk}/100`], ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
+    ['12-Month', `${report.riskForecast.month12}/100`], ['24-Month', `${report.riskForecast.month24}/100`], ['36-Month', `${report.riskForecast.month36}/100`],
+  ] }, [50, 50]);
+
+  layout.heading('Governance & Ownership');
+  layout.table({ title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, [22, 24, 54]);
 
   layout.heading('Evidence Sources');
-  layout.paragraph(report.evidence.sources.join(' · '), 9, MUTED);
+  layout.paragraph(report.evidence.sources.join(' - '), 9, MUTED);
   layout.paragraph(report.evidence.notes, 9, MUTED);
   if (report.integrity) layout.paragraph(`Integrity (${report.integrity.algorithm}): ${report.integrity.hash}`, 8, MUTED);
 

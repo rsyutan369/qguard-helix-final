@@ -25,6 +25,21 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
   return bytes;
 }
 
+/** Read intrinsic PNG dimensions from the IHDR chunk (big-endian). */
+function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 24 || bytes[0] !== 0x89 || bytes[1] !== 0x50) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/** Fit a logo into a box preserving aspect ratio. */
+function logoFit(bytes: Uint8Array, maxW = 170, maxH = 64): { width: number; height: number } {
+  const size = pngSize(bytes);
+  if (!size || !size.width || !size.height) return { width: maxW, height: maxH };
+  const scale = Math.min(maxW / size.width, maxH / size.height);
+  return { width: Math.round(size.width * scale), height: Math.round(size.height * scale) };
+}
+
 const INK = '0F172A';
 const MUTED = '64748B';
 
@@ -80,7 +95,8 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const coverChildren: Paragraph[] = [];
   if (branding.companyLogo) {
     try {
-      coverChildren.push(new Paragraph({ spacing: { after: 240 }, children: [new ImageRun({ type: 'png', data: dataUrlToBytes(branding.companyLogo), transformation: { width: 160, height: 60 } })] }));
+      const logoBytes = dataUrlToBytes(branding.companyLogo);
+      coverChildren.push(new Paragraph({ spacing: { after: 240 }, children: [new ImageRun({ type: 'png', data: logoBytes, transformation: logoFit(logoBytes, 170, 64) })] }));
     } catch {
       /* logo not embeddable */
     }
@@ -97,11 +113,43 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const kpiTable: ReportTable = { title: 'KPIs', columns: ['KPI', 'Value', 'Level'], rows: report.kpis.map((kpi) => [kpi.label, `${kpi.value}${kpi.unit || ''}`, kpi.level || '—']) };
   const findingsTable: ReportTable = {
     title: 'Findings',
-    columns: ['Severity', 'Title', 'Evidence', 'Recommendation'],
-    rows: report.findings.length ? report.findings.map((f) => [f.severity.toUpperCase(), f.title, f.evidence, f.recommendation]) : [['—', 'Evidence Not Available', '—', '—']],
+    columns: ['ID', 'Severity', 'Asset', 'Current -> Recommended', 'Owner', 'Target', 'Cost', 'Risk-'],
+    rows: report.findings.length
+      ? report.findings.map((f) => [f.id, f.severity.toUpperCase(), f.affectedAssets.join(', ') || '-', `${f.currentState} -> ${f.recommendedState}`, f.owner, f.targetDate, f.estimatedCostUsd ? `$${f.estimatedCostUsd.toLocaleString()}` : '-', `${f.riskReductionPct}%`])
+      : [['-', '-', 'Evidence Not Available', '-', '-', '-', '-', '-']],
   };
-  const complianceTable: ReportTable = { title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Detail'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]) };
+  const complianceTable: ReportTable = { title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current -> Target / Gap'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]) };
   const roadmapTable: ReportTable = { title: 'Roadmap', columns: ['Phase', 'Description', 'Status', 'Effort (wks)'], rows: report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]) };
+  const ex = report.executiveBlock;
+  const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
+  const stateTable: ReportTable = { title: 'Current vs Target', columns: ['Metric', 'Current', 'Target', 'Improvement'], rows: [
+    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, `+${Math.max(0, ex.targetReadiness - ex.currentReadiness)}`],
+    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, `-${ex.expectedRiskReductionPct}%`],
+    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, `-${Math.max(0, ex.currentHndl - ex.targetHndl)}`],
+    ['Migration Timeline', '-', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
+    ['Migration Budget', '-', usd(ex.estimatedCostUsd), ''],
+  ] };
+  const businessTable: ReportTable = { title: 'Business Impact', columns: ['Dimension', 'Value'], rows: [
+    ['Customer-Facing Systems', report.businessImpact.customerFacingSystems], ['Mission-Critical Systems', report.businessImpact.missionCriticalSystems],
+    ['Third-Party Dependencies', report.businessImpact.thirdPartyDependencies], ['Revenue Impact', report.businessImpact.revenueImpact],
+    ['Compliance Impact', report.businessImpact.complianceImpact], ['Financial Impact', report.businessImpact.financialImpact],
+    ['HNDL Exposure', report.businessImpact.hndlExposure], ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
+  ] };
+  const domainsTable: ReportTable = { title: 'Readiness Domains', columns: ['Domain', 'Score', 'Risk', 'Owner', 'Recommended Action'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}/100`, d.riskLevel, d.owner, d.actions]) };
+  const advisorTable: ReportTable = { title: 'AI Migration Advisor', columns: ['Risk Reduction', 'Est. Cost', 'Timeline', 'Complexity', 'Confidence'], rows: [[`${report.migrationAdvisor.riskReductionPct}%`, usd(report.migrationAdvisor.costUsd), `${report.migrationAdvisor.timelineWeeks}w`, report.migrationAdvisor.complexity, `${report.migrationAdvisor.confidencePct}%`]] };
+  const readinessTable: ReportTable = { title: 'Migration Readiness', columns: ['Category', 'Score', 'Recommendation'], rows: report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]) };
+  const wavesTable: ReportTable = { title: 'Migration Waves', columns: ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk Reduction', 'Status'], rows: report.migrationWaves.map((w) => [`Wave ${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]) };
+  const depTable: ReportTable = { title: 'Dependencies', columns: ['Dependency Chain', 'Blast Radius', 'Complexity'], rows: report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]) };
+  const riskCatTable: ReportTable = { title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, `${r.currentScore}/100`, `${r.targetScore}/100`, `${r.reductionPotentialPct}%`]) };
+  const hndlCatTable: ReportTable = { title: 'HNDL Categories', columns: ['Data Category', 'Retention', 'Current Protection', 'Risk', 'Recommended'], rows: report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]) };
+  const remediationTable: ReportTable = { title: 'Remediation Program', columns: ['Pri', 'Action', 'Owner', 'Cost', 'Risk Reduction', 'Target Date', 'Status'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, usd(r.costUsd), `${r.riskReductionPct}%`, r.targetDate, r.status]) };
+  const costTable: ReportTable = { title: 'Cost Forecast', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] };
+  const forecastTable: ReportTable = { title: 'Risk Forecast', columns: ['Metric', 'Value'], rows: [
+    ['Current Risk', `${report.riskForecast.currentRisk}/100`], ['Target Risk', `${report.riskForecast.targetRisk}/100`], ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
+    ['12-Month', `${report.riskForecast.month12}/100`], ['24-Month', `${report.riskForecast.month24}/100`], ['36-Month', `${report.riskForecast.month36}/100`],
+  ] };
+  const governanceTable: ReportTable = { title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) };
+  const topTable: ReportTable = { title: 'Top 5', columns: ['#', 'Top Risk', 'Recommended Action'], rows: Array.from({ length: Math.max(ex.topRisks.length, ex.topActions.length, 1) }).map((_, i) => [i + 1, ex.topRisks[i] || '-', ex.topActions[i] || '-']) };
 
   const doc = new Document({
     creator: branding.companyName,
@@ -125,29 +173,54 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           heading('Executive Summary'),
           para(report.executiveSummary),
           ...(branding.customNotes ? [para(`Notes: ${branding.customNotes}`, MUTED)] : []),
-          heading('Key Performance Indicators'),
+          docTable(stateTable),
+          para(`Executive Recommendation: ${ex.executiveRecommendation}`, INK),
+          heading('Top Risks & Recommended Actions'),
+          docTable(topTable),
+          heading('Executive Dashboard'),
           docTable(kpiTable),
+          heading('Business Impact Analysis'),
+          docTable(businessTable),
+          heading('Quantum Readiness Breakdown'),
+          docTable(domainsTable),
+          heading('AI Migration Advisor'),
+          para(`Recommendation: ${report.migrationAdvisor.recommendation}`, INK),
+          para(report.migrationAdvisor.reason),
+          docTable(advisorTable),
+          heading('Migration Readiness Assessment'),
+          docTable(readinessTable),
+          heading('Migration Wave Planning'),
+          docTable(wavesTable),
+          heading('Migration Dependency Analysis'),
+          para(report.dependencyAnalysis.summary, MUTED),
+          docTable(depTable),
+          heading('Quantum Risk Analysis'),
+          docTable(riskCatTable),
+          heading('HNDL Exposure Analysis'),
+          para(report.hndl.summary),
+          docTable(hndlCatTable),
           heading('Visual Analysis'),
           ...chartParagraphs(report),
-          heading('Findings'),
+          heading('Findings & Evidence'),
           docTable(findingsTable),
-          heading('PQC Readiness'),
-          para(report.pqcReadiness.summary),
-          docTable(report.pqcReadiness.table),
-          heading('HNDL Exposure'),
-          para(report.hndl.summary),
-          docTable(report.hndl.table),
-          heading('Asset & CBOM Inventory'),
+          heading('Cryptographic & Asset Inventory'),
           docTable(report.assets),
           docTable(report.cbom),
-          heading('Compliance'),
+          docTable(report.pqcReadiness.table),
+          heading('Compliance Mapping'),
           docTable(complianceTable),
-          heading('Remediation Plan'),
-          docTable(report.remediation),
+          heading('Remediation Program'),
+          docTable(remediationTable),
           heading('Migration Roadmap'),
           docTable(roadmapTable),
+          heading('Cost Forecast'),
+          docTable(costTable),
+          heading('Risk Reduction Forecast'),
+          docTable(forecastTable),
+          heading('Governance & Ownership'),
+          docTable(governanceTable),
           heading('Evidence Sources'),
-          para(report.evidence.sources.join(' · '), MUTED),
+          para(report.evidence.sources.join(' - '), MUTED),
           para(report.evidence.notes, MUTED),
           ...(report.integrity ? [para(`Integrity (${report.integrity.algorithm}): ${report.integrity.hash}`, MUTED)] : []),
         ],

@@ -26,7 +26,7 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   cover.background = { color: 'F8FAFC' };
   if (report.branding.companyLogo) {
     try {
-      cover.addImage({ data: report.branding.companyLogo, x: 0.6, y: 0.5, w: 2.2, h: 0.8 });
+      cover.addImage({ data: report.branding.companyLogo, x: 0.6, y: 0.5, w: 2.4, h: 0.9, sizing: { type: 'contain', w: 2.4, h: 0.9 } });
     } catch {
       /* logo not embeddable */
     }
@@ -57,6 +57,49 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   summary.addText('Executive Summary', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
   summary.addText(report.executiveSummary, { x: 0.5, y: 1.1, w: 12.3, h: 5, fontSize: 15, color: '334155', align: 'left', valign: 'top' });
   footer(summary);
+
+  const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'N/A');
+  const headerRow = (cols: string[]): pptxgen.TableRow => cols.map((c) => ({ text: c, options: { bold: true, color: 'FFFFFF', fill: { color: INK } } }));
+  const tableSlide = (title: string, head: string[], body: Array<Array<string | number>>, colW: number[]) => {
+    const slide = pptx.addSlide();
+    slide.addText(title, { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
+    const rows: pptxgen.TableRow[] = [headerRow(head), ...body.map((r) => r.map((c) => ({ text: String(c), options: { color: '334155' } })))];
+    slide.addTable(rows, { x: 0.5, y: 1.1, w: 12.3, colW, fontSize: 10, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
+    footer(slide);
+    return slide;
+  };
+
+  // Executive current -> target
+  const ex = report.executiveBlock;
+  tableSlide('Executive Summary — Current vs Target', ['Metric', 'Current', 'Target', 'Improvement'], [
+    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, `+${Math.max(0, ex.targetReadiness - ex.currentReadiness)}`],
+    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, `-${ex.expectedRiskReductionPct}%`],
+    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, `-${Math.max(0, ex.currentHndl - ex.targetHndl)}`],
+    ['Timeline', '-', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
+    ['Budget', '-', usd(ex.estimatedCostUsd), ''],
+  ], [3.6, 2.9, 2.9, 2.9]);
+
+  // AI Migration Advisor
+  const adv = pptx.addSlide();
+  adv.addText('AI Migration Advisor™', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
+  adv.addText(report.migrationAdvisor.recommendation, { x: 0.5, y: 1.0, w: 12.3, h: 0.6, fontSize: 20, bold: true, color: BRAND });
+  adv.addText(report.migrationAdvisor.reason, { x: 0.5, y: 1.7, w: 12.3, h: 1, fontSize: 14, color: '334155' });
+  [['Risk Reduction', `${report.migrationAdvisor.riskReductionPct}%`], ['Est. Cost', usd(report.migrationAdvisor.costUsd)], ['Timeline', `${report.migrationAdvisor.timelineWeeks}w`], ['Confidence', `${report.migrationAdvisor.confidencePct}%`]].forEach(([k, v], i) => {
+    const x = 0.5 + i * 3.1;
+    adv.addShape(pptx.ShapeType.roundRect, { x, y: 3.0, w: 2.9, h: 1.6, fill: { color: 'FFFFFF' }, line: { color: 'E2E8F0', width: 1 }, rectRadius: 0.08 });
+    adv.addText(String(v), { x, y: 3.2, w: 2.9, h: 0.8, fontSize: 26, bold: true, color: INK, align: 'center' });
+    adv.addText(String(k), { x, y: 4.0, w: 2.9, h: 0.4, fontSize: 11, color: MUTED, align: 'center' });
+  });
+  footer(adv);
+
+  // Business impact + Migration waves + Cost forecast
+  tableSlide('Business Impact Analysis', ['Dimension', 'Value'], [
+    ['Customer-Facing Systems', report.businessImpact.customerFacingSystems], ['Mission-Critical Systems', report.businessImpact.missionCriticalSystems],
+    ['Revenue Impact', report.businessImpact.revenueImpact], ['Compliance Impact', report.businessImpact.complianceImpact],
+    ['HNDL Exposure', report.businessImpact.hndlExposure], ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
+  ], [6.1, 6.2]);
+  tableSlide('Migration Wave Planning', ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk-', 'Status'], report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]), [1, 2.6, 1.4, 2.3, 1.2, 1.6, 1, 1.2]);
+  tableSlide('Cost Forecast', ['Category', 'Estimated Cost'], [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)]], [8, 4.3]);
 
   // Visual analysis — one slide per chart
   for (const chart of report.charts) {

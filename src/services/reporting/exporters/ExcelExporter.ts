@@ -60,37 +60,54 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   summary.getColumn(2).width = 20;
   summary.getColumn(3).width = 24;
 
-  // Findings sheet with severity colouring
+  const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
+
+  // Actionable findings sheet with severity colouring
   const findings = workbook.addWorksheet('Findings');
-  const fHeader = findings.addRow(['ID', 'Title', 'Severity', 'Source', 'Affected Assets', 'Evidence', 'Recommendation', 'Remediation Plan']);
+  const fHeader = findings.addRow(['ID', 'Severity', 'Title', 'Asset', 'Current State', 'Recommended State', 'Business Impact', 'Complexity', 'Owner', 'Target Date', 'Effort', 'Cost', 'Risk Reduction', 'Dependencies']);
   styleHeader(fHeader);
   if (report.findings.length) {
-    report.findings.forEach((finding) => {
+    report.findings.forEach((f) => {
       const row = findings.addRow([
-        finding.id,
-        finding.title,
-        finding.severity.toUpperCase(),
-        finding.source,
-        finding.affectedAssets.join('; ') || 'Evidence Not Available',
-        finding.evidence,
-        finding.recommendation,
-        finding.remediationPlan,
+        f.id, f.severity.toUpperCase(), f.title, f.affectedAssets.join('; ') || 'Evidence Not Available', f.currentState, f.recommendedState,
+        f.businessImpact, f.migrationComplexity, f.owner, f.targetDate, f.estimatedEffort, usd(f.estimatedCostUsd), `${f.riskReductionPct}%`, f.dependencies.join('; '),
       ]);
-      const sevCell = row.getCell(3);
-      sevCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SEV_FILL[finding.severity] || 'FF64748B' } };
+      const sevCell = row.getCell(2);
+      sevCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SEV_FILL[f.severity] || 'FF64748B' } };
       sevCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     });
-    findings.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 8 } };
+    findings.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 14 } };
   } else {
     findings.addRow(['Evidence Not Available']);
   }
-  [10, 30, 12, 18, 22, 40, 40, 40].forEach((width, index) => (findings.getColumn(index + 1).width = width));
+  [10, 10, 28, 18, 22, 26, 28, 11, 18, 12, 12, 12, 12, 26].forEach((width, index) => (findings.getColumn(index + 1).width = width));
 
-  // Inventory & governance sheets
+  // Program sheets
+  addTableSheet(workbook, { title: 'Executive', columns: ['Metric', 'Current', 'Target'], rows: [
+    ['Quantum Readiness', report.executiveBlock.currentReadiness, report.executiveBlock.targetReadiness],
+    ['Quantum Risk', report.executiveBlock.currentRisk, report.executiveBlock.targetRisk],
+    ['HNDL Exposure', report.executiveBlock.currentHndl, report.executiveBlock.targetHndl],
+    ['Timeline (weeks)', '-', report.executiveBlock.estimatedDurationWeeks],
+    ['Budget', '-', usd(report.executiveBlock.estimatedCostUsd)],
+    ['Expected Risk Reduction', '-', `${report.executiveBlock.expectedRiskReductionPct}%`],
+  ] }, 'Executive Summary');
+  addTableSheet(workbook, { title: 'Business Impact', columns: ['Dimension', 'Value'], rows: [
+    ['Customer-Facing Systems', report.businessImpact.customerFacingSystems], ['Mission-Critical Systems', report.businessImpact.missionCriticalSystems],
+    ['Third-Party Dependencies', report.businessImpact.thirdPartyDependencies], ['Revenue Impact', report.businessImpact.revenueImpact],
+    ['Compliance Impact', report.businessImpact.complianceImpact], ['Financial Impact', report.businessImpact.financialImpact],
+    ['HNDL Exposure', report.businessImpact.hndlExposure], ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
+  ] }, 'Business Impact');
+  addTableSheet(workbook, { title: 'Readiness Domains', columns: ['Domain', 'Score', 'Risk Level', 'Owner', 'Recommended Action'], rows: report.readinessDomains.map((d) => [d.domain, d.score, d.riskLevel, d.owner, d.actions]) }, 'Readiness Domains');
+  addTableSheet(workbook, { title: 'Migration Waves', columns: ['Wave', 'Focus', 'Priority', 'Owner', 'Duration (wks)', 'Cost', 'Risk Reduction', 'Status', 'Assets'], rows: report.migrationWaves.map((w) => [w.wave, w.name, w.priority, w.owner, w.durationWeeks, usd(w.costUsd), `${w.riskReductionPct}%`, w.status, w.assets.join('; ')]) }, 'Migration Waves');
+  addTableSheet(workbook, { title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, r.currentScore, r.targetScore, `${r.reductionPotentialPct}%`]) }, 'Risk Analysis');
+  addTableSheet(workbook, { title: 'Remediation Program', columns: ['Priority', 'Action', 'Owner', 'Affected Assets', 'Cost', 'Effort', 'Risk Reduction', 'Target Date', 'Status'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, r.affectedAssets.join('; '), usd(r.costUsd), r.effort, `${r.riskReductionPct}%`, r.targetDate, r.status]) }, 'Remediation Program');
+  addTableSheet(workbook, { title: 'Cost Forecast', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] }, 'Cost Forecast');
+  addTableSheet(workbook, { title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, 'Governance');
+
+  // Inventory sheets
   addTableSheet(workbook, report.assets, 'Assets');
   addTableSheet(workbook, report.cbom, 'CBOM');
   addTableSheet(workbook, report.pqcReadiness.table, 'PQC Readiness');
-  addTableSheet(workbook, report.remediation, 'Remediation');
   const compliance = workbook.addWorksheet('Compliance');
   styleHeader(compliance.addRow(['Framework', 'Control', 'Status', 'Detail']));
   report.compliance.forEach((row) => compliance.addRow([row.framework, row.control, row.status, row.detail]));
