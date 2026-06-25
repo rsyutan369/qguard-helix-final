@@ -1,0 +1,849 @@
+# QGuard Helix Enterprise Report Intelligence Enhancement & Refactor
+
+## Objective
+
+Refactor and enhance Again the Quantum Readiness Executive Report™ generation engine.
+
+The current report structure is strong, however several metrics, recommendations, remediation plans, migration waves, risk calculations, and cost forecasts appear disconnected from the actual evidence.
+
+The report must become:
+
+* Evidence Driven
+* Explainable
+* Defensible
+* Board Ready
+* Auditor Ready
+* Enterprise Grade
+
+Every recommendation, score, timeline, budget, risk forecast, and migration plan must be traceable to actual assets, telemetry, CBOM data, certificates, keys, TLS configurations, trust relationships, and scanner findings.
+
+No fabricated values.
+
+No arbitrary targets.
+
+No hardcoded calculations.
+
+No placeholder assumptions.
+
+---
+
+# Phase 1
+
+# Risk Scoring Transparency Engine™
+
+Current issue:
+
+Overall Quantum Risk is shown but no methodology explains how it was calculated.
+
+Implement:
+
+Risk Calculation Methodology
+
+Display:
+
+Quantum Risk Formula
+
+TLS Risk Weight
+
+PKI Risk Weight
+
+Identity Risk Weight
+
+Application Risk Weight
+
+Cloud Risk Weight
+
+Vendor Risk Weight
+
+HNDL Risk Weight
+
+Business Impact Weight
+
+Operational Impact Weight
+
+Example:
+
+Overall Quantum Risk
+
+= (TLS × Weight)
+
+* (PKI × Weight)
+* (Identity × Weight)
+* (Applications × Weight)
+* (Cloud × Weight)
+* (Vendor × Weight)
+* (HNDL × Weight)
+
+Display weighted contribution.
+
+Example:
+
+TLS contributes 42%
+
+Identity contributes 11%
+
+Cloud contributes 18%
+
+HNDL contributes 29%
+
+The report must explain WHY the final score exists.
+
+---
+
+# Phase 2
+
+# AI Recommendation Validation Engine™
+
+Current issue:
+
+AI Migration Advisor recommendation does not always align with findings.
+
+Implement:
+
+Recommendation Validation Layer
+
+Requirements:
+
+Before generating recommendation:
+
+Analyze:
+
+Findings
+
+Severity
+
+Asset Counts
+
+Affected Domains
+
+Business Impact
+
+Dependency Impact
+
+Quantum Exposure
+
+Determine:
+
+Primary Exposure Domain
+
+Examples:
+
+If TLS findings dominate
+
+Recommend:
+
+TLS Modernization
+
+If PKI findings dominate
+
+Recommend:
+
+Certificate Modernization
+
+If Identity findings dominate
+
+Recommend:
+
+Identity Migration
+
+If Cloud findings dominate
+
+Recommend:
+
+Cloud Crypto Modernization
+
+Recommendation must always align with evidence.
+
+Never generate generic recommendations.
+
+Display:
+
+Why This Recommendation?
+
+Top Contributing Findings
+
+Top Contributing Assets
+
+Expected Risk Reduction
+
+Confidence Score
+
+---
+
+# Phase 3
+
+# Cost Forecast Intelligence™
+
+Current issue:
+
+Migration cost appears arbitrary.
+
+Implement:
+
+Cost Calculation Breakdown
+
+Every budget number must show:
+
+Labor Hours
+
+Engineer Count
+
+Cloud Costs
+
+Certificate Costs
+
+PKI Costs
+
+Validation Costs
+
+Training Costs
+
+Infrastructure Costs
+
+HSM Costs
+
+Consulting Costs
+
+Display formulas.
+
+Example:
+
+TLS Migration
+
+80 Hours
+
+Engineer Rate:
+
+$120/hour
+
+Cost:
+
+$9,600
+
+Validation
+
+40 Hours
+
+Cost:
+
+$4,800
+
+Training
+
+20 Hours
+
+Cost:
+
+$2,400
+
+Total:
+
+$16,800
+
+Display all calculations.
+
+Never display unexplained costs.
+
+---
+
+# Phase 4
+
+# Dynamic Migration Wave Engine™
+
+Current issue:
+
+Migration waves generated even when asset inventory is minimal.
+
+Implement:
+
+Adaptive Wave Planning
+
+Requirements:
+
+Generate waves based on actual scope.
+
+Example:
+
+Single Asset Assessment
+
+Wave 1
+
+TLS Modernization
+
+Wave 2
+
+Certificate Upgrade
+
+Wave 3
+
+Validation
+
+Enterprise Assessment
+
+Wave 1
+
+Internet Facing Assets
+
+Wave 2
+
+PKI
+
+Wave 3
+
+Applications
+
+Wave 4
+
+Identity
+
+Wave 5
+
+Cloud
+
+Wave count must scale automatically.
+
+Never generate unnecessary migration phases.
+
+---
+
+# Phase 5
+
+# Asset Criticality Engine™
+
+Create:
+
+Asset Criticality Analysis
+
+Every asset must include:
+
+Business Criticality
+
+Operational Criticality
+
+Customer Facing
+
+Internet Facing
+
+Revenue Impact
+
+Compliance Scope
+
+Data Sensitivity
+
+Availability Requirement
+
+Examples:
+
+Asset
+
+qguardhelix.com
+
+Business Criticality:
+
+High
+
+Customer Facing:
+
+Yes
+
+Internet Facing:
+
+Yes
+
+Compliance Scope:
+
+PCI DSS
+
+ISO27001
+
+SOC2
+
+Data Sensitivity:
+
+Medium
+
+This becomes the basis for prioritization.
+
+---
+
+# Phase 6
+
+# Business Impact Intelligence™
+
+Replace static impact values.
+
+Determine impact from:
+
+Asset Type
+
+Data Type
+
+Trust Relationships
+
+Exposure
+
+User Population
+
+Business Unit
+
+Generate:
+
+Customer Impact
+
+Revenue Impact
+
+Operational Impact
+
+Compliance Impact
+
+Brand Impact
+
+Display explanation.
+
+Example:
+
+Revenue Impact
+
+Medium
+
+Reason:
+
+Customer-facing portal using vulnerable TLS configuration.
+
+---
+
+# Phase 7
+
+# Finding Deduplication Engine™
+
+Current issue:
+
+Multiple findings represent same root cause.
+
+Implement:
+
+Root Cause Consolidation
+
+Example:
+
+Do not display:
+
+TLS_RSA_WITH_AES_256_CBC_SHA
+
+TLS_RSA_WITH_AES_128_CBC_SHA
+
+TLS_RSA_WITH_AES_256_GCM_SHA384
+
+TLS_RSA_WITH_AES_128_GCM_SHA256
+
+as separate findings.
+
+Instead:
+
+Finding:
+
+Legacy RSA Cipher Suites
+
+Occurrences:
+
+4
+
+Affected Assets:
+
+1
+
+Evidence:
+
+TLS_RSA_WITH_AES_256_CBC_SHA
+
+TLS_RSA_WITH_AES_128_CBC_SHA
+
+TLS_RSA_WITH_AES_256_GCM_SHA384
+
+TLS_RSA_WITH_AES_128_GCM_SHA256
+
+Impact:
+
+Critical
+
+This dramatically improves report quality.
+
+---
+
+# Phase 8
+
+# Migration Confidence Scoring™
+
+Create:
+
+Migration Confidence
+
+Factors:
+
+Asset Coverage
+
+Certificate Coverage
+
+Key Coverage
+
+CBOM Coverage
+
+Trust Visibility
+
+Dependency Visibility
+
+Telemetry Quality
+
+Scanner Coverage
+
+Generate:
+
+Overall Confidence Score
+
+Example:
+
+Asset Coverage
+
+100%
+
+Certificate Coverage
+
+100%
+
+Dependency Visibility
+
+20%
+
+Trust Visibility
+
+10%
+
+Migration Confidence
+
+74%
+
+Display confidence in every recommendation.
+
+---
+
+# Phase 9
+
+# Evidence Confidence Scoring™
+
+Create:
+
+Evidence Confidence Dashboard
+
+For every evidence source:
+
+Scanner
+
+CBOM
+
+Runtime Telemetry
+
+Trust Fabric
+
+Cloud Inventory
+
+Certificate Inventory
+
+Identity Inventory
+
+Dependency Mapping
+
+Display:
+
+Coverage
+
+Completeness
+
+Freshness
+
+Confidence
+
+Example:
+
+Scanner
+
+Confidence
+
+100%
+
+Runtime Telemetry
+
+Confidence
+
+45%
+
+Trust Fabric
+
+Confidence
+
+0%
+
+No Data Available
+
+This increases trust.
+
+---
+
+# Phase 10
+
+# Executive Decision Center™
+
+Create a dedicated section.
+
+Display:
+
+Executive Decisions Required
+
+Budget Approval
+
+Migration Approval
+
+Governance Approval
+
+Ownership Assignment
+
+Policy Approval
+
+Examples:
+
+Approve Wave 1 TLS Migration
+
+Approve Budget Allocation
+
+Assign PKI Owner
+
+Approve Hybrid TLS Standard
+
+Approve ML-KEM Adoption
+
+This section should tell executives exactly what needs approval.
+
+---
+
+# Phase 11
+
+# Enterprise Remediation Playbook™
+
+Current remediation plan is too generic.
+
+Generate:
+
+Detailed Technical Playbook
+
+For every remediation:
+
+Current State
+
+Target State
+
+Pre-Requisites
+
+Dependencies
+
+Execution Steps
+
+Validation Steps
+
+Rollback Steps
+
+Success Criteria
+
+Example:
+
+Finding
+
+Legacy RSA TLS
+
+Current State
+
+TLS_RSA_WITH_AES_256_CBC_SHA
+
+Target State
+
+TLS 1.3
+
+X25519
+
+ML-KEM Hybrid
+
+Execution
+
+Step 1
+
+Enable TLS 1.3
+
+Step 2
+
+Disable RSA Cipher Suites
+
+Step 3
+
+Enable Hybrid ML-KEM
+
+Step 4
+
+Validate Handshake
+
+Step 5
+
+Monitor Production
+
+Rollback
+
+Restore Previous TLS Profile
+
+Success Criteria
+
+Hybrid TLS Negotiation Successful
+
+No Downtime
+
+No Client Failures
+
+---
+
+# Phase 12
+
+# Migration Simulation Engine™
+
+Add:
+
+What-If Analysis
+
+Examples:
+
+If Wave 1 Completes
+
+Readiness
+
+29 → 45
+
+Risk
+
+58 → 42
+
+Cost
+
+$32,604
+
+Timeline
+
+5 Weeks
+
+Confidence
+
+91%
+
+If Entire Program Completes
+
+Readiness
+
+29 → 85
+
+Risk
+
+58 → 15
+
+Cost
+
+$163,020
+
+Timeline
+
+26 Weeks
+
+Confidence
+
+78%
+
+---
+
+# Phase 13
+
+# Enterprise Governance Section™
+
+Add:
+
+Program Governance
+
+Executive Sponsor
+
+Program Manager
+
+Migration Lead
+
+Infrastructure Lead
+
+PKI Lead
+
+Application Lead
+
+Compliance Lead
+
+Trust Fabric Lead
+
+Display:
+
+Responsibilities
+
+Approval Gates
+
+Success Criteria
+
+---
+
+# Phase 14
+
+# Report Explainability Requirements™
+
+Every metric must answer:
+
+What was calculated?
+
+How was it calculated?
+
+Which evidence was used?
+
+Why does it matter?
+
+What action should be taken?
+
+If evidence is unavailable:
+
+Display:
+
+Evidence Not Available
+
+instead of assumptions.
+
+---
+
+# Final Success Criteria
+
+The final report should resemble:
+
+Big Four Cybersecurity Assessment Reports
+
+Deloitte
+
+PwC
+
+EY
+
+KPMG
+
+Government PQC Readiness Assessments
+
+DigiCert Trust Lifecycle Reports
+
+Venafi TLS Protect Reports
+
+Keyfactor Enterprise PKI Reports
+
+ServiceNow GRC Executive Reports
+
+The report must transition from a scanner-generated PDF into a complete Executive Quantum Readiness Assessment, Migration Program, Remediation Strategy, and Board-Level Decision Support Report.

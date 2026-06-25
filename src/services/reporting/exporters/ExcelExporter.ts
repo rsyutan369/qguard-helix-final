@@ -104,6 +104,31 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   addTableSheet(workbook, { title: 'Cost Forecast', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] }, 'Cost Forecast');
   addTableSheet(workbook, { title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, 'Governance');
 
+  // Report Intelligence (Reports_Enhancements_3) sheets
+  addTableSheet(workbook, { title: 'Risk Methodology', columns: ['Risk Domain', 'Weight %', 'Domain Score', 'Weighted Contribution %'], rows: report.riskMethodology.weights.map((w) => [w.domain, w.weightPct, w.score, w.contributionPct]) }, 'Risk Methodology');
+  addTableSheet(workbook, { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] }, 'Cost Breakdown');
+  addTableSheet(workbook, { title: 'Consolidated Findings', columns: ['Finding', 'Occurrences', 'Affected Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join('; ')]) }, 'Finding Groups');
+  addTableSheet(workbook, { title: 'Asset Criticality', columns: ['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue', 'Compliance', 'Data Sensitivity'], rows: report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join('; '), a.dataSensitivity]) }, 'Asset Criticality');
+  addTableSheet(workbook, { title: 'Migration Confidence', columns: ['Confidence Factor', 'Coverage %'], rows: [['OVERALL', report.migrationConfidence.overallPct], ...report.migrationConfidence.factors.map((f) => [f.label, f.coveragePct])] }, 'Migration Confidence');
+  addTableSheet(workbook, { title: 'Evidence Confidence', columns: ['Source', 'Coverage %', 'Completeness %', 'Freshness', 'Confidence %', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, e.coveragePct, e.completenessPct, e.freshness, e.confidencePct, e.note]) }, 'Evidence Confidence');
+  addTableSheet(workbook, { title: 'Executive Decisions', columns: ['Decision Required', 'Type', 'Rationale', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]) }, 'Executive Decisions');
+  addTableSheet(workbook, { title: 'Migration Simulation', columns: ['Scenario', 'Readiness From', 'Readiness To', 'Risk From', 'Risk To', 'Cost', 'Timeline (wks)', 'Confidence %'], rows: report.waveSimulation.map((w) => [w.label, w.readinessFrom, w.readinessTo, w.riskFrom, w.riskTo, usd(w.costUsd), w.timelineWeeks, w.confidencePct]) }, 'Migration Simulation');
+  addTableSheet(workbook, { title: 'Advisor Validation', columns: ['Attribute', 'Value'], rows: [
+    ['Primary Exposure Domain', report.advisorValidation.primaryExposureDomain],
+    ['Expected Risk Reduction', `${report.advisorValidation.expectedRiskReductionPct}%`],
+    ['Confidence', `${report.advisorValidation.confidencePct}%`],
+    ['Why This Recommendation', report.advisorValidation.why],
+    ['Top Contributing Findings', report.advisorValidation.topContributingFindings.join('; ') || 'Evidence Not Available'],
+    ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
+  ] }, 'Advisor Validation');
+  addTableSheet(workbook, { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Reason'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason]) }, 'Impact Intelligence');
+  addTableSheet(workbook, { title: 'Remediation Playbook', columns: ['Finding', 'Current State', 'Target State', 'Prerequisites', 'Dependencies', 'Execution Steps', 'Validation Steps', 'Rollback Steps', 'Success Criteria'], rows: report.playbookDetail.map((p) => [
+    p.finding, p.currentState, p.targetState, p.prerequisites.join('; '), p.dependencies.join('; '),
+    p.executionSteps.map((s, i) => `${i + 1}. ${s}`).join('  '), p.validationSteps.join('; '), p.rollbackSteps.join('; '), p.successCriteria.join('; '),
+  ]) }, 'Remediation Playbook');
+  addTableSheet(workbook, { title: 'Governance Gates', columns: ['Approval Gate', 'Owner', 'Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) }, 'Governance Gates');
+  addTableSheet(workbook, { title: 'Report Explainability', columns: ['Metric', 'What', 'How', 'Evidence', 'Why It Matters', 'Action'], rows: report.explainability.map((e) => [e.metric, e.what, e.how, e.evidence, e.why, e.action]) }, 'Explainability');
+
   // Inventory sheets
   addTableSheet(workbook, report.assets, 'Assets');
   addTableSheet(workbook, report.cbom, 'CBOM');

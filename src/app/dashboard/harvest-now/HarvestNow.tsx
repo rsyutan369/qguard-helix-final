@@ -1,1265 +1,789 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
 import {
   Activity,
-  AlertTriangle,
+  ArrowRight,
+  Boxes,
+  CalendarClock,
   CheckCircle2,
   ChevronRight,
+  Clock,
   Crosshair,
   Database,
-  Expand,
-  Fingerprint,
-  Flame,
-  Gauge,
-  LockKeyhole,
+  Globe2,
+  HardDriveDownload,
+  KeyRound,
+  Layers,
+  Lock,
   Network,
+  Radar,
   RefreshCw,
-  Settings,
+  ShieldAlert,
   ShieldCheck,
   Siren,
-  Skull,
-  UserCog,
-  Zap,
+  Target,
+  TrendingUp,
 } from 'lucide-react';
-import { useAuth } from '@/contexts/auth-context';
-import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
+import { useHarvestNow, type CryptoClass } from '@/hooks/use-harvest-now';
 
-type Severity = 'Critical' | 'High' | 'Medium' | 'Low' | 'Info';
-type Tone = 'red' | 'gold' | 'green' | 'blue' | 'muted';
-
-type ThreatRow = {
-  id: string;
-  anchorKey: string;
-  name: string;
-  location: string;
-  impact: string;
-  severity: Severity;
-  recommendation: string;
-  timestamp: string;
-  riskScore: number;
+/* ------------------------------------------------------------------ */
+/* Formatters & tone helpers                                          */
+/* ------------------------------------------------------------------ */
+const fmt = (n: number) => new Intl.NumberFormat('en-US').format(Math.max(0, Math.round(Number(n) || 0)));
+const pct = (n: number) => `${Math.max(0, Math.min(100, Math.round(Number(n) || 0)))}%`;
+const tbFmt = (n: number) => {
+  const v = Math.max(0, Number(n) || 0);
+  if (v >= 1024) return `${(v / 1024).toFixed(2)} PB`;
+  return `${v.toFixed(2)} TB`;
+};
+const utcClock = (value: unknown) => {
+  const d = value ? new Date(String(value)) : new Date();
+  return (Number.isFinite(d.getTime()) ? d : new Date()).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC', timeZoneName: 'short' });
 };
 
-type MapNode = {
-  id: string;
-  name: string;
-  location: string;
-  impact: Severity;
-  x: number;
-  y: number;
+type Tone = 'red' | 'amber' | 'green' | 'cyan' | 'muted';
+
+function classTone(c: CryptoClass): Tone {
+  if (c === 'vulnerable') return 'red';
+  if (c === 'hybrid') return 'amber';
+  if (c === 'safe') return 'green';
+  return 'muted';
+}
+function levelTone(level: string): Tone {
+  const l = (level || '').toLowerCase();
+  if (/critical/.test(l)) return 'red';
+  if (/high|elevated/.test(l)) return 'amber';
+  if (/medium|moderate|guarded/.test(l)) return 'cyan';
+  if (/low|none|minimal|quantum safe|safe/.test(l)) return 'green';
+  return 'muted';
+}
+const TONE_TEXT: Record<Tone, string> = {
+  red: 'text-red-300', amber: 'text-amber-300', green: 'text-emerald-300', cyan: 'text-cyan-300', muted: 'text-white/55',
 };
-
-type MissionEvent = {
-  id: string;
-  time: string;
-  label: string;
-  detail: string;
-  tone: Tone;
+const TONE_DOT: Record<Tone, string> = {
+  red: 'bg-red-400 shadow-[0_0_10px_rgba(248,113,113,0.9)]',
+  amber: 'bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.85)]',
+  green: 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.85)]',
+  cyan: 'bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.85)]',
+  muted: 'bg-white/30',
 };
-
-type ActionItem = {
-  actionType: DefenseActionType;
-  label: string;
-  detail: string;
-  icon: LucideIcon;
-  count: number;
-  href: string;
+const TONE_BADGE: Record<Tone, string> = {
+  red: 'border-red-500/50 bg-red-500/12 text-red-300',
+  amber: 'border-amber-400/50 bg-amber-500/12 text-amber-300',
+  green: 'border-emerald-400/50 bg-emerald-500/12 text-emerald-300',
+  cyan: 'border-cyan-400/45 bg-cyan-500/12 text-cyan-300',
+  muted: 'border-white/15 bg-white/5 text-white/55',
 };
-
-type TimerAnchor = {
-  firstSeenMs: number;
-  source: 'telemetry' | 'session';
+const TONE_BAR: Record<Tone, string> = {
+  red: 'bg-gradient-to-r from-red-500 to-red-400',
+  amber: 'bg-gradient-to-r from-amber-500 to-amber-400',
+  green: 'bg-gradient-to-r from-emerald-500 to-emerald-400',
+  cyan: 'bg-gradient-to-r from-cyan-500 to-cyan-400',
+  muted: 'bg-white/25',
 };
+const TONE_STROKE: Record<Tone, string> = { red: '#f87171', amber: '#fbbf24', green: '#34d399', cyan: '#22d3ee', muted: '#64748b' };
 
-type DefenseActionType =
-  | 'isolate_asset'
-  | 'kill_process'
-  | 'revoke_credentials'
-  | 'patch_harden'
-  | 'backup_restore'
-  | 'deploy_honeypot';
+const PANEL = 'hndl-panel group relative overflow-hidden rounded-lg border border-cyan-400/15 bg-[#05080f]/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_0_22px_rgba(8,16,30,0.55)] backdrop-blur-xl transition-all duration-300 hover:border-cyan-400/40';
 
-const RESPONSE_WINDOW_MS = 60 * 60 * 1000;
-
-const PANEL =
-  'hndl-panel group relative overflow-hidden rounded-lg border border-[#26394a]/80 bg-[#05080d]/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_22px_rgba(255,33,33,0.12)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_0_32px_rgba(255,211,107,0.24),0_0_70px_rgba(255,211,107,0.12)]';
-
-const RED_PANEL =
-  'hndl-panel group relative overflow-hidden rounded-lg border border-red-500/45 bg-[#120606]/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_34px_rgba(239,68,68,0.2)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.16),0_0_40px_rgba(255,211,107,0.28),0_0_90px_rgba(239,68,68,0.22)]';
-
-const GREEN_PANEL =
-  'hndl-panel group relative overflow-hidden rounded-lg border border-emerald-400/45 bg-[#06120d]/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_34px_rgba(52,211,153,0.2)] backdrop-blur-xl transition-all duration-300 hover:-translate-y-0.5 hover:border-gold/70 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.16),0_0_40px_rgba(255,211,107,0.25),0_0_90px_rgba(52,211,153,0.22)]';
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat().format(Math.max(0, Number(value) || 0));
-}
-
-function formatPercent(value: number) {
-  return `${Math.max(0, Math.min(100, Math.round(Number(value) || 0)))}%`;
-}
-
-function formatBytesFromCount(value: number) {
-  const safe = Math.max(0, Number(value) || 0);
-  if (safe >= 1000) return `${(safe / 1000).toFixed(2)} PB`;
-  if (safe >= 1) return `${safe.toFixed(2)} TB`;
-  return '0 TB';
-}
-
-function percentOf(value: number, total: number) {
-  if (!total) return 0;
-  return Math.max(0, Math.min(100, Math.round((value / total) * 100)));
-}
-
-function normalizeSeverity(value: unknown): Severity {
-  const level = String(value || '').toUpperCase();
-  if (level === 'CRITICAL') return 'Critical';
-  if (level === 'HIGH') return 'High';
-  if (level === 'MEDIUM' || level === 'MODERATE') return 'Medium';
-  if (level === 'SAFE' || level === 'INFO') return 'Info';
-  return 'Low';
-}
-
-function severityRank(severity: Severity) {
-  if (severity === 'Critical') return 5;
-  if (severity === 'High') return 4;
-  if (severity === 'Medium') return 3;
-  if (severity === 'Low') return 2;
-  return 1;
-}
-
-function severityClasses(severity: Severity) {
-  if (severity === 'Critical') return 'border-red-500/60 bg-red-500/15 text-red-600 shadow-[0_0_18px_rgba(239,68,68,0.25)] dark:text-red-300';
-  if (severity === 'High') return 'border-orange-400/55 bg-orange-500/15 text-orange-600 dark:text-orange-300';
-  if (severity === 'Medium') return 'border-gold/45 bg-gold/10 text-gold';
-  if (severity === 'Info') return 'border-sky-400/35 bg-sky-500/10 text-sky-600 dark:text-sky-300';
-  return 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]';
-}
-
-function toneDot(tone: Tone) {
-  if (tone === 'red') return 'bg-red-400 shadow-[0_0_12px_rgba(248,113,113,0.9)]';
-  if (tone === 'gold') return 'bg-gold shadow-[0_0_12px_rgba(255,211,107,0.85)]';
-  if (tone === 'green') return 'bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.8)]';
-  if (tone === 'blue') return 'bg-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.8)]';
-  return 'bg-white/35';
-}
-
-function threatName(finding: ScannerFinding, index: number) {
-  const raw = String(finding.algorithm || finding.category || finding.source || `HNDL-${index + 1}`);
-  return `${raw.replace(/[^a-z0-9]+/gi, '.').replace(/(^\.|\.$)/g, '').toUpperCase()}.HNDL`;
-}
-
-function findingLocation(finding: ScannerFinding) {
-  return String(finding.location || finding.asset || finding.target || finding.source || 'Unmapped asset');
-}
-
-function findingRecommendation(finding: ScannerFinding) {
-  return String(finding.recommendation || 'Prioritize PQC remediation for this exposure.');
-}
-
-function isHndlRelevant(finding: ScannerFinding) {
-  const text = [
-    finding.algorithm,
-    finding.category,
-    finding.status,
-    finding.evidence,
-    finding.recommendation,
-    finding.source,
-  ].join(' ').toLowerCase();
-  const severity = normalizeSeverity(finding.threatLevel || finding.severity || finding.status);
-  return severityRank(severity) >= 3 || /rsa|ecc|ecdsa|dh|dsa|legacy|vulnerable|hndl|harvest|decrypt|quantum/.test(text);
-}
-
-function eventTime(value: unknown) {
-  const date = value ? new Date(String(value)) : null;
-  if (!date || Number.isNaN(date.getTime())) return '--:--:--';
-  return date.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
-
-function utcTime(value: unknown) {
-  const date = value ? new Date(String(value)) : new Date();
-  return date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    timeZone: 'UTC',
-    timeZoneName: 'short',
-  });
-}
-
-function recordOf(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function timestampMs(value: unknown) {
-  if (!value) return null;
-  const parsed = Date.parse(String(value));
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return parsed;
-}
-
-function findingDetectedMs(finding: ScannerFinding) {
-  const raw = recordOf(finding.raw);
-  const metadata = recordOf(finding.metadata);
-  const candidates = [
-    finding.timestamp,
-    finding.detectedAt,
-    finding.detected_at,
-    finding.created_at,
-    finding.observed_at,
-    metadata.detectedAt,
-    metadata.detected_at,
-    metadata.timestamp,
-    metadata.created_at,
-    raw.detectedAt,
-    raw.detected_at,
-    raw.timestamp,
-    raw.created_at,
-  ];
-
-  for (const candidate of candidates) {
-    const parsed = timestampMs(candidate);
-    if (parsed) return parsed;
-  }
-
-  return null;
-}
-
-function threatAnchorKey(finding: ScannerFinding, index: number) {
-  const severity = normalizeSeverity(finding.threatLevel || finding.severity || finding.status);
-  const parts = [
-    finding.id,
-    finding.algorithm,
-    finding.category,
-    findingLocation(finding),
-    severity,
-    finding.evidence,
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join('|') : `hndl-finding-${index}`;
-}
-
-function stableThreatTimestamp(finding: ScannerFinding, anchorKey: string, anchors: Map<string, TimerAnchor>) {
-  const telemetryMs = findingDetectedMs(finding);
-  const existing = anchors.get(anchorKey);
-
-  if (telemetryMs) {
-    const firstSeenMs = existing?.source === 'telemetry'
-      ? Math.min(existing.firstSeenMs, telemetryMs)
-      : telemetryMs;
-    anchors.set(anchorKey, { firstSeenMs, source: 'telemetry' });
-    return new Date(firstSeenMs).toISOString();
-  }
-
-  if (existing) return new Date(existing.firstSeenMs).toISOString();
-
-  const firstSeenMs = Date.now();
-  anchors.set(anchorKey, { firstSeenMs, source: 'session' });
-  return new Date(firstSeenMs).toISOString();
-}
-
-function formatCountdownMs(value: number) {
-  const totalSeconds = Math.max(0, Math.ceil(value / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':');
-}
-
-function responseWindowState(timestamp: string, now = Date.now()) {
-  const source = timestampMs(timestamp);
-  if (!source) {
-    return {
-      remainingMs: 0,
-      completedCycles: 0,
-      activeCycle: 1,
-      overdue: false,
-    };
-  }
-
-  const elapsed = Math.max(0, now - source);
-  const completedCycles = Math.floor(elapsed / RESPONSE_WINDOW_MS);
-  const elapsedInCycle = elapsed % RESPONSE_WINDOW_MS;
-  const remainingMs = completedCycles > 0
-    ? RESPONSE_WINDOW_MS - elapsedInCycle
-    : Math.max(0, RESPONSE_WINDOW_MS - elapsed);
-
-  return {
-    remainingMs: Math.min(RESPONSE_WINDOW_MS, Math.max(0, remainingMs)),
-    completedCycles,
-    activeCycle: completedCycles + 1,
-    overdue: completedCycles > 0,
-  };
-}
-
-function buildRemediationHref(threat: ThreatRow | undefined, active: boolean) {
-  if (!active || !threat) {
-    return '/dashboard/audit-vault?source=harvest-now&status=mitigated';
-  }
-
-  const params = new URLSearchParams({
-    source: 'harvest-now',
-    workflow: 'hndl-remediation',
-    threatId: threat.id,
-    threat: threat.name,
-    asset: threat.location,
-    severity: threat.severity,
-    action: 'remediate',
-  });
-
-  return `/dashboard/pqc-orchestration?${params.toString()}`;
-}
-
-function hashText(value: string) {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return hash;
-}
-
-function deterministicPoint(seed: string, axis: 'x' | 'y') {
-  const hash = hashText(`${axis}:${seed}`);
-  const min = axis === 'x' ? 10 : 24;
-  const max = axis === 'x' ? 90 : 72;
-  return min + (hash % (max - min));
-}
-
-function sparklinePath(values: number[], width = 156, height = 58) {
-  const points = values.length > 1 ? values : [0, values[0] || 0, 0];
-  const max = Math.max(1, ...points);
-  return points.map((value, index) => {
-    const x = (index / Math.max(1, points.length - 1)) * width;
-    const y = height - (Math.max(0, value) / max) * height;
-    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
-  }).join(' ');
-}
-
-function SectionHeader({ children, action }: { children: string; action?: string }) {
+/* ------------------------------------------------------------------ */
+/* Presentational primitives                                          */
+/* ------------------------------------------------------------------ */
+function SectionHeader({ icon: Icon, children, action, tone = 'cyan' }: { icon: ElementType; children: string; action?: string; tone?: Tone }) {
   return (
-    <div className="relative z-10 mb-2 flex items-center justify-between gap-3 border-b border-[var(--qg-card-border)] pb-1.5">
-      <h2 className="text-[11px] font-black uppercase tracking-[0.12em] text-[var(--qg-dashboard-text-soft)]">{children}</h2>
-      {action && <span className="text-[9px] font-black uppercase tracking-[0.16em] text-red-600 dark:text-red-400">{action}</span>}
+    <div className="relative z-10 mb-2.5 flex items-center justify-between gap-3 border-b border-white/8 pb-2">
+      <h2 className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-white/80">
+        <Icon className={`h-3.5 w-3.5 ${TONE_TEXT[tone]}`} />
+        {children}
+      </h2>
+      {action && <span className={`text-[9px] font-black uppercase tracking-[0.16em] ${TONE_TEXT[tone]}`}>{action}</span>}
     </div>
   );
 }
 
-export default function HarvestNow() {
-  const { session } = useAuth();
-  const { data, loading, error, connected, refresh } = useScannerIntelligence();
+function Bar({ value, tone, label, right }: { value: number; tone: Tone; label?: string; right?: string }) {
+  return (
+    <div className="space-y-1">
+      {(label || right) && (
+        <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-[0.08em] text-white/55">
+          <span className="truncate">{label}</span>
+          <span className={TONE_TEXT[tone]}>{right}</span>
+        </div>
+      )}
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/8">
+        <div className={`h-full rounded-full ${TONE_BAR[tone]}`} style={{ width: pct(value) }} />
+      </div>
+    </div>
+  );
+}
+
+function Ring({ value, tone, label, sub, size = 116 }: { value: number; tone: Tone; label: string; sub?: string; size?: number }) {
+  const r = (size - 14) / 2;
+  const circ = 2 * Math.PI * r;
+  const safe = Math.max(0, Math.min(100, value));
+  return (
+    <div className="relative grid place-items-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="7" />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={TONE_STROKE[tone]} strokeWidth="7" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ - (safe / 100) * circ} style={{ filter: `drop-shadow(0 0 6px ${TONE_STROKE[tone]}88)`, transition: 'stroke-dashoffset 600ms ease' }} />
+      </svg>
+      <div className="absolute inset-0 grid place-items-center text-center">
+        <div>
+          <p className={`text-2xl font-black ${TONE_TEXT[tone]}`}>{Math.round(safe)}<span className="text-xs">%</span></p>
+          <p className="mt-0.5 text-[9px] font-black uppercase tracking-[0.14em] text-white/50">{label}</p>
+          {sub && <p className="text-[9px] font-bold text-white/40">{sub}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Badge({ tone, children }: { tone: Tone; children: ReactNode }) {
+  return <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.1em] ${TONE_BADGE[tone]}`}>{children}</span>;
+}
+
+function Stat({ label, value, tone = 'cyan', sub }: { label: string; value: string | number; tone?: Tone; sub?: string }) {
+  return (
+    <div className="rounded-md border border-white/8 bg-black/30 px-3 py-2">
+      <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/45">{label}</p>
+      <p className={`mt-0.5 text-lg font-black ${TONE_TEXT[tone]}`}>{value}</p>
+      {sub && <p className="text-[9px] font-bold text-white/40">{sub}</p>}
+    </div>
+  );
+}
+
+function EmptyState({ children }: { children: string }) {
+  return (
+    <div className="grid place-items-center rounded-md border border-dashed border-white/12 bg-black/20 px-4 py-6 text-center">
+      <div>
+        <Database className="mx-auto h-5 w-5 text-white/30" />
+        <p className="mt-2 text-[10px] font-bold uppercase tracking-[0.12em] text-white/45">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Next-escalation live countdown (to next UTC hour boundary)         */
+/* ------------------------------------------------------------------ */
+function useEscalationCountdown() {
   const [now, setNow] = useState(() => Date.now());
-  const [dismissedReminderId, setDismissedReminderId] = useState<string | null>(null);
-  const [defenseActionPending, setDefenseActionPending] = useState<DefenseActionType | null>(null);
-  const [defenseActionNotice, setDefenseActionNotice] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
-  const threatTimerAnchorsRef = useRef<Map<string, TimerAnchor>>(new Map());
-
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
   }, []);
+  const nextHour = Math.ceil(now / 3_600_000) * 3_600_000;
+  const remaining = Math.max(0, nextHour - now);
+  const totalSeconds = Math.floor(remaining / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return [h, m, s].map((p) => String(p).padStart(2, '0')).join(':');
+}
 
-  const threats = useMemo<ThreatRow[]>(() => (
-    data.findings
-      .filter(isHndlRelevant)
-      .map((finding, index) => {
-        const severity = normalizeSeverity(finding.threatLevel || finding.severity || finding.status);
-        const anchorKey = threatAnchorKey(finding, index);
-        return {
-          id: String(finding.id || `${finding.algorithm || finding.category || 'finding'}-${index}`),
-          anchorKey,
-          name: threatName(finding, index),
-          location: findingLocation(finding),
-          impact: severity === 'Info' ? 'Low' : severity,
-          severity,
-          recommendation: findingRecommendation(finding),
-          timestamp: stableThreatTimestamp(finding, anchorKey, threatTimerAnchorsRef.current),
-          riskScore: severityRank(severity) * 20,
-        };
-      })
-      .sort((a, b) => (severityRank(b.severity) * 100 + b.riskScore) - (severityRank(a.severity) * 100 + a.riskScore))
-  ), [data.findings]);
+/* ================================================================== */
+/* Page                                                               */
+/* ================================================================== */
+export default function HarvestNow() {
+  const { data, state, error, sseConnected, refresh } = useHarvestNow();
+  const countdown = useEscalationCountdown();
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
-  useEffect(() => {
-    const activeKeys = new Set(threats.map((threat) => threat.anchorKey));
-    for (const key of threatTimerAnchorsRef.current.keys()) {
-      if (!activeKeys.has(key)) threatTimerAnchorsRef.current.delete(key);
-    }
-  }, [threats]);
+  const banner = data.banner;
+  const bannerTone = levelTone(banner.threatLevel);
+  const alert = data.hasData && (banner.threatLevel === 'Critical' || banner.threatLevel === 'High');
 
-  const activeThreatCount = threats.filter((threat) => severityRank(threat.severity) >= 3).length;
-  const criticalThreatCount = data.severityCounts.critical;
-  const highThreatCount = data.severityCounts.high;
-  const mediumThreatCount = data.severityCounts.medium;
-  const lowThreatCount = data.severityCounts.low;
-  const infoThreatCount = data.severityCounts.safe;
-  const primaryThreat = threats[0];
-  const primaryThreatTimestamp = primaryThreat?.timestamp || '';
-  const responseWindow = responseWindowState(primaryThreatTimestamp, now);
-  const responseCountdown = formatCountdownMs(responseWindow.remainingMs);
-  const hndlAlertActive = activeThreatCount > 0;
-  const responseWindowExpired = hndlAlertActive && responseWindow.overdue;
-  const reminderId = primaryThreat ? `${primaryThreat.id}:${primaryThreat.timestamp}:cycle-${responseWindow.completedCycles}` : 'hndl-reminder';
-  const showOverdueReminder = responseWindowExpired && dismissedReminderId !== reminderId;
-  const remediationHref = buildRemediationHref(primaryThreat, hndlAlertActive);
-  const hndlHeroPanel = hndlAlertActive ? RED_PANEL : GREEN_PANEL;
-  const hndlTone = {
-    badge: hndlAlertActive
-      ? 'border-red-500/70 bg-red-500/15 text-red-200 shadow-[0_0_26px_rgba(239,68,68,0.35)]'
-      : 'border-emerald-400/70 bg-emerald-500/15 text-emerald-200 shadow-[0_0_26px_rgba(52,211,153,0.32)]',
-    icon: hndlAlertActive ? 'text-red-300' : 'text-emerald-300',
-    text: hndlAlertActive ? 'text-red-300' : 'text-emerald-300',
-    textStrong: hndlAlertActive ? 'text-red-400' : 'text-emerald-300',
-    borderStrong: hndlAlertActive ? 'border-red-500/45' : 'border-emerald-400/45',
-    borderMid: hndlAlertActive ? 'border-red-400/45' : 'border-emerald-400/40',
-    borderSoft: hndlAlertActive ? 'border-red-300/30' : 'border-emerald-300/25',
-    ringShadow: hndlAlertActive ? 'shadow-[0_0_26px_rgba(239,68,68,0.3)]' : 'shadow-[0_0_26px_rgba(52,211,153,0.28)]',
-    iconShadow: hndlAlertActive ? 'drop-shadow-[0_0_18px_rgba(248,113,113,0.9)]' : 'drop-shadow-[0_0_18px_rgba(52,211,153,0.75)]',
-    textMuted: hndlAlertActive ? 'text-red-300/65' : 'text-emerald-300/65',
-    action: hndlAlertActive
-      ? 'border-red-400/70 bg-red-500/20 text-red-100 shadow-[0_0_28px_rgba(239,68,68,0.38)]'
-      : 'border-emerald-400/70 bg-emerald-500/15 text-emerald-100 shadow-[0_0_28px_rgba(52,211,153,0.28)]',
-    meter: hndlAlertActive
-      ? 'border-red-500/35 shadow-[0_0_22px_rgba(239,68,68,0.18)]'
-      : 'border-emerald-400/35 shadow-[0_0_22px_rgba(52,211,153,0.16)]',
-    flow: hndlAlertActive ? 'rgba(239,68,68,0.92)' : 'rgba(52,211,153,0.92)',
-    flowSoft: hndlAlertActive ? 'rgba(239,68,68,0.32)' : 'rgba(52,211,153,0.30)',
-  };
+  const selected = useMemo(() => data.exposureGraph.nodes.find((n) => n.id === selectedNode) || null, [data.exposureGraph.nodes, selectedNode]);
 
-  useEffect(() => {
-    setDismissedReminderId(null);
-  }, [reminderId]);
-
-  const assetTotals = useMemo(() => {
-    const unknown = data.assets.assets.filter((asset: any) => !asset.riskScore && !asset.vulnerableCount).length;
-    const compromised = data.summary.vulnerableAssets;
-    const atRisk = data.assets.assets.filter((asset: any) => Number(asset.riskScore || 0) > 0 && Number(asset.vulnerableCount || 0) === 0).length;
-    const secure = Math.max(0, data.summary.totalAssets - compromised - atRisk - unknown);
-    return {
-      total: data.summary.totalAssets,
-      secure,
-      atRisk,
-      compromised,
-      unknown,
-    };
-  }, [data.assets.assets, data.summary.totalAssets, data.summary.vulnerableAssets]);
-
-  const mapNodes = useMemo<MapNode[]>(() => {
-    const sourceNodes = data.exposure.nodes.length > 0
-      ? data.exposure.nodes
-      : data.assets.assets.map((asset: any) => ({
-        id: asset.id,
-        label: asset.name || asset.domain || asset.url,
-        name: asset.name || asset.domain || asset.url,
-        region: asset.region || asset.metadata?.region || asset.environment || asset.metadata?.environment,
-        riskScore: asset.riskScore,
-        vulnerableCount: asset.vulnerableCount,
-      }));
-
-    return sourceNodes
-      .map((node: any, index: number) => {
-        const id = String(node.id || node.name || node.label || `node-${index}`);
-        const risk = Number(node.riskScore || node.risk || 0);
-        const vulnerable = Number(node.vulnerableCount || node.vulnerableComponents || 0);
-        const impact: Severity = risk >= 80 ? 'Critical' : risk >= 55 || vulnerable > 0 ? 'High' : risk >= 25 ? 'Medium' : 'Low';
-        return {
-          id,
-          name: String(node.name || node.label || `Asset ${index + 1}`),
-          location: String(node.region || node.location || node.environment || 'Tenant scope'),
-          impact,
-          x: Number(node.x) || deterministicPoint(id, 'x'),
-          y: Number(node.y) || deterministicPoint(id, 'y'),
-        };
-      })
-      .filter((node) => severityRank(node.impact) >= 2)
-      .slice(0, 16);
-  }, [data.assets.assets, data.exposure.nodes]);
-
-  const missionFeed = useMemo<MissionEvent[]>(() => {
-    const telemetryEvents = data.telemetry.map((event: any, index: number) => {
-      const message = String(event.message || event.status || event.type || event.event || 'Scanner telemetry update');
-      const finding = event.finding || {};
-      const severity = normalizeSeverity(finding.threatLevel || event.severity || event.level);
-      return {
-        id: String(event.id || event.timestamp || `telemetry-${index}`),
-        time: eventTime(event.timestamp || event.observedAt || event.created_at),
-        label: severityRank(severity) >= 4 ? 'HNDL threat detected' : message,
-        detail: String(event.target || event.asset || finding.location || finding.algorithm || message),
-        tone: severityRank(severity) >= 4 ? 'red' as Tone : severityRank(severity) >= 3 ? 'gold' as Tone : 'blue' as Tone,
-      };
-    });
-
-    const historyEvents = data.history.history.slice(0, 6).map((entry: any, index: number) => ({
-      id: String(entry.scanId || `history-${index}`),
-      time: eventTime(entry.startedAt || entry.completedAt),
-      label: String(entry.status || 'Scan activity').replace(/[-_]/g, ' '),
-      detail: String(entry.target || `${entry.detectedComponents || 0} detections`),
-      tone: Number(entry.vulnerableFindings || 0) > 0 ? 'red' as Tone : 'green' as Tone,
-    }));
-
-    return telemetryEvents.concat(historyEvents).slice(0, 8);
-  }, [data.history.history, data.telemetry]);
-
-  const defenseActions = useMemo<ActionItem[]>(() => [
-    { actionType: 'isolate_asset', label: 'Isolate Asset', detail: 'Block threat propagation', icon: Network, count: assetTotals.compromised, href: '/dashboard/assets?source=harvest-now&defenseAction=isolate_asset' },
-    { actionType: 'kill_process', label: 'Kill Process', detail: 'Terminate malicious process', icon: Zap, count: data.runtime.alerts, href: '/dashboard/runtime-crypto-intel?source=harvest-now&defenseAction=kill_process' },
-    { actionType: 'revoke_credentials', label: 'Revoke Credentials', detail: 'Invalidate exposed keys', icon: Fingerprint, count: data.runtime.keyRotations, href: '/dashboard/identity-trust?source=harvest-now&defenseAction=revoke_credentials' },
-    { actionType: 'patch_harden', label: 'Patch & Harden', detail: 'Apply security hardening', icon: Settings, count: data.summary.vulnerableComponents, href: '/dashboard/scanner?source=harvest-now&defenseAction=patch_harden' },
-    { actionType: 'backup_restore', label: 'Backup & Restore', detail: 'Recover from clean backup', icon: Database, count: data.summary.completedScans, href: '/dashboard/migration-sandbox?source=harvest-now&defenseAction=backup_restore' },
-    { actionType: 'deploy_honeypot', label: 'Deploy Honeypot', detail: 'Trap and analyze attacker', icon: Crosshair, count: activeThreatCount, href: '/dashboard/runtime-crypto-intel?source=harvest-now&defenseAction=deploy_honeypot' },
-  ], [activeThreatCount, assetTotals.compromised, data.runtime.alerts, data.runtime.keyRotations, data.summary.completedScans, data.summary.vulnerableComponents]);
-
-  const handleDefenseAction = async (action: ActionItem) => {
-    if (!session?.access_token) {
-      window.location.assign(action.href);
-      return;
-    }
-
-    setDefenseActionPending(action.actionType);
-    setDefenseActionNotice(null);
-    try {
-      const response = await fetch('/api/v1/dashboard/harvest-now/defense-action', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          actionType: action.actionType,
-          linkedSignalCount: action.count,
-          activeThreatCount,
-          totalFindings: data.summary.totalFindings,
-          primaryThreat,
-          threatIds: threats.slice(0, 100).map((threat) => threat.id),
-          threats: threats.slice(0, 12).map((threat) => ({
-            id: threat.id,
-            name: threat.name,
-            location: threat.location,
-            severity: threat.severity,
-            recommendation: threat.recommendation,
-            detectedAt: threat.timestamp,
-          })),
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `Defense action failed with HTTP ${response.status}`);
-
-      const createdJobs = Number(payload?.data?.createdJobs || 0);
-      const linkedJobs = Number(payload?.data?.linkedJobs || 0);
-      setDefenseActionNotice({
-        tone: 'success',
-        message: `${action.label} playbook recorded. ${formatNumber(createdJobs)} new workflow(s), ${formatNumber(linkedJobs)} linked remediation job(s).`,
-      });
-      await refresh();
-      window.location.assign(payload?.data?.redirectUrl || action.href);
-    } catch (err) {
-      setDefenseActionNotice({
-        tone: 'error',
-        message: err instanceof Error ? err.message : `${action.label} could not be recorded.`,
-      });
-    } finally {
-      setDefenseActionPending(null);
-    }
-  };
-
-  const sparkValues = useMemo(() => {
-    const riskHistory = data.history.history
-      .slice(0, 12)
-      .map((entry: any) => Number(entry.riskScore || entry.summary?.riskScore || entry.vulnerableFindings || 0))
-      .reverse();
-    return riskHistory.length > 0 ? riskHistory : [criticalThreatCount, highThreatCount, mediumThreatCount, lowThreatCount, infoThreatCount];
-  }, [criticalThreatCount, data.history.history, highThreatCount, infoThreatCount, lowThreatCount, mediumThreatCount]);
-
-  const dataAtRisk = formatBytesFromCount(data.summary.vulnerableComponents / 10);
-  const attackSurfaceChange = percentOf(data.summary.totalFindings, Math.max(1, data.summary.totalComponents + data.summary.totalFindings));
-  const pqcReadyChange = data.summary.pqcReadiness;
+  const loading = state === 'loading' && !data.hasData;
 
   return (
     <div className="hndl-shell min-h-full bg-[var(--qg-dashboard-bg)] p-3 text-[var(--qg-dashboard-text)] md:p-4">
       <style>{`
         .hndl-shell {
           background:
-            radial-gradient(circle at 18% 10%, rgba(239, 68, 68, 0.18), transparent 28%),
-            radial-gradient(circle at 76% 8%, rgba(255, 211, 107, 0.12), transparent 26%),
-            linear-gradient(180deg, #02050a 0%, #05070c 48%, #020409 100%);
+            radial-gradient(circle at 16% 6%, rgba(239,68,68,0.16), transparent 26%),
+            radial-gradient(circle at 84% 4%, rgba(34,211,238,0.12), transparent 24%),
+            radial-gradient(circle at 50% 120%, rgba(34,211,238,0.08), transparent 40%),
+            linear-gradient(180deg, #01030a 0%, #04060f 48%, #01030a 100%);
         }
-        .hndl-panel::before,
-        .hndl-hero::before {
-          content: "";
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
+        .hndl-panel::before {
+          content: ""; position: absolute; inset: 0; pointer-events: none;
           background:
-            linear-gradient(135deg, rgba(255,255,255,0.08), transparent 18%, transparent 82%, rgba(255,33,33,0.08)),
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 42px);
-          opacity: 0.72;
-        }
-        .hndl-panel::after,
-        .hndl-hero::after {
-          content: "";
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
-          border-radius: inherit;
-          background: linear-gradient(90deg, transparent, rgba(255,211,107,0.28), transparent);
-          height: 1px;
-          top: 0;
-          opacity: 0;
-          transition: opacity 300ms ease;
-        }
-        .hndl-panel:hover::after,
-        .hndl-hero:hover::after {
-          opacity: 1;
+            linear-gradient(135deg, rgba(255,255,255,0.05), transparent 20%, transparent 80%, rgba(34,211,238,0.06)),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 44px);
+          opacity: 0.7;
         }
         .hndl-grid {
-          background-size: 28px 28px;
+          background-image:
+            linear-gradient(rgba(34,211,238,0.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(34,211,238,0.06) 1px, transparent 1px);
+          background-size: 30px 30px;
         }
-        .hndl-grid-alert {
+        .hndl-grid-red {
           background-image:
             linear-gradient(rgba(239,68,68,0.08) 1px, transparent 1px),
             linear-gradient(90deg, rgba(239,68,68,0.08) 1px, transparent 1px);
         }
-        .hndl-grid-clear {
-          background-image:
-            linear-gradient(rgba(52,211,153,0.08) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(52,211,153,0.08) 1px, transparent 1px);
-        }
-        .hndl-hero-alert {
-          animation: hndlRedPulse 2.35s ease-in-out infinite;
-        }
-        .hndl-hero-clear {
-          animation: hndlGreenPulse 3s ease-in-out infinite;
-        }
-        .hndl-hero-clear::before {
-          background:
-            linear-gradient(135deg, rgba(255,255,255,0.08), transparent 18%, transparent 82%, rgba(52,211,153,0.09)),
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 42px);
-        }
-        .hndl-rune {
-          animation: hndlRunePulse 2.2s ease-in-out infinite;
-        }
-        .hndl-map {
-          background:
-            radial-gradient(circle at 25% 45%, rgba(239,68,68,0.22), transparent 13%),
-            radial-gradient(circle at 54% 38%, rgba(239,68,68,0.18), transparent 16%),
-            radial-gradient(circle at 78% 52%, rgba(239,68,68,0.24), transparent 13%),
-            radial-gradient(circle at 40% 60%, rgba(255,211,107,0.08), transparent 18%),
-            linear-gradient(180deg, rgba(4, 9, 16, 0.2), rgba(2, 5, 10, 0.85));
-        }
-        .hndl-map-clear {
-          background:
-            radial-gradient(circle at 25% 45%, rgba(52,211,153,0.18), transparent 13%),
-            radial-gradient(circle at 54% 38%, rgba(52,211,153,0.14), transparent 16%),
-            radial-gradient(circle at 78% 52%, rgba(52,211,153,0.2), transparent 13%),
-            radial-gradient(circle at 40% 60%, rgba(255,211,107,0.08), transparent 18%),
-            linear-gradient(180deg, rgba(4, 16, 11, 0.25), rgba(2, 8, 6, 0.85));
-        }
-        .hndl-map::before {
-          content: "";
-          position: absolute;
-          inset: 18px;
-          opacity: 0.68;
-          background-image:
-            radial-gradient(circle, rgba(248,113,113,0.72) 0 1px, transparent 1.5px),
-            linear-gradient(rgba(56,189,248,0.08) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(56,189,248,0.08) 1px, transparent 1px);
-          background-size: 16px 10px, 48px 48px, 48px 48px;
-          mask-image: radial-gradient(ellipse at 25% 45%, black 0 20%, transparent 35%),
-            radial-gradient(ellipse at 50% 40%, black 0 24%, transparent 38%),
-            radial-gradient(ellipse at 78% 52%, black 0 22%, transparent 35%);
-          mask-composite: add;
-        }
-        .hndl-map-clear::before {
-          background-image:
-            radial-gradient(circle, rgba(52,211,153,0.62) 0 1px, transparent 1.5px),
-            linear-gradient(rgba(52,211,153,0.08) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(52,211,153,0.08) 1px, transparent 1px);
-        }
-        .hndl-flow-line {
-          stroke-dasharray: 7 9;
-          animation: hndlFlow 1.6s linear infinite;
-        }
-        .hndl-flow-glow {
-          stroke-dasharray: 10 16;
-          animation: hndlFlow 2.6s linear infinite reverse;
-        }
-        .hndl-scanline {
-          background: linear-gradient(180deg, transparent, rgba(255,255,255,0.08), transparent);
-          animation: hndlScan 4s linear infinite;
-        }
-        .hndl-scanline-clear {
-          background: linear-gradient(180deg, transparent, rgba(52,211,153,0.12), transparent);
-        }
-        @keyframes hndlScan {
-          from { transform: translateY(-100%); }
-          to { transform: translateY(100%); }
-        }
-        @keyframes hndlFlow {
-          from { stroke-dashoffset: 0; }
-          to { stroke-dashoffset: -48; }
-        }
+        .hndl-hero-alert { animation: hndlRedPulse 2.6s ease-in-out infinite; }
         @keyframes hndlRedPulse {
-          0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 28px rgba(239,68,68,0.22), 0 0 70px rgba(239,68,68,0.08); }
-          50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 0 42px rgba(239,68,68,0.42), 0 0 110px rgba(239,68,68,0.18); }
+          0%,100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 26px rgba(239,68,68,0.18); }
+          50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 0 40px rgba(239,68,68,0.36); }
         }
-        @keyframes hndlGreenPulse {
-          0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 26px rgba(52,211,153,0.18), 0 0 70px rgba(52,211,153,0.07); }
-          50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), 0 0 38px rgba(52,211,153,0.34), 0 0 100px rgba(52,211,153,0.14); }
+        .hndl-radar::after {
+          content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+          background: conic-gradient(from 0deg, transparent 0deg, rgba(34,211,238,0.14) 40deg, transparent 80deg);
+          animation: hndlSweep 5s linear infinite;
         }
-        @keyframes hndlRunePulse {
-          0%, 100% { transform: scale(1); opacity: 0.86; }
-          50% { transform: scale(1.035); opacity: 1; }
-        }
+        @keyframes hndlSweep { to { transform: rotate(360deg); } }
+        .hndl-flow { stroke-dasharray: 6 8; animation: hndlFlow 1.8s linear infinite; }
+        @keyframes hndlFlow { to { stroke-dashoffset: -42; } }
+        .hndl-scan { animation: hndlScan 5s linear infinite; }
+        @keyframes hndlScan { from { transform: translateY(-100%); } to { transform: translateY(220%); } }
         .qg-theme-light .hndl-shell {
           background:
-            radial-gradient(circle at 20% 8%, rgba(0, 197, 235, 0.17), transparent 30%),
-            radial-gradient(circle at 82% 12%, rgba(124, 58, 237, 0.08), transparent 28%),
+            radial-gradient(circle at 18% 6%, rgba(0,197,235,0.16), transparent 28%),
             linear-gradient(180deg, var(--qg-dashboard-bg) 0%, var(--qg-dashboard-bg-soft) 100%);
           color: var(--qg-dashboard-text);
         }
-        .qg-theme-light .hndl-panel,
-        .qg-theme-light .hndl-hero {
-          background:
-            linear-gradient(135deg, rgba(255,255,255,0.9), rgba(236,249,255,0.84)) !important;
-          border-color: var(--qg-card-border) !important;
-          color: var(--qg-dashboard-text) !important;
+        .qg-theme-light .hndl-panel {
+          background: linear-gradient(135deg, rgba(255,255,255,0.92), rgba(236,249,255,0.82)) !important;
+          border-color: var(--qg-card-border) !important; color: var(--qg-dashboard-text) !important;
           box-shadow: var(--qg-panel-shadow) !important;
         }
-        .qg-theme-light .hndl-hero-alert {
-          background:
-            radial-gradient(circle at 14% 18%, rgba(239,68,68,0.12), transparent 28%),
-            linear-gradient(135deg, rgba(255,255,255,0.94), rgba(236,249,255,0.84)) !important;
-          animation: hndlLightRedPulse 2.8s ease-in-out infinite;
-        }
-        .qg-theme-light .hndl-hero-clear {
-          background:
-            radial-gradient(circle at 14% 18%, rgba(16,185,129,0.12), transparent 28%),
-            linear-gradient(135deg, rgba(255,255,255,0.94), rgba(236,249,255,0.84)) !important;
-          animation: hndlLightGreenPulse 3.2s ease-in-out infinite;
-        }
-        .qg-theme-light .hndl-panel::before,
-        .qg-theme-light .hndl-hero::before {
-          background:
-            linear-gradient(135deg, rgba(255,255,255,0.65), transparent 22%, rgba(0,197,235,0.08)),
-            repeating-linear-gradient(90deg, rgba(14,165,233,0.08) 0 1px, transparent 1px 42px);
-          opacity: 0.74;
-        }
-        .qg-theme-light .hndl-panel::after,
-        .qg-theme-light .hndl-hero::after {
-          background: linear-gradient(90deg, transparent, rgba(0,197,235,0.45), transparent);
-        }
-        .qg-theme-light .hndl-map,
-        .qg-theme-light .hndl-map-clear {
-          background:
-            radial-gradient(circle at 24% 46%, rgba(239,68,68,0.12), transparent 16%),
-            radial-gradient(circle at 55% 40%, rgba(14,165,233,0.13), transparent 18%),
-            radial-gradient(circle at 78% 52%, rgba(239,68,68,0.12), transparent 15%),
-            linear-gradient(180deg, rgba(255,255,255,0.86), rgba(236,249,255,0.76)) !important;
-          border-color: var(--qg-card-border) !important;
-        }
-        .qg-theme-light .hndl-map::before {
-          opacity: 0.56;
-          background-image:
-            radial-gradient(circle, rgba(239,68,68,0.45) 0 1px, transparent 1.5px),
-            linear-gradient(rgba(14,165,233,0.11) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(14,165,233,0.11) 1px, transparent 1px);
-        }
         .qg-theme-light .hndl-shell [class*="bg-black/"],
-        .qg-theme-light .hndl-shell [class*="bg-[#05080d]"],
-        .qg-theme-light .hndl-shell [class*="bg-[#120606]"],
-        .qg-theme-light .hndl-shell [class*="bg-[#140606]"] {
-          background-color: rgba(255,255,255,0.78) !important;
-        }
-        .qg-theme-light .hndl-shell [class*="bg-white/"],
-        .qg-theme-light .hndl-shell [class*="bg-white\\["] {
-          background-color: rgba(236,249,255,0.78) !important;
-        }
-        .qg-theme-light .hndl-shell [class*="border-white"] {
-          border-color: var(--qg-card-border) !important;
-        }
-        .qg-theme-light .hndl-shell [class*="text-white/"] {
-          color: var(--qg-dashboard-text-soft) !important;
-        }
-        .qg-theme-light .hndl-shell .text-white,
-        .qg-theme-light .hndl-shell h1[class*="text-white"],
-        .qg-theme-light .hndl-shell h2[class*="text-white"],
-        .qg-theme-light .hndl-shell h3[class*="text-white"],
-        .qg-theme-light .hndl-shell p[class*="text-white"],
-        .qg-theme-light .hndl-shell span[class*="text-white"],
-        .qg-theme-light .hndl-shell [class*="font-black"][class*="text-white"] {
-          color: var(--qg-dashboard-text) !important;
-        }
-        .qg-theme-light .hndl-shell .text-red-100,
-        .qg-theme-light .hndl-shell .text-red-200,
-        .qg-theme-light .hndl-shell .text-red-300,
-        .qg-theme-light .hndl-shell .text-red-400 {
-          color: #dc2626 !important;
-        }
-        .qg-theme-light .hndl-shell .text-orange-300 {
-          color: #ea580c !important;
-        }
-        .qg-theme-light .hndl-shell .text-emerald-100,
-        .qg-theme-light .hndl-shell .text-emerald-200,
-        .qg-theme-light .hndl-shell .text-emerald-300,
-        .qg-theme-light .hndl-shell .text-emerald-400 {
-          color: #047857 !important;
-        }
-        .qg-theme-light .hndl-shell .text-sky-300,
-        .qg-theme-light .hndl-shell .text-sky-400 {
-          color: #0284c7 !important;
-        }
-        .qg-theme-light .hndl-shell .text-gold,
-        .qg-theme-light .hndl-shell .hover\\:text-gold:hover {
-          color: var(--qg-amber) !important;
-        }
-        .qg-theme-light .hndl-shell svg text {
-          fill: var(--qg-dashboard-text-soft) !important;
-        }
-        @keyframes hndlLightRedPulse {
-          0%, 100% { box-shadow: var(--qg-panel-shadow), 0 0 0 rgba(239,68,68,0); }
-          50% { box-shadow: var(--qg-hover-shadow), 0 0 36px rgba(239,68,68,0.12); }
-        }
-        @keyframes hndlLightGreenPulse {
-          0%, 100% { box-shadow: var(--qg-panel-shadow), 0 0 0 rgba(16,185,129,0); }
-          50% { box-shadow: var(--qg-hover-shadow), 0 0 34px rgba(16,185,129,0.1); }
-        }
+        .qg-theme-light .hndl-shell [class*="bg-[#05080f]"] { background-color: rgba(255,255,255,0.72) !important; }
+        .qg-theme-light .hndl-shell [class*="text-white/"] { color: var(--qg-dashboard-text-soft) !important; }
+        .qg-theme-light .hndl-shell .text-white { color: var(--qg-dashboard-text) !important; }
+        .qg-theme-light .hndl-shell .text-red-300, .qg-theme-light .hndl-shell .text-red-400 { color: #dc2626 !important; }
+        .qg-theme-light .hndl-shell .text-amber-300 { color: #b45309 !important; }
+        .qg-theme-light .hndl-shell .text-emerald-300 { color: #047857 !important; }
+        .qg-theme-light .hndl-shell .text-cyan-300, .qg-theme-light .hndl-shell .text-cyan-400 { color: #0e7490 !important; }
+        .qg-theme-light .hndl-shell svg text { fill: var(--qg-dashboard-text-soft) !important; }
+        .qg-theme-light .hndl-shell [class*="border-white/"] { border-color: var(--qg-card-border) !important; }
       `}</style>
 
-      <div className="mx-auto grid max-w-[1600px] gap-3">
-        <header className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(340px,1fr)_160px_150px_48px_48px_230px]">
+      <div className="mx-auto grid max-w-[1700px] gap-3">
+        {/* ---------- Top bar ---------- */}
+        <header className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(360px,1fr)_150px_160px_150px_48px]">
           <div className={`${PANEL} sm:col-span-2 xl:col-span-1`}>
-            <div className="relative z-10 flex min-h-[56px] flex-col justify-center px-3 py-2">
-              <h1 className="text-lg font-black uppercase leading-none tracking-[0.07em] text-white md:text-xl xl:whitespace-nowrap">
-                Harvest Now, Decrypt Later
-              </h1>
-              <p className="mt-1 text-[10px] font-black uppercase tracking-[0.16em] text-white/48">
-                Quantum threat command center
-              </p>
-            </div>
-          </div>
-
-          <div className={PANEL}>
-            <div className="relative z-10 flex min-h-[56px] flex-col justify-center px-3 py-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/35">System Time</p>
-              <p className="mt-1 font-mono text-xs font-black text-white">{utcTime(data.generatedAt)}</p>
-            </div>
-          </div>
-          <div className={`${PANEL} border-emerald-400/35`}>
-            <div className="relative z-10 flex min-h-[56px] flex-col justify-center px-3 py-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-emerald-300/70">Defense Mode</p>
-              <p className="mt-1 text-xs font-black uppercase text-emerald-300">{connected ? 'Active' : 'Syncing'}</p>
-            </div>
-          </div>
-          <button type="button" className={`${PANEL} relative z-10 grid min-h-[56px] place-items-center text-white/65 hover:text-gold`} aria-label="Expand harvest dashboard">
-            <Expand className="h-4 w-4" />
-          </button>
-          <button type="button" onClick={refresh} className={`${PANEL} relative z-10 grid min-h-[56px] place-items-center text-white/65 hover:text-gold`} aria-label="Refresh harvest dashboard">
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-          <div className={PANEL}>
-            <div className="relative z-10 flex min-h-[56px] items-center gap-2 px-2.5 py-2">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-red-400/40 bg-red-500/15 text-red-300">
-                <UserCog className="h-4 w-4" />
+            <div className="relative z-10 flex min-h-[54px] items-center gap-3 px-3.5 py-2">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-red-400/40 bg-red-500/12 text-red-300">
+                <Radar className="h-4 w-4" />
               </div>
               <div className="min-w-0">
-                <p className="truncate text-[10px] font-black uppercase tracking-[0.1em] text-white">QGuard Commander</p>
-                <p className="text-[9px] font-bold text-white/45">Authenticated</p>
+                <h1 className="text-base font-black uppercase leading-none tracking-[0.08em] text-white md:text-lg">Harvest Now, Decrypt Later</h1>
+                <p className="mt-1 text-[9px] font-black uppercase tracking-[0.18em] text-cyan-300/70">Quantum Threat Operations Center</p>
               </div>
             </div>
           </div>
+          <div className={PANEL}>
+            <div className="relative z-10 flex min-h-[54px] flex-col justify-center px-3 py-2">
+              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">System Time</p>
+              <p className="mt-1 font-mono text-xs font-black text-cyan-300">{utcClock(data.generatedAt)}</p>
+            </div>
+          </div>
+          <div className={PANEL}>
+            <div className="relative z-10 flex min-h-[54px] items-center gap-2 px-3 py-2">
+              <span className={`h-2 w-2 rounded-full ${sseConnected ? TONE_DOT.green : TONE_DOT.amber}`} />
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">Telemetry Link</p>
+                <p className={`mt-0.5 text-xs font-black uppercase ${sseConnected ? 'text-emerald-300' : 'text-amber-300'}`}>{sseConnected ? 'Live SSE' : state === 'error' ? 'Reconnecting' : 'Syncing'}</p>
+              </div>
+            </div>
+          </div>
+          <div className={PANEL}>
+            <div className="relative z-10 flex min-h-[54px] flex-col justify-center px-3 py-2">
+              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">Migration Deadline</p>
+              <p className="mt-0.5 text-xs font-black uppercase text-amber-300">{banner.migrationDeadlineYear} · {banner.yearsToDeadline}y left</p>
+            </div>
+          </div>
+          <button type="button" onClick={refresh} className={`${PANEL} relative z-10 grid min-h-[54px] place-items-center text-white/60 hover:text-cyan-300`} aria-label="Refresh">
+            <RefreshCw className={`h-4 w-4 ${state === 'loading' ? 'animate-spin' : ''}`} />
+          </button>
         </header>
 
         {error && (
-          <div className="rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-200">
-            {error}
-          </div>
+          <div className="rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-200">{error}</div>
         )}
 
-        {showOverdueReminder && (
-          <div className="fixed bottom-5 right-5 z-[70] w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-lg border border-red-400/55 bg-[#140606]/95 p-4 text-white shadow-[0_0_34px_rgba(239,68,68,0.35)] backdrop-blur-xl">
-            <div className="flex gap-3">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-red-400/50 bg-red-500/15 text-red-300">
-                <AlertTriangle className="h-5 w-5" />
+        {/* ============ SECTION 1 — Quantum Threat Banner ============ */}
+        <section className={`${PANEL} ${alert ? 'hndl-hero-alert border-red-500/40' : ''} min-h-[150px]`}>
+          <div className={`hndl-grid ${alert ? 'hndl-grid-red' : ''} absolute inset-0 opacity-60`} />
+          {alert && <div className="hndl-scan pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-red-400/12 to-transparent" />}
+          <div className="relative z-10 grid gap-3 p-3.5 lg:grid-cols-[auto_1fr_auto] lg:items-center">
+            <div className="flex items-center gap-3">
+              <div className={`grid h-16 w-16 place-items-center rounded-lg border ${alert ? 'border-red-500/50 bg-red-500/12' : 'border-emerald-400/45 bg-emerald-500/10'}`}>
+                {alert ? <ShieldAlert className="h-8 w-8 text-red-300" /> : <ShieldCheck className="h-8 w-8 text-emerald-300" />}
               </div>
-              <div className="min-w-0">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-red-300">1HR remediation overdue</p>
-                <p className="mt-1 text-xs font-medium leading-5 text-white/62">
-                  {primaryThreat ? `${primaryThreat.name} on ${primaryThreat.location} is still active in live scanner telemetry.` : 'An active HNDL exposure is still unresolved in live scanner telemetry.'}
-                  {' '}Escalation cycle {responseWindow.activeCycle} is now running and will repeat hourly until remediation clears the finding.
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 flex gap-2">
-              <a href={remediationHref} className="inline-flex h-8 flex-1 items-center justify-center rounded border border-red-400/70 bg-red-500/15 text-[10px] font-black uppercase tracking-[0.12em] text-red-100 transition hover:border-gold hover:bg-gold/10 hover:text-gold">
-                Remediate Now
-              </a>
-              <button type="button" onClick={() => setDismissedReminderId(reminderId)} className="inline-flex h-8 items-center justify-center rounded border border-white/10 px-3 text-[10px] font-black uppercase tracking-[0.12em] text-white/55 transition hover:border-white/30 hover:text-white">
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
-
-        <main className="grid gap-3">
-          <div className="grid gap-3">
-            <section className={`${hndlHeroPanel} hndl-hero ${hndlAlertActive ? 'hndl-hero-alert' : 'hndl-hero-clear'} min-h-[270px]`}>
-              <div className={`hndl-grid ${hndlAlertActive ? 'hndl-grid-alert' : 'hndl-grid-clear'} absolute inset-0 opacity-70`} />
-              <div className={`hndl-scanline ${hndlAlertActive ? '' : 'hndl-scanline-clear'} absolute inset-x-0 top-0 h-1/2 opacity-35`} />
-              <div className="relative z-10 flex h-full flex-col p-3">
-                <div className={`mx-auto mb-3 inline-flex items-center gap-2 rounded-md px-6 py-1.5 ${hndlTone.badge}`}>
-                  {hndlAlertActive ? <AlertTriangle className="h-4 w-4 fill-red-400/20" /> : <ShieldCheck className="h-4 w-4" />}
-                  <span className="text-xs font-black uppercase tracking-[0.18em]">
-                    {hndlAlertActive ? 'HNDL Threat Detected' : 'HNDL Remediated / Mitigated'}
-                  </span>
-                </div>
-
-                <div className="grid flex-1 items-center gap-4 lg:grid-cols-[190px_1fr]">
-                  <div className="flex flex-col items-center justify-center">
-                    <div className="hndl-rune relative grid h-32 w-32 place-items-center">
-                      <div className={`absolute inset-0 rotate-45 border ${hndlTone.borderStrong} ${hndlTone.ringShadow}`} />
-                      <div className={`absolute inset-5 rotate-45 border ${hndlTone.borderMid}`} />
-                      <div className={`absolute inset-10 rotate-45 border ${hndlTone.borderSoft}`} />
-                      <LockKeyhole className={`h-12 w-12 ${hndlTone.icon} ${hndlTone.iconShadow}`} />
-                    </div>
-                    <p className={`mt-2 text-[10px] font-black uppercase tracking-[0.18em] ${hndlTone.textMuted}`}>Threat Level</p>
-                    <p className={`text-xl font-black uppercase tracking-[0.16em] ${hndlTone.textStrong}`}>
-                      {criticalThreatCount > 0 ? 'Critical' : activeThreatCount > 0 ? 'Elevated' : 'Mitigated'}
-                    </p>
-                  </div>
-
-                  <div className="text-center">
-                    <p className={`text-sm font-black uppercase tracking-[0.16em] ${hndlTone.text}`}>
-                      {hndlAlertActive ? 'Critical Threat Detected' : 'Threat Remediated / Mitigated'}
-                    </p>
-                    <h2 className={`mt-2 text-3xl font-black uppercase leading-tight tracking-[0.05em] text-white ${hndlTone.iconShadow} md:text-4xl`}>
-                      Harvest Now, Decrypt Later
-                    </h2>
-                    <p className="mt-2 text-xs font-black uppercase tracking-[0.14em] text-white/65">
-                      {hndlAlertActive ? 'Immediate action required' : 'Current tenant telemetry is clear'}
-                    </p>
-
-                    <div className="mt-4 flex flex-col items-center justify-center gap-3 md:flex-row">
-                      <div className={`rounded-lg border bg-black/40 px-4 py-2 ${hndlTone.meter}`}>
-                        <p className={`text-[9px] font-black uppercase tracking-[0.18em] ${hndlTone.textMuted}`}>{hndlAlertActive ? (responseWindowExpired ? 'Next 1HR Escalation' : '1HR Response Window') : 'Remediation State'}</p>
-                        <p className={`mt-1 font-mono text-3xl font-black tracking-[0.1em] ${hndlTone.text}`}>
-                          {activeThreatCount > 0 ? responseCountdown : '00:00:00'}
-                        </p>
-                        <p className={`mt-1 text-[9px] font-black uppercase tracking-[0.14em] ${hndlTone.textMuted}`}>
-                          {hndlAlertActive ? (responseWindowExpired ? `Cycle ${responseWindow.activeCycle} active` : 'Live SLA countdown') : 'No active HNDL SLA'}
-                        </p>
-                      </div>
-                      <a href={remediationHref} className={`inline-flex min-h-11 items-center gap-2 rounded-md px-6 text-xs font-black uppercase tracking-[0.08em] transition hover:border-gold/80 hover:bg-gold/15 hover:text-gold ${hndlTone.action}`}>
-                        {hndlAlertActive ? <AlertTriangle className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
-                        {hndlAlertActive ? 'Attend & Remediate Now' : 'Review Mitigation Evidence'}
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className={`${PANEL} min-h-[370px]`}>
-              <div className="relative z-10 p-3">
-                <SectionHeader>Global Threat Map</SectionHeader>
-                <div className={`hndl-map ${hndlAlertActive ? '' : 'hndl-map-clear'} relative min-h-[270px] overflow-hidden rounded-lg border ${hndlAlertActive ? 'border-red-500/25' : 'border-emerald-400/25'} bg-black/40`}>
-                  <svg className="absolute inset-0 h-full w-full opacity-70" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                    <path className="hndl-flow-glow" d="M7 66 C22 42, 34 40, 47 55 S78 72, 91 39" fill="none" stroke={hndlTone.flowSoft} strokeWidth="1.15" strokeLinecap="round" />
-                    <path className="hndl-flow-line" d="M7 66 C22 42, 34 40, 47 55 S78 72, 91 39" fill="none" stroke={hndlTone.flow} strokeWidth="0.45" strokeLinecap="round" />
-                    <path className="hndl-flow-line" d="M23 51 C34 34, 51 30, 73 52" fill="none" stroke={hndlAlertActive ? 'rgba(255,211,107,0.55)' : 'rgba(167,243,208,0.48)'} strokeWidth="0.32" strokeLinecap="round" />
-                    <path className="hndl-flow-line" d="M13 42 C31 58, 45 70, 68 61 S83 46, 94 58" fill="none" stroke={hndlTone.flowSoft} strokeWidth="0.35" strokeLinecap="round" />
-                  </svg>
-
-                  {mapNodes.map((node) => (
-                    <div
-                      key={node.id}
-                      className="absolute z-10 -translate-x-1/2 -translate-y-1/2"
-                      style={{ left: `${node.x}%`, top: `${node.y}%` }}
-                    >
-                      <div className={`grid h-8 w-8 place-items-center rounded-full border ${severityClasses(node.impact)} bg-black/50`}>
-                        <Crosshair className="h-4 w-4" />
-                      </div>
-                      <div className="mt-1 hidden w-44 rounded border border-red-500/35 bg-black/80 p-2 text-[10px] font-black uppercase tracking-[0.08em] text-white/70 shadow-[0_0_22px_rgba(239,68,68,0.22)] md:block">
-                        <p className="truncate text-red-300">{node.name}</p>
-                        <p className="mt-1 text-white/50">Location: {node.location}</p>
-                        <p className="text-gold">Impact: {node.impact}</p>
-                      </div>
-                    </div>
-                  ))}
-
-                  {mapNodes.length === 0 && (
-                    <div className="absolute inset-0 z-10 grid place-items-center text-center">
-                      <div>
-                        <ShieldCheck className="mx-auto h-10 w-10 text-emerald-300" />
-                        <p className="mt-3 text-sm font-black uppercase tracking-[0.12em] text-white">No mapped HNDL exposure</p>
-                        <p className="mt-1 text-xs font-medium text-white/45">Run an authenticated scan to populate the tenant exposure map.</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-3 grid gap-3 md:grid-cols-4">
-                  {[
-                    { label: 'Attack Surface', value: formatNumber(data.summary.totalAssets), delta: attackSurfaceChange },
-                    { label: 'Data At Risk', value: dataAtRisk, delta: percentOf(data.summary.vulnerableComponents, Math.max(1, data.summary.totalComponents)) },
-                    { label: 'Encryption Targets', value: formatNumber(data.summary.totalComponents), delta: pqcReadyChange },
-                    { label: 'Compromised Assets', value: formatNumber(assetTotals.compromised), delta: percentOf(assetTotals.compromised, Math.max(1, data.summary.totalAssets)) },
-                  ].map((metric) => (
-                    <div key={metric.label} className="rounded-md border border-white/10 bg-black/35 p-3 transition hover:border-gold/50 hover:bg-gold/[0.06]">
-                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/35">{metric.label}</p>
-                      <div className="mt-2 flex items-end justify-between gap-2">
-                        <p className="font-mono text-2xl font-black text-white">{metric.value}</p>
-                        <p className="text-[10px] font-black text-emerald-300">+{formatPercent(metric.delta)}</p>
-                      </div>
-                      <p className="mt-1 text-[10px] font-semibold text-white/35">vs latest scan baseline</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </section>
-          </div>
-
-          <aside className="grid gap-3 lg:grid-cols-3">
-            <section className={PANEL}>
-              <div className="relative z-10 p-3">
-                <SectionHeader>Threat Status</SectionHeader>
-                <div className="grid gap-2">
-                  <div>
-                    <div className="flex items-end gap-3">
-                      <p className="font-mono text-5xl font-black leading-none text-red-400 drop-shadow-[0_0_16px_rgba(248,113,113,0.8)]">{formatNumber(activeThreatCount)}</p>
-                      <div className="pb-1">
-                        <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/35">Active HNDL Threats</p>
-                        <p className="mt-0.5 text-[10px] font-bold text-white/55">{formatNumber(data.summary.totalFindings)} total findings</p>
-                      </div>
-                    </div>
-                    <svg className="mt-2 h-12 w-full" viewBox="0 0 156 58" preserveAspectRatio="none" aria-hidden="true">
-                      <defs>
-                        <linearGradient id="hndlSpark" x1="0" x2="0" y1="0" y2="1">
-                          <stop offset="0%" stopColor="rgba(239,68,68,0.65)" />
-                          <stop offset="100%" stopColor="rgba(239,68,68,0.02)" />
-                        </linearGradient>
-                      </defs>
-                      <path d={`${sparklinePath(sparkValues)} L 156 58 L 0 58 Z`} fill="url(#hndlSpark)" />
-                      <path d={sparklinePath(sparkValues)} fill="none" stroke="#ef4444" strokeWidth="2" />
-                    </svg>
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                    {[
-                      ['Critical', criticalThreatCount],
-                      ['High', highThreatCount],
-                      ['Medium', mediumThreatCount],
-                      ['Low', lowThreatCount],
-                      ['Info', infoThreatCount],
-                    ].map(([label, value]) => (
-                      <div key={label} className="flex items-center justify-between gap-2 text-[10px]">
-                        <span className={`inline-flex items-center gap-1.5 font-black uppercase tracking-[0.08em] ${label === 'Critical' ? 'text-red-300' : label === 'High' ? 'text-orange-300' : label === 'Medium' ? 'text-gold' : label === 'Info' ? 'text-sky-300' : 'text-white/45'}`}>
-                          <span className="h-1.5 w-1.5 rounded-full border border-current" />
-                          {label}
-                        </span>
-                        <span className="font-mono font-black text-white">{formatNumber(Number(value))}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className={PANEL}>
-              <div className="relative z-10 p-3">
-                <SectionHeader>Remediate & Secure</SectionHeader>
-                <div className="grid gap-2">
-                  <div className="rounded-lg border border-red-500/35 bg-red-500/10 p-3">
-                    <div className="flex gap-2.5">
-                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-red-400/45 bg-red-500/15 text-red-300">
-                        <Skull className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <p className="text-xs font-black uppercase tracking-[0.1em] text-red-300">
-                          {activeThreatCount > 0 ? 'Mitigation Required' : 'No Mitigation Queue'}
-                        </p>
-                        <p className="mt-1 text-[10px] font-medium text-white/52">
-                          {activeThreatCount > 0 ? `${formatNumber(activeThreatCount)} active HNDL threats require immediate remediation.` : 'No active HNDL threats are currently reported.'}
-                        </p>
-                      </div>
-                    </div>
-                    <a href={remediationHref} className="mt-3 inline-flex h-8 w-full items-center justify-center rounded border border-red-400/70 bg-red-500/15 text-[10px] font-black uppercase tracking-[0.12em] text-red-100 transition hover:border-gold hover:bg-gold/10 hover:text-gold">
-                      Start Remediation
-                    </a>
-                  </div>
-                  <div className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 p-3">
-                    <div className="flex gap-2.5">
-                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-emerald-400/45 bg-emerald-500/15 text-emerald-300">
-                        <ShieldCheck className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <p className="text-xs font-black uppercase tracking-[0.1em] text-emerald-300">All Clear</p>
-                        <p className="mt-1 text-[10px] font-medium text-white/52">
-                          {activeThreatCount === 0 ? 'No active HNDL threats. System is secure.' : `${formatNumber(Math.max(0, data.summary.totalAssets - assetTotals.compromised))} assets remain outside the active HNDL queue.`}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className={PANEL}>
-              <div className="relative z-10 p-3">
-                <SectionHeader action="View All">Top HNDL Threats</SectionHeader>
-                <div className="space-y-1.5">
-                  {threats.slice(0, 4).map((threat) => (
-                    <div key={threat.id} className="grid grid-cols-[16px_1fr_auto_14px] items-center gap-2 rounded border border-white/8 bg-white/[0.025] px-2 py-1.5 text-[10px] transition hover:border-gold/45 hover:bg-gold/[0.06]">
-                      <Siren className="h-3 w-3 text-red-400" />
-                      <div className="min-w-0">
-                        <p className="truncate font-black uppercase tracking-[0.08em] text-red-300">{threat.name}</p>
-                        <p className="truncate text-[9px] font-semibold text-white/38">{threat.location}</p>
-                      </div>
-                      <span className={`text-[9px] font-black uppercase ${severityClasses(threat.severity).split(' ').find((part) => part.startsWith('text-')) || 'text-white/50'}`}>
-                        {threat.severity}
-                      </span>
-                      <ChevronRight className="h-3 w-3 text-white/25" />
-                    </div>
-                  ))}
-                  {threats.length === 0 && (
-                    <div className="rounded border border-white/10 bg-white/[0.025] px-3 py-5 text-center">
-                      <CheckCircle2 className="mx-auto h-6 w-6 text-emerald-300" />
-                      <p className="mt-2 text-xs font-black text-white">No active HNDL threats</p>
-                      <p className="mt-1 text-xs font-medium text-white/42">Findings will appear here from live scanner intelligence.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
-          </aside>
-        </main>
-
-        <section className="grid gap-3 xl:grid-cols-[420px_minmax(0,1fr)]">
-          <div className={PANEL}>
-            <div className="relative z-10 p-4">
-              <SectionHeader>Mission Feed</SectionHeader>
-              <div className="space-y-3">
-                {missionFeed.map((event) => (
-                  <div key={event.id} className="grid grid-cols-[10px_54px_1fr] gap-3 text-xs">
-                    <span className={`mt-1.5 h-2 w-2 rounded-full ${toneDot(event.tone)}`} />
-                    <span className="font-mono text-[10px] font-bold text-white/48">{event.time}</span>
-                    <div className="min-w-0">
-                      <p className={`truncate text-[11px] font-black uppercase tracking-[0.08em] ${event.tone === 'red' ? 'text-red-300' : event.tone === 'green' ? 'text-emerald-300' : event.tone === 'gold' ? 'text-gold' : 'text-sky-300'}`}>
-                        {event.label}
-                      </p>
-                      <p className="truncate text-[10px] font-medium text-white/44">{event.detail}</p>
-                    </div>
-                  </div>
-                ))}
-                {missionFeed.length === 0 && (
-                  <div className="rounded border border-white/10 bg-white/[0.025] px-4 py-8 text-center">
-                    <Activity className="mx-auto h-7 w-7 text-white/35" />
-                    <p className="mt-3 text-sm font-black text-white">No mission activity yet</p>
-                    <p className="mt-1 text-xs font-medium text-white/42">Live scan telemetry and activity events will stream into this feed.</p>
-                  </div>
-                )}
-              </div>
-              <a href="/dashboard/scanner" className="mt-4 flex h-8 items-center justify-center rounded border border-sky-400/25 text-[10px] font-black uppercase tracking-[0.14em] text-sky-300 transition hover:border-gold/60 hover:text-gold">
-                View Full Log
-              </a>
-            </div>
-          </div>
-
-          <div className={PANEL}>
-            <div className="relative z-10 p-4">
-              <SectionHeader>Defense Actions</SectionHeader>
-              {defenseActionNotice && (
-                <div className={`mb-3 rounded-md border px-3 py-2 text-[10px] font-bold leading-5 ${
-                  defenseActionNotice.tone === 'success'
-                    ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
-                    : 'border-red-400/35 bg-red-500/10 text-red-200'
-                }`}>
-                  {defenseActionNotice.message}
-                </div>
-              )}
-              <div className="grid gap-3 md:grid-cols-2">
-                {defenseActions.map((action) => {
-                  const Icon = action.icon;
-                  const pending = defenseActionPending === action.actionType;
-                  return (
-                    <button
-                      key={action.label}
-                      type="button"
-                      disabled={Boolean(defenseActionPending)}
-                      onClick={() => handleDefenseAction(action)}
-                      className="grid grid-cols-[44px_1fr_18px] items-center gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-3 text-left transition hover:border-gold/50 hover:bg-gold/[0.06] disabled:cursor-wait disabled:opacity-60"
-                    >
-                      <div className="grid h-11 w-11 place-items-center rounded-md border border-red-400/35 bg-red-500/10 text-red-300">
-                        <Icon className={`h-5 w-5 ${pending ? 'animate-pulse' : ''}`} />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-black uppercase tracking-[0.1em] text-white">{action.label}</p>
-                        <p className="truncate text-[10px] font-medium text-white/42">{action.detail}</p>
-                        <p className="mt-1 font-mono text-[10px] font-black text-gold">
-                          {pending ? 'creating response task...' : `${formatNumber(action.count)} linked signals`}
-                        </p>
-                      </div>
-                      <ChevronRight className="h-4 w-4 text-white/25" />
-                    </button>
-                  );
-                })}
+              <div>
+                <Badge tone={bannerTone}><Siren className="h-3 w-3" /> {data.hasData ? `${banner.threatLevel} Threat` : 'Awaiting Scan'}</Badge>
+                <h2 className="mt-1.5 text-xl font-black uppercase leading-none tracking-[0.04em] text-white md:text-2xl">Harvest Now, Decrypt Later</h2>
+                <p className="mt-1 max-w-[460px] text-[11px] font-semibold leading-4 text-white/55">{banner.headline}</p>
               </div>
             </div>
-          </div>
 
-          <div className={`${PANEL} xl:col-span-2`}>
-            <div className="relative z-10 p-4">
-              <SectionHeader>Asset Status</SectionHeader>
-              <div className="grid gap-4 md:grid-cols-[1fr_190px_1fr]">
-                <div className="grid content-center gap-4">
-                  <div className="flex items-center justify-between rounded-lg border border-emerald-400/20 bg-emerald-500/8 p-3">
-                    <span className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-emerald-300"><ShieldCheck className="h-4 w-4" /> Secure</span>
-                    <span className="font-mono text-2xl font-black text-emerald-300">{formatNumber(assetTotals.secure)}</span>
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border border-gold/20 bg-gold/8 p-3">
-                    <span className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-gold"><AlertTriangle className="h-4 w-4" /> At Risk</span>
-                    <span className="font-mono text-2xl font-black text-gold">{formatNumber(assetTotals.atRisk)}</span>
-                  </div>
-                </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Stat label="HNDL Exposure" value={`${banner.hndlExposureScore}/100`} tone={levelTone(banner.hndlExposureLevel)} sub={banner.hndlExposureLevel} />
+              <Stat label="Critical Findings" value={fmt(banner.criticalFindings)} tone={banner.criticalFindings > 0 ? 'red' : 'green'} sub="quantum-vulnerable" />
+              <Stat label="Future Decryptable" value={tbFmt(banner.estimatedFutureDecryptableTb)} tone="amber" sub="est. at risk" />
+              <Stat label="Exposure Window" value={banner.quantumExposureWindow} tone={bannerTone} sub="to CRQC" />
+            </div>
 
-                <div className="relative grid min-h-[190px] place-items-center">
-                  <div className="absolute h-40 w-40 rounded-full border border-red-400/30 shadow-[0_0_28px_rgba(239,68,68,0.2)]" />
-                  <div
-                    className="absolute h-36 w-36 rounded-full"
-                    style={{
-                      background: `conic-gradient(#ef4444 0 ${percentOf(assetTotals.compromised, Math.max(1, assetTotals.total))}%, #facc15 ${percentOf(assetTotals.compromised, Math.max(1, assetTotals.total))}% ${percentOf(assetTotals.compromised + assetTotals.atRisk, Math.max(1, assetTotals.total))}%, #34d399 ${percentOf(assetTotals.compromised + assetTotals.atRisk, Math.max(1, assetTotals.total))}% 100%)`,
-                    }}
-                  />
-                  <div className="absolute h-28 w-28 rounded-full bg-[#05080d]" />
-                  <div className="relative text-center">
-                    <p className="font-mono text-3xl font-black text-white">{formatNumber(assetTotals.total)}</p>
-                    <p className="mt-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/45">Total Assets</p>
-                  </div>
-                </div>
-
-                <div className="grid content-center gap-4">
-                  <div className="flex items-center justify-between rounded-lg border border-red-400/20 bg-red-500/10 p-3">
-                    <span className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-red-300"><Flame className="h-4 w-4" /> Compromised</span>
-                    <span className="font-mono text-2xl font-black text-red-300">{formatNumber(assetTotals.compromised)}</span>
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                    <span className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-white/42"><Gauge className="h-4 w-4" /> Unknown</span>
-                    <span className="font-mono text-2xl font-black text-white/65">{formatNumber(assetTotals.unknown)}</span>
-                  </div>
-                </div>
+            <div className="flex flex-col items-stretch gap-2">
+              <div className={`rounded-lg border px-3 py-2 text-center ${alert ? 'border-red-500/35 bg-red-500/8' : 'border-cyan-400/30 bg-cyan-500/8'}`}>
+                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/45">Next Escalation Cycle</p>
+                <p className={`font-mono text-2xl font-black tracking-[0.08em] ${alert ? 'text-red-300' : 'text-cyan-300'}`}>{countdown}</p>
               </div>
-              <a href="/dashboard/assets" className="mt-4 flex h-9 items-center justify-center rounded border border-sky-400/25 text-[10px] font-black uppercase tracking-[0.14em] text-sky-300 transition hover:border-gold/60 hover:text-gold">
-                View All Assets
-              </a>
+              <div className="flex gap-2">
+                <a href="#exposure-matrix" className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md border border-cyan-400/50 bg-cyan-500/10 text-[10px] font-black uppercase tracking-[0.1em] text-cyan-200 transition hover:bg-cyan-500/20"><Activity className="h-3.5 w-3.5" /> Review Exposure</a>
+                <a href="/dashboard/migration-planner?source=harvest-now" className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md border border-amber-400/50 bg-amber-500/10 text-[10px] font-black uppercase tracking-[0.1em] text-amber-200 transition hover:bg-amber-500/20"><ArrowRight className="h-3.5 w-3.5" /> Begin Migration</a>
+              </div>
             </div>
           </div>
         </section>
 
-        <footer className="relative overflow-hidden rounded-lg border border-red-500/30 bg-red-500/5 px-5 py-3 text-center shadow-[0_0_24px_rgba(239,68,68,0.12)]">
-          <p className="relative z-10 text-sm font-black uppercase tracking-[0.16em] text-red-300">
-            Protect Today. Decrypt Never.
-          </p>
+        {loading ? (
+          <div className={`${PANEL} grid place-items-center py-16`}>
+            <div className="text-center">
+              <Radar className="mx-auto h-8 w-8 animate-pulse text-cyan-300" />
+              <p className="mt-3 text-xs font-black uppercase tracking-[0.16em] text-white/55">Synchronizing quantum threat telemetry…</p>
+            </div>
+          </div>
+        ) : !data.hasData ? (
+          <section className={`${PANEL} p-6`}>
+            <div className="mx-auto max-w-lg text-center">
+              <ShieldCheck className="mx-auto h-10 w-10 text-cyan-300" />
+              <h2 className="mt-3 text-lg font-black uppercase tracking-[0.06em] text-white">No HNDL Evidence Yet</h2>
+              <p className="mt-2 text-xs font-semibold leading-5 text-white/55">{data.evidence.note || 'Run a discovery scan to populate the Quantum Threat Operations Center with your real cryptographic exposure, harvestable data and migration intelligence.'}</p>
+              <a href="/dashboard/scanner" className="mt-4 inline-flex h-10 items-center gap-2 rounded-md border border-cyan-400/50 bg-cyan-500/10 px-5 text-xs font-black uppercase tracking-[0.1em] text-cyan-200 transition hover:bg-cyan-500/20"><Radar className="h-4 w-4" /> Launch Discovery Scan</a>
+            </div>
+          </section>
+        ) : (
+          <>
+            {/* ===== Row 1: Quantum Exposure Graph | Global Quantum Exposure Theater ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 2 — Quantum Exposure Graph */}
+              <section className={`${PANEL} min-h-[320px]`}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Network} action={`${data.exposureGraph.nodes.length} nodes`}>Quantum Exposure Graph™</SectionHeader>
+                  <div className="space-y-1.5">
+                    {data.exposureGraph.tiers.map((tier, i) => {
+                      const tone = classTone(tier.cryptoClass);
+                      return (
+                        <div key={tier.id} className="relative">
+                          {i < data.exposureGraph.tiers.length - 1 && <div className="absolute left-4 top-9 h-2 w-px bg-cyan-400/25" />}
+                          <div className="flex items-center gap-2.5 rounded-md border border-white/8 bg-black/25 px-2.5 py-1.5">
+                            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_DOT[tone]}`} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-[11px] font-black uppercase tracking-[0.08em] text-white/85">{tier.label}</p>
+                                <span className="text-[10px] font-black text-white/55">{fmt(tier.total)}</span>
+                              </div>
+                              <p className="truncate text-[9px] font-semibold text-white/40">{tier.detail}</p>
+                            </div>
+                            {tier.vulnerable > 0 && <Badge tone="red">{tier.vulnerable} vuln</Badge>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2.5 border-t border-white/8 pt-2">
+                    <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.14em] text-white/40">Top Exposure Nodes · click for detail</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {data.exposureGraph.nodes.slice(0, 12).map((n) => {
+                        const tone = classTone(n.cryptoClass);
+                        return (
+                          <button key={n.id} type="button" onClick={() => setSelectedNode(n.id === selectedNode ? null : n.id)} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-bold transition ${n.id === selectedNode ? 'border-cyan-400/70 bg-cyan-500/15 text-cyan-200' : TONE_BADGE[tone]}`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${TONE_DOT[tone]}`} />
+                            <span className="max-w-[120px] truncate">{n.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selected && (
+                      <div className="mt-2 rounded-md border border-cyan-400/30 bg-cyan-500/8 p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-[11px] font-black text-cyan-200">{selected.label}</p>
+                          <Badge tone={classTone(selected.cryptoClass)}>{selected.cryptoClass}</Badge>
+                        </div>
+                        <p className="mt-1 text-[9px] font-bold text-white/45">{selected.type} · {selected.environment} · risk {selected.riskScore}{selected.internetFacing ? ' · internet-facing' : ''}</p>
+                        {selected.algorithms.length > 0 && <p className="mt-1 text-[9px] font-semibold text-white/55">Algorithms: {selected.algorithms.join(', ')}</p>}
+                        <p className="mt-1 text-[9px] font-semibold text-amber-300/80">{selected.affectedDataDetail} · {selected.migrationPlan}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 3 — Global Quantum Exposure Theater */}
+              <section className={`${PANEL} min-h-[320px]`}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Globe2} action={`${data.theater.totalRegions} regions`}>Global Quantum Exposure Theater™</SectionHeader>
+                  <div className="hndl-radar relative min-h-[240px] overflow-hidden rounded-lg border border-cyan-400/20 bg-black/40">
+                    <svg className="absolute inset-0 h-full w-full opacity-50" viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true">
+                      <path className="hndl-flow" d="M22 24 C40 14, 60 16, 84 26" fill="none" stroke="rgba(34,211,238,0.5)" strokeWidth="0.4" />
+                      <path className="hndl-flow" d="M16 32 C38 44, 60 40, 85 30" fill="none" stroke="rgba(239,68,68,0.4)" strokeWidth="0.4" />
+                      <path className="hndl-flow" d="M27 22 C45 30, 65 50, 85 56" fill="none" stroke="rgba(251,191,36,0.35)" strokeWidth="0.35" />
+                    </svg>
+                    {data.theater.regions.length === 0 ? (
+                      <div className="absolute inset-0 grid place-items-center"><EmptyState>No regional telemetry</EmptyState></div>
+                    ) : data.theater.regions.map((r) => {
+                      const tone = levelTone(r.severity);
+                      return (
+                        <div key={r.key} className="group/region absolute z-10 -translate-x-1/2 -translate-y-1/2" style={{ left: `${r.x}%`, top: `${r.y}%` }}>
+                          <span className={`block h-3 w-3 rounded-full ${TONE_DOT[tone]} ring-2 ring-black/40`} />
+                          <span className={`absolute left-1/2 top-1/2 -z-10 -translate-x-1/2 -translate-y-1/2 rounded-full ${TONE_BAR[tone]} opacity-25`} style={{ width: 10 + r.vulnerableAssets * 6, height: 10 + r.vulnerableAssets * 6 }} />
+                          <div className="pointer-events-none absolute left-4 top-0 hidden w-40 rounded border border-cyan-400/30 bg-black/85 p-1.5 text-[9px] font-bold text-white/70 shadow-lg group-hover/region:block">
+                            <p className="truncate text-cyan-200">{r.region}</p>
+                            <p className="text-white/50">{r.assets} assets · {r.vulnerableAssets} vulnerable</p>
+                            <p className={TONE_TEXT[tone]}>Avg risk {r.avgRisk} · {r.severity}</p>
+                            {r.cloudProviders.length > 0 && <p className="text-white/40">{r.cloudProviders.join(', ')}</p>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <Stat label="Regions" value={fmt(data.theater.totalRegions)} tone="cyan" />
+                    <Stat label="High-Value Targets" value={fmt(data.theater.highValueTargets)} tone="red" />
+                    <Stat label="Vulnerable Regions" value={fmt(data.theater.regions.filter((r) => r.vulnerableAssets > 0).length)} tone="amber" />
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* ===== Row 2: Forward Secrecy Coverage | Harvest Value Engine ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 7 — Forward Secrecy Coverage */}
+              <section className={`${PANEL} min-h-[320px]`}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Lock} tone={data.forwardSecrecy.coveragePct >= 70 ? 'green' : 'red'}>Forward Secrecy Coverage™</SectionHeader>
+                  <div className="flex items-center justify-center py-1">
+                    <Ring value={data.forwardSecrecy.coveragePct} tone={data.forwardSecrecy.coveragePct >= 70 ? 'green' : data.forwardSecrecy.coveragePct >= 40 ? 'amber' : 'red'} label="PFS Coverage" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Stat label="Protected" value={fmt(data.forwardSecrecy.assetsProtected)} tone="green" />
+                    <Stat label="Unprotected" value={fmt(data.forwardSecrecy.assetsUnprotected)} tone="red" />
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    {data.forwardSecrecy.nonPfsBreakdown.length === 0 ? (
+                      <p className="text-center text-[10px] font-bold text-emerald-300/70">No non-PFS configurations detected</p>
+                    ) : data.forwardSecrecy.nonPfsBreakdown.map((b) => (
+                      <div key={b.type} className="flex items-center justify-between rounded border border-white/8 bg-black/25 px-2 py-1">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.06em] text-white/65">{b.type}</span>
+                        <Badge tone="red">{b.count}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 4 — Harvest Value Engine */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Target} tone="amber">Harvest Value Engine™</SectionHeader>
+                  <div className="space-y-1.5">
+                    {data.harvestValue.map((h) => {
+                      const tone = levelTone(h.estimatedFutureValue);
+                      return (
+                        <div key={h.key} className={`rounded-md border bg-black/25 px-2.5 py-1.5 ${h.inScope ? 'border-white/10' : 'border-white/5 opacity-55'}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-[11px] font-black uppercase tracking-[0.06em] text-white/85">{h.label}</p>
+                            <Badge tone={tone}>{h.estimatedFutureValue}</Badge>
+                          </div>
+                          <div className="mt-1 grid grid-cols-3 gap-1.5 text-[9px] font-bold">
+                            <span className="text-white/45">Exposure <span className={TONE_TEXT[tone]}>{h.exposureScore}</span></span>
+                            <span className="text-white/45">Lifetime <span className="text-cyan-300">{h.confidentialityLifetimeYears}y</span></span>
+                            <span className="text-white/45">Adversary <span className="text-red-300">{h.adversaryInterestScore}</span></span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* ===== Row 3: Data Shelf-Life Analyzer | Quantum Break Timeline ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 5 — Data Shelf-Life Analyzer */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={CalendarClock} tone="cyan" action="vs CRQC 2030">Data Shelf-Life Analyzer™</SectionHeader>
+                  <div className="space-y-1">
+                    {data.shelfLife.map((s) => (
+                      <div key={s.dataType} className={`flex items-center justify-between gap-2 rounded-md border bg-black/25 px-2.5 py-1.5 ${s.exceedsCrqc ? 'border-red-500/30' : 'border-white/8'}`}>
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-black uppercase tracking-[0.06em] text-white/85">{s.dataType}</p>
+                          <p className="text-[9px] font-semibold text-white/40">{s.retentionRequirement} · expires {s.dataExpiresYear}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-black text-cyan-300">{s.confidentialityYears}y</p>
+                          {s.exceedsCrqc && <span className="text-[8px] font-black uppercase tracking-[0.08em] text-red-300">{s.quantumRiskWindow}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 6 — Quantum Break Timeline */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Clock} tone="red">Quantum Break Timeline™</SectionHeader>
+                  <div className="mb-2 grid grid-cols-3 gap-2">
+                    <Stat label="Now" value={data.breakTimeline.currentYear} tone="cyan" />
+                    <Stat label="CRQC" value={data.breakTimeline.crqcYear} tone="red" />
+                    <Stat label="Target" value={data.breakTimeline.migrationCompletionYear} tone="amber" />
+                  </div>
+                  <div className="space-y-1.5">
+                    {data.breakTimeline.years.map((y) => {
+                      const tone: Tone = y.projectedRisk >= 75 ? 'red' : y.projectedRisk >= 50 ? 'amber' : 'cyan';
+                      return (
+                        <div key={y.year} className="flex items-center gap-2">
+                          <span className={`w-9 shrink-0 text-[10px] font-black ${y.critical ? 'text-red-300' : 'text-white/55'}`}>{y.year}</span>
+                          <div className="flex-1"><Bar value={y.projectedRisk} tone={tone} /></div>
+                          <span className={`w-8 shrink-0 text-right text-[10px] font-black ${TONE_TEXT[tone]}`}>{y.projectedRisk}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-[9px] font-semibold leading-3 text-white/40">{data.breakTimeline.years.find((y) => y.critical)?.milestone || 'Projected quantum risk growth toward CRQC.'}</p>
+                </div>
+              </section>
+            </div>
+
+            {/* ===== SECTION 8 — Cryptographic Exposure Matrix ===== */}
+            <section id="exposure-matrix" className={PANEL}>
+              <div className="relative z-10 p-3">
+                <SectionHeader icon={Layers} tone="red" action={`${data.exposureMatrix.length} algorithms`}>Cryptographic Exposure Matrix™</SectionHeader>
+                {data.exposureMatrix.length === 0 ? <EmptyState>No cryptographic inventory</EmptyState> : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[640px] border-collapse text-left">
+                      <thead>
+                        <tr className="border-b border-white/10 text-[9px] font-black uppercase tracking-[0.12em] text-white/45">
+                          <th className="px-2 py-1.5">Algorithm</th>
+                          <th className="px-2 py-1.5">Assets</th>
+                          <th className="px-2 py-1.5">Instances</th>
+                          <th className="px-2 py-1.5">Criticality</th>
+                          <th className="px-2 py-1.5">Exposure</th>
+                          <th className="px-2 py-1.5">Migration Priority</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.exposureMatrix.map((m) => {
+                          const tone = classTone(m.cryptoClass);
+                          const prTone = levelTone(m.migrationPriority);
+                          return (
+                            <tr key={m.algorithm} className="border-b border-white/5 text-[11px] font-semibold text-white/75 transition hover:bg-white/4">
+                              <td className="px-2 py-1.5"><span className="inline-flex items-center gap-1.5"><span className={`h-2 w-2 rounded-full ${TONE_DOT[tone]}`} />{m.algorithm}{m.internetFacing && <Crosshair className="h-3 w-3 text-red-300" />}</span></td>
+                              <td className="px-2 py-1.5 font-black text-white">{fmt(m.assetCount)}</td>
+                              <td className="px-2 py-1.5 text-white/55">{fmt(m.instanceCount)}</td>
+                              <td className="px-2 py-1.5"><Badge tone={levelTone(m.businessCriticality)}>{m.businessCriticality}</Badge></td>
+                              <td className="px-2 py-1.5"><span className={TONE_TEXT[tone]}>{m.exposure}</span></td>
+                              <td className="px-2 py-1.5"><Badge tone={prTone}>{m.migrationPriority}</Badge></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* ===== Row 5: Estimated Captured Data | Future Decryptable Data ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 9 — Estimated Captured Data */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={HardDriveDownload} tone="amber">Estimated Captured Data™</SectionHeader>
+                  {!data.capturedData.hasEvidence ? <EmptyState>No harvestable data sources</EmptyState> : (
+                    <>
+                      <div className="space-y-1">
+                        {data.capturedData.lines.filter((l) => l.gb > 0).map((l) => (
+                          <div key={l.key} className="flex items-center justify-between text-[10px] font-bold">
+                            <span className="text-white/55">{l.label}</span>
+                            <span className="text-amber-300">{tbFmt(l.tb)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 border-t border-white/8 pt-2 text-center">
+                        <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/45">Total Captured Volume</p>
+                        <p className="text-2xl font-black text-amber-300">{tbFmt(data.capturedData.totalTb)}</p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </section>
+
+              {/* SECTION 10 — Estimated Future Decryptable Data */}
+              <section className={`${PANEL} border-red-500/25`}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={TrendingUp} tone="red">Future Decryptable Data™</SectionHeader>
+                  <div className="text-center">
+                    <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/45">Projected Decryptable Volume</p>
+                    <p className="text-3xl font-black text-red-300">{tbFmt(data.futureDecryptable.projectedDecryptableTb)}</p>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <Stat label="Data At Risk" value={tbFmt(data.futureDecryptable.totalDataAtRiskTb)} tone="amber" />
+                    <Stat label="High-Value" value={pct(data.futureDecryptable.highValueDataPct)} tone="red" />
+                    <Stat label="Critical Assets" value={fmt(data.futureDecryptable.criticalConfidentialAssets)} tone="red" />
+                    <Stat label="Vuln Share" value={pct(data.futureDecryptable.vulnerableSharePct)} tone="amber" />
+                  </div>
+                  {data.futureDecryptable.trend.length > 1 && (
+                    <div className="mt-2 flex h-10 items-end gap-1">
+                      {data.futureDecryptable.trend.map((t, i) => {
+                        const max = Math.max(...data.futureDecryptable.trend.map((x) => x.decryptableTb), 0.01);
+                        return <div key={i} className="flex-1 rounded-t bg-gradient-to-t from-red-500/40 to-red-400" style={{ height: `${Math.max(6, (t.decryptableTb / max) * 100)}%` }} title={`${t.label}: ${tbFmt(t.decryptableTb)}`} />;
+                      })}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            {/* ===== Row 6: Quantum Migration Readiness | Adversary Interest Score ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 11 — Quantum Migration Readiness */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Boxes} tone="green">Quantum Migration Readiness™</SectionHeader>
+                  <div className="flex items-center justify-center py-1">
+                    <Ring value={data.migrationReadiness.readinessScore} tone={levelTone(data.migrationReadiness.readinessLevel)} label="Readiness" sub={data.migrationReadiness.readinessLevel} size={104} />
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <Stat label="PQC Ready" value={fmt(data.migrationReadiness.pqcReady)} tone="green" />
+                    <Stat label="Hybrid" value={fmt(data.migrationReadiness.hybridReady)} tone="amber" />
+                    <Stat label="Legacy" value={fmt(data.migrationReadiness.legacyOnly)} tone="red" />
+                    <Stat label="In Progress" value={fmt(data.migrationReadiness.migrationInProgress)} tone="cyan" />
+                    <Stat label="Completed" value={fmt(data.migrationReadiness.migrationCompleted)} tone="green" />
+                    <Stat label="Blocked" value={fmt(data.migrationReadiness.migrationBlocked)} tone="red" />
+                  </div>
+                  <p className="mt-2 text-[9px] font-semibold leading-3 text-white/45">{data.migrationReadiness.recommendation}</p>
+                </div>
+              </section>
+
+              {/* SECTION 12 — Adversary Interest Score */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Crosshair} tone="red">Adversary Interest Score™</SectionHeader>
+                  <div className="space-y-1.5">
+                    {data.adversaryInterest.length === 0 ? <EmptyState>No sector telemetry</EmptyState> : data.adversaryInterest.map((a) => (
+                      <div key={a.key}><Bar value={a.interestScore} tone={levelTone(a.level)} label={a.sector} right={`${a.interestScore}`} /></div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* ===== Row 7: Threat Actors Most Interested | Strategic Intelligence Feed ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 13 — Threat Actors Most Interested */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Target} tone="red">Threat Actors Most Interested™</SectionHeader>
+                  <div className="space-y-1.5">
+                    {data.threatActors.length === 0 ? <EmptyState>No exposure intelligence</EmptyState> : data.threatActors.map((a) => (
+                      <div key={a.key} className="rounded-md border border-white/8 bg-black/25 px-2.5 py-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-[11px] font-black uppercase tracking-[0.05em] text-white/85">{a.actor}</p>
+                          <Badge tone={levelTone(a.level)}>{a.interestScore}</Badge>
+                        </div>
+                        <p className="mt-0.5 text-[9px] font-semibold leading-3 text-white/45">{a.motivation}</p>
+                        {a.targetedAssetCount > 0 && <p className="mt-0.5 text-[9px] font-bold text-cyan-300/70">Targets: {a.targetedAssetCount} asset(s)</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {/* SECTION 14 — Strategic Intelligence Feed */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={Activity} tone="cyan" action="PQC ecosystem">Strategic Intelligence Feed™</SectionHeader>
+                  <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
+                    {data.intelligenceFeed.map((it) => (
+                      <div key={it.id} className="rounded-md border border-white/8 bg-black/25 px-2.5 py-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-black uppercase tracking-[0.1em] text-cyan-300">{it.source}</span>
+                          <span className="text-[8px] font-bold text-white/35">{it.date}</span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] font-black text-white/85">{it.title}</p>
+                        <p className="text-[9px] font-semibold leading-3 text-white/45">{it.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* ===== Row 8: Top HNDL Findings | Remediation Center ===== */}
+            <div className="grid gap-3 xl:grid-cols-2">
+              {/* SECTION 15 — Top HNDL Findings */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={ShieldAlert} tone="red" action={`${data.topFindings.length}`}>Top HNDL Findings™</SectionHeader>
+                  {data.topFindings.length === 0 ? <EmptyState>No HNDL findings</EmptyState> : (
+                    <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
+                      {data.topFindings.map((f) => (
+                        <div key={f.id} className={`rounded-md border bg-black/25 px-2.5 py-1.5 ${f.exceedsCrqc ? 'border-red-500/30' : 'border-white/8'}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate font-mono text-[10px] font-black text-red-300">{f.algorithm}</p>
+                            <Badge tone={levelTone(f.migrationPriority)}>{f.migrationPriority}</Badge>
+                          </div>
+                          <p className="truncate text-[9px] font-semibold text-white/55">{f.asset}</p>
+                          <div className="mt-0.5 flex items-center justify-between text-[9px] font-bold">
+                            <span className="text-white/40">{f.dataLifetimeLabel}</span>
+                            <span className={f.exceedsCrqc ? 'text-red-300' : 'text-cyan-300'}>{f.riskWindow}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* SECTION 16 — Remediation Center */}
+              <section className={PANEL}>
+                <div className="relative z-10 p-3">
+                  <SectionHeader icon={KeyRound} tone="green" action="action plan">Remediation Center™</SectionHeader>
+                  <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
+                    {data.remediationCenter.map((a) => (
+                      <a key={a.key} href={a.href} className={`block rounded-md border bg-black/25 px-2.5 py-1.5 transition hover:border-cyan-400/40 hover:bg-cyan-500/5 ${a.inScope ? 'border-white/10' : 'border-white/5 opacity-55'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-[11px] font-black uppercase tracking-[0.05em] text-white/85">{a.label}</p>
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/35" />
+                        </div>
+                        <p className="text-[9px] font-semibold text-white/40">{a.requires}</p>
+                        <div className="mt-1 grid grid-cols-3 gap-1 text-[9px] font-bold">
+                          <span className="text-white/45">Assets <span className="text-cyan-300">{fmt(a.affectedAssets)}</span></span>
+                          <span className="text-white/45">Risk <span className="text-emerald-300">-{a.riskReductionPct}%</span></span>
+                          <span className="text-white/45">Effort <span className="text-amber-300">{a.effort}</span></span>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            {/* ===== Evidence footer ===== */}
+            <section className={`${PANEL}`}>
+              <div className="relative z-10 flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5">
+                <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.1em] text-white/45">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" />
+                  <span>Evidence: {data.evidence.sources.join(' · ')}</span>
+                </div>
+                <p className="max-w-[60%] text-right text-[9px] font-semibold text-white/40">{data.evidence.note}</p>
+              </div>
+            </section>
+          </>
+        )}
+
+        <footer className="py-1 text-center">
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-300/40">Dominate Today · Defeat Tomorrow · Protect Forever</p>
         </footer>
       </div>
     </div>

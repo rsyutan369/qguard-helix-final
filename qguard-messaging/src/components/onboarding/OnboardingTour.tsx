@@ -130,7 +130,7 @@ export default function OnboardingTour({ controller, steps, checklist, userName,
             {checklist.map((item) => (
               <li
                 key={item.id}
-                className="flex items-center gap-3 rounded-lg border border-line bg-white/60 px-3 py-2.5"
+                className="flex items-center gap-3 rounded-lg border border-line bg-ink-50 px-3 py-2.5"
               >
                 {item.done ? (
                   <CheckCircle2 size={18} className="shrink-0 text-emerald-500" />

@@ -5,19 +5,24 @@ Most discussions about Post-Quantum Cryptography (PQC) focus entirely on algorit
 ​That isn't what surprises you when you actually touch the infrastructure.
 ​Replacing a primitive inside an isolated app is straightforward.
 ​The real mess begins when you try to achieve enterprise-scale visibility. You realize very quickly that you don't actually know what exists across your perimeter.
+
 ​You aren't just looking at a clean database. The engineering reality is complete chaos.
 ​You start digging into the infrastructure and find:
 ​Hardcoded cipher suites buried inside legacy internal binaries.
 ​Shadow IT services running undocumented API endpoints.
+
 ​Third-party vendor appliances running proprietary, locked-down TLS stacks.
 ​Ephemeral container workloads spinning up with custom, unmapped OpenSSL forks.
 ​At this stage, you realize that basic network scanning is a joke. It only captures what's active right at that second.
+
 ​To get true visibility, the questions shift from network layers to runtime and static engineering:
 ​Can your SAST rules reliably flag non-compliant curves in custom source code without blowing up your triage pipeline?
 ​How do you hook into cryptographic providers at the JVM or CLR level to map active handshakes without killing production performance?
+
 ​Can you reliably intercept system calls using eBPF at the kernel level to see what legacy systems are doing in the background?
 ​If you try to migrate without solving this visibility puzzle first, you aren't executing a strategy.
 ​You are just guessing.
+
 ​And guessing at enterprise scale means introducing massive, unmapped operational risks.
 ​Discovery isn't a compliance checklist item. It is the absolute core foundation of cryptographic lifecycle management.
 ​I'm curious whether others working on infrastructure architecture are relying on deep runtime instrumentation, or if you're stuck trying to clean up network-level scans.

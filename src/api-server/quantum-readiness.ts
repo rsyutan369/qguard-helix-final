@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { buildScannerIntelligence } from './scanner'
 
 /**
  * Quantum Readiness Assessment Engine™ — aggregation router.
@@ -149,6 +150,28 @@ export async function buildSnapshot(token: string, userId: string) {
     safeRows(client, 'vault_files', (q) => q.select('id, encryption_algorithm, created_at').eq('user_id', userId).limit(800)),
   ])
 
+  // ---- Canonical scanner intelligence ----------------------------------
+  // Mirror the platform's scanner-intelligence view (same source as harvest-now,
+  // assets, CBOM) so the QR pages display the scanner's *expanded* per-instance
+  // finding counts, severity distribution and CBOM component stats rather than
+  // the raw graded scan rows. Falls back to raw-table computation if unavailable.
+  type IntelFinding = { id?: string; algorithm?: string; category?: string; location?: string; threatLevel?: string; status?: string; detectedAt?: string; timestamp?: string; description?: string }
+  type IntelSnapshot = {
+    summary?: { totalComponents?: number; vulnerableComponents?: number; pqcReadyComponents?: number; pqcReadiness?: number; totalAssets?: number; vulnerableAssets?: number }
+    severityCounts?: { critical?: number; high?: number; medium?: number; low?: number; safe?: number }
+    findings?: IntelFinding[]
+  }
+  let intel: IntelSnapshot | null = null
+  try {
+    intel = (await buildScannerIntelligence(token, userId)) as IntelSnapshot
+  } catch {
+    intel = null
+  }
+  const intelSummary = intel?.summary
+  const intelSeverity = intel?.severityCounts
+  const intelFindings = intel?.findings || []
+  const intelHasData = Boolean(intelSummary && ((intelSummary.totalComponents || 0) > 0 || intelFindings.length > 0))
+
   // ---- Inventory --------------------------------------------------------
   const assetsAssessed = assets.length
   const certificatesAnalyzed = certificates.length
@@ -156,14 +179,27 @@ export async function buildSnapshot(token: string, userId: string) {
   const trustRelationships = assetRelationships.length
   const cloudAccounts = connectorAccounts.length
   const dataRepositories = vaultFiles.length
+  // Scanned domains = distinct scanned targets (evidence/runtime hosts, scan
+  // result targets, and discovered web/domain assets). A scanned domain must
+  // never read as 0.
+  const domainAssetNames = assets
+    .filter((a) => /web|domain|tls|endpoint|site|host|app/i.test(str(a.type)) || /\.[a-z]{2,}$/i.test(str(a.name)))
+    .map((a) => str(a.name))
   const domainsScanned = new Set(
     [
       ...scannerEvidence.map((e) => str(e.host)),
       ...runtimeEvents.map((e) => str(e.host)),
+      ...scanResults.map((r) => str(r.target_name)),
+      ...domainAssetNames,
     ].filter(Boolean),
   ).size
 
-  // ---- Algorithm posture ------------------------------------------------
+  // ---- Algorithm / CBOM posture ----------------------------------------
+  // crypto_inventory is the authoritative Cryptographic Bill of Materials and
+  // carries is_vulnerable / is_quantum_safe flags. Use it as the single source
+  // of truth for posture so percentages match the platform's scanner
+  // intelligence. Only when no CBOM exists do we fall back to scan findings,
+  // certificates and keys — summing all sources double-counts the same crypto.
   let vulnerable = 0
   let pqcReady = 0
   let hybrid = 0
@@ -173,24 +209,38 @@ export async function buildSnapshot(token: string, userId: string) {
     else if (klass === 'hybrid') hybrid += 1
   }
 
-  for (const item of cryptoInventory) {
-    if (item.is_quantum_safe === true) tally('pqc')
-    else if (item.is_vulnerable === true) tally('vulnerable')
-    else tally(classifyAlgorithm(str(item.algorithm)))
-  }
-  for (const cert of certificates) {
-    if (cert.is_quantum_safe === true) tally('pqc')
-    else tally(classifyAlgorithm(str(cert.algorithm)))
-  }
-  for (const key of generatedKeys) tally(classifyAlgorithm(str(key.algorithm)))
-  for (const result of scanResults) tally(classifyAlgorithm(str(result.algorithm)))
-  for (const event of runtimeEvents) {
-    if (event.is_pqc === true) tally('pqc')
-    else if (event.is_legacy === true) tally('vulnerable')
-    else tally(classifyAlgorithm(str(event.algorithm)))
+  if (cryptoInventory.length) {
+    for (const item of cryptoInventory) {
+      if (item.is_quantum_safe === true) tally('pqc')
+      else if (item.is_vulnerable === true) tally('vulnerable')
+      else tally(classifyAlgorithm(str(item.algorithm)))
+    }
+  } else {
+    for (const result of scanResults) tally(classifyAlgorithm(str(result.algorithm)))
+    for (const cert of certificates) {
+      if (cert.is_quantum_safe === true) tally('pqc')
+      else tally(classifyAlgorithm(str(cert.algorithm)))
+    }
+    for (const key of generatedKeys) tally(classifyAlgorithm(str(key.algorithm)))
+    for (const event of runtimeEvents) {
+      if (event.is_pqc === true) tally('pqc')
+      else if (event.is_legacy === true) tally('vulnerable')
+      else tally(classifyAlgorithm(str(event.algorithm)))
+    }
   }
 
-  const totalCrypto = vulnerable + pqcReady + hybrid
+  // Mirror the scanner's expanded CBOM component stats when available so the QR
+  // posture, PQC-adoption % and component counts match scanner intelligence.
+  if (intelHasData && intelSummary) {
+    vulnerable = num(intelSummary.vulnerableComponents)
+    pqcReady = num(intelSummary.pqcReadyComponents)
+    hybrid = 0
+  }
+
+  const totalCrypto = intelHasData && intelSummary ? Math.max(1, num(intelSummary.totalComponents)) : vulnerable + pqcReady + hybrid
+  const cryptoComponents = intelHasData && intelSummary ? num(intelSummary.totalComponents) : (cryptoInventory.length || totalCrypto)
+  const vulnerableComponents = intelHasData && intelSummary ? num(intelSummary.vulnerableComponents) : vulnerable
+  const pqcReadyComponents = intelHasData && intelSummary ? num(intelSummary.pqcReadyComponents) : pqcReady + hybrid
 
   // ---- Per-asset risk ---------------------------------------------------
   const assetRisk = new Map<string, number>()
@@ -251,10 +301,21 @@ export async function buildSnapshot(token: string, userId: string) {
     else if (s.includes('medium') || s.includes('moderate')) medium += 1
     else if (s.includes('low')) low += 1
   }
-  for (const result of scanResults) bumpSeverity(str(result.threat_level))
-  for (const exposure of cryptoExposures) bumpSeverity(str(exposure.severity))
-  for (const alert of scannerAlerts) bumpSeverity(str(alert.severity))
-  for (const event of securityEvents) bumpSeverity(str(event.severity))
+  // Mirror the scanner's expanded per-instance severity distribution. When
+  // scanner intelligence is unavailable, fall back to the authoritative graded
+  // scan findings (pqc_scan_results), then to crypto_exposures — never summing
+  // both, which would double-count the same issue.
+  if (intelHasData && intelSeverity) {
+    critical = num(intelSeverity.critical)
+    high = num(intelSeverity.high)
+    medium = num(intelSeverity.medium)
+    low = num(intelSeverity.low)
+  } else if (scanResults.length) {
+    for (const result of scanResults) bumpSeverity(str(result.threat_level))
+  } else {
+    for (const exposure of cryptoExposures) bumpSeverity(str(exposure.severity))
+    for (const alert of scannerAlerts) bumpSeverity(str(alert.severity))
+  }
 
   const totalFindings = critical + high + medium + low
 
@@ -326,26 +387,45 @@ export async function buildSnapshot(token: string, userId: string) {
   ]
 
   // ---- Critical findings ------------------------------------------------
+  // Mirror the scanner's expanded findings (critical/high) when available so the
+  // QR findings table matches scanner intelligence; otherwise use graded scan rows.
   const assetNameById = new Map<string, Record<string, unknown>>(assets.map((a) => [str(a.id), a]))
-  const criticalFindings = scanResults
-    .filter((r) => {
-      const t = str(r.threat_level).toLowerCase()
-      return t.includes('critical') || t.includes('high')
-    })
-    .slice(0, 16)
-    .map((r) => {
-      const asset = assetNameById.get(str(r.asset_id))
-      return {
-        id: str(r.id),
-        title: `${str(r.algorithm) || 'Quantum-vulnerable algorithm'} detected`,
-        asset: str(asset?.name) || str(r.asset_id) || 'Unknown asset',
-        assetType: str(asset?.type) || 'asset',
-        environment: str(asset?.environment) || 'unknown',
-        severity: str(r.threat_level) || 'high',
-        algorithm: str(r.algorithm) || '—',
-        detectedAt: str(r.created_at) || null,
-      }
-    })
+  const criticalFindings = intelHasData && intelFindings.length
+    ? intelFindings
+        .filter((f) => {
+          const t = str(f.threatLevel).toLowerCase()
+          return t.includes('critical') || t.includes('high')
+        })
+        .slice(0, 24)
+        .map((f, index) => ({
+          id: str(f.id) || `intel-${index}`,
+          title: `${str(f.algorithm) || str(f.category) || 'Quantum-vulnerable algorithm'} detected`,
+          asset: str(f.location) || 'Unknown asset',
+          assetType: str(f.category) || 'asset',
+          environment: 'unknown',
+          severity: str(f.threatLevel).toLowerCase() || 'high',
+          algorithm: str(f.algorithm) || '—',
+          detectedAt: str(f.detectedAt) || str(f.timestamp) || null,
+        }))
+    : scanResults
+        .filter((r) => {
+          const t = str(r.threat_level).toLowerCase()
+          return t.includes('critical') || t.includes('high')
+        })
+        .slice(0, 16)
+        .map((r) => {
+          const asset = assetNameById.get(str(r.asset_id))
+          return {
+            id: str(r.id),
+            title: `${str(r.algorithm) || 'Quantum-vulnerable algorithm'} detected`,
+            asset: str(asset?.name) || str(r.asset_id) || 'Unknown asset',
+            assetType: str(asset?.type) || 'asset',
+            environment: str(asset?.environment) || 'unknown',
+            severity: str(r.threat_level) || 'high',
+            algorithm: str(r.algorithm) || '—',
+            detectedAt: str(r.created_at) || null,
+          }
+        })
 
   // ---- Recommended actions ---------------------------------------------
   const recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }> = []
@@ -498,6 +578,9 @@ export async function buildSnapshot(token: string, userId: string) {
       pqcReadyAssets,
       hybridAssets,
       quantumVulnerableAssets,
+      cryptoComponents,
+      vulnerableComponents,
+      pqcReadyComponents,
     },
     riskDistribution: { critical, high, medium, low },
     readinessFactors,

@@ -5,6 +5,8 @@ import telemetryCorrelationRoutes from './telemetry-correlation'
 import quantumRiskScoringRoutes from './quantum-risk-scoring'
 import quantumReadinessRoutes from './quantum-readiness'
 import reportsRoutes from './reports'
+import migrationPlannerRoutes from './migration-planner'
+import harvestNowRoutes from './harvest-now'
 import tlsTelemetryRoutes from './tls-telemetry'
 import pkiVisibilityRoutes from './pki-visibility'
 import ecosystemSupplyChainRoutes from './ecosystem-supply-chain'
@@ -723,6 +725,8 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/quantum-risk-scoring', quantumRiskScoringRoutes)
   app.use('/api/v1/quantum-readiness', quantumReadinessRoutes)
   app.use('/api/v1/reports', reportsRoutes)
+  app.use('/api/v1/migration-planner', migrationPlannerRoutes)
+  app.use('/api/v1/harvest-now', harvestNowRoutes)
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/tls-orchestrator', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/pki-visibility', pkiVisibilityRoutes)

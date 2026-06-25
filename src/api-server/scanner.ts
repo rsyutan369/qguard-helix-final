@@ -2736,7 +2736,7 @@ function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceM
   return { mode, history }
 }
 
-async function buildScannerIntelligence(token: string, userId: string) {
+export async function buildScannerIntelligence(token: string, userId: string) {
   const client = getDbClient(token)
   const { assets, inventory, exposures, results, sessions, vulnerabilities, mode } = await loadScannerTables(client, userId)
   const evidenceAssets = buildEvidenceBackedAssets(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[])

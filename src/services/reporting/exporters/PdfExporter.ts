@@ -304,6 +304,10 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     ['HNDL Exposure', report.businessImpact.hndlExposure],
     ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
   ] }, [50, 50]);
+  layout.table({ title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why (evidence-based)'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason]) }, [22, 12, 66]);
+
+  layout.heading('Executive Decision Center');
+  layout.table({ title: 'Decisions', columns: ['Decision Required', 'Type', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.owner]) }, [54, 26, 20]);
 
   layout.heading('Quantum Readiness Breakdown');
   layout.table({ title: 'Domains', columns: ['Domain', 'Score', 'Risk', 'Owner', 'Recommended Action'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}`, d.riskLevel, d.owner, d.actions]) }, [16, 8, 10, 18, 48]);
@@ -312,6 +316,16 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.paragraph(`Recommendation: ${report.migrationAdvisor.recommendation}`, 11, INK);
   layout.paragraph(report.migrationAdvisor.reason);
   layout.table({ title: 'Advisor', columns: ['Risk Reduction', 'Est. Cost', 'Timeline', 'Complexity', 'Confidence'], rows: [[`${report.migrationAdvisor.riskReductionPct}%`, usd(report.migrationAdvisor.costUsd), `${report.migrationAdvisor.timelineWeeks}w`, report.migrationAdvisor.complexity, `${report.migrationAdvisor.confidencePct}%`]] }, [20, 22, 16, 20, 22]);
+  layout.paragraph(`Why this recommendation: ${report.advisorValidation.why}`, 9, MUTED);
+  layout.table({ title: 'Validation', columns: ['Validation Factor', 'Evidence'], rows: [
+    ['Primary Exposure Domain', report.advisorValidation.primaryExposureDomain],
+    ['Top Contributing Findings', report.advisorValidation.topContributingFindings.join('; ') || 'Evidence Not Available'],
+    ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
+  ] }, [28, 72]);
+
+  layout.heading('Migration Confidence');
+  layout.paragraph(`Overall Migration Confidence: ${report.migrationConfidence.overallPct}%`, 10, INK);
+  layout.table({ title: 'Confidence', columns: ['Confidence Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) }, [70, 30]);
 
   layout.heading('Migration Readiness Assessment');
   layout.table({ title: 'Readiness', columns: ['Category', 'Score', 'Recommendation'], rows: report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]) }, [26, 12, 62]);
@@ -326,12 +340,23 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Quantum Risk Analysis');
   layout.table({ title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, `${r.currentScore}`, `${r.targetScore}`, `${r.reductionPotentialPct}%`]) }, [40, 18, 18, 24]);
 
+  layout.heading('Risk Scoring Methodology');
+  layout.paragraph(`Formula: ${report.riskMethodology.formula}`, 9, INK);
+  layout.paragraph(report.riskMethodology.explanation, 9, MUTED);
+  layout.table({ title: 'Risk Methodology', columns: ['Risk Domain', 'Weight', 'Score', 'Weighted Contribution'], rows: report.riskMethodology.weights.map((w) => [w.domain, `${w.weightPct}%`, `${w.score}`, `${w.contributionPct}%`]) }, [40, 16, 16, 28]);
+
   layout.heading('HNDL Exposure Analysis');
   layout.paragraph(report.hndl.summary);
   layout.table({ title: 'HNDL', columns: ['Data Category', 'Retention', 'Current', 'Risk', 'Recommended'], rows: report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]) }, [22, 18, 22, 10, 28]);
 
   layout.heading('Visual Analysis');
   for (const chart of report.charts) await layout.image(chart.dataUrl, layout.contentW * 0.62, 200, chart.title);
+
+  layout.heading('Consolidated Findings (Root-Cause)');
+  layout.table({ title: 'Finding Groups', columns: ['Finding', 'Occ.', 'Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join(', ') || '-']) }, [26, 8, 10, 12, 44]);
+
+  layout.heading('Asset Criticality Analysis');
+  layout.table({ title: 'Asset Criticality', columns: ['Asset', 'Business', 'Cust.', 'Internet', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.customerFacing ? 'Y' : 'N', a.internetFacing ? 'Y' : 'N', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [24, 12, 8, 10, 12, 22, 12]);
 
   layout.heading('Findings & Evidence');
   layout.findings(report);
@@ -350,8 +375,26 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Migration Roadmap');
   layout.table({ title: 'Roadmap', columns: ['Phase', 'Description', 'Status', 'Weeks'], rows: report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]) }, [26, 48, 14, 12]);
 
-  layout.heading('Cost Forecast');
-  layout.table({ title: 'Cost', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] }, [60, 40]);
+  layout.heading('Enterprise Remediation Playbook');
+  for (const p of report.playbookDetail) {
+    layout.paragraph(p.finding, 10, INK);
+    layout.table({ title: 'Playbook', columns: ['Step', 'Detail'], rows: [
+      ['Current State', p.currentState],
+      ['Target State', p.targetState],
+      ['Pre-Requisites', p.prerequisites.join('; ')],
+      ['Execution', p.executionSteps.map((st, i) => `${i + 1}. ${st}`).join('  ')],
+      ['Validation', p.validationSteps.join('; ')],
+      ['Rollback', p.rollbackSteps.join('; ')],
+      ['Success Criteria', p.successCriteria.join('; ')],
+    ] }, [18, 82]);
+  }
+
+  layout.heading('Cost Forecast Intelligence');
+  layout.paragraph(`Blended rate $${report.costBreakdown.blendedRateUsd}/hr - total ${report.costBreakdown.totalHours.toLocaleString()} hours.`, 9, MUTED);
+  layout.table({ title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Eng.', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] }, [22, 10, 8, 12, 16, 32]);
+
+  layout.heading('Migration Simulation (What-If)');
+  layout.table({ title: 'Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom}->${w.readinessTo}`, `${w.riskFrom}->${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) }, [34, 16, 14, 14, 10, 12]);
 
   layout.heading('Risk Reduction Forecast');
   layout.table({ title: 'Forecast', columns: ['Metric', 'Value'], rows: [
@@ -359,8 +402,23 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     ['12-Month', `${report.riskForecast.month12}/100`], ['24-Month', `${report.riskForecast.month24}/100`], ['36-Month', `${report.riskForecast.month36}/100`],
   ] }, [50, 50]);
 
-  layout.heading('Governance & Ownership');
+  layout.heading('Program Governance');
   layout.table({ title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, [22, 24, 54]);
+  layout.table({ title: 'Approval Gates', columns: ['Gate', 'Owner', 'Success Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) }, [24, 18, 58]);
+
+  layout.heading('Evidence Confidence Dashboard');
+  layout.table({ title: 'Evidence Confidence', columns: ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`, e.note || '-']) }, [22, 14, 16, 16, 14, 18]);
+
+  layout.heading('Report Explainability');
+  for (const x of report.explainability) {
+    layout.table({ title: x.metric, columns: [x.metric, ''], rows: [
+      ['What was calculated?', x.what],
+      ['How was it calculated?', x.how],
+      ['Which evidence was used?', x.evidence],
+      ['Why does it matter?', x.why],
+      ['What action should be taken?', x.action],
+    ] }, [26, 74]);
+  }
 
   layout.heading('Evidence Sources');
   layout.paragraph(report.evidence.sources.join(' - '), 9, MUTED);

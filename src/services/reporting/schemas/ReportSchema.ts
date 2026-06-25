@@ -184,6 +184,95 @@ export type RemediationItem = z.infer<typeof remediationItemSchema>;
 
 export const dependencyChainSchema = z.object({ path: z.string(), blastRadius: z.number(), complexity: z.string() });
 
+/* ---- Report Intelligence sections (Reports_Enhancements_3) ---- */
+
+// Phase 1 — Risk Scoring Transparency Engine™
+export const riskWeightSchema = z.object({ domain: z.string(), weightPct: z.number(), score: z.number(), contributionPct: z.number() });
+export const riskMethodologySchema = z.object({
+  formula: z.string(),
+  overall: z.number(),
+  weights: z.array(riskWeightSchema),
+  topDriver: z.string(),
+  explanation: z.string(),
+});
+export type RiskMethodology = z.infer<typeof riskMethodologySchema>;
+
+// Phase 2 — AI Recommendation Validation Engine™
+export const advisorValidationSchema = z.object({
+  primaryExposureDomain: z.string(),
+  topContributingFindings: z.array(z.string()),
+  topContributingAssets: z.array(z.string()),
+  expectedRiskReductionPct: z.number(),
+  confidencePct: z.number(),
+  why: z.string(),
+});
+export type AdvisorValidation = z.infer<typeof advisorValidationSchema>;
+
+// Phase 3 — Cost Forecast Intelligence™
+export const costLineDetailSchema = z.object({ category: z.string(), hours: z.number(), engineers: z.number(), rateUsd: z.number(), costUsd: z.number(), formula: z.string() });
+export const costBreakdownSchema = z.object({ blendedRateUsd: z.number(), totalHours: z.number(), totalUsd: z.number(), lines: z.array(costLineDetailSchema) });
+export type CostBreakdown = z.infer<typeof costBreakdownSchema>;
+
+// Phase 5 — Asset Criticality Engine™
+export const assetCriticalitySchema = z.object({
+  asset: z.string(),
+  businessCriticality: z.string(),
+  operationalCriticality: z.string(),
+  customerFacing: z.boolean(),
+  internetFacing: z.boolean(),
+  revenueImpact: z.string(),
+  complianceScope: z.array(z.string()),
+  dataSensitivity: z.string(),
+});
+export type AssetCriticality = z.infer<typeof assetCriticalitySchema>;
+
+// Phase 6 — Business Impact Intelligence™ (reasons)
+export const impactReasonSchema = z.object({ dimension: z.string(), level: z.string(), reason: z.string() });
+export type ImpactReason = z.infer<typeof impactReasonSchema>;
+
+// Phase 7 — Finding Deduplication Engine™
+export const findingGroupSchema = z.object({ title: z.string(), occurrences: z.number(), affectedAssets: z.number(), evidence: z.array(z.string()), impact: z.enum(SEVERITIES) });
+export type FindingGroup = z.infer<typeof findingGroupSchema>;
+
+// Phase 8 — Migration Confidence Scoring™
+export const confidenceFactorSchema = z.object({ label: z.string(), coveragePct: z.number() });
+export const migrationConfidenceSchema = z.object({ overallPct: z.number(), factors: z.array(confidenceFactorSchema) });
+export type MigrationConfidence = z.infer<typeof migrationConfidenceSchema>;
+
+// Phase 9 — Evidence Confidence Scoring™
+export const evidenceConfidenceSchema = z.object({ source: z.string(), coveragePct: z.number(), completenessPct: z.number(), freshness: z.string(), confidencePct: z.number(), note: z.string() });
+export type EvidenceConfidence = z.infer<typeof evidenceConfidenceSchema>;
+
+// Phase 10 — Executive Decision Center™
+export const executiveDecisionSchema = z.object({ decision: z.string(), type: z.string(), rationale: z.string(), owner: z.string() });
+export type ExecutiveDecision = z.infer<typeof executiveDecisionSchema>;
+
+// Phase 11 — Enterprise Remediation Playbook™
+export const playbookDetailSchema = z.object({
+  finding: z.string(),
+  currentState: z.string(),
+  targetState: z.string(),
+  prerequisites: z.array(z.string()),
+  dependencies: z.array(z.string()),
+  executionSteps: z.array(z.string()),
+  validationSteps: z.array(z.string()),
+  rollbackSteps: z.array(z.string()),
+  successCriteria: z.array(z.string()),
+});
+export type PlaybookDetail = z.infer<typeof playbookDetailSchema>;
+
+// Phase 12 — Migration Simulation Engine™
+export const waveSimulationSchema = z.object({ label: z.string(), readinessFrom: z.number(), readinessTo: z.number(), riskFrom: z.number(), riskTo: z.number(), costUsd: z.number(), timelineWeeks: z.number(), confidencePct: z.number() });
+export type WaveSimulation = z.infer<typeof waveSimulationSchema>;
+
+// Phase 13 — Enterprise Governance gates
+export const governanceGateSchema = z.object({ gate: z.string(), owner: z.string(), criteria: z.string() });
+export type GovernanceGate = z.infer<typeof governanceGateSchema>;
+
+// Phase 14 — Report Explainability Requirements™
+export const explainabilitySchema = z.object({ metric: z.string(), what: z.string(), how: z.string(), evidence: z.string(), why: z.string(), action: z.string() });
+export type Explainability = z.infer<typeof explainabilitySchema>;
+
 export const kpiSchema = z.object({
   label: z.string(),
   value: z.union([z.string(), z.number()]),
@@ -268,6 +357,20 @@ export const enterpriseAssessmentReportSchema = z.object({
   migrationWaves: z.array(migrationWaveSchema),
   dependencyAnalysis: z.object({ chains: z.array(dependencyChainSchema), failurePoints: z.array(z.string()), summary: z.string() }),
   riskCategories: z.array(riskCategorySchema),
+  // Report Intelligence (Reports_Enhancements_3)
+  riskMethodology: riskMethodologySchema,
+  advisorValidation: advisorValidationSchema,
+  costBreakdown: costBreakdownSchema,
+  assetCriticality: z.array(assetCriticalitySchema),
+  impactReasons: z.array(impactReasonSchema),
+  findingGroups: z.array(findingGroupSchema),
+  migrationConfidence: migrationConfidenceSchema,
+  evidenceConfidence: z.array(evidenceConfidenceSchema),
+  executiveDecisions: z.array(executiveDecisionSchema),
+  playbookDetail: z.array(playbookDetailSchema),
+  waveSimulation: z.array(waveSimulationSchema),
+  governanceGates: z.array(governanceGateSchema),
+  explainability: z.array(explainabilitySchema),
   findings: z.array(findingSchema),
   assets: tableSchema,
   certificates: tableSchema,

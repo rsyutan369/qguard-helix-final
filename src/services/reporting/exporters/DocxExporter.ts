@@ -151,6 +151,36 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const governanceTable: ReportTable = { title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) };
   const topTable: ReportTable = { title: 'Top 5', columns: ['#', 'Top Risk', 'Recommended Action'], rows: Array.from({ length: Math.max(ex.topRisks.length, ex.topActions.length, 1) }).map((_, i) => [i + 1, ex.topRisks[i] || '-', ex.topActions[i] || '-']) };
 
+  // Report Intelligence (Reports_Enhancements_3) tables
+  const methodologyTable: ReportTable = { title: 'Risk Methodology', columns: ['Risk Domain', 'Weight', 'Domain Score', 'Weighted Contribution'], rows: report.riskMethodology.weights.map((w) => [w.domain, `${w.weightPct}%`, `${w.score}/100`, `${w.contributionPct}%`]) };
+  const validationTable: ReportTable = { title: 'Recommendation Validation', columns: ['Validation Factor', 'Evidence'], rows: [
+    ['Primary Exposure Domain', report.advisorValidation.primaryExposureDomain],
+    ['Expected Risk Reduction', `${report.advisorValidation.expectedRiskReductionPct}%`],
+    ['Confidence', `${report.advisorValidation.confidencePct}%`],
+    ['Top Contributing Findings', report.advisorValidation.topContributingFindings.join('; ') || 'Evidence Not Available'],
+    ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
+  ] };
+  const confidenceTable: ReportTable = { title: 'Migration Confidence', columns: ['Confidence Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) };
+  const costBreakdownTable: ReportTable = { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] };
+  const criticalityTable: ReportTable = { title: 'Asset Criticality', columns: ['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
+  const impactReasonTable: ReportTable = { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why (evidence-based)'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason]) };
+  const findingGroupTable: ReportTable = { title: 'Consolidated Findings', columns: ['Finding', 'Occurrences', 'Affected Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join(', ') || '-']) };
+  const decisionTable: ReportTable = { title: 'Executive Decisions', columns: ['Decision Required', 'Type', 'Rationale', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]) };
+  const simulationTable: ReportTable = { title: 'Migration Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom} -> ${w.readinessTo}`, `${w.riskFrom} -> ${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) };
+  const gateTable: ReportTable = { title: 'Approval Gates', columns: ['Gate', 'Owner', 'Success Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) };
+  const evidenceConfTable: ReportTable = { title: 'Evidence Confidence', columns: ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`, e.note || '-']) };
+  const playbookChildren = report.playbookDetail.flatMap((p) => [
+    para(p.finding, INK),
+    docTable({ title: 'Playbook', columns: ['Step', 'Detail'], rows: [
+      ['Current State', p.currentState], ['Target State', p.targetState], ['Pre-Requisites', p.prerequisites.join('; ')], ['Dependencies', p.dependencies.join('; ')],
+      ['Execution', p.executionSteps.map((st, i) => `${i + 1}. ${st}`).join('  ')], ['Validation', p.validationSteps.join('; ')], ['Rollback', p.rollbackSteps.join('; ')], ['Success Criteria', p.successCriteria.join('; ')],
+    ] }),
+  ]);
+  const explainChildren = report.explainability.flatMap((x) => [
+    para(x.metric, INK),
+    docTable({ title: x.metric, columns: ['Question', 'Answer'], rows: [['What was calculated?', x.what], ['How was it calculated?', x.how], ['Which evidence was used?', x.evidence], ['Why does it matter?', x.why], ['What action should be taken?', x.action]] }),
+  ]);
+
   const doc = new Document({
     creator: branding.companyName,
     title: meta.title,
@@ -181,12 +211,21 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(kpiTable),
           heading('Business Impact Analysis'),
           docTable(businessTable),
+          heading('Business Impact Intelligence'),
+          docTable(impactReasonTable),
+          heading('Executive Decision Center'),
+          docTable(decisionTable),
           heading('Quantum Readiness Breakdown'),
           docTable(domainsTable),
           heading('AI Migration Advisor'),
           para(`Recommendation: ${report.migrationAdvisor.recommendation}`, INK),
           para(report.migrationAdvisor.reason),
           docTable(advisorTable),
+          para(`Why this recommendation: ${report.advisorValidation.why}`, MUTED),
+          docTable(validationTable),
+          heading('Migration Confidence'),
+          para(`Overall Migration Confidence: ${report.migrationConfidence.overallPct}%`, INK),
+          docTable(confidenceTable),
           heading('Migration Readiness Assessment'),
           docTable(readinessTable),
           heading('Migration Wave Planning'),
@@ -196,11 +235,19 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(depTable),
           heading('Quantum Risk Analysis'),
           docTable(riskCatTable),
+          heading('Risk Scoring Methodology'),
+          para(`Formula: ${report.riskMethodology.formula}`, INK),
+          para(report.riskMethodology.explanation, MUTED),
+          docTable(methodologyTable),
           heading('HNDL Exposure Analysis'),
           para(report.hndl.summary),
           docTable(hndlCatTable),
           heading('Visual Analysis'),
           ...chartParagraphs(report),
+          heading('Consolidated Findings (Root-Cause)'),
+          docTable(findingGroupTable),
+          heading('Asset Criticality Analysis'),
+          docTable(criticalityTable),
           heading('Findings & Evidence'),
           docTable(findingsTable),
           heading('Cryptographic & Asset Inventory'),
@@ -211,14 +258,24 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(complianceTable),
           heading('Remediation Program'),
           docTable(remediationTable),
+          heading('Enterprise Remediation Playbook'),
+          ...playbookChildren,
           heading('Migration Roadmap'),
           docTable(roadmapTable),
-          heading('Cost Forecast'),
-          docTable(costTable),
+          heading('Cost Forecast Intelligence'),
+          para(`Blended rate $${report.costBreakdown.blendedRateUsd}/hr — total ${report.costBreakdown.totalHours.toLocaleString()} hours.`, MUTED),
+          docTable(costBreakdownTable),
+          heading('Migration Simulation (What-If)'),
+          docTable(simulationTable),
           heading('Risk Reduction Forecast'),
           docTable(forecastTable),
-          heading('Governance & Ownership'),
+          heading('Program Governance'),
           docTable(governanceTable),
+          docTable(gateTable),
+          heading('Evidence Confidence Dashboard'),
+          docTable(evidenceConfTable),
+          heading('Report Explainability'),
+          ...explainChildren,
           heading('Evidence Sources'),
           para(report.evidence.sources.join(' - '), MUTED),
           para(report.evidence.notes, MUTED),

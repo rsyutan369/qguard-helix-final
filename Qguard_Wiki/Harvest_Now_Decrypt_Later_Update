@@ -1,0 +1,727 @@
+Objective
+
+Refactor the Harvest Now, Decrypt Later (HNDL) dashboard into a true enterprise-grade Quantum Threat Operations Center.
+
+The page must focus on:
+
+Harvest Now, Decrypt Later exposure
+Cryptographic intelligence
+Future decryption risk
+Data confidentiality lifetime
+PQC migration urgency
+Forward secrecy gaps
+Adversary interest analysis
+Quantum-safe readiness
+
+This is NOT an EDR dashboard.
+
+This is NOT a malware dashboard.
+
+This is NOT an incident response dashboard.
+
+The HNDL module must answer:
+
+What data can be harvested today?
+What data remains valuable in 5–20 years?
+Which cryptographic systems will fail against CRQC?
+Which assets lack forward secrecy?
+What is the estimated future decryptable data volume?
+How urgently should migration occur?
+What should be remediated first?
+Design Direction
+
+Visual Theme:
+
+Enterprise Cyber Warfare Command Center
+
+References:
+
+Military command center
+NSA operations center
+National cyber defense center
+Strategic intelligence dashboard
+Satellite command interface
+
+Visual Characteristics:
+
+Deep black background
+Dark navy overlays
+Red threat illumination
+Cyan telemetry accents
+Amber warning indicators
+Subtle grid overlays
+Animated data flows
+Tactical radar effects
+Holographic world maps
+
+Style:
+
+Modern
+
+Enterprise
+
+Mission Critical
+
+Not gaming
+
+Not sci-fi fantasy
+
+Not hacker-themed
+
+REMOVE THESE COMPONENTS
+
+Remove completely:
+
+Kill Process
+
+Deploy Honeypot
+
+Backup & Restore
+
+Revoke Credentials
+
+These are incident response actions and belong in:
+
+EDR
+
+XDR
+
+Threat Hunting
+
+SOC Operations
+
+NOT HNDL
+
+ADD NEW COMMAND CENTER LAYOUT
+
+SECTION 1
+
+Quantum Threat Banner
+
+Purpose:
+
+Executive awareness
+
+Display:
+
+Threat Level
+
+HNDL Exposure Score
+
+Critical Findings
+
+Next Escalation Timer
+
+Estimated Future Decryptable Data
+
+Primary CTA:
+
+Review Exposure
+
+Begin Migration
+
+SECTION 2
+
+Quantum Exposure Graph™
+
+This becomes the centerpiece visualization.
+
+Display:
+
+Internet
+
+TLS Endpoints
+
+Certificates
+
+Cryptographic Keys
+
+Databases
+
+Backups
+
+Archives
+
+Long-Term Storage
+
+Connections:
+
+Show relationships between:
+
+Assets
+
+Certificates
+
+Algorithms
+
+Data stores
+
+Trust chains
+
+Color Coding:
+
+Green = Quantum Safe
+
+Amber = Hybrid
+
+Red = Vulnerable
+
+Interactive:
+
+Click node
+
+View cryptographic details
+
+View migration plan
+
+View affected data
+
+SECTION 3
+
+Global Quantum Exposure Theater™
+
+Replace Global Threat Map.
+
+Purpose:
+
+Show worldwide exposure.
+
+Display:
+
+Regions
+
+Cloud providers
+
+Data centers
+
+Branches
+
+Third-party vendors
+
+Highlight:
+
+High-value cryptographic targets
+
+Long-term confidential assets
+
+Legacy cryptography concentration
+
+Quantum migration progress
+
+SECTION 4
+
+Harvest Value Engine™
+
+Purpose:
+
+Determine what adversaries are most likely to harvest.
+
+Display:
+
+Customer PII
+
+Financial Records
+
+Trade Secrets
+
+Intellectual Property
+
+Legal Documents
+
+Source Code
+
+R&D Data
+
+Classified Assets
+
+Each category should show:
+
+Exposure Score
+
+Confidentiality Lifetime
+
+Adversary Interest Score
+
+Estimated Future Value
+
+SECTION 5
+
+Data Shelf-Life Analyzer™
+
+Purpose:
+
+Determine how long data must remain confidential.
+
+Display:
+
+Data Type
+
+Retention Requirement
+
+Confidentiality Duration
+
+Quantum Risk Window
+
+Examples:
+
+Customer Records = 10 Years
+
+Trade Secrets = 20 Years
+
+Source Code = 15 Years
+
+Legal Documents = 25 Years
+
+Medical Records = 20 Years
+
+Highlight:
+
+Any data whose confidentiality exceeds estimated CRQC arrival timelines.
+
+SECTION 6
+
+Quantum Break Timeline™
+
+Purpose:
+
+Strategic planning.
+
+Display:
+
+Current Year
+
+Migration Deadline
+
+Projected Quantum Risk Growth
+
+Expected Exposure Increase
+
+Migration Completion Target
+
+Show timeline:
+
+2025
+
+2026
+
+2027
+
+2028
+
+2029
+
+2030
+
+Highlight:
+
+Critical migration windows
+
+SECTION 7
+
+Forward Secrecy Coverage™
+
+Purpose:
+
+Identify assets vulnerable to future decryption.
+
+Display:
+
+Coverage %
+
+Assets Protected
+
+Assets Unprotected
+
+Assets Using:
+
+TLS_RSA
+
+SSH_RSA
+
+Legacy VPN
+
+Static Key Exchange
+
+Non-PFS Configurations
+
+Show:
+
+Top non-forward-secret systems
+
+SECTION 8
+
+Cryptographic Exposure Matrix™
+
+Purpose:
+
+Most important operational panel.
+
+Display table:
+
+Algorithm
+
+Asset Count
+
+Business Criticality
+
+Exposure
+
+Migration Priority
+
+Example:
+
+RSA-2048
+
+RSA-3072
+
+ECDSA P-256
+
+ECDSA P-384
+
+X25519
+
+Ed25519
+
+ML-KEM
+
+ML-DSA
+
+SLH-DSA
+
+Risk Levels:
+
+Critical
+
+High
+
+Medium
+
+Low
+
+Quantum Safe
+
+SECTION 9
+
+Estimated Captured Data™
+
+Purpose:
+
+Quantify harvested assets.
+
+Display:
+
+Encrypted Traffic
+
+Stored Archives
+
+Database Dumps
+
+Backups
+
+Email Repositories
+
+Document Repositories
+
+Source Code Repositories
+
+Total Captured Volume
+
+SECTION 10
+
+Estimated Future Decryptable Data™
+
+Purpose:
+
+Core HNDL metric.
+
+Display:
+
+Total Data At Risk
+
+Projected Decryptable Volume
+
+High-Value Data %
+
+Critical Confidential Assets
+
+Trend Over Time
+
+Prominent visualization.
+
+SECTION 11
+
+Quantum Migration Readiness™
+
+Purpose:
+
+Measure preparedness.
+
+Display:
+
+PQC Ready
+
+Hybrid Ready
+
+Legacy Only
+
+Migration Blocked
+
+Migration In Progress
+
+Migration Completed
+
+Provide:
+
+Readiness Score
+
+Migration Recommendations
+
+SECTION 12
+
+Adversary Interest Score™
+
+Purpose:
+
+Cyber warfare intelligence.
+
+Display:
+
+Government
+
+Defense
+
+Finance
+
+Healthcare
+
+Technology
+
+Manufacturing
+
+Critical Infrastructure
+
+Score based on:
+
+Data value
+
+Retention duration
+
+Exposure
+
+Threat intelligence
+
+SECTION 13
+
+Threat Actors Most Interested™
+
+Purpose:
+
+Strategic risk visibility.
+
+Display:
+
+Nation-State APT
+
+Cyber Espionage Groups
+
+Foreign Intelligence Services
+
+Organized Crime
+
+Hacktivists
+
+Show:
+
+Interest Score
+
+Targeted Assets
+
+Potential Motivation
+
+SECTION 14
+
+Strategic Intelligence Feed™
+
+Replace Mission Feed.
+
+Do NOT display:
+
+Scanner logs
+
+Detection logs
+
+Rule execution logs
+
+Instead display:
+
+NIST PQC Updates
+
+CNSA 2.0 Updates
+
+Google PQC Rollout
+
+Cloudflare PQC Adoption
+
+Microsoft PQC Announcements
+
+Vendor PQC Readiness Changes
+
+Threat Intelligence Updates
+
+Quantum Research Milestones
+
+SECTION 15
+
+Top HNDL Findings™
+
+Display:
+
+Asset
+
+Algorithm
+
+Data Lifetime
+
+Risk Window
+
+Migration Priority
+
+Examples:
+
+TLS_RSA_WITH_AES_256_CBC_SHA
+
+ECDSA_P256
+
+RSA_2048
+
+SSH_RSA
+
+Static VPN Keys
+
+Non-PFS Sessions
+
+SECTION 16
+
+Remediation Center™
+
+Purpose:
+
+Action-oriented migration planning.
+
+Actions:
+
+Enable Hybrid TLS
+
+Deploy ML-KEM
+
+Deploy ML-DSA
+
+Replace Legacy Certificates
+
+Enable Forward Secrecy
+
+Rotate Cryptographic Keys
+
+Deploy Quantum-Safe VPN
+
+Validate PQC Interoperability
+
+Each action should include:
+
+Affected Assets
+
+Risk Reduction
+
+Estimated Effort
+
+Estimated Completion
+
+Telemetry Requirements
+
+Every KPI must come from actual backend telemetry.
+
+No hardcoded values.
+
+No fake numbers.
+
+No mock findings.
+
+All widgets must be wired to:
+
+Supabase
+
+SSE
+
+WebSockets
+
+Scanner telemetry
+
+CBOM inventory
+
+Asset inventory
+
+TLS discovery
+
+Certificate discovery
+
+Key discovery
+
+Crypto exposure engine
+
+PQC readiness engine
+
+HNDL risk engine
+
+Intelligence Requirements
+
+Every HNDL finding must be traceable to:
+
+Asset
+
+Certificate
+
+Protocol
+
+Key Exchange
+
+Signature Algorithm
+
+Forward Secrecy Status
+
+Data Classification
+
+Retention Policy
+
+Migration Recommendation
+
+Final Goal
+
+Transform the Harvest Now, Decrypt Later page into the flagship Quantum Threat Operations Center of QGuard Helix.
+
+The dashboard must look and behave like a platform used by:
+
+National cyber defense agencies
+
+Fortune 500 security teams
+
+Critical infrastructure operators
+
+Banking security operations
+
+Government cybersecurity programs
+
+while remaining accurate to:
+
+NIST PQC Standards
+
+FIPS 203
+
+FIPS 204
+
+FIPS 205
+
+CNSA 2.0
+
+PQC migration best practices
+
+and focused specifically on the real-world risk of Harvest Now, Decrypt Later attacks.

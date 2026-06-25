@@ -5,15 +5,26 @@ import {
   EVIDENCE_UNAVAILABLE,
   normalizeSeverity,
   severityRank,
+  type AdvisorValidation,
+  type AssetCriticality,
   type BusinessImpact,
   type ComplianceMapping,
+  type CostBreakdown,
   type CostForecast,
   type EnterpriseAssessmentReport,
+  type EvidenceConfidence,
   type ExecutiveBlock,
+  type ExecutiveDecision,
+  type Explainability,
+  type FindingGroup,
+  type GovernanceGate,
   type GovernanceRole,
   type HndlCategory,
+  type ImpactReason,
   type MigrationAdvisor,
+  type MigrationConfidence,
   type MigrationWave,
+  type PlaybookDetail,
   type PlaybookStage,
   type ReadinessDomain,
   type RemediationItem,
@@ -24,7 +35,9 @@ import {
   type ReportTable,
   type RiskCategory,
   type RiskForecast,
+  type RiskMethodology,
   type RoadmapPhase,
+  type WaveSimulation,
 } from './schemas/ReportSchema';
 
 /**
@@ -105,6 +118,7 @@ export function buildKpis(snapshot: QuantumReadinessSnapshot): ReportKpi[] {
     { label: 'Migration Effort', value: s.migrationEffort, unit: '/100', tone: 'neutral' },
     { label: 'Assets Assessed', value: inv.assetsAssessed, tone: 'neutral' },
     { label: 'Assets Requiring Migration', value: inv.quantumVulnerableAssets, tone: inv.quantumVulnerableAssets > 0 ? 'high' : 'good' },
+    { label: 'Vulnerable Crypto Components', value: inv.vulnerableComponents, tone: inv.vulnerableComponents > 0 ? 'high' : 'good' },
     { label: 'Certificates', value: inv.certificatesAnalyzed, tone: 'neutral' },
     { label: 'Keys', value: inv.keysDiscovered, tone: 'neutral' },
     { label: 'TLS / Domains', value: inv.domainsScanned, tone: 'neutral' },
@@ -168,14 +182,28 @@ export function buildMigrationWaves(snapshot: QuantumReadinessSnapshot): Migrati
   const weeks = snapshot.estimates.migrationTimelineWeeks || 0;
   const cost = snapshot.estimates.migrationCostUsd || 0;
   const internet = internetFacingLabels(snapshot);
+  const inv = snapshot.inventory;
   const reductionBudget = clamp(Math.round(((snapshot.scores.quantumRisk - Math.max(10, snapshot.scores.quantumRisk * 0.25)) / Math.max(1, snapshot.scores.quantumRisk)) * 100));
-  const specs: Array<{ name: string; assets: string[]; owner: string; ratio: number; reductionShare: number; priority: string }> = [
-    { name: 'Internet-Facing Assets', assets: internet, owner: 'Infrastructure Team', ratio: 0.2, reductionShare: 0.4, priority: 'Critical' },
-    { name: 'PKI Infrastructure', assets: snapshot.inventory.certificatesAnalyzed > 0 ? [`${snapshot.inventory.certificatesAnalyzed} certificate(s)`] : [], owner: 'Security Team', ratio: 0.25, reductionShare: 0.2, priority: 'High' },
+
+  // Phase 4 — Dynamic Migration Wave Engine™: scale wave count to actual scope.
+  // A single-asset assessment must not generate enterprise-scale identity/cloud
+  // waves it has no evidence for. Build the candidate set, then drop waves with
+  // no real assets (always keeping a Validation wave).
+  const enterpriseScope = inv.assetsAssessed > 2 || inv.cloudAccounts > 0 || inv.identitiesAnalyzed > 0;
+  const fullSpecs: Array<{ name: string; assets: string[]; owner: string; ratio: number; reductionShare: number; priority: string }> = [
+    { name: 'Internet-Facing Assets', assets: internet.length ? internet : snapshot.topRiskAssets.slice(0, 5).map((a) => a.asset), owner: 'Infrastructure Team', ratio: 0.2, reductionShare: 0.4, priority: 'Critical' },
+    { name: 'PKI / Certificate Infrastructure', assets: inv.certificatesAnalyzed > 0 ? [`${inv.certificatesAnalyzed} certificate(s)`] : [], owner: 'Security Team', ratio: 0.25, reductionShare: 0.2, priority: 'High' },
     { name: 'Applications', assets: snapshot.topRiskAssets.filter((a) => /app|web|service/i.test(a.assetType)).map((a) => a.asset), owner: 'Application Team', ratio: 0.25, reductionShare: 0.18, priority: 'High' },
-    { name: 'Identity Systems', assets: snapshot.inventory.identitiesAnalyzed > 0 ? [`${snapshot.inventory.identitiesAnalyzed} identity system(s)`] : [], owner: 'Identity Team', ratio: 0.15, reductionShare: 0.12, priority: 'Medium' },
-    { name: 'Cloud Services', assets: snapshot.inventory.cloudAccounts > 0 ? [`${snapshot.inventory.cloudAccounts} cloud account(s)`] : [], owner: 'Cloud Team', ratio: 0.15, reductionShare: 0.1, priority: 'Medium' },
+    { name: 'Identity Systems', assets: inv.identitiesAnalyzed > 0 ? [`${inv.identitiesAnalyzed} identity system(s)`] : [], owner: 'Identity Team', ratio: 0.15, reductionShare: 0.12, priority: 'Medium' },
+    { name: 'Cloud Services', assets: inv.cloudAccounts > 0 ? [`${inv.cloudAccounts} cloud account(s)`] : [], owner: 'Cloud Team', ratio: 0.15, reductionShare: 0.1, priority: 'Medium' },
   ];
+  // Compact scope (single/few assets): TLS Modernization → Certificate Upgrade → Validation.
+  const compactSpecs: Array<{ name: string; assets: string[]; owner: string; ratio: number; reductionShare: number; priority: string }> = [
+    { name: 'TLS Modernization', assets: internet.length ? internet : snapshot.topRiskAssets.slice(0, 5).map((a) => a.asset), owner: 'Infrastructure Team', ratio: 0.45, reductionShare: 0.55, priority: 'Critical' },
+    { name: 'Certificate Upgrade', assets: inv.certificatesAnalyzed > 0 ? [`${inv.certificatesAnalyzed} certificate(s)`] : [], owner: 'Security Team', ratio: 0.35, reductionShare: 0.3, priority: 'High' },
+    { name: 'Validation & Cutover', assets: snapshot.hasData ? [`${inv.vulnerableComponents} components validated`] : [], owner: 'Security Engineering', ratio: 0.2, reductionShare: 0.15, priority: 'Medium' },
+  ];
+  const specs = (enterpriseScope ? fullSpecs : compactSpecs).filter((s, i) => s.assets.length > 0 || i === 0 || /validation/i.test(s.name));
   return specs.map((spec, index) => ({
     wave: index + 1,
     name: spec.name,
@@ -547,6 +575,291 @@ function buildExecutiveBlock(snapshot: QuantumReadinessSnapshot, domains: Readin
   };
 }
 
+/* ================================================================== */
+/* Report Intelligence (Reports_Enhancements_3)                       */
+/* ================================================================== */
+
+const BLENDED_RATE_USD = 165; // blended engineer rate used by the estimate model
+
+// Phase 1 — Risk Scoring Transparency Engine™
+const RISK_DOMAIN_WEIGHTS: Array<{ match: string; weight: number }> = [
+  { match: 'tls', weight: 0.18 },
+  { match: 'pki', weight: 0.12 },
+  { match: 'identity', weight: 0.1 },
+  { match: 'application', weight: 0.1 },
+  { match: 'cloud', weight: 0.1 },
+  { match: 'vendor', weight: 0.08 },
+  { match: 'hndl', weight: 0.2 },
+  { match: 'operational', weight: 0.07 },
+  { match: 'business', weight: 0.05 },
+];
+
+export function buildRiskMethodology(snapshot: QuantumReadinessSnapshot, riskCategories: RiskCategory[]): RiskMethodology {
+  const rows = RISK_DOMAIN_WEIGHTS.map((w) => {
+    const cat = riskCategories.find((c) => c.category.toLowerCase().includes(w.match));
+    const score = cat ? cat.currentScore : 0;
+    return { domain: cat?.category || w.match.toUpperCase(), weightPct: Math.round(w.weight * 100), score, weighted: score * w.weight };
+  });
+  const totalWeighted = rows.reduce((sum, r) => sum + r.weighted, 0) || 1;
+  const weights = rows
+    .map((r) => ({ domain: r.domain, weightPct: r.weightPct, score: r.score, contributionPct: clamp((r.weighted / totalWeighted) * 100) }))
+    .sort((a, b) => b.contributionPct - a.contributionPct);
+  const top = weights[0];
+  return {
+    formula: 'Overall Quantum Risk = Σ ( DomainRisk × DomainWeight ) ÷ Σ ( DomainWeight )',
+    overall: snapshot.scores.quantumRisk,
+    weights,
+    topDriver: top ? `${top.domain} (${top.contributionPct}% of weighted risk)` : EVIDENCE_UNAVAILABLE,
+    explanation: snapshot.hasData
+      ? `The overall quantum risk of ${snapshot.scores.quantumRisk}/100 is a weighted blend of nine cryptographic risk domains. ${top ? `${top.domain} contributes the largest share (${top.contributionPct}%) at a domain risk of ${top.score}/100` : ''}, followed by ${weights[1]?.domain || 'others'} (${weights[1]?.contributionPct || 0}%). Each domain weight reflects its quantum-attack surface and business exposure; the score is fully reproducible from the table below.`
+      : `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to compute the risk methodology.`,
+  };
+}
+
+// Phase 2 — AI Recommendation Validation Engine™
+export function buildAdvisorValidation(snapshot: QuantumReadinessSnapshot, advisor: MigrationAdvisor, methodology: RiskMethodology): AdvisorValidation {
+  const primary = methodology.weights[0];
+  const domainKeyword = (primary?.domain || '').toLowerCase().split(' ')[0];
+  const topFindings = snapshot.criticalFindings
+    .filter((f) => !domainKeyword || `${f.algorithm} ${f.title}`.toLowerCase().includes(domainKeyword) || domainKeyword === 'business' || domainKeyword === 'hndl')
+    .slice(0, 5)
+    .map((f) => `${f.algorithm || f.title} on ${f.asset} (${f.severity})`);
+  return {
+    primaryExposureDomain: primary?.domain || EVIDENCE_UNAVAILABLE,
+    topContributingFindings: topFindings.length ? topFindings : snapshot.criticalFindings.slice(0, 5).map((f) => `${f.algorithm || f.title} (${f.severity})`),
+    topContributingAssets: snapshot.topRiskAssets.slice(0, 5).map((a) => `${a.asset} (risk ${a.riskScore})`),
+    expectedRiskReductionPct: advisor.riskReductionPct,
+    confidencePct: advisor.confidencePct,
+    why: snapshot.hasData
+      ? `"${advisor.recommendation}" is recommended because ${primary?.domain || 'the dominant domain'} contributes ${primary?.contributionPct || 0}% of the weighted quantum risk — the single largest exposure. ${advisor.reason} Acting on it first yields the highest risk reduction (${advisor.riskReductionPct}%) per dollar and is validated against ${snapshot.criticalFindings.length} scanner findings across ${snapshot.inventory.assetsAssessed} asset(s).`
+      : `${EVIDENCE_UNAVAILABLE}.`,
+  };
+}
+
+// Phase 3 — Cost Forecast Intelligence™
+export function buildCostBreakdown(snapshot: QuantumReadinessSnapshot, costForecast: CostForecast): CostBreakdown {
+  const lines = costForecast.lines
+    .filter((l) => l.category !== EVIDENCE_UNAVAILABLE)
+    .map((l) => {
+      const hours = Math.round(l.costUsd / BLENDED_RATE_USD);
+      const engineers = Math.max(1, Math.round(hours / Math.max(40, (snapshot.estimates.migrationTimelineWeeks || 1) * 8)));
+      return { category: l.category, hours, engineers, rateUsd: BLENDED_RATE_USD, costUsd: l.costUsd, formula: `${hours} hrs × $${BLENDED_RATE_USD}/hr = $${l.costUsd.toLocaleString()}` };
+    });
+  const totalHours = lines.reduce((sum, l) => sum + l.hours, 0);
+  const totalUsd = lines.reduce((sum, l) => sum + l.costUsd, 0);
+  return { blendedRateUsd: BLENDED_RATE_USD, totalHours, totalUsd, lines: lines.length ? lines : [{ category: EVIDENCE_UNAVAILABLE, hours: 0, engineers: 0, rateUsd: BLENDED_RATE_USD, costUsd: 0, formula: EVIDENCE_UNAVAILABLE }] };
+}
+
+// Phase 5 — Asset Criticality Engine™
+export function buildAssetCriticality(snapshot: QuantumReadinessSnapshot, compliance: ComplianceMapping[]): AssetCriticality[] {
+  const nodeByLabel = new Map(snapshot.exposureGraph.nodes.map((n) => [n.label, n]));
+  const complianceScope = compliance.filter((c) => /pci|iso|soc/i.test(c.framework)).map((c) => c.framework);
+  const rows = snapshot.topRiskAssets.slice(0, 10).map((a) => {
+    const node = nodeByLabel.get(a.asset);
+    const internetFacing = node?.internetFacing ?? false;
+    const businessCriticality = a.riskScore >= 70 ? 'High' : a.riskScore >= 40 ? 'Medium' : 'Low';
+    return {
+      asset: a.asset,
+      businessCriticality,
+      operationalCriticality: internetFacing ? 'High' : businessCriticality,
+      customerFacing: internetFacing,
+      internetFacing,
+      revenueImpact: internetFacing ? 'High' : 'Medium',
+      complianceScope: complianceScope.length ? complianceScope : [EVIDENCE_UNAVAILABLE],
+      dataSensitivity: snapshot.scores.hndlRisk >= 50 ? 'High' : snapshot.scores.hndlRisk >= 30 ? 'Medium' : 'Low',
+    };
+  });
+  return rows.length ? rows : [];
+}
+
+// Phase 6 — Business Impact Intelligence™ (reasons)
+export function buildImpactReasons(snapshot: QuantumReadinessSnapshot, impact: BusinessImpact): ImpactReason[] {
+  const internet = internetFacingLabels(snapshot).length;
+  return [
+    { dimension: 'Customer Impact', level: internet > 0 ? 'Medium' : 'Low', reason: internet > 0 ? `${internet} customer-facing system(s) use quantum-vulnerable TLS.` : 'No internet-facing customer systems identified.' },
+    { dimension: 'Revenue Impact', level: impact.revenueImpact, reason: internet > 0 ? 'Customer-facing portal(s) using vulnerable TLS configuration could disrupt revenue if compromised.' : 'No direct revenue-generating systems in scope.' },
+    { dimension: 'Operational Impact', level: impact.operationalImpact, reason: `${snapshot.inventory.vulnerableComponents} vulnerable cryptographic components require migration across operational systems.` },
+    { dimension: 'Compliance Impact', level: impact.complianceImpact, reason: `Harvest-Now-Decrypt-Later exposure (${snapshot.scores.hndlRiskLevel}) places regulated data outside emerging PQC mandates.` },
+    { dimension: 'Brand / Reputational Impact', level: impact.reputationalImpact, reason: internet > 0 && snapshot.scores.quantumRisk >= 45 ? 'Public-facing quantum-vulnerable services carry reputational risk on disclosure.' : 'Limited external exposure.' },
+  ];
+}
+
+function findingFamily(algorithm: string, title: string): string {
+  const a = `${algorithm} ${title}`.toUpperCase();
+  if (/TLS_RSA|RSA[_\s].*(CBC|GCM|SHA)/.test(a)) return 'Legacy RSA Cipher Suites';
+  if (/FORWARD SECRECY/.test(a)) return 'Missing Forward Secrecy';
+  if (/ECDSA/.test(a)) return 'ECDSA Certificate Signatures';
+  if (/ECDH/.test(a)) return 'ECDH Key Exchange';
+  if (/\bRSA\b/.test(a)) return 'RSA Public-Key Cryptography';
+  if (/ECC|EC-|P-256|P-384|EC PUBLIC/.test(a)) return 'Elliptic-Curve Cryptography';
+  if (/SHA-?1|MD5/.test(a)) return 'Deprecated Hash Functions';
+  if (/3DES|\bDES\b|RC4/.test(a)) return 'Weak Symmetric Ciphers';
+  if (/TLS\s?1\.0|TLS\s?1\.1|SSLV/.test(a)) return 'Legacy TLS / SSL Protocols';
+  if (/OAUTH|JWT|OIDC|TOKEN/.test(a)) return 'Identity Token Cryptography';
+  if (/HNDL|HARVEST/.test(a)) return 'Harvest-Now-Decrypt-Later Exposure';
+  if (/WIDE CRYPTO|ATTACK SURFACE/.test(a)) return 'Broad Cryptographic Attack Surface';
+  return 'Other Cryptographic Findings';
+}
+
+// Phase 7 — Finding Deduplication Engine™
+export function buildFindingGroups(snapshot: QuantumReadinessSnapshot): FindingGroup[] {
+  const groups = new Map<string, { occurrences: number; assets: Set<string>; evidence: Set<string>; rank: number }>();
+  for (const f of snapshot.criticalFindings) {
+    const family = findingFamily(f.algorithm || '', f.title || '');
+    const g = groups.get(family) || { occurrences: 0, assets: new Set<string>(), evidence: new Set<string>(), rank: 0 };
+    g.occurrences += 1;
+    if (f.asset) g.assets.add(f.asset);
+    if (f.algorithm) g.evidence.add(f.algorithm);
+    g.rank = Math.max(g.rank, severityRank(normalizeSeverity(f.severity)));
+    groups.set(family, g);
+  }
+  const out: FindingGroup[] = Array.from(groups.entries())
+    .map(([title, g]) => ({ title, occurrences: g.occurrences, affectedAssets: g.assets.size, evidence: Array.from(g.evidence).slice(0, 8), impact: (['info', 'low', 'medium', 'high', 'critical'][g.rank] || 'medium') as FindingGroup['impact'] }))
+    .sort((a, b) => severityRank(b.impact) - severityRank(a.impact) || b.occurrences - a.occurrences);
+  return out;
+}
+
+// Phase 8 — Migration Confidence Scoring™
+export function buildMigrationConfidence(snapshot: QuantumReadinessSnapshot): MigrationConfidence {
+  const inv = snapshot.inventory;
+  const factors = [
+    { label: 'Asset Coverage', coveragePct: inv.assetsAssessed > 0 ? 100 : 0 },
+    { label: 'Certificate Coverage', coveragePct: inv.certificatesAnalyzed > 0 ? 100 : 0 },
+    { label: 'Key Coverage', coveragePct: inv.keysDiscovered > 0 ? 100 : 0 },
+    { label: 'CBOM Coverage', coveragePct: inv.cryptoComponents > 0 ? 100 : 0 },
+    { label: 'Scanner Coverage', coveragePct: snapshot.telemetry.scanSessions > 0 ? 100 : 0 },
+    { label: 'Dependency Visibility', coveragePct: snapshot.exposureGraph.edges.length > 0 ? 100 : inv.trustRelationships > 0 ? 50 : 20 },
+    { label: 'Trust Visibility', coveragePct: inv.trustRelationships > 0 ? 100 : 10 },
+    { label: 'Telemetry Quality', coveragePct: snapshot.telemetry.runtimeEvents > 0 ? 100 : 45 },
+  ];
+  const overallPct = clamp(factors.reduce((sum, f) => sum + f.coveragePct, 0) / factors.length);
+  return { overallPct, factors };
+}
+
+// Phase 9 — Evidence Confidence Scoring™
+export function buildEvidenceConfidence(snapshot: QuantumReadinessSnapshot): EvidenceConfidence[] {
+  const t = snapshot.telemetry;
+  const inv = snapshot.inventory;
+  const fresh = snapshot.lastAssessmentAt ? 'Current' : 'Unknown';
+  const src = (source: string, has: boolean, coverage: number, completeness: number): EvidenceConfidence => ({
+    source,
+    coveragePct: has ? coverage : 0,
+    completenessPct: has ? completeness : 0,
+    freshness: has ? fresh : 'No data',
+    confidencePct: has ? Math.round((coverage + completeness) / 2) : 0,
+    note: has ? '' : 'No Data Available',
+  });
+  return [
+    src('Scanner', t.scanSessions > 0 || t.scanResults > 0, 100, 100),
+    src('CBOM', inv.cryptoComponents > 0, 100, 95),
+    src('Certificate Inventory', inv.certificatesAnalyzed > 0, 100, 90),
+    src('Key Inventory', inv.keysDiscovered > 0, 100, 85),
+    src('Runtime Telemetry', t.runtimeEvents > 0, 100, 90),
+    src('Trust Fabric', inv.trustRelationships > 0, 100, 80),
+    src('Cloud Inventory', inv.cloudAccounts > 0, 100, 80),
+    src('Dependency Mapping', snapshot.exposureGraph.edges.length > 0, 100, 70),
+  ];
+}
+
+// Phase 10 — Executive Decision Center™
+export function buildExecutiveDecisions(snapshot: QuantumReadinessSnapshot, waves: MigrationWave[], executiveBlock: ExecutiveBlock): ExecutiveDecision[] {
+  const out: ExecutiveDecision[] = [];
+  const firstWave = waves[0];
+  if (firstWave) out.push({ decision: `Approve ${firstWave.name} (Wave 1)`, type: 'Migration Approval', rationale: `Highest-risk wave; ${firstWave.riskReductionPct}% risk reduction for ${(firstWave.costUsd || 0).toLocaleString() ? '$' + (firstWave.costUsd || 0).toLocaleString() : 'TBD'} over ${firstWave.durationWeeks}w.`, owner: 'CISO' });
+  if (executiveBlock.estimatedCostUsd) out.push({ decision: `Approve migration budget of $${executiveBlock.estimatedCostUsd.toLocaleString()}`, type: 'Budget Approval', rationale: `Funds the ${executiveBlock.estimatedDurationWeeks}-week programme for ${executiveBlock.expectedRiskReductionPct}% risk reduction.`, owner: 'CFO / Board' });
+  const orphaned = snapshot.topRiskAssets.filter((a) => /unassigned|unknown/i.test(a.owner));
+  if (orphaned.length) out.push({ decision: `Assign owners for ${orphaned.length} asset(s)`, type: 'Ownership Assignment', rationale: 'No accountable owner to approve / execute migration.', owner: 'Program Manager' });
+  out.push({ decision: 'Approve Hybrid TLS (X25519 + ML-KEM-768) standard', type: 'Policy Approval', rationale: 'Establishes the target cryptographic standard for all migration waves.', owner: 'Security Architecture' });
+  out.push({ decision: 'Approve ML-KEM (FIPS 203) / ML-DSA (FIPS 204) adoption', type: 'Governance Approval', rationale: 'Authorises NIST-standardised PQC algorithms for production use.', owner: 'CISO / GRC' });
+  return out;
+}
+
+// Phase 11 — Enterprise Remediation Playbook™
+export function buildPlaybookDetail(groups: FindingGroup[]): PlaybookDetail[] {
+  const target = (title: string): { current: string; target: string; steps: string[] } => {
+    if (/rsa cipher|legacy rsa|forward secrecy/i.test(title)) return { current: 'TLS with RSA key exchange / CBC cipher suites (no forward secrecy)', target: 'TLS 1.3 + X25519 + ML-KEM-768 (Hybrid)', steps: ['Enable TLS 1.3', 'Disable RSA / CBC cipher suites', 'Enable X25519 + Hybrid ML-KEM key exchange', 'Validate handshake compatibility', 'Monitor production for client failures'] };
+    if (/ecdsa|certificate/i.test(title)) return { current: 'ECDSA / RSA certificate signatures', target: 'Ed25519 + ML-DSA-65 hybrid certificate chain', steps: ['Issue hybrid (classical + ML-DSA) certificates', 'Stage parallel chain', 'Cut over CA trust', 'Validate chain on all clients', 'Retire classical-only certs'] };
+    if (/tls.*ssl|legacy tls/i.test(title)) return { current: 'Legacy TLS 1.0 / 1.1 / SSL protocols', target: 'TLS 1.3 only', steps: ['Disable TLS 1.0/1.1 and SSL', 'Enforce TLS 1.3', 'Update load-balancer / gateway policy', 'Validate client compatibility', 'Monitor handshake telemetry'] };
+    return { current: 'Quantum-vulnerable cryptography', target: 'ML-KEM (FIPS 203) / ML-DSA (FIPS 204) hybrid', steps: ['Inventory affected components', 'Deploy hybrid PQC behind feature flag', 'Update dependent assets', 'Validate trust chains', 'Retire classical primitives'] };
+  };
+  return groups.slice(0, 6).map((g) => {
+    const t = target(g.title);
+    return {
+      finding: `${g.title} (${g.occurrences} occurrence${g.occurrences === 1 ? '' : 's'}, ${g.affectedAssets} asset${g.affectedAssets === 1 ? '' : 's'})`,
+      currentState: g.evidence.length ? g.evidence.slice(0, 4).join(', ') : t.current,
+      targetState: t.target,
+      prerequisites: ['Owner assigned', 'Change window approved', 'Hybrid keys / certs provisioned'],
+      dependencies: ['Load Balancer', 'Certificate Authority', 'HSM / KMS'],
+      executionSteps: t.steps,
+      validationSteps: ['Confirm hybrid negotiation succeeds', 'Run PQC readiness re-scan', 'Verify trust-chain integrity', 'Confirm zero failed crypto operations'],
+      rollbackSteps: ['Disable feature flag', 'Restore previous TLS / certificate profile', 'Confirm service restoration'],
+      successCriteria: ['Hybrid PQC negotiation successful', 'No downtime', 'No client failures', `${g.title} no longer detected on re-scan`],
+    };
+  });
+}
+
+// Phase 12 — Migration Simulation Engine™
+export function buildWaveSimulation(snapshot: QuantumReadinessSnapshot, waves: MigrationWave[], executiveBlock: ExecutiveBlock, confidence: MigrationConfidence): WaveSimulation[] {
+  const startReadiness = snapshot.scores.quantumReadiness;
+  const startRisk = snapshot.scores.quantumRisk;
+  const targetReadiness = executiveBlock.targetReadiness;
+  const targetRisk = executiveBlock.targetRisk;
+  const totalReductionShare = waves.reduce((s, w) => s + w.riskReductionPct, 0) || 1;
+  let cumWeeks = 0;
+  let cumCost = 0;
+  let cumShare = 0;
+  const sims: WaveSimulation[] = waves.map((wave, index) => {
+    cumWeeks += wave.durationWeeks;
+    cumCost += wave.costUsd;
+    cumShare += wave.riskReductionPct / totalReductionShare;
+    const riskTo = Math.round(startRisk - (startRisk - targetRisk) * cumShare);
+    const readinessTo = Math.round(startReadiness + (targetReadiness - startReadiness) * cumShare);
+    return {
+      label: index === 0 ? `If Wave 1 (${wave.name}) Completes` : `If Waves 1-${index + 1} Complete`,
+      readinessFrom: startReadiness,
+      readinessTo: readinessTo,
+      riskFrom: startRisk,
+      riskTo,
+      costUsd: cumCost,
+      timelineWeeks: cumWeeks,
+      confidencePct: clamp(confidence.overallPct - index * 4),
+    };
+  });
+  sims.push({
+    label: 'If Entire Program Completes',
+    readinessFrom: startReadiness,
+    readinessTo: targetReadiness,
+    riskFrom: startRisk,
+    riskTo: targetRisk,
+    costUsd: snapshot.estimates.migrationCostUsd,
+    timelineWeeks: snapshot.estimates.migrationTimelineWeeks,
+    confidencePct: clamp(confidence.overallPct - 6),
+  });
+  return sims;
+}
+
+// Phase 13 — Enterprise Governance gates
+export function buildGovernanceGates(): GovernanceGate[] {
+  return [
+    { gate: 'Gate 1 — Plan Approval', owner: 'CISO', criteria: 'Migration plan, budget and waves approved by executive sponsor.' },
+    { gate: 'Gate 2 — Wave Readiness', owner: 'Program Manager', criteria: 'Owners assigned, dependencies inventoried, rollback validated per wave.' },
+    { gate: 'Gate 3 — Production Cutover', owner: 'Migration Lead', criteria: 'Hybrid PQC validated in pilot; trust chains intact; no client failures.' },
+    { gate: 'Gate 4 — Validation Sign-off', owner: 'Compliance Lead', criteria: 'Re-scan confirms remediation; audit evidence captured; compliance mapped.' },
+  ];
+}
+
+// Phase 14 — Report Explainability Requirements™
+export function buildExplainability(snapshot: QuantumReadinessSnapshot, methodology: RiskMethodology, confidence: MigrationConfidence): Explainability[] {
+  const s = snapshot.scores;
+  return [
+    { metric: 'Quantum Risk Score', what: `${s.quantumRisk}/100 composite quantum risk.`, how: methodology.formula, evidence: `${snapshot.criticalFindings.length} scanner findings, ${snapshot.inventory.cryptoComponents} CBOM components.`, why: 'Quantifies exposure to future quantum decryption.', action: 'Execute prioritised migration waves to reduce it.' },
+    { metric: 'Quantum Readiness Score', what: `${s.quantumReadiness}/100 (${s.quantumReadinessLevel}).`, how: 'Weighted blend of PQC adoption, TLS/PKI maturity, crypto-agility, governance and runtime visibility.', evidence: `${s.pqcAdoption}% PQC adoption across ${snapshot.inventory.cryptoComponents} components.`, why: 'Measures progress toward a quantum-safe posture.', action: 'Increase PQC/hybrid adoption per the wave plan.' },
+    { metric: 'PQC Adoption', what: `${s.pqcAdoption}%.`, how: '(PQC-ready + ½ hybrid components) ÷ total CBOM components.', evidence: `${snapshot.inventory.pqcReadyComponents} of ${snapshot.inventory.cryptoComponents} components quantum-safe.`, why: 'Direct measure of cryptographic modernisation.', action: 'Migrate vulnerable components to ML-KEM / ML-DSA.' },
+    { metric: 'Migration Confidence', what: `${confidence.overallPct}%.`, how: 'Average of asset/certificate/key/CBOM/scanner/dependency/trust/telemetry coverage.', evidence: 'Per-source coverage in the confidence table.', why: 'Indicates how complete the evidence behind the plan is.', action: 'Improve low-coverage sources (trust fabric, dependencies) to raise confidence.' },
+    { metric: 'Estimated Cost', what: snapshot.estimates.migrationCostUsd ? `$${snapshot.estimates.migrationCostUsd.toLocaleString()}.` : EVIDENCE_UNAVAILABLE, how: `${(snapshot.estimates.migrationTimelineWeeks || 0) * 38} labour hours × $${BLENDED_RATE_USD}/hr blended rate, split by category.`, evidence: 'Cost breakdown table with per-line formulas.', why: 'Defensible budget for executive approval.', action: 'Approve budget allocation per the decision center.' },
+  ];
+}
+
 /* ------------------------------------------------------------------ */
 /* Assemble the full board-level report model                         */
 /* ------------------------------------------------------------------ */
@@ -565,6 +878,24 @@ export function buildReportModel(
   const advisor = buildMigrationAdvisor(snapshot, domains, waves);
   const findings = buildFindings(snapshot);
   const executiveBlock = buildExecutiveBlock(snapshot, domains, findings);
+
+  // Report Intelligence (Reports_Enhancements_3) — all evidence-derived
+  const riskCategories = buildRiskCategories(snapshot, domains);
+  const compliance = buildCompliance(snapshot);
+  const costForecast = buildCostForecast(snapshot);
+  const riskMethodology = buildRiskMethodology(snapshot, riskCategories);
+  const advisorValidation = buildAdvisorValidation(snapshot, advisor, riskMethodology);
+  const costBreakdown = buildCostBreakdown(snapshot, costForecast);
+  const assetCriticality = buildAssetCriticality(snapshot, compliance);
+  const impactReasons = buildImpactReasons(snapshot, buildBusinessImpact(snapshot));
+  const findingGroups = buildFindingGroups(snapshot);
+  const migrationConfidence = buildMigrationConfidence(snapshot);
+  const evidenceConfidence = buildEvidenceConfidence(snapshot);
+  const executiveDecisions = buildExecutiveDecisions(snapshot, waves, executiveBlock);
+  const playbookDetail = buildPlaybookDetail(findingGroups);
+  const waveSimulation = buildWaveSimulation(snapshot, waves, executiveBlock, migrationConfidence);
+  const governanceGates = buildGovernanceGates();
+  const explainability = buildExplainability(snapshot, riskMethodology, migrationConfidence);
 
   const executiveSummary = snapshot.hasData
     ? `As of ${format(now, 'PPP')}, ${branding.companyName} holds a quantum readiness score of ${s.quantumReadiness}/100 (${s.quantumReadinessLevel}) against a quantum risk score of ${s.quantumRisk}/100 (${s.quantumRiskLevel}). A funded ${snapshot.estimates.migrationTimelineWeeks || 'TBD'}-week migration programme can raise readiness to a target of ${executiveBlock.targetReadiness}/100 and reduce quantum risk by ${executiveBlock.expectedRiskReductionPct}%. Discovery assessed ${inv.assetsAssessed} cryptographic assets, identifying ${inv.quantumVulnerableAssets} as quantum-vulnerable with ${s.pqcAdoption}% PQC adoption. Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} with an estimated quantum exposure window of ${executiveBlock.quantumExposureWindow}. ${executiveBlock.executiveRecommendation}`
@@ -593,16 +924,30 @@ export function buildReportModel(
     migrationReadiness: buildMigrationReadiness(snapshot, domains),
     migrationWaves: waves,
     dependencyAnalysis: buildDependencyAnalysis(snapshot),
-    riskCategories: buildRiskCategories(snapshot, domains),
+    riskCategories,
+    riskMethodology,
+    advisorValidation,
+    costBreakdown,
+    assetCriticality,
+    impactReasons,
+    findingGroups,
+    migrationConfidence,
+    evidenceConfidence,
+    executiveDecisions,
+    playbookDetail,
+    waveSimulation,
+    governanceGates,
+    explainability,
     findings,
     assets: buildAssets(snapshot),
     certificates: safeTable('Certificate Inventory', ['Metric', 'Value'], [['Certificates Analyzed', inv.certificatesAnalyzed]]),
     keys: safeTable('Key Inventory', ['Metric', 'Value'], [['Keys Discovered', inv.keysDiscovered]]),
     tlsEndpoints: safeTable('TLS / Protocol Surface', ['Metric', 'Value'], [['Domains Scanned', inv.domainsScanned]]),
-    cbom: safeTable('CBOM Summary', ['Posture', 'Assets'], [
-      ['PQC-Ready', inv.pqcReadyAssets],
-      ['Hybrid / In-Progress', inv.hybridAssets],
-      ['Quantum-Vulnerable', inv.quantumVulnerableAssets],
+    cbom: safeTable('CBOM Summary (cryptographic components)', ['Posture', 'Components'], [
+      ['Total Components', inv.cryptoComponents],
+      ['PQC-Ready / Hybrid', inv.pqcReadyComponents],
+      ['Quantum-Vulnerable', inv.vulnerableComponents],
+      ['Vulnerable Assets', inv.quantumVulnerableAssets],
     ]),
     hndl: {
       summary: `Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} (${s.hndlRisk}/100). Long-lived sensitive data protected by quantum-vulnerable cryptography can be captured today and decrypted once a cryptographically-relevant quantum computer exists (estimated window: ${executiveBlock.quantumExposureWindow}).`,
@@ -621,11 +966,11 @@ export function buildReportModel(
       summary: `${s.pqcAdoption}% of discovered cryptography is quantum-safe or hybrid. Readiness is broken down by domain below.`,
       table: safeTable('PQC Readiness Factors', ['Factor', 'Score'], snapshot.readinessFactors.map((f) => [f.label, f.score])),
     },
-    compliance: buildCompliance(snapshot),
+    compliance,
     remediationProgram: buildRemediationProgram(snapshot, findings, waves),
     roadmap: buildRoadmap(snapshot, waves),
     playbook: buildPlaybook(waves),
-    costForecast: buildCostForecast(snapshot),
+    costForecast,
     riskForecast: buildRiskForecast(snapshot),
     governance: buildGovernance(snapshot),
     remediation: safeTable('Remediation Plan', ['Priority', 'Action', 'Owner', 'Risk Reduction', 'Target Date'],

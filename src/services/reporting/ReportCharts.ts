@@ -88,11 +88,10 @@ export function assetDistributionOption(snapshot: QuantumReadinessSnapshot): ECh
 
 export function algorithmExposureOption(snapshot: QuantumReadinessSnapshot): EChartsOption {
   const inv = snapshot.inventory;
-  // Derive posture-based exposure from real asset posture counts.
+  // Derive posture-based exposure from real CBOM component counts.
   const data = [
-    { name: 'Quantum-Vulnerable (RSA/ECC)', value: inv.quantumVulnerableAssets, color: PALETTE.red },
-    { name: 'Hybrid', value: inv.hybridAssets, color: PALETTE.gold },
-    { name: 'PQC-Ready', value: inv.pqcReadyAssets, color: PALETTE.green },
+    { name: 'Quantum-Vulnerable (RSA/ECC)', value: inv.vulnerableComponents || inv.quantumVulnerableAssets, color: PALETTE.red },
+    { name: 'PQC-Ready / Hybrid', value: inv.pqcReadyComponents || inv.pqcReadyAssets, color: PALETTE.green },
   ];
   return {
     tooltip: { trigger: 'item' },

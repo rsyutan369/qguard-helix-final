@@ -60,6 +60,9 @@ export interface QuantumReadinessSnapshot {
     pqcReadyAssets: number;
     hybridAssets: number;
     quantumVulnerableAssets: number;
+    cryptoComponents: number;
+    vulnerableComponents: number;
+    pqcReadyComponents: number;
   };
   riskDistribution: { critical: number; high: number; medium: number; low: number };
   readinessFactors: Array<{ label: string; score: number }>;
@@ -142,6 +145,9 @@ export const EMPTY_SNAPSHOT: QuantumReadinessSnapshot = {
     pqcReadyAssets: 0,
     hybridAssets: 0,
     quantumVulnerableAssets: 0,
+    cryptoComponents: 0,
+    vulnerableComponents: 0,
+    pqcReadyComponents: 0,
   },
   riskDistribution: { critical: 0, high: 0, medium: 0, low: 0 },
   readinessFactors: [],
