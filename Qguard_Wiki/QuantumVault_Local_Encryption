@@ -1,0 +1,346 @@
+# Quantum Vault Local-Only Encryption Architecture & Implementation Requirements
+
+## Objective
+
+Refactor and validate the Quantum Vault module located at:
+
+`C:\Users\HP\Music\qguard-helix-final\qguard-messaging\src-tauri`
+
+to operate as a **strictly local-first, zero-knowledge quantum-safe vault**.
+
+The Quantum Vault must never store user files, folders, decrypted content, encryption keys, or recovery keys in any cloud service.
+
+---
+
+# Core Security Requirements
+
+## Local-Only Encryption
+
+All user files, folders, and data must be:
+
+* Encrypted locally on the user's device.
+* Decrypted locally on the user's device.
+* Stored locally only.
+* Never uploaded to any QGuard server.
+* Never transmitted to cloud storage.
+* Never processed by remote APIs.
+
+The application may synchronize user account metadata for authentication purposes, but actual vault contents must remain entirely local.
+
+### Prohibited
+
+The following are not allowed:
+
+* Cloud-based file encryption.
+* Cloud-based file storage.
+* Server-side decryption.
+* Server-side key management.
+* Server-side recovery key storage.
+* Server-side access to vault contents.
+
+QGuard infrastructure must have zero visibility into user-protected content.
+
+---
+
+# Supported Storage Locations
+
+Users must be able to encrypt and decrypt:
+
+* Individual files
+* Entire folders
+* External USB drives
+* External SSD drives
+* NAS-mounted folders
+* Removable storage devices
+* Local workstation storage
+
+The vault should support:
+
+* Drag-and-drop encryption
+* Bulk folder encryption
+* Recursive directory encryption
+* Large file encryption
+* Offline operation
+
+The Quantum Vault must continue functioning even without internet connectivity.
+
+---
+
+# Recovery Architecture
+
+## Recovery Key System
+
+Users must be able to generate a recovery key during vault setup.
+
+Recovery keys are intended for:
+
+* Lost devices
+* Stolen devices
+* Damaged devices
+* Operating system reinstallations
+* Device migrations
+
+### Recovery Workflow
+
+1. User installs QGuard Messaging on a new device.
+2. User signs into their account.
+3. User selects "Recover Existing Vault."
+4. User enters Recovery Key.
+5. Vault keys are reconstructed locally.
+6. User regains access to encrypted vault data.
+
+### Security Requirements
+
+Recovery keys must be:
+
+* Generated locally.
+* Never uploaded to servers.
+* Never stored by QGuard.
+* Never recoverable by administrators.
+* Never visible after initial generation.
+
+Recovery keys must be protected using:
+
+* AES-256-GCM
+* HKDF-SHA3-256
+* SHA3-256 integrity validation
+
+Display clear warnings that lost recovery keys cannot be recovered by QGuard.
+
+---
+
+# Quantum Vault Cryptographic Profile
+
+The Quantum Vault must use the highest security profile available.
+
+## Mandatory Cryptographic Stack
+
+### Key Encapsulation
+
+Primary:
+
+* ML-KEM-1024
+
+Optional Hybrid Mode:
+
+* X25519 + ML-KEM-1024
+
+---
+
+### Digital Signatures
+
+Primary:
+
+* ML-DSA-87
+
+Additional Support:
+
+* SLH-DSA
+
+Optional Hybrid:
+
+* Ed25519 + ML-DSA-87
+
+---
+
+### Symmetric Encryption
+
+Mandatory:
+
+* AES-256-GCM
+
+Requirements:
+
+* Unique nonce per encryption operation
+* Authenticated encryption
+* Integrity validation
+* Tamper detection
+
+---
+
+### Key Derivation
+
+Primary:
+
+* HKDF-SHA3-256
+
+Compatibility Fallback:
+
+* HKDF-SHA-256
+
+---
+
+### Hashing
+
+Primary:
+
+* SHA3-256
+
+Additional Support:
+
+* SHA3-512
+
+Uses:
+
+* Integrity validation
+* Metadata verification
+* Key derivation support
+* File verification
+
+---
+
+# Vault Encryption Architecture
+
+Implement envelope encryption.
+
+## Recommended Flow
+
+File Data
+↓
+AES-256-GCM File Encryption Key (FEK)
+↓
+FEK Wrapped by Vault Master Key (VMK)
+↓
+VMK Protected Using ML-KEM-1024
+↓
+Recovery Key Protects Backup Copy of VMK
+↓
+Store Encrypted Vault Locally
+
+Benefits:
+
+* Fast encryption for large files
+* Quantum-resistant key protection
+* Recovery support
+* Crypto-agility
+* Enterprise-grade design
+
+---
+
+# Local Security Controls
+
+Implement the following protections:
+
+### Secure Memory Handling
+
+* Zeroize sensitive memory after use.
+* Clear plaintext keys from memory.
+* Clear decrypted file buffers.
+
+### Integrity Verification
+
+* Verify encrypted file integrity before decryption.
+* Reject modified ciphertext.
+* Detect tampering.
+
+### Key Protection
+
+* Store keys using OS secure storage.
+
+Examples:
+
+* Windows DPAPI
+* macOS Keychain
+* Linux Secret Service
+
+### Audit Events
+
+Log locally:
+
+* Encryption events
+* Decryption events
+* Recovery operations
+* Key generation events
+
+Never log:
+
+* Plaintext data
+* Encryption keys
+* Recovery keys
+
+---
+
+# Validation Requirements
+
+Verify and test:
+
+* File encryption works completely offline.
+* Folder encryption works recursively.
+* USB drive encryption works.
+* Recovery process works on a new device.
+* Recovery keys successfully restore access.
+* No vault data is transmitted to servers.
+* No plaintext files remain after encryption.
+* No cryptographic material is leaked to logs.
+* All cryptographic operations use approved algorithms.
+
+---
+
+# Approved QGuard Helix Cryptographic Standards
+
+## Key Encapsulation
+
+Standard Profile:
+
+* ML-KEM-768
+* X25519 + ML-KEM-768 Hybrid
+
+Quantum Vault High-Security Profile:
+
+* ML-KEM-1024
+
+---
+
+## Digital Signatures
+
+Standard Profile:
+
+* ML-DSA-65
+* Ed25519 + ML-DSA-65 Hybrid
+
+Quantum Vault High-Security Profile:
+
+* ML-DSA-87
+* SLH-DSA
+
+---
+
+## Symmetric Encryption
+
+* AES-256-GCM
+
+---
+
+## Key Derivation
+
+Primary:
+
+* HKDF-SHA3-256
+
+Fallback:
+
+* HKDF-SHA-256
+
+---
+
+## Hashing
+
+* SHA3-256
+* SHA3-512
+
+---
+
+## Transport Security (Application Services Only)
+
+When communicating with authentication, licensing, or update services:
+
+* TLS 1.3
+* X25519MLKEM768 preferred
+* Hybrid TLS enabled
+* Classical fallback controlled by policy
+
+Important:
+
+TLS protects application communications only.
+
+Vault encryption must remain local and independent of TLS.

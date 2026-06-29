@@ -390,13 +390,26 @@ export async function buildSnapshot(token: string, userId: string) {
   // Mirror the scanner's expanded findings (critical/high) when available so the
   // QR findings table matches scanner intelligence; otherwise use graded scan rows.
   const assetNameById = new Map<string, Record<string, unknown>>(assets.map((a) => [str(a.id), a]))
-  const criticalFindings = intelHasData && intelFindings.length
+  type CriticalFinding = {
+    id: string
+    title: string
+    asset: string
+    assetType: string
+    environment: string
+    severity: string
+    algorithm: string
+    detectedAt: string | null
+    instances: number
+  }
+
+  // Map raw scanner evidence into display rows. The scanner emits one finding per
+  // detected instance, so the same algorithm on the same asset shows up many times.
+  const rawCriticalFindings: CriticalFinding[] = intelHasData && intelFindings.length
     ? intelFindings
         .filter((f) => {
           const t = str(f.threatLevel).toLowerCase()
           return t.includes('critical') || t.includes('high')
         })
-        .slice(0, 24)
         .map((f, index) => ({
           id: str(f.id) || `intel-${index}`,
           title: `${str(f.algorithm) || str(f.category) || 'Quantum-vulnerable algorithm'} detected`,
@@ -406,13 +419,13 @@ export async function buildSnapshot(token: string, userId: string) {
           severity: str(f.threatLevel).toLowerCase() || 'high',
           algorithm: str(f.algorithm) || '—',
           detectedAt: str(f.detectedAt) || str(f.timestamp) || null,
+          instances: 1,
         }))
     : scanResults
         .filter((r) => {
           const t = str(r.threat_level).toLowerCase()
           return t.includes('critical') || t.includes('high')
         })
-        .slice(0, 16)
         .map((r) => {
           const asset = assetNameById.get(str(r.asset_id))
           return {
@@ -424,8 +437,27 @@ export async function buildSnapshot(token: string, userId: string) {
             severity: str(r.threat_level) || 'high',
             algorithm: str(r.algorithm) || '—',
             detectedAt: str(r.created_at) || null,
+            instances: 1,
           }
         })
+
+  // Collapse identical evidence rows (same finding + algorithm + asset + environment
+  // + severity) into a single record, tracking how many raw instances it represents.
+  // Keep the earliest detection timestamp so the evidence stays traceable.
+  const findingByKey = new Map<string, CriticalFinding>()
+  for (const f of rawCriticalFindings) {
+    const key = `${f.title}|${f.algorithm}|${f.asset}|${f.environment}|${f.severity}`.toLowerCase()
+    const existing = findingByKey.get(key)
+    if (existing) {
+      existing.instances += 1
+      if (f.detectedAt && (!existing.detectedAt || f.detectedAt < existing.detectedAt)) {
+        existing.detectedAt = f.detectedAt
+      }
+    } else {
+      findingByKey.set(key, { ...f })
+    }
+  }
+  const criticalFindings = Array.from(findingByKey.values()).slice(0, 24)
 
   // ---- Recommended actions ---------------------------------------------
   const recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }> = []

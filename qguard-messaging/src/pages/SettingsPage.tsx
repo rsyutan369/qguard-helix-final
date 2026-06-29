@@ -22,9 +22,11 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { useAuth } from "@/lib/auth-context";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
+import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
 import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
 import type { ThemeMode } from "@/lib/use-theme";
+import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
 
 interface SettingsPageProps {
   theme: ThemeMode;
@@ -35,6 +37,10 @@ interface SettingsPageProps {
   liveStatus: QGuardLiveStatus;
   onToggleTheme: () => void;
   onRefresh: () => void | Promise<void>;
+  inactivityMinutes: number;
+  onSetInactivityMinutes: (minutes: number) => void;
+  workspaceStatus: WorkspaceStatus | null;
+  onLockWorkspaces: () => void | Promise<void>;
 }
 
 interface MfaEnrollment {
@@ -185,12 +191,14 @@ async function resizeAvatar(file: File): Promise<Blob> {
   }
 }
 
-export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh }: SettingsPageProps) {
+export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh, inactivityMinutes, onSetInactivityMinutes, workspaceStatus, onLockWorkspaces }: SettingsPageProps) {
   const auth = useAuth();
   const user = auth.user;
   const [displayName, setDisplayName] = useState(profile?.name ?? "");
   const [username, setUsername] = useState(profile?.username ?? "");
-  const [email, setEmail] = useState(profile?.email ?? user?.email ?? "");
+  // Prefer the authoritative auth session email (auth.users) over the denormalized
+  // profiles.email mirror, so a completed email change is reflected immediately.
+  const [email, setEmail] = useState(user?.email ?? profile?.email ?? "");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -271,7 +279,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   useEffect(() => {
     setDisplayName(profile?.name ?? "");
     setUsername(profile?.username ?? "");
-    setEmail(profile?.email ?? user?.email ?? "");
+    setEmail(user?.email ?? profile?.email ?? "");
   }, [profile, user?.email]);
 
   useEffect(() => {
@@ -476,6 +484,20 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   async function startMfaEnrollment() {
     await runAction("mfa-enroll", async () => {
       await enforceRateLimit("mfa_enroll");
+      // Clear any stale UNVERIFIED TOTP factor from an abandoned enrollment.
+      // Otherwise re-enrolling fails with "a factor with this friendly name
+      // already exists", locking the user out of enabling MFA again.
+      try {
+        const { data: existing } = await supabase.auth.mfa.listFactors();
+        const stale = (existing?.all ?? []).filter(
+          (factor) => factor.factor_type === "totp" && factor.status !== "verified",
+        );
+        for (const factor of stale) {
+          await supabase.auth.mfa.unenroll({ factorId: factor.id }).catch(() => undefined);
+        }
+      } catch {
+        // Best-effort cleanup; never block a fresh enrollment.
+      }
       const { data, error: enrollError } = await supabase.auth.mfa.enroll({
         factorType: "totp",
         friendlyName: "QGuard Authenticator",
@@ -619,6 +641,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
                 className="hidden"
+                onClick={() => guardNativeFileInput()}
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0];
                   if (file) uploadAvatar(file);
@@ -765,6 +788,60 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="shell-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-bold text-ink-950"><LockKeyhole size={18} /> Workspace Lock</div>
+          <span className="status-pill bg-emerald-50 text-emerald-600"><ShieldCheck size={12} /> Zero-Trust</span>
+        </div>
+        <p className="mt-1 text-sm text-ink-600">
+          Secure Chat and Quantum Vault each require their own password or PIN, separate from your account login. They lock automatically when the app is minimized, hidden, or idle.
+        </p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {(["chat", "vault"] as const).map((scope) => {
+            const scopeStatus = workspaceStatus?.[scope];
+            const label = scope === "chat" ? "Secure Chat" : "Quantum Vault";
+            return (
+              <div key={scope} className="rounded-lg border border-line bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-bold text-ink-950">{label}</div>
+                  <span className={`status-pill ${!scopeStatus?.configured ? "bg-amber-50 text-amber-700" : scopeStatus.unlocked ? "bg-emerald-50 text-emerald-600" : "bg-ink-50 text-ink-600"}`}>
+                    {!scopeStatus?.configured ? "Not set up" : scopeStatus.unlocked ? "Unlocked" : "Locked"}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] text-ink-500">
+                  {scopeStatus?.configured
+                    ? `Protected by ${[scopeStatus.hasPassword ? "password" : null, scopeStatus.hasPin ? "PIN" : null].filter(Boolean).join(" + ")}`
+                    : `Open ${label} to set up a password or PIN.`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-4 flex flex-wrap items-end justify-between gap-3">
+          <label className="text-sm font-semibold text-ink-700">
+            Inactivity auto-lock
+            <select
+              value={inactivityMinutes}
+              onChange={(event) => onSetInactivityMinutes(Number(event.currentTarget.value))}
+              className="mt-1 block w-56 rounded-lg border border-line bg-canvas px-3 py-2 text-sm outline-none focus:border-cyan-300"
+            >
+              {INACTIVITY_OPTIONS.map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {minutes === 0 ? "Never (not recommended)" : `${minutes} minutes`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => void onLockWorkspaces()}
+            className="flex items-center gap-2 rounded-lg border border-line bg-white px-4 py-2 text-sm font-bold text-ink-700 hover:bg-canvas"
+          >
+            <LockKeyhole size={16} /> Lock now
+          </button>
         </div>
       </section>
 

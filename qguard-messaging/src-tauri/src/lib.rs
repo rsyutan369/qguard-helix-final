@@ -3,7 +3,6 @@ pub mod commands;
 pub mod crypto;
 pub mod device_trust;
 pub mod error;
-pub mod file_crypto;
 pub mod fingerprints;
 pub mod identity;
 pub mod message_crypto;
@@ -25,6 +24,7 @@ use commands::security::*;
 use commands::telemetry::*;
 use commands::calls::*;
 use commands::vault::*;
+use commands::workspace::*;
 use state::AppState;
 use tauri::Manager;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -115,26 +115,24 @@ pub fn run() {
             messaging_sync_queue,
             messaging_delete_encrypted_message,
             messaging_mark_delivery_receipt,
-            vault_encrypt_upload,
-            vault_decrypt_file_name,
-            vault_download_decrypt,
-            vault_share_file,
-            vault_revoke_file_access,
-            vault_verify_metadata,
             vault_encrypt_path,
             vault_decrypt_path,
             vault_encrypt_folder_path,
             vault_decrypt_folder_path,
+            vault_delete_file,
             vault_recovery_status,
             vault_setup_recovery,
             vault_enable_recovery_with_phrase,
             vault_rewrap_path,
-            vault_rewrap_package,
-            vault_download_decrypt_with_recovery,
             vault_decrypt_path_with_recovery,
             vault_decrypt_folder_path_with_recovery,
             vault_decrypt_path_with_enterprise,
             vault_decrypt_folder_path_with_enterprise,
+            workspace_status,
+            workspace_setup_credential,
+            workspace_unlock,
+            workspace_lock,
+            workspace_lock_all,
             security_verify_fingerprint,
             security_report_key_change,
             security_export_report,

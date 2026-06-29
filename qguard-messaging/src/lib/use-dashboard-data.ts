@@ -58,14 +58,6 @@ function describeDataError(error: unknown, tableName: string): string {
   return rawMessage || `${tableName} could not be loaded.`;
 }
 
-function isMissingColumnError(error: unknown, columnName: string): boolean {
-  if (!error || typeof error === "string" || error instanceof Error) return false;
-  const dataError = error as SupabaseDataError;
-  const rawMessage = [dataError.message, dataError.details, dataError.hint, dataError.code].filter(Boolean).join(" ");
-  return rawMessage.includes(columnName)
-    && /could not find|does not exist|schema cache|column/i.test(rawMessage);
-}
-
 function isMissingRelationError(error: unknown): boolean {
   if (!error || typeof error === "string" || error instanceof Error) return false;
   const dataError = error as SupabaseDataError;
@@ -191,23 +183,10 @@ export function useDashboardData(user: User | null, session: Session | null) {
     try {
       const client = requireSupabase();
       await ensureMessagingWorkspace(client, user);
-      const fetchVaultFiles = async () => {
-        const withDisplayName = await client
-          .from("messaging_vault_files")
-          .select("id,storage_path,display_name_hint,size_bytes,content_type,suite,created_at,revoked_at")
-          .eq("owner_user_id", user.id)
-          .is("revoked_at", null)
-          .order("created_at", { ascending: false })
-          .limit(500);
-        if (!withDisplayName.error || !isMissingColumnError(withDisplayName.error, "display_name_hint")) return withDisplayName;
-        return client
-          .from("messaging_vault_files")
-          .select("id,storage_path,size_bytes,content_type,suite,created_at,revoked_at")
-          .eq("owner_user_id", user.id)
-          .is("revoked_at", null)
-          .order("created_at", { ascending: false })
-          .limit(500);
-      };
+      // The Quantum Vault is strictly local (no cloud storage), so vault files and
+      // operations are no longer read from Supabase. These resolve empty to keep
+      // the dashboard data shape unchanged.
+      const emptyResult = () => Promise.resolve({ data: [] as Array<Record<string, unknown>>, error: null });
       const [profileResult, modulesResult] = await Promise.all([
         client.from("profiles").select("id,email,name,username,avatar_storage_path,avatar_updated_at,tier,q_score,vault_storage_used,max_vault_storage").eq("id", user.id).maybeSingle(),
         client.from("messaging_user_modules").select("module_id,label,icon,route,enabled,sort_order").eq("user_id", user.id).eq("enabled", true).order("sort_order"),
@@ -240,7 +219,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }),
         client.from("messaging_conversations").select("id,owner_user_id,conversation_type,encrypted_title,updated_at,created_at").order("updated_at", { ascending: false }).limit(100),
         client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at").order("created_at", { ascending: false }).limit(50),
-        fetchVaultFiles(),
+        emptyResult(),
         client.from("messaging_security_events").select("id,device_id,event_type,severity,encrypted_details,event_hash,previous_hash,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_org_members").select("org_id,user_id,role,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_contacts").select("id,contact_user_id,alias,trust_state,created_at,updated_at").eq("owner_user_id", user.id).neq("trust_state", "removed").order("updated_at", { ascending: false }),
@@ -250,7 +229,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         client.from("messaging_signed_prekeys").select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at").eq("is_active", true).order("expires_at", { ascending: true }),
         client.from("messaging_one_time_prekeys").select("id,device_id,consumed_at,created_at").eq("user_id", user.id).is("consumed_at", null),
         client.from("messaging_crypto_telemetry").select("id,user_id,device_id,event_scope,stage,detail,progress,status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50),
-        client.from("qguard_vault_operations").select("id,operation_type,status,current_operation,progress,display_name_hint,updated_at,started_at").eq("user_id", user.id).order("updated_at", { ascending: false }).limit(50),
+        emptyResult(),
         loadSecurityHardeningStatus(),
       ]);
 

@@ -6,3 +6,4 @@ pub mod messaging;
 pub mod security;
 pub mod telemetry;
 pub mod vault;
+pub mod workspace;

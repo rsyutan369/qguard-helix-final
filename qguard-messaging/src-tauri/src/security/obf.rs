@@ -37,6 +37,21 @@ pub fn key_material_aad() -> Vec<u8> { deobf(KEY_MATERIAL_AAD) }
 const VAULT_RECOVERY_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 192, 37, 218, 76, 7, 181, 114, 153, 239, 1, 3, 241, 219, 15, 115, 145, 19, 252, 131, 123, 11, 175, 68, 43, 214, 23, 87, 181, 251, 9, 123, 133, 225, 109, 223, 14];
 pub fn vault_recovery_material_aad() -> Vec<u8> { deobf(VAULT_RECOVERY_MATERIAL_AAD) }
 
+const VAULT_MASTER_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 192, 37, 218, 76, 7, 181, 114, 153, 239, 1, 3, 241, 219, 15, 115, 145, 12, 248, 147, 96, 24, 184, 27, 31, 154, 46, 83, 179, 247, 26, 126, 201, 251, 113];
+pub fn vault_master_material_aad() -> Vec<u8> { deobf(VAULT_MASTER_MATERIAL_AAD) }
+
+const WORKSPACE_VAULT_UNLOCK_INFO: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 218, 47, 219, 84, 21, 162, 122, 148, 237, 1, 3, 241, 219, 15, 115, 145, 20, 247, 140, 123, 30, 161, 27, 36, 202];
+pub fn workspace_vault_unlock_info() -> Vec<u8> { deobf(WORKSPACE_VAULT_UNLOCK_INFO) }
+
+const WORKSPACE_VAULT_WRAP_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 218, 47, 219, 84, 21, 162, 122, 148, 237, 1, 3, 241, 219, 15, 115, 145, 22, 235, 129, 100, 80, 188, 7];
+pub fn workspace_vault_wrap_aad() -> Vec<u8> { deobf(WORKSPACE_VAULT_WRAP_AAD) }
+
+const WORKSPACE_CHAT_VERIFIER_INFO: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 218, 47, 219, 84, 21, 162, 122, 148, 237, 1, 22, 248, 207, 23, 42, 234, 36, 235, 137, 114, 20, 175, 68, 127, 141, 107];
+pub fn workspace_chat_verifier_info() -> Vec<u8> { deobf(WORKSPACE_CHAT_VERIFIER_INFO) }
+
+const WORKSPACE_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 218, 47, 219, 84, 21, 162, 122, 148, 237, 1, 24, 241, 218, 6, 117, 213, 32, 245, 205, 98, 76];
+pub fn workspace_material_aad() -> Vec<u8> { deobf(WORKSPACE_MATERIAL_AAD) }
+
 const LOCAL_RATCHET_INFO: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 225, 47, 202, 94, 10, 255, 105, 150, 252, 79, 61, 245, 218];
 pub fn local_ratchet_info() -> Vec<u8> { deobf(LOCAL_RATCHET_INFO) }
 
@@ -88,6 +103,11 @@ mod tests {
         assert_eq!(ratchet_root_rotation(), b"QGuard-Messaging-Root-Rotation-v1".to_vec());
         assert_eq!(key_material_aad(), b"QGuard-Messaging-Device-Key-Material-v1".to_vec());
         assert_eq!(vault_recovery_material_aad(), b"QGuard-Messaging-Vault-Recovery-Material-v1".to_vec());
+        assert_eq!(vault_master_material_aad(), b"QGuard-Messaging-Vault-Master-Material-v1".to_vec());
+        assert_eq!(workspace_vault_unlock_info(), b"QGuard-Workspace-Vault-Unlock-v1".to_vec());
+        assert_eq!(workspace_vault_wrap_aad(), b"QGuard-Workspace-Vault-Wrap-v1".to_vec());
+        assert_eq!(workspace_chat_verifier_info(), b"QGuard-Workspace-Chat-Verifier-v1".to_vec());
+        assert_eq!(workspace_material_aad(), b"QGuard-Workspace-Material-v1".to_vec());
         assert_eq!(local_ratchet_info(), b"QGuard-local-ratchet".to_vec());
         assert_eq!(vault_stream_wrap_info(), b"QGuard-Vault-Stream-FileKey-Wrap-v1".to_vec());
         assert_eq!(vault_stream_chunk_aad_prefix(), b"QGuard-Vault-Stream-Chunk-v1:".to_vec());

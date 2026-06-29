@@ -2,286 +2,24 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use tauri::ipc::Channel;
 use tauri::State;
 
 use zeroize::Zeroize;
 
 use crate::crypto::hybrid_kex::LocalKemKeypair;
-use crate::crypto::signatures::LocalSigningKeypair;
 use crate::crypto::vault_recovery;
 use crate::crypto::AlgorithmSuite;
 use crate::error::{QGuardError, Result};
-use crate::file_crypto::{
-    decrypt_file_for_device, decrypt_file_name_for_device, decrypt_file_with_recovery,
-    encrypt_file_for_device, rewrap_package_with_recovery, verify_file_metadata,
-    EncryptedFilePackage, EncryptionContext,
-};
-use crate::state::{AppState, PersistedVaultRecovery};
+use crate::state::{AppState, PersistedVaultMaster, PersistedVaultRecovery};
 use crate::vault_stream::{self, FolderReader, FolderWriter, StreamSummary};
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultEncryptRequest {
-    pub file_name: String,
-    pub content_type: String,
-    pub plaintext_base64: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct VaultShareGrant {
-    pub file_id: String,
-    pub recipient_user_id: String,
-    pub recipient_device_id: String,
-    pub status: String,
-}
-
-#[tauri::command]
-pub fn vault_encrypt_upload(
-    state: State<'_, AppState>,
-    request: VaultEncryptRequest,
-) -> Result<EncryptedFilePackage> {
-    let identity_bundle = state.ensure_identity(&state.user_id()?, "Windows Desktop")?;
-    let owner_user_id = state.user_id()?;
-    // Uploaded-vault recovery currently supports personal mode only; enterprise/
-    // hybrid recovery is wired for the local .qvault path.
-    let recovery_wrap_key = state
-        .load_vault_recovery(&owner_user_id)?
-        .filter(|material| material.recovery_mode() == "personal")
-        .map(|material| material.wrap_key);
-    let plaintext = {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(request.plaintext_base64)
-            .map_err(|e| QGuardError::InvalidInput(format!("invalid base64: {e}")))?
-    };
-    let identity = state
-        .identity
-        .lock()
-        .map_err(|_| QGuardError::Storage("identity lock poisoned".to_string()))?;
-    let identity = identity
-        .as_ref()
-        .ok_or_else(|| QGuardError::NotFound("identity".to_string()))?;
-    let signer = LocalSigningKeypair {
-        ed25519_secret: identity.signing.ed25519_secret,
-        ed25519_public: identity.signing.ed25519_public.clone(),
-        mldsa_secret: identity.signing.mldsa_secret.clone(),
-        mldsa_public: identity.signing.mldsa_public.clone(),
-    };
-    let recipient = (
-        &identity.kem.x25519_public[..],
-        &identity.kem.mlkem_public[..],
-    );
-    let package = encrypt_file_for_device(
-        &request.file_name,
-        &request.content_type,
-        &plaintext,
-        EncryptionContext {
-            owner_user_id,
-            owner_device_id: identity_bundle.device_id.clone(),
-        },
-        &identity_bundle.device_id,
-        recipient,
-        &signer,
-        recovery_wrap_key.as_ref(),
-    )?;
-    state.touch_telemetry(
-        "vault",
-        "File encrypted locally; upload should store ciphertext only",
-        100,
-    );
-    state.audit_info(
-        "vault_encrypt_upload",
-        "Quantum vault package prepared for Supabase Storage",
-    );
-    Ok(package)
-}
-
-#[tauri::command]
-pub fn vault_download_decrypt(
-    state: State<'_, AppState>,
-    package: EncryptedFilePackage,
-) -> Result<String> {
-    state.require_auth()?;
-    let session_user_id = state.user_id()?;
-    state.ensure_identity(&session_user_id, "Windows Desktop")?;
-    state.check_decrypt_rate_limit("vault_file", &package.metadata.file_id, 8, 300)?;
-    let identity = state
-        .identity
-        .lock()
-        .map_err(|_| QGuardError::Storage("identity lock poisoned".to_string()))?;
-    let identity = identity
-        .as_ref()
-        .ok_or_else(|| QGuardError::NotFound("identity".to_string()))?;
-    let recipient = LocalKemKeypair {
-        x25519_secret: identity.kem.x25519_secret,
-        x25519_public: identity.kem.x25519_public.clone(),
-        mlkem_secret: identity.kem.mlkem_secret.clone(),
-        mlkem_public: identity.kem.mlkem_public.clone(),
-    };
-    let context = EncryptionContext {
-        owner_user_id: identity.user_id.clone(),
-        owner_device_id: identity.device_id.clone(),
-    };
-    let plaintext = match decrypt_file_for_device(
-        &package,
-        &identity.device_id,
-        &recipient,
-        context.clone(),
-    ) {
-        Ok(plaintext) => plaintext,
-        Err(current_error) => {
-            let legacy_kems = state
-                .legacy_kem_keypairs
-                .lock()
-                .map_err(|_| QGuardError::Storage("legacy KEM keypair lock poisoned".to_string()))?
-                .clone();
-            decrypt_with_legacy_kems(&package, &identity.device_id, &legacy_kems, context)
-                .map_err(|legacy_error| {
-                    QGuardError::Crypto(format!(
-                        "current ML-KEM-1024 unwrap failed: {current_error}; legacy unwrap fallback failed: {legacy_error}"
-                    ))
-                })?
-        }
-    };
-    state.touch_telemetry(
-        "vault_decrypt",
-        "Client-side vault decrypt completed with local key material",
-        100,
-    );
-    use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(plaintext))
-}
-
-#[tauri::command]
-pub fn vault_decrypt_file_name(
-    state: State<'_, AppState>,
-    package: EncryptedFilePackage,
-) -> Result<String> {
-    state.require_auth()?;
-    let session_user_id = state.user_id()?;
-    state.ensure_identity(&session_user_id, "Windows Desktop")?;
-    state.check_decrypt_rate_limit("vault_filename", &package.metadata.file_id, 24, 300)?;
-    let identity = state
-        .identity
-        .lock()
-        .map_err(|_| QGuardError::Storage("identity lock poisoned".to_string()))?;
-    let identity = identity
-        .as_ref()
-        .ok_or_else(|| QGuardError::NotFound("identity".to_string()))?;
-    let recipient = LocalKemKeypair {
-        x25519_secret: identity.kem.x25519_secret,
-        x25519_public: identity.kem.x25519_public.clone(),
-        mlkem_secret: identity.kem.mlkem_secret.clone(),
-        mlkem_public: identity.kem.mlkem_public.clone(),
-    };
-    let context = EncryptionContext {
-        owner_user_id: identity.user_id.clone(),
-        owner_device_id: identity.device_id.clone(),
-    };
-    match decrypt_file_name_for_device(&package, &identity.device_id, &recipient, context.clone()) {
-        Ok(file_name) => Ok(file_name),
-        Err(current_error) => {
-            let legacy_kems = state
-                .legacy_kem_keypairs
-                .lock()
-                .map_err(|_| QGuardError::Storage("legacy KEM keypair lock poisoned".to_string()))?
-                .clone();
-            decrypt_file_name_with_legacy_kems(&package, &identity.device_id, &legacy_kems, context)
-                .map_err(|legacy_error| {
-                    QGuardError::Crypto(format!(
-                        "current ML-KEM-1024 filename unwrap failed: {current_error}; legacy unwrap fallback failed: {legacy_error}"
-                    ))
-                })
-        }
-    }
-}
-
-#[tauri::command]
-pub fn vault_share_file(
-    state: State<'_, AppState>,
-    file_id: String,
-    recipient_user_id: String,
-    recipient_device_id: String,
-) -> Result<VaultShareGrant> {
-    state.require_auth()?;
-    state.audit_info("vault_share", "Encrypted file grant created");
-    Ok(VaultShareGrant {
-        file_id,
-        recipient_user_id,
-        recipient_device_id,
-        status: "granted_ciphertext_only".to_string(),
-    })
-}
-
-#[tauri::command]
-pub fn vault_revoke_file_access(
-    state: State<'_, AppState>,
-    file_id: String,
-    recipient_device_id: String,
-) -> Result<VaultShareGrant> {
-    state.require_auth()?;
-    state.audit_info("vault_revoke", "Encrypted file grant revoked");
-    Ok(VaultShareGrant {
-        file_id,
-        recipient_user_id: "revoked".to_string(),
-        recipient_device_id,
-        status: "revoked".to_string(),
-    })
-}
-
-#[tauri::command]
-pub fn vault_verify_metadata(
-    state: State<'_, AppState>,
-    package: EncryptedFilePackage,
-) -> Result<bool> {
-    state.require_auth()?;
-    verify_file_metadata(&package)?;
-    Ok(true)
-}
-
-fn decrypt_with_legacy_kems(
-    package: &EncryptedFilePackage,
-    current_device_id: &str,
-    legacy_kems: &[LocalKemKeypair],
-    context: EncryptionContext,
-) -> Result<Vec<u8>> {
-    let mut last_error: Option<QGuardError> = None;
-    for legacy_kem in legacy_kems {
-        match decrypt_file_for_device(package, current_device_id, legacy_kem, context.clone()) {
-            Ok(plaintext) => return Ok(plaintext),
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        QGuardError::NotFound("legacy ML-KEM-768 vault KEM material".to_string())
-    }))
-}
-
-fn decrypt_file_name_with_legacy_kems(
-    package: &EncryptedFilePackage,
-    current_device_id: &str,
-    legacy_kems: &[LocalKemKeypair],
-    context: EncryptionContext,
-) -> Result<String> {
-    let mut last_error: Option<QGuardError> = None;
-    for legacy_kem in legacy_kems {
-        match decrypt_file_name_for_device(package, current_device_id, legacy_kem, context.clone())
-        {
-            Ok(file_name) => return Ok(file_name),
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        QGuardError::NotFound("legacy ML-KEM-768 vault KEM material".to_string())
-    }))
-}
 
 // ---------------------------------------------------------------------------
 // Local-first streaming vault: encrypt/decrypt files and folders directly on
 // the user's disk (any size, fully offline) using the same hybrid PQC stack.
+// The Quantum Vault is strictly local — there is no cloud upload/download/share
+// path. All cryptography happens on-device; nothing leaves the machine.
 // ---------------------------------------------------------------------------
 
 /// Non-secret result returned to the UI after a local stream operation.
@@ -319,7 +57,8 @@ impl VaultLocalStreamSummary {
 struct LocalVaultContext {
     user_id: String,
     device_id: String,
-    signer: LocalSigningKeypair,
+    /// Vault Master Key + the ML-DSA-87 vault signing key (loaded-or-created).
+    vault_master: PersistedVaultMaster,
     kem_x25519_public: Vec<u8>,
     kem_mlkem_public: Vec<u8>,
     recipient_kems: Vec<LocalKemKeypair>,
@@ -341,8 +80,12 @@ fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
     state.require_auth()?;
     let user_id = state.user_id()?;
     let identity_bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
+    // The Vault Master Key + ML-DSA-87 signing key are only available while the
+    // Quantum Vault workspace is unlocked (password/PIN). Locked => this errors,
+    // gating every vault operation behind the workspace unlock.
+    let vault_master = state.unlocked_vault_master()?;
 
-    let (signer, kem_x25519_public, kem_mlkem_public, current_kem) = {
+    let (kem_x25519_public, kem_mlkem_public, current_kem) = {
         let guard = state
             .identity
             .lock()
@@ -350,12 +93,6 @@ fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
         let identity = guard
             .as_ref()
             .ok_or_else(|| QGuardError::NotFound("identity".to_string()))?;
-        let signer = LocalSigningKeypair {
-            ed25519_secret: identity.signing.ed25519_secret,
-            ed25519_public: identity.signing.ed25519_public.clone(),
-            mldsa_secret: identity.signing.mldsa_secret.clone(),
-            mldsa_public: identity.signing.mldsa_public.clone(),
-        };
         let current_kem = LocalKemKeypair {
             x25519_secret: identity.kem.x25519_secret,
             x25519_public: identity.kem.x25519_public.clone(),
@@ -363,7 +100,6 @@ fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
             mlkem_public: identity.kem.mlkem_public.clone(),
         };
         (
-            signer,
             identity.kem.x25519_public.clone(),
             identity.kem.mlkem_public.clone(),
             current_kem,
@@ -401,7 +137,7 @@ fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
     Ok(LocalVaultContext {
         user_id,
         device_id: identity_bundle.device_id,
-        signer,
+        vault_master,
         kem_x25519_public,
         kem_mlkem_public,
         recipient_kems,
@@ -429,6 +165,7 @@ pub fn vault_encrypt_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
+    on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
     let metadata = std::fs::metadata(&source_path)
@@ -453,7 +190,7 @@ pub fn vault_encrypt_path(
             File::create(&tmp)
                 .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
         );
-        match vault_stream::encrypt_stream(
+        match vault_stream::encrypt_stream_with_progress(
             &mut reader,
             &mut writer,
             vault_stream::KIND_FILE,
@@ -464,9 +201,11 @@ pub fn vault_encrypt_path(
             &ctx.device_id,
             &ctx.kem_x25519_public,
             &ctx.kem_mlkem_public,
-            &ctx.signer,
+            &ctx.vault_master.vmk,
+            &ctx.vault_master.signer,
             ctx.recovery_wrap_key.as_ref(),
             ctx.enterprise().as_ref(),
+            &mut |p| { let _ = on_progress.send(p); },
         ) {
             Ok(summary) => {
                 writer
@@ -501,6 +240,7 @@ pub fn vault_decrypt_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
+    on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
     state.check_decrypt_rate_limit("vault_local_file", &source_path, 60, 300)?;
@@ -516,7 +256,7 @@ pub fn vault_decrypt_path(
             File::create(&tmp)
                 .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
         );
-        match vault_stream::decrypt_stream(&mut reader, &mut writer, kem) {
+        match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
             Ok(summary) => {
                 writer
                     .flush()
@@ -552,6 +292,7 @@ pub fn vault_encrypt_folder_path(
     state: State<'_, AppState>,
     source_dir: String,
     dest_path: String,
+    on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
     let root = PathBuf::from(&source_dir);
@@ -578,7 +319,7 @@ pub fn vault_encrypt_folder_path(
             File::create(&tmp)
                 .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
         );
-        match vault_stream::encrypt_stream(
+        match vault_stream::encrypt_stream_with_progress(
             &mut reader,
             &mut writer,
             vault_stream::KIND_FOLDER,
@@ -589,9 +330,11 @@ pub fn vault_encrypt_folder_path(
             &ctx.device_id,
             &ctx.kem_x25519_public,
             &ctx.kem_mlkem_public,
-            &ctx.signer,
+            &ctx.vault_master.vmk,
+            &ctx.vault_master.signer,
             ctx.recovery_wrap_key.as_ref(),
             ctx.enterprise().as_ref(),
+            &mut |p| { let _ = on_progress.send(p); },
         ) {
             Ok(summary) => {
                 writer
@@ -626,6 +369,7 @@ pub fn vault_decrypt_folder_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_dir: String,
+    on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
     state.check_decrypt_rate_limit("vault_local_folder", &source_path, 30, 300)?;
@@ -639,7 +383,7 @@ pub fn vault_decrypt_folder_path(
             Err(e) => return Err(QGuardError::Storage(format!("open encrypted source: {e}"))),
         };
         let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
-        match vault_stream::decrypt_stream(&mut reader, &mut writer, kem) {
+        match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
             Ok(summary) => {
                 writer
                     .flush()
@@ -838,20 +582,18 @@ pub fn vault_enable_recovery_with_phrase(
     })
 }
 
-/// Re-protect an existing `.qvault` container by adding the recovery-key wrap to
-/// its header in place (chunks are copied unchanged). Use this on a working
-/// device to make files that predate recovery setup recoverable.
+/// Re-protect an existing `.qvault` container by rebuilding it as a v3 VMK
+/// envelope (ML-KEM-1024-protected VMK + ML-DSA-87 signature) in place, adding
+/// the recovery / enterprise wraps when configured. Chunks are copied unchanged.
+/// Use this on a working device to upgrade older v1/v2 files (and to make files
+/// that predate recovery setup recoverable).
 #[tauri::command]
 pub fn vault_rewrap_path(
     state: State<'_, AppState>,
     source_path: String,
+    on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
-    let recovery_wrap_key = ctx.recovery_wrap_key.ok_or_else(|| {
-        QGuardError::InvalidInput(
-            "Set up a recovery key first, then re-protect existing files.".to_string(),
-        )
-    })?;
 
     let tmp = part_path(&source_path);
     let summary = {
@@ -862,12 +604,17 @@ pub fn vault_rewrap_path(
         let mut writer = BufWriter::new(
             File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
         );
-        match vault_stream::rewrap_stream_with_recovery(
+        match vault_stream::rewrap_stream_to_v3_with_progress(
             &mut reader,
             &mut writer,
             &ctx.recipient_kems,
-            &ctx.signer,
-            &recovery_wrap_key,
+            &ctx.kem_x25519_public,
+            &ctx.kem_mlkem_public,
+            &ctx.vault_master.vmk,
+            &ctx.vault_master.signer,
+            ctx.recovery_wrap_key.as_ref(),
+            ctx.enterprise().as_ref(),
+            &mut |p| { let _ = on_progress.send(p); },
         ) {
             Ok(summary) => {
                 writer
@@ -887,11 +634,11 @@ pub fn vault_rewrap_path(
         .map_err(|e| QGuardError::Storage(format!("finalize re-protected file: {e}")))?;
     state.audit_info(
         "vault_recovery_rewrap",
-        "Existing vault container re-protected with the recovery key",
+        "Existing vault container upgraded to the v3 VMK envelope (ML-DSA-87)",
     );
     state.touch_telemetry(
         "vault",
-        "Existing vault file re-protected with quantum-safe recovery key",
+        "Existing vault file re-protected with the v3 VMK envelope (ML-KEM-1024 / ML-DSA-87)",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(
@@ -991,68 +738,6 @@ pub fn vault_decrypt_folder_path_with_recovery(
     }
 }
 
-/// Decrypt an uploaded vault package with the recovery key (new-device recovery).
-#[tauri::command]
-pub fn vault_download_decrypt_with_recovery(
-    state: State<'_, AppState>,
-    package: EncryptedFilePackage,
-    recovery_key: String,
-) -> Result<String> {
-    state.require_auth()?;
-    let owner_user_id = state.user_id()?;
-    state.check_decrypt_rate_limit("vault_recovery_upload", &package.metadata.file_id, 30, 300)?;
-    let mut root = vault_recovery::decode_recovery_key(&recovery_key)?;
-    let mut wrap_key = vault_recovery::derive_wrap_key(&root)?;
-    root.zeroize();
-    let plaintext = decrypt_file_with_recovery(&package, &owner_user_id, &wrap_key);
-    wrap_key.zeroize();
-    let plaintext = plaintext?;
-    state.audit_info(
-        "vault_recovery_decrypt_upload",
-        "Uploaded vault file recovered with the recovery key",
-    );
-    state.touch_telemetry(
-        "vault_decrypt",
-        "Uploaded vault file recovered on a new device using the recovery key",
-        100,
-    );
-    use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(plaintext))
-}
-
-/// Re-protect an existing uploaded package by adding the recovery wrap and
-/// re-signing it. Returns the updated package for the caller to re-store
-/// (chunks are unchanged; only the manifest needs rewriting).
-#[tauri::command]
-pub fn vault_rewrap_package(
-    state: State<'_, AppState>,
-    package: EncryptedFilePackage,
-) -> Result<EncryptedFilePackage> {
-    let ctx = local_vault_context(&state)?;
-    let recovery_wrap_key = ctx.recovery_wrap_key.ok_or_else(|| {
-        QGuardError::InvalidInput(
-            "Set up a recovery key first, then re-protect existing files.".to_string(),
-        )
-    })?;
-    let updated = rewrap_package_with_recovery(
-        &package,
-        &ctx.user_id,
-        &ctx.recipient_kems,
-        &recovery_wrap_key,
-        &ctx.signer,
-    )?;
-    state.audit_info(
-        "vault_recovery_rewrap_upload",
-        "Uploaded vault package re-protected with the recovery key",
-    );
-    state.touch_telemetry(
-        "vault",
-        "Uploaded vault file re-protected with quantum-safe recovery key",
-        100,
-    );
-    Ok(updated)
-}
-
 /// Recover a local `.qvault` file with the enterprise ML-KEM-1024 recovery key.
 /// For hybrid containers, the personal `recovery_key` is also required.
 #[tauri::command]
@@ -1146,4 +831,29 @@ pub fn vault_decrypt_folder_path_with_enterprise(
         }
         Err(error) => Err(error),
     }
+}
+
+/// Permanently delete a local `.qvault` container from disk. Restricted to the
+/// `.qvault` extension so the command can never remove arbitrary files.
+#[tauri::command]
+pub fn vault_delete_file(state: State<'_, AppState>, source_path: String) -> Result<()> {
+    state.require_auth()?;
+    let path = Path::new(&source_path);
+    let is_qvault = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("qvault"))
+        .unwrap_or(false);
+    if !is_qvault {
+        return Err(QGuardError::InvalidInput(
+            "only .qvault containers can be deleted from the vault".to_string(),
+        ));
+    }
+    if !path.is_file() {
+        return Err(QGuardError::NotFound("vault file not found".to_string()));
+    }
+    std::fs::remove_file(path).map_err(|e| QGuardError::Storage(format!("delete vault file: {e}")))?;
+    state.audit_info("vault_delete_file", "Local vault container permanently deleted");
+    state.touch_telemetry("vault", "Local vault container permanently deleted from disk", 100);
+    Ok(())
 }

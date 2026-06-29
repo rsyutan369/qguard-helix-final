@@ -1,23 +1,41 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import OnboardingTour from "@/components/onboarding/OnboardingTour";
+import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
+import { useWorkspaceLock, type WorkspaceScope } from "@/lib/use-workspace-lock";
+import { safeInvoke } from "@/lib/tauri";
 import { useTheme } from "@/lib/use-theme";
 import LoginPage from "@/pages/LoginPage";
 import type { Page } from "@/lib/types";
 
-const AuditLogsPage = lazy(() => import("@/pages/AuditLogsPage"));
-const DashboardPage = lazy(() => import("@/pages/DashboardPage"));
-const DeviceTrustCenterPage = lazy(() => import("@/pages/DeviceTrustCenterPage"));
-const KeyManagementPage = lazy(() => import("@/pages/KeyManagementPage"));
-const QuantumSecurityDashboardPage = lazy(() => import("@/pages/QuantumSecurityDashboardPage"));
-const QuantumVaultPage = lazy(() => import("@/pages/QuantumVaultPage"));
-const SecurityVerificationPage = lazy(() => import("@/pages/SecurityVerificationPage"));
-const SecureChatPage = lazy(() => import("@/pages/SecureChatPage"));
-const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
+// Importer thunks are reused for both lazy() and idle-time prefetch (so the
+// first switch to a module is instant). Prefetch only downloads/parses chunks;
+// protected modules still don't *mount* until unlocked.
+const pageImporters = {
+  audit: () => import("@/pages/AuditLogsPage"),
+  dashboard: () => import("@/pages/DashboardPage"),
+  devices: () => import("@/pages/DeviceTrustCenterPage"),
+  keys: () => import("@/pages/KeyManagementPage"),
+  quantum: () => import("@/pages/QuantumSecurityDashboardPage"),
+  vault: () => import("@/pages/QuantumVaultPage"),
+  verification: () => import("@/pages/SecurityVerificationPage"),
+  chat: () => import("@/pages/SecureChatPage"),
+  settings: () => import("@/pages/SettingsPage"),
+};
+
+const AuditLogsPage = lazy(pageImporters.audit);
+const DashboardPage = lazy(pageImporters.dashboard);
+const DeviceTrustCenterPage = lazy(pageImporters.devices);
+const KeyManagementPage = lazy(pageImporters.keys);
+const QuantumSecurityDashboardPage = lazy(pageImporters.quantum);
+const QuantumVaultPage = lazy(pageImporters.vault);
+const SecurityVerificationPage = lazy(pageImporters.verification);
+const SecureChatPage = lazy(pageImporters.chat);
+const SettingsPage = lazy(pageImporters.settings);
 
 const titles: Record<Page, [string, string]> = {
   dashboard: ["Dashboard", "Overview of secure communication and quantum security status."],
@@ -48,6 +66,9 @@ function ProtectedMessagingApp() {
   const { theme, toggleTheme } = useTheme();
   const { data, loading, error, refresh, liveEvents, liveStatus } = useDashboardData(auth.user, auth.session);
   const [page, setPage] = useState<Page>("dashboard");
+  const lockState = useWorkspaceLock(auth.user?.id ?? null);
+  const [vaultRecoveryEnabled, setVaultRecoveryEnabled] = useState(false);
+  const navigate = useCallback((next: Page) => setPage(next), []);
 
   useEffect(() => {
     if (data.modules.length === 0) return;
@@ -55,6 +76,37 @@ function ProtectedMessagingApp() {
       setPage(data.modules[0].route);
     }
   }, [data.modules, page]);
+
+  // Idle-time prefetch of route chunks so the first switch to each module is
+  // instant. Only downloads/parses chunks — protected modules still don't mount
+  // until unlocked.
+  useEffect(() => {
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const schedule = win.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 200));
+    const handle = schedule(() => {
+      Object.values(pageImporters).forEach((load) => {
+        void load();
+      });
+    });
+    return () => {
+      (win.cancelIdleCallback ?? window.clearTimeout)(handle as number);
+    };
+  }, []);
+
+  // Whether vault recovery is configured (for the lock-gate telemetry chip).
+  useEffect(() => {
+    if (page !== "vault") return;
+    let active = true;
+    void safeInvoke<{ enabled: boolean }>("vault_recovery_status", undefined, { enabled: false }).then((statusValue) => {
+      if (active) setVaultRecoveryEnabled(Boolean(statusValue.enabled));
+    });
+    return () => {
+      active = false;
+    };
+  }, [page, lockState.status?.vault.unlocked]);
 
   const tourSteps = useMemo(() => buildTourSteps(data.modules), [data.modules]);
   const tourChecklist = useMemo(
@@ -112,15 +164,40 @@ function ProtectedMessagingApp() {
       </div>
     );
   } else {
+    // Zero-Trust Workspace Lock: Secure Chat and Quantum Vault require their own
+    // password/PIN before the module mounts. While locked, render the gate; the
+    // heavy page component only mounts once the scope is unlocked.
+    const renderProtected = (scope: WorkspaceScope, pageElement: ReactNode): ReactNode => {
+      const scopeStatus = lockState.status?.[scope];
+      if (!scopeStatus) return <ModuleFallback />;
+      if (!scopeStatus.unlocked) {
+        return (
+          <WorkspaceLockGate
+            scope={scope}
+            status={scopeStatus}
+            recoveryEnabled={scope === "vault" ? vaultRecoveryEnabled : undefined}
+            inactivityMinutes={lockState.inactivityMinutes}
+            onUnlock={(method, secret) => lockState.unlock(scope, method, secret)}
+            onSetup={(method, secret) => lockState.setup(scope, method, secret)}
+            onCancel={() => setPage("dashboard")}
+          />
+        );
+      }
+      return pageElement;
+    };
+
     switch (page) {
       case "dashboard":
-        content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => setPage(next as Page)} />;
+        content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => navigate(next as Page)} />;
         break;
       case "chat":
-        content = <SecureChatPage userId={auth.user.id} conversations={data.conversations} devices={data.devices} contacts={data.contacts} onSent={refresh} />;
+        content = renderProtected(
+          "chat",
+          <SecureChatPage userId={auth.user.id} conversations={data.conversations} devices={data.devices} contacts={data.contacts} onSent={refresh} />,
+        );
         break;
       case "vault":
-        content = <QuantumVaultPage userId={auth.user.id} files={data.vaultFiles} telemetry={data.telemetry} onUploaded={refresh} />;
+        content = renderProtected("vault", <QuantumVaultPage userId={auth.user.id} telemetry={data.telemetry} />);
         break;
       case "keys":
         content = <KeyManagementPage userId={auth.user.id} devices={data.devices} keyInventory={data.keyInventory} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
@@ -138,17 +215,17 @@ function ProtectedMessagingApp() {
         content = <QuantumSecurityDashboardPage userId={auth.user.id} data={data} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
       case "settings":
-        content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
+        content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} />;
         break;
       default:
-        content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => setPage(next as Page)} />;
+        content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => navigate(next as Page)} />;
         break;
     }
   }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-canvas">
-      <Sidebar activePage={page} modules={data.modules} snapshot={data.snapshot} onNavigate={setPage} />
+      <Sidebar activePage={page} modules={data.modules} snapshot={data.snapshot} onNavigate={navigate} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar
           title={title}
@@ -170,7 +247,7 @@ function ProtectedMessagingApp() {
         steps={tourSteps}
         checklist={tourChecklist}
         userName={String(auth.user.user_metadata?.full_name ?? auth.user.email ?? "")}
-        onNavigate={setPage}
+        onNavigate={navigate}
       />
     </div>
   );

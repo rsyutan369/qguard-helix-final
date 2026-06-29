@@ -12,6 +12,7 @@ import {
   type DecryptionStatus,
 } from "@/lib/secure-decryption";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
+import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
@@ -3536,6 +3537,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               ref={fileInputRef}
               type="file"
               className="hidden"
+              onClick={() => guardNativeFileInput()}
               onChange={(event) => {
                 const selected = event.currentTarget.files?.[0] ?? null;
                 handleAttachmentSelected(selected).catch((error) => setStatus(describeMessageError(error)));
@@ -3994,6 +3996,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     {["calling", "connecting", "connected"].includes(call.state.phase) && (
       <InCallOverlay state={call.state} localStream={call.localStream} remoteStream={call.remoteStream}
         micEnabled={call.micEnabled} cameraEnabled={call.cameraEnabled} peerName={callPeer?.displayName ?? "Contact"}
+        quality={call.quality} onSetQuality={(q) => void call.setQuality(q)}
         onHangup={() => call.hangup()} onToggleMic={() => call.toggleMic()} onToggleCamera={() => call.toggleCamera()} />
     )}
     </>

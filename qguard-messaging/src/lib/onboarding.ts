@@ -179,7 +179,16 @@ export function buildChecklist(data: DashboardData, userId: string): ChecklistIt
   const encryptionActive =
     /active|enabled|protected|ready/i.test(data.snapshot.e2ee_status) ||
     data.snapshot.quantum_safe_score > 0;
-  const vaultReady = data.vaultFiles.length > 0;
+  // The Quantum Vault is local-only, so there are no cloud vault files to count.
+  // Treat the vault as set up once the user has configured a recovery key on this
+  // device (the vault page sets this flag on recovery setup/enable).
+  const vaultReady = (() => {
+    try {
+      return window.localStorage.getItem("qguard.vault.recovery.configured") === "true";
+    } catch {
+      return false;
+    }
+  })();
   const messagingStarted = data.conversations.length > 0 || data.contacts.length > 0;
 
   return [

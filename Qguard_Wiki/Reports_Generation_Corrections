@@ -1,0 +1,128 @@
+Major Mismatches Found
+
+1. AI Advisor recommendation is still wrong
+
+It says:
+
+“Modernize Identity cryptography”
+
+But the evidence says the primary exposure domain is TLS Risk, and the top findings are TLS cipher suites and missing forward secrecy.
+
+Correct recommendation should be:
+
+Modernize TLS / Internet-Facing Transport Cryptography
+
+Not Identity.
+
+2. Risk scoring formula does not match the final score
+
+The report says overall quantum risk is 58/100.
+
+But the weighted risk table shows values like:
+
+TLS Risk 97
+HNDL Risk 59
+Identity Risk 100
+Application Risk 98
+Cloud Risk 100
+PKI Risk 78
+Vendor Risk 98
+
+Using the displayed weights, the calculated score is closer to 82/100, not 58/100.
+
+This is a serious accuracy issue.
+
+3. Asset count mismatch
+
+The report says:
+
+Assets assessed: 1
+
+But consolidated findings show:
+
+Legacy RSA Cipher Suites — 16 occurrences, 2 assets
+Missing Forward Secrecy — 4 occurrences, 2 assets
+
+If only one asset was assessed, this should not show 2 assets.
+
+4. Customer-facing / internet-facing conflict
+
+Business Impact says:
+
+Customer-Facing Systems: 0
+No internet-facing customer systems identified
+
+But the report also says:
+
+Prioritize hybrid PQC deployment on all internet-facing assets
+
+And the asset is:
+
+qguardhelix.com
+
+That is likely internet-facing. This needs fixing.
+
+5. Cost calculations have rounding/formula errors
+
+Example:
+
+217 hrs × $165/hr = $35,805
+
+But the report shows:
+
+$35,864
+
+Several cost rows have this issue. The total equals 988 × $165 = $163,020, but the line-item formulas do not match.
+
+6. Top risks are still redundant
+
+Top Risks still repeats:
+
+No Forward Secrecy detected twice
+TLS_RSA_WITH_AES_256_CBC_SHA detected twice
+
+You already added root-cause consolidation, which is good, but the executive summary still uses duplicate raw findings.
+
+7. Findings section still repeats raw findings
+
+The report has a good Consolidated Findings section, but then still shows duplicated raw findings afterward.
+
+Better structure:
+
+Executive Report: show only consolidated findings
+Technical Appendix: show raw evidence only if needed
+
+What Is Strong Now
+
+The report improved a lot. These are good enterprise features:
+
+Executive Decision Center
+Migration Confidence
+Risk Scoring Methodology
+Consolidated Findings
+Asset Criticality Analysis
+Remediation Playbook
+Cost Forecast Intelligence
+What-If Migration Simulation
+Program Governance
+Evidence Confidence Dashboard
+Report Explainability
+
+These are exactly the right sections. 👍
+
+Final Verdict
+
+Enterprise-grade layout: Yes ✅
+Enterprise-grade logic: Almost ⚠️
+Mathematically accurate: Not yet ❌
+Board-ready: Close, but fix the mismatches first ⚠️
+
+Highest-priority fixes
+Fix risk formula so weighted score = displayed score.
+Change AI Advisor from Identity to TLS Modernization when TLS findings dominate.
+Fix asset count from 2 assets to 1 asset.
+Fix customer-facing / internet-facing classification.
+Fix cost line-item math.
+Remove duplicate findings from executive sections.
+
+After those fixes, this can become a very strong 9/10 enterprise-grade quantum readiness report.

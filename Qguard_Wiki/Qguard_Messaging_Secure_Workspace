@@ -1,0 +1,357 @@
+# QGuard Messaging™ Secure Workspace Protection
+
+## Objective
+
+Implement an additional security layer that requires user authentication before access is granted to:
+
+* Secure Chat
+* Quantum Vault
+
+Even after the user has already signed in to the QGuard Messaging application.
+
+This creates a Zero-Trust Workspace Access model where application login and data access are separate security controls.
+
+---
+
+# Security Model
+
+## Layer 1
+
+Application Authentication
+
+User signs in using:
+
+* Username
+* Password
+* MFA (optional)
+
+This grants access to the application shell only.
+
+The user can:
+
+* View dashboard
+* View settings
+* View telemetry
+* View account information
+
+But cannot access:
+
+* Secure Chat
+* Quantum Vault
+
+Until additional authentication succeeds.
+
+---
+
+## Layer 2
+
+Workspace Unlock
+
+Protected modules:
+
+* Secure Chat
+* Quantum Vault
+
+Require additional authentication.
+
+---
+
+# Secure Chat Protection
+
+When the user clicks:
+
+Secure Chat
+
+Display:
+
+"Secure Chat Locked"
+
+This workspace contains end-to-end encrypted conversations and protected files.
+
+Authenticate to continue.
+
+Available methods:
+
+* Workspace Password
+* PIN
+
+Buttons:
+
+Unlock Chat
+Cancel
+
+---
+
+# Quantum Vault Protection
+
+When the user clicks:
+
+Quantum Vault
+
+Display:
+
+"Quantum Vault Locked"
+
+This workspace contains locally encrypted files and quantum-safe recovery material.
+
+Authenticate to continue.
+
+Available methods:
+
+* Vault Password
+* PIN
+
+
+Buttons:
+
+Unlock Vault
+Cancel
+
+---
+
+# Separate Credentials
+
+Secure Chat and Quantum Vault must have independent credentials.
+
+Examples:
+
+Application Password
+≠
+Chat Password
+≠
+Vault Password
+
+This prevents compromise of one credential from exposing all data.
+
+---
+
+# Recommended Authentication Priority
+
+---
+
+## Option 1
+
+Vault / Chat Password
+
+User-defined secret.
+
+Requirements:
+
+* Minimum 12 characters
+* Strong password enforcement
+* Offline verification
+
+---
+
+## Option 2
+
+Secure PIN
+
+Requirements:
+
+* 6–12 digits
+* Rate limited
+* Anti-bruteforce protection
+
+---
+
+# Auto Lock
+
+Secure Chat and Quantum Vault must automatically lock when:
+
+* Application minimized
+* Application closed
+* Device sleeps
+* Device locks
+* User logs out
+
+---
+
+# Inactivity Lock
+
+Default:
+
+15 minutes
+
+Configurable:
+
+* 5 minutes
+* 15 minutes
+* 30 minutes
+* 60 minutes
+* Never (not recommended)
+
+After timeout:
+
+Workspace re-locks.
+
+Authentication required again.
+
+---
+
+# Memory Protection
+
+Upon lock:
+
+* Decrypted messages removed from memory.
+* Decrypted vault keys removed from memory.
+* Sensitive buffers zeroized.
+* Session secrets cleared.
+
+Requirements:
+
+* Memory zeroization
+* Secure buffer destruction
+* Key cache invalidation
+
+---
+
+# Anti-Bruteforce Controls
+
+After:
+
+5 failed attempts
+
+Apply:
+
+* 30-second lockout
+
+After:
+
+10 failed attempts
+
+Apply:
+
+* 5-minute lockout
+
+After:
+
+20 failed attempts
+
+Apply:
+
+* Vault lockdown
+
+User must re-authenticate through account login.
+
+---
+
+# Quantum Vault Key Protection
+
+The unlock password must never directly encrypt files.
+
+Correct Architecture:
+
+User Password
+↓
+HKDF-SHA3-256
+↓
+Unlock Key
+↓
+Decrypt Vault Master Key (VMK)
+↓
+VMK Unlocks File Encryption Keys (FEK)
+↓
+AES-256-GCM Decrypts Files
+
+Files remain encrypted with:
+
+* AES-256-GCM
+
+Vault Master Keys protected by:
+
+* ML-KEM-1024
+* HKDF-SHA3-256
+* Recovery Key Protection
+
+Never use passwords directly as file encryption keys.
+
+---
+
+# Security Telemetry
+
+Display status:
+
+Secure Chat
+
+✓ Locked
+✓ Unlocked
+✓ Windows Hello Protected
+✓ Auto-Lock Enabled
+
+Quantum Vault
+
+✓ Locked
+✓ Unlocked
+✓ Recovery Protected
+✓ ML-KEM-1024 Protected
+✓ AES-256-GCM Active
+
+---
+
+# Tauri Implementation Requirements
+
+Never store:
+
+* Plaintext passwords
+* Plaintext vault keys
+
+All verification must occur locally.
+
+No authentication secrets may be sent to QGuard servers.
+
+---
+
+# User Experience Flow
+
+Application Login
+↓
+Dashboard
+↓
+User Clicks Secure Chat
+↓
+Secure Chat Unlock Screen
+↓
+Authenticate
+↓
+Access Granted
+
+Application Login
+↓
+Dashboard
+↓
+User Clicks Quantum Vault
+↓
+Quantum Vault Unlock Screen
+↓
+Authenticate
+↓
+Access Granted
+
+If authentication fails:
+
+Access Denied
+
+Protected content remains encrypted and hidden.
+
+---
+
+# Compliance Goal
+
+The Secure Chat and Quantum Vault modules should follow the security principles commonly found in:
+
+* Signal
+* Proton Pass
+* Bitwarden
+* 1Password
+* Keeper
+* Enterprise Zero-Knowledge Vaults
+
+while maintaining QGuard's quantum-safe architecture based on:
+
+* ML-KEM-1024
+* ML-DSA-87
+* AES-256-GCM
+* HKDF-SHA3-256
+* SHA3-256
+* TLS 1.3 Hybrid Transport

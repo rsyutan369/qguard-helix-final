@@ -43,6 +43,10 @@ pub fn auth_register_user(
         &user_id,
         request.device_label.as_deref().unwrap_or("Windows Desktop"),
     )?;
+    // Re-authenticating at the app level clears any workspace lockdown, and the
+    // protected workspaces start locked until the user unlocks them.
+    state.reset_workspace_lockouts(&user_id);
+    state.lock_all_workspaces();
     state.audit_info(
         "auth_register",
         "User registered locally; server receives public bundle only",
@@ -62,6 +66,8 @@ pub fn auth_login(state: State<'_, AppState>, request: AuthRequest) -> Result<Au
 
 #[tauri::command]
 pub fn auth_logout(state: State<'_, AppState>, user_id: Option<String>) -> Result<bool> {
+    // Zeroize unlocked workspace secrets (VMK + decrypted chat) before clearing auth.
+    state.lock_all_workspaces();
     state.clear_auth_session_for(user_id.as_deref())?;
     state.audit_info("auth_logout", "Session cleared from desktop state");
     state.touch_telemetry(

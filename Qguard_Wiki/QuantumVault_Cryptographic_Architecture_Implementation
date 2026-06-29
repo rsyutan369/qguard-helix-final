@@ -1,0 +1,266 @@
+# Quantum Vault Cryptographic Architecture (Mandatory)
+
+## Important Cryptographic Requirement
+
+Do not use ML-KEM-1024 to directly encrypt files, folders, or user data.
+
+ML-KEM-1024 is a Post-Quantum Key Encapsulation Mechanism (KEM), not a bulk data encryption algorithm.
+
+The Quantum Vault must follow a hybrid enterprise-grade envelope encryption architecture identical to the design principles used in modern:
+
+* Enterprise Vault Systems
+* Hardware Security Modules (HSMs)
+* Key Management Systems (KMS)
+* Zero-Knowledge Storage Platforms
+* Post-Quantum Cryptography Migration Architectures
+
+---
+
+# Mandatory Encryption Model
+
+## File Encryption Layer
+
+All files, folders, and user data must be encrypted using:
+
+* AES-256-GCM
+
+AES-256-GCM is the only algorithm permitted for bulk data encryption.
+
+Requirements:
+
+* Unique cryptographically secure nonce per encryption operation
+* Authenticated encryption
+* Integrity protection
+* Tamper detection
+* Streaming support for large files
+
+ML-KEM must never be used as a file encryption algorithm.
+
+---
+
+# Enterprise Envelope Encryption Architecture
+
+For every encrypted file:
+
+## Step 1
+
+Generate a random File Encryption Key (FEK).
+
+Example:
+
+FEK = 256-bit random key
+
+Generated locally using:
+
+* Operating System CSPRNG
+* QGuard QRNG Entropy Service (optional enhancement)
+
+---
+
+## Step 2
+
+Encrypt the file using:
+
+* AES-256-GCM
+
+File
+↓
+AES-256-GCM
+↓
+Encrypted File
+
+---
+
+## Step 3
+
+Generate or retrieve the Vault Master Key (VMK).
+
+The VMK protects all File Encryption Keys within the user's vault.
+
+---
+
+## Step 4
+
+Wrap the File Encryption Key using the Vault Master Key.
+
+FEK
+↓
+Wrapped By VMK
+↓
+Protected FEK
+
+---
+
+## Step 5
+
+Protect the Vault Master Key using ML-KEM-1024.
+
+VMK
+↓
+ML-KEM-1024 Encapsulation
+↓
+Quantum-Safe Protected VMK
+
+This is the correct role of ML-KEM.
+
+ML-KEM protects keys.
+
+ML-KEM does not encrypt files.
+
+---
+
+# Recovery Key Protection
+
+The Recovery Key must never directly encrypt user files.
+
+Instead:
+
+Recovery Key
+↓
+Protects Backup Copy Of VMK
+↓
+Allows Vault Recovery
+
+This ensures:
+
+* Device migration support
+* Lost device recovery
+* Secure vault restoration
+* Zero-knowledge architecture
+
+---
+
+# Recommended Cryptographic Flow
+
+User File
+↓
+AES-256-GCM Encryption
+↓
+File Encryption Key (FEK)
+↓
+Protected By Vault Master Key (VMK)
+↓
+VMK Protected By ML-KEM-1024
+↓
+Recovery Key Protects Backup VMK
+↓
+Encrypted Vault Stored Locally
+
+---
+
+# Approved Quantum Vault High-Security Profile
+
+## Key Encapsulation
+
+Primary:
+
+* ML-KEM-1024
+
+Optional Hybrid:
+
+* X25519 + ML-KEM-1024
+
+Purpose:
+
+* Key protection
+* Key transport
+* Key wrapping
+* Quantum-safe encapsulation
+
+Not permitted for:
+
+* File encryption
+* Folder encryption
+* Bulk data encryption
+
+---
+
+## Digital Signatures
+
+Primary:
+
+* ML-DSA-87
+
+Additional Support:
+
+* SLH-DSA
+
+Optional Hybrid:
+
+* Ed25519 + ML-DSA-87
+
+Purpose:
+
+* Integrity verification
+* Vault signing
+* Manifest signing
+* Recovery package signing
+
+---
+
+## Symmetric Encryption
+
+Mandatory:
+
+* AES-256-GCM
+
+Purpose:
+
+* File encryption
+* Folder encryption
+* Vault encryption
+* Secure local storage
+
+---
+
+## Key Derivation
+
+Primary:
+
+* HKDF-SHA3-256
+
+Compatibility Fallback:
+
+* HKDF-SHA-256
+
+---
+
+## Hashing
+
+Primary:
+
+* SHA3-256
+* SHA3-512
+
+Purpose:
+
+* Integrity verification
+* Metadata validation
+* Recovery validation
+* Cryptographic fingerprints
+
+---
+
+# Security Validation Requirements
+
+Verify that:
+
+✓ No file is encrypted directly with ML-KEM
+
+✓ All user data uses AES-256-GCM
+
+✓ ML-KEM-1024 only protects cryptographic keys
+
+✓ Recovery Keys only protect Vault Master Keys
+
+✓ Recovery Keys never encrypt files directly
+
+✓ All encryption operations occur locally
+
+✓ No plaintext leaves the device
+
+✓ No encryption keys are uploaded to servers
+
+✓ Quantum Vault remains fully functional while offline
+
+Any implementation that uses ML-KEM directly to encrypt files should be considered non-compliant and must be refactored.

@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
 import type { CallState } from "@/lib/call-state";
+import { qualityLabel, type CallQuality } from "@/lib/call-quality";
+
+const QUALITY_OPTIONS: CallQuality[] = ["low", "auto", "hd"];
 
 export function InCallOverlay(props: {
   state: CallState; localStream: MediaStream | null; remoteStream: MediaStream | null;
   micEnabled: boolean; cameraEnabled: boolean; peerName: string;
+  quality: CallQuality; onSetQuality: (quality: CallQuality) => void;
   onHangup: () => void; onToggleMic: () => void; onToggleCamera: () => void;
 }) {
   const localRef = useRef<HTMLVideoElement>(null);
@@ -24,9 +28,26 @@ export function InCallOverlay(props: {
           <div className="text-sm font-bold">{props.peerName}</div>
           <div className="text-xs text-white/70">{phaseLabel}</div>
         </div>
-        <button type="button" onClick={() => setShowSas((v) => !v)} className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-emerald-300">
-          <ShieldCheck size={14} /> Quantum-encrypted
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-full bg-white/10 p-0.5" role="radiogroup" aria-label="Call quality">
+            {QUALITY_OPTIONS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={props.quality === option}
+                onClick={() => props.onSetQuality(option)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition ${props.quality === option ? "bg-white text-ink-950" : "text-white/70 hover:text-white"}`}
+                title={option === "auto" ? "Auto — adapts to your device" : option === "low" ? "Low — saves CPU/bandwidth" : "HD — needs a strong device"}
+              >
+                {qualityLabel(option)}
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={() => setShowSas((v) => !v)} className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-emerald-300">
+            <ShieldCheck size={14} /> Quantum-encrypted
+          </button>
+        </div>
       </div>
       <div className="relative flex-1">
         <video ref={remoteRef} autoPlay playsInline className="h-full w-full bg-black object-cover" />

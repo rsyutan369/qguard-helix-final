@@ -1,15 +1,21 @@
 //! Streaming, on-disk quantum-safe vault container.
 //!
-//! Unlike `file_crypto::encrypt_file_for_device` (which buffers the whole file +
-//! package in memory), this module streams plaintext through the SAME hybrid
-//! post-quantum stack one chunk at a time, so it works for arbitrarily large
-//! files and folders with constant memory and no IPC/base64 round-trips:
+//! This module streams plaintext through the hybrid post-quantum stack one chunk
+//! at a time, so it works for arbitrarily large files and folders with constant
+//! memory and no IPC/base64 round-trips. It is the only vault crypto path: the
+//! Quantum Vault is strictly local, so there is no cloud upload/package format.
 //!
-//! * Key wrap:  X25519 + ML-KEM-1024 (`hybrid_kex::encapsulate`)
-//! * KDF:       HKDF-SHA3-256 (inside the hybrid KEX)
 //! * Content:   AES-256-GCM per 1 MiB chunk, AAD-bound to file id + chunk index
-//! * Header:    dual-signed Ed25519 + ML-DSA-65 (authenticates the wrapped key,
-//!              metadata, and total chunk count -> truncation/extension proof)
+//! * Envelope (v3): File -> AES-256-GCM FEK -> FEK wrapped by the Vault Master
+//!              Key (VMK) -> VMK protected by X25519 + ML-KEM-1024 (and, when
+//!              configured, by the recovery key / enterprise ML-KEM recipient).
+//!              ML-KEM only ever protects keys, never file content.
+//! * KDF:       HKDF-SHA3-256 (inside the hybrid KEX)
+//! * Header:    v3 dual-signed Ed25519 + ML-DSA-87 (FIPS 204 Level 5); v1/v2
+//!              dual-signed Ed25519 + ML-DSA-65. The signature authenticates the
+//!              wrapped key(s), metadata, and total chunk count -> truncation /
+//!              extension proof. v1/v2 (FEK wrapped directly to the device) are
+//!              still accepted on decrypt; new files are always written as v3.
 //!
 //! On-disk layout:
 //! ```text
@@ -25,16 +31,19 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 use crate::crypto::hybrid_kex::{decapsulate, encapsulate, LocalKemKeypair};
-use crate::crypto::signatures::{dual_sign, dual_verify, LocalSigningKeypair};
+use crate::crypto::signatures::{dual_verify, dual_sign_87, dual_verify_87, VaultSigningKeypair};
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::vault_recovery;
-use crate::crypto::{AlgorithmSuite, DualSignature, EncryptedEnvelope, HybridCiphertext};
+use crate::crypto::{vault_suite, AlgorithmSuite, DualSignature, DualSignature87, EncryptedEnvelope, HybridCiphertext};
 use crate::error::{QGuardError, Result};
 
 const MAGIC: &[u8; 8] = b"QGUARDVS";
 /// v1: device wrap only. v2: adds an optional quantum-safe recovery-key wrap so
-/// files survive total device loss. Both versions are accepted on decrypt.
-pub const STREAM_VERSION: u8 = 2;
+/// files survive total device loss. v3: introduces the Vault Master Key (VMK)
+/// envelope (FEK wrapped by VMK; VMK protected by ML-KEM-1024 / recovery /
+/// enterprise) and signs with ML-DSA-87. All versions are accepted on decrypt;
+/// new files are always written as v3.
+pub const STREAM_VERSION: u8 = 3;
 pub const CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB plaintext per chunk
 const MAX_HEADER_LEN: usize = 1024 * 1024; // signed header is a few KB; cap defensively
 const MAX_FRAME_CIPHERTEXT: usize = CHUNK_SIZE + 64;
@@ -64,18 +73,37 @@ pub struct StreamHeader {
     pub owner_user_id: String,
     pub owner_device_id: String,
     pub hybrid_ciphertext: HybridCiphertext,
+    /// v1/v2: the per-file FEK wrapped to the device hybrid-KEM. v3: the Vault
+    /// Master Key (VMK) wrapped to the device hybrid-KEM. `recovery_wrapped_key`
+    /// and `recovery_kem_wrap` follow the same version-dependent meaning.
     pub wrapped_key: EncryptedEnvelope,
-    /// Optional quantum-safe recovery wrap of the same file key (v2+). Lets the
-    /// owner decrypt on a brand-new device using only their recovery key.
+    /// v1/v2: optional recovery-key wrap of the FEK. v3: optional recovery-key
+    /// wrap of the VMK. Lets the owner decrypt on a brand-new device using only
+    /// their recovery key.
     #[serde(default)]
     pub recovery_wrapped_key: Option<EncryptedEnvelope>,
-    /// Optional enterprise/hybrid ML-KEM-1024 recovery recipient (v2+).
+    /// Optional enterprise/hybrid ML-KEM-1024 recovery recipient (v2+). Wraps the
+    /// FEK in v1/v2 and the VMK in v3.
     #[serde(default)]
     pub recovery_kem_wrap: Option<vault_recovery::RecoveryKemWrap>,
+    /// v3 only: the per-file FEK wrapped under the Vault Master Key (AES-256-GCM).
+    /// `wrapped_key` / recovery wraps above unwrap the VMK, which then unwraps
+    /// this to recover the FEK. Absent on v1/v2 containers.
+    #[serde(default)]
+    pub fek_wrapped_by_vmk: Option<EncryptedEnvelope>,
     pub suite: AlgorithmSuite,
     pub signer_ed25519_public: Vec<u8>,
+    /// v1/v2 ML-DSA-65 signer public (empty on v3 containers).
+    #[serde(default)]
     pub signer_mldsa_public: Vec<u8>,
+    /// v3 ML-DSA-87 vault signer public (empty on v1/v2 containers).
+    #[serde(default)]
+    pub signer_mldsa87_public: Vec<u8>,
+    /// v1/v2 Ed25519 + ML-DSA-65 header signature (empty vecs on v3 containers).
     pub header_signature: DualSignature,
+    /// v3 Ed25519 + ML-DSA-87 header signature (absent on v1/v2 containers).
+    #[serde(default)]
+    pub header_signature_v3: Option<DualSignature87>,
 }
 
 /// Public, non-secret summary returned to callers after a stream operation.
@@ -104,12 +132,37 @@ impl StreamSummary {
     }
 }
 
+/// Real, non-secret progress update streamed to the UI during a vault stream
+/// operation. Every field is measured from the actual chunk loop — never faked.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultProgress {
+    pub op: String,            // "encrypt" | "decrypt" | "rewrap"
+    pub phase: String,         // init|fek|vmk_wrap|recovery_wrap|sign|header|chunk|verify|decapsulate|unwrap_fek|finalize|done
+    pub message: String,
+    pub processed_bytes: u64,
+    pub total_bytes: u64,
+    pub chunk_index: u64,
+    pub total_chunks: u64,
+    pub level: String,         // "info" | "success"
+}
+
+/// Emit at most ~200 chunk events regardless of size: smooth bar, bounded IPC.
+fn chunk_emit_every(total_chunks: u64) -> u64 {
+    (total_chunks / 200).max(1)
+}
+
 fn io_err(error: io::Error) -> QGuardError {
     QGuardError::Storage(format!("vault stream I/O failed: {error}"))
 }
 
 fn wrap_aad_bytes(file_id: &str, owner_user_id: &str, owner_device_id: &str) -> Vec<u8> {
     format!("QGuard-Vault-Stream-Wrap-v1:{file_id}:{owner_user_id}:{owner_device_id}").into_bytes()
+}
+
+/// AAD binding the v3 FEK-under-VMK wrap to its container (file id + owner).
+fn fek_vmk_wrap_aad(file_id: &str, owner_user_id: &str) -> Vec<u8> {
+    format!("QGuard-Vault-FEK-Under-VMK-v1:{file_id}:{owner_user_id}").into_bytes()
 }
 
 fn chunk_aad(file_id: &str, index: u64, total_chunks: u64, is_last: bool) -> Vec<u8> {
@@ -181,6 +234,21 @@ fn header_signable(header: &StreamHeader) -> Vec<u8> {
             }
             None => data.push(0),
         }
+    }
+    // v3 additionally authenticates the FEK-under-VMK wrap and the ML-DSA-87
+    // signer public key. v1/v2 bytes are untouched so older containers still
+    // verify against their original signature.
+    if header.version >= 3 {
+        match &header.fek_wrapped_by_vmk {
+            Some(env) => {
+                data.push(3);
+                data.extend_from_slice(&env.nonce);
+                data.extend_from_slice(&env.ciphertext);
+                data.extend_from_slice(&env.tag);
+            }
+            None => data.push(0),
+        }
+        data.extend_from_slice(&header.signer_mldsa87_public);
     }
     data
 }
@@ -261,24 +329,95 @@ pub fn encrypt_stream<R: Read, W: Write>(
     owner_device_id: &str,
     recipient_x25519_public: &[u8],
     recipient_mlkem_public: &[u8],
-    signer: &LocalSigningKeypair,
+    vmk: &[u8; KEY_SIZE],
+    vault_signer: &VaultSigningKeypair,
     recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
     enterprise: Option<&EnterpriseRecipient>,
+) -> Result<StreamSummary> {
+    encrypt_stream_with_progress(
+        reader,
+        writer,
+        kind,
+        name,
+        content_type,
+        original_size,
+        owner_user_id,
+        owner_device_id,
+        recipient_x25519_public,
+        recipient_mlkem_public,
+        vmk,
+        vault_signer,
+        recovery_wrap_key,
+        enterprise,
+        &mut |_| {},
+    )
+}
+
+/// Same as [`encrypt_stream`] but reports real per-phase / per-chunk progress
+/// through `progress`. The sink is best-effort telemetry only — it never affects
+/// the produced container.
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_stream_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    kind: &str,
+    name: &str,
+    content_type: &str,
+    original_size: u64,
+    owner_user_id: &str,
+    owner_device_id: &str,
+    recipient_x25519_public: &[u8],
+    recipient_mlkem_public: &[u8],
+    vmk: &[u8; KEY_SIZE],
+    vault_signer: &VaultSigningKeypair,
+    recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
+    enterprise: Option<&EnterpriseRecipient>,
+    progress: &mut dyn FnMut(VaultProgress),
 ) -> Result<StreamSummary> {
     let file_id = Uuid::new_v4().to_string();
     let total_chunks = total_chunks_for(original_size);
 
+    let emit = |progress: &mut dyn FnMut(VaultProgress),
+                phase: &str,
+                message: &str,
+                processed: u64,
+                idx: u64,
+                level: &str| {
+        progress(VaultProgress {
+            op: "encrypt".into(),
+            phase: phase.into(),
+            message: message.into(),
+            processed_bytes: processed,
+            total_bytes: original_size,
+            chunk_index: idx,
+            total_chunks,
+            level: level.into(),
+        });
+    };
+    emit(progress, "init", "Initializing quantum-safe vault container", 0, 0, "info");
+
+    // The per-file FEK encrypts the bulk data; the VMK protects the FEK.
     let mut file_key = symmetric::random_key();
+    let fek_wrapped_by_vmk = Some(symmetric::encrypt(
+        vmk,
+        &file_key,
+        &fek_vmk_wrap_aad(&file_id, owner_user_id),
+    )?);
+    emit(progress, "fek", "Per-file key generated · AES-256-GCM (256-bit) · wrapped under VMK", 0, 0, "info");
+
+    // The device / recovery / enterprise wraps all seal the VMK (never the FEK,
+    // and never the file content). ML-KEM only ever protects keys.
     let (hybrid_ciphertext, mut wrapping_secret) =
         encapsulate(recipient_x25519_public, recipient_mlkem_public, &crate::security::obf::vault_stream_wrap_info())?;
     let wrap_aad = wrap_aad_bytes(&file_id, owner_user_id, owner_device_id);
-    let wrapped_key = symmetric::encrypt(&wrapping_secret, &file_key, &wrap_aad)?;
+    let wrapped_key = symmetric::encrypt(&wrapping_secret, vmk, &wrap_aad)?;
     wrapping_secret.zeroize();
+    emit(progress, "vmk_wrap", "Vault Master Key sealed to device · X25519 + ML-KEM-1024", 0, 0, "info");
 
-    // Optionally seal the same file key under the quantum-safe recovery key so it
-    // can be recovered on a new device without access to this one.
+    // Optionally seal a backup copy of the VMK under the quantum-safe recovery
+    // key so the vault can be recovered on a new device without this one.
     let recovery_wrapped_key = match recovery_wrap_key {
-        Some(key) => Some(vault_recovery::wrap_file_key(key, &file_key, &file_id, owner_user_id)?),
+        Some(key) => Some(vault_recovery::wrap_file_key(key, vmk, &file_id, owner_user_id)?),
         None => None,
     };
     let recovery_kem_wrap = match enterprise {
@@ -286,12 +425,15 @@ pub fn encrypt_stream<R: Read, W: Write>(
             ent.x25519_public,
             ent.mlkem_public,
             ent.recovery_secret,
-            &file_key,
+            vmk,
             &file_id,
             owner_user_id,
         )?),
         None => None,
     };
+    if recovery_wrapped_key.is_some() || recovery_kem_wrap.is_some() {
+        emit(progress, "recovery_wrap", "VMK sealed to recovery recipient · ML-KEM-1024 / HKDF-SHA3-256", 0, 0, "info");
+    }
 
     let mut header = StreamHeader {
         version: STREAM_VERSION,
@@ -308,16 +450,24 @@ pub fn encrypt_stream<R: Read, W: Write>(
         wrapped_key,
         recovery_wrapped_key,
         recovery_kem_wrap,
-        suite: AlgorithmSuite::default(),
-        signer_ed25519_public: signer.ed25519_public.clone(),
-        signer_mldsa_public: signer.mldsa_public.clone(),
+        fek_wrapped_by_vmk,
+        suite: vault_suite(),
+        signer_ed25519_public: vault_signer.ed25519_public.clone(),
+        signer_mldsa_public: Vec::new(),
+        signer_mldsa87_public: vault_signer.mldsa87_public.clone(),
         header_signature: DualSignature {
             ed25519: Vec::new(),
             ml_dsa_65: Vec::new(),
         },
+        header_signature_v3: None,
     };
     let signable = header_signable(&header);
-    header.header_signature = dual_sign(&signer.ed25519_secret, &signer.mldsa_secret, &signable)?;
+    header.header_signature_v3 = Some(dual_sign_87(
+        &vault_signer.ed25519_secret,
+        &vault_signer.mldsa87_secret,
+        &signable,
+    )?);
+    emit(progress, "sign", "Header signed · Ed25519 + ML-DSA-87 (FIPS 204 L5)", 0, 0, "info");
 
     let header_json = serde_json::to_vec(&header)
         .map_err(|e| QGuardError::Crypto(format!("vault stream header encode failed: {e}")))?;
@@ -329,6 +479,8 @@ pub fn encrypt_stream<R: Read, W: Write>(
         .write_all(&(header_json.len() as u32).to_be_bytes())
         .map_err(io_err)?;
     writer.write_all(&header_json).map_err(io_err)?;
+    emit(progress, "header", "Signed header written · streaming encrypted chunks", 0, 0, "info");
+    let emit_every = chunk_emit_every(total_chunks);
 
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut index: u64 = 0;
@@ -350,6 +502,9 @@ pub fn encrypt_stream<R: Read, W: Write>(
         write_chunk_frame(writer, &env)?;
         index += 1;
         streamed += n as u64;
+        if index % emit_every == 0 || index == total_chunks {
+            emit(progress, "chunk", "Encrypting chunk · AES-256-GCM (AAD-bound)", streamed, index, "info");
+        }
     }
     buf.zeroize();
     file_key.zeroize();
@@ -361,6 +516,7 @@ pub fn encrypt_stream<R: Read, W: Write>(
         )));
     }
 
+    emit(progress, "done", "Vault container sealed · integrity protected per chunk", streamed, total_chunks, "success");
     Ok(StreamSummary::from_header(&header))
 }
 
@@ -390,15 +546,59 @@ fn read_and_verify_header<R: Read>(reader: &mut R) -> Result<StreamHeader> {
         )));
     }
 
-    // Authenticate the header (wrapped key + metadata + total_chunks) before use.
+    // Authenticate the header (wrapped key(s) + metadata + total_chunks) before
+    // use. v3 verifies with ML-DSA-87; v1/v2 with ML-DSA-65.
     let signable = header_signable(&header);
-    dual_verify(
-        &header.signer_ed25519_public,
-        &header.signer_mldsa_public,
-        &signable,
-        &header.header_signature,
-    )?;
+    if header.version >= 3 {
+        let sig = header.header_signature_v3.as_ref().ok_or_else(|| {
+            QGuardError::Crypto("v3 vault container is missing its ML-DSA-87 signature".to_string())
+        })?;
+        dual_verify_87(
+            &header.signer_ed25519_public,
+            &header.signer_mldsa87_public,
+            &signable,
+            sig,
+        )?;
+    } else {
+        dual_verify(
+            &header.signer_ed25519_public,
+            &header.signer_mldsa_public,
+            &signable,
+            &header.header_signature,
+        )?;
+    }
     Ok(header)
+}
+
+/// Given the key unwrapped from a device / recovery / enterprise wrap — which is
+/// the VMK on v3 containers and the FEK directly on v1/v2 — return the per-file
+/// FEK used to decrypt the chunk stream.
+fn resolve_file_key(header: &StreamHeader, unwrapped: [u8; KEY_SIZE]) -> Result<[u8; KEY_SIZE]> {
+    if header.version < 3 {
+        return Ok(unwrapped);
+    }
+    let mut vmk = unwrapped;
+    let env = match header.fek_wrapped_by_vmk.as_ref() {
+        Some(env) => env,
+        None => {
+            vmk.zeroize();
+            return Err(QGuardError::Crypto(
+                "v3 vault container is missing its VMK-wrapped file key".to_string(),
+            ));
+        }
+    };
+    let aad = fek_vmk_wrap_aad(&header.file_id, &header.owner_user_id);
+    let unwrapped_fek = symmetric::decrypt(&vmk, env, &aad);
+    vmk.zeroize();
+    let mut bytes = unwrapped_fek?;
+    if bytes.len() != KEY_SIZE {
+        bytes.zeroize();
+        return Err(QGuardError::Crypto("v3 vault unwrapped FEK is invalid".to_string()));
+    }
+    let mut key = [0u8; KEY_SIZE];
+    key.copy_from_slice(&bytes);
+    bytes.zeroize();
+    Ok(key)
 }
 
 /// Decrypt and stream out every chunk once the per-file key has been recovered.
@@ -407,15 +607,32 @@ fn decrypt_chunks<R: Read, W: Write>(
     writer: &mut W,
     header: &StreamHeader,
     file_key: &[u8; KEY_SIZE],
+    progress: &mut dyn FnMut(VaultProgress),
 ) -> Result<StreamSummary> {
+    let emit_every = chunk_emit_every(header.total_chunks);
+    let mut processed: u64 = 0;
     for index in 0..header.total_chunks {
         let env = read_chunk_frame(reader)?;
         let is_last = index + 1 == header.total_chunks;
         let aad = chunk_aad(&header.file_id, index, header.total_chunks, is_last);
         let mut plain = symmetric::decrypt(file_key, &env, &aad)?;
+        processed += plain.len() as u64;
         let write_result = writer.write_all(&plain).map_err(io_err);
         plain.zeroize();
         write_result?;
+        let one = index + 1;
+        if one % emit_every == 0 || is_last {
+            progress(VaultProgress {
+                op: "decrypt".into(),
+                phase: "chunk".into(),
+                message: "Decrypting chunk · AES-256-GCM · integrity verified".into(),
+                processed_bytes: processed,
+                total_bytes: header.original_size,
+                chunk_index: one,
+                total_chunks: header.total_chunks,
+                level: "info".into(),
+            });
+        }
     }
     writer.flush().map_err(io_err)?;
     Ok(StreamSummary::from_header(header))
@@ -427,7 +644,28 @@ pub fn decrypt_stream<R: Read, W: Write>(
     writer: &mut W,
     recipient: &LocalKemKeypair,
 ) -> Result<StreamSummary> {
+    decrypt_stream_with_progress(reader, writer, recipient, &mut |_| {})
+}
+
+/// Same as [`decrypt_stream`] but reports real per-phase / per-chunk progress.
+pub fn decrypt_stream_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    recipient: &LocalKemKeypair,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
     let header = read_and_verify_header(reader)?;
+    let sig = if header.version >= 3 { "Ed25519 + ML-DSA-87" } else { "Ed25519 + ML-DSA-65" };
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "verify".into(),
+        message: format!("Header verified · {sig} signature valid"),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
 
     let mut wrapping_secret = decapsulate(
         &recipient.x25519_secret,
@@ -435,44 +673,122 @@ pub fn decrypt_stream<R: Read, W: Write>(
         &header.hybrid_ciphertext,
         &crate::security::obf::vault_stream_wrap_info(),
     )?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "decapsulate".into(),
+        message: "Vault Master Key recovered · X25519 + ML-KEM-1024".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
     let wrap_aad = wrap_aad_bytes(&header.file_id, &header.owner_user_id, &header.owner_device_id);
-    let mut file_key_bytes = symmetric::decrypt(&wrapping_secret, &header.wrapped_key, &wrap_aad)?;
+    let mut unwrapped_bytes = symmetric::decrypt(&wrapping_secret, &header.wrapped_key, &wrap_aad)?;
     wrapping_secret.zeroize();
-    if file_key_bytes.len() != KEY_SIZE {
-        file_key_bytes.zeroize();
+    if unwrapped_bytes.len() != KEY_SIZE {
+        unwrapped_bytes.zeroize();
         return Err(QGuardError::Crypto("vault stream unwrapped key is invalid".to_string()));
     }
-    let mut file_key = [0u8; KEY_SIZE];
-    file_key.copy_from_slice(&file_key_bytes);
-    file_key_bytes.zeroize();
+    let mut unwrapped = [0u8; KEY_SIZE];
+    unwrapped.copy_from_slice(&unwrapped_bytes);
+    unwrapped_bytes.zeroize();
 
-    let result = decrypt_chunks(reader, writer, &header, &file_key);
+    // v3: `unwrapped` is the VMK -> unwrap the FEK from it. v1/v2: it is the FEK.
+    let mut file_key = resolve_file_key(&header, unwrapped)?;
+    unwrapped.zeroize();
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "unwrap_fek".into(),
+        message: "Per-file key unwrapped · streaming decrypt".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
+    let result = decrypt_chunks(reader, writer, &header, &file_key, progress);
     file_key.zeroize();
-    result
+    let summary = result?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "done".into(),
+        message: "Vault container fully decrypted · integrity verified".into(),
+        processed_bytes: header.original_size,
+        total_bytes: header.original_size,
+        chunk_index: header.total_chunks,
+        total_chunks: header.total_chunks,
+        level: "success".into(),
+    });
+    Ok(summary)
 }
 
 /// Stream-decrypt `reader` into `writer` using the owner's quantum-safe recovery
-/// key — no access to the original device is required.
+/// key — no access to the original device is required. On v3 the recovery key
+/// unwraps the VMK, which then unwraps the per-file FEK.
 pub fn decrypt_stream_with_recovery<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
     recovery_wrap_key: &[u8; KEY_SIZE],
 ) -> Result<StreamSummary> {
+    decrypt_stream_with_recovery_with_progress(reader, writer, recovery_wrap_key, &mut |_| {})
+}
+
+/// Same as [`decrypt_stream_with_recovery`] but reports real progress.
+pub fn decrypt_stream_with_recovery_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    recovery_wrap_key: &[u8; KEY_SIZE],
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
     let header = read_and_verify_header(reader)?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "verify".into(),
+        message: "Header verified · recovery decrypt".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
     let recovery_env = header.recovery_wrapped_key.as_ref().ok_or_else(|| {
         QGuardError::NotFound(
             "this vault container was sealed without a recovery key; re-encrypt it with recovery enabled".to_string(),
         )
     })?;
-    let mut file_key = vault_recovery::unwrap_file_key(
+    let mut unwrapped = vault_recovery::unwrap_file_key(
         recovery_wrap_key,
         recovery_env,
         &header.file_id,
         &header.owner_user_id,
     )?;
-    let result = decrypt_chunks(reader, writer, &header, &file_key);
+    let mut file_key = resolve_file_key(&header, unwrapped)?;
+    unwrapped.zeroize();
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "unwrap_fek".into(),
+        message: "VMK unwrapped via recovery key · ML-KEM-1024 / HKDF-SHA3-256".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
+    let result = decrypt_chunks(reader, writer, &header, &file_key, progress);
     file_key.zeroize();
-    result
+    let summary = result?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "done".into(),
+        message: "Vault container recovered · integrity verified".into(),
+        processed_bytes: header.original_size,
+        total_bytes: header.original_size,
+        chunk_index: header.total_chunks,
+        total_chunks: header.total_chunks,
+        level: "success".into(),
+    });
+    Ok(summary)
 }
 
 /// Stream-decrypt using the enterprise ML-KEM-1024 recovery key. For hybrid
@@ -483,43 +799,140 @@ pub fn decrypt_stream_with_enterprise<R: Read, W: Write>(
     recipient: &LocalKemKeypair,
     recovery_secret: Option<&[u8; KEY_SIZE]>,
 ) -> Result<StreamSummary> {
+    decrypt_stream_with_enterprise_with_progress(reader, writer, recipient, recovery_secret, &mut |_| {})
+}
+
+/// Same as [`decrypt_stream_with_enterprise`] but reports real progress.
+pub fn decrypt_stream_with_enterprise_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    recipient: &LocalKemKeypair,
+    recovery_secret: Option<&[u8; KEY_SIZE]>,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
     let header = read_and_verify_header(reader)?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "verify".into(),
+        message: "Header verified · enterprise recovery decrypt".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
     let kem_wrap = header.recovery_kem_wrap.as_ref().ok_or_else(|| {
         QGuardError::NotFound(
             "this vault container was sealed without an enterprise recovery key".to_string(),
         )
     })?;
-    let mut file_key = vault_recovery::unwrap_file_key_kem(
+    let mut unwrapped = vault_recovery::unwrap_file_key_kem(
         recipient,
         recovery_secret,
         kem_wrap,
         &header.file_id,
         &header.owner_user_id,
     )?;
-    let result = decrypt_chunks(reader, writer, &header, &file_key);
+    let mut file_key = resolve_file_key(&header, unwrapped)?;
+    unwrapped.zeroize();
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "unwrap_fek".into(),
+        message: "VMK unwrapped via enterprise key · ML-KEM-1024".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
+    let result = decrypt_chunks(reader, writer, &header, &file_key, progress);
     file_key.zeroize();
-    result
+    let summary = result?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "done".into(),
+        message: "Vault container recovered · integrity verified".into(),
+        processed_bytes: header.original_size,
+        total_bytes: header.original_size,
+        chunk_index: header.total_chunks,
+        total_chunks: header.total_chunks,
+        level: "success".into(),
+    });
+    Ok(summary)
 }
 
-/// Re-wrap an existing container so it gains (or refreshes) the recovery-key
-/// wrap, *without* re-encrypting the bulk data. The signed header is rebuilt and
-/// the encrypted chunk frames are copied verbatim. Requires a device key that
-/// can currently unwrap the per-file key. The existing device wrap is preserved,
-/// so the original device keeps working too.
-pub fn rewrap_stream_with_recovery<R: Read, W: Write>(
+/// Re-protect an existing container by rebuilding it as a fresh v3 VMK-envelope
+/// container, *without* re-encrypting the bulk data. The per-file FEK is recovered
+/// from the existing container using a device key, then re-sealed under the VMK;
+/// the VMK is wrapped to this device (and, when configured, the recovery key /
+/// enterprise recipient) and the header is re-signed with ML-DSA-87. The encrypted
+/// chunk frames — and the original `file_id` / `total_chunks` they are AAD-bound
+/// to — are copied verbatim. Accepts v1/v2/v3 input; always emits v3.
+#[allow(clippy::too_many_arguments)]
+pub fn rewrap_stream_to_v3<R: Read, W: Write>(
     reader: &mut R,
     writer: &mut W,
     recipient_kems: &[LocalKemKeypair],
-    signer: &LocalSigningKeypair,
-    recovery_wrap_key: &[u8; KEY_SIZE],
+    recipient_x25519_public: &[u8],
+    recipient_mlkem_public: &[u8],
+    vmk: &[u8; KEY_SIZE],
+    vault_signer: &VaultSigningKeypair,
+    recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
+    enterprise: Option<&EnterpriseRecipient>,
 ) -> Result<StreamSummary> {
-    let mut header = read_and_verify_header(reader)?;
+    rewrap_stream_to_v3_with_progress(
+        reader,
+        writer,
+        recipient_kems,
+        recipient_x25519_public,
+        recipient_mlkem_public,
+        vmk,
+        vault_signer,
+        recovery_wrap_key,
+        enterprise,
+        &mut |_| {},
+    )
+}
 
-    // Recover the per-file key from the existing device wrap (try each key).
+/// Same as [`rewrap_stream_to_v3`] but reports real per-phase progress. The bulk
+/// chunk frames are copied verbatim (header-only re-protection), so progress is
+/// reported at phase boundaries rather than per chunk.
+#[allow(clippy::too_many_arguments)]
+pub fn rewrap_stream_to_v3_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    recipient_kems: &[LocalKemKeypair],
+    recipient_x25519_public: &[u8],
+    recipient_mlkem_public: &[u8],
+    vmk: &[u8; KEY_SIZE],
+    vault_signer: &VaultSigningKeypair,
+    recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
+    enterprise: Option<&EnterpriseRecipient>,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let header = read_and_verify_header(reader)?;
+    let total = header.original_size;
+    let total_chunks = header.total_chunks;
+    let mut emit = |phase: &str, message: &str, processed: u64, level: &str| {
+        progress(VaultProgress {
+            op: "rewrap".into(),
+            phase: phase.into(),
+            message: message.into(),
+            processed_bytes: processed,
+            total_bytes: total,
+            chunk_index: if processed >= total { total_chunks } else { 0 },
+            total_chunks,
+            level: level.into(),
+        });
+    };
+    emit("verify", "Existing container verified · re-protecting to v3 envelope", 0, "info");
+
+    // Recover the per-file FEK from the existing container (any version) using a
+    // device key. `resolve_file_key` handles the v3 VMK indirection transparently.
     let wrap_aad = wrap_aad_bytes(&header.file_id, &header.owner_user_id, &header.owner_device_id);
     let mut file_key: Option<[u8; KEY_SIZE]> = None;
     for kem in recipient_kems {
-        let secret = match decapsulate(
+        let mut secret = match decapsulate(
             &kem.x25519_secret,
             &kem.mlkem_secret,
             &header.hybrid_ciphertext,
@@ -528,15 +941,22 @@ pub fn rewrap_stream_with_recovery<R: Read, W: Write>(
             Ok(secret) => secret,
             Err(_) => continue,
         };
-        if let Ok(mut bytes) = symmetric::decrypt(&secret, &header.wrapped_key, &wrap_aad) {
+        let decrypted = symmetric::decrypt(&secret, &header.wrapped_key, &wrap_aad);
+        secret.zeroize();
+        if let Ok(mut bytes) = decrypted {
             if bytes.len() == KEY_SIZE {
-                let mut key = [0u8; KEY_SIZE];
-                key.copy_from_slice(&bytes);
+                let mut unwrapped = [0u8; KEY_SIZE];
+                unwrapped.copy_from_slice(&bytes);
                 bytes.zeroize();
-                file_key = Some(key);
-                break;
+                let resolved = resolve_file_key(&header, unwrapped);
+                unwrapped.zeroize();
+                if let Ok(fek) = resolved {
+                    file_key = Some(fek);
+                    break;
+                }
+            } else {
+                bytes.zeroize();
             }
-            bytes.zeroize();
         }
     }
     let mut file_key = file_key.ok_or_else(|| {
@@ -544,28 +964,76 @@ pub fn rewrap_stream_with_recovery<R: Read, W: Write>(
             "this device cannot unwrap the file key, so it cannot re-protect this container".to_string(),
         )
     })?;
+    emit("unwrap_fek", "Per-file key recovered from existing container", 0, "info");
 
-    // Seal the recovered key under the recovery key and re-sign the header with
-    // this device's signer (the embedded signer public key is updated to match).
-    header.recovery_wrapped_key = Some(vault_recovery::wrap_file_key(
-        recovery_wrap_key,
+    // Re-seal as a v3 container around the SAME FEK + file_id (so the verbatim
+    // chunk frames still authenticate). The VMK now protects the FEK.
+    let fek_wrapped_by_vmk = Some(symmetric::encrypt(
+        vmk,
         &file_key,
-        &header.file_id,
-        &header.owner_user_id,
+        &fek_vmk_wrap_aad(&header.file_id, &header.owner_user_id),
     )?);
-    file_key.zeroize();
-    header.version = STREAM_VERSION;
-    header.signer_ed25519_public = signer.ed25519_public.clone();
-    header.signer_mldsa_public = signer.mldsa_public.clone();
-    header.header_signature = DualSignature {
-        ed25519: Vec::new(),
-        ml_dsa_65: Vec::new(),
+    let (hybrid_ciphertext, mut wrapping_secret) = encapsulate(
+        recipient_x25519_public,
+        recipient_mlkem_public,
+        &crate::security::obf::vault_stream_wrap_info(),
+    )?;
+    let wrapped_key = symmetric::encrypt(&wrapping_secret, vmk, &wrap_aad)?;
+    wrapping_secret.zeroize();
+    emit("vmk_wrap", "Re-sealed under new VMK · X25519 + ML-KEM-1024", 0, "info");
+    let recovery_wrapped_key = match recovery_wrap_key {
+        Some(key) => Some(vault_recovery::wrap_file_key(key, vmk, &header.file_id, &header.owner_user_id)?),
+        None => None,
     };
-    let signable = header_signable(&header);
-    header.header_signature = dual_sign(&signer.ed25519_secret, &signer.mldsa_secret, &signable)?;
+    let recovery_kem_wrap = match enterprise {
+        Some(ent) => Some(vault_recovery::wrap_file_key_kem(
+            ent.x25519_public,
+            ent.mlkem_public,
+            ent.recovery_secret,
+            vmk,
+            &header.file_id,
+            &header.owner_user_id,
+        )?),
+        None => None,
+    };
+    file_key.zeroize();
+
+    let mut new_header = StreamHeader {
+        version: STREAM_VERSION,
+        file_id: header.file_id.clone(),
+        kind: header.kind.clone(),
+        name: header.name.clone(),
+        content_type: header.content_type.clone(),
+        original_size: header.original_size,
+        chunk_size: header.chunk_size,
+        total_chunks: header.total_chunks,
+        owner_user_id: header.owner_user_id.clone(),
+        owner_device_id: header.owner_device_id.clone(),
+        hybrid_ciphertext,
+        wrapped_key,
+        recovery_wrapped_key,
+        recovery_kem_wrap,
+        fek_wrapped_by_vmk,
+        suite: vault_suite(),
+        signer_ed25519_public: vault_signer.ed25519_public.clone(),
+        signer_mldsa_public: Vec::new(),
+        signer_mldsa87_public: vault_signer.mldsa87_public.clone(),
+        header_signature: DualSignature {
+            ed25519: Vec::new(),
+            ml_dsa_65: Vec::new(),
+        },
+        header_signature_v3: None,
+    };
+    let signable = header_signable(&new_header);
+    new_header.header_signature_v3 = Some(dual_sign_87(
+        &vault_signer.ed25519_secret,
+        &vault_signer.mldsa87_secret,
+        &signable,
+    )?);
+    emit("sign", "New header signed · Ed25519 + ML-DSA-87 (FIPS 204 L5)", 0, "info");
 
     // Write the rebuilt header, then copy the unchanged chunk frames verbatim.
-    let header_json = serde_json::to_vec(&header)
+    let header_json = serde_json::to_vec(&new_header)
         .map_err(|e| QGuardError::Crypto(format!("vault stream header encode failed: {e}")))?;
     if header_json.len() > MAX_HEADER_LEN {
         return Err(QGuardError::Crypto("vault stream header too large".to_string()));
@@ -577,8 +1045,9 @@ pub fn rewrap_stream_with_recovery<R: Read, W: Write>(
     writer.write_all(&header_json).map_err(io_err)?;
     io::copy(reader, writer).map_err(io_err)?;
     writer.flush().map_err(io_err)?;
+    emit("done", "Container re-protected · v3 VMK envelope (ML-DSA-87)", total, "success");
 
-    Ok(StreamSummary::from_header(&header))
+    Ok(StreamSummary::from_header(&new_header))
 }
 
 // ---------------------------------------------------------------------------
@@ -855,22 +1324,24 @@ impl Write for FolderWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::signatures::{dual_sign, LocalSigningKeypair};
     use std::io::Cursor;
 
-    fn keypair() -> (LocalKemKeypair, LocalSigningKeypair) {
-        (LocalKemKeypair::generate(), LocalSigningKeypair::generate())
+    fn keypair() -> (LocalKemKeypair, VaultSigningKeypair) {
+        (LocalKemKeypair::generate(), VaultSigningKeypair::generate())
     }
 
-    fn encrypt_bytes(plaintext: &[u8], kem: &LocalKemKeypair, signer: &LocalSigningKeypair) -> Vec<u8> {
+    fn encrypt_bytes(plaintext: &[u8], kem: &LocalKemKeypair, signer: &VaultSigningKeypair) -> Vec<u8> {
         encrypt_bytes_with_recovery(plaintext, kem, signer, None)
     }
 
     fn encrypt_bytes_with_recovery(
         plaintext: &[u8],
         kem: &LocalKemKeypair,
-        signer: &LocalSigningKeypair,
+        signer: &VaultSigningKeypair,
         recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
     ) -> Vec<u8> {
+        let vmk = symmetric::random_key();
         let mut out = Vec::new();
         encrypt_stream(
             &mut Cursor::new(plaintext.to_vec()),
@@ -883,11 +1354,82 @@ mod tests {
             "device-1",
             &kem.x25519_public,
             &kem.mlkem_public,
+            &vmk,
             signer,
             recovery_wrap_key,
             None,
         )
         .unwrap();
+        out
+    }
+
+    /// Build a legacy v2 container by hand (FEK wrapped directly to the device,
+    /// ML-DSA-65 signature) to prove the v1/v2 decrypt paths still work after the
+    /// v3 upgrade.
+    fn build_v2_container(
+        plaintext: &[u8],
+        kem: &LocalKemKeypair,
+        signer: &LocalSigningKeypair,
+        recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
+    ) -> Vec<u8> {
+        let file_id = Uuid::new_v4().to_string();
+        let owner_user_id = "user-1";
+        let owner_device_id = "device-1";
+        let total_chunks = total_chunks_for(plaintext.len() as u64);
+        let mut file_key = symmetric::random_key();
+        let (hybrid_ciphertext, mut wrapping_secret) = encapsulate(
+            &kem.x25519_public,
+            &kem.mlkem_public,
+            &crate::security::obf::vault_stream_wrap_info(),
+        )
+        .unwrap();
+        let wrap_aad = wrap_aad_bytes(&file_id, owner_user_id, owner_device_id);
+        let wrapped_key = symmetric::encrypt(&wrapping_secret, &file_key, &wrap_aad).unwrap();
+        wrapping_secret.zeroize();
+        let recovery_wrapped_key = recovery_wrap_key
+            .map(|k| vault_recovery::wrap_file_key(k, &file_key, &file_id, owner_user_id).unwrap());
+
+        let mut header = StreamHeader {
+            version: 2,
+            file_id: file_id.clone(),
+            kind: KIND_FILE.to_string(),
+            name: "legacy.bin".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            original_size: plaintext.len() as u64,
+            chunk_size: CHUNK_SIZE as u32,
+            total_chunks,
+            owner_user_id: owner_user_id.to_string(),
+            owner_device_id: owner_device_id.to_string(),
+            hybrid_ciphertext,
+            wrapped_key,
+            recovery_wrapped_key,
+            recovery_kem_wrap: None,
+            fek_wrapped_by_vmk: None,
+            suite: AlgorithmSuite::default(),
+            signer_ed25519_public: signer.ed25519_public.clone(),
+            signer_mldsa_public: signer.mldsa_public.clone(),
+            signer_mldsa87_public: Vec::new(),
+            header_signature: DualSignature { ed25519: Vec::new(), ml_dsa_65: Vec::new() },
+            header_signature_v3: None,
+        };
+        let signable = header_signable(&header);
+        header.header_signature =
+            dual_sign(&signer.ed25519_secret, &signer.mldsa_secret, &signable).unwrap();
+
+        let header_json = serde_json::to_vec(&header).unwrap();
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&(header_json.len() as u32).to_be_bytes());
+        out.extend_from_slice(&header_json);
+        let mut index = 0u64;
+        for chunk in plaintext.chunks(CHUNK_SIZE) {
+            let is_last = index + 1 == total_chunks;
+            let aad = chunk_aad(&file_id, index, total_chunks, is_last);
+            let env = symmetric::encrypt(&file_key, chunk, &aad).unwrap();
+            write_chunk_frame(&mut out, &env).unwrap();
+            index += 1;
+        }
+        file_key.zeroize();
         out
     }
 
@@ -926,17 +1468,80 @@ mod tests {
     }
 
     #[test]
+    fn v3_envelope_uses_vmk_and_mldsa87() {
+        let (kem, signer) = keypair();
+        let vmk = symmetric::random_key();
+        let plaintext = vec![1u8; CHUNK_SIZE + 5];
+        let mut sealed = Vec::new();
+        encrypt_stream(
+            &mut Cursor::new(plaintext.clone()), &mut sealed, KIND_FILE, "v3.bin",
+            "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+            &kem.x25519_public, &kem.mlkem_public, &vmk, &signer, None, None,
+        )
+        .unwrap();
+
+        let header = read_and_verify_header(&mut Cursor::new(sealed.clone())).unwrap();
+        // Envelope: FEK is wrapped by the VMK (not by ML-KEM); signature is ML-DSA-87.
+        assert_eq!(header.version, 3);
+        assert_eq!(header.suite.pq_signature, "ML-DSA-87");
+        assert!(header.fek_wrapped_by_vmk.is_some());
+        assert!(header.header_signature_v3.is_some());
+        assert!(!header.signer_mldsa87_public.is_empty());
+        assert!(header.signer_mldsa_public.is_empty());
+
+        // The device wrap unwraps to the VMK itself (proving ML-KEM protects the
+        // key, never the file content): decapsulate -> AES-unwrap == vmk.
+        let mut secret = decapsulate(
+            &kem.x25519_secret, &kem.mlkem_secret, &header.hybrid_ciphertext,
+            &crate::security::obf::vault_stream_wrap_info(),
+        )
+        .unwrap();
+        let wrap_aad = wrap_aad_bytes(&header.file_id, &header.owner_user_id, &header.owner_device_id);
+        let unwrapped = symmetric::decrypt(&secret, &header.wrapped_key, &wrap_aad).unwrap();
+        secret.zeroize();
+        assert_eq!(unwrapped.as_slice(), vmk.as_slice());
+
+        let mut restored = Vec::new();
+        decrypt_stream(&mut Cursor::new(sealed), &mut restored, &kem).unwrap();
+        assert_eq!(restored, plaintext);
+    }
+
+    #[test]
+    fn legacy_v2_container_still_decrypts() {
+        let (kem, _signer) = keypair();
+        let v2_signer = LocalSigningKeypair::generate();
+        let root = vault_recovery::generate_recovery_root();
+        let recovery_wrap_key = vault_recovery::derive_wrap_key(&root).unwrap();
+        let plaintext = vec![8u8; CHUNK_SIZE + 17];
+        let legacy = build_v2_container(&plaintext, &kem, &v2_signer, Some(&recovery_wrap_key));
+
+        // The v2 container reports version 2 and verifies with its ML-DSA-65 sig.
+        let header = read_and_verify_header(&mut Cursor::new(legacy.clone())).unwrap();
+        assert_eq!(header.version, 2);
+        assert!(header.fek_wrapped_by_vmk.is_none());
+
+        // Both the device key and the recovery key still decrypt it.
+        let mut via_device = Vec::new();
+        decrypt_stream(&mut Cursor::new(legacy.clone()), &mut via_device, &kem).unwrap();
+        assert_eq!(via_device, plaintext);
+        let mut via_recovery = Vec::new();
+        decrypt_stream_with_recovery(&mut Cursor::new(legacy), &mut via_recovery, &recovery_wrap_key).unwrap();
+        assert_eq!(via_recovery, plaintext);
+    }
+
+    #[test]
     fn enterprise_and_hybrid_recovery_round_trip() {
         let (kem, signer) = keypair();
         let enterprise = vault_recovery::generate_enterprise_keypair();
         let plaintext = vec![9u8; CHUNK_SIZE + 33];
+        let vmk = symmetric::random_key();
 
         // Enterprise-only.
         let mut out = Vec::new();
         encrypt_stream(
             &mut Cursor::new(plaintext.clone()), &mut out, KIND_FILE, "e.bin",
             "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
-            &kem.x25519_public, &kem.mlkem_public, &signer, None,
+            &kem.x25519_public, &kem.mlkem_public, &vmk, &signer, None,
             Some(&EnterpriseRecipient {
                 x25519_public: &enterprise.x25519_public,
                 mlkem_public: &enterprise.mlkem_public,
@@ -956,7 +1561,7 @@ mod tests {
         encrypt_stream(
             &mut Cursor::new(plaintext.clone()), &mut hout, KIND_FILE, "h.bin",
             "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
-            &kem.x25519_public, &kem.mlkem_public, &signer, None,
+            &kem.x25519_public, &kem.mlkem_public, &vmk, &signer, None,
             Some(&EnterpriseRecipient {
                 x25519_public: &enterprise.x25519_public,
                 mlkem_public: &enterprise.mlkem_public,
@@ -971,9 +1576,9 @@ mod tests {
     }
 
     #[test]
-    fn rewrap_adds_recovery_to_an_existing_container() {
+    fn rewrap_to_v3_adds_recovery_to_an_existing_container() {
         let (kem, signer) = keypair();
-        // A pre-existing container sealed WITHOUT recovery.
+        // A pre-existing v3 container sealed WITHOUT recovery.
         let plaintext = vec![5u8; CHUNK_SIZE + 21];
         let original = encrypt_bytes(&plaintext, &kem, &signer);
         let root = vault_recovery::generate_recovery_root();
@@ -983,14 +1588,19 @@ mod tests {
         let mut fail = Vec::new();
         assert!(decrypt_stream_with_recovery(&mut Cursor::new(original.clone()), &mut fail, &recovery_wrap_key).is_err());
 
-        // Re-wrap it (header-only) using the device key.
+        // Re-protect it (header-only) using the device key, adding the recovery wrap.
+        let vmk = symmetric::random_key();
         let mut rewrapped = Vec::new();
-        rewrap_stream_with_recovery(
+        rewrap_stream_to_v3(
             &mut Cursor::new(original),
             &mut rewrapped,
             std::slice::from_ref(&kem),
+            &kem.x25519_public,
+            &kem.mlkem_public,
+            &vmk,
             &signer,
-            &recovery_wrap_key,
+            Some(&recovery_wrap_key),
+            None,
         )
         .unwrap();
 
@@ -1004,18 +1614,54 @@ mod tests {
     }
 
     #[test]
+    fn rewrap_upgrades_a_legacy_v2_container_to_v3() {
+        let (kem, vault_signer) = keypair();
+        let v2_signer = LocalSigningKeypair::generate();
+        let plaintext = vec![6u8; CHUNK_SIZE + 9];
+        let legacy = build_v2_container(&plaintext, &kem, &v2_signer, None);
+
+        let vmk = symmetric::random_key();
+        let mut upgraded = Vec::new();
+        rewrap_stream_to_v3(
+            &mut Cursor::new(legacy),
+            &mut upgraded,
+            std::slice::from_ref(&kem),
+            &kem.x25519_public,
+            &kem.mlkem_public,
+            &vmk,
+            &vault_signer,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // The upgraded container is v3 and still decrypts with the device key.
+        let header = read_and_verify_header(&mut Cursor::new(upgraded.clone())).unwrap();
+        assert_eq!(header.version, 3);
+        assert_eq!(header.suite.pq_signature, "ML-DSA-87");
+        assert!(header.fek_wrapped_by_vmk.is_some());
+        let mut restored = Vec::new();
+        decrypt_stream(&mut Cursor::new(upgraded), &mut restored, &kem).unwrap();
+        assert_eq!(restored, plaintext);
+    }
+
+    #[test]
     fn rewrap_requires_a_usable_device_key() {
         let (kem, signer) = keypair();
         let original = encrypt_bytes(b"locked to a device we don't have", &kem, &signer);
         let attacker = LocalKemKeypair::generate();
-        let recovery_wrap_key = vault_recovery::derive_wrap_key(&vault_recovery::generate_recovery_root()).unwrap();
+        let vmk = symmetric::random_key();
         let mut out = Vec::new();
-        assert!(rewrap_stream_with_recovery(
+        assert!(rewrap_stream_to_v3(
             &mut Cursor::new(original),
             &mut out,
             std::slice::from_ref(&attacker),
+            &attacker.x25519_public,
+            &attacker.mlkem_public,
+            &vmk,
             &signer,
-            &recovery_wrap_key,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1076,6 +1722,7 @@ mod tests {
 
         let (entries, total) = collect_folder_entries(&root).unwrap();
         assert_eq!(entries.len(), 3);
+        let vmk = symmetric::random_key();
         let mut sealed = Vec::new();
         encrypt_stream(
             &mut FolderReader::new(entries),
@@ -1088,6 +1735,7 @@ mod tests {
             "device-1",
             &kem.x25519_public,
             &kem.mlkem_public,
+            &vmk,
             &signer,
             None,
             None,
@@ -1120,5 +1768,64 @@ mod tests {
         framed.push(0);
         assert!(writer.write_all(&framed).is_err());
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn encrypt_stream_emits_monotonic_progress() {
+        let (kem, signer) = keypair();
+        let vmk = symmetric::random_key();
+        let plaintext = vec![4u8; CHUNK_SIZE * 3 + 11];
+        let mut out = Vec::new();
+        let mut seen: Vec<VaultProgress> = Vec::new();
+        encrypt_stream_with_progress(
+            &mut Cursor::new(plaintext.clone()), &mut out, KIND_FILE, "p.bin",
+            "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+            &kem.x25519_public, &kem.mlkem_public, &vmk, &signer, None, None,
+            &mut |p| seen.push(p),
+        )
+        .unwrap();
+
+        // Phases appear in order and include the crypto milestones.
+        let phases: Vec<&str> = seen.iter().map(|p| p.phase.as_str()).collect();
+        assert_eq!(phases.first(), Some(&"init"));
+        assert!(phases.contains(&"fek"));
+        assert!(phases.contains(&"vmk_wrap"));
+        assert!(phases.contains(&"sign"));
+        assert!(phases.contains(&"chunk"));
+        assert_eq!(phases.last(), Some(&"done"));
+
+        // processed_bytes is non-decreasing and ends exactly at the input size.
+        let mut last = 0u64;
+        for p in &seen {
+            assert!(p.processed_bytes >= last, "processed regressed");
+            assert_eq!(p.total_bytes, plaintext.len() as u64);
+            last = p.processed_bytes;
+        }
+        let done = seen.last().unwrap();
+        assert_eq!(done.processed_bytes, plaintext.len() as u64);
+        assert_eq!(done.total_chunks, total_chunks_for(plaintext.len() as u64));
+
+        // The container still round-trips (no behavior change).
+        let mut restored = Vec::new();
+        decrypt_stream(&mut Cursor::new(out), &mut restored, &kem).unwrap();
+        assert_eq!(restored, plaintext);
+    }
+
+    #[test]
+    fn decrypt_stream_emits_progress_to_completion() {
+        let (kem, signer) = keypair();
+        let plaintext = vec![2u8; CHUNK_SIZE * 2 + 7];
+        let sealed = encrypt_bytes(&plaintext, &kem, &signer);
+        let mut restored = Vec::new();
+        let mut seen: Vec<VaultProgress> = Vec::new();
+        decrypt_stream_with_progress(&mut Cursor::new(sealed), &mut restored, &kem, &mut |p| seen.push(p)).unwrap();
+        assert_eq!(restored, plaintext);
+        let phases: Vec<&str> = seen.iter().map(|p| p.phase.as_str()).collect();
+        assert!(phases.contains(&"verify"));
+        assert!(phases.contains(&"decapsulate"));
+        assert!(phases.contains(&"chunk"));
+        assert_eq!(phases.last(), Some(&"done"));
+        let done = seen.last().unwrap();
+        assert_eq!(done.processed_bytes, plaintext.len() as u64);
     }
 }

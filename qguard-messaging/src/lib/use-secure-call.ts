@@ -5,6 +5,13 @@ import { sendCallSignal, subscribeCallSignals } from "@/lib/call-signaling";
 import type { CallSignalRow } from "@/lib/call-types";
 import { safeInvoke } from "@/lib/tauri";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import {
+  applySenderParams,
+  applyTrackConstraints,
+  DEFAULT_CALL_QUALITY,
+  mediaConstraints,
+  type CallQuality,
+} from "@/lib/call-quality";
 
 interface CallSetup { hybridCiphertext: unknown; sendKeyB64: string; recvKeyB64: string; safetyNumber: string; }
 interface Peer { userId: string; deviceId: string; x25519: number[]; mlkem: number[]; displayName: string; }
@@ -22,8 +29,10 @@ export function useSecureCall(args: {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
+  const [quality, setQualityState] = useState<CallQuality>(DEFAULT_CALL_QUALITY);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const qualityRef = useRef<CallQuality>(DEFAULT_CALL_QUALITY);
   const workerRef = useRef<Worker | null>(null);
   const setupRef = useRef<CallSetup | null>(null);
   const pendingOfferRef = useRef<CallSignalRow | null>(null);
@@ -115,10 +124,26 @@ export function useSecureCall(args: {
   }, [args.conversationId, args.deviceId, args.userId, worker]);
 
   const getMedia = useCallback(async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: 1280, height: 720 } });
+    const constraints = mediaConstraints(qualityRef.current);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch {
+      // Camera missing/blocked or constraints rejected → fall back to audio-only
+      // so a bad webcam can never hang the call (a key freeze guard).
+      stream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio ?? true });
+      setCameraEnabled(false);
+    }
     setLocalStream(stream);
     return stream;
   }, []);
+
+  const setQuality = useCallback(async (next: CallQuality) => {
+    qualityRef.current = next;
+    setQualityState(next);
+    if (pcRef.current) await applySenderParams(pcRef.current, next);
+    await applyTrackConstraints(localStream, next);
+  }, [localStream]);
 
   const startCall = useCallback(async () => {
     if (!supported || !args.peer || !args.conversationId) return;
@@ -135,6 +160,7 @@ export function useSecureCall(args: {
       attachSenderTransforms(pc, setup);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      await applySenderParams(pc, qualityRef.current);
       await sendCallSignal({ call_id: callId, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: peer.userId, to_device_id: peer.deviceId, signal_type: "ring", payload: {} });
       await sendCallSignal({ call_id: callId, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: peer.userId, to_device_id: peer.deviceId, signal_type: "offer", payload: { sdp: offer.sdp, hybridCiphertext: setup.hybridCiphertext } });
     } catch (e) {
@@ -159,6 +185,7 @@ export function useSecureCall(args: {
       flushPendingCandidates();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      await applySenderParams(pc, qualityRef.current);
       await sendCallSignal({ call_id: offer.call_id, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: offer.from_user_id, to_device_id: offer.from_device_id, signal_type: "answer", payload: { sdp: answer.sdp } });
     } catch (e) {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Accept failed" });
@@ -242,5 +269,5 @@ export function useSecureCall(args: {
 
   useEffect(() => () => cleanup(), [cleanup]);
 
-  return { state, localStream, remoteStream, micEnabled, cameraEnabled, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
+  return { state, localStream, remoteStream, micEnabled, cameraEnabled, quality, setQuality, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
 }

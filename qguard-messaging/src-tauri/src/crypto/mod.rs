@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 pub const CURRENT_PQ_KEM: &str = "ML-KEM-1024";
 pub const LEGACY_PQ_KEM_768: &str = "ML-KEM-768";
 
+/// Digital signature used by the messaging identity (shared with other devices).
+pub const MESSAGING_PQ_SIGNATURE: &str = "ML-DSA-65";
+/// High-security signature used by the Quantum Vault (`.qvault` v3) only. Kept
+/// separate from the messaging identity so upgrading the vault never breaks
+/// cross-device messaging compatibility.
+pub const VAULT_PQ_SIGNATURE: &str = "ML-DSA-87";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AlgorithmSuite {
     pub classical_kex: String,
@@ -43,6 +50,25 @@ pub struct EncryptedEnvelope {
 pub struct DualSignature {
     pub ed25519: Vec<u8>,
     pub ml_dsa_65: Vec<u8>,
+}
+
+/// High-security dual signature (Ed25519 + ML-DSA-87) used by the Quantum Vault
+/// `.qvault` v3 header. Distinct from `DualSignature` (ML-DSA-65) so the vault can
+/// move to the FIPS 204 Level 5 parameter set independently of messaging.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DualSignature87 {
+    pub ed25519: Vec<u8>,
+    pub ml_dsa_87: Vec<u8>,
+}
+
+/// Algorithm suite advertised for the Quantum Vault high-security profile. Same
+/// hybrid KEM + symmetric stack as the default, but the FIPS 204 Level 5
+/// signature (ML-DSA-87). Surfaced to the UI so displayed crypto matches reality.
+pub fn vault_suite() -> AlgorithmSuite {
+    AlgorithmSuite {
+        pq_signature: VAULT_PQ_SIGNATURE.to_string(),
+        ..AlgorithmSuite::default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

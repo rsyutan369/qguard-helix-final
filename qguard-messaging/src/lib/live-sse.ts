@@ -31,9 +31,6 @@ function serializeSse(event: Omit<QGuardLiveEvent, "raw">): string {
 }
 
 function payloadDetail(table: string, eventType: string, payload: Record<string, unknown>): string {
-  if (table === "messaging_vault_files" && eventType === "DELETE") {
-    return `file_deleted: ${String(payload.display_name_hint ?? payload.storage_path ?? payload.id ?? "vault object")}`;
-  }
   if (table === "messaging_devices" && eventType === "DELETE") {
     return `device_deleted: ${String(payload.device_label ?? payload.fingerprint ?? payload.id ?? "trusted device")}`;
   }
@@ -68,8 +65,6 @@ function tableSpecs(userId: string): LiveTableSpec[] {
     { table: "messaging_message_envelopes", filter: `recipient_user_id=eq.${userId}` },
     { table: "messaging_message_envelopes", filter: `sender_user_id=eq.${userId}` },
     { table: "messaging_message_user_states", filter: `user_id=eq.${userId}` },
-    { table: "messaging_vault_files", filter: `owner_user_id=eq.${userId}` },
-    { table: "qguard_vault_operations", filter: `user_id=eq.${userId}` },
     { table: "messaging_security_events", filter: `user_id=eq.${userId}` },
     { table: "messaging_crypto_telemetry", filter: `user_id=eq.${userId}` },
     { table: "messaging_org_members", filter: `user_id=eq.${userId}` },

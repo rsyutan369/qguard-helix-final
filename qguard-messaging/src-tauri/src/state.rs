@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -10,6 +10,7 @@ use zeroize::Zeroize;
 
 use crate::audit::{AuditChain, AuditSeverity};
 use crate::crypto::hybrid_kex::LocalKemKeypair;
+use crate::crypto::signatures::VaultSigningKeypair;
 use crate::device_trust::TrustedDevice;
 use crate::error::{QGuardError, Result};
 use crate::identity::{LocalIdentity, PublicIdentityBundle};
@@ -100,6 +101,70 @@ impl PersistedVaultRecovery {
     }
 }
 
+/// Device-local, encrypted-at-rest Vault Master Key (VMK) + the vault's ML-DSA-87
+/// signing keypair. The VMK wraps every per-file key (FEK) in the user's vault;
+/// it is generated once and reused so it acts as a true master key. Both live
+/// under the same OS-keychain-held DEK as the device key material — never sent to
+/// a server. Mirrors the `PersistedVaultRecovery` storage pattern (no `Drop` impl,
+/// matching that type; `VaultSigningKeypair` zeroizes its own secrets on drop).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedVaultMaster {
+    pub version: u8,
+    pub vmk: [u8; crate::crypto::symmetric::KEY_SIZE],
+    pub signer: VaultSigningKeypair,
+    pub configured_at: chrono::DateTime<Utc>,
+}
+
+/// One unlock credential (password or PIN) for a protected workspace scope.
+/// Stores only a salt + an HKDF-derived verifier (never the secret). For the
+/// vault scope it additionally holds the VMK material wrapped under the unlock
+/// key, so the password/PIN cryptographically gates the VMK (zero-knowledge).
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct WorkspaceCredential {
+    pub salt: Vec<u8>,
+    pub verifier: String,
+    #[serde(default)]
+    pub wrapped_master: Option<crate::crypto::EncryptedEnvelope>,
+}
+
+/// Device-local, encrypted-at-rest workspace-lock state for one scope
+/// ("chat" | "vault"): the configured password/PIN credentials plus the
+/// anti-bruteforce counters. Stored under the same OS-keychain DEK as the device
+/// keys; holds no plaintext secret.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedWorkspaceScope {
+    pub version: u8,
+    pub scope: String,
+    #[serde(default)]
+    pub password: Option<WorkspaceCredential>,
+    #[serde(default)]
+    pub pin: Option<WorkspaceCredential>,
+    #[serde(default)]
+    pub failed_attempts: u32,
+    #[serde(default)]
+    pub lockout_until: Option<chrono::DateTime<Utc>>,
+    #[serde(default)]
+    pub lockdown: bool,
+}
+
+impl PersistedWorkspaceScope {
+    pub fn new(scope: &str) -> Self {
+        Self {
+            version: 1,
+            scope: scope.to_string(),
+            password: None,
+            pin: None,
+            failed_attempts: 0,
+            lockout_until: None,
+            lockdown: false,
+        }
+    }
+
+    pub fn configured(&self) -> bool {
+        self.password.is_some() || self.pin.is_some()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AuthSession {
     pub user_id: String,
@@ -126,6 +191,11 @@ pub struct AppState {
     pub auth_session: Mutex<Option<AuthSession>>,
     pub auth_sessions: Mutex<HashMap<String, AuthSession>>,
     pub decrypt_attempts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Unlocked Vault Master Key for this session (None = vault locked). Cleared
+    /// and zeroized on lock / inactivity / sign-out.
+    pub vault_session: Mutex<Option<PersistedVaultMaster>>,
+    /// Set of currently-unlocked workspace scopes ("chat" | "vault").
+    pub workspace_unlocked: Mutex<HashSet<String>>,
 }
 
 impl AppState {
@@ -150,6 +220,8 @@ impl AppState {
             auth_session: Mutex::new(None),
             auth_sessions: Mutex::new(HashMap::new()),
             decrypt_attempts: Mutex::new(HashMap::new()),
+            vault_session: Mutex::new(None),
+            workspace_unlocked: Mutex::new(HashSet::new()),
         })
     }
 
@@ -613,6 +685,186 @@ impl AppState {
             .map_err(|e| QGuardError::Storage(format!("decode vault recovery payload: {e}")))?;
         plaintext.zeroize();
         Ok(Some(material))
+    }
+
+    fn vault_master_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.vault-master.enc"))
+    }
+
+    fn load_vault_master(&self, user_id: &str) -> Result<Option<PersistedVaultMaster>> {
+        let path = self.vault_master_path(user_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| QGuardError::Storage(format!("read vault master material: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode vault master material: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let mut plaintext =
+            crate::crypto::symmetric::decrypt(&key, &file.envelope, &crate::security::obf::vault_master_material_aad())?;
+        let material: PersistedVaultMaster = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode vault master payload: {e}")))?;
+        plaintext.zeroize();
+        Ok(Some(material))
+    }
+
+    /// Return the user's Vault Master Key + ML-DSA-87 signing keypair WITHOUT
+    /// persisting it. If a legacy keychain-protected copy exists (`*.vault-master.enc`,
+    /// from before workspace lock), it is loaded so existing files stay decryptable;
+    /// otherwise a fresh VMK is generated in memory. The caller (vault unlock setup)
+    /// then wraps it under the user's password/PIN and deletes any legacy copy, so
+    /// the VMK is only ever stored password-wrapped (zero-knowledge).
+    pub fn load_or_generate_vault_master(&self, user_id: &str) -> Result<PersistedVaultMaster> {
+        if let Some(material) = self.load_vault_master(user_id)? {
+            return Ok(material);
+        }
+        Ok(PersistedVaultMaster {
+            version: 1,
+            vmk: crate::crypto::symmetric::random_key(),
+            signer: VaultSigningKeypair::generate(),
+            configured_at: Utc::now(),
+        })
+    }
+
+    /// Remove the legacy keychain-only VMK file once it has been migrated to the
+    /// password-wrapped store, so vault access truly requires the unlock secret.
+    pub fn delete_vault_master_file(&self, user_id: &str) -> Result<()> {
+        let path = self.vault_master_path(user_id);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| QGuardError::Storage(format!("remove legacy vault master file: {e}")))?;
+        }
+        Ok(())
+    }
+
+    // ---- Workspace lock: scope persistence + session ----------------------
+
+    fn workspace_scope_path(&self, user_id: &str, scope: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        let safe_scope = if scope == "vault" { "vault" } else { "chat" };
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.workspace-{safe_scope}.enc"))
+    }
+
+    pub fn save_workspace_scope(&self, user_id: &str, material: &PersistedWorkspaceScope) -> Result<()> {
+        let encoded = serde_json::to_vec(material)
+            .map_err(|e| QGuardError::Storage(format!("encode workspace scope: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, &crate::security::obf::workspace_material_aad())?;
+        let file = EncryptedKeyMaterialFile { version: 1, envelope };
+        let serialized = serde_json::to_vec(&file)
+            .map_err(|e| QGuardError::Storage(format!("encode encrypted workspace scope: {e}")))?;
+        std::fs::write(self.workspace_scope_path(user_id, &material.scope), &serialized)
+            .map_err(|e| QGuardError::Storage(format!("write workspace scope: {e}")))?;
+        Ok(())
+    }
+
+    pub fn load_workspace_scope(&self, user_id: &str, scope: &str) -> Result<Option<PersistedWorkspaceScope>> {
+        let path = self.workspace_scope_path(user_id, scope);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| QGuardError::Storage(format!("read workspace scope: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode workspace scope: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let plaintext =
+            crate::crypto::symmetric::decrypt(&key, &file.envelope, &crate::security::obf::workspace_material_aad())?;
+        let material: PersistedWorkspaceScope = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode workspace scope payload: {e}")))?;
+        Ok(Some(material))
+    }
+
+    /// Store the unlocked VMK for this session (vault unlocked).
+    pub fn set_vault_session(&self, master: PersistedVaultMaster) -> Result<()> {
+        *self
+            .vault_session
+            .lock()
+            .map_err(|_| QGuardError::Storage("vault session lock poisoned".to_string()))? = Some(master);
+        Ok(())
+    }
+
+    /// The unlocked VMK for this session, or an error if the vault is locked.
+    pub fn unlocked_vault_master(&self) -> Result<PersistedVaultMaster> {
+        self.vault_session
+            .lock()
+            .map_err(|_| QGuardError::Storage("vault session lock poisoned".to_string()))?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| QGuardError::Trust("Quantum Vault is locked — unlock it to continue".to_string()))
+    }
+
+    /// Zeroize + drop the unlocked VMK (vault re-locks).
+    pub fn clear_vault_session(&self) -> Result<()> {
+        if let Ok(mut guard) = self.vault_session.lock() {
+            if let Some(mut master) = guard.take() {
+                master.vmk.zeroize(); // VaultSigningKeypair zeroizes its secrets on drop
+            }
+        }
+        Ok(())
+    }
+
+    pub fn mark_workspace_unlocked(&self, scope: &str) -> Result<()> {
+        self.workspace_unlocked
+            .lock()
+            .map_err(|_| QGuardError::Storage("workspace lock state poisoned".to_string()))?
+            .insert(scope.to_string());
+        Ok(())
+    }
+
+    pub fn mark_workspace_locked(&self, scope: &str) -> Result<()> {
+        self.workspace_unlocked
+            .lock()
+            .map_err(|_| QGuardError::Storage("workspace lock state poisoned".to_string()))?
+            .remove(scope);
+        Ok(())
+    }
+
+    pub fn is_workspace_unlocked(&self, scope: &str) -> bool {
+        self.workspace_unlocked
+            .lock()
+            .map(|set| set.contains(scope))
+            .unwrap_or(false)
+    }
+
+    /// Memory protection on chat lock: drop decrypted message plaintext from the
+    /// in-memory cache so it can no longer be read while locked.
+    pub fn clear_chat_session(&self) {
+        if let Ok(mut cache) = self.decrypted_message_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    /// Lock every protected workspace (sign-out / inactivity / app close): zeroize
+    /// the VMK, clear decrypted chat plaintext, and forget all unlocked scopes.
+    pub fn lock_all_workspaces(&self) {
+        let _ = self.clear_vault_session();
+        self.clear_chat_session();
+        if let Ok(mut set) = self.workspace_unlocked.lock() {
+            set.clear();
+        }
+    }
+
+    /// Reset anti-bruteforce counters + lockdown for both scopes. Called on a
+    /// successful application login, so re-authenticating clears a lockdown
+    /// (per the Secure Workspace spec).
+    pub fn reset_workspace_lockouts(&self, user_id: &str) {
+        for scope in ["chat", "vault"] {
+            if let Ok(Some(mut record)) = self.load_workspace_scope(user_id, scope) {
+                if record.failed_attempts != 0 || record.lockout_until.is_some() || record.lockdown {
+                    record.failed_attempts = 0;
+                    record.lockout_until = None;
+                    record.lockdown = false;
+                    let _ = self.save_workspace_scope(user_id, &record);
+                }
+            }
+        }
     }
 
     pub fn set_auth_session(&self, session: AuthSession) -> Result<()> {
