@@ -32,6 +32,7 @@ export function useSecureCall(args: {
   const [quality, setQualityState] = useState<CallQuality>(DEFAULT_CALL_QUALITY);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   const qualityRef = useRef<CallQuality>(DEFAULT_CALL_QUALITY);
   const workerRef = useRef<Worker | null>(null);
   const setupRef = useRef<CallSetup | null>(null);
@@ -74,10 +75,15 @@ export function useSecureCall(args: {
     pendingOfferRef.current = null;
     pendingCandidatesRef.current = [];
     if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
-    localStream?.getTracks().forEach((t) => t.stop());
+    // Read the live stream from a ref so `cleanup` keeps a STABLE identity. If it
+    // depended on `localStream` state, the unmount effect below would re-run on
+    // every stream change and tear the active call down mid-negotiation (closing
+    // the peer connection / worker and releasing the camera in a race).
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
-  }, [localStream]);
+  }, []);
 
   const armTimeout = useCallback((ms: number) => {
     if (timeoutRef.current !== undefined) window.clearTimeout(timeoutRef.current);
@@ -134,6 +140,7 @@ export function useSecureCall(args: {
       stream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio ?? true });
       setCameraEnabled(false);
     }
+    localStreamRef.current = stream;
     setLocalStream(stream);
     return stream;
   }, []);

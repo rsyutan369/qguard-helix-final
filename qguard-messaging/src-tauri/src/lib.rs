@@ -31,6 +31,20 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Force WebRTC video onto the software codec path on Windows BEFORE the
+    // WebView2 environment is created. WebView2's hardware H.264/VP8 encode+decode
+    // can hang the GPU driver — freezing the entire machine (hard-restart) — during
+    // a video call on many GPUs/drivers. Call media is already capped to <=360p@24fps
+    // by default (see call-quality.ts), so the software codec costs little CPU; this
+    // trades a sliver of CPU for never hanging the host. Respects an existing override.
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-accelerated-video-decode --disable-accelerated-video-encode",
+        );
+    }
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "qguard_messaging=info".to_string()),
