@@ -23,6 +23,7 @@ import {
   Key,
   KeyRound,
   Lock,
+  MessageSquareLock,
   AlertTriangle,
   MoveRight,
   FileCheck,
@@ -2971,40 +2972,40 @@ export default function App() {
                 <span className="homepage-nav__menu-kicker">Solution Suites</span>
                 {[
                   {
-                    title: 'Crypto Asset Discovery',
-                    description: 'Inventory certificates, keys, endpoints, collector agents, weak ciphers, and CBOM evidence.',
-                    href: '/dashboard/scanner',
-                    icon: Search
+                    title: 'Post-Quantum Migration Platform',
+                    description: 'Plan, orchestrate, and validate hybrid PQC migrations with rollback-safe controls.',
+                    href: '/dashboard/migration-planner',
+                    icon: RefreshCcw
                   },
                   {
-                    title: 'Runtime Crypto Intelligence',
-                    description: 'Monitor live cryptographic operations, TLS behavior, key usage, and runtime risk signals.',
-                    href: '/dashboard/runtime-crypto-intel',
-                    icon: Activity
+                    title: 'Qguard Messaging',
+                    description: 'End-to-end encrypted Secure Chat and an on-device Quantum Vault, built on NIST post-quantum cryptography.',
+                    href: '/qguard-messaging',
+                    icon: MessageSquareLock
                   },
                   {
-                    title: 'Harvest Now Defense',
-                    description: 'Detect long-lived data exposure and trigger tenant-scoped remediation workflows.',
-                    href: '/dashboard/harvest-now',
+                    title: 'Quantum Readiness & Assessment',
+                    description: 'Score quantum risk, model exposure, and generate executive readiness reports.',
+                    href: '/dashboard/quantum-readiness',
                     icon: Shield
                   },
                   {
-                    title: 'PQC Migration Orchestration',
-                    description: 'Coordinate hybrid deployments, migration jobs, readiness telemetry, and rollback controls.',
-                    href: '/dashboard/pqc-orchestration',
-                    icon: RefreshCw
+                    title: 'Cryptographic Asset Management',
+                    description: 'Discover, inventory, and govern certificates, keys, and CBOM evidence across your estate.',
+                    href: '/dashboard/scanner',
+                    icon: Database
                   },
                   {
-                    title: 'Governance & Compliance',
-                    description: 'Manage cryptographic policy, audit evidence, NIST alignment, and compliance reporting.',
+                    title: 'Quantum Key & Trust Services',
+                    description: 'QRNG, key generation, QKMS, PKI, and continuous trust validation.',
+                    href: '/dashboard/qkms/overview',
+                    icon: KeyRound
+                  },
+                  {
+                    title: 'Cyber Resilience & Compliance',
+                    description: 'Governance, audit evidence, NIST/CNSA alignment, and compliance reporting.',
                     href: '/dashboard/compliance',
                     icon: FileCheck
-                  },
-                  {
-                    title: 'Encryption & Key Services',
-                    description: 'Operate QRNG, key generation, PKI, vault, tokenization, and secure communications tools.',
-                    href: '/dashboard/keys',
-                    icon: KeyRound
                   }
                 ].map((entry) => (
                   <a

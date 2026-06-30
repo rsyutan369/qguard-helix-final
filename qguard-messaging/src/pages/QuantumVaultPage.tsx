@@ -32,7 +32,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@/lib/tauri-dialog";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
-import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta } from "@/lib/vault-progress";
+import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, overallPercent } from "@/lib/vault-progress";
 
 // ---------------------------------------------------------------------------
 // Quantum Vault — strictly LOCAL, zero-knowledge, post-quantum file vault.
@@ -294,9 +294,19 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   const terminalRef = useRef<HTMLDivElement | null>(null);
 
   // Live, real-time crypto progress streamed from the Rust vault streamer.
-  const [liveProgress, setLiveProgress] = useState<VaultProgress | null>(null);
+  // `liveStep` carries the currently-displayed real event plus its stage-weighted
+  // percentage and the REAL elapsed time (from the event's arrival), so throughput
+  // and ETA stay accurate even while the step display is paced for readability.
+  type LiveStep = { p: VaultProgress; pct: number; elapsedMs: number };
+  const [liveStep, setLiveStep] = useState<LiveStep | null>(null);
   const progressStartRef = useRef<number>(0);
   const lastChunkLogRef = useRef<number>(-1);
+  const stepQueueRef = useRef<Array<{ p: VaultProgress; receivedAt: number }>>([]);
+  const drainTimerRef = useRef<number | undefined>(undefined);
+  const maxPctRef = useRef<number>(0);
+
+  // Cancel any in-flight progress playback timer on unmount.
+  useEffect(() => () => { if (drainTimerRef.current !== undefined) window.clearTimeout(drainTimerRef.current); }, []);
 
   const appendLog = useCallback((level: VaultTerminalLog["level"], message: string) => {
     setTerminalLogs((current) => [
@@ -306,35 +316,95 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   }, []);
 
   // Runs a vault stream command with a real-time progress Channel. The Rust side
-  // streams VaultProgress events: we drive the live panel from every event and
-  // append a terminal line for each phase (and every ~10% of chunks) so the log
-  // stays readable even for multi-GB files.
+  // streams REAL VaultProgress events (per crypto phase + per 1 MiB chunk). On-device
+  // AES-256-GCM is so fast that small files finish in milliseconds, so we PLAY BACK
+  // the real events through a queue at a human-readable cadence: each step is shown
+  // for a beat, and the cadence auto-accelerates when events back up so large files
+  // stay genuinely real-time. No values are fabricated — percentage is stage-weighted
+  // over the steps that actually ran, and throughput/ETA use each event's real
+  // arrival time.
   const runVaultStream = useCallback(
     async (command: string, args: Record<string, unknown>): Promise<VaultLocalStreamSummary> => {
-      progressStartRef.current = Date.now();
+      if (drainTimerRef.current !== undefined) {
+        window.clearTimeout(drainTimerRef.current);
+        drainTimerRef.current = undefined;
+      }
+      const startedAt = Date.now();
+      progressStartRef.current = startedAt;
       lastChunkLogRef.current = -1;
-      setLiveProgress(null);
+      maxPctRef.current = 0;
+      stepQueueRef.current = [];
+      setLiveStep(null);
+
+      const BASE_MS = 320; // readable pace per step when caught up
+      const MIN_MS = 25; // fast catch-up when many events are queued (large files)
+      const HOLD_MS = 1100; // keep the completed 100% bar visible briefly
+
+      let producerDone = false;
+      let finishPlayback: () => void = () => undefined;
+      const playbackDone = new Promise<void>((resolve) => { finishPlayback = resolve; });
+
+      const renderStep = (item: { p: VaultProgress; receivedAt: number }) => {
+        const { p, receivedAt } = item;
+        const pct = Math.max(maxPctRef.current, overallPercent(p));
+        maxPctRef.current = pct;
+        setLiveStep({ p, pct, elapsedMs: Math.max(0, receivedAt - startedAt) });
+        if (p.phase === "chunk") {
+          const decile = p.totalBytes > 0 ? Math.floor((p.processedBytes / p.totalBytes) * 10) : 0;
+          if (decile !== lastChunkLogRef.current) {
+            lastChunkLogRef.current = decile;
+            appendLog("info", `${phaseLabel(p.phase)} · ${pct}% · chunk ${p.chunkIndex}/${p.totalChunks} · ${formatBytes(p.processedBytes)} / ${formatBytes(p.totalBytes)}`);
+          }
+        } else {
+          appendLog(p.level === "success" ? "success" : "info", `▸ ${p.message}`);
+        }
+      };
+
+      let graceChecks = 0; // brief wait for trailing channel events after the command resolves
+      const drain = () => {
+        const queue = stepQueueRef.current;
+        if (queue.length === 0) {
+          if (producerDone && graceChecks >= 3) {
+            drainTimerRef.current = window.setTimeout(() => {
+              drainTimerRef.current = undefined;
+              setLiveStep(null);
+              finishPlayback();
+            }, HOLD_MS);
+            return;
+          }
+          if (producerDone) graceChecks += 1;
+          drainTimerRef.current = window.setTimeout(drain, 60); // await more events
+          return;
+        }
+        graceChecks = 0;
+        renderStep(queue.shift()!);
+        // Accelerate as backlog grows so playback never lags far behind reality.
+        const delay = Math.max(MIN_MS, Math.round(BASE_MS / (1 + queue.length)));
+        drainTimerRef.current = window.setTimeout(drain, delay);
+      };
 
       const onProgress = isTauriRuntime() ? new Channel<VaultProgress>() : null;
       if (onProgress) {
         onProgress.onmessage = (p) => {
-          setLiveProgress(p);
-          if (p.phase === "chunk") {
-            const decile = p.totalBytes > 0 ? Math.floor((p.processedBytes / p.totalBytes) * 10) : 0;
-            if (decile !== lastChunkLogRef.current) {
-              lastChunkLogRef.current = decile;
-              appendLog("info", `${phaseLabel(p.phase)} · ${decile * 10}% · chunk ${p.chunkIndex}/${p.totalChunks}`);
-            }
-          } else {
-            appendLog(p.level === "success" ? "success" : "info", `▸ ${p.message}`);
-          }
+          stepQueueRef.current.push({ p, receivedAt: Date.now() });
         };
+        drain();
       }
 
       try {
-        return await safeInvoke<VaultLocalStreamSummary>(command, { ...args, onProgress });
-      } finally {
-        setLiveProgress(null);
+        const summary = await safeInvoke<VaultLocalStreamSummary>(command, { ...args, onProgress });
+        producerDone = true;
+        if (onProgress) await playbackDone; // let the user watch the full sequence
+        return summary;
+      } catch (error) {
+        producerDone = true;
+        if (drainTimerRef.current !== undefined) {
+          window.clearTimeout(drainTimerRef.current);
+          drainTimerRef.current = undefined;
+        }
+        stepQueueRef.current = [];
+        setLiveStep(null);
+        throw error;
       }
     },
     [appendLog],
@@ -1289,28 +1359,28 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
           </div>
           <span className="text-xs font-semibold text-cyan-200">On-device vault logs</span>
         </div>
-        {liveProgress && (() => {
-          const p = liveProgress;
-          const pct = p.totalBytes > 0 ? Math.min(100, Math.round((p.processedBytes / p.totalBytes) * 100)) : 0;
-          const elapsed = Date.now() - progressStartRef.current;
+        {liveStep && (() => {
+          const { p, pct, elapsedMs } = liveStep;
           return (
             <div className="border-b border-white/10 px-4 py-3">
               <div className="flex items-center justify-between gap-2 text-xs">
-                <span className="font-bold text-white">
+                <span className="flex items-center gap-2 font-bold text-white">
+                  <Loader2 className="animate-spin text-cyan-300" size={13} />
                   {opLabel(p.op)} <span className="text-cyan-200">· {phaseLabel(p.phase)}</span>
                 </span>
                 <span className="font-mono text-cyan-200">{pct}%</span>
               </div>
+              <div className="mt-1.5 truncate font-mono text-[11px] text-cyan-100/70">{p.message}</div>
               <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500 transition-[width] duration-200"
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-violet-500 transition-[width] duration-300 ease-out"
                   style={{ width: `${pct}%` }}
                 />
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-cyan-100/80">
-                <span>{formatBytes(p.processedBytes)} / {formatBytes(p.totalBytes)}</span>
-                <span>{formatThroughput(p.processedBytes, elapsed)}</span>
-                <span>{formatEta(p.processedBytes, p.totalBytes, elapsed)}</span>
+                {p.totalBytes > 0 && <span>{formatBytes(p.processedBytes)} / {formatBytes(p.totalBytes)}</span>}
+                {p.processedBytes > 0 && <span>{formatThroughput(p.processedBytes, elapsedMs)}</span>}
+                {p.phase === "chunk" && <span>{formatEta(p.processedBytes, p.totalBytes, elapsedMs)}</span>}
                 {p.totalChunks > 0 && <span>chunk {p.chunkIndex}/{p.totalChunks}</span>}
               </div>
             </div>

@@ -8,6 +8,9 @@ import RegisterPage from './app/authentication/register/page';
 import DocsPage from './app/docs/page';
 import PqcChecklistPage from './app/resources/pqc-checklist/page';
 import QuantumSimulationPage from './app/resources/quantum-simulation/page';
+import QguardMessagingOverview from './app/qguard-messaging/page';
+import QguardMessagingSecureChat from './app/qguard-messaging/secure-chat/page';
+import QguardMessagingQuantumVault from './app/qguard-messaging/quantum-vault/page';
 import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
@@ -114,6 +117,9 @@ export default function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/authentication/register" element={<RegisterPage />} />
           <Route path="/docs" element={<DocsPage />} />
+          <Route path="/qguard-messaging" element={<QguardMessagingOverview />} />
+          <Route path="/qguard-messaging/secure-chat" element={<QguardMessagingSecureChat />} />
+          <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />
           <Route path="/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/localhost/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/resources/quantum-simulation" element={<QuantumSimulationPage />} />
