@@ -295,18 +295,26 @@ export const DETECTION_RULES: DetectionRule[] = [
   },
   {
     id: 'TLS-008',
-    name: 'TLS 1.0/1.1 Detected',
+    name: 'Deprecated SSL/TLS Protocol Detected',
     category: 'tls-config',
     severity: 'CRITICAL',
-    description: 'TLS 1.0 or 1.1 is deprecated and insecure',
-    remediation: 'Disable TLS 1.0/1.1 immediately — enforce TLS 1.2+ minimum',
+    description: 'SSLv2, SSLv3, TLS 1.0 or TLS 1.1 is deprecated and insecure',
+    remediation: 'Disable SSLv2/SSLv3/TLS 1.0/1.1 immediately — enforce TLS 1.2+ (prefer TLS 1.3)',
     evaluate: (ctx) => {
       const tls = ctx.tlsResult
       if (!tls) return null
-      if (tls.tlsVersion === 'TLSv1' || tls.tlsVersion === 'TLSv1.1') {
-        return makeResult('TLS-008', 'Deprecated TLS Version', 'tls-config', 'CRITICAL',
-          `${tls.tlsVersion} detected — deprecated, classically insecure`,
-          'Disable TLS 1.0/1.1 immediately and enforce TLS 1.3')
+      // Consider the negotiated version AND every protocol reported as supported
+      // (by probes, an agent collector, or server-config analysis). SSLv2/SSLv3
+      // cannot be negotiated by the Node/OpenSSL runtime prober, so they are
+      // flagged here whenever any evidence source reports them.
+      const reported = new Set<string>([tls.tlsVersion, ...(tls.supportedProtocols || [])].map((p) => String(p)))
+      const deprecated = ['SSLv2', 'SSLv3', 'SSL 2.0', 'SSL 3.0', 'TLSv1', 'TLS 1.0', 'TLSv1.1', 'TLS 1.1']
+      const hit = deprecated.filter((p) => reported.has(p))
+      if (hit.length > 0) {
+        const legacySsl = hit.some((p) => /ssl/i.test(p))
+        return makeResult('TLS-008', 'Deprecated SSL/TLS Version', 'tls-config', 'CRITICAL',
+          `Deprecated protocol(s) ${hit.join(', ')} detected — classically insecure${legacySsl ? ' (SSLv2/SSLv3 are trivially broken: DROWN/POODLE)' : ''}`,
+          'Disable all protocols below TLS 1.2 and enforce TLS 1.3')
       }
       return null
     },

@@ -1,6 +1,7 @@
 /**
  * QGuard Web Scanner — X.509 Certificate OID Database
- * 50 OID mappings with quantum vulnerability classifications
+ * 52 OID mappings with quantum vulnerability classifications
+ * (includes SHA-224/256/384/512 RSA & ECDSA signature algorithms)
  */
 
 import type { OidClassification } from './types'
@@ -52,6 +53,15 @@ export const OID_DATABASE: OidClassification[] = [
     quantumThreat: 'both',
     pqcReplacement: 'ML-DSA-65 (FIPS 204)',
     description: 'RSA signature with SHA-1 hash — deprecated hash + quantum-vulnerable RSA',
+  },
+  {
+    oid: '1.2.840.113549.1.1.14',
+    name: 'sha224WithRSAEncryption',
+    category: 'rsa',
+    quantumVulnerable: true,
+    quantumThreat: 'shor',
+    pqcReplacement: 'ML-DSA-65 (FIPS 204)',
+    description: 'RSA signature with SHA-224 — quantum-vulnerable RSA component',
   },
   {
     oid: '1.2.840.113549.1.1.11',
@@ -118,6 +128,15 @@ export const OID_DATABASE: OidClassification[] = [
     quantumThreat: 'both',
     pqcReplacement: 'ML-DSA-65 (FIPS 204)',
     description: 'ECDSA with SHA-1 — deprecated hash + quantum-vulnerable ECDSA',
+  },
+  {
+    oid: '1.2.840.10045.4.3.1',
+    name: 'ecdsa-with-SHA224',
+    category: 'ecc',
+    quantumVulnerable: true,
+    quantumThreat: 'shor',
+    pqcReplacement: 'ML-DSA-65 (FIPS 204)',
+    description: 'ECDSA with SHA-224 — quantum-vulnerable ECDSA signature',
   },
   {
     oid: '1.2.840.10045.4.3.2',
@@ -502,6 +521,9 @@ export function classifySignatureAlgorithm(sigAlg: string): OidClassification | 
 
   // Map common signature algorithm names to OIDs
   const sigAlgMap: Record<string, string> = {
+    'sha224withrsa': '1.2.840.113549.1.1.14',
+    'sha224withrsaencryption': '1.2.840.113549.1.1.14',
+    'rsa-sha224': '1.2.840.113549.1.1.14',
     'sha256withrsa': '1.2.840.113549.1.1.11',
     'sha256withrsaencryption': '1.2.840.113549.1.1.11',
     'sha384withrsa': '1.2.840.113549.1.1.12',
@@ -513,6 +535,7 @@ export function classifySignatureAlgorithm(sigAlg: string): OidClassification | 
     'md5withrsa': '1.2.840.113549.1.1.4',
     'md5withrsaencryption': '1.2.840.113549.1.1.4',
     'rsassa-pss': '1.2.840.113549.1.1.10',
+    'ecdsa-with-sha224': '1.2.840.10045.4.3.1',
     'ecdsa-with-sha256': '1.2.840.10045.4.3.2',
     'ecdsa-with-sha384': '1.2.840.10045.4.3.3',
     'ecdsa-with-sha512': '1.2.840.10045.4.3.4',
