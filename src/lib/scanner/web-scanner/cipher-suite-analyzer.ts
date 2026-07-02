@@ -495,81 +495,110 @@ function classifyFromPattern(name: string, protocol: string): CipherSuiteDetail 
   let riskLevel: ThreatLevel = 'HIGH'
   let description = 'Cipher suite detected'
 
-  // Determine key exchange
-  if (name.includes('TLS_RSA_WITH') || name.startsWith('RSA')) {
+  const upper = name.toUpperCase()
+
+  // Determine key exchange / authentication.
+  // Anonymous (no authentication) and EXPORT-grade suites are always CRITICAL —
+  // they are trivially breakable classically, before any quantum consideration.
+  const isAnon = /(_|-)ANON(_|-)|DH_ANON|ECDH_ANON/.test(upper)
+  const isExport = /EXPORT|_EXP(_|$)/.test(upper)
+  if (isAnon) {
+    category = 'other'
+    keyExchange = upper.includes('ECDH') ? 'ECDH_anon' : 'DH_anon'
+    authentication = 'ANONYMOUS'
+    riskLevel = 'CRITICAL'
+    description = 'Anonymous key exchange — no server authentication (MITM-exploitable) + quantum-vulnerable'
+  } else if (upper.includes('TLS_RSA_WITH') || upper.includes('TLS_RSA_EXPORT') || upper.startsWith('RSA')) {
     category = 'rsa-kex'
     keyExchange = 'RSA'
     authentication = 'RSA'
     riskLevel = 'CRITICAL'
     description = 'RSA key exchange — no forward secrecy + quantum-vulnerable'
-  } else if (name.includes('ECDHE_RSA') || name.includes('ECDHE-RSA')) {
+  } else if (upper.includes('ECDHE_RSA') || upper.includes('ECDHE-RSA')) {
     category = 'ecdhe-rsa'
     keyExchange = 'ECDHE'
     authentication = 'RSA'
     description = 'ECDHE + RSA — both quantum-vulnerable'
-  } else if (name.includes('ECDHE_ECDSA') || name.includes('ECDHE-ECDSA')) {
+  } else if (upper.includes('ECDHE_ECDSA') || upper.includes('ECDHE-ECDSA')) {
     category = 'ecdhe-ecdsa'
     keyExchange = 'ECDHE'
     authentication = 'ECDSA'
     description = 'ECDHE + ECDSA — ECC-based, quantum-vulnerable via Shor\'s'
-  } else if (name.includes('DHE_RSA') || name.includes('DHE-RSA')) {
+  } else if (upper.includes('DHE_RSA') || upper.includes('DHE-RSA')) {
     category = 'dhe-rsa'
     keyExchange = 'DHE'
     authentication = 'RSA'
     description = 'DHE + RSA — both quantum-vulnerable'
-  } else if (name.includes('DHE_DSS') || name.includes('DHE-DSS')) {
+  } else if (upper.includes('DHE_DSS') || upper.includes('DHE-DSS') || upper.includes('DSS')) {
     category = 'dhe-dss'
-    keyExchange = 'DHE'
+    keyExchange = upper.includes('DHE') ? 'DHE' : 'unknown'
     authentication = 'DSS'
     riskLevel = 'CRITICAL'
-    description = 'DHE + DSS — deprecated + quantum-vulnerable'
-  } else if (protocol === 'TLSv1.3' || name.startsWith('TLS_AES') || name.startsWith('TLS_CHACHA')) {
+    description = 'DSS/DSA authentication — deprecated + quantum-vulnerable'
+  } else if (upper.includes('ECDH_') || upper.includes('ECDH-')) {
+    category = 'ecdhe-ecdsa'
+    keyExchange = 'ECDH (static)'
+    authentication = upper.includes('ECDSA') ? 'ECDSA' : 'RSA'
+    description = 'Static ECDH — no forward secrecy + quantum-vulnerable via Shor\'s'
+  } else if (protocol === 'TLSv1.3' || upper.startsWith('TLS_AES') || upper.startsWith('TLS_CHACHA') || upper.startsWith('TLS_SM4')) {
     category = 'tls13'
     keyExchange = 'ECDHE/DHE (negotiated)'
     authentication = 'Certificate'
     riskLevel = 'MEDIUM'
-    description = 'TLS 1.3 cipher — key exchange needs PQC upgrade'
+    description = 'TLS 1.3 cipher — key exchange needs PQC (hybrid ML-KEM) upgrade'
+  }
+  if (isExport) {
+    riskLevel = 'CRITICAL'
+    description = `EXPORT-grade cipher — intentionally weakened key sizes, classically broken. ${description}`
   }
 
-  // Determine encryption
-  if (name.includes('AES_128_GCM') || name.includes('AES-128-GCM')) {
-    encryption = 'AES-128-GCM'
-    mac = 'AEAD'
-  } else if (name.includes('AES_256_GCM') || name.includes('AES-256-GCM')) {
-    encryption = 'AES-256-GCM'
-    mac = 'AEAD'
-  } else if (name.includes('AES_128_CBC') || name.includes('AES-128-CBC')) {
-    encryption = 'AES-128-CBC'
-  } else if (name.includes('AES_256_CBC') || name.includes('AES-256-CBC')) {
-    encryption = 'AES-256-CBC'
-  } else if (name.includes('CHACHA20') || name.includes('ChaCha20')) {
-    encryption = 'CHACHA20-POLY1305'
-    mac = 'AEAD'
-  } else if (name.includes('3DES') || name.includes('DES-CBC3')) {
-    encryption = '3DES-EDE-CBC'
-    riskLevel = 'CRITICAL'
-  } else if (name.includes('RC4')) {
-    encryption = 'RC4'
-    riskLevel = 'CRITICAL'
-    description = 'RC4 stream cipher — classically broken + quantum-vulnerable key exchange'
-  } else if (name.includes('NULL')) {
-    encryption = 'NULL'
-    riskLevel = 'CRITICAL'
-    description = 'NULL encryption — no data confidentiality'
-  } else if (name.includes('CCM_8')) {
-    encryption = 'AES-128-CCM-8'
-    mac = 'AEAD'
-    riskLevel = 'HIGH'
-  } else if (name.includes('CCM')) {
-    encryption = 'AES-128-CCM'
-    mac = 'AEAD'
+  // Determine symmetric encryption. Grover's algorithm halves the effective
+  // symmetric key strength, so 128-bit ciphers drop to a ~64-bit quantum margin
+  // (flag) while 256-bit ciphers retain a ~128-bit margin (quantum-resistant
+  // symmetric). Coverage spans the full enterprise/legacy catalogue: AES, ChaCha20,
+  // Camellia, ARIA, SM4, SEED, IDEA, 3DES, single DES, RC4, RC2, NULL.
+  const setEnc = (value: string) => { encryption = value }
+  if (upper.includes('AES_128_GCM') || upper.includes('AES-128-GCM')) { setEnc('AES-128-GCM'); mac = 'AEAD' }
+  else if (upper.includes('AES_256_GCM') || upper.includes('AES-256-GCM')) { setEnc('AES-256-GCM'); mac = 'AEAD' }
+  else if (upper.includes('AES_128_CCM_8')) { setEnc('AES-128-CCM-8'); mac = 'AEAD' }
+  else if (upper.includes('AES_256_CCM_8')) { setEnc('AES-256-CCM-8'); mac = 'AEAD' }
+  else if (upper.includes('AES_128_CCM')) { setEnc('AES-128-CCM'); mac = 'AEAD' }
+  else if (upper.includes('AES_256_CCM')) { setEnc('AES-256-CCM'); mac = 'AEAD' }
+  else if (upper.includes('AES_128_CBC') || upper.includes('AES-128-CBC')) setEnc('AES-128-CBC')
+  else if (upper.includes('AES_256_CBC') || upper.includes('AES-256-CBC')) setEnc('AES-256-CBC')
+  else if (upper.includes('CHACHA20')) { setEnc('CHACHA20-POLY1305'); mac = 'AEAD' }
+  else if (upper.includes('CAMELLIA_128') || upper.includes('CAMELLIA-128')) setEnc('Camellia-128')
+  else if (upper.includes('CAMELLIA_256') || upper.includes('CAMELLIA-256')) setEnc('Camellia-256')
+  else if (upper.includes('CAMELLIA')) setEnc('Camellia')
+  else if (upper.includes('ARIA_128') || upper.includes('ARIA-128')) setEnc('ARIA-128')
+  else if (upper.includes('ARIA_256') || upper.includes('ARIA-256')) setEnc('ARIA-256')
+  else if (upper.includes('ARIA')) setEnc('ARIA')
+  else if (upper.includes('SM4')) { setEnc('SM4'); mac = mac === 'unknown' ? 'GCM/AEAD' : mac }
+  else if (upper.includes('SEED')) setEnc('SEED')
+  else if (upper.includes('IDEA')) { setEnc('IDEA'); if (riskLevel !== 'CRITICAL') riskLevel = 'HIGH'; description = `IDEA (64-bit block, deprecated). ${description}` }
+  else if (upper.includes('3DES') || upper.includes('DES_EDE') || upper.includes('DES-CBC3') || upper.includes('DES_CBC3')) { setEnc('3DES-EDE-CBC'); riskLevel = 'CRITICAL'; description = `3DES — SWEET32-vulnerable 64-bit block, classically deprecated. ${description}` }
+  else if (upper.includes('RC4')) { setEnc('RC4'); riskLevel = 'CRITICAL'; description = 'RC4 stream cipher — classically broken (RFC 7465 prohibited) + quantum-vulnerable key exchange' }
+  else if (upper.includes('RC2')) { setEnc('RC2'); riskLevel = 'CRITICAL'; description = 'RC2 — legacy weak cipher, classically broken' }
+  else if (/(_|-)DES(_|-)|WITH_DES|DES_CBC(?!3)/.test(upper)) { setEnc('DES-56'); riskLevel = 'CRITICAL'; description = 'Single DES (56-bit) — exhaustively breakable, classically broken' }
+  else if (upper.includes('NULL')) { setEnc('NULL'); riskLevel = 'CRITICAL'; description = 'NULL encryption — no data confidentiality' }
+
+  // Grover margin note for 128-bit AEAD symmetric ciphers (secondary to the
+  // key-exchange risk that drives the overall rating).
+  if (/(AES-128|CAMELLIA-128|ARIA-128)/.test(encryption)) {
+    description = `${description} Note: 128-bit symmetric strength → ~64-bit post-Grover margin; prefer 256-bit.`
   }
 
   // Determine MAC if not AEAD
   if (mac === 'unknown') {
-    if (name.includes('SHA384')) mac = 'SHA-384'
-    else if (name.includes('SHA256')) mac = 'SHA-256'
-    else if (name.includes('SHA')) mac = 'SHA-1'
+    if (upper.includes('SHA384')) mac = 'SHA-384'
+    else if (upper.includes('SHA256')) mac = 'SHA-256'
+    else if (upper.includes('SHA512')) mac = 'SHA-512'
+    else if (upper.includes('SHA')) mac = 'SHA-1'
+    else if (upper.includes('MD5')) mac = 'MD5'
+  }
+  if (mac === 'MD5' || mac === 'SHA-1') {
+    if (riskLevel !== 'CRITICAL') riskLevel = 'HIGH'
+    description = `${description} Legacy ${mac} MAC (broken/deprecated).`
   }
 
   return {

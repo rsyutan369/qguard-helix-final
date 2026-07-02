@@ -1,6 +1,7 @@
 import { Bell, CircleHelp, LogOut, Moon, Search, Sparkles, Sun } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { describeLiveEvent, liveStatusLabel } from "@/lib/live-sse";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import type { ThemeMode } from "@/lib/use-theme";
 
@@ -9,6 +10,7 @@ interface TopBarProps {
   subtitle: string;
   user: User;
   theme: ThemeMode;
+  activePage: string;
   liveStatus: QGuardLiveStatus;
   lastLiveEvent: QGuardLiveEvent | null;
   onToggleTheme: () => void;
@@ -26,9 +28,29 @@ function initials(user: User): string {
     .join("") || "U";
 }
 
-export default function TopBar({ title, subtitle, user, theme, liveStatus, lastLiveEvent, onToggleTheme, onSignOut, onStartTour }: TopBarProps) {
+export default function TopBar({ title, subtitle, user, theme, activePage, liveStatus, lastLiveEvent, onToggleTheme, onSignOut, onStartTour }: TopBarProps) {
   const [panel, setPanel] = useState<"search" | "notifications" | "help" | null>(null);
   const [search, setSearch] = useState("");
+  const headerRef = useRef<HTMLElement>(null);
+
+  // Close any open panel when navigating to another page.
+  useEffect(() => { setPanel(null); }, [activePage]);
+
+  // Close on outside click (incl. sidebar navigation) and on Escape, so a panel
+  // never lingers over other pages.
+  useEffect(() => {
+    if (!panel) return undefined;
+    const onPointerDown = (event: MouseEvent) => {
+      if (headerRef.current && !headerRef.current.contains(event.target as Node)) setPanel(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setPanel(null); };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [panel]);
   const liveTone = liveStatus.state === "live"
     ? "bg-emerald-50 text-emerald-600"
     : liveStatus.state === "connecting"
@@ -43,7 +65,7 @@ export default function TopBar({ title, subtitle, user, theme, liveStatus, lastL
   }, [search]);
 
   return (
-    <header className="relative flex h-[76px] items-center justify-between border-b border-line bg-white/75 px-7 backdrop-blur-xl">
+    <header ref={headerRef} className="relative z-40 flex h-[76px] items-center justify-between border-b border-line bg-white/75 px-7 backdrop-blur-xl">
       <div>
         <h1 className="text-2xl font-bold tracking-tight text-ink-950">{title}</h1>
         <p className="mt-1 text-sm text-ink-600">{subtitle}</p>
@@ -57,7 +79,7 @@ export default function TopBar({ title, subtitle, user, theme, liveStatus, lastL
           <Search size={17} />
           <span>Search secure workspace</span>
         </button>
-        <span className={`status-pill ${liveTone}`} title={liveStatus.detail}>
+        <span className={`status-pill ${liveTone}`} title={liveStatusLabel(liveStatus.state)}>
           {liveStatus.state}
         </span>
         <button className="icon-button" title="Notifications" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>
@@ -77,7 +99,7 @@ export default function TopBar({ title, subtitle, user, theme, liveStatus, lastL
         </div>
       </div>
       {panel && (
-        <div className="absolute right-7 top-[66px] z-20 w-[360px] rounded-lg border border-line bg-white/90 p-4 shadow-soft backdrop-blur-xl">
+        <div className="absolute right-7 top-[66px] z-50 w-[360px] rounded-lg border border-line bg-white/95 p-4 shadow-soft backdrop-blur-xl">
           {panel === "search" && (
             <div>
               <div className="text-sm font-bold text-ink-950">Workspace Search</div>
@@ -93,19 +115,26 @@ export default function TopBar({ title, subtitle, user, theme, liveStatus, lastL
           {panel === "notifications" && (
             <div>
               <div className="text-sm font-bold text-ink-950">Live Activity</div>
-              <div className="mt-3 rounded-lg border border-line bg-canvas p-3 text-xs text-ink-600">
-                {lastLiveEvent ? lastLiveEvent.detail : liveStatus.detail}
-              </div>
-              {lastLiveEvent && <div className="mt-2 font-mono text-[11px] text-ink-400">{lastLiveEvent.raw.trim()}</div>}
+              {lastLiveEvent ? (
+                <div className="mt-3 rounded-lg border border-line bg-canvas p-3">
+                  <div className="text-sm font-semibold text-ink-900">{describeLiveEvent(lastLiveEvent).title}</div>
+                  <div className="mt-1 text-xs text-ink-400">{describeLiveEvent(lastLiveEvent).meta}</div>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg border border-line bg-canvas p-3 text-xs text-ink-500">
+                  You&apos;re all caught up. New workspace activity will appear here.
+                </div>
+              )}
+              <div className="mt-2 text-[11px] text-ink-400">{liveStatusLabel(liveStatus.state)}</div>
             </div>
           )}
           {panel === "help" && (
             <div>
               <div className="text-sm font-bold text-ink-950">Security Help</div>
               <div className="mt-3 grid gap-2 text-xs leading-5 text-ink-600">
-                <div>All production actions are routed through Supabase APIs or local Tauri crypto commands.</div>
-                <div>Live status reflects SSE-formatted backend events with fallback polling.</div>
-                <div>Plaintext and private keys stay on this client.</div>
+                <div>Your messages and private keys are encrypted on this device and never leave it in readable form.</div>
+                <div>Every conversation is protected with end-to-end, quantum-safe encryption.</div>
+                <div>The live indicator shows when your workspace is receiving real-time updates.</div>
               </div>
               <button
                 type="button"

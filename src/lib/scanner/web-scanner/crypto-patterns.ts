@@ -1,6 +1,9 @@
 /**
  * QGuard Web Scanner — Cryptographic Pattern Detection
- * 35 regex patterns for detecting quantum-vulnerable cryptography in source code
+ * 65 regex patterns for detecting quantum-vulnerable and legacy cryptography in
+ * source code, spanning asymmetric (RSA/ECC/DSA/ElGamal), symmetric
+ * (AES/3DES/DES/RC4/RC2/Blowfish/IDEA/Twofish/Camellia/SEED/SM4/Salsa20),
+ * hashes (MD2/MD4/MD5/SHA-1/RIPEMD/Whirlpool), JWT, TLS/SSH config and key material.
  */
 
 import type { CryptoPattern } from './types'
@@ -589,6 +592,124 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
     threatLevel: 'HIGH',
     languages: ['all'],
     description: 'NaCl/Libsodium library — uses Curve25519/Ed25519, quantum-vulnerable',
+  },
+
+  // ── Legacy / Weak Symmetric Ciphers (Patterns 55-61) ──────────────────────
+  // Symmetric ciphers are only weakened (not broken) by Grover's algorithm, but
+  // these are classically deprecated/broken and belong in the CBOM inventory.
+  {
+    id: 55,
+    regex: /\b3DES\b|\bDES3\b|TripleDES|DESede|DES-EDE3|DES_EDE/i,
+    label: '3DES / Triple DES',
+    category: 'Symmetric',
+    algorithm: '3DES',
+    threatLevel: 'HIGH',
+    languages: ['all'],
+    description: '3DES — 64-bit block (SWEET32), classically deprecated by NIST (disallowed after 2023)',
+  },
+  {
+    id: 56,
+    regex: /\bDES\b(?!ede|-EDE|_EDE)|DES\/CBC|DES-CBC(?!3)/,
+    label: 'Single DES',
+    category: 'Symmetric',
+    algorithm: 'DES',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'Single DES (56-bit key) — exhaustively breakable, classically broken',
+  },
+  {
+    id: 57,
+    regex: /\bRC4\b|ARCFOUR|Rivest Cipher 4/i,
+    label: 'RC4 Stream Cipher',
+    category: 'Symmetric',
+    algorithm: 'RC4',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'RC4 — biased keystream, classically broken and prohibited (RFC 7465)',
+  },
+  {
+    id: 58,
+    regex: /\bRC2\b/,
+    label: 'RC2 Block Cipher',
+    category: 'Symmetric',
+    algorithm: 'RC2',
+    threatLevel: 'HIGH',
+    languages: ['all'],
+    description: 'RC2 — legacy 64-bit block cipher, classically weak',
+  },
+  {
+    id: 59,
+    regex: /\bBlowfish\b/i,
+    label: 'Blowfish Cipher',
+    category: 'Symmetric',
+    algorithm: 'Blowfish',
+    threatLevel: 'MEDIUM',
+    languages: ['all'],
+    description: 'Blowfish — 64-bit block (SWEET32-exposed), legacy; migrate to AES-256-GCM',
+  },
+  {
+    id: 60,
+    regex: /\bIDEA\b(?!S|L)|IDEA-CBC/,
+    label: 'IDEA Cipher',
+    category: 'Symmetric',
+    algorithm: 'IDEA',
+    threatLevel: 'MEDIUM',
+    languages: ['all'],
+    description: 'IDEA — 64-bit block legacy cipher; migrate to AES-256-GCM',
+  },
+  {
+    id: 61,
+    regex: /\bTwofish\b|\bSalsa20\b|\bCamellia\b|\bSEED\b|\bSM4\b/i,
+    label: 'Legacy/Regional Symmetric Cipher',
+    category: 'Symmetric',
+    algorithm: 'Twofish/Salsa20/Camellia/SEED/SM4',
+    threatLevel: 'LOW',
+    languages: ['all'],
+    description: 'Symmetric cipher detected — inventory for CBOM; ensure 256-bit key strength for post-Grover margin',
+  },
+
+  // ── Broken / Legacy Hash Functions (Patterns 62-64) ───────────────────────
+  {
+    id: 62,
+    regex: /\bMD2\b|\bMD4\b/i,
+    label: 'MD2 / MD4 Hash',
+    category: 'Hash',
+    algorithm: 'MD2/MD4',
+    threatLevel: 'HIGH',
+    languages: ['all'],
+    description: 'MD2/MD4 — obsolete hash functions, classically broken (trivial collisions)',
+  },
+  {
+    id: 63,
+    regex: /\bRIPEMD(-?1[26]0)?\b/i,
+    label: 'RIPEMD Hash',
+    category: 'Hash',
+    algorithm: 'RIPEMD',
+    threatLevel: 'MEDIUM',
+    languages: ['all'],
+    description: 'RIPEMD hash family — legacy; prefer SHA-256/SHA-3 (SHA-1-era security for RIPEMD-160)',
+  },
+  {
+    id: 64,
+    regex: /\bWhirlpool\b/i,
+    label: 'Whirlpool Hash',
+    category: 'Hash',
+    algorithm: 'Whirlpool',
+    threatLevel: 'LOW',
+    languages: ['all'],
+    description: 'Whirlpool hash — uncommon; inventory for CBOM and confirm library support',
+  },
+
+  // ── DSA / ElGamal Asymmetric (Pattern 65) ─────────────────────────────────
+  {
+    id: 65,
+    regex: /\bDSA\b|DSACryptoServiceProvider|ElGamal|ELGAMAL/,
+    label: 'DSA / ElGamal',
+    category: 'Asymmetric',
+    algorithm: 'DSA/ElGamal',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'DSA/ElGamal — discrete-log cryptography, breakable by Shor\'s algorithm',
   },
 ]
 

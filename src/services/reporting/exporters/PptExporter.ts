@@ -85,6 +85,18 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
     ['Budget', '-', usd(ex.estimatedCostUsd), ''],
   ], [3.6, 2.9, 2.9, 2.9]);
 
+  // Top Business Risks (I2#8) — board-language risk register
+  tableSlide('Top Business Risks', ['#', 'Business Risk', 'Level', 'Evidence Driver'], ex.topBusinessRisks.length ? ex.topBusinessRisks.map((r, i) => [i + 1, r.risk, r.level, r.driver]) : [['-', 'Evidence Not Available', '-', '-']], [0.6, 3.4, 1.3, 7]);
+
+  // Quantum Readiness Index™ (I2#11) — strategic pillars behind the score
+  tableSlide(`Quantum Readiness Index™ — Overall ${report.readinessIndex.overall}/100`, ['Strategic Pillar', 'Score', 'Weight', 'Contribution', 'Primary Driver'], report.readinessIndex.pillars.map((p) => [p.pillar, typeof p.score === 'number' ? `${p.score}/100` : p.score, p.measured ? `${p.weightPct}%` : '-', p.measured ? p.contribution.toFixed(1) : '-', p.driver]), [2.6, 1.4, 1.2, 1.5, 5.6]);
+
+  // Readiness Scoring Methodology™ (I2#3) — auditable contribution table
+  tableSlide('Readiness Scoring Methodology™', ['Factor', 'Weight', 'Score', 'Contribution', 'Basis'], [...report.readinessMethodology.factors.map((f) => [f.factor, f.measured ? `${f.weightPct}%` : 'Excluded', typeof f.score === 'number' ? `${f.score}/100` : f.score, f.measured ? f.contribution.toFixed(1) : '-', f.basis]), ['OVERALL (Σ)', '100%', `${report.readinessMethodology.overall}/100`, report.readinessMethodology.overall.toFixed(1), '±1 rounding']], [3, 1.3, 1.4, 1.5, 5.1]);
+
+  // Industry Benchmarking™ (I2#9)
+  tableSlide('Industry Benchmarking™', ['Cohort', 'Readiness', 'Delta vs You', 'Source'], report.benchmarking.rows.length ? report.benchmarking.rows.map((b) => [b.cohort, `${b.readiness}/100`, b.delta === 0 ? '-' : `${b.delta > 0 ? '+' : ''}${b.delta}`, b.source]) : [['Evidence Not Available', '-', '-', '-']], [4, 1.8, 1.8, 4.7]);
+
   // AI Migration Advisor
   const adv = pptx.addSlide();
   adv.addText('AI Migration Advisor™', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
@@ -107,8 +119,14 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   tableSlide('Migration Wave Planning', ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk-', 'Status'], report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]), [1, 2.6, 1.4, 2.3, 1.2, 1.6, 1, 1.2]);
   tableSlide('Cost Forecast', ['Category', 'Estimated Cost'], [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)]], [8, 4.3]);
 
+  // Executive ROI & Value Intelligence™ (I2#4)
+  tableSlide('Executive ROI & Value Intelligence™', ['Value Metric', 'Expected Outcome', 'Basis / Formula'], report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '-', '-']], [2.8, 3.6, 5.9]);
+
+  // Migration Resource Loading™ (I2#5)
+  tableSlide('Migration Resource Loading™', ['Team', 'Waves', 'Hours', 'Eng.', 'Window', 'Allocation'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`]) : [['Evidence Not Available', '-', '-', '-', '-', '-']], [2.4, 4.9, 1.2, 1, 1.2, 1.6]);
+
   // Report Intelligence (Reports_Enhancements_3) board slides
-  tableSlide('Risk Scoring Methodology™', ['Risk Domain', 'Weight', 'Score', 'Weighted Contribution'], report.riskMethodology.weights.map((w) => [w.domain, `${w.weightPct}%`, `${w.score}/100`, `${w.contributionPct}%`]), [4.8, 2.5, 2.5, 2.5]);
+  tableSlide('Risk Scoring Methodology™', ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution', 'Share'], [...report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]), ['OVERALL = Σ Contribution', `${report.riskMethodology.overall}/100`, '100%', report.riskMethodology.overall.toFixed(1), '100%']], [4.3, 2.3, 2, 2.2, 1.5]);
   tableSlide('Cost Forecast Intelligence™', ['Category', 'Hours', 'Eng.', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.costUsd), l.formula]), [2.6, 1.2, 1, 1.8, 5.7]);
   tableSlide('Executive Decision Center™', ['Decision Required', 'Type', 'Owner'], report.executiveDecisions.map((d) => [d.decision, d.type, d.owner]), [6.6, 3.2, 2.5]);
   tableSlide('Migration Simulation (What-If)™', ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], report.waveSimulation.map((w) => [w.label, `${w.readinessFrom}→${w.readinessTo}`, `${w.riskFrom}→${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]), [3.7, 2, 1.8, 2, 1.4, 1.4]);
@@ -135,8 +153,17 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   // Asset Criticality™
   tableSlide('Asset Criticality Analysis™', ['Asset', 'Business', 'Operational', 'Customer', 'Internet', 'Revenue', 'Data Sensitivity'], report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.dataSensitivity]), [3.4, 1.6, 1.7, 1.4, 1.4, 1.4, 1.8]);
 
-  // Business Impact Intelligence™
-  tableSlide('Business Impact Intelligence™', ['Dimension', 'Level', 'Reason'], report.impactReasons.map((r) => [r.dimension, r.level, r.reason]), [2.8, 1.5, 8]);
+  // Business Impact Intelligence™ (evidence-cited)
+  tableSlide('Business Impact Intelligence™', ['Dimension', 'Level', 'Why', 'Evidence'], report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]), [2.4, 1.2, 4.4, 4.3]);
+
+  // Asset-Level Readiness (which assets drive the overall score)
+  tableSlide('Asset-Level Readiness™', ['Asset', 'Readiness', 'Risk', 'Posture', 'Net', 'Primary Driver'], report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]), [3.0, 1.6, 1.4, 2.2, 0.9, 3.2]);
+
+  // Executive Risk Acceptance (residual-risk disposition)
+  tableSlide('Executive Risk Acceptance™', ['Risk', 'Decision', 'Owner', 'Rationale', 'Review'], report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.reviewDate]), [3.0, 1.4, 1.8, 4.6, 1.5]);
+
+  // Decision Traceability (Evidence → … → Approval)
+  tableSlide('Decision Traceability™', ['Stage', 'Detail'], report.decisionChain.steps.map((s) => [s.stage, s.detail]), [2.4, 10]);
 
   // Finding Deduplication™
   tableSlide('Consolidated Findings (Root Cause)™', ['Finding', 'Occurrences', 'Affected Assets', 'Impact'], report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase()]), [6.4, 2, 2.4, 1.5]);
@@ -149,6 +176,24 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
 
   // Report Explainability™
   tableSlide('Report Explainability™', ['Metric', 'What', 'How', 'Why It Matters', 'Action'], report.explainability.map((e) => [e.metric, e.what, e.how, e.why, e.action]), [2.2, 2.5, 2.6, 2.5, 2.5]);
+
+  // Crypto-Policy Profiles (I2#12) — policy-driven target algorithm selection
+  tableSlide(`Crypto-Policy Profiles — Active: ${report.cryptoPolicy.activeProfile}`, ['Profile', 'Key Establishment', 'Digital Signature', 'Symmetric / Hash', 'Guidance'], report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, `${p.symmetric} / ${p.hash}`, p.guidance]), [2.2, 2.6, 2.9, 1.9, 2.7]);
+
+  // Report Validation badge (I2#10) — computed, never asserted
+  const validationSlide = pptx.addSlide();
+  validationSlide.addText('Report Validation', { x: 0.5, y: 0.3, w: 9, h: 0.6, fontSize: 24, bold: true, color: INK });
+  validationSlide.addText(`Overall: ${report.reportValidation.overall}`, { x: 9.8, y: 0.35, w: 3, h: 0.5, fontSize: 16, bold: true, color: 'FFFFFF', fill: { color: report.reportValidation.overall === 'PASS' ? '16A34A' : 'DC2626' }, align: 'center' });
+  const validationRows: pptxgen.TableRow[] = [
+    headerRow(['Validation Check', 'Result', 'Detail']),
+    ...report.reportValidation.checks.map((c) => [
+      { text: c.check, options: { color: '334155' } },
+      { text: c.status === 'pass' ? '✓ PASS' : '✗ FAIL', options: { bold: true, color: c.status === 'pass' ? '16A34A' : 'DC2626' } },
+      { text: c.detail, options: { color: '334155' } },
+    ]),
+  ];
+  validationSlide.addTable(validationRows, { x: 0.5, y: 1.1, w: 12.3, colW: [3, 1.3, 8], fontSize: 10, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
+  footer(validationSlide);
 
   // Enterprise Remediation Playbook™ — one detailed slide per finding family
   for (const p of report.playbookDetail) {
@@ -182,44 +227,52 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
     footer(slide);
   }
 
-  // Top findings
-  const findingsSlide = pptx.addSlide();
-  findingsSlide.addText('Top Findings', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
-  const rows: pptxgen.TableRow[] = [
-    [
-      { text: 'Severity', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
-      { text: 'Finding', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
-      { text: 'Recommendation', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
-    ],
-    ...(report.findings.length
-      ? report.findings.slice(0, 8).map((finding) => [
-          { text: finding.severity.toUpperCase(), options: { color: 'FFFFFF', fill: { color: SEV_COLOR[finding.severity] || MUTED }, bold: true } },
-          { text: finding.title, options: { color: '334155' } },
-          { text: finding.recommendation, options: { color: '334155' } },
-        ])
-      : [[{ text: 'Evidence Not Available', options: { colspan: 3, color: MUTED } }]]),
-  ];
-  findingsSlide.addTable(rows, { x: 0.5, y: 1.1, w: 12.3, colW: [1.6, 5, 5.7], fontSize: 11, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
-  footer(findingsSlide);
+  // Raw per-instance top findings — Technical Assessment deck only. Board /
+  // compliance / migration decks already carry the consolidated (root-cause)
+  // findings slide, so the raw list would only duplicate it.
+  if (report.meta.kind === 'technical') {
+    const findingsSlide = pptx.addSlide();
+    findingsSlide.addText('Technical Appendix — Raw Findings', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
+    const rows: pptxgen.TableRow[] = [
+      [
+        { text: 'Severity', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+        { text: 'Finding', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+        { text: 'Recommendation', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+      ],
+      ...(report.findings.length
+        ? report.findings.slice(0, 8).map((finding) => [
+            { text: finding.severity.toUpperCase(), options: { color: 'FFFFFF', fill: { color: SEV_COLOR[finding.severity] || MUTED }, bold: true } },
+            { text: finding.title, options: { color: '334155' } },
+            { text: finding.recommendation, options: { color: '334155' } },
+          ])
+        : [[{ text: 'Evidence Not Available', options: { colspan: 3, color: MUTED } }]]),
+    ];
+    findingsSlide.addTable(rows, { x: 0.5, y: 1.1, w: 12.3, colW: [1.6, 5, 5.7], fontSize: 11, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
+    footer(findingsSlide);
+  }
 
-  // Roadmap
+  // Roadmap & Program Plan (dates, milestones, approval gates, critical path)
   const roadmapSlide = pptx.addSlide();
-  roadmapSlide.addText('PQC Migration Roadmap', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
+  roadmapSlide.addText('PQC Migration Roadmap & Program Plan', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
   const roadmapRows: pptxgen.TableRow[] = [
     [
       { text: 'Phase', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
-      { text: 'Description', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
-      { text: 'Status', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
-      { text: 'Weeks', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+      { text: 'Start', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+      { text: 'Finish', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+      { text: 'Wks', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+      { text: 'Milestone / Approval Gate', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
+      { text: 'Crit', options: { bold: true, color: 'FFFFFF', fill: { color: INK } } },
     ],
     ...report.roadmap.map((phase) => [
       { text: phase.phase, options: { bold: true, color: INK } },
-      { text: phase.description, options: { color: '334155' } },
-      { text: phase.status, options: { color: BRAND } },
+      { text: phase.startDate, options: { color: '334155', align: 'center' as const } },
+      { text: phase.endDate, options: { color: '334155', align: 'center' as const } },
       { text: String(phase.effortWeeks), options: { color: '334155', align: 'center' as const } },
+      { text: `${phase.milestone} — ${phase.gate}`, options: { color: '334155' } },
+      { text: phase.criticalPath ? 'Yes' : 'No', options: { color: phase.criticalPath ? 'B91C1C' : MUTED, align: 'center' as const } },
     ]),
   ];
-  roadmapSlide.addTable(roadmapRows, { x: 0.5, y: 1.1, w: 12.3, colW: [2, 7, 2, 1.3], fontSize: 11, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
+  roadmapSlide.addTable(roadmapRows, { x: 0.5, y: 1.1, w: 12.3, colW: [2.6, 1.3, 1.3, 0.7, 5.4, 1], fontSize: 10, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
   footer(roadmapSlide);
 
   const blob = (await pptx.write({ outputType: 'blob' })) as Blob;

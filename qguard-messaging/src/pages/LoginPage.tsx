@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { KeyRound, LockKeyhole, RefreshCcw, ShieldCheck } from "lucide-react";
+import { Atom, FileLock2, Fingerprint, LockKeyhole, RefreshCcw, ShieldCheck } from "lucide-react";
 
 interface LoginPageProps {
   loading: boolean;
@@ -22,7 +22,7 @@ function toVisibleError(message: string | null): string | null {
   }
 
   if (message.includes("QGUARD_SUPABASE_CONFIG_REQUIRED")) {
-    return "Registration is not connected to a Supabase project. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the workspace .env or .env.example, then restart QGuard Messaging.";
+    return "Registration is not connected to a Supabase project. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the workspace .env or .env.example, then restart Qguard Helix.";
   }
 
   const internalTerms = ["supabase", "vite_", "environment", "jwt", "token", "auth_sync_session", "auth session", "configured"];
@@ -72,26 +72,46 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-6">
       <section className="shell-card grid w-full max-w-4xl grid-cols-[1fr_380px] overflow-hidden">
-        <div className="bg-violet-600 p-8 text-white">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-white/15">
-            <ShieldCheck size={26} />
-          </div>
-          <h1 className="mt-8 text-3xl font-bold tracking-tight">QGuard Messaging</h1>
-          <p className="mt-3 max-w-sm text-sm leading-6 text-violet-100">
-            Quantum-ready secure messaging for encrypted chat, trusted devices, file vaults, voice notes, and safety verification.
-          </p>
-          <div className="mt-8 grid gap-3 text-sm text-violet-50">
-            <div className="flex items-center gap-2"><LockKeyhole size={16} /> End-to-end encrypted conversations</div>
-            <div className="flex items-center gap-2"><KeyRound size={16} /> Hybrid classical and post-quantum protection</div>
-            <div className="flex items-center gap-2"><RefreshCcw size={16} /> Forward secrecy with continuous key rotation</div>
-            <div className="flex items-center gap-2"><ShieldCheck size={16} /> Device trust, safety numbers, and vault security</div>
+        <div className="relative overflow-hidden bg-gradient-to-br from-violet-700 via-violet-600 to-blue-700 p-8 text-white">
+          <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-20 -left-10 h-56 w-56 rounded-full bg-blue-400/20 blur-3xl" />
+
+          <div className="relative">
+            <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl bg-white p-2 shadow-lg ring-1 ring-white/40">
+              <img src="/NEW_LOGO.png" alt="Qguard Helix" className="h-full w-full object-contain" />
+            </div>
+
+            <div className="mt-7 text-[11px] font-semibold uppercase tracking-[0.28em] text-violet-200">
+              Secure · Intelligent · Quantum-Ready
+            </div>
+            <h1 className="mt-2 text-3xl font-bold leading-tight tracking-tight">
+              Qguard Helix
+              <span className="block text-violet-200">Messaging &amp; Vault</span>
+            </h1>
+            <p className="mt-3 max-w-sm text-sm leading-6 text-violet-100">
+              Enterprise post-quantum secure collaboration — encrypted messaging, voice notes, and a zero-knowledge file vault, engineered to stay private against tomorrow&apos;s quantum threats.
+            </p>
+
+            <div className="mt-7 grid gap-3 text-sm text-violet-50">
+              <div className="flex items-start gap-2.5"><LockKeyhole size={16} className="mt-0.5 shrink-0 text-violet-200" /> End-to-end encrypted chat, calls &amp; file vault</div>
+              <div className="flex items-start gap-2.5"><Atom size={16} className="mt-0.5 shrink-0 text-violet-200" /> Hybrid post-quantum key exchange · X25519 + ML-KEM-1024 (FIPS 203)</div>
+              <div className="flex items-start gap-2.5"><Fingerprint size={16} className="mt-0.5 shrink-0 text-violet-200" /> Dual-signature device identity · Ed25519 + ML-DSA-65 (FIPS 204)</div>
+              <div className="flex items-start gap-2.5"><RefreshCcw size={16} className="mt-0.5 shrink-0 text-violet-200" /> Forward secrecy with continuous signed-prekey rotation</div>
+              <div className="flex items-start gap-2.5"><FileLock2 size={16} className="mt-0.5 shrink-0 text-violet-200" /> Zero-knowledge vault · AES-256-GCM with quantum-safe key wrapping</div>
+              <div className="flex items-start gap-2.5"><ShieldCheck size={16} className="mt-0.5 shrink-0 text-violet-200" /> Device trust, safety-number verification &amp; tamper-evident audit</div>
+            </div>
+
+            <div className="mt-7 flex flex-wrap gap-2">
+              <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold text-violet-100 ring-1 ring-white/15">Harvest-now, decrypt-later resistant</span>
+              <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold text-violet-100 ring-1 ring-white/15">NIST FIPS 203 &amp; 204</span>
+            </div>
           </div>
         </div>
 
         <form onSubmit={submit} className="bg-white p-7">
           <h2 className="text-xl font-bold text-ink-950">{pendingMfa ? "Verify MFA" : mode === "sign-in" ? "Sign in" : "Create account"}</h2>
           <p className="mt-1 text-sm text-ink-600">
-            {pendingMfa ? pendingMfa.factorName : mode === "sign-in" ? "Use your QGuard account to continue." : "Create your QGuard Messaging account."}
+            {pendingMfa ? pendingMfa.factorName : mode === "sign-in" ? "Use your Qguard Helix account to continue." : "Create your Qguard Helix Messaging & Vault account."}
           </p>
 
           {visibleError && (

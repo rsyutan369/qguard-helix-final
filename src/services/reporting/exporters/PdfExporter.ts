@@ -288,6 +288,8 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   ] }, [34, 22, 22, 22]);
   layout.heading('Top Risks & Recommended Actions');
   layout.table({ title: 'Top 5', columns: ['# ', 'Top Risk', 'Recommended Action'], rows: Array.from({ length: Math.max(ex.topRisks.length, ex.topActions.length) }).map((_, i) => [i + 1, ex.topRisks[i] || '—', ex.topActions[i] || '—']) }, [6, 47, 47]);
+  layout.heading('Top Business Risks');
+  layout.table({ title: 'Business Risks', columns: ['#', 'Business Risk', 'Level', 'Evidence Driver'], rows: ex.topBusinessRisks.length ? ex.topBusinessRisks.map((r, i) => [i + 1, r.risk, r.level, r.driver]) : [['-', 'Evidence Not Available', '-', '-']] }, [5, 28, 10, 57]);
   layout.paragraph(`Executive Recommendation: ${ex.executiveRecommendation}`, 9.5, INK);
 
   layout.heading('Executive Dashboard');
@@ -304,13 +306,30 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     ['HNDL Exposure', report.businessImpact.hndlExposure],
     ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
   ] }, [50, 50]);
-  layout.table({ title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why (evidence-based)'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason]) }, [22, 12, 66]);
+  layout.table({ title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why', 'Evidence'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]) }, [18, 10, 36, 36]);
 
   layout.heading('Executive Decision Center');
   layout.table({ title: 'Decisions', columns: ['Decision Required', 'Type', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.owner]) }, [54, 26, 20]);
 
   layout.heading('Quantum Readiness Breakdown');
-  layout.table({ title: 'Domains', columns: ['Domain', 'Score', 'Risk', 'Owner', 'Recommended Action'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}`, d.riskLevel, d.owner, d.actions]) }, [16, 8, 10, 18, 48]);
+  layout.paragraph('Targets are calculated per domain (baseline + internet-facing exposure), not static — rationale below.', 9, MUTED);
+  layout.table({ title: 'Domains', columns: ['Domain', 'Cur', 'Tgt', 'Risk', 'Owner', 'Target Rationale'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}`, `${d.targetScore}`, d.riskLevel, d.owner, d.targetRationale]) }, [14, 6, 6, 9, 15, 50]);
+
+  layout.heading('Quantum Readiness Index');
+  layout.paragraph(report.readinessIndex.note, 9, MUTED);
+  layout.table({ title: 'Readiness Index', columns: ['Strategic Pillar', 'Score', 'Weight', 'Contribution', 'Primary Driver'], rows: report.readinessIndex.pillars.length ? report.readinessIndex.pillars.map((p) => [p.pillar, typeof p.score === 'number' ? `${p.score}` : p.score, p.measured ? `${p.weightPct}%` : '-', p.measured ? p.contribution.toFixed(1) : '-', p.driver]) : [['Evidence Not Available', '-', '-', '-', '-']] }, [20, 10, 9, 12, 49]);
+  layout.paragraph(`Overall Quantum Readiness Index: ${report.readinessIndex.overall}/100.`, 9.5, INK);
+
+  layout.heading('Readiness Scoring Methodology');
+  layout.paragraph(`Formula: ${report.readinessMethodology.formula}`, 9, INK);
+  layout.paragraph(report.readinessMethodology.explanation, 9, MUTED);
+  layout.table({ title: 'Readiness Methodology', columns: ['Factor', 'Weight', 'Score', 'Contribution', 'Measurement Basis'], rows: report.readinessMethodology.factors.map((f) => [f.factor, f.measured ? `${f.weightPct}%` : 'Excluded', typeof f.score === 'number' ? `${f.score}` : f.score, f.measured ? f.contribution.toFixed(1) : '-', f.basis]) }, [22, 10, 10, 12, 46]);
+  layout.paragraph(`Overall = ${report.readinessMethodology.factors.filter((f) => f.measured).map((f) => f.contribution.toFixed(1)).join(' + ')} = ${report.readinessMethodology.overall}/100 (±1 rounding).`, 9, INK);
+
+  layout.heading('Industry Benchmarking');
+  layout.paragraph(report.benchmarking.percentileNarrative, 9, MUTED);
+  layout.table({ title: 'Benchmarking', columns: ['Cohort', 'Readiness', 'Delta vs You', 'Source'], rows: report.benchmarking.rows.length ? report.benchmarking.rows.map((b) => [b.cohort, `${b.readiness}/100`, b.delta === 0 ? '-' : `${b.delta > 0 ? '+' : ''}${b.delta}`, b.source]) : [['Evidence Not Available', '-', '-', '-']] }, [32, 14, 14, 40]);
+  if (report.benchmarking.note) layout.paragraph(report.benchmarking.note, 8.5, MUTED);
 
   layout.heading('AI Migration Advisor');
   layout.paragraph(`Recommendation: ${report.migrationAdvisor.recommendation}`, 11, INK);
@@ -343,7 +362,8 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Risk Scoring Methodology');
   layout.paragraph(`Formula: ${report.riskMethodology.formula}`, 9, INK);
   layout.paragraph(report.riskMethodology.explanation, 9, MUTED);
-  layout.table({ title: 'Risk Methodology', columns: ['Risk Domain', 'Weight', 'Score', 'Weighted Contribution'], rows: report.riskMethodology.weights.map((w) => [w.domain, `${w.weightPct}%`, `${w.score}`, `${w.contributionPct}%`]) }, [40, 16, 16, 28]);
+  layout.table({ title: 'Risk Methodology', columns: ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution', 'Share'], rows: report.riskMethodology.weights.map((w) => [w.domain, `${w.score}`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]) }, [34, 16, 14, 18, 18]);
+  layout.paragraph(`Overall = Σ Contribution = ${report.riskMethodology.weights.map((w) => w.contribution.toFixed(1)).join(' + ')} = ${report.riskMethodology.overall}/100.`, 9, INK);
 
   layout.heading('HNDL Exposure Analysis');
   layout.paragraph(report.hndl.summary);
@@ -358,8 +378,17 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Asset Criticality Analysis');
   layout.table({ title: 'Asset Criticality', columns: ['Asset', 'Business', 'Cust.', 'Internet', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.customerFacing ? 'Y' : 'N', a.internetFacing ? 'Y' : 'N', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [24, 12, 8, 10, 12, 22, 12]);
 
-  layout.heading('Findings & Evidence');
-  layout.findings(report);
+  layout.heading('Asset Intelligence Profile');
+  layout.paragraph('Per-asset cryptographic posture — algorithms, key sizes, TLS profile, dependencies, complexity and effort. Unobserved fields are Evidence Not Available.', 9, MUTED);
+  layout.table({ title: 'Asset Intelligence', columns: ['Asset', 'Owner Dept.', 'TLS', 'Algorithms', 'Key Sizes', 'Deps', 'PQC', 'Cplx', 'Hrs'], rows: report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.ownerDepartment, a.tlsVersion, a.algorithms.join(', '), a.keySizes.join(', '), a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-']] }, [16, 11, 12, 20, 12, 13, 5, 6, 5]);
+
+  // Raw per-instance findings belong in the Technical Assessment only. Board /
+  // compliance / migration reports show the consolidated (root-cause) view above
+  // so the same cipher/algorithm is not listed dozens of times.
+  if (report.meta.kind === 'technical') {
+    layout.heading('Technical Appendix — Raw Findings & Evidence');
+    layout.findings(report);
+  }
 
   layout.heading('Cryptographic & Asset Inventory');
   layout.table(report.assets, [26, 14, 16, 20, 12, 12]);
@@ -367,13 +396,23 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table(report.pqcReadiness.table, [60, 40]);
 
   layout.heading('Compliance Mapping');
-  layout.table({ title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current -> Target / Gap'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]) }, [16, 28, 12, 44]);
+  layout.paragraph('Dynamic gap tracking: Current, Target, Gap and Progress per framework.', 9, MUTED);
+  layout.table({ title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Cur', 'Tgt', 'Gap', 'Progress'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct}`, `${c.progressPct}%`]) }, [16, 36, 12, 9, 9, 9, 9]);
+
+  layout.heading('Crypto-Policy Profiles (Target Algorithm Selection)');
+  layout.paragraph(report.cryptoPolicy.note, 9, MUTED);
+  layout.table({ title: 'Crypto Policy', columns: ['Profile', 'Key Establishment', 'Digital Signature', 'Symmetric / Hash', 'Guidance'], rows: report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, `${p.symmetric} / ${p.hash}`, p.guidance]) }, [16, 20, 22, 16, 26]);
 
   layout.heading('Remediation Program');
   layout.table({ title: 'Remediation', columns: ['Pri', 'Action', 'Owner', 'Cost', 'Risk-', 'Target'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, usd(r.costUsd), `${r.riskReductionPct}%`, r.targetDate]) }, [6, 40, 18, 14, 8, 14]);
 
-  layout.heading('Migration Roadmap');
-  layout.table({ title: 'Roadmap', columns: ['Phase', 'Description', 'Status', 'Weeks'], rows: report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]) }, [26, 48, 14, 12]);
+  layout.heading('Migration Roadmap & Program Plan');
+  layout.paragraph('Sequential dates, milestones, approval gates and critical-path/slack.', 9, MUTED);
+  layout.table({ title: 'Roadmap', columns: ['Phase', 'Start', 'Finish', 'Wks', 'Milestone / Gate', 'Crit', 'Slack'], rows: report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, `${p.milestone} | ${p.gate}`, p.criticalPath ? 'Y' : 'N', `${p.slackWeeks}w`]) }, [20, 12, 12, 6, 38, 6, 6]);
+
+  layout.heading('Migration Resource Loading');
+  layout.paragraph('Team allocation across the programme window — hours, engineers and percentage loading per team.', 9, MUTED);
+  layout.table({ title: 'Resource Loading', columns: ['Team', 'Waves', 'Hours', 'Eng.', 'Window', 'Alloc', 'Basis'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`, r.basis]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [14, 26, 8, 6, 8, 8, 30]);
 
   layout.heading('Enterprise Remediation Playbook');
   for (const p of report.playbookDetail) {
@@ -393,6 +432,10 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.paragraph(`Blended rate $${report.costBreakdown.blendedRateUsd}/hr - total ${report.costBreakdown.totalHours.toLocaleString()} hours.`, 9, MUTED);
   layout.table({ title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Eng.', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] }, [22, 10, 8, 12, 16, 32]);
 
+  layout.heading('Executive ROI & Value Intelligence');
+  layout.paragraph(report.roiAnalysis.paybackNarrative, 9.5, INK);
+  layout.table({ title: 'ROI', columns: ['Value Metric', 'Expected Outcome', 'Basis / Formula'], rows: report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '-', '-']] }, [20, 32, 48]);
+
   layout.heading('Migration Simulation (What-If)');
   layout.table({ title: 'Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom}->${w.readinessTo}`, `${w.riskFrom}->${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) }, [34, 16, 14, 14, 10, 12]);
 
@@ -401,6 +444,18 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     ['Current Risk', `${report.riskForecast.currentRisk}/100`], ['Target Risk', `${report.riskForecast.targetRisk}/100`], ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
     ['12-Month', `${report.riskForecast.month12}/100`], ['24-Month', `${report.riskForecast.month24}/100`], ['36-Month', `${report.riskForecast.month36}/100`],
   ] }, [50, 50]);
+
+  layout.heading('Asset-Level Readiness');
+  layout.paragraph('Which assets drive the overall readiness score, with their primary risk driver.', 9, MUTED);
+  layout.table({ title: 'Asset Readiness', columns: ['Asset', 'Ready', 'Risk', 'Posture', 'Net', 'Primary Driver', 'Owner'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}`, `${a.risk}`, a.posture, a.internetFacing ? 'Y' : 'N', a.primaryDriver, a.owner]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [20, 8, 8, 18, 6, 28, 12]);
+
+  layout.heading('Executive Risk Acceptance');
+  layout.paragraph('Formal disposition of residual risk (mitigate / accept / transfer / defer) for governance and audit.', 9, MUTED);
+  layout.table({ title: 'Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual', 'Review'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) }, [22, 12, 14, 30, 14, 8]);
+
+  layout.heading('Decision Traceability');
+  layout.paragraph(report.decisionChain.headline, 9, INK);
+  layout.table({ title: 'Decision Chain', columns: ['Stage', 'Detail'], rows: report.decisionChain.steps.map((st) => [st.stage, st.detail]) }, [20, 80]);
 
   layout.heading('Program Governance');
   layout.table({ title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, [22, 24, 54]);
@@ -419,6 +474,13 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
       ['What action should be taken?', x.action],
     ] }, [26, 74]);
   }
+
+  layout.heading('Terminology & Definitions');
+  layout.table({ title: 'Definitions', columns: ['Term', 'Definition'], rows: report.definitions.length ? report.definitions.map((d) => [d.term, d.definition]) : [['Evidence Not Available', '-']] }, [24, 76]);
+
+  layout.heading(`Report Validation — ${report.reportValidation.overall}`);
+  layout.table({ title: 'Validation', columns: ['Validation Check', 'Result', 'Detail'], rows: report.reportValidation.checks.length ? report.reportValidation.checks.map((c) => [c.check, c.status === 'pass' ? 'PASS' : 'FAIL', c.detail]) : [['Evidence Not Available', '-', '-']] }, [24, 10, 66]);
+  layout.paragraph(report.reportValidation.note, 8.5, MUTED);
 
   layout.heading('Evidence Sources');
   layout.paragraph(report.evidence.sources.join(' - '), 9, MUTED);

@@ -19,6 +19,78 @@ export interface QGuardLiveStatus {
   retryCount: number;
 }
 
+/**
+ * User-facing presentation of a live event.
+ *
+ * The raw event carries backend-only fields (table names, DB operation,
+ * SSE payload). Those must never reach the customer UI — {@link describeLiveEvent}
+ * and {@link liveStatusLabel} translate them into plain, professional language.
+ */
+export interface LiveEventView {
+  title: string;
+  meta: string;
+}
+
+// Maps an internal table name to a plain-language activity label. Anything not
+// listed falls back to a generic, non-technical phrase so we never leak a raw
+// table name into the UI.
+const LIVE_EVENT_LABELS: Record<string, string> = {
+  messaging_user_modules: "Workspace preferences updated",
+  profiles: "Profile updated",
+  messaging_devices: "Trusted device updated",
+  messaging_device_verification_payloads: "Device verification updated",
+  messaging_device_link_requests: "Device pairing request updated",
+  messaging_contacts: "Contacts updated",
+  messaging_conversation_members: "Conversation membership updated",
+  messaging_conversation_user_states: "Conversation updated",
+  messaging_signed_prekeys: "Encryption keys refreshed",
+  messaging_one_time_prekeys: "Encryption keys refreshed",
+  messaging_message_envelopes: "Secure message activity",
+  messaging_message_user_states: "Message status updated",
+  messaging_security_events: "Security check completed",
+  messaging_crypto_telemetry: "Encryption activity recorded",
+  messaging_org_members: "Organization membership updated",
+  qguard_profile_audit_events: "Account activity recorded",
+};
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "Just now";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 45) return "Just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/** Translate a raw live event into safe, customer-friendly copy. */
+export function describeLiveEvent(event: QGuardLiveEvent): LiveEventView {
+  let title = LIVE_EVENT_LABELS[event.table] ?? "Workspace activity";
+  if (event.table === "messaging_devices" && event.event === "DELETE") {
+    title = "Trusted device removed";
+  } else if (event.table === "messaging_message_envelopes" && event.event === "INSERT") {
+    title = "New secure message received";
+  }
+  return { title, meta: relativeTime(event.at) };
+}
+
+/** Plain-language connection status, free of backend/transport terminology. */
+export function liveStatusLabel(state: LiveConnectionState): string {
+  switch (state) {
+    case "live":
+      return "Connected — activity updates in real time";
+    case "connecting":
+      return "Connecting to live updates…";
+    case "fallback":
+      return "Reconnecting — refreshing periodically";
+    default:
+      return "Live updates are temporarily unavailable";
+  }
+}
+
 interface LiveTableSpec {
   table: string;
   filter: string;

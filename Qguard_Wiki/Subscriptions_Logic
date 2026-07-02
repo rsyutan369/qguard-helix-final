@@ -1,0 +1,257 @@
+Right now were charging based on features, while enterprise cybersecurity companies usually charge based on scale + management capabilities + support.
+
+For example:
+
+Signal → Secure messaging
+Proton → Secure Mail/VPN/Drive
+CrowdStrike → Endpoints
+Microsoft Defender → Number of users/devices
+Venafi → Certificates/Assets
+Keyfactor → PKI Assets
+IBM Quantum Safe → Assessment engagements
+
+Your pricing should make it easy for someone to start small and naturally grow into larger plans.
+
+I would organize it like this
+
+🟢 Starter ($5/month $3/year)
+
+Perfect for individuals.
+
+Includes
+✅ Secure Chat
+✅ Local Quantum Vault
+✅ AES-256-GCM Encryption
+✅ ML-KEM Hybrid Encryption
+✅ ML-DSA Signatures
+✅ Local File Encryption
+✅ Secure Notes
+✅ Basic File Sharing
+✅ Community Support
+
+Storage
+
+Local only
+
+Target
+
+Individuals
+
+Students
+
+Privacy enthusiasts
+
+🔵 Basic ($10/month $8/year)
+
+Adds assessment capabilities.
+
+Everything in Starter plus:
+
+Quantum Readiness Assessment
+Personal Crypto Scan
+Crypto Health Score
+CBOM Report
+Executive Report
+Basic Migration Recommendations
+Discover up to 100 crypto assets
+
+Target
+
+Developers
+
+Freelancers
+
+Small businesses
+
+🟣 Professional ($30/month $25/year)
+
+This becomes the first serious enterprise tier.
+
+Everything in Basic plus:
+
+Cloud Quantum Vault
+5 GB encrypted storage
+Secure Sync
+Secure File Sharing
+Discover up to 500 assets
+Certificate Discovery
+SSH Key Discovery
+API Key Discovery
+Limited Post-Quantum Migration
+Email Support
+
+Target
+
+Small businesses
+
+IT Teams
+
+Consultants
+
+🟠 Elite ($100/month - $90/year)
+
+This is where real revenue begins.
+
+Everything above plus:
+
+5,000 crypto assets
+Unlimited Assessments
+Full Migration Platform
+CBOM Generator
+Algorithm Agility
+Certificate Lifecycle
+Compliance Reports
+Team Management
+RBAC
+Audit Logs
+Priority Email Support
+
+Target
+
+Growing companies
+
+Banks
+
+Healthcare
+
+Universities
+
+🔴 Enterprise/Business (Custom)
+
+No price.
+
+Request Quote.
+
+Includes
+
+Unlimited Everything
+
+Unlimited Assets
+Unlimited Storage
+Unlimited Users
+Unlimited Assessments
+Full Crypto Discovery
+HSM Integration
+TPM Integration
+PKI
+API Access
+SIEM Integration
+Active Directory
+Azure
+AWS
+Google Cloud
+SAML SSO
+SCIM
+Dedicated Success Manager
+24/7 Support
+Professional Services
+
+Don't lock products behind plans
+
+Instead of saying
+
+Only Pro users can use Secure Video
+
+I'd recommend
+
+Everyone can use Secure Video.
+
+But
+
+Starter
+
+2 participants
+
+Professional
+
+100 participants
+
+Enterprise
+
+Unlimited
+
+That's how Slack, Zoom, Teams, and Discord grow.
+
+QGuard Messaging should become a Product
+
+Think like Proton.
+
+QGuard Helix
+
+Products
+
+Messaging
+
+Migration
+
+Assessment
+
+Governance
+
+
+Messaging itself has plans.
+
+Starter
+
+Basic
+
+Professional
+
+Enterprise
+
+Migration has plans.
+
+Assessment has plans.
+
+Enterprise customers can buy only what they need.
+
+Your biggest revenue won't come from individuals
+
+Here's where I think the money is:
+
+Product	Customer	Revenue Potential
+Messaging	Individuals	⭐⭐
+Quantum Vault	Individuals	⭐⭐
+Readiness Assessment	SMB	⭐⭐⭐⭐
+CBOM Generator	Enterprise	⭐⭐⭐⭐⭐
+Crypto Discovery	Enterprise	⭐⭐⭐⭐⭐
+Post-Quantum Migration	Enterprise	⭐⭐⭐⭐⭐
+PKI Management	Enterprise	⭐⭐⭐⭐⭐
+Governance	Government	⭐⭐⭐⭐⭐
+
+Enterprise licenses are often worth far more than consumer subscriptions.
+
+A few additional features that justify higher tiers
+
+As customers move up, you can introduce capabilities such as:
+
+Cloud Quantum Vault with larger encrypted storage quotas
+Team collaboration (shared vaults, group messaging)
+Role-Based Access Control (RBAC)
+Single Sign-On (SAML/OIDC) and enterprise identity integration
+API access for automation
+SIEM/SOAR integrations (Splunk, Microsoft Sentinel, QRadar)
+Audit logs and compliance exports
+Cryptographic policy enforcement
+Certificate lifecycle monitoring
+Scheduled Quantum Readiness assessments
+White-label executive reports
+Priority support with defined response times
+Dedicated customer success for enterprise customers
+One recommendation I'd make
+
+Since QGuard Helix™ is evolving into a platform with multiple products, I would avoid making the subscriptions too tightly coupled.
+
+Instead, think in terms of platform editions plus optional add-ons.
+
+For example:
+
+Starter – Messaging only
+Basic – Messaging + Quantum Readiness
+Professional – Adds Cloud Vault and limited Migration
+Business – Full Migration + Cryptographic Asset Management
+Enterprise – Everything plus enterprise integrations and support
+
+Then allow organizations to purchase additional modules (for example, extra Cloud Vault storage, additional cryptographic asset capacity, advanced compliance packs, or professional services) without forcing them into a higher tier.
+
+That gives customers flexibility while also creating clear upgrade paths as their needs grow. I think that approach aligns especially well with the long-term vision you've been building for QGuard Helix.

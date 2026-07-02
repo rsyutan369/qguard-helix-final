@@ -49,6 +49,10 @@ export type ReportFinding = z.infer<typeof findingSchema>;
 
 /* ---- Board-level program sections (Report Enhancement 1 & 2) ---- */
 
+// I2#8 — Top Business Risks (board language, evidence-driven)
+export const businessRiskSchema = z.object({ risk: z.string(), level: z.string(), driver: z.string() });
+export type BusinessRisk = z.infer<typeof businessRiskSchema>;
+
 export const executiveBlockSchema = z.object({
   currentReadiness: z.number(),
   targetReadiness: z.number(),
@@ -63,6 +67,8 @@ export const executiveBlockSchema = z.object({
   quantumExposureWindow: z.string(),
   topRisks: z.array(z.string()),
   topActions: z.array(z.string()),
+  // I2#8 — board-language business risks (Internet-facing TLS, HNDL, …)
+  topBusinessRisks: z.array(businessRiskSchema).default([]),
   executiveRecommendation: z.string(),
 });
 export type ExecutiveBlock = z.infer<typeof executiveBlockSchema>;
@@ -84,6 +90,8 @@ export type BusinessImpact = z.infer<typeof businessImpactSchema>;
 export const readinessDomainSchema = z.object({
   domain: z.string(),
   score: z.number(),
+  targetScore: z.number().default(0),
+  targetRationale: z.string().default(EVIDENCE_UNAVAILABLE),
   riskLevel: z.string(),
   owner: z.string(),
   actions: z.string(),
@@ -187,7 +195,9 @@ export const dependencyChainSchema = z.object({ path: z.string(), blastRadius: z
 /* ---- Report Intelligence sections (Reports_Enhancements_3) ---- */
 
 // Phase 1 — Risk Scoring Transparency Engine™
-export const riskWeightSchema = z.object({ domain: z.string(), weightPct: z.number(), score: z.number(), contributionPct: z.number() });
+// `contribution` = absolute weighted contribution (DomainRisk × Weight); the
+// overall score is Σ(contribution), so an auditor can reconstruct it by hand.
+export const riskWeightSchema = z.object({ domain: z.string(), weightPct: z.number(), score: z.number(), contribution: z.number(), contributionPct: z.number() });
 export const riskMethodologySchema = z.object({
   formula: z.string(),
   overall: z.number(),
@@ -227,7 +237,7 @@ export const assetCriticalitySchema = z.object({
 export type AssetCriticality = z.infer<typeof assetCriticalitySchema>;
 
 // Phase 6 — Business Impact Intelligence™ (reasons)
-export const impactReasonSchema = z.object({ dimension: z.string(), level: z.string(), reason: z.string() });
+export const impactReasonSchema = z.object({ dimension: z.string(), level: z.string(), reason: z.string(), evidence: z.array(z.string()).default([]) });
 export type ImpactReason = z.infer<typeof impactReasonSchema>;
 
 // Phase 7 — Finding Deduplication Engine™
@@ -294,6 +304,11 @@ export const complianceMappingSchema = z.object({
   control: z.string(),
   status: z.enum(['aligned', 'partial', 'gap', 'not-assessed']),
   detail: z.string(),
+  // I2#7 — dynamic gap tracking: Current / Target / Gap / Progress per framework
+  currentPct: z.number().default(0),
+  targetPct: z.number().default(0),
+  gapPct: z.number().default(0),
+  progressPct: z.number().default(0),
 });
 export type ComplianceMapping = z.infer<typeof complianceMappingSchema>;
 
@@ -302,8 +317,148 @@ export const roadmapPhaseSchema = z.object({
   description: z.string(),
   status: z.string(),
   effortWeeks: z.number(),
+  // Program-management enrichment (#8)
+  startDate: z.string().default(EVIDENCE_UNAVAILABLE),
+  endDate: z.string().default(EVIDENCE_UNAVAILABLE),
+  milestone: z.string().default(''),
+  gate: z.string().default(''),
+  criticalPath: z.boolean().default(false),
+  slackWeeks: z.number().default(0),
 });
 export type RoadmapPhase = z.infer<typeof roadmapPhaseSchema>;
+
+// #9 — Executive Risk Acceptance register
+export const riskAcceptanceSchema = z.object({
+  risk: z.string(),
+  decision: z.enum(['Mitigate', 'Accept', 'Transfer', 'Defer']),
+  owner: z.string(),
+  rationale: z.string(),
+  residualRisk: z.string(),
+  reviewDate: z.string().default(EVIDENCE_UNAVAILABLE),
+});
+export type RiskAcceptance = z.infer<typeof riskAcceptanceSchema>;
+
+// #10 — Asset-Level Readiness
+export const assetReadinessSchema = z.object({
+  asset: z.string(),
+  readiness: z.number(),
+  risk: z.number(),
+  posture: z.string(),
+  internetFacing: z.boolean(),
+  primaryDriver: z.string(),
+  owner: z.string(),
+});
+export type AssetReadiness = z.infer<typeof assetReadinessSchema>;
+
+// Architectural — Decision Traceability (Evidence → … → Approval)
+export const decisionChainStepSchema = z.object({ stage: z.string(), detail: z.string() });
+export const decisionChainSchema = z.object({ headline: z.string(), steps: z.array(decisionChainStepSchema) });
+export type DecisionChain = z.infer<typeof decisionChainSchema>;
+
+/* ---- Improvements_02 — enterprise-grade report intelligence ---- */
+
+// I2#1/#3 — Readiness Scoring Methodology™: the exact readiness formula with a
+// per-factor Weight × Score = Contribution table. Unmeasured factors (e.g.
+// runtime visibility with zero runtime telemetry) are marked `measured: false`,
+// excluded from the blend and the remaining weights renormalised — the score is
+// fully auditable and never contradicts the evidence dashboard.
+export const readinessFactorContributionSchema = z.object({
+  factor: z.string(),
+  weightPct: z.number(),
+  score: z.union([z.number(), z.string()]), // number, or 'Not Measured'
+  contribution: z.number(),
+  measured: z.boolean().default(true),
+  basis: z.string().default(''),
+});
+export const readinessMethodologySchema = z.object({
+  formula: z.string(),
+  overall: z.number(),
+  factors: z.array(readinessFactorContributionSchema),
+  explanation: z.string(),
+});
+export type ReadinessMethodology = z.infer<typeof readinessMethodologySchema>;
+
+// I2#4 — Executive ROI & Value Intelligence™
+export const roiLineSchema = z.object({ metric: z.string(), value: z.string(), basis: z.string() });
+export const roiAnalysisSchema = z.object({
+  investmentUsd: z.number(),
+  expectedRiskReductionPct: z.number(),
+  riskAvoidanceUsd: z.number(),
+  netBenefitUsd: z.number(),
+  roiMultiple: z.number(),
+  paybackNarrative: z.string(),
+  lines: z.array(roiLineSchema),
+});
+export type RoiAnalysis = z.infer<typeof roiAnalysisSchema>;
+
+// I2#5 — Migration Resource Loading™ (per-team allocation)
+export const resourceLoadSchema = z.object({
+  team: z.string(),
+  waves: z.string(),
+  hours: z.number(),
+  engineers: z.number(),
+  windowWeeks: z.number(),
+  allocationPct: z.number(),
+  basis: z.string().default(''),
+});
+export type ResourceLoad = z.infer<typeof resourceLoadSchema>;
+
+// I2#6 — Asset Intelligence Profile™ (deep per-asset crypto posture)
+export const assetIntelligenceSchema = z.object({
+  asset: z.string(),
+  assetType: z.string().default(EVIDENCE_UNAVAILABLE),
+  environment: z.string().default(EVIDENCE_UNAVAILABLE),
+  ownerDepartment: z.string().default(EVIDENCE_UNAVAILABLE),
+  certificates: z.string().default(EVIDENCE_UNAVAILABLE),
+  tlsVersion: z.string().default(EVIDENCE_UNAVAILABLE),
+  algorithms: z.array(z.string()).default([]),
+  keySizes: z.array(z.string()).default([]),
+  cryptoLibraries: z.string().default(EVIDENCE_UNAVAILABLE),
+  dependencies: z.array(z.string()).default([]),
+  pqcReadinessPct: z.number().default(0),
+  migrationComplexity: z.string().default('Medium'),
+  estimatedHours: z.number().default(0),
+});
+export type AssetIntelligence = z.infer<typeof assetIntelligenceSchema>;
+
+// I2#9 — Industry Benchmarking™ (peer values are modeled reference points)
+export const benchmarkRowSchema = z.object({ cohort: z.string(), readiness: z.number(), delta: z.number(), source: z.string() });
+export const benchmarkingSchema = z.object({ rows: z.array(benchmarkRowSchema), percentileNarrative: z.string(), note: z.string() });
+export type Benchmarking = z.infer<typeof benchmarkingSchema>;
+
+// I2#10 — Report Validation™ (self-verified arithmetic/consistency badge)
+export const validationCheckSchema = z.object({ check: z.string(), status: z.enum(['pass', 'fail']), detail: z.string() });
+export const reportValidationSchema = z.object({ overall: z.enum(['PASS', 'FAIL']), checks: z.array(validationCheckSchema), note: z.string().default('') });
+export type ReportValidation = z.infer<typeof reportValidationSchema>;
+
+// I2#11 — Quantum Readiness Index™ (strategic pillars behind the single score)
+export const readinessPillarSchema = z.object({
+  pillar: z.string(),
+  score: z.union([z.number(), z.string()]), // number, or 'Not Measured'
+  weightPct: z.number(),
+  contribution: z.number(),
+  measured: z.boolean().default(true),
+  driver: z.string().default(''),
+});
+export const readinessIndexSchema = z.object({ overall: z.number(), pillars: z.array(readinessPillarSchema), note: z.string() });
+export type ReadinessIndex = z.infer<typeof readinessIndexSchema>;
+
+// I2#12 — Policy-driven PQC algorithm profiles (no hard-coded universal target)
+export const cryptoPolicyProfileSchema = z.object({
+  profile: z.string(),
+  keyEstablishment: z.string(),
+  digitalSignature: z.string(),
+  certificateChain: z.string(),
+  symmetric: z.string(),
+  hash: z.string(),
+  guidance: z.string(),
+});
+export const cryptoPolicySchema = z.object({ activeProfile: z.string(), profiles: z.array(cryptoPolicyProfileSchema), note: z.string() });
+export type CryptoPolicy = z.infer<typeof cryptoPolicySchema>;
+
+// I2#2 — Terminology & Definitions (Assets vs Components etc.)
+export const definitionSchema = z.object({ term: z.string(), definition: z.string() });
+export type ReportDefinition = z.infer<typeof definitionSchema>;
 
 export const brandingSchema = z.object({
   companyName: z.string().default('QGuard Helix'),
@@ -371,6 +526,20 @@ export const enterpriseAssessmentReportSchema = z.object({
   waveSimulation: z.array(waveSimulationSchema),
   governanceGates: z.array(governanceGateSchema),
   explainability: z.array(explainabilitySchema),
+  // Improvements_01
+  riskAcceptance: z.array(riskAcceptanceSchema),
+  assetReadiness: z.array(assetReadinessSchema),
+  decisionChain: decisionChainSchema,
+  // Improvements_02 — defaults keep previously-saved report JSON parseable
+  readinessMethodology: readinessMethodologySchema.default({ formula: '', overall: 0, factors: [], explanation: EVIDENCE_UNAVAILABLE }),
+  readinessIndex: readinessIndexSchema.default({ overall: 0, pillars: [], note: EVIDENCE_UNAVAILABLE }),
+  roiAnalysis: roiAnalysisSchema.default({ investmentUsd: 0, expectedRiskReductionPct: 0, riskAvoidanceUsd: 0, netBenefitUsd: 0, roiMultiple: 0, paybackNarrative: EVIDENCE_UNAVAILABLE, lines: [] }),
+  resourceLoading: z.array(resourceLoadSchema).default([]),
+  assetIntelligence: z.array(assetIntelligenceSchema).default([]),
+  benchmarking: benchmarkingSchema.default({ rows: [], percentileNarrative: EVIDENCE_UNAVAILABLE, note: '' }),
+  reportValidation: reportValidationSchema.default({ overall: 'FAIL', checks: [], note: 'Validation not executed for this report version.' }),
+  cryptoPolicy: cryptoPolicySchema.default({ activeProfile: '', profiles: [], note: '' }),
+  definitions: z.array(definitionSchema).default([]),
   findings: z.array(findingSchema),
   assets: tableSchema,
   certificates: tableSchema,

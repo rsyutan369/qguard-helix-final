@@ -1,0 +1,302 @@
+🟢 1. Binary Integrity Verification
+
+Current Status
+
+Runtime binary hash captured:
+No release manifest or hash pin configured.
+Purpose
+
+This verifies that the executable hasn't been modified after release.
+
+For example:
+
+QGuardMessaging.exe
+
+↓
+
+SHA-256
+
+↓
+
+4A73...
+
+The application compares the current hash against a trusted release manifest.
+
+How to implement
+
+Generate a manifest during your release process.
+
+Example:
+
+release-manifest.json
+
+{
+  "version": "1.0.0",
+  "sha256": "...",
+  "signature": "...",
+  "timestamp": "..."
+}
+
+During startup:
+
+Read manifest
+
+↓
+
+Compute SHA256
+
+↓
+
+Compare
+
+↓
+
+Match?
+
+Yes → Continue
+
+No → Stop execution
+
+This is especially valuable if you distribute installers outside an app store.
+
+🟢 2. Signed Build Verification
+
+Current
+
+Release signing marker is not configured
+
+This means your executable is not code signed.
+
+For Windows, obtain a code-signing certificate (OV or EV) and sign your binaries.
+
+Example:
+
+signtool sign
+
+↓
+
+QGuardMessaging.exe
+
+↓
+
+Trusted Publisher
+
+After signing, verify at runtime that the executable is signed by your expected publisher.
+
+Benefits:
+
+SmartScreen reputation
+Prevents tampering
+Trusted publisher information
+Better enterprise deployment experience
+🟢 3. Code Obfuscation
+
+Current
+
+Debug build keeps symbols.
+
+This is expected for development builds.
+
+For production:
+
+Strip debug symbols
+Minify JavaScript/TypeScript
+Optimize Rust binaries
+Avoid embedding sensitive strings (API keys, secrets)
+
+For Rust:
+
+Cargo.toml
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
+panic = "abort"
+codegen-units = 1
+
+For Tauri:
+
+npm run tauri build
+
+Avoid shipping debug builds.
+
+🟢 4. Control-Flow Flattening
+
+Current
+
+Not configured.
+
+This is an advanced binary-hardening technique that makes reverse engineering more difficult by restructuring program control flow.
+
+Reality check
+
+Rust does not provide built-in control-flow flattening.
+
+Commercial protectors (e.g., VM-based or binary protection products) can offer this capability, but they're typically used for software IP protection and are not required for a secure application.
+
+Instead, focus on:
+
+Release optimization
+Symbol stripping
+Code signing
+Runtime integrity checks
+Secret management
+Secure key handling
+
+These deliver more practical security benefits for most applications.
+
+🟢 Additional hardening I recommend for QGuard Messaging
+Secure Boot Verification
+Application Starts
+
+↓
+
+Verify executable hash
+
+↓
+
+Verify digital signature
+
+↓
+
+Verify configuration
+
+↓
+
+Verify integrity
+
+↓
+
+Launch
+Secure Update Verification
+
+When you add auto-updates:
+
+Download update
+
+↓
+
+Verify signature
+
+↓
+
+Verify hash
+
+↓
+
+Install
+
+Never install an unsigned update.
+
+DLL Integrity
+
+On Windows:
+
+Verify
+
+tauri.dll
+
+webview2
+
+custom dlls
+
+plugins
+
+before loading them.
+
+Secure Configuration
+
+Protect configuration files with signatures.
+
+Example:
+
+settings.json
+
+↓
+
+SHA-256
+
+↓
+
+Signature
+
+↓
+
+Verify
+
+If altered:
+
+Configuration modified
+
+↓
+
+Reject
+Tamper Detection
+
+Detect if:
+
+executable changes
+resources change
+injected DLLs
+debugger presence (if appropriate for your threat model)
+modified binaries
+Secure Key Storage
+
+Your Quantum Vault should never keep encryption keys in plaintext.
+
+Instead:
+
+Master Password
+
+↓
+
+Argon2id
+
+↓
+
+Master Key
+
+↓
+
+AES-256-GCM
+
+↓
+
+Encrypted Vault Key
+
+If available, integrate platform secure storage such as:
+
+Windows: DPAPI or TPM-backed protection
+macOS: Keychain
+Linux: Secret Service/KWallet (where appropriate)
+Production Hardening Checklist for QGuard Messaging
+Feature	Status
+Release Build (cargo --release)	✅
+Strip Symbols	✅
+Link-Time Optimization (LTO)	✅
+Code Signing	🔲
+Runtime Signature Verification	🔲
+Binary Hash Verification	🔲
+Secure Auto-Update Verification	🔲
+Release Manifest	🔲
+Secure Configuration Validation	🔲
+AES-256-GCM Vault Encryption	✅
+ML-KEM Hybrid Key Exchange	✅
+ML-DSA Digital Signatures	✅
+Argon2id Password Derivation	✅
+Local-Only Quantum Vault	✅
+End-to-End Encryption	✅
+Certificate Pinning (if using remote services)	🔲
+Secure Logging (avoid secrets)	🔲
+My recommendation
+
+The highest priority items to complete before a public release are:
+
+Code-sign the application (OV or EV certificate).
+Always build optimized release binaries (cargo build --release / tauri build).
+Implement binary hash and release manifest verification for tamper detection.
+Sign and verify updates before installation if you add an update mechanism.
+Harden configuration and key storage, ensuring secrets are never embedded in the application.
+
+The control-flow flattening warning is the lowest priority. It's an advanced anti-reverse-engineering measure rather than a fundamental security requirement. For an enterprise application like QGuard Messaging, strong cryptography, secure key management, code signing, and integrity verification provide substantially more practical security value.

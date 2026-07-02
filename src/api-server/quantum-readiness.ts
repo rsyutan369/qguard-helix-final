@@ -111,7 +111,15 @@ function isInternetFacing(asset: Record<string, unknown>): boolean {
   const meta = recordOf(asset.metadata)
   if (meta.internet_facing === true || meta.public === true) return true
   const exposure = str(meta.exposure || meta.exposure_level).toLowerCase()
-  return exposure.includes('internet') || exposure.includes('public') || exposure.includes('external')
+  if (exposure.includes('internet') || exposure.includes('public') || exposure.includes('external')) return true
+  // Domain / website / TLS-endpoint / gateway assets are internet-facing by
+  // nature — a scanned public domain (e.g. "qguardhelix.com") must not read as
+  // internal. Mirror the domain-asset heuristic used for `domainsScanned`.
+  const type = str(asset.type).toLowerCase()
+  if (/web|domain|tls|endpoint|site|host|gateway|cdn|proxy|load|dns|ingress|api/i.test(type)) return true
+  const name = str(asset.name)
+  if (/^https?:\/\//i.test(name) || /\.[a-z]{2,}(?::\d+)?$/i.test(name)) return true
+  return false
 }
 
 export async function buildSnapshot(token: string, userId: string) {
@@ -339,11 +347,20 @@ export async function buildSnapshot(token: string, userId: string) {
     : 0
 
   const pqcAdoption = totalCrypto > 0 ? ((pqcReady + hybrid * 0.5) / totalCrypto) * 100 : 0
-  const runtimeVisibility = runtimeEvents.length > 0 ? 100 : scanSessions.length > 0 ? 55 : 0
+  // Runtime visibility is a MEASURED signal: non-zero only when real runtime
+  // crypto telemetry exists. Scan sessions alone do not observe runtime paths,
+  // so they no longer grant a 55-point proxy (reports showed "Runtime
+  // Visibility 55" next to "Runtime Telemetry: No Data" — a contradiction).
+  // When runtime is not measured the factor is EXCLUDED from the readiness
+  // blend and the remaining weights are renormalised, instead of silently
+  // scoring an unmeasured factor.
+  const runtimeMeasured = runtimeEvents.length > 0
+  const runtimeVisibility = runtimeMeasured ? 100 : 0
   const governanceMaturity = scanSessions.length > 0 ? 60 : 0
 
+  const readinessWeightSum = runtimeMeasured ? 1 : 0.85
   const quantumReadiness = hasData
-    ? Math.round(clamp(pqcAdoption * 0.45 + (100 - quantumRisk) * 0.25 + runtimeVisibility * 0.15 + governanceMaturity * 0.15))
+    ? Math.round(clamp((pqcAdoption * 0.45 + (100 - quantumRisk) * 0.25 + (runtimeMeasured ? runtimeVisibility * 0.15 : 0) + governanceMaturity * 0.15) / readinessWeightSum))
     : 0
 
   const hndlEvents = runtimeEvents.filter((e) => e.hndl_risk === true).length
@@ -369,8 +386,11 @@ export async function buildSnapshot(token: string, userId: string) {
   const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * 38 * 165) : 0
 
   // ---- Factor breakdowns ------------------------------------------------
+  // Terminology: this factor measures the CBOM component share (pqcReady /
+  // totalCrypto are cryptographic COMPONENTS, not assets) — labelled accordingly
+  // so it can never be confused with the asset-level `pqcReadyAssets` count.
   const readinessFactors = [
-    { label: 'PQC-Ready Assets', score: Math.round(clamp(totalCrypto > 0 ? (pqcReady / totalCrypto) * 100 : 0)) },
+    { label: 'PQC-Ready Components', score: Math.round(clamp(totalCrypto > 0 ? (pqcReady / totalCrypto) * 100 : 0)) },
     { label: 'Hybrid Crypto Adoption', score: Math.round(clamp(totalCrypto > 0 ? (hybrid / totalCrypto) * 100 : 0)) },
     { label: 'TLS / Protocol Maturity', score: Math.round(clamp(domainsScanned > 0 ? 100 - vulnerableShare : 0)) },
     { label: 'PKI Maturity', score: Math.round(clamp(certificatesAnalyzed > 0 ? 100 - vulnerableShare * 0.8 : 0)) },

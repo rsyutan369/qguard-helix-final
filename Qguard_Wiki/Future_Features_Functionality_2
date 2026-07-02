@@ -1,0 +1,878 @@
+MASTER IMPLEMENTATION PROMPT
+ROLE
+
+You are acting as a team of:
+
+Enterprise Software Architect
+Principal Rust Engineer
+Principal React Engineer
+Principal Cybersecurity Engineer
+Principal Post-Quantum Cryptography Engineer
+Principal Zero Trust Architect
+Enterprise UX/UI Engineer
+DevSecOps Engineer
+
+Your task is to design, build, integrate and implement a completely new enterprise module inside the existing QGuard Helix Platform.
+
+This is NOT a proof-of-concept.
+
+Everything must be designed as production-ready, scalable, modular, enterprise-grade software suitable for Government, Defense, Financial Institutions, Critical Infrastructure, Healthcare, Telecommunications and Fortune 500 organizations.
+
+PROJECT
+
+QGuard Helix™
+
+Enterprise Quantum Security Platform
+
+New Enterprise Module:
+
+PROTECTION
+
+This module will extend the existing Quantum Readiness Platform into an active Quantum Security Platform capable of protecting enterprise assets in real time using modern cryptographic practices with a strong emphasis on post-quantum readiness.
+
+The implementation must integrate seamlessly with every existing QGuard Helix module.
+
+Never duplicate existing functionality.
+
+Always reuse existing services whenever possible.
+
+EXISTING PLATFORM
+
+The current platform already contains:
+
+Quantum Readiness Assessment Engine™
+Migration Planner
+Migration Sandbox
+Live Migration Operations
+PQC Scanner
+CBOM Explorer
+Shadow Crypto
+Crypto Exposure
+Runtime Cryptographic Intelligence
+Behavioral Analytics
+PQAuth™
+QKMS™
+Quantum Vault
+Encryption Services
+Secure Communication
+Governance
+Telemetry
+Trust Center
+Observability
+
+The new module must function as an enterprise extension of these existing systems.
+
+NEW MODULE
+
+Implement a new top-level platform module:
+
+PROTECTION
+
+The sidebar navigation shall become:
+
+CORE MODULES
+
+DISCOVERY
+
+QUANTUM READINESS ASSESSMENT ENGINE™
+
+OPERATIONS
+
+ECOSYSTEM & SUPPLY CHAIN
+
+INTELLIGENCE
+
+PQAUTH™
+
+OBSERVABILITY
+
+QKMS™
+
+TRUST CENTER
+
+GOVERNANCE
+
+TELEMETRY
+
+PROTECTION
+
+QUANTUM TOOLS
+PROTECTION MODULE
+
+Build the following enterprise submodules.
+
+Protection Command Center
+
+Network Protection
+
+Endpoint Protection
+
+Data Protection
+
+Cloud Protection
+
+Application Protection
+
+Identity Protection
+
+Protection Policies
+
+Protection Analytics
+
+Threat Prevention
+
+Every module must have:
+
+Overview dashboard
+Live metrics
+Executive dashboard
+Technical dashboard
+Risk analysis
+AI insights
+Historical timeline
+Real-time telemetry
+Policy management
+Compliance status
+Recommendations
+Audit logs
+PROTECTION COMMAND CENTER
+
+Create an executive SOC dashboard.
+
+Display:
+
+Enterprise Protection Score
+
+Protected Assets
+
+Protected Networks
+
+Protected Endpoints
+
+Protected Databases
+
+Protected APIs
+
+Protected Cloud Resources
+
+Protected Identities
+
+Protected Applications
+
+Threat Status
+
+Quantum Readiness Status
+
+Harvest Now Decrypt Later Risk
+
+Crypto Agility Score
+
+Active Policies
+
+Protection Health
+
+Security Incidents
+
+Runtime Alerts
+
+Real-Time Protection Events
+
+Key Rotation Status
+
+Certificate Health
+
+Encryption Coverage
+
+Attack Surface Overview
+
+Enterprise Risk Heatmap
+
+Executive KPIs
+
+NETWORK PROTECTION
+
+Design a complete enterprise network protection platform.
+
+Create:
+
+Overview
+
+Real-Time Network Encryption
+
+Quantum Secure Tunnel
+
+Zero Trust Quantum Network
+
+Quantum Network Sensor
+
+TLS Analytics
+
+Weak Crypto Discovery
+
+Packet Inspection
+
+Traffic Intelligence
+
+Encrypted Session Analytics
+
+Quantum VPN
+
+Secure Gateway
+
+API Encryption
+
+Network Policies
+
+Runtime Telemetry
+
+AI Threat Detection
+
+Network Risk Scoring
+
+Network Health
+
+Network Compliance
+
+The platform shall detect:
+
+RSA
+
+ECC
+
+Weak TLS
+
+Deprecated Ciphers
+
+Weak Certificates
+
+Legacy VPN
+
+Weak PKI
+
+Weak Cipher Suites
+
+Hybrid PQC Support
+
+Post-Quantum Readiness
+
+Visualize everything in interactive dashboards.
+
+QUANTUM NETWORK SENSOR
+
+Implement a passive enterprise network sensor.
+
+Capabilities:
+
+Detect TLS versions
+
+Cipher Suites
+
+Key Exchange
+
+Certificates
+
+RSA Usage
+
+ECC Usage
+
+Hybrid PQC
+
+ML-KEM Adoption
+
+Weak Algorithms
+
+Encryption Downgrade
+
+TLS Misconfiguration
+
+Certificate Expiration
+
+Certificate Chains
+
+PKI Trust
+
+Handshake Analysis
+
+Network Metadata
+
+Encrypted Traffic Statistics
+
+Risk Score
+
+Quantum Exposure Score™
+
+Generate live topology graphs.
+
+REAL-TIME NETWORK PROTECTION
+
+Implement a secure networking architecture that:
+
+Establishes secure sessions using post-quantum key establishment where supported.
+
+Uses authenticated symmetric encryption for ongoing traffic.
+
+Supports hybrid deployments for interoperability with existing enterprise infrastructure.
+
+Includes:
+
+Session establishment
+Secure tunnel management
+Session key lifecycle
+Automatic re-keying
+Traffic integrity
+Replay protection
+Forward secrecy where applicable
+Crypto-agility to adopt future algorithms
+
+Do not claim to replace TLS across the Internet. Where PQC-enabled protocols are unavailable, design hybrid or overlay approaches that can coexist with existing enterprise networks.
+
+ENDPOINT PROTECTION
+
+Create:
+
+Overview
+
+Real-Time File Encryption
+
+Transparent File Encryption
+
+Folder Protection
+
+Disk Protection
+
+Secure Delete
+
+Integrity Monitoring
+
+Endpoint Telemetry
+
+Device Protection
+
+File Analytics
+
+File Policies
+
+Device Trust
+
+Runtime Protection
+
+Files should be protected transparently through enterprise policy rather than requiring users to manually encrypt files.
+
+Support:
+
+Office files
+
+PDF
+
+CAD
+
+Images
+
+Archives
+
+Source code
+
+Database backups
+
+Virtual machines
+
+Cloud synchronized folders
+
+USB devices
+
+Shared folders
+
+DATA PROTECTION
+
+Implement:
+
+Overview
+
+Quantum Database Engine
+
+Real-Time Database Encryption
+
+Column Encryption
+
+Row Encryption
+
+Field Encryption
+
+Transparent Encryption
+
+Data Discovery
+
+Tokenization
+
+Secrets Protection
+
+Database Integrity
+
+Database Telemetry
+
+Database Policies
+
+Database Compliance
+
+Database Risk Analysis
+
+Support:
+
+PostgreSQL
+
+MySQL
+
+MariaDB
+
+Microsoft SQL Server
+
+Oracle
+
+MongoDB
+
+Redis
+
+Cassandra
+
+Never modify application code directly.
+
+Use transparent integration wherever possible.
+
+CLOUD PROTECTION
+
+Implement:
+
+Overview
+
+Cloud Storage Encryption
+
+Cloud Key Management
+
+Cloud Integrity
+
+Cloud Compliance
+
+Cloud Telemetry
+
+Cloud Risk Analysis
+
+Cloud Discovery
+
+SaaS Protection
+
+Object Storage Protection
+
+Backup Protection
+
+Multi Cloud Dashboard
+
+Support:
+
+AWS
+
+Azure
+
+Google Cloud
+
+Oracle Cloud
+
+Cloudflare
+
+Backblaze
+
+MinIO
+
+Dropbox
+
+OneDrive
+
+Google Drive
+
+APPLICATION PROTECTION
+
+Create:
+
+Overview
+
+API Protection
+
+API Encryption
+
+Runtime Protection
+
+Certificate Management
+
+JWT Protection
+
+Token Protection
+
+Secrets Protection
+
+Microservice Protection
+
+Service Mesh Security
+
+Application Telemetry
+
+Application Risk Analysis
+
+API Analytics
+
+Support:
+
+REST
+
+GraphQL
+
+gRPC
+
+WebSocket
+
+MQTT
+
+AMQP
+
+IDENTITY PROTECTION
+
+Extend PQAuth™.
+
+Add:
+
+Runtime Identity Protection
+
+Credential Protection
+
+Session Protection
+
+Privilege Protection
+
+Device Binding
+
+Continuous Verification
+
+Identity Risk
+
+Identity Telemetry
+
+Identity Compliance
+
+Integrate with:
+
+Active Directory
+
+Microsoft Entra ID
+
+LDAP
+
+OAuth2
+
+OIDC
+
+SAML
+
+Passkeys
+
+FIDO2
+
+THREAT PREVENTION
+
+Implement:
+
+Attack Detection
+
+Crypto Downgrade Detection
+
+Harvest Now Decrypt Later Detection
+
+Ransomware Indicators
+
+Certificate Abuse
+
+Weak Crypto Usage
+
+Suspicious Key Usage
+
+Session Hijacking Detection
+
+Credential Abuse
+
+Policy Violations
+
+Behavioral Detection
+
+AI Correlation Engine
+
+PROTECTION POLICIES
+
+Implement enterprise policy engine.
+
+Support:
+
+Department
+
+Organization
+
+Region
+
+Cloud
+
+Application
+
+Network
+
+Identity
+
+Database
+
+Device
+
+File
+
+User
+
+Group
+
+Time
+
+Location
+
+Risk
+
+Policies should be reusable and version controlled.
+
+PROTECTION ANALYTICS
+
+Provide:
+
+Executive KPIs
+
+Technical KPIs
+
+Compliance
+
+Protection Coverage
+
+Threat Trends
+
+Encryption Trends
+
+Asset Trends
+
+Risk Trends
+
+Policy Effectiveness
+
+Crypto Agility
+
+Historical Timeline
+
+Predictive Analytics
+
+AI Recommendations
+
+ENTERPRISE UI
+
+Use the existing QGuard Helix design language.
+
+Maintain consistency across:
+
+Cards
+
+Charts
+
+Tables
+
+Maps
+
+Topology Graphs
+
+Risk Matrix
+
+Executive Reports
+
+Dark Theme
+
+Cyber Warfare Theme
+
+Enterprise SOC Theme
+
+Glass Morphism
+
+3D Effects
+
+Smooth Animations
+
+Responsive Layout
+
+Accessibility
+
+AI CAPABILITIES
+
+Every page must include:
+
+AI Executive Advisor™
+
+AI Security Advisor™
+
+AI Migration Advisor™
+
+AI Threat Advisor™
+
+AI Policy Advisor™
+
+AI Recommendations™
+
+Explain:
+
+Current status
+
+Business impact
+
+Technical impact
+
+Recommendations
+
+Migration guidance
+
+Risk mitigation
+
+Compliance implications
+
+PLATFORM INTEGRATION
+
+Integrate with:
+
+Quantum Readiness Assessment Engine™
+
+PQC Scanner
+
+CBOM Explorer
+
+Shadow Crypto
+
+Telemetry
+
+Observability
+
+QKMS™
+
+Quantum Vault
+
+Migration Planner
+
+Governance
+
+Trust Center
+
+PQAuth™
+
+No duplicated services.
+
+Reuse existing APIs.
+
+Reuse existing stores.
+
+Reuse existing authentication.
+
+Reuse existing telemetry.
+
+Reuse existing dashboards where appropriate.
+
+CRYPTOGRAPHY ARCHITECTURE
+
+Implement a modular crypto provider abstraction rather than hard-coding algorithms.
+
+Use responsibilities such as:
+
+Post-quantum key establishment (for example ML-KEM where supported)
+Digital signatures (for example ML-DSA, with optional support for SLH-DSA)
+Symmetric authenticated encryption (for example XChaCha20-Poly1305 or AES-256-GCM)
+Password-based key derivation (Argon2id)
+Hashing and integrity (BLAKE3 and/or SHA-3 depending on compliance requirements)
+HKDF for session key derivation
+
+Design for crypto-agility so algorithms can be upgraded or replaced without changing application logic.
+
+IMPLEMENTATION REQUIREMENTS
+
+Use:
+
+Frontend
+
+React 19
+TypeScript
+Vite
+TailwindCSS
+shadcn/ui
+Framer Motion
+Recharts
+TanStack Query
+React Router
+
+Desktop
+
+Tauri v2
+
+Backend
+
+Rust
+
+Architecture
+
+Clean Architecture
+Hexagonal Architecture
+SOLID
+Domain Driven Design
+CQRS where appropriate
+Event Driven Architecture
+
+Security
+
+Zero Trust
+Principle of Least Privilege
+Secure by Default
+Defense in Depth
+Secure IPC
+Secure Local Storage
+
+Code Quality
+
+Enterprise folder structure
+Modular components
+Reusable hooks
+Service layer abstraction
+Unit tests
+Integration tests
+Error boundaries
+Logging
+Telemetry
+Performance optimization
+Lazy loading
+Accessibility
+Internationalization ready
+DELIVERABLES
+
+Generate:
+
+Complete enterprise architecture.
+Full folder structure.
+Database schema.
+Rust backend services.
+React frontend.
+API contracts.
+State management.
+Tauri integration.
+Telemetry pipeline.
+AI integration.
+UI implementation.
+Enterprise dashboards.
+Protection engine services.
+Background workers.
+Scheduler.
+Policy engine.
+Testing suite.
+Documentation.
+Migration strategy.
+Production-ready implementation with no placeholder code.
+
+The final solution should feel like a cohesive extension of the existing QGuard Helix platform, preserving its architecture, UI/UX, security model, and modularity while adding comprehensive enterprise protection capabilities.

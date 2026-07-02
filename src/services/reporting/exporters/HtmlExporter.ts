@@ -127,6 +127,8 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     <div><h3>Top Risks</h3><ol>${ex.topRisks.map((r) => `<li>${esc(r)}</li>`).join('') || '<li class="muted">Evidence Not Available</li>'}</ol></div>
     <div><h3>Top Recommended Actions</h3><ol>${ex.topActions.map((a) => `<li>${esc(a)}</li>`).join('') || '<li class="muted">Evidence Not Available</li>'}</ol></div>
   </div>
+  <h3>Top Business Risks</h3>
+  ${gridTable(['#', 'Business Risk', 'Level', 'Evidence Driver'], ex.topBusinessRisks.length ? ex.topBusinessRisks.map((r, i) => [i + 1, r.risk, r.level, r.driver]) : [['—', 'Evidence Not Available', '—', '—']])}
   <div class="callout"><b>Executive Recommendation:</b> ${esc(ex.executiveRecommendation)}<br/><b>Estimated Programme:</b> ${esc(ex.estimatedDurationWeeks || 'TBD')} weeks · ${esc(usd(ex.estimatedCostUsd))} · Expected risk reduction ${esc(ex.expectedRiskReductionPct)}% · Quantum exposure window ${esc(ex.quantumExposureWindow)}.</div>
 
   <h2>Executive Dashboard</h2>
@@ -147,14 +149,31 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ])}
 
   <h2>Business Impact Intelligence&trade;</h2>
-  ${gridTable(['Dimension', 'Level', 'Why (evidence-based)'], report.impactReasons.map((r) => [r.dimension, r.level, r.reason]))}
+  ${gridTable(['Dimension', 'Level', 'Why', 'Evidence'], report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ') || 'Evidence Not Available']))}
 
   <h2>Executive Decision Center&trade;</h2>
   <p class="muted">Decisions requiring executive approval, with rationale and accountable owner.</p>
   ${gridTable(['Decision Required', 'Type', 'Rationale', 'Owner'], report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]))}
 
   <h2>Quantum Readiness Breakdown</h2>
-  ${gridTable(['Domain', 'Score', 'Risk Level', 'Owner', 'Recommended Action'], report.readinessDomains.map((d) => [d.domain, `${d.score}/100`, d.riskLevel, d.owner, d.actions]))}
+  <p class="muted">Targets are calculated per domain (baseline + internet-facing exposure), not static — the rationale explains each.</p>
+  ${gridTable(['Domain', 'Current', 'Target', 'Risk Level', 'Owner', 'Target Rationale'], report.readinessDomains.map((d) => [d.domain, `${d.score}/100`, `${d.targetScore}/100`, d.riskLevel, d.owner, d.targetRationale]))}
+
+  <h2>Quantum Readiness Index&trade;</h2>
+  <p class="muted">${esc(report.readinessIndex.note)}</p>
+  ${gridTable(['Strategic Pillar', 'Score', 'Weight', 'Contribution', 'Primary Driver'], report.readinessIndex.pillars.length ? report.readinessIndex.pillars.map((p) => [p.pillar, typeof p.score === 'number' ? `${p.score}/100` : p.score, p.measured ? `${p.weightPct}%` : '—', p.measured ? p.contribution.toFixed(1) : '—', p.driver]) : [['Evidence Not Available', '—', '—', '—', '—']])}
+  <p><b>Overall Quantum Readiness Index:</b> ${esc(report.readinessIndex.overall)}/100</p>
+
+  <h2>Readiness Scoring Methodology&trade;</h2>
+  <p><b>Formula:</b> <code>${esc(report.readinessMethodology.formula)}</code></p>
+  <p class="muted">${esc(report.readinessMethodology.explanation)}</p>
+  ${gridTable(['Factor', 'Weight', 'Score', 'Contribution (Score×Weight)', 'Measurement Basis'], report.readinessMethodology.factors.map((f) => [f.factor, f.measured ? `${f.weightPct}%` : 'Excluded', typeof f.score === 'number' ? `${f.score}/100` : f.score, f.measured ? f.contribution.toFixed(1) : '—', f.basis]))}
+  <p><b>Overall Quantum Readiness = Σ Contribution =</b> ${report.readinessMethodology.factors.filter((f) => f.measured).map((f) => f.contribution.toFixed(1)).join(' + ')} ≈ <b>${esc(report.readinessMethodology.overall)}/100</b></p>
+
+  <h2>Industry Benchmarking&trade;</h2>
+  <p class="muted">${esc(report.benchmarking.percentileNarrative)}</p>
+  ${gridTable(['Cohort', 'Readiness', 'Delta vs You', 'Source'], report.benchmarking.rows.length ? report.benchmarking.rows.map((b) => [b.cohort, `${b.readiness}/100`, b.delta === 0 ? '—' : `${b.delta > 0 ? '+' : ''}${b.delta}`, b.source]) : [['Evidence Not Available', '—', '—', '—']])}
+  ${report.benchmarking.note ? `<p class="muted">${esc(report.benchmarking.note)}</p>` : ''}
 
   <h2>AI Migration Advisor&trade;</h2>
   <div class="advisor">
@@ -202,8 +221,9 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Risk Scoring Methodology&trade;</h2>
   <p><b>Formula:</b> <code>${esc(report.riskMethodology.formula)}</code></p>
   <p class="muted">${esc(report.riskMethodology.explanation)}</p>
-  ${gridTable(['Risk Domain', 'Weight', 'Domain Score', 'Weighted Contribution'], report.riskMethodology.weights.map((w) => [w.domain, `${w.weightPct}%`, `${w.score}/100`, `${w.contributionPct}%`]))}
-  <p><b>Top Driver:</b> ${esc(report.riskMethodology.topDriver)} · <b>Overall Quantum Risk:</b> ${esc(report.riskMethodology.overall)}/100</p>
+  ${gridTable(['Risk Domain', 'Domain Risk', 'Weight', 'Contribution (Risk×Weight)', 'Share'], report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]))}
+  <p><b>Overall Quantum Risk = Σ Contribution =</b> ${report.riskMethodology.weights.map((w) => w.contribution.toFixed(1)).join(' + ')} = <b>${esc(report.riskMethodology.overall)}/100</b></p>
+  <p><b>Top Driver:</b> ${esc(report.riskMethodology.topDriver)}</p>
 
   <h2>HNDL Exposure Analysis</h2>
   <p>${esc(report.hndl.summary)}</p>
@@ -219,8 +239,12 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Asset Criticality Analysis&trade;</h2>
   ${gridTable(['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue Impact', 'Compliance Scope', 'Data Sensitivity'], report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—']])}
 
-  <h2>Findings &amp; Evidence</h2>
-  ${findings}
+  <h2>Asset Intelligence Profile&trade;</h2>
+  <p class="muted">Per-asset cryptographic posture: detected algorithms, key sizes, TLS profile, dependencies, migration complexity and effort. Fields the evidence pipeline has not yet observed are shown as Evidence Not Available.</p>
+  ${gridTable(['Asset', 'Type / Env', 'Owner Dept.', 'Certificates', 'TLS Version', 'Algorithms', 'Key Sizes', 'Dependencies', 'PQC Ready', 'Complexity', 'Est. Hours'], report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, `${a.assetType} / ${a.environment}`, a.ownerDepartment, a.certificates, a.tlsVersion, a.algorithms.join(', '), a.keySizes.join(', '), a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
+
+  ${meta.kind === 'technical' ? `<h2>Technical Appendix &mdash; Raw Findings &amp; Evidence</h2>
+  ${findings}` : ''}
 
   <h2>Cryptographic & Asset Inventory</h2>
   ${tableHtml(report.assets)}
@@ -228,15 +252,25 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${tableHtml(report.pqcReadiness.table)}
 
   <h2>Compliance Mapping</h2>
-  ${gridTable(['Framework', 'Control', 'Status', 'Current → Target / Gap'], report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]))}
+  <p class="muted">Dynamic gap tracking: Current, Target, Gap and Progress per framework — not a static status word.</p>
+  ${gridTable(['Framework', 'Control', 'Status', 'Current', 'Target', 'Gap', 'Progress', 'Detail'], report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct} pts`, `${c.progressPct}% complete`, c.detail]))}
+
+  <h2>Crypto-Policy Profiles (Target Algorithm Selection)</h2>
+  <p class="muted">${esc(report.cryptoPolicy.note)}</p>
+  ${gridTable(['Profile', 'Key Establishment', 'Digital Signature', 'Certificate Chain', 'Symmetric', 'Hash', 'Guidance'], report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, p.certificateChain, p.symmetric, p.hash, p.guidance]))}
 
   <h2>Remediation Program&trade;</h2>
   ${gridTable(['Priority', 'Action', 'Owner', 'Affected Assets', 'Cost', 'Effort', 'Risk Reduction', 'Target Date', 'Status'], report.remediationProgram.map((r) => [
     r.priority, r.action, r.owner, r.affectedAssets.join(', '), usd(r.costUsd), r.effort, `${r.riskReductionPct}%`, r.targetDate, r.status,
   ]))}
 
-  <h2>Migration Roadmap</h2>
-  ${gridTable(['Phase', 'Description', 'Status', 'Effort (wks)'], report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]))}
+  <h2>Migration Roadmap &amp; Program Plan</h2>
+  <p class="muted">Sequential dates, milestones, approval gates and critical-path/slack — a true program-management plan.</p>
+  ${gridTable(['Phase', 'Start', 'Finish', 'Effort (wks)', 'Milestone', 'Approval Gate', 'Critical Path', 'Slack'], report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, p.milestone || '—', p.gate || '—', p.criticalPath ? 'Yes' : 'No', `${p.slackWeeks}w`]))}
+
+  <h2>Migration Resource Loading&trade;</h2>
+  <p class="muted">Team allocation across the programme window — hours, engineers and percentage loading per team for resource planning.</p>
+  ${gridTable(['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Allocation', 'Basis'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`, r.basis]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Enterprise Remediation Playbook&trade;</h2>
   ${report.playbookDetail.length ? report.playbookDetail.map((p) => `<h3>${esc(p.finding)}</h3>${gridTable(['Step', 'Detail'], [
@@ -255,6 +289,10 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${gridTable(['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]))}
   <p><b>Total Migration Cost:</b> ${esc(usd(report.costForecast.totalUsd))} · <b>Projected Risk-Reduction Value:</b> ${esc(usd(report.costForecast.projectedRiskReductionValueUsd))}</p>
 
+  <h2>Executive ROI &amp; Value Intelligence&trade;</h2>
+  <div class="callout"><b>ROI Summary:</b> ${esc(report.roiAnalysis.paybackNarrative)}</div>
+  ${gridTable(['Value Metric', 'Expected Outcome', 'Basis / Formula'], report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '—', '—']])}
+
   <h2>Migration Simulation (What-If)&trade;</h2>
   ${gridTable(['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], report.waveSimulation.map((w) => [
     w.label, `${w.readinessFrom} → ${w.readinessTo}`, `${w.riskFrom} → ${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`,
@@ -263,13 +301,25 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Risk Reduction Forecast</h2>
   ${gridTable(['Metric', 'Value'], [
     ['Current Risk', `${report.riskForecast.currentRisk}/100`],
-    ['Target Risk', `${report.riskForecast.targetRisk}/100`],
+    ['Target Risk (after migration waves)', `${report.riskForecast.targetRisk}/100`],
     ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
-    ['Projected Residual Risk', `${report.riskForecast.residualRisk}/100`],
+    ['Residual Risk (after optimization)', `${report.riskForecast.residualRisk}/100`],
     ['12-Month Projection', `${report.riskForecast.month12}/100`],
     ['24-Month Projection', `${report.riskForecast.month24}/100`],
     ['36-Month Projection', `${report.riskForecast.month36}/100`],
   ])}
+
+  <h2>Asset-Level Readiness</h2>
+  <p class="muted">Which assets drive the overall readiness score, with their primary risk driver.</p>
+  ${gridTable(['Asset', 'Readiness', 'Risk', 'Posture', 'Internet-Facing', 'Primary Driver', 'Owner'], report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver, a.owner]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—']])}
+
+  <h2>Executive Risk Acceptance</h2>
+  <p class="muted">Formal disposition of residual risk — mitigate, accept, transfer or defer — for governance and audit.</p>
+  ${gridTable(['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], report.riskAcceptance.length ? report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) : [['Evidence Not Available', '—', '—', '—', '—', '—']])}
+
+  <h2>Decision Traceability</h2>
+  <p class="muted">${esc(report.decisionChain.headline)}</p>
+  ${gridTable(['Stage', 'Detail'], report.decisionChain.steps.map((st) => [st.stage, st.detail]))}
 
   <h2>Program Governance</h2>
   ${gridTable(['Role', 'Owner', 'Responsibility'], report.governance.map((g) => [g.role, g.owner, g.responsibility]))}
@@ -288,6 +338,14 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     ['Why does it matter?', x.why],
     ['What action should be taken?', x.action],
   ])}`).join('')}
+
+  <h2>Terminology &amp; Definitions</h2>
+  ${gridTable(['Term', 'Definition'], report.definitions.length ? report.definitions.map((d) => [d.term, d.definition]) : [['Evidence Not Available', '—']])}
+
+  <h2>Report Validation</h2>
+  <p><span class="pill" style="background:${report.reportValidation.overall === 'PASS' ? '#16A34A' : '#DC2626'};color:#fff">Overall Validation: ${esc(report.reportValidation.overall)}</span></p>
+  ${gridTable(['Validation Check', 'Result', 'Detail'], report.reportValidation.checks.length ? report.reportValidation.checks.map((c) => [c.check, c.status === 'pass' ? '✓ PASS' : '✗ FAIL', c.detail]) : [['Evidence Not Available', '—', '—']])}
+  <p class="muted">${esc(report.reportValidation.note)}</p>
 
   <h2>Evidence Sources</h2>
   <p class="muted">${esc(report.evidence.sources.join(' · '))}</p>

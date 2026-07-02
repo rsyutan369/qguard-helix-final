@@ -232,6 +232,7 @@ function ProtectedMessagingApp() {
           subtitle={subtitle}
           user={auth.user}
           theme={theme}
+          activePage={page}
           liveStatus={liveStatus}
           lastLiveEvent={liveEvents[0] ?? null}
           onToggleTheme={toggleTheme}

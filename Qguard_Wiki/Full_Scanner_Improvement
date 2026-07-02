@@ -1,0 +1,341 @@
+# Enterprise Prompt: Quantum Vulnerability Scanner Validation, Integration, and Enhancement
+
+## Objective
+
+Perform a comprehensive review, validation, refactoring, and enhancement of the **Asset Scanner** located at:
+
+`http://localhost:3000/dashboard/scanner`
+
+The goal is to ensure the scanner operates as a production-ready enterprise quantum security assessment engine capable of accurately identifying cryptographic risks across multiple asset types.
+
+---
+
+## Core Requirements
+
+### 1. Validate All Existing Scanner Engines
+
+Review every scanner currently implemented and verify that each one:
+
+* Is fully functional and production-ready.
+* Executes successfully during every scan.
+* Is properly integrated into the scanning pipeline.
+* Produces accurate findings.
+* Reports real cryptographic information instead of placeholder or simulated data.
+* Handles errors gracefully.
+* Supports concurrent scanning where applicable.
+* Completes scans without blocking other scanning modules.
+
+Remove any unused, incomplete, duplicated, or obsolete scanner logic.
+
+---
+
+### 2. Verify End-to-End Backend Integration
+
+Ensure all scanner engines are properly connected to the backend.
+
+Validate:
+
+* API endpoints
+* Scan orchestration
+* Background workers
+* Queue processing
+* Scan lifecycle management
+* Scan state updates
+* Scan progress reporting
+* Result aggregation
+* Error propagation
+* Retry mechanisms
+
+Every scan request must invoke the actual detection engines and return real scan results.
+
+No mocked responses.
+
+No fabricated findings.
+
+No placeholder values.
+
+---
+
+### 3. Verify Frontend ↔ Backend Communication
+
+Ensure complete real-time communication between the frontend and backend.
+
+Review and validate:
+
+* Server-Sent Events (SSE)
+* Event streaming
+* React hooks
+* State management
+* WebSocket/SSE listeners (if applicable)
+* API polling (only where appropriate)
+* Loading states
+* Scan progress indicators
+* Error states
+* Completion events
+
+Every event emitted by the backend should immediately update the frontend without requiring a page refresh.
+
+---
+
+### 4. Ensure Accurate Real-Time Telemetry
+
+During scans, display live telemetry such as:
+
+* Assets discovered
+* Technologies detected
+* Cryptographic algorithms identified
+* Certificates analyzed
+* Protocols detected
+* Scan progress
+* Risk scoring
+* Findings
+* Warnings
+* Errors
+* Recommendations
+
+Telemetry must originate from actual scanner results and never from hardcoded or mock data.
+
+---
+
+### 5. Ensure Cross-Module Data Consistency
+
+Scanner findings must automatically propagate to all dependent modules, including but not limited to:
+
+* `http://localhost:3000/dashboard/quantum-readiness`
+* Executive Dashboard
+* Compliance Dashboard
+* Crypto Inventory
+* Cryptographic Bill of Materials (CBOM)
+* Crypto Agility Dashboard
+* Risk Dashboard
+* Harvest Now, Decrypt Later Dashboard
+* Asset Inventory
+* Executive Reports
+* Assessment Reports
+* Remediation Center
+* Migration Planner
+* Analytics Dashboard
+
+Every module must consume the same backend data source to maintain consistency.
+
+There should be a single source of truth for all scan results.
+
+---
+
+# Quantum Cryptography Detection Engine
+
+Expand the scanner to identify modern and legacy cryptographic technologies.
+
+Detect, identify, classify, and inventory:
+
+## Symmetric Encryption
+
+* AES-128
+* AES-192
+* AES-256
+* DES
+* Triple DES (3DES)
+* Blowfish
+* Twofish
+* RC2
+* RC4
+* ChaCha20
+* Salsa20
+* SM4
+* Camellia
+* SEED
+* IDEA
+
+---
+
+## Asymmetric Encryption
+
+* RSA (all key sizes)
+* Diffie-Hellman (DH)
+* Elliptic Curve Cryptography (ECC)
+* ECDSA
+* ECDH
+* DSA
+* ElGamal
+
+---
+
+## Hash Algorithms
+
+* MD2
+* MD4
+* MD5
+* SHA-1
+* SHA-224
+* SHA-256
+* SHA-384
+* SHA-512
+* RIPEMD
+* Whirlpool
+* BLAKE2
+* BLAKE3
+
+---
+
+## Digital Signatures
+
+* RSA Signatures
+* ECDSA
+* Ed25519
+* Ed448
+* DSA
+
+---
+
+## Key Exchange
+
+* RSA Key Exchange
+* DH
+* ECDH
+* TLS Key Exchange
+* Hybrid PQC Key Exchange
+* X25519
+* X448
+
+---
+
+## TLS / SSL
+
+Detect:
+
+* SSLv2
+* SSLv3
+* TLS 1.0
+* TLS 1.1
+* TLS 1.2
+* TLS 1.3
+
+Also detect:
+
+* Weak cipher suites
+* Deprecated ciphers
+* Weak certificates
+* Expired certificates
+* Weak key sizes
+* Forward secrecy support
+* Quantum-vulnerable TLS configurations
+
+---
+
+## Certificates
+
+Analyze:
+
+* Certificate chain
+* Signature algorithm
+* Public key algorithm
+* Key length
+* Expiration
+* Issuer
+* Trust status
+* Quantum readiness
+* PQC migration readiness
+
+---
+
+## Quantum Risk Classification
+
+Automatically classify findings into categories such as:
+
+* Quantum Safe
+* Quantum Vulnerable
+* High Risk
+* Medium Risk
+* Low Risk
+* Deprecated
+* Legacy
+* Unsupported
+* Requires Immediate Migration
+
+Generate migration recommendations aligned with current post-quantum cryptography guidance.
+
+---
+
+# Asset Coverage
+
+Ensure the platform can scan and assess:
+
+* Websites
+* Web Applications
+* APIs
+* Backend Services
+* Frontend Applications
+* Mobile Applications
+* GitHub Repositories
+* GitLab Repositories
+* Bitbucket Repositories
+* Source Code
+* Infrastructure
+* Virtual Machines
+* Kubernetes
+* Docker Containers
+* Cloud Environments
+* AWS
+* Azure
+* Google Cloud
+* Databases
+* Storage Services
+* Load Balancers
+* Reverse Proxies
+* Identity Providers
+* VPN Gateways
+* Email Servers
+* DNS Servers
+* PKI Infrastructure
+* Certificate Authorities
+* IoT Devices
+* Internal Networks
+* External Attack Surface
+
+---
+
+# Advanced Detection Capabilities
+
+Where technically feasible, implement additional enterprise-grade detection engines capable of:
+
+* Static cryptographic analysis
+* Dynamic runtime cryptographic discovery
+* Binary cryptography inspection
+* Software composition analysis (SCA)
+* Secret discovery
+* TLS fingerprinting
+* Certificate enumeration
+* OpenSSL configuration analysis
+* Web server cryptographic configuration analysis
+* API cryptography inspection
+* Cloud cryptographic configuration analysis
+* Infrastructure-as-Code cryptographic analysis
+* Container cryptography inspection
+* Kubernetes secret and certificate analysis
+* Cryptographic library inventory
+* PKI discovery
+* Cryptographic dependency mapping
+* Automatic Cryptographic Bill of Materials (CBOM) generation
+* Crypto Agility assessment
+* NIST Post-Quantum Cryptography migration readiness assessment
+
+---
+
+# Production Readiness Requirements
+
+The completed implementation must satisfy the following:
+
+* No mock data.
+* No fake scan results.
+* No placeholder values.
+* Accurate cryptographic detection.
+* Real-time telemetry.
+* Enterprise-grade performance.
+* Scalable architecture.
+* Modular scanner engine design.
+* Robust error handling and recovery.
+* High test coverage.
+* Clean, maintainable code.
+* Complete backend-to-frontend integration.
+* Consistent data across all dashboards.
+* Production-ready quality suitable for enterprise deployment.

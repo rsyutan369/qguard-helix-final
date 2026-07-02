@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  Check,
   Clock3,
   Database,
   Download,
@@ -9,8 +10,10 @@ import {
   Radio,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
+  X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
@@ -36,6 +39,7 @@ type AuditSource = "Telemetry" | "Security" | "Realtime";
 
 interface AuditRow {
   id: string;
+  rawId: string;
   source: AuditSource;
   stage: string;
   detail: string;
@@ -124,6 +128,31 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+const AUDIT_PAGE_SIZE = 5;
+
+// Only persisted, user-owned sources can be deleted. Realtime rows are ephemeral
+// in-memory SSE events with no backing row, so they are intentionally omitted.
+const auditDeleteTables: Partial<Record<AuditSource, "messaging_crypto_telemetry" | "messaging_security_events">> = {
+  Telemetry: "messaging_crypto_telemetry",
+  Security: "messaging_security_events",
+};
+
+// Compact, windowed page list (e.g. 1 … 4 5 6 … 24) so a long log never renders
+// dozens of page buttons.
+function pageWindow(current: number, total: number): Array<number | "ellipsis"> {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+  const wanted = [1, current - 1, current, current + 1, total].filter((page) => page >= 1 && page <= total);
+  const unique = Array.from(new Set(wanted)).sort((a, b) => a - b);
+  const items: Array<number | "ellipsis"> = [];
+  let previous = 0;
+  for (const page of unique) {
+    if (page - previous > 1) items.push("ellipsis");
+    items.push(page);
+    previous = page;
+  }
+  return items;
+}
+
 export default function AuditLogsPage({ userId, events, securityEvents, liveEvents, liveStatus, onRefresh }: AuditLogsPageProps) {
   const isAdmin = useIsAdmin();
   const [exporting, setExporting] = useState(false);
@@ -132,6 +161,7 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
   const rows = useMemo<AuditRow[]>(() => [
     ...events.map((event) => ({
       id: `telemetry-${event.id}`,
+      rawId: event.id,
       source: "Telemetry" as const,
       stage: event.stage,
       detail: event.detail,
@@ -141,6 +171,7 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
     })),
     ...securityEvents.map((event) => ({
       id: `security-${event.id}`,
+      rawId: event.id,
       source: "Security" as const,
       stage: event.event_type,
       detail: event.event_hash,
@@ -151,6 +182,7 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
     })),
     ...liveEvents.slice(0, 50).map((event) => ({
       id: `live-${event.id}`,
+      rawId: event.id,
       source: "Realtime" as const,
       stage: event.table,
       detail: event.detail,
@@ -177,6 +209,19 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
   const backendEvents = liveEvents.slice(0, 5);
   const latestTelemetry = events.slice(0, 5);
   const latestSecurity = securityEvents.slice(0, 5);
+
+  const [page, setPage] = useState(1);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / AUDIT_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  useEffect(() => {
+    // Keep the page in range as rows shrink (e.g. after a delete).
+    if (page !== currentPage) setPage(currentPage);
+  }, [page, currentPage]);
+  const pageStart = (currentPage - 1) * AUDIT_PAGE_SIZE;
+  const pageRows = rows.slice(pageStart, pageStart + AUDIT_PAGE_SIZE);
 
   async function recordAuditTelemetry(stage: string, detail: string, progress: number, statusValue: "started" | "progress" | "verified" | "failed" | "complete") {
     await recordCryptoTelemetry({
@@ -302,6 +347,26 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
         setStatus({ tone: "error", message: describeDataError(error) });
       }
     })();
+  }
+
+  async function deleteAuditRow(row: AuditRow) {
+    const table = auditDeleteTables[row.source];
+    if (!table) return;
+    setDeletingId(row.id);
+    setStatus({ tone: "info", message: "Deleting audit record..." });
+    try {
+      // RLS already scopes deletes to the owner; the explicit user_id filter is
+      // defense-in-depth so a record can never be removed outside the session user.
+      const { error } = await supabase.from(table).delete().eq("id", row.rawId).eq("user_id", userId);
+      if (error) throw error;
+      setConfirmDeleteId(null);
+      setStatus({ tone: "success", message: "Audit record deleted." });
+      await Promise.resolve(onRefresh());
+    } catch (error) {
+      setStatus({ tone: "error", message: describeDataError(error) });
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   return (
@@ -459,20 +524,21 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
         )}
 
         <div className="overflow-x-auto">
-          <div className="min-w-[980px]">
-            <div className="grid grid-cols-[120px_190px_1fr_110px_140px_90px] border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
+          <div className="min-w-[1080px]">
+            <div className="grid grid-cols-[120px_190px_1fr_110px_140px_90px_96px] border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
               <span>Source</span>
               <span>Stage</span>
               <span>Detail</span>
               <span>Progress</span>
               <span>Integrity</span>
               <span>Age</span>
+              <span className="text-right">Actions</span>
             </div>
             {rows.length === 0 && (
               <div className="p-6 text-center text-sm text-ink-600">No security events are available for this user.</div>
             )}
-            {rows.map((event) => (
-              <div key={event.id} className="grid grid-cols-[120px_190px_1fr_110px_140px_90px] border-b border-line px-4 py-3 text-sm">
+            {pageRows.map((event) => (
+              <div key={event.id} className="grid grid-cols-[120px_190px_1fr_110px_140px_90px_96px] border-b border-line px-4 py-3 text-sm">
                 <span>
                   <span className={`status-pill ${sourceTone(event.source)}`}>{event.source}</span>
                 </span>
@@ -484,14 +550,91 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
                   {event.integrity}
                 </span>
                 <span className="text-xs text-ink-400">{relativeTime(event.created_at)}</span>
+                <span className="flex items-center justify-end">
+                  {!auditDeleteTables[event.source] ? (
+                    <span className="text-[11px] text-ink-300">Live</span>
+                  ) : deletingId === event.id ? (
+                    <Loader2 className="animate-spin text-ink-400" size={16} />
+                  ) : confirmDeleteId === event.id ? (
+                    <span className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => deleteAuditRow(event)}
+                        title="Confirm delete"
+                        className="rounded-md bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100"
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        title="Cancel"
+                        className="rounded-md border border-line p-1.5 text-ink-500 hover:bg-canvas"
+                      >
+                        <X size={14} />
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteId(event.id)}
+                      title="Delete record"
+                      className="rounded-md border border-line p-1.5 text-ink-500 transition hover:border-rose-200 hover:text-rose-600"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </span>
               </div>
             ))}
           </div>
         </div>
 
+        {rows.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line p-3">
+            <div className="text-xs text-ink-500">
+              Showing {pageStart + 1}-{Math.min(pageStart + AUDIT_PAGE_SIZE, rows.length)} of {rows.length}
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setPage(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="rounded-md border border-line px-2 py-1 text-xs font-semibold text-ink-600 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Prev
+                </button>
+                {pageWindow(currentPage, totalPages).map((item, index) =>
+                  item === "ellipsis" ? (
+                    <span key={`gap-${index}`} className="px-1 text-xs text-ink-400">…</span>
+                  ) : (
+                    <button
+                      type="button"
+                      key={item}
+                      onClick={() => setPage(item)}
+                      className={`min-w-[28px] rounded-md border px-2 py-1 text-xs font-semibold ${item === currentPage ? "border-violet-300 bg-violet-50 text-violet-700" : "border-line text-ink-600 hover:bg-canvas"}`}
+                    >
+                      {item}
+                    </button>
+                  ),
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPage(currentPage + 1)}
+                  disabled={currentPage === totalPages}
+                  className="rounded-md border border-line px-2 py-1 text-xs font-semibold text-ink-600 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {securityEvents.length > 0 && (
           <div className="border-t border-line bg-canvas p-3 text-xs font-semibold text-ink-600">
-            Hash chain heads are rendered from `messaging_security_events`; event details remain encrypted.
+            Security events are hash-chained for tamper-evidence, and their details remain encrypted on your device.
           </div>
         )}
       </section>

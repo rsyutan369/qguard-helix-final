@@ -9,7 +9,6 @@ import {
   Radio,
   RefreshCcw,
   ShieldCheck,
-  UnlockKeyhole,
   UploadCloud,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -45,7 +44,7 @@ interface PublicSignedPrekey {
   expires_at: string;
 }
 
-type KeyAction = "publish" | "unlock" | "rotate" | "refresh";
+type KeyAction = "publish" | "rotate" | "refresh";
 type OperationStatus = "running" | "success" | "error";
 
 interface KeyOperationLog {
@@ -186,7 +185,6 @@ export default function KeyManagementPage({
   onRefresh,
 }: KeyManagementPageProps) {
   const isAdmin = useIsAdmin();
-  const [unlockStatus, setUnlockStatus] = useState("Private keys remain device-bound");
   const [busy, setBusy] = useState<KeyAction | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [operationLogs, setOperationLogs] = useState<KeyOperationLog[]>([]);
@@ -302,22 +300,6 @@ export default function KeyManagementPage({
       pushLog("Inventory refresh", "Refreshing key inventory", "running");
       await Promise.resolve(onRefresh());
       return `Public identity bundle and prekeys published for ${bundle.fingerprint.slice(0, 24)}`;
-    });
-  }
-
-  function unlockPrivateKey() {
-    void runKeyAction("unlock", "Unlock private key", async () => {
-      const status = await withTimeout(
-        safeInvoke<{ storage: string; fingerprint: string; private_key_exported: boolean }>("keys_unlock_private_key", { userId }),
-        "Unlock private key",
-        20_000,
-      );
-      if (status.private_key_exported) {
-        throw new Error("Unlock blocked because private key export was attempted.");
-      }
-      const detail = `Unlocked via ${status.storage} - ${status.fingerprint}`;
-      setUnlockStatus(detail);
-      return "Private key unlocked locally; no private key bytes exported.";
     });
   }
 
@@ -521,14 +503,12 @@ export default function KeyManagementPage({
               {busy === "refresh" ? <Loader2 className="animate-spin" size={16} /> : <RefreshCcw size={16} />}
               {busy === "refresh" ? "Refreshing" : "Refresh"}
             </button>
-            <button onClick={publishPublicBundle} disabled={Boolean(busy)} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-semibold text-ink-700 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50">
-              {busy === "publish" ? <Loader2 className="animate-spin" size={16} /> : <UploadCloud size={16} />}
-              {busy === "publish" ? "Publishing" : "Publish Public Bundle"}
-            </button>
-            <button onClick={unlockPrivateKey} disabled={Boolean(busy)} className="flex items-center gap-2 rounded-lg border border-cyan-200 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60">
-              {busy === "unlock" ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />}
-              {busy === "unlock" ? "Unlocking" : "Unlock Private Key"}
-            </button>
+            {isAdmin && (
+              <button onClick={publishPublicBundle} disabled={Boolean(busy)} className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-semibold text-ink-700 hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50">
+                {busy === "publish" ? <Loader2 className="animate-spin" size={16} /> : <UploadCloud size={16} />}
+                {busy === "publish" ? "Publishing" : "Publish Public Bundle"}
+              </button>
+            )}
             <button onClick={rotateAndPublishPrekey} disabled={Boolean(busy)} className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
               {busy === "rotate" ? <Loader2 className="animate-spin" size={16} /> : <RefreshCcw size={16} />}
               {busy === "rotate" ? "Rotating" : "Rotate Prekeys"}
@@ -578,7 +558,7 @@ export default function KeyManagementPage({
               <span className="font-semibold text-ink-950">Private Decryption Key</span>
               <span className="truncate font-mono text-xs text-violet-600">OS keychain / secure storage</span>
               <span className="text-emerald-600">local only</span>
-              <span className="truncate text-ink-600">{unlockStatus}</span>
+              <span className="truncate text-ink-600">Private keys remain device-bound</span>
             </div>
 
             <div className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line px-4 py-3 text-sm">

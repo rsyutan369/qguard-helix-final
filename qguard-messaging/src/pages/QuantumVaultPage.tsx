@@ -288,6 +288,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   const [explorerQuery, setExplorerQuery] = useState("");
   const [recoveryModalOpen, setRecoveryModalOpen] = useState(false);
   const [vaultStatusModalOpen, setVaultStatusModalOpen] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{ kind: "delete" | "remove"; entry: VaultRegistryEntry } | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [selectedExplorerNodeId, setSelectedExplorerNodeId] = useState<string | null>(null);
 
@@ -850,7 +851,6 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
   async function deleteRegistryFile(entry: VaultRegistryEntry) {
     if (actionBusy) return;
-    if (!window.confirm(`Permanently delete the encrypted file ${pathBasename(entry.qvaultPath)} from disk? This cannot be undone.`)) return;
     setActionBusy(`delete-${entry.id}`);
     try {
       await safeInvoke("vault_delete_file", { sourcePath: entry.qvaultPath });
@@ -918,10 +918,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         <button type="button" disabled={disabled} onClick={() => reprotectRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Re-protect (upgrade to v3 / add recovery)">
           {reprotectBusy ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
         </button>
-        <button type="button" disabled={disabled} onClick={() => removeFromList(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Remove from list (keeps the file on disk)">
+        <button type="button" disabled={disabled} onClick={() => setConfirmDialog({ kind: "remove", entry })} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Remove from list (keeps the file on disk)">
           <X size={16} />
         </button>
-        <button type="button" disabled={disabled} onClick={() => deleteRegistryFile(entry)} className="icon-button border-rose-200 text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50" title="Permanently delete file from disk">
+        <button type="button" disabled={disabled} onClick={() => setConfirmDialog({ kind: "delete", entry })} className="icon-button border-rose-200 text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50" title="Permanently delete file from disk">
           {deleteBusy ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
         </button>
       </div>
@@ -1489,6 +1489,54 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       </section>
 
       {/* Vault Status modal */}
+      {confirmDialog && (() => {
+        const { kind, entry } = confirmDialog;
+        const kindLabel = entry.kind === "folder" ? "folder" : "file";
+        const isDelete = kind === "delete";
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm" onClick={() => setConfirmDialog(null)}>
+            <div className="w-full max-w-md rounded-xl border border-white/30 bg-white p-5 shadow-soft" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-center gap-3">
+                <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${isDelete ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-600"}`}>
+                  {isDelete ? <Trash2 size={20} /> : <AlertTriangle size={20} />}
+                </span>
+                <div className="min-w-0">
+                  <h3 className="text-base font-bold text-ink-950">
+                    {isDelete ? `Permanently delete this ${kindLabel}?` : `Remove this ${kindLabel} from the list?`}
+                  </h3>
+                  <p className="mt-0.5 truncate text-xs text-ink-500" title={entry.name}>{entry.name}</p>
+                </div>
+              </div>
+              <div className={`mt-4 rounded-lg border p-3 text-sm leading-relaxed ${isDelete ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+                {isDelete
+                  ? `Are you sure you want to permanently delete this ${kindLabel}? This erases the encrypted .qvault container from disk. It is unrecoverable and cannot be undone.`
+                  : `Remove this ${kindLabel} from your vault list only. The encrypted .qvault file stays on disk and can be re-added later.`}
+              </div>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDialog(null)}
+                  className="rounded-lg border border-line bg-white px-4 py-2 text-sm font-bold text-ink-700 hover:bg-canvas"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmDialog(null);
+                    if (isDelete) void deleteRegistryFile(entry);
+                    else removeFromList(entry);
+                  }}
+                  className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white transition ${isDelete ? "bg-rose-600 hover:bg-rose-700" : "bg-ink-950 hover:opacity-90"}`}
+                >
+                  {isDelete ? <><Trash2 size={15} /> Delete permanently</> : <><X size={15} /> Remove from list</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {vaultStatusModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/50 p-4 backdrop-blur-sm" onClick={() => setVaultStatusModalOpen(false)}>
           <div className="max-h-[88vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-white/30 bg-white p-5 shadow-soft" onClick={(event) => event.stopPropagation()}>

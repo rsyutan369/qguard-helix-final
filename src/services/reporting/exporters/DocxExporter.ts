@@ -118,8 +118,8 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
       ? report.findings.map((f) => [f.id, f.severity.toUpperCase(), f.affectedAssets.join(', ') || '-', `${f.currentState} -> ${f.recommendedState}`, f.owner, f.targetDate, f.estimatedCostUsd ? `$${f.estimatedCostUsd.toLocaleString()}` : '-', `${f.riskReductionPct}%`])
       : [['-', '-', 'Evidence Not Available', '-', '-', '-', '-', '-']],
   };
-  const complianceTable: ReportTable = { title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current -> Target / Gap'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, c.detail]) };
-  const roadmapTable: ReportTable = { title: 'Roadmap', columns: ['Phase', 'Description', 'Status', 'Effort (wks)'], rows: report.roadmap.map((p) => [p.phase, p.description, p.status, p.effortWeeks]) };
+  const complianceTable: ReportTable = { title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current', 'Target', 'Gap', 'Progress'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct} pts`, `${c.progressPct}% complete`]) };
+  const roadmapTable: ReportTable = { title: 'Roadmap & Program Plan', columns: ['Phase', 'Start', 'Finish', 'Wks', 'Milestone', 'Approval Gate', 'Critical', 'Slack'], rows: report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, p.milestone || '-', p.gate || '-', p.criticalPath ? 'Yes' : 'No', `${p.slackWeeks}w`]) };
   const ex = report.executiveBlock;
   const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
   const stateTable: ReportTable = { title: 'Current vs Target', columns: ['Metric', 'Current', 'Target', 'Improvement'], rows: [
@@ -135,7 +135,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
     ['Compliance Impact', report.businessImpact.complianceImpact], ['Financial Impact', report.businessImpact.financialImpact],
     ['HNDL Exposure', report.businessImpact.hndlExposure], ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
   ] };
-  const domainsTable: ReportTable = { title: 'Readiness Domains', columns: ['Domain', 'Score', 'Risk', 'Owner', 'Recommended Action'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}/100`, d.riskLevel, d.owner, d.actions]) };
+  const domainsTable: ReportTable = { title: 'Readiness Domains', columns: ['Domain', 'Current', 'Target', 'Risk', 'Owner', 'Target Rationale'], rows: report.readinessDomains.map((d) => [d.domain, `${d.score}/100`, `${d.targetScore}/100`, d.riskLevel, d.owner, d.targetRationale]) };
   const advisorTable: ReportTable = { title: 'AI Migration Advisor', columns: ['Risk Reduction', 'Est. Cost', 'Timeline', 'Complexity', 'Confidence'], rows: [[`${report.migrationAdvisor.riskReductionPct}%`, usd(report.migrationAdvisor.costUsd), `${report.migrationAdvisor.timelineWeeks}w`, report.migrationAdvisor.complexity, `${report.migrationAdvisor.confidencePct}%`]] };
   const readinessTable: ReportTable = { title: 'Migration Readiness', columns: ['Category', 'Score', 'Recommendation'], rows: report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]) };
   const wavesTable: ReportTable = { title: 'Migration Waves', columns: ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk Reduction', 'Status'], rows: report.migrationWaves.map((w) => [`Wave ${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]) };
@@ -152,7 +152,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const topTable: ReportTable = { title: 'Top 5', columns: ['#', 'Top Risk', 'Recommended Action'], rows: Array.from({ length: Math.max(ex.topRisks.length, ex.topActions.length, 1) }).map((_, i) => [i + 1, ex.topRisks[i] || '-', ex.topActions[i] || '-']) };
 
   // Report Intelligence (Reports_Enhancements_3) tables
-  const methodologyTable: ReportTable = { title: 'Risk Methodology', columns: ['Risk Domain', 'Weight', 'Domain Score', 'Weighted Contribution'], rows: report.riskMethodology.weights.map((w) => [w.domain, `${w.weightPct}%`, `${w.score}/100`, `${w.contributionPct}%`]) };
+  const methodologyTable: ReportTable = { title: 'Risk Methodology', columns: ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution (Risk×Weight)', 'Share'], rows: [...report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]), ['OVERALL (Σ Contribution)', `${report.riskMethodology.overall}/100`, '100%', report.riskMethodology.overall.toFixed(1), '100%']] };
   const validationTable: ReportTable = { title: 'Recommendation Validation', columns: ['Validation Factor', 'Evidence'], rows: [
     ['Primary Exposure Domain', report.advisorValidation.primaryExposureDomain],
     ['Expected Risk Reduction', `${report.advisorValidation.expectedRiskReductionPct}%`],
@@ -163,12 +163,27 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const confidenceTable: ReportTable = { title: 'Migration Confidence', columns: ['Confidence Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) };
   const costBreakdownTable: ReportTable = { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] };
   const criticalityTable: ReportTable = { title: 'Asset Criticality', columns: ['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
-  const impactReasonTable: ReportTable = { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why (evidence-based)'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason]) };
+  const impactReasonTable: ReportTable = { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why', 'Evidence'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]) };
+  const assetReadinessTable: ReportTable = { title: 'Asset-Level Readiness', columns: ['Asset', 'Readiness', 'Risk', 'Posture', 'Internet-Facing', 'Primary Driver', 'Owner'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver, a.owner]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] };
+  const riskAcceptanceTable: ReportTable = { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) };
+  const decisionChainTable: ReportTable = { title: 'Decision Traceability', columns: ['Stage', 'Detail'], rows: report.decisionChain.steps.map((st) => [st.stage, st.detail]) };
   const findingGroupTable: ReportTable = { title: 'Consolidated Findings', columns: ['Finding', 'Occurrences', 'Affected Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join(', ') || '-']) };
   const decisionTable: ReportTable = { title: 'Executive Decisions', columns: ['Decision Required', 'Type', 'Rationale', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]) };
   const simulationTable: ReportTable = { title: 'Migration Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom} -> ${w.readinessTo}`, `${w.riskFrom} -> ${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) };
   const gateTable: ReportTable = { title: 'Approval Gates', columns: ['Gate', 'Owner', 'Success Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) };
   const evidenceConfTable: ReportTable = { title: 'Evidence Confidence', columns: ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`, e.note || '-']) };
+
+  // Improvements_02 tables
+  const topBusinessRisksTable: ReportTable = { title: 'Top Business Risks', columns: ['#', 'Business Risk', 'Level', 'Evidence Driver'], rows: report.executiveBlock.topBusinessRisks.length ? report.executiveBlock.topBusinessRisks.map((r, i) => [i + 1, r.risk, r.level, r.driver]) : [['-', 'Evidence Not Available', '-', '-']] };
+  const readinessIndexTable: ReportTable = { title: 'Quantum Readiness Index', columns: ['Strategic Pillar', 'Score', 'Weight', 'Contribution', 'Primary Driver'], rows: report.readinessIndex.pillars.length ? report.readinessIndex.pillars.map((p) => [p.pillar, typeof p.score === 'number' ? `${p.score}/100` : p.score, p.measured ? `${p.weightPct}%` : '-', p.measured ? p.contribution.toFixed(1) : '-', p.driver]) : [['Evidence Not Available', '-', '-', '-', '-']] };
+  const readinessMethodologyTable: ReportTable = { title: 'Readiness Methodology', columns: ['Factor', 'Weight', 'Score', 'Contribution', 'Measurement Basis'], rows: [...report.readinessMethodology.factors.map((f) => [f.factor, f.measured ? `${f.weightPct}%` : 'Excluded', typeof f.score === 'number' ? `${f.score}/100` : f.score, f.measured ? f.contribution.toFixed(1) : '-', f.basis]), ['OVERALL (Σ Contribution)', '100%', `${report.readinessMethodology.overall}/100`, report.readinessMethodology.overall.toFixed(1), '±1 rounding']] };
+  const benchmarkingTable: ReportTable = { title: 'Industry Benchmarking', columns: ['Cohort', 'Readiness', 'Delta vs You', 'Source'], rows: report.benchmarking.rows.length ? report.benchmarking.rows.map((b) => [b.cohort, `${b.readiness}/100`, b.delta === 0 ? '-' : `${b.delta > 0 ? '+' : ''}${b.delta}`, b.source]) : [['Evidence Not Available', '-', '-', '-']] };
+  const roiTable: ReportTable = { title: 'Executive ROI', columns: ['Value Metric', 'Expected Outcome', 'Basis / Formula'], rows: report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '-', '-']] };
+  const resourceLoadingTable: ReportTable = { title: 'Resource Loading', columns: ['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Allocation', 'Basis'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`, r.basis]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] };
+  const assetIntelTable: ReportTable = { title: 'Asset Intelligence', columns: ['Asset', 'Owner Dept.', 'Certificates', 'TLS Version', 'Algorithms', 'Key Sizes', 'Dependencies', 'PQC Ready', 'Complexity', 'Est. Hours'], rows: report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.ownerDepartment, a.certificates, a.tlsVersion, a.algorithms.join(', '), a.keySizes.join(', '), a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-', '-']] };
+  const cryptoPolicyTable: ReportTable = { title: 'Crypto-Policy Profiles', columns: ['Profile', 'Key Establishment', 'Digital Signature', 'Certificate Chain', 'Symmetric / Hash', 'Guidance'], rows: report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, p.certificateChain, `${p.symmetric} / ${p.hash}`, p.guidance]) };
+  const definitionsTable: ReportTable = { title: 'Terminology & Definitions', columns: ['Term', 'Definition'], rows: report.definitions.length ? report.definitions.map((d) => [d.term, d.definition]) : [['Evidence Not Available', '-']] };
+  const reportValidationTable: ReportTable = { title: 'Report Validation', columns: ['Validation Check', 'Result', 'Detail'], rows: report.reportValidation.checks.length ? report.reportValidation.checks.map((c) => [c.check, c.status === 'pass' ? 'PASS' : 'FAIL', c.detail]) : [['Evidence Not Available', '-', '-']] };
   const playbookChildren = report.playbookDetail.flatMap((p) => [
     para(p.finding, INK),
     docTable({ title: 'Playbook', columns: ['Step', 'Detail'], rows: [
@@ -207,6 +222,8 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           para(`Executive Recommendation: ${ex.executiveRecommendation}`, INK),
           heading('Top Risks & Recommended Actions'),
           docTable(topTable),
+          heading('Top Business Risks'),
+          docTable(topBusinessRisksTable),
           heading('Executive Dashboard'),
           docTable(kpiTable),
           heading('Business Impact Analysis'),
@@ -217,6 +234,17 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(decisionTable),
           heading('Quantum Readiness Breakdown'),
           docTable(domainsTable),
+          heading('Quantum Readiness Index'),
+          para(report.readinessIndex.note, MUTED),
+          docTable(readinessIndexTable),
+          heading('Readiness Scoring Methodology'),
+          para(`Formula: ${report.readinessMethodology.formula}`, INK),
+          para(report.readinessMethodology.explanation, MUTED),
+          docTable(readinessMethodologyTable),
+          heading('Industry Benchmarking'),
+          para(report.benchmarking.percentileNarrative, MUTED),
+          docTable(benchmarkingTable),
+          ...(report.benchmarking.note ? [para(report.benchmarking.note, MUTED)] : []),
           heading('AI Migration Advisor'),
           para(`Recommendation: ${report.migrationAdvisor.recommendation}`, INK),
           para(report.migrationAdvisor.reason),
@@ -248,27 +276,48 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(findingGroupTable),
           heading('Asset Criticality Analysis'),
           docTable(criticalityTable),
-          heading('Findings & Evidence'),
-          docTable(findingsTable),
+          heading('Asset Intelligence Profile'),
+          para('Per-asset cryptographic posture — algorithms, key sizes, TLS profile, dependencies, complexity and effort. Unobserved fields are Evidence Not Available.', MUTED),
+          docTable(assetIntelTable),
+          // Raw per-instance findings: Technical Assessment only (executive /
+          // compliance / migration use the consolidated view above).
+          ...(report.meta.kind === 'technical' ? [heading('Technical Appendix — Raw Findings & Evidence'), docTable(findingsTable)] : []),
           heading('Cryptographic & Asset Inventory'),
           docTable(report.assets),
           docTable(report.cbom),
           docTable(report.pqcReadiness.table),
           heading('Compliance Mapping'),
+          para('Dynamic gap tracking: Current, Target, Gap and Progress per framework.', MUTED),
           docTable(complianceTable),
+          heading('Crypto-Policy Profiles (Target Algorithm Selection)'),
+          para(report.cryptoPolicy.note, MUTED),
+          docTable(cryptoPolicyTable),
           heading('Remediation Program'),
           docTable(remediationTable),
           heading('Enterprise Remediation Playbook'),
           ...playbookChildren,
-          heading('Migration Roadmap'),
+          heading('Migration Roadmap & Program Plan'),
           docTable(roadmapTable),
+          heading('Migration Resource Loading'),
+          para('Team allocation across the programme window — hours, engineers and percentage loading per team.', MUTED),
+          docTable(resourceLoadingTable),
           heading('Cost Forecast Intelligence'),
           para(`Blended rate $${report.costBreakdown.blendedRateUsd}/hr — total ${report.costBreakdown.totalHours.toLocaleString()} hours.`, MUTED),
           docTable(costBreakdownTable),
+          heading('Executive ROI & Value Intelligence'),
+          para(report.roiAnalysis.paybackNarrative, INK),
+          docTable(roiTable),
           heading('Migration Simulation (What-If)'),
           docTable(simulationTable),
           heading('Risk Reduction Forecast'),
           docTable(forecastTable),
+          heading('Asset-Level Readiness'),
+          docTable(assetReadinessTable),
+          heading('Executive Risk Acceptance'),
+          docTable(riskAcceptanceTable),
+          heading('Decision Traceability'),
+          para(report.decisionChain.headline, INK),
+          docTable(decisionChainTable),
           heading('Program Governance'),
           docTable(governanceTable),
           docTable(gateTable),
@@ -276,6 +325,11 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(evidenceConfTable),
           heading('Report Explainability'),
           ...explainChildren,
+          heading('Terminology & Definitions'),
+          docTable(definitionsTable),
+          heading(`Report Validation — ${report.reportValidation.overall}`),
+          docTable(reportValidationTable),
+          para(report.reportValidation.note, MUTED),
           heading('Evidence Sources'),
           para(report.evidence.sources.join(' - '), MUTED),
           para(report.evidence.notes, MUTED),
