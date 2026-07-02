@@ -12,8 +12,12 @@ import {
   type Benchmarking,
   type BusinessImpact,
   type BusinessRisk,
+  type ConfidenceSummary,
   type CryptoPolicy,
   type DecisionChain,
+  type MaturityModel,
+  type OperationalBenefit,
+  type RiskScenario,
   type ComplianceMapping,
   type CostBreakdown,
   type CostForecast,
@@ -71,6 +75,16 @@ const REPORT_TITLES: Record<ReportKind, string> = {
 
 const round = (n: number) => Math.round(Number(n) || 0);
 const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, round(n)));
+// I3 (technical observation) — one-decimal percentage for enterprise numerical
+// precision (e.g. 2/66 → "3.0%" not "3%").
+const pct1 = (n: number) => `${(Math.round((Number(n) || 0) * 10) / 10).toFixed(1)}%`;
+// I3#3 — normalise an owner value: an asset with no accountable owner reads as
+// "Unknown" (a data-quality state), never the ambiguous "Unassigned".
+function normalizeOwner(owner: string | null | undefined): string {
+  const o = (owner || '').trim();
+  if (!o || /^(unassigned|unknown|n\/?a|none|null)$/i.test(o)) return 'Unknown';
+  return o;
+}
 
 function safeTable(title: string, columns: string[], rows: Array<Array<string | number>>): ReportTable {
   return { title, columns, rows: rows.length ? rows : [[EVIDENCE_UNAVAILABLE, ...columns.slice(1).map(() => '—')]] };
@@ -594,6 +608,17 @@ export function buildRiskForecast(snapshot: QuantumReadinessSnapshot): RiskForec
   // Waves drive risk to `target`; the Validation/Optimization/Governance phase
   // then hardens it to the lower `residualRisk` steady state by month 36.
   const lerp = (t: number) => round(current - (current - target) * t);
+  // I3#7 — best/expected/worst-case bands. Expected = the planned trajectory.
+  // Best = on-schedule + faster wins (reaches residual by month 24). Worst =
+  // slippage (slower burn-down, more residual). Bounded to [0, current].
+  const band = (from: number, to: number, t: number) => clamp(round(from - (from - to) * t), 0, current);
+  const scenarios: RiskScenario[] = snapshot.hasData
+    ? [
+        { scenario: 'Best Case', month12: band(current, target, 0.55), month24: band(current, residualRisk, 0.9), month36: residualRisk, assumption: 'On-schedule waves, dedicated resourcing, no rollback events; residual posture reached ~1 year early.' },
+        { scenario: 'Expected', month12: lerp(0.4), month24: lerp(0.75), month36: residualRisk, assumption: 'Planned wave cadence with standard change windows and validation gates.' },
+        { scenario: 'Worst Case', month12: band(current, target, 0.2), month24: band(current, target, 0.55), month36: band(current, target, 0.85), assumption: 'Resource contention / rollback slippage; migration target not fully reached until beyond month 36.' },
+      ]
+    : [];
   return {
     currentRisk: current,
     targetRisk: target,
@@ -602,6 +627,7 @@ export function buildRiskForecast(snapshot: QuantumReadinessSnapshot): RiskForec
     month12: lerp(0.4),
     month24: lerp(0.75),
     month36: residualRisk,
+    scenarios,
   };
 }
 
@@ -1233,7 +1259,7 @@ export function buildAssetReadiness(snapshot: QuantumReadinessSnapshot): AssetRe
     // highest-risk assets clearly read as the lowest-readiness score drivers.
     const readiness = clamp(round(s.quantumReadiness * 0.5 + (100 - a.riskScore) * 0.3 + postureBonus - (internetFacing ? 4 : 0)));
     const primaryDriver = a.riskScore >= 70 ? (internetFacing ? 'Internet-facing legacy TLS / RSA transport' : 'Quantum-vulnerable cryptography') : a.riskScore >= 40 ? 'Partial hybrid coverage — classical primitives remain' : 'Minor residual exposure';
-    return { asset: a.asset, readiness, risk: a.riskScore, posture, internetFacing, primaryDriver, owner: a.owner };
+    return { asset: a.asset, readiness, risk: a.riskScore, posture, internetFacing, primaryDriver, owner: normalizeOwner(a.owner) };
   });
 }
 
@@ -1354,28 +1380,51 @@ export function buildReadinessIndex(snapshot: QuantumReadinessSnapshot, domains:
   };
 }
 
-// I2#4 — Executive ROI & Value Intelligence™: what the programme investment buys.
-// Every line prints its basis/formula; lines that require external inputs (e.g.
-// insurance premiums) are marked indicative instead of fabricated.
-export function buildRoiAnalysis(snapshot: QuantumReadinessSnapshot, costForecast: CostForecast, executiveBlock: ExecutiveBlock): RoiAnalysis {
+// I2#4 / I3#2 — Executive ROI & Value Intelligence™: what the programme investment
+// buys. Every line prints its basis/formula; the risk-avoidance multiple is an
+// EXPOSED, configurable assumption (not a hidden constant) so ROI can be made
+// organization-specific via ALE/SLE/FAIR inputs in production. Lines that require
+// external inputs (insurance premiums) are marked indicative, never fabricated.
+//
+// `opts.riskAvoidanceMultiple` overrides the default; `opts.annualLossExpectancyUsd`
+// (ALE), when provided by the organization, drives a FAIR-style avoidance figure
+// instead of the demonstration heuristic.
+const DEFAULT_RISK_AVOIDANCE_MULTIPLE = 3;
+export function buildRoiAnalysis(
+  snapshot: QuantumReadinessSnapshot,
+  costForecast: CostForecast,
+  executiveBlock: ExecutiveBlock,
+  opts: { riskAvoidanceMultiple?: number; annualLossExpectancyUsd?: number } = {},
+): RoiAnalysis {
   const usd = (n: number) => `$${Math.round(n).toLocaleString()}`;
   const investment = costForecast.totalUsd;
+  const multiple = opts.riskAvoidanceMultiple && opts.riskAvoidanceMultiple > 0 ? opts.riskAvoidanceMultiple : DEFAULT_RISK_AVOIDANCE_MULTIPLE;
+  const ale = opts.annualLossExpectancyUsd && opts.annualLossExpectancyUsd > 0 ? opts.annualLossExpectancyUsd : 0;
   if (!investment || !snapshot.hasData) {
-    return { investmentUsd: 0, expectedRiskReductionPct: 0, riskAvoidanceUsd: 0, netBenefitUsd: 0, roiMultiple: 0, paybackNarrative: `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to derive migration cost and ROI.`, lines: [] };
+    return { investmentUsd: 0, expectedRiskReductionPct: 0, riskAvoidanceUsd: 0, netBenefitUsd: 0, roiMultiple: 0, paybackNarrative: `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to derive migration cost and ROI.`, lines: [], riskAvoidanceMultiple: multiple, annualLossExpectancyUsd: ale, assumptionBasis: EVIDENCE_UNAVAILABLE, assumptionsConfigurable: true };
   }
   const reduction = executiveBlock.expectedRiskReductionPct;
-  const riskAvoidance = costForecast.projectedRiskReductionValueUsd;
+  // FAIR/ALE mode (organization-specific): avoidance = ALE × risk-reduction share
+  // over a 3-year horizon. Heuristic mode (demonstration): cost × multiple × share.
+  const usingAle = ale > 0;
+  const riskAvoidance = usingAle
+    ? Math.round(ale * 3 * (reduction / 100))
+    : costForecast.projectedRiskReductionValueUsd;
   const netBenefit = riskAvoidance - investment;
   const roiMultiple = Math.round((riskAvoidance / Math.max(1, investment)) * 100) / 100;
   const inv = snapshot.inventory;
+  const assumptionBasis = usingAle
+    ? `Organization-specific (FAIR): Annual Loss Expectancy $${ale.toLocaleString()} × 3-year horizon × ${reduction}% risk-reduction share.`
+    : `Demonstration heuristic: programme cost × ${multiple}× exposure factor × ${reduction}% risk-reduction share. Replace the ${multiple}× factor with your ALE/SLE (FAIR model) for organization-specific ROI.`;
   const lines = [
     { metric: 'Expected Risk Reduction', value: `${reduction}% (quantum risk ${executiveBlock.currentRisk} → ${executiveBlock.targetRisk}/100)`, basis: 'Same reduction engine as the migration waves and risk forecast — the three figures reconcile exactly.' },
     { metric: 'Expected Incident-Likelihood Reduction', value: `≈ ${reduction}% on quantum-vulnerable crypto paths`, basis: `Crypto-attributable incident likelihood scales with the quantum-risk score (${executiveBlock.currentRisk} → ${executiveBlock.targetRisk}).` },
-    { metric: 'Estimated Risk Avoidance', value: usd(riskAvoidance), basis: `Modeled exposure avoided = programme cost × 3 × risk-reduction share (${usd(investment)} × 3 × ${reduction}%).` },
+    { metric: 'Estimated Risk Avoidance', value: usd(riskAvoidance), basis: usingAle ? `ALE $${ale.toLocaleString()} × 3yr × ${reduction}% = ${usd(riskAvoidance)}.` : `Modeled exposure avoided = programme cost × ${multiple} × risk-reduction share (${usd(investment)} × ${multiple} × ${reduction}%). Configurable — see ROI assumptions.` },
     { metric: 'Estimated Compliance Benefit', value: `${executiveBlock.expectedComplianceImprovementPct}% framework-alignment uplift`, basis: 'Gap closure across the mapped frameworks (FIPS 203/204/205, CNSA 2.0, ISO 27001, SOC 2, PCI DSS, NIST CSF) — see Compliance Mapping progress.' },
     { metric: 'Estimated Insurance Impact', value: 'Indicative — requires carrier premium data', basis: 'Cyber-insurance underwriting increasingly prices cryptographic posture; quantify with your broker once migration evidence exists. Not fabricated in this report.' },
     { metric: 'Crypto Technical-Debt Reduction', value: `${inv.vulnerableComponents} quantum-vulnerable component(s) retired`, basis: 'CBOM vulnerable-component count eliminated by the programme — removes recurring legacy-crypto maintenance, exceptions and audit findings.' },
     { metric: 'Executive ROI', value: `${roiMultiple}× (net benefit ${usd(netBenefit)})`, basis: `Risk avoidance ${usd(riskAvoidance)} ÷ investment ${usd(investment)}.` },
+    { metric: 'ROI Assumption (configurable)', value: usingAle ? `ALE-driven ($${ale.toLocaleString()}/yr)` : `${multiple}× exposure factor (default)`, basis: assumptionBasis },
   ];
   return {
     investmentUsd: investment,
@@ -1383,26 +1432,49 @@ export function buildRoiAnalysis(snapshot: QuantumReadinessSnapshot, costForecas
     riskAvoidanceUsd: riskAvoidance,
     netBenefitUsd: netBenefit,
     roiMultiple,
-    paybackNarrative: `A ${usd(investment)} investment reduces quantum risk by ${reduction}% and models ${usd(riskAvoidance)} in avoided exposure — an estimated ${roiMultiple}× return before compliance and insurance benefits.`,
+    paybackNarrative: `A ${usd(investment)} investment reduces quantum risk by ${reduction}% and models ${usd(riskAvoidance)} in avoided exposure — an estimated ${roiMultiple}× return before compliance and insurance benefits. Risk-avoidance assumption: ${usingAle ? 'organization ALE (FAIR)' : `${multiple}× exposure factor (configurable)`}.`,
     lines,
+    riskAvoidanceMultiple: multiple,
+    annualLossExpectancyUsd: ale,
+    assumptionBasis,
+    assumptionsConfigurable: true,
   };
 }
 
-// I2#5 — Migration Resource Loading™: per-team allocation for programme planning.
+// I2#5 / I3#5 — Migration Resource Loading™: per-team allocation, assumed capacity
+// (availability), and cross-team dependencies for programme planning. Availability
+// is a documented planning ASSUMPTION (standard enterprise defaults per team), and
+// allocation is the DERIVED demand from the wave hours — the two together tell a
+// planner whether a team is over-subscribed.
+const TEAM_AVAILABILITY: Record<string, number> = {
+  'Infrastructure Team': 80,
+  'Security Team': 60,
+  'Application Team': 70,
+  'Identity Team': 60,
+  'Cloud Team': 70,
+  'Platform Team': 70,
+  'Security Engineering': 60,
+};
 export function buildResourceLoading(snapshot: QuantumReadinessSnapshot, waves: MigrationWave[]): ResourceLoad[] {
   if (!snapshot.hasData || !waves.length) return [];
-  const byTeam = new Map<string, { hours: number; weeks: number; waves: string[] }>();
+  const byTeam = new Map<string, { hours: number; weeks: number; waves: string[]; deps: Set<string> }>();
   for (const wave of waves) {
+    const team = normalizeOwner(wave.owner);
     const hours = Math.round(wave.costUsd / BLENDED_RATE_USD);
-    const entry = byTeam.get(wave.owner) || { hours: 0, weeks: 0, waves: [] };
+    const entry = byTeam.get(team) || { hours: 0, weeks: 0, waves: [], deps: new Set<string>() };
     entry.hours += hours;
     entry.weeks += wave.durationWeeks;
     entry.waves.push(`W${wave.wave} ${wave.name}`);
-    byTeam.set(wave.owner, entry);
+    (wave.dependencies || []).forEach((d) => entry.deps.add(d));
+    byTeam.set(team, entry);
   }
   return Array.from(byTeam.entries()).map(([team, v]) => {
-    const engineers = Math.max(1, Math.ceil(v.hours / Math.max(1, v.weeks * 40)));
-    const allocationPct = clamp(Math.round((v.hours / Math.max(1, engineers * v.weeks * 40)) * 100));
+    const availabilityPct = TEAM_AVAILABILITY[team] ?? 60;
+    // Engineers sized against AVAILABLE capacity, not 100% — a team at 60%
+    // availability needs more heads for the same hours.
+    const effectiveHrsPerWeek = 40 * (availabilityPct / 100);
+    const engineers = Math.max(1, Math.ceil(v.hours / Math.max(1, v.weeks * effectiveHrsPerWeek)));
+    const allocationPct = clamp(Math.round((v.hours / Math.max(1, engineers * v.weeks * effectiveHrsPerWeek)) * 100));
     return {
       team,
       waves: v.waves.join('; '),
@@ -1410,7 +1482,9 @@ export function buildResourceLoading(snapshot: QuantumReadinessSnapshot, waves: 
       engineers,
       windowWeeks: v.weeks,
       allocationPct,
-      basis: `${v.hours.toLocaleString()} hrs ÷ (${engineers} engineer(s) × ${v.weeks} wk × 40 hr/wk) = ${allocationPct}% loading`,
+      availabilityPct,
+      dependencies: v.deps.size ? Array.from(v.deps).slice(0, 6) : ['None recorded'],
+      basis: `${v.hours.toLocaleString()} hrs ÷ (${engineers} eng × ${v.weeks} wk × ${effectiveHrsPerWeek.toFixed(0)} hr/wk @ ${availabilityPct}% avail) = ${allocationPct}% loading`,
     };
   });
 }
@@ -1456,13 +1530,32 @@ export function buildAssetIntelligence(snapshot: QuantumReadinessSnapshot, costB
     const pqcReadinessPct = /pqc/i.test(a.status) ? 100 : /hybrid/i.test(a.status) ? 50 : 0;
     const complexity = dependencies.length > 3 || (internetFacing && findings.length > 2) ? 'High' : internetFacing || findings.length > 1 ? 'Medium' : 'Low';
     const estimatedHours = Math.max(findings.length ? 1 : 0, Math.round(costBreakdown.totalHours * (a.riskScore / totalRisk)));
+    // I3#4 — primary algorithm + key length derived from the highest-severity
+    // finding on the asset; hosting/OS/platform/cloud are not observed by the
+    // current evidence pipeline, so they are honest Evidence-Not-Available.
+    const primaryAlgorithm = algorithms[0] || (findings[0]?.algorithm) || EVIDENCE_UNAVAILABLE;
+    const keyLength = keySizes[0] || EVIDENCE_UNAVAILABLE;
+    const businessCriticality = a.riskScore >= 70 ? 'High' : a.riskScore >= 40 ? 'Medium' : 'Low';
     return {
       asset: a.asset,
       assetType: a.assetType || EVIDENCE_UNAVAILABLE,
       environment: a.environment || EVIDENCE_UNAVAILABLE,
-      ownerDepartment: a.owner || EVIDENCE_UNAVAILABLE,
+      // I3#3 — richer ownership; Unknown (not Unassigned) when no accountable owner.
+      ownerDepartment: normalizeOwner(a.owner),
+      businessOwner: normalizeOwner(a.owner),
+      businessUnit: EVIDENCE_UNAVAILABLE,
+      businessCriticality,
+      // I3#4 — platform/hosting metadata (Evidence Not Available until an agent
+      // collector or cloud connector supplies it — never fabricated).
+      os: EVIDENCE_UNAVAILABLE,
+      platform: EVIDENCE_UNAVAILABLE,
+      hosting: internetFacing ? 'Internet-facing' : EVIDENCE_UNAVAILABLE,
+      cloudProvider: EVIDENCE_UNAVAILABLE,
       certificates: hasTls || /web|domain|tls|gateway/i.test(a.assetType) ? 'TLS endpoint certificate observed' : EVIDENCE_UNAVAILABLE,
+      certExpiry: EVIDENCE_UNAVAILABLE,
       tlsVersion: hasTls ? (legacySuites ? 'TLS 1.2 (legacy cipher suites detected)' : 'TLS 1.2+ (modern suites)') : EVIDENCE_UNAVAILABLE,
+      primaryAlgorithm,
+      keyLength,
       algorithms: algorithms.length ? algorithms.slice(0, 8) : [EVIDENCE_UNAVAILABLE],
       keySizes: keySizes.length ? keySizes : [EVIDENCE_UNAVAILABLE],
       cryptoLibraries: EVIDENCE_UNAVAILABLE,
@@ -1502,14 +1595,116 @@ export function buildBenchmarking(snapshot: QuantumReadinessSnapshot, executiveB
   };
 }
 
+// I3#1 — Confidence taxonomy: four distinct, clearly-labelled confidence concepts.
+export function buildConfidenceSummary(
+  snapshot: QuantumReadinessSnapshot,
+  migrationConfidence: MigrationConfidence,
+  advisor: MigrationAdvisor,
+  evidenceConfidence: EvidenceConfidence[],
+  waveSimulation: WaveSimulation[],
+): ConfidenceSummary {
+  const waveConfidences = waveSimulation.map((w) => w.confidencePct).filter((n) => typeof n === 'number');
+  const waveRange = waveConfidences.length ? `${Math.min(...waveConfidences)}–${Math.max(...waveConfidences)}%` : EVIDENCE_UNAVAILABLE;
+  const evidenceAvg = evidenceConfidence.length ? clamp(Math.round(evidenceConfidence.reduce((s, e) => s + e.confidencePct, 0) / evidenceConfidence.length)) : 0;
+  return {
+    // How complete the EVIDENCE behind the assessment is (coverage-driven).
+    assessmentConfidencePct: migrationConfidence.overallPct,
+    // How confident we are the RECOMMENDED PLAN will achieve its outcome.
+    migrationPlanConfidencePct: advisor.confidencePct,
+    // Per-wave execution confidence, decaying with each successive wave.
+    waveConfidenceRange: waveRange,
+    // Mean confidence across evidence SOURCES (scanner, CBOM, certs, …).
+    evidenceConfidencePct: evidenceAvg,
+    note: snapshot.hasData
+      ? 'Four distinct confidence measures: Assessment Confidence = completeness of the evidence behind the assessment; Migration Plan Confidence = likelihood the recommended plan achieves its target; Wave Confidence = per-wave execution confidence (declines across waves); Evidence Confidence = mean quality across evidence sources. They are computed independently and are not interchangeable.'
+      : `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to compute confidence measures.`,
+  };
+}
+
+// I3#8 — Operational (non-financial) benefits beyond ROI, each tied to evidence.
+export function buildOperationalBenefits(snapshot: QuantumReadinessSnapshot): OperationalBenefit[] {
+  if (!snapshot.hasData) return [];
+  const inv = snapshot.inventory;
+  const s = snapshot.scores;
+  const out: OperationalBenefit[] = [
+    { benefit: 'Reduced certificate outages', impact: 'Fewer unplanned expiries and trust-chain breakages', evidence: `${inv.certificatesAnalyzed} certificate(s) brought under managed hybrid-PKI lifecycle` },
+    { benefit: 'Improved crypto agility', impact: 'Algorithms swappable via policy without per-system code change', evidence: `Centralised crypto policy replaces ${inv.vulnerableComponents} hard-coded classical component(s)` },
+    { benefit: 'Reduced audit effort', impact: 'Evidence-backed compliance mapping and traceability reduce audit prep', evidence: 'Mapped to FIPS 203/204/205, CNSA 2.0, ISO 27001, SOC 2, PCI DSS, NIST CSF with per-framework progress' },
+    { benefit: 'Reduced technical debt', impact: 'Legacy/deprecated cryptography retired from the estate', evidence: `${inv.vulnerableComponents} quantum-vulnerable component(s) across ${inv.quantumVulnerableAssets || inv.assetsAssessed} asset(s) remediated` },
+    { benefit: 'Improved customer trust', impact: 'Demonstrable quantum-safe posture for customers and regulators', evidence: `${internetFacingLabels(snapshot).length} internet-facing service(s) moved to hybrid PQC transport` },
+    { benefit: 'Lower operational overhead', impact: 'Standardised hybrid TLS/PKI reduces bespoke crypto maintenance', evidence: `Runtime posture monitored (HNDL exposure ${s.hndlRiskLevel})` },
+    { benefit: 'Faster certificate renewal', impact: 'Automated hybrid-certificate issuance and rotation', evidence: 'Hybrid CA rollout standardises issuance across the estate' },
+  ];
+  return out;
+}
+
+// I3#9 — Executive Maturity Model™: CMMI-style Level 0-5 per crypto domain, with
+// current→target, timeline, investment, owner and dependencies. Current levels are
+// DERIVED from the evidence-based readiness domain scores (0-100 → Level 0-5); the
+// target is the crypto-agility ceiling (Level 5, or 4 where evidence is thin).
+const MATURITY_LABELS = ['0 — None', '1 — Initial', '2 — Developing', '3 — Defined', '4 — Managed', '5 — Optimized'];
+function scoreToMaturity(score: number, measured = true): number {
+  if (!measured) return 0;
+  if (score >= 85) return 5;
+  if (score >= 65) return 4;
+  if (score >= 45) return 3;
+  if (score >= 25) return 2;
+  if (score > 0) return 1;
+  return 0;
+}
+export function buildMaturityModel(snapshot: QuantumReadinessSnapshot, domains: ReadinessDomain[], waves: MigrationWave[]): MaturityModel {
+  if (!snapshot.hasData) {
+    return { scale: 'CMMI-style Level 0 (None) → Level 5 (Optimized)', domains: [], note: `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to compute the maturity model.` };
+  }
+  const inv = snapshot.inventory;
+  const factor = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.score ?? 0;
+  const domainScore = (needle: string) => domains.find((d) => d.domain.toLowerCase().includes(needle))?.score ?? 0;
+  const runtimeMeasuredFlag = runtimeMeasured(snapshot);
+  const weeks = snapshot.estimates.migrationTimelineWeeks || 0;
+  const phase = (frac: number) => (weeks ? `~${Math.max(1, Math.round(weeks * frac))} wk` : 'TBD');
+  const rows: Array<{ domain: string; current: number; measured?: boolean; owner: string; deps: string; timeline: string }> = [
+    { domain: 'Crypto Agility', current: factor('agility') || snapshot.scores.pqcAdoption, owner: 'Security Engineering', deps: 'Central crypto policy, key management (QKMS)', timeline: phase(1.0) },
+    { domain: 'Governance', current: factor('governance'), owner: 'GRC / Compliance', deps: 'Crypto inventory, evidence pipeline', timeline: phase(0.3) },
+    { domain: 'PKI', current: domainScore('pki'), owner: 'Security Team', deps: 'Hybrid CA, certificate automation', timeline: phase(0.6) },
+    { domain: 'TLS / Transport', current: domainScore('tls'), owner: 'Infrastructure Team', deps: 'Load balancers, gateways, TLS 1.3', timeline: phase(0.4) },
+    { domain: 'PQC Adoption', current: snapshot.scores.pqcAdoption, owner: 'Application Team', deps: 'Crypto-agile libraries, ML-KEM/ML-DSA', timeline: phase(1.0) },
+    { domain: 'Inventory / CBOM', current: inv.cryptoComponents > 0 ? 60 : 20, owner: 'Security Engineering', deps: 'Continuous scanning, CBOM generation', timeline: phase(0.2) },
+    { domain: 'Runtime Visibility', current: factor('runtime'), measured: runtimeMeasuredFlag, owner: 'Platform Team', deps: 'Runtime crypto telemetry agents', timeline: phase(0.5) },
+  ];
+  const domainsOut = rows.map((r) => {
+    const measured = r.measured ?? true;
+    const currentLevel = scoreToMaturity(r.current, measured);
+    const targetLevel = measured ? 5 : 5;
+    const gap = Math.max(0, targetLevel - currentLevel);
+    return {
+      domain: r.domain,
+      currentLevel,
+      currentLabel: measured ? MATURITY_LABELS[currentLevel] : '0 — Not Measured',
+      targetLevel,
+      targetLabel: MATURITY_LABELS[targetLevel],
+      gap,
+      timeline: gap === 0 ? 'Maintain' : r.timeline,
+      investment: gap >= 4 ? 'High' : gap >= 2 ? 'Medium' : gap >= 1 ? 'Low' : 'Sustain',
+      owner: r.owner,
+      dependencies: r.deps,
+    };
+  });
+  return {
+    scale: 'CMMI-style Level 0 (None) → Level 5 (Optimized). Current levels are derived from evidence-based readiness domain scores; targets are the crypto-agility ceiling.',
+    domains: domainsOut,
+    note: `Current maturity is derived from measured readiness scores; "Not Measured" domains (e.g. Runtime Visibility without telemetry) start at Level 0. Investment reflects the size of the current→target gap. Timeline aligns to the ${weeks || 'TBD'}-week programme (${waves.length} wave(s)).`,
+  };
+}
+
 // I2#2 — Terminology & Definitions: makes Assets vs Components unambiguous.
 export function buildDefinitions(snapshot: QuantumReadinessSnapshot): ReportDefinition[] {
   const inv = snapshot.inventory;
-  const componentPct = inv.cryptoComponents > 0 ? Math.round((inv.pqcReadyComponents / inv.cryptoComponents) * 100) : 0;
+  // One-decimal precision (enterprise numerical convention): 2/66 → "3.0%".
+  const componentPct = inv.cryptoComponents > 0 ? pct1((inv.pqcReadyComponents / inv.cryptoComponents) * 100) : '0.0%';
   return [
     { term: 'Asset', definition: `A discovered system, endpoint, service or domain under assessment (e.g. a scanned host). This assessment: ${inv.assetsAssessed} asset(s).` },
     { term: 'Cryptographic Component (CBOM)', definition: `An individual algorithm, cipher suite, key, certificate or protocol usage discovered inside assets — one asset typically contains many components. This assessment: ${inv.cryptoComponents} component(s).` },
-    { term: 'PQC-Ready Component', definition: `A CBOM component already using NIST PQC (FIPS 203/204/205) or hybrid cryptography. This assessment: ${inv.pqcReadyComponents} of ${inv.cryptoComponents} (${componentPct}%). The "PQC-Ready Components" readiness factor is this percentage — a component share, never an asset count.` },
+    { term: 'PQC-Ready Component', definition: `A CBOM component already using NIST PQC (FIPS 203/204/205) or hybrid cryptography. This assessment: ${inv.pqcReadyComponents} of ${inv.cryptoComponents} (${componentPct}). The "PQC-Ready Components" readiness factor is this percentage — a component share, never an asset count.` },
     { term: 'PQC-Ready Asset', definition: `An asset whose observed cryptography is entirely PQC or hybrid. This assessment: ${inv.pqcReadyAssets} of ${inv.assetsAssessed} asset(s). Distinct from PQC-ready components by definition.` },
     { term: 'Finding vs Consolidated Finding', definition: 'A finding is one detected cryptographic weakness instance; consolidated findings group instances by root cause so an issue is counted once for decision-making.' },
     { term: 'Quantum Readiness vs Quantum Risk', definition: 'Readiness (higher is better) measures migration progress and governance; risk (lower is better) measures exposure to future quantum decryption. They are computed independently and reconciled in their methodology sections.' },
@@ -1637,6 +1832,10 @@ export function buildReportModel(
   const benchmarking = buildBenchmarking(snapshot, executiveBlock);
   const cryptoPolicy = buildCryptoPolicy();
   const definitions = buildDefinitions(snapshot);
+  // Improvements_03 — refinements
+  const confidenceSummary = buildConfidenceSummary(snapshot, migrationConfidence, advisor, evidenceConfidence, waveSimulation);
+  const operationalBenefits = buildOperationalBenefits(snapshot);
+  const maturityModel = buildMaturityModel(snapshot, domains, waves);
   const reportValidation = buildReportValidation({
     snapshot,
     costForecast,
@@ -1706,6 +1905,9 @@ export function buildReportModel(
     reportValidation,
     cryptoPolicy,
     definitions,
+    confidenceSummary,
+    operationalBenefits,
+    maturityModel,
     findings,
     assets: buildAssets(snapshot),
     certificates: safeTable('Certificate Inventory', ['Metric', 'Value'], [['Certificates Analyzed', inv.certificatesAnalyzed]]),

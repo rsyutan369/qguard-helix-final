@@ -273,6 +273,13 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   // ---- Body (board-level migration program structure) ----
   const ex = report.executiveBlock;
   const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
+  // ASCII progress bar (I3#6) — CP1252-safe (pdf-lib StandardFonts can't render
+  // Unicode block glyphs, so we use [####----] rather than █░).
+  const bar = (pct: number) => {
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    const filled = Math.round(p / 10);
+    return `[${'#'.repeat(filled)}${'-'.repeat(10 - filled)}] ${p}%`;
+  };
   const layout = new PdfLayout(doc, font, bold);
 
   layout.heading('Executive Summary');
@@ -342,9 +349,16 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
   ] }, [28, 72]);
 
-  layout.heading('Migration Confidence');
-  layout.paragraph(`Overall Migration Confidence: ${report.migrationConfidence.overallPct}%`, 10, INK);
-  layout.table({ title: 'Confidence', columns: ['Confidence Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) }, [70, 30]);
+  layout.heading('Confidence Overview');
+  layout.paragraph(report.confidenceSummary.note, 9, MUTED);
+  layout.table({ title: 'Confidence', columns: ['Confidence Measure', 'Value', 'What it means'], rows: [
+    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind the assessment'],
+    ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the recommended plan achieves target'],
+    ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
+    ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
+  ] }, [26, 14, 60]);
+  layout.paragraph(`Assessment Confidence (evidence coverage): ${report.confidenceSummary.assessmentConfidencePct}%`, 9.5, INK);
+  layout.table({ title: 'Coverage', columns: ['Coverage Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) }, [70, 30]);
 
   layout.heading('Migration Readiness Assessment');
   layout.table({ title: 'Readiness', columns: ['Category', 'Score', 'Recommendation'], rows: report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]) }, [26, 12, 62]);
@@ -379,8 +393,8 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table({ title: 'Asset Criticality', columns: ['Asset', 'Business', 'Cust.', 'Internet', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.customerFacing ? 'Y' : 'N', a.internetFacing ? 'Y' : 'N', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [24, 12, 8, 10, 12, 22, 12]);
 
   layout.heading('Asset Intelligence Profile');
-  layout.paragraph('Per-asset cryptographic posture — algorithms, key sizes, TLS profile, dependencies, complexity and effort. Unobserved fields are Evidence Not Available.', 9, MUTED);
-  layout.table({ title: 'Asset Intelligence', columns: ['Asset', 'Owner Dept.', 'TLS', 'Algorithms', 'Key Sizes', 'Deps', 'PQC', 'Cplx', 'Hrs'], rows: report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.ownerDepartment, a.tlsVersion, a.algorithms.join(', '), a.keySizes.join(', '), a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-']] }, [16, 11, 12, 20, 12, 13, 5, 6, 5]);
+  layout.paragraph('Per-asset crypto posture, ownership and platform metadata. Fields not observed by the current pipeline (OS/platform/hosting/cloud/cert expiry) are Evidence Not Available — deploy an agent/cloud connector to populate them.', 9, MUTED);
+  layout.table({ title: 'Asset Intelligence', columns: ['Asset', 'Owner', 'Crit', 'Hosting', 'TLS', 'Primary Alg', 'Key', 'PQC', 'Cplx', 'Hrs'], rows: report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.businessOwner, a.businessCriticality, a.hosting, a.tlsVersion, a.primaryAlgorithm, a.keyLength, `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-', '-']] }, [16, 11, 7, 12, 10, 16, 9, 5, 8, 6]);
 
   // Raw per-instance findings belong in the Technical Assessment only. Board /
   // compliance / migration reports show the consolidated (root-cause) view above
@@ -396,8 +410,8 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table(report.pqcReadiness.table, [60, 40]);
 
   layout.heading('Compliance Mapping');
-  layout.paragraph('Dynamic gap tracking: Current, Target, Gap and Progress per framework.', 9, MUTED);
-  layout.table({ title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Cur', 'Tgt', 'Gap', 'Progress'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct}`, `${c.progressPct}%`]) }, [16, 36, 12, 9, 9, 9, 9]);
+  layout.paragraph('Dynamic gap tracking with a visual progress bar: Current to Target per framework.', 9, MUTED);
+  layout.table({ title: 'Compliance', columns: ['Framework', 'Control', 'Cur', 'Tgt', 'Progress'], rows: report.compliance.map((c) => [c.framework, c.control, `${c.currentPct}%`, `${c.targetPct}%`, bar(c.progressPct)]) }, [15, 30, 8, 8, 39]);
 
   layout.heading('Crypto-Policy Profiles (Target Algorithm Selection)');
   layout.paragraph(report.cryptoPolicy.note, 9, MUTED);
@@ -411,8 +425,8 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table({ title: 'Roadmap', columns: ['Phase', 'Start', 'Finish', 'Wks', 'Milestone / Gate', 'Crit', 'Slack'], rows: report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, `${p.milestone} | ${p.gate}`, p.criticalPath ? 'Y' : 'N', `${p.slackWeeks}w`]) }, [20, 12, 12, 6, 38, 6, 6]);
 
   layout.heading('Migration Resource Loading');
-  layout.paragraph('Team allocation across the programme window — hours, engineers and percentage loading per team.', 9, MUTED);
-  layout.table({ title: 'Resource Loading', columns: ['Team', 'Waves', 'Hours', 'Eng.', 'Window', 'Alloc', 'Basis'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`, r.basis]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [14, 26, 8, 6, 8, 8, 30]);
+  layout.paragraph('Per-team planning: assumed availability (capacity), derived allocation demand, engineers and dependencies. A team whose allocation approaches its availability is over-subscribed.', 9, MUTED);
+  layout.table({ title: 'Resource Loading', columns: ['Team', 'Waves', 'Hrs', 'Eng.', 'Window', 'Avail', 'Alloc', 'Dependencies'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.availabilityPct}%`, `${r.allocationPct}%`, r.dependencies.join(', ')]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] }, [14, 20, 7, 6, 8, 8, 8, 29]);
 
   layout.heading('Enterprise Remediation Playbook');
   for (const p of report.playbookDetail) {
@@ -435,6 +449,15 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Executive ROI & Value Intelligence');
   layout.paragraph(report.roiAnalysis.paybackNarrative, 9.5, INK);
   layout.table({ title: 'ROI', columns: ['Value Metric', 'Expected Outcome', 'Basis / Formula'], rows: report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '-', '-']] }, [20, 32, 48]);
+  layout.paragraph(`ROI assumption (configurable): ${report.roiAnalysis.assumptionBasis}`, 8.5, MUTED);
+
+  layout.heading('Operational Benefits (Beyond ROI)');
+  layout.paragraph('Non-financial business value executives value alongside pure financial return.', 9, MUTED);
+  layout.table({ title: 'Operational Benefits', columns: ['Operational Benefit', 'Impact', 'Evidence'], rows: report.operationalBenefits.length ? report.operationalBenefits.map((b) => [b.benefit, b.impact, b.evidence]) : [['Evidence Not Available', '-', '-']] }, [26, 34, 40]);
+
+  layout.heading('Executive Maturity Model');
+  layout.paragraph(`${report.maturityModel.scale} ${report.maturityModel.note}`, 9, MUTED);
+  layout.table({ title: 'Maturity Model', columns: ['Domain', 'Current', 'Target', 'Gap', 'Timeline', 'Invest', 'Owner', 'Dependencies'], rows: report.maturityModel.domains.length ? report.maturityModel.domains.map((d) => [d.domain, d.currentLabel, d.targetLabel, `${d.gap}`, d.timeline, d.investment, d.owner, d.dependencies]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] }, [15, 13, 13, 5, 10, 9, 15, 20]);
 
   layout.heading('Migration Simulation (What-If)');
   layout.table({ title: 'Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom}->${w.readinessTo}`, `${w.riskFrom}->${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) }, [34, 16, 14, 14, 10, 12]);
@@ -442,8 +465,11 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Risk Reduction Forecast');
   layout.table({ title: 'Forecast', columns: ['Metric', 'Value'], rows: [
     ['Current Risk', `${report.riskForecast.currentRisk}/100`], ['Target Risk', `${report.riskForecast.targetRisk}/100`], ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
-    ['12-Month', `${report.riskForecast.month12}/100`], ['24-Month', `${report.riskForecast.month24}/100`], ['36-Month', `${report.riskForecast.month36}/100`],
+    ['12-Month (Expected)', `${report.riskForecast.month12}/100`], ['24-Month (Expected)', `${report.riskForecast.month24}/100`], ['36-Month (Expected)', `${report.riskForecast.month36}/100`],
   ] }, [50, 50]);
+  if (report.riskForecast.scenarios.length) {
+    layout.table({ title: 'Scenario Bands', columns: ['Scenario', '12-Mo', '24-Mo', '36-Mo', 'Planning Assumption'], rows: report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}`, `${sc.month24}`, `${sc.month36}`, sc.assumption]) }, [16, 10, 10, 10, 54]);
+  }
 
   layout.heading('Asset-Level Readiness');
   layout.paragraph('Which assets drive the overall readiness score, with their primary risk driver.', 9, MUTED);

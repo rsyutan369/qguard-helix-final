@@ -118,7 +118,8 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
       ? report.findings.map((f) => [f.id, f.severity.toUpperCase(), f.affectedAssets.join(', ') || '-', `${f.currentState} -> ${f.recommendedState}`, f.owner, f.targetDate, f.estimatedCostUsd ? `$${f.estimatedCostUsd.toLocaleString()}` : '-', `${f.riskReductionPct}%`])
       : [['-', '-', 'Evidence Not Available', '-', '-', '-', '-', '-']],
   };
-  const complianceTable: ReportTable = { title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current', 'Target', 'Gap', 'Progress'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct} pts`, `${c.progressPct}% complete`]) };
+  const docBar = (pct: number) => { const p = Math.max(0, Math.min(100, Math.round(pct))); const f = Math.round(p / 10); return `${'█'.repeat(f)}${'░'.repeat(10 - f)} ${p}%`; };
+  const complianceTable: ReportTable = { title: 'Compliance', columns: ['Framework', 'Control', 'Status', 'Current', 'Target', 'Gap', 'Progress'], rows: report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct} pts`, docBar(c.progressPct)]) };
   const roadmapTable: ReportTable = { title: 'Roadmap & Program Plan', columns: ['Phase', 'Start', 'Finish', 'Wks', 'Milestone', 'Approval Gate', 'Critical', 'Slack'], rows: report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, p.milestone || '-', p.gate || '-', p.criticalPath ? 'Yes' : 'No', `${p.slackWeeks}w`]) };
   const ex = report.executiveBlock;
   const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
@@ -144,6 +145,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const hndlCatTable: ReportTable = { title: 'HNDL Categories', columns: ['Data Category', 'Retention', 'Current Protection', 'Risk', 'Recommended'], rows: report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]) };
   const remediationTable: ReportTable = { title: 'Remediation Program', columns: ['Pri', 'Action', 'Owner', 'Cost', 'Risk Reduction', 'Target Date', 'Status'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, usd(r.costUsd), `${r.riskReductionPct}%`, r.targetDate, r.status]) };
   const costTable: ReportTable = { title: 'Cost Forecast', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] };
+  const scenarioTable: ReportTable = { title: 'Risk Scenario Bands', columns: ['Scenario', '12-Month', '24-Month', '36-Month', 'Planning Assumption'], rows: report.riskForecast.scenarios.length ? report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}/100`, `${sc.month24}/100`, `${sc.month36}/100`, sc.assumption]) : [['Evidence Not Available', '-', '-', '-', '-']] };
   const forecastTable: ReportTable = { title: 'Risk Forecast', columns: ['Metric', 'Value'], rows: [
     ['Current Risk', `${report.riskForecast.currentRisk}/100`], ['Target Risk', `${report.riskForecast.targetRisk}/100`], ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
     ['12-Month', `${report.riskForecast.month12}/100`], ['24-Month', `${report.riskForecast.month24}/100`], ['36-Month', `${report.riskForecast.month36}/100`],
@@ -160,7 +162,15 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
     ['Top Contributing Findings', report.advisorValidation.topContributingFindings.join('; ') || 'Evidence Not Available'],
     ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
   ] };
-  const confidenceTable: ReportTable = { title: 'Migration Confidence', columns: ['Confidence Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) };
+  const confidenceTable: ReportTable = { title: 'Assessment Confidence', columns: ['Coverage Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) };
+  const confidenceSummaryTable: ReportTable = { title: 'Confidence Overview', columns: ['Confidence Measure', 'Value', 'What it means'], rows: [
+    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind the assessment'],
+    ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the recommended plan achieves its target'],
+    ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
+    ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
+  ] };
+  const operationalBenefitsTable: ReportTable = { title: 'Operational Benefits', columns: ['Operational Benefit', 'Impact', 'Evidence'], rows: report.operationalBenefits.length ? report.operationalBenefits.map((b) => [b.benefit, b.impact, b.evidence]) : [['Evidence Not Available', '-', '-']] };
+  const maturityTable: ReportTable = { title: 'Executive Maturity Model', columns: ['Domain', 'Current', 'Target', 'Gap', 'Timeline', 'Investment', 'Owner', 'Dependencies'], rows: report.maturityModel.domains.length ? report.maturityModel.domains.map((d) => [d.domain, d.currentLabel, d.targetLabel, `${d.gap} level(s)`, d.timeline, d.investment, d.owner, d.dependencies]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
   const costBreakdownTable: ReportTable = { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] };
   const criticalityTable: ReportTable = { title: 'Asset Criticality', columns: ['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
   const impactReasonTable: ReportTable = { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why', 'Evidence'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]) };
@@ -179,8 +189,8 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const readinessMethodologyTable: ReportTable = { title: 'Readiness Methodology', columns: ['Factor', 'Weight', 'Score', 'Contribution', 'Measurement Basis'], rows: [...report.readinessMethodology.factors.map((f) => [f.factor, f.measured ? `${f.weightPct}%` : 'Excluded', typeof f.score === 'number' ? `${f.score}/100` : f.score, f.measured ? f.contribution.toFixed(1) : '-', f.basis]), ['OVERALL (Σ Contribution)', '100%', `${report.readinessMethodology.overall}/100`, report.readinessMethodology.overall.toFixed(1), '±1 rounding']] };
   const benchmarkingTable: ReportTable = { title: 'Industry Benchmarking', columns: ['Cohort', 'Readiness', 'Delta vs You', 'Source'], rows: report.benchmarking.rows.length ? report.benchmarking.rows.map((b) => [b.cohort, `${b.readiness}/100`, b.delta === 0 ? '-' : `${b.delta > 0 ? '+' : ''}${b.delta}`, b.source]) : [['Evidence Not Available', '-', '-', '-']] };
   const roiTable: ReportTable = { title: 'Executive ROI', columns: ['Value Metric', 'Expected Outcome', 'Basis / Formula'], rows: report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '-', '-']] };
-  const resourceLoadingTable: ReportTable = { title: 'Resource Loading', columns: ['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Allocation', 'Basis'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`, r.basis]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] };
-  const assetIntelTable: ReportTable = { title: 'Asset Intelligence', columns: ['Asset', 'Owner Dept.', 'Certificates', 'TLS Version', 'Algorithms', 'Key Sizes', 'Dependencies', 'PQC Ready', 'Complexity', 'Est. Hours'], rows: report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.ownerDepartment, a.certificates, a.tlsVersion, a.algorithms.join(', '), a.keySizes.join(', '), a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-', '-']] };
+  const resourceLoadingTable: ReportTable = { title: 'Resource Loading', columns: ['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Availability', 'Allocation', 'Dependencies'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.availabilityPct}%`, `${r.allocationPct}%`, r.dependencies.join(', ')]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
+  const assetIntelTable: ReportTable = { title: 'Asset Intelligence', columns: ['Asset', 'Business Owner', 'Business Unit', 'Criticality', 'OS / Platform', 'Hosting / Cloud', 'TLS Version', 'Primary Algorithm', 'Key Length', 'Cert Expiry', 'Dependencies', 'PQC Ready', 'Complexity', 'Est. Hours'], rows: report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.businessOwner, a.businessUnit, a.businessCriticality, `${a.os} / ${a.platform}`, `${a.hosting} / ${a.cloudProvider}`, a.tlsVersion, a.primaryAlgorithm, a.keyLength, a.certExpiry, a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-']] };
   const cryptoPolicyTable: ReportTable = { title: 'Crypto-Policy Profiles', columns: ['Profile', 'Key Establishment', 'Digital Signature', 'Certificate Chain', 'Symmetric / Hash', 'Guidance'], rows: report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, p.certificateChain, `${p.symmetric} / ${p.hash}`, p.guidance]) };
   const definitionsTable: ReportTable = { title: 'Terminology & Definitions', columns: ['Term', 'Definition'], rows: report.definitions.length ? report.definitions.map((d) => [d.term, d.definition]) : [['Evidence Not Available', '-']] };
   const reportValidationTable: ReportTable = { title: 'Report Validation', columns: ['Validation Check', 'Result', 'Detail'], rows: report.reportValidation.checks.length ? report.reportValidation.checks.map((c) => [c.check, c.status === 'pass' ? 'PASS' : 'FAIL', c.detail]) : [['Evidence Not Available', '-', '-']] };
@@ -251,8 +261,11 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(advisorTable),
           para(`Why this recommendation: ${report.advisorValidation.why}`, MUTED),
           docTable(validationTable),
-          heading('Migration Confidence'),
-          para(`Overall Migration Confidence: ${report.migrationConfidence.overallPct}%`, INK),
+          heading('Confidence Overview'),
+          para(report.confidenceSummary.note, MUTED),
+          docTable(confidenceSummaryTable),
+          heading('Assessment Confidence (Evidence Coverage)'),
+          para(`Overall Assessment Confidence: ${report.confidenceSummary.assessmentConfidencePct}% — completeness of the evidence behind the assessment.`, INK),
           docTable(confidenceTable),
           heading('Migration Readiness Assessment'),
           docTable(readinessTable),
@@ -307,10 +320,18 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           heading('Executive ROI & Value Intelligence'),
           para(report.roiAnalysis.paybackNarrative, INK),
           docTable(roiTable),
+          para(`ROI assumption (configurable): ${report.roiAnalysis.assumptionBasis}`, MUTED),
+          heading('Operational Benefits (Beyond ROI)'),
+          para('Non-financial business value executives value alongside pure financial return.', MUTED),
+          docTable(operationalBenefitsTable),
+          heading('Executive Maturity Model'),
+          para(`${report.maturityModel.scale} ${report.maturityModel.note}`, MUTED),
+          docTable(maturityTable),
           heading('Migration Simulation (What-If)'),
           docTable(simulationTable),
           heading('Risk Reduction Forecast'),
           docTable(forecastTable),
+          docTable(scenarioTable),
           heading('Asset-Level Readiness'),
           docTable(assetReadinessTable),
           heading('Executive Risk Acceptance'),

@@ -161,6 +161,16 @@ export const costForecastSchema = z.object({
 });
 export type CostForecast = z.infer<typeof costForecastSchema>;
 
+// I3#7 — Risk-trend scenario band (best / expected / worst case)
+export const riskScenarioSchema = z.object({
+  scenario: z.enum(['Best Case', 'Expected', 'Worst Case']),
+  month12: z.number(),
+  month24: z.number(),
+  month36: z.number(),
+  assumption: z.string(),
+});
+export type RiskScenario = z.infer<typeof riskScenarioSchema>;
+
 export const riskForecastSchema = z.object({
   currentRisk: z.number(),
   targetRisk: z.number(),
@@ -169,6 +179,8 @@ export const riskForecastSchema = z.object({
   month12: z.number(),
   month24: z.number(),
   month36: z.number(),
+  // I3#7 — best/expected/worst-case bands for planning
+  scenarios: z.array(riskScenarioSchema).default([]),
 });
 export type RiskForecast = z.infer<typeof riskForecastSchema>;
 
@@ -379,6 +391,8 @@ export const readinessMethodologySchema = z.object({
 export type ReadinessMethodology = z.infer<typeof readinessMethodologySchema>;
 
 // I2#4 — Executive ROI & Value Intelligence™
+// I3#2 — assumptions are exposed and configurable (ALE/SLE/FAIR-oriented) rather
+// than a hidden constant, so ROI can be made organization-specific in production.
 export const roiLineSchema = z.object({ metric: z.string(), value: z.string(), basis: z.string() });
 export const roiAnalysisSchema = z.object({
   investmentUsd: z.number(),
@@ -388,10 +402,15 @@ export const roiAnalysisSchema = z.object({
   roiMultiple: z.number(),
   paybackNarrative: z.string(),
   lines: z.array(roiLineSchema),
+  // I3#2 — exposed ROI assumptions (configurable per organization)
+  riskAvoidanceMultiple: z.number().default(3),
+  annualLossExpectancyUsd: z.number().default(0),
+  assumptionBasis: z.string().default(EVIDENCE_UNAVAILABLE),
+  assumptionsConfigurable: z.boolean().default(true),
 });
 export type RoiAnalysis = z.infer<typeof roiAnalysisSchema>;
 
-// I2#5 — Migration Resource Loading™ (per-team allocation)
+// I2#5 / I3#5 — Migration Resource Loading™ (per-team allocation + capacity + deps)
 export const resourceLoadSchema = z.object({
   team: z.string(),
   waves: z.string(),
@@ -399,18 +418,66 @@ export const resourceLoadSchema = z.object({
   engineers: z.number(),
   windowWeeks: z.number(),
   allocationPct: z.number(),
+  // I3#5 — planning inputs
+  availabilityPct: z.number().default(100),
+  dependencies: z.array(z.string()).default([]),
   basis: z.string().default(''),
 });
 export type ResourceLoad = z.infer<typeof resourceLoadSchema>;
 
-// I2#6 — Asset Intelligence Profile™ (deep per-asset crypto posture)
+// I3#1 — Confidence taxonomy: four distinct confidence concepts, clearly labelled
+// so "72% assessment confidence" is never confused with per-wave confidence.
+export const confidenceSummarySchema = z.object({
+  assessmentConfidencePct: z.number(),
+  migrationPlanConfidencePct: z.number(),
+  waveConfidenceRange: z.string(),
+  evidenceConfidencePct: z.number(),
+  note: z.string(),
+});
+export type ConfidenceSummary = z.infer<typeof confidenceSummarySchema>;
+
+// I3#8 — Operational (non-financial) business value beyond ROI
+export const operationalBenefitSchema = z.object({ benefit: z.string(), impact: z.string(), evidence: z.string() });
+export type OperationalBenefit = z.infer<typeof operationalBenefitSchema>;
+
+// I3#9 — Executive Maturity Model (CMMI-style Level 0-5 per crypto domain)
+export const maturityDomainSchema = z.object({
+  domain: z.string(),
+  currentLevel: z.number(),
+  currentLabel: z.string(),
+  targetLevel: z.number(),
+  targetLabel: z.string(),
+  gap: z.number(),
+  timeline: z.string(),
+  investment: z.string(),
+  owner: z.string(),
+  dependencies: z.string(),
+});
+export const maturityModelSchema = z.object({ scale: z.string(), domains: z.array(maturityDomainSchema), note: z.string() });
+export type MaturityModel = z.infer<typeof maturityModelSchema>;
+
+// I2#6 / I3#3 / I3#4 — Asset Intelligence Profile™ (deep per-asset crypto posture,
+// richer owner/business metadata, and platform/hosting fields). Fields the
+// evidence pipeline does not observe are `Evidence Not Available`, never invented.
 export const assetIntelligenceSchema = z.object({
   asset: z.string(),
   assetType: z.string().default(EVIDENCE_UNAVAILABLE),
   environment: z.string().default(EVIDENCE_UNAVAILABLE),
   ownerDepartment: z.string().default(EVIDENCE_UNAVAILABLE),
+  // I3#3 — richer ownership + business context
+  businessOwner: z.string().default('Unknown'),
+  businessUnit: z.string().default(EVIDENCE_UNAVAILABLE),
+  businessCriticality: z.string().default(EVIDENCE_UNAVAILABLE),
+  // I3#4 — platform / hosting metadata
+  os: z.string().default(EVIDENCE_UNAVAILABLE),
+  platform: z.string().default(EVIDENCE_UNAVAILABLE),
+  hosting: z.string().default(EVIDENCE_UNAVAILABLE),
+  cloudProvider: z.string().default(EVIDENCE_UNAVAILABLE),
   certificates: z.string().default(EVIDENCE_UNAVAILABLE),
+  certExpiry: z.string().default(EVIDENCE_UNAVAILABLE),
   tlsVersion: z.string().default(EVIDENCE_UNAVAILABLE),
+  primaryAlgorithm: z.string().default(EVIDENCE_UNAVAILABLE),
+  keyLength: z.string().default(EVIDENCE_UNAVAILABLE),
   algorithms: z.array(z.string()).default([]),
   keySizes: z.array(z.string()).default([]),
   cryptoLibraries: z.string().default(EVIDENCE_UNAVAILABLE),
@@ -533,13 +600,17 @@ export const enterpriseAssessmentReportSchema = z.object({
   // Improvements_02 — defaults keep previously-saved report JSON parseable
   readinessMethodology: readinessMethodologySchema.default({ formula: '', overall: 0, factors: [], explanation: EVIDENCE_UNAVAILABLE }),
   readinessIndex: readinessIndexSchema.default({ overall: 0, pillars: [], note: EVIDENCE_UNAVAILABLE }),
-  roiAnalysis: roiAnalysisSchema.default({ investmentUsd: 0, expectedRiskReductionPct: 0, riskAvoidanceUsd: 0, netBenefitUsd: 0, roiMultiple: 0, paybackNarrative: EVIDENCE_UNAVAILABLE, lines: [] }),
+  roiAnalysis: roiAnalysisSchema.default({ investmentUsd: 0, expectedRiskReductionPct: 0, riskAvoidanceUsd: 0, netBenefitUsd: 0, roiMultiple: 0, paybackNarrative: EVIDENCE_UNAVAILABLE, lines: [], riskAvoidanceMultiple: 3, annualLossExpectancyUsd: 0, assumptionBasis: EVIDENCE_UNAVAILABLE, assumptionsConfigurable: true }),
   resourceLoading: z.array(resourceLoadSchema).default([]),
   assetIntelligence: z.array(assetIntelligenceSchema).default([]),
   benchmarking: benchmarkingSchema.default({ rows: [], percentileNarrative: EVIDENCE_UNAVAILABLE, note: '' }),
   reportValidation: reportValidationSchema.default({ overall: 'FAIL', checks: [], note: 'Validation not executed for this report version.' }),
   cryptoPolicy: cryptoPolicySchema.default({ activeProfile: '', profiles: [], note: '' }),
   definitions: z.array(definitionSchema).default([]),
+  // Improvements_03 — refinements (defaults keep older report JSON parseable)
+  confidenceSummary: confidenceSummarySchema.default({ assessmentConfidencePct: 0, migrationPlanConfidencePct: 0, waveConfidenceRange: EVIDENCE_UNAVAILABLE, evidenceConfidencePct: 0, note: '' }),
+  operationalBenefits: z.array(operationalBenefitSchema).default([]),
+  maturityModel: maturityModelSchema.default({ scale: '', domains: [], note: EVIDENCE_UNAVAILABLE }),
   findings: z.array(findingSchema),
   assets: tableSchema,
   certificates: tableSchema,

@@ -119,11 +119,25 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   tableSlide('Migration Wave Planning', ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk-', 'Status'], report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]), [1, 2.6, 1.4, 2.3, 1.2, 1.6, 1, 1.2]);
   tableSlide('Cost Forecast', ['Category', 'Estimated Cost'], [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)]], [8, 4.3]);
 
-  // Executive ROI & Value Intelligence™ (I2#4)
+  // Confidence Overview™ (I3#1) — four distinct confidence measures
+  tableSlide('Confidence Overview™', ['Confidence Measure', 'Value', 'What it means'], [
+    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of evidence behind the assessment'],
+    ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the plan achieves its target'],
+    ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
+    ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
+  ], [3.2, 1.8, 7.3]);
+
+  // Executive ROI & Value Intelligence™ (I2#4 / I3#2 configurable assumption)
   tableSlide('Executive ROI & Value Intelligence™', ['Value Metric', 'Expected Outcome', 'Basis / Formula'], report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '-', '-']], [2.8, 3.6, 5.9]);
 
-  // Migration Resource Loading™ (I2#5)
-  tableSlide('Migration Resource Loading™', ['Team', 'Waves', 'Hours', 'Eng.', 'Window', 'Allocation'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`]) : [['Evidence Not Available', '-', '-', '-', '-', '-']], [2.4, 4.9, 1.2, 1, 1.2, 1.6]);
+  // Operational Benefits (I3#8) — non-financial value beyond ROI
+  tableSlide('Operational Benefits (Beyond ROI)', ['Operational Benefit', 'Impact', 'Evidence'], report.operationalBenefits.length ? report.operationalBenefits.map((b) => [b.benefit, b.impact, b.evidence]) : [['Evidence Not Available', '-', '-']], [3.2, 4.1, 5]);
+
+  // Executive Maturity Model™ (I3#9) — CMMI-style current→target per domain
+  tableSlide('Executive Maturity Model™', ['Domain', 'Current', 'Target', 'Gap', 'Timeline', 'Invest', 'Owner'], report.maturityModel.domains.length ? report.maturityModel.domains.map((d) => [d.domain, d.currentLabel, d.targetLabel, `${d.gap}`, d.timeline, d.investment, d.owner]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']], [2.4, 1.9, 1.9, 0.7, 1.5, 1.4, 2.5]);
+
+  // Migration Resource Loading™ (I2#5 / I3#5 capacity + dependencies)
+  tableSlide('Migration Resource Loading™', ['Team', 'Waves', 'Hrs', 'Eng.', 'Window', 'Avail', 'Alloc', 'Dependencies'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.availabilityPct}%`, `${r.allocationPct}%`, r.dependencies.join(', ')]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']], [1.9, 2.9, 0.9, 0.8, 1.1, 1, 1, 2.7]);
 
   // Report Intelligence (Reports_Enhancements_3) board slides
   tableSlide('Risk Scoring Methodology™', ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution', 'Share'], [...report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]), ['OVERALL = Σ Contribution', `${report.riskMethodology.overall}/100`, '100%', report.riskMethodology.overall.toFixed(1), '100%']], [4.3, 2.3, 2, 2.2, 1.5]);
@@ -168,8 +182,14 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   // Finding Deduplication™
   tableSlide('Consolidated Findings (Root Cause)™', ['Finding', 'Occurrences', 'Affected Assets', 'Impact'], report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase()]), [6.4, 2, 2.4, 1.5]);
 
-  // Migration Confidence™
-  tableSlide(`Migration Confidence™ — Overall ${report.migrationConfidence.overallPct}%`, ['Confidence Factor', 'Coverage'], report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]), [8, 4.3]);
+  // Assessment Confidence™ (evidence coverage)
+  tableSlide(`Assessment Confidence™ — ${report.confidenceSummary.assessmentConfidencePct}% (evidence coverage)`, ['Coverage Factor', 'Coverage'], report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]), [8, 4.3]);
+
+  // Asset Intelligence Profile™ (I3#4 richer per-asset metadata)
+  tableSlide('Asset Intelligence Profile™', ['Asset', 'Owner', 'Crit', 'Hosting', 'TLS', 'Primary Algorithm', 'Key', 'PQC'], report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, a.businessOwner, a.businessCriticality, a.hosting, a.tlsVersion, a.primaryAlgorithm, a.keyLength, `${a.pqcReadinessPct}%`]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']], [2.6, 1.6, 1, 1.6, 1.4, 2.4, 1.1, 0.7]);
+
+  // Risk Trend Scenarios™ (I3#7 best/expected/worst)
+  tableSlide('Risk Trend — Scenario Bands™', ['Scenario', '12-Month', '24-Month', '36-Month', 'Planning Assumption'], report.riskForecast.scenarios.length ? report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}/100`, `${sc.month24}/100`, `${sc.month36}/100`, sc.assumption]) : [['Evidence Not Available', '-', '-', '-', '-']], [2, 1.6, 1.6, 1.6, 5.5]);
 
   // Governance Gates™
   tableSlide('Program Governance — Approval Gates™', ['Approval Gate', 'Owner', 'Criteria'], report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]), [3.2, 2.4, 6.7]);

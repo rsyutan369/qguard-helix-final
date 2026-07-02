@@ -244,6 +244,57 @@ function verifyImprovements02(report: ReturnType<typeof buildReportModel>, snaps
   assert(!certPlaybook || certPlaybook.targetState.includes('ML-DSA-65 + ECDSA P-256'), `I2#12 Cert playbook target: "${certPlaybook?.targetState}"`);
 }
 
+// Improvements_03 assertions — refinements.
+function verifyImprovements03(report: ReturnType<typeof buildReportModel>, snapshot: QuantumReadinessSnapshot) {
+  console.log('  --- Improvements_03 assertions ---');
+  const measured = snapshot.telemetry.runtimeEvents > 0;
+
+  // I3#1 Confidence taxonomy: four distinct measures, all present.
+  const cs = report.confidenceSummary;
+  assert(cs.assessmentConfidencePct === report.migrationConfidence.overallPct && cs.migrationPlanConfidencePct === report.migrationAdvisor.confidencePct && /–|Evidence/.test(cs.waveConfidenceRange) && cs.evidenceConfidencePct >= 0 && /Assessment Confidence/.test(cs.note), `I3#1 Confidence taxonomy: assess=${cs.assessmentConfidencePct}% plan=${cs.migrationPlanConfidencePct}% wave=${cs.waveConfidenceRange} evidence=${cs.evidenceConfidencePct}%`);
+
+  // I3#2 ROI assumption is exposed + configurable, and appears as its own line.
+  assert(report.roiAnalysis.assumptionsConfigurable && report.roiAnalysis.riskAvoidanceMultiple > 0 && /configurable|ALE|FAIR/i.test(report.roiAnalysis.assumptionBasis) && report.roiAnalysis.lines.some((l) => /assumption/i.test(l.metric)), `I3#2 ROI assumption: ${report.roiAnalysis.riskAvoidanceMultiple}× multiple, configurable=${report.roiAnalysis.assumptionsConfigurable}`);
+
+  // I3#3 Owners are "Unknown" (never "Unassigned") when no accountable owner.
+  const jsonStr = JSON.stringify(report);
+  const unassignedOwner = report.assetReadiness.some((a) => /^unassigned$/i.test(a.owner)) || report.assetIntelligence.some((a) => /^unassigned$/i.test(a.businessOwner));
+  assert(!unassignedOwner, `I3#3 Owners: no "Unassigned" owner values (converted to Unknown)`);
+  // Richer owner/business fields present on asset intelligence.
+  const ai0 = report.assetIntelligence[0];
+  assert(!ai0 || (typeof ai0.businessOwner === 'string' && typeof ai0.businessUnit === 'string' && typeof ai0.businessCriticality === 'string'), `I3#3 Asset owner fields present`);
+
+  // I3#4 Asset intelligence carries platform + primary algorithm + key length fields.
+  assert(!ai0 || (typeof ai0.os === 'string' && typeof ai0.platform === 'string' && typeof ai0.hosting === 'string' && typeof ai0.cloudProvider === 'string' && typeof ai0.certExpiry === 'string' && typeof ai0.primaryAlgorithm === 'string' && typeof ai0.keyLength === 'string'), `I3#4 Asset intel richer fields: primary=${ai0?.primaryAlgorithm} key=${ai0?.keyLength} hosting=${ai0?.hosting}`);
+
+  // I3#5 Resource loading has availability + dependencies.
+  const rl0 = report.resourceLoading[0];
+  assert(!rl0 || (rl0.availabilityPct > 0 && rl0.availabilityPct <= 100 && Array.isArray(rl0.dependencies) && rl0.basis.includes('avail')), `I3#5 Resource loading: ${rl0?.team} avail=${rl0?.availabilityPct}% deps=[${rl0?.dependencies.join(', ')}]`);
+
+  // I3#7 Risk-forecast scenario bands: best/expected/worst present and ordered
+  // (worst >= expected >= best at 12 months, since higher risk = worse).
+  const sc = report.riskForecast.scenarios;
+  const best = sc.find((s) => s.scenario === 'Best Case');
+  const worst = sc.find((s) => s.scenario === 'Worst Case');
+  assert(sc.length === 3 && !!best && !!worst && worst.month12 >= best.month12 && sc.every((s) => s.assumption.length > 15), `I3#7 Risk scenarios: best m12=${best?.month12}, worst m12=${worst?.month12}`);
+
+  // I3#8 Operational (non-financial) benefits.
+  assert(report.operationalBenefits.length >= 5 && report.operationalBenefits.every((b) => b.benefit && b.impact && b.evidence), `I3#8 Operational benefits: ${report.operationalBenefits.length}`);
+
+  // I3#9 Executive maturity model: CMMI 0-5 per domain, current→target with gap.
+  const mm = report.maturityModel;
+  const runtimeDomain = mm.domains.find((d) => /runtime/i.test(d.domain));
+  assert(mm.domains.length >= 6 && mm.domains.every((d) => d.currentLevel >= 0 && d.currentLevel <= 5 && d.targetLevel <= 5 && d.gap === Math.max(0, d.targetLevel - d.currentLevel) && !!d.owner && !!d.timeline), `I3#9 Maturity model: ${mm.domains.length} domains`);
+  // Runtime maturity starts at Level 0 when telemetry is not measured.
+  assert(!runtimeDomain || measured || runtimeDomain.currentLevel === 0, `I3#9 Runtime maturity level=${runtimeDomain?.currentLevel} (measured=${measured})`);
+
+  // Technical observation — one-decimal percentage in definitions.
+  const pqcCompDef = report.definitions.find((d) => d.term === 'PQC-Ready Component');
+  assert(!!pqcCompDef && /\d+\.\d%/.test(pqcCompDef.definition), `Obs one-decimal %: "${pqcCompDef?.definition.match(/\([^)]*%\)/)?.[0]}"`);
+
+  void jsonStr;
+}
+
 async function run(name: string, snapshot: QuantumReadinessSnapshot, outDir: string, checkPhases = false) {
   const branding = brandingSchema.parse({ companyName: 'QGuard Helix', businessUnit: 'PQC Program Office' });
   const report = buildReportModel(snapshot, branding, 'executive', 'Export Smoke');
@@ -252,6 +303,7 @@ async function run(name: string, snapshot: QuantumReadinessSnapshot, outDir: str
   enterpriseAssessmentReportSchema.parse(report);
   if (checkPhases) verifyPhases(report, snapshot);
   verifyImprovements02(report, snapshot);
+  verifyImprovements03(report, snapshot);
 
   let ok = 0;
   for (const fmt of REPORT_FORMATS) {

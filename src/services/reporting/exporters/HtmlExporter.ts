@@ -13,6 +13,13 @@ function esc(value: unknown): string {
 const SEV_COLOR: Record<string, string> = { critical: '#DC2626', high: '#EA580C', medium: '#D97706', low: '#16A34A', info: '#2563EB' };
 const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
 
+/** Inline HTML progress bar (I3#6) — filled proportional to pct, 0-100. */
+function progressBar(pct: number): string {
+  const p = Math.max(0, Math.min(100, Math.round(pct)));
+  const color = p >= 75 ? '#16A34A' : p >= 40 ? '#D97706' : '#DC2626';
+  return `<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;min-width:80px;height:8px;background:#E2E8F0;border-radius:4px;overflow:hidden"><div style="width:${p}%;height:100%;background:${color}"></div></div><span style="font-size:11px;color:#475569">${p}%</span></div>`;
+}
+
 function tableHtml(table: ReportTable): string {
   return `<h3>${esc(table.title)}</h3><table><thead><tr>${table.columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${table.rows
     .map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`)
@@ -198,9 +205,18 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
   ])}
 
-  <h2>Migration Confidence&trade;</h2>
-  <p><b>Overall Migration Confidence:</b> ${esc(report.migrationConfidence.overallPct)}%</p>
-  ${gridTable(['Confidence Factor', 'Coverage'], report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]))}
+  <h2>Confidence Overview&trade;</h2>
+  <p class="muted">${esc(report.confidenceSummary.note)}</p>
+  ${gridTable(['Confidence Measure', 'Value', 'What it means'], [
+    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind this assessment'],
+    ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the recommended plan achieves its target'],
+    ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
+    ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
+  ])}
+
+  <h2>Assessment Confidence&trade; (Evidence Coverage)</h2>
+  <p><b>Overall Assessment Confidence:</b> ${esc(report.confidenceSummary.assessmentConfidencePct)}% — how complete the evidence behind the assessment is.</p>
+  ${gridTable(['Coverage Factor', 'Coverage'], report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]))}
 
   <h2>Migration Readiness Assessment</h2>
   ${gridTable(['Category', 'Score', 'Recommendation'], report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]))}
@@ -240,8 +256,8 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${gridTable(['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue Impact', 'Compliance Scope', 'Data Sensitivity'], report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Asset Intelligence Profile&trade;</h2>
-  <p class="muted">Per-asset cryptographic posture: detected algorithms, key sizes, TLS profile, dependencies, migration complexity and effort. Fields the evidence pipeline has not yet observed are shown as Evidence Not Available.</p>
-  ${gridTable(['Asset', 'Type / Env', 'Owner Dept.', 'Certificates', 'TLS Version', 'Algorithms', 'Key Sizes', 'Dependencies', 'PQC Ready', 'Complexity', 'Est. Hours'], report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, `${a.assetType} / ${a.environment}`, a.ownerDepartment, a.certificates, a.tlsVersion, a.algorithms.join(', '), a.keySizes.join(', '), a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
+  <p class="muted">Per-asset cryptographic posture, ownership and platform metadata to help technical teams prioritise remediation. Fields the evidence pipeline has not yet observed (OS, platform, hosting, cloud provider, certificate expiry) are shown as Evidence Not Available — never fabricated; deploy an agent/cloud connector to populate them.</p>
+  ${gridTable(['Asset', 'Type / Env', 'Business Owner', 'Business Unit', 'Criticality', 'OS / Platform', 'Hosting / Cloud', 'TLS Version', 'Primary Algorithm', 'Key Length', 'Cert Expiry', 'Dependencies', 'PQC Ready', 'Complexity', 'Est. Hours'], report.assetIntelligence.length ? report.assetIntelligence.map((a) => [a.asset, `${a.assetType} / ${a.environment}`, a.businessOwner, a.businessUnit, a.businessCriticality, `${a.os} / ${a.platform}`, `${a.hosting} / ${a.cloudProvider}`, a.tlsVersion, a.primaryAlgorithm, a.keyLength, a.certExpiry, a.dependencies.join(', '), `${a.pqcReadinessPct}%`, a.migrationComplexity, a.estimatedHours]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
 
   ${meta.kind === 'technical' ? `<h2>Technical Appendix &mdash; Raw Findings &amp; Evidence</h2>
   ${findings}` : ''}
@@ -252,8 +268,10 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${tableHtml(report.pqcReadiness.table)}
 
   <h2>Compliance Mapping</h2>
-  <p class="muted">Dynamic gap tracking: Current, Target, Gap and Progress per framework — not a static status word.</p>
-  ${gridTable(['Framework', 'Control', 'Status', 'Current', 'Target', 'Gap', 'Progress', 'Detail'], report.compliance.map((c) => [c.framework, c.control, c.status, `${c.currentPct}%`, `${c.targetPct}%`, `${c.gapPct} pts`, `${c.progressPct}% complete`, c.detail]))}
+  <p class="muted">Dynamic gap tracking with a visual progress indicator: Current → Target per framework — not a static status word.</p>
+  <table><thead><tr>${['Framework', 'Control', 'Status', 'Current', 'Target', 'Gap', 'Progress'].map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${report.compliance
+    .map((c) => `<tr><td>${esc(c.framework)}</td><td>${esc(c.control)}</td><td>${esc(c.status)}</td><td>${esc(c.currentPct)}%</td><td>${esc(c.targetPct)}%</td><td>${esc(c.gapPct)} pts</td><td>${progressBar(c.progressPct)}</td></tr>`)
+    .join('')}</tbody></table>
 
   <h2>Crypto-Policy Profiles (Target Algorithm Selection)</h2>
   <p class="muted">${esc(report.cryptoPolicy.note)}</p>
@@ -269,8 +287,8 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${gridTable(['Phase', 'Start', 'Finish', 'Effort (wks)', 'Milestone', 'Approval Gate', 'Critical Path', 'Slack'], report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, p.milestone || '—', p.gate || '—', p.criticalPath ? 'Yes' : 'No', `${p.slackWeeks}w`]))}
 
   <h2>Migration Resource Loading&trade;</h2>
-  <p class="muted">Team allocation across the programme window — hours, engineers and percentage loading per team for resource planning.</p>
-  ${gridTable(['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Allocation', 'Basis'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.allocationPct}%`, r.basis]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—']])}
+  <p class="muted">Per-team resource planning: assumed availability (capacity), derived allocation demand, engineer count and cross-team dependencies. Availability values are standard enterprise planning assumptions; allocation is derived from the wave hours — a team whose allocation approaches or exceeds its availability is over-subscribed.</p>
+  ${gridTable(['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Availability', 'Allocation', 'Dependencies'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.availabilityPct}%`, `${r.allocationPct}%`, r.dependencies.join(', ')]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Enterprise Remediation Playbook&trade;</h2>
   ${report.playbookDetail.length ? report.playbookDetail.map((p) => `<h3>${esc(p.finding)}</h3>${gridTable(['Step', 'Detail'], [
@@ -292,6 +310,15 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Executive ROI &amp; Value Intelligence&trade;</h2>
   <div class="callout"><b>ROI Summary:</b> ${esc(report.roiAnalysis.paybackNarrative)}</div>
   ${gridTable(['Value Metric', 'Expected Outcome', 'Basis / Formula'], report.roiAnalysis.lines.length ? report.roiAnalysis.lines.map((l) => [l.metric, l.value, l.basis]) : [['Evidence Not Available', '—', '—']])}
+  <p class="muted"><b>ROI assumption (configurable):</b> ${esc(report.roiAnalysis.assumptionBasis)}</p>
+
+  <h2>Operational Benefits (Beyond ROI)</h2>
+  <p class="muted">Non-financial business value executives value alongside pure financial return.</p>
+  ${gridTable(['Operational Benefit', 'Impact', 'Evidence'], report.operationalBenefits.length ? report.operationalBenefits.map((b) => [b.benefit, b.impact, b.evidence]) : [['Evidence Not Available', '—', '—']])}
+
+  <h2>Executive Maturity Model&trade;</h2>
+  <p class="muted">${esc(report.maturityModel.scale)} ${esc(report.maturityModel.note)}</p>
+  ${gridTable(['Domain', 'Current', 'Target', 'Gap', 'Timeline', 'Investment', 'Owner', 'Dependencies'], report.maturityModel.domains.length ? report.maturityModel.domains.map((d) => [d.domain, d.currentLabel, d.targetLabel, `${d.gap} level(s)`, d.timeline, d.investment, d.owner, d.dependencies]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Migration Simulation (What-If)&trade;</h2>
   ${gridTable(['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], report.waveSimulation.map((w) => [
@@ -304,10 +331,12 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     ['Target Risk (after migration waves)', `${report.riskForecast.targetRisk}/100`],
     ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
     ['Residual Risk (after optimization)', `${report.riskForecast.residualRisk}/100`],
-    ['12-Month Projection', `${report.riskForecast.month12}/100`],
-    ['24-Month Projection', `${report.riskForecast.month24}/100`],
-    ['36-Month Projection', `${report.riskForecast.month36}/100`],
+    ['12-Month Projection (Expected)', `${report.riskForecast.month12}/100`],
+    ['24-Month Projection (Expected)', `${report.riskForecast.month24}/100`],
+    ['36-Month Projection (Expected)', `${report.riskForecast.month36}/100`],
   ])}
+  ${report.riskForecast.scenarios.length ? `<h3>Scenario Bands (Best / Expected / Worst Case)</h3>
+  ${gridTable(['Scenario', '12-Month', '24-Month', '36-Month', 'Planning Assumption'], report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}/100`, `${sc.month24}/100`, `${sc.month36}/100`, sc.assumption]))}` : ''}
 
   <h2>Asset-Level Readiness</h2>
   <p class="muted">Which assets drive the overall readiness score, with their primary risk driver.</p>
