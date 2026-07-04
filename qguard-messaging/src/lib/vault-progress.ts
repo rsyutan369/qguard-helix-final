@@ -4,7 +4,7 @@
 // never fabricate.
 
 export interface VaultProgress {
-  op: "encrypt" | "decrypt" | "rewrap";
+  op: "encrypt" | "decrypt" | "rewrap" | "verify";
   phase: string;
   message: string;
   processedBytes: number;
@@ -37,6 +37,7 @@ export function opLabel(op: string): string {
   if (op === "encrypt") return "Encrypting";
   if (op === "decrypt") return "Decrypting";
   if (op === "rewrap") return "Re-protecting";
+  if (op === "verify") return "Verifying";
   return op;
 }
 

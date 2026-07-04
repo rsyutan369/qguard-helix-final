@@ -2,6 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNo
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import OnboardingTour from "@/components/onboarding/OnboardingTour";
+import { CallProvider } from "@/components/call/CallProvider";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
@@ -69,6 +71,14 @@ function ProtectedMessagingApp() {
   const lockState = useWorkspaceLock(auth.user?.id ?? null);
   const [vaultRecoveryEnabled, setVaultRecoveryEnabled] = useState(false);
   const navigate = useCallback((next: Page) => setPage(next), []);
+  // Total unread encrypted messages across visible conversations, surfaced as
+  // notification bubbles on the sidebar chat entry and the top-bar bell.
+  const unreadMessages = useMemo(
+    () => data.conversations
+      .filter((conversation) => !conversation.hidden_at && !conversation.deleted_at)
+      .reduce((sum, conversation) => sum + conversation.unread_count, 0),
+    [data.conversations],
+  );
 
   useEffect(() => {
     if (data.modules.length === 0) return;
@@ -224,33 +234,41 @@ function ProtectedMessagingApp() {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-canvas">
-      <Sidebar activePage={page} modules={data.modules} snapshot={data.snapshot} onNavigate={navigate} />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar
-          title={title}
-          subtitle={subtitle}
-          user={auth.user}
-          theme={theme}
-          activePage={page}
-          liveStatus={liveStatus}
-          lastLiveEvent={liveEvents[0] ?? null}
-          onToggleTheme={toggleTheme}
-          onSignOut={auth.signOut}
-          onStartTour={onboarding.replay}
+    // CallProvider sits ABOVE the router and the workspace lock: incoming
+    // quantum-encrypted calls ring on every page (dashboard, settings, locked
+    // chat...), not just while Secure Chat happens to be mounted.
+    <CallProvider userId={auth.user.id}>
+      <UpdateBanner />
+      <div className="flex h-screen w-screen overflow-hidden bg-canvas">
+        <Sidebar activePage={page} modules={data.modules} snapshot={data.snapshot} unreadMessages={unreadMessages} onNavigate={navigate} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TopBar
+            title={title}
+            subtitle={subtitle}
+            user={auth.user}
+            theme={theme}
+            activePage={page}
+            liveStatus={liveStatus}
+            lastLiveEvent={liveEvents[0] ?? null}
+            unreadMessages={unreadMessages}
+            onOpenChat={() => navigate("chat")}
+            onToggleTheme={toggleTheme}
+            onSignOut={auth.signOut}
+            onStartTour={onboarding.replay}
+          />
+          <main className="min-h-0 flex-1 overflow-y-auto p-5">
+            <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
+          </main>
+        </div>
+        <OnboardingTour
+          controller={onboarding}
+          steps={tourSteps}
+          checklist={tourChecklist}
+          userName={String(auth.user.user_metadata?.full_name ?? auth.user.email ?? "")}
+          onNavigate={navigate}
         />
-        <main className="min-h-0 flex-1 overflow-y-auto p-5">
-          <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
-        </main>
       </div>
-      <OnboardingTour
-        controller={onboarding}
-        steps={tourSteps}
-        checklist={tourChecklist}
-        userName={String(auth.user.user_metadata?.full_name ?? auth.user.email ?? "")}
-        onNavigate={navigate}
-      />
-    </div>
+    </CallProvider>
   );
 }
 

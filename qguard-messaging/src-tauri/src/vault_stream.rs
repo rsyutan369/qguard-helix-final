@@ -723,6 +723,25 @@ pub fn decrypt_stream_with_progress<R: Read, W: Write>(
     Ok(summary)
 }
 
+/// Fully verify a container WITHOUT writing plaintext anywhere: decrypts every
+/// chunk into an in-memory sink, checking the signed header (Ed25519 + ML-DSA),
+/// the device KEM unwrap, each chunk's AES-256-GCM tag + AAD binding, and the
+/// declared chunk count / size. Succeeds only if the whole container is intact.
+pub fn verify_stream_with_progress<R: Read>(
+    reader: &mut R,
+    recipient: &LocalKemKeypair,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let mut relabel = |mut p: VaultProgress| {
+        p.op = "verify".into();
+        if p.phase == "done" {
+            p.message = "Integrity verified · signed header + every chunk authenticated".into();
+        }
+        progress(p);
+    };
+    decrypt_stream_with_progress(reader, &mut io::sink(), recipient, &mut relabel)
+}
+
 /// Stream-decrypt `reader` into `writer` using the owner's quantum-safe recovery
 /// key — no access to the original device is required. On v3 the recovery key
 /// unwraps the VMK, which then unwraps the per-file FEK.
@@ -1809,6 +1828,32 @@ mod tests {
         let mut restored = Vec::new();
         decrypt_stream(&mut Cursor::new(out), &mut restored, &kem).unwrap();
         assert_eq!(restored, plaintext);
+    }
+
+    #[test]
+    fn verify_stream_accepts_intact_and_rejects_tampered_containers() {
+        let (kem, signer) = keypair();
+        let plaintext = vec![11u8; CHUNK_SIZE + 3];
+        let sealed = encrypt_bytes(&plaintext, &kem, &signer);
+
+        let mut seen: Vec<VaultProgress> = Vec::new();
+        let summary =
+            verify_stream_with_progress(&mut Cursor::new(sealed.clone()), &kem, &mut |p| seen.push(p)).unwrap();
+        assert_eq!(summary.original_size, plaintext.len() as u64);
+        assert!(seen.iter().all(|p| p.op == "verify"), "verify must relabel every event");
+        assert_eq!(seen.last().map(|p| p.phase.as_str()), Some("done"));
+
+        // A single flipped ciphertext byte must fail verification.
+        let mut tampered = sealed;
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        assert!(verify_stream_with_progress(&mut Cursor::new(tampered), &kem, &mut |_| {}).is_err());
+
+        // A wrong device key must fail verification too.
+        let attacker = LocalKemKeypair::generate();
+        let plain2 = vec![12u8; 64];
+        let sealed2 = encrypt_bytes(&plain2, &kem, &signer);
+        assert!(verify_stream_with_progress(&mut Cursor::new(sealed2), &attacker, &mut |_| {}).is_err());
     }
 
     #[test]

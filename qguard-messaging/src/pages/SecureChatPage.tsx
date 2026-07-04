@@ -11,15 +11,14 @@ import {
   wipeBytes,
   type DecryptionStatus,
 } from "@/lib/secure-decryption";
+import { chatControlCache, chatMessageCache, ensureChatCacheOwner } from "@/lib/chat-plaintext-cache";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
-import { useSecureCall } from "@/lib/use-secure-call";
+import { useCall } from "@/components/call/CallProvider";
 import { CallButton } from "@/components/call/CallButton";
-import { IncomingCallModal } from "@/components/call/IncomingCallModal";
-import { InCallOverlay } from "@/components/call/InCallOverlay";
 
 interface SecureChatPageProps {
   userId: string;
@@ -859,6 +858,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [searching, setSearching] = useState(false);
   const [searchFeedback, setSearchFeedback] = useState<string | null>(null);
   const [contactAction, setContactAction] = useState<string | null>(null);
+  const [showMyQrPayload, setShowMyQrPayload] = useState(false);
+  const [myQrPayloadCopied, setMyQrPayloadCopied] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatBusyId, setNewChatBusyId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -905,14 +906,20 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const voiceChunksRef = useRef<Blob[]>([]);
   const voiceStartedAtRef = useRef<number>(0);
   const attachmentPreviewUrlsRef = useRef<Record<string, string>>({});
-  const decryptedMessageCacheRef = useRef<Map<string, ChatMessage>>(new Map());
-  const decryptedControlCacheRef = useRef<Map<string, SecureControlMessage & { sender_user_id: string; created_at: string }>>(new Map());
+  // Module-scope plaintext caches (see chat-plaintext-cache.ts): they survive
+  // page remounts so revisiting the chat never re-decrypts the whole history,
+  // and are wiped on workspace lock / logout / user-device change.
+  const decryptedMessageCacheRef = useRef<Map<string, ChatMessage>>(chatMessageCache<ChatMessage>());
+  const decryptedControlCacheRef = useRef<Map<string, SecureControlMessage & { sender_user_id: string; created_at: string }>>(
+    chatControlCache<SecureControlMessage & { sender_user_id: string; created_at: string }>(),
+  );
   const decryptInFlightRef = useRef<Map<string, Promise<DecryptedChatEnvelope>>>(new Map());
   const syncInFlightRef = useRef<Set<string>>(new Set());
   const syncedEnvelopeTargetsRef = useRef<Set<string>>(new Set());
   const searchRequestRef = useRef(0);
   const messageLoadSeqRef = useRef(0);
   const threatTelemetryRef = useRef<Set<string>>(new Set());
+  const expiredAttachmentCleanupRef = useRef<Set<string>>(new Set());
   const typingPulseRef = useRef<number>(0);
 
   // Contacts shown in the panel: apply optimistic overrides on top of the live
@@ -1070,7 +1077,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     };
   }, [activeConversation, sendableRecipientDevices]);
 
-  const call = useSecureCall({ userId, deviceId: localDeviceId ?? "", conversationId: activeConversation?.id ?? null, peer: callPeer });
+  // App-level call engine (CallProvider): incoming calls ring on every page;
+  // this page only supplies the outgoing-call target.
+  const call = useCall();
 
   useEffect(() => {
     setProtectionConfig(readChatProtectionConfig(userId));
@@ -1078,8 +1087,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setConversationStateOverrides({});
     setLocalDeviceId(null);
     setLocalSignedPrekeyId(null);
-    decryptedMessageCacheRef.current.clear();
-    decryptedControlCacheRef.current.clear();
+    // Plaintext caches are module-scoped: only wiped when the OWNER changes
+    // (different user/device), not on every page mount — that reuse is what
+    // makes returning to the chat instant instead of a full re-decrypt.
+    ensureChatCacheOwner(userId, null);
     decryptInFlightRef.current.clear();
     syncInFlightRef.current.clear();
     syncedEnvelopeTargetsRef.current.clear();
@@ -1128,11 +1139,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }, [userId]);
 
   useEffect(() => {
-    decryptedMessageCacheRef.current.clear();
-    decryptedControlCacheRef.current.clear();
+    if (!localDeviceId) return;
+    ensureChatCacheOwner(userId, localDeviceId);
     decryptInFlightRef.current.clear();
     syncInFlightRef.current.clear();
     syncedEnvelopeTargetsRef.current.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localDeviceId]);
 
   useEffect(() => {
@@ -1459,7 +1471,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
   }
 
-  async function hydrateMessageRows(rows: MessageEnvelopeRow[], userStates: Map<string, MessageUserState>): Promise<ChatMessage[]> {
+  async function hydrateMessageRows(
+    rows: MessageEnvelopeRow[],
+    userStates: Map<string, MessageUserState>,
+    onPartial?: (messages: ChatMessage[]) => void,
+  ): Promise<ChatMessage[]> {
     const groups = new Map<string, MessageEnvelopeRow[]>();
     rows
       .filter((row) => !row.deleted_at)
@@ -1471,7 +1487,32 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const hydrated: ChatMessage[] = [];
     const controls: Array<SecureControlMessage & { sender_user_id: string; created_at: string }> = [];
     const decryptDeviceId = localDeviceId ?? currentDevice?.device_id ?? null;
-    for (const [groupId, groupRows] of groups) {
+
+    // Controls (edits/reactions) are re-applied on every partial flush; both
+    // operations are idempotent per (actor, target), so repeats are safe.
+    const applyControlsAndSort = (): ChatMessage[] => {
+      const byId = new Map(hydrated.map((item) => [item.client_message_id, item]));
+      controls.forEach((control) => {
+        const target = byId.get(control.target_client_message_id);
+        if (!target) return;
+        if (control.type === "reaction") {
+          const withoutPrevious = target.reactions.filter((reaction) => reaction.actor_user_id !== control.sender_user_id);
+          target.reactions = [...withoutPrevious, {
+            actor_user_id: control.sender_user_id,
+            reaction: control.reaction,
+            created_at: control.created_at,
+          }];
+        }
+        if (control.type === "edit" && target.sender_user_id === control.sender_user_id) {
+          target.plaintext = control.body;
+          target.edited_at = control.created_at;
+          target.threat = assessThreatLocally(control.body);
+        }
+      });
+      return [...hydrated].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    };
+
+    const hydrateGroup = async (groupId: string, groupRows: MessageEnvelopeRow[]): Promise<void> => {
       const orderedRows = [...groupRows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
       const candidateRows = orderedRows.filter((row) => row.recipient_user_id === userId);
       const exactLocalRow = decryptDeviceId
@@ -1496,17 +1537,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       const cachedControl = decryptedControlCacheRef.current.get(groupId);
       if (cachedControl) {
         controls.push(cachedControl);
-        continue;
+        return;
       }
       const cached = decryptedMessageCacheRef.current.get(groupId);
       if (cached) {
-        if (!isMine && (cached.read_once || cached.view_once) && state?.first_read_at) continue;
+        if (!isMine && (cached.read_once || cached.view_once) && state?.first_read_at) return;
         hydrated.push({
           ...cached,
           row_ids: orderedRows.map((row) => row.id),
           can_delete: isMine,
         });
-        continue;
+        return;
       }
 
       if (decryptRows.length > 0) {
@@ -1543,6 +1584,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           const isExpired = Boolean(secureMessage.lifecycle.expires_at && new Date(secureMessage.lifecycle.expires_at).getTime() <= Date.now());
           const isLocked = Boolean(secureMessage.lifecycle.available_at && new Date(secureMessage.lifecycle.available_at).getTime() > Date.now());
           if (state?.hidden_at || isExpired || (!localRowIsMine && (secureMessage.lifecycle.read_once || secureMessage.lifecycle.view_once) && state?.first_read_at)) {
+            // Expired attachments: the storage path only exists inside the
+            // decrypted plaintext, so the sender's client is the one place the
+            // ciphertext blob can be cleaned up once the message expires.
+            const expiredPath = secureMessage.attachment?.storage_path;
+            if (isExpired && localRowIsMine && expiredPath && !expiredAttachmentCleanupRef.current.has(expiredPath)) {
+              expiredAttachmentCleanupRef.current.add(expiredPath);
+              void supabase.storage.from("messaging-files").remove([expiredPath]).catch(() => undefined);
+            }
             handledGroup = true;
             break;
           }
@@ -1602,7 +1651,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           }
         }
         }
-        if (handledGroup) continue;
+        if (handledGroup) return;
         const failedRow = decryptRows[0];
         const failedRowSenderUserId = originalSenderUserId(failedRow);
           hydrated.push({
@@ -1666,41 +1715,49 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           can_delete: false,
         });
       }
+    };
+
+    // Newest-first, bounded-parallel hydration. The visible tail of the
+    // conversation decrypts and flushes to the UI first, and up to `chunkSize`
+    // envelope decrypts overlap instead of serializing one Tauri round-trip at
+    // a time — this is what turned "Loading encrypted history..." from tens of
+    // seconds into a progressive render. Chunk size stays modest so parallel
+    // decrypts don't monopolize the Rust async worker pool.
+    const entries = [...groups.entries()].sort((a, b) => {
+      const newest = (list: MessageEnvelopeRow[]) =>
+        list.reduce((max, row) => Math.max(max, new Date(row.created_at).getTime()), 0);
+      return newest(b[1]) - newest(a[1]);
+    });
+    const chunkSize = 6;
+    for (let index = 0; index < entries.length; index += chunkSize) {
+      const chunk = entries.slice(index, index + chunkSize);
+      await Promise.all(chunk.map(([groupId, groupRows]) => hydrateGroup(groupId, groupRows)));
+      if (onPartial && index + chunkSize < entries.length) onPartial(applyControlsAndSort());
     }
 
-    const byId = new Map(hydrated.map((item) => [item.client_message_id, item]));
-    controls.forEach((control) => {
-      const target = byId.get(control.target_client_message_id);
-      if (!target) return;
-      if (control.type === "reaction") {
-        const withoutPrevious = target.reactions.filter((reaction) => reaction.actor_user_id !== control.sender_user_id);
-        target.reactions = [...withoutPrevious, {
-          actor_user_id: control.sender_user_id,
-          reaction: control.reaction,
-          created_at: control.created_at,
-        }];
-      }
-      if (control.type === "edit" && target.sender_user_id === control.sender_user_id) {
-        target.plaintext = control.body;
-        target.edited_at = control.created_at;
-        target.threat = assessThreatLocally(control.body);
-      }
-    });
-
-    return hydrated.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    return applyControlsAndSort();
   }
 
-  async function persistMessageUserStates(messages: ChatMessage[]) {
+  async function persistMessageUserStates(messages: ChatMessage[], existingStates?: Map<string, MessageUserState>) {
     if (!activeConversation) return;
+    const readAt = new Date().toISOString();
     const rows = messages
       .filter((item) => item.status === "decrypted")
       .map((item) => {
-        const markAsRead = item.sender_user_id !== userId && (item.read_once || (item.view_once && !item.attachment));
+        // Rendering a decrypted message on screen is the read event, so every
+        // peer message is marked read here (this is what clears the unread
+        // bubbles). The one exception: view-once attachments only burn when the
+        // recipient actually opens them (markViewOnceAttachmentOpened), because
+        // first_read_at doubles as the burn trigger for ephemeral messages.
+        // An already-recorded first_read_at is preserved so re-renders never
+        // reset or bump the original read timestamp.
+        const existingReadAt = existingStates?.get(item.client_message_id)?.first_read_at ?? null;
+        const markAsRead = item.sender_user_id !== userId && !(item.view_once && item.attachment);
         return {
           user_id: userId,
           conversation_id: activeConversation.id,
           client_message_id: item.client_message_id,
-          first_read_at: markAsRead ? new Date().toISOString() : null,
+          first_read_at: existingReadAt ?? (markAsRead ? readAt : null),
           verification_state: item.authenticated ? "valid" : "tampered",
           threat_score: item.threat.score,
           threat_flags: item.threat.flags,
@@ -1778,7 +1835,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         .select("id,conversation_id,client_message_id,parent_client_message_id,sender_user_id,sender_device_id,recipient_user_id,recipient_device_id,message_kind,sealed_sender_envelope,ciphertext,nonce,auth_tag,aad,ratchet_counter,suite,lifecycle,verification_state,threat_result,deleted_at,created_at")
         .eq("conversation_id", activeConversation.id)
         .is("deleted_at", null)
-        .order("created_at", { ascending: true })
+        // Newest 250 — ascending+limit returned the OLDEST page, so long
+        // conversations could never even see their recent messages.
+        .order("created_at", { ascending: false })
         .limit(250),
         supabase
           .from("messaging_message_user_states")
@@ -1820,12 +1879,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         threat_score: Number(row.threat_score ?? 0),
         threat_flags: Array.isArray(row.threat_flags) ? row.threat_flags.map(String) : [],
       } satisfies MessageUserState]));
-      const hydrated = await hydrateMessageRows(rows, userStates);
+      // Progressive render: each decrypted chunk flushes to the screen
+      // immediately (newest messages first) instead of holding the whole
+      // conversation behind one long "Loading encrypted history..." gate.
+      const hydrated = await hydrateMessageRows(rows, userStates, (partial) => {
+        if (messageLoadSeqRef.current !== loadSeq) return;
+        setChatMessages(partial);
+        setMessagesLoading(false);
+      });
       // Ignore a load that has been superseded by a newer conversation switch,
       // so a slow earlier load can never overwrite the conversation now on screen.
       if (messageLoadSeqRef.current !== loadSeq) return;
       setChatMessages(hydrated);
-      persistMessageUserStates(hydrated).catch(() => undefined);
+      persistMessageUserStates(hydrated, userStates).catch(() => undefined);
     } catch (error) {
       // The realtime subscription reloads on every envelope change, so a transient
       // reload failure must not flash a banner over an already-rendered conversation;
@@ -1894,6 +1960,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setChatMessages((items) => items.filter((item) => !item.expires_at || new Date(item.expires_at).getTime() > now));
     }, 5000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  // Disappearing messages must not leave ciphertext at rest: hard-delete
+  // expired envelope rows server-side once per chat session (best-effort —
+  // the migration may not be applied yet).
+  useEffect(() => {
+    supabase.rpc("purge_expired_messaging_envelopes").then(() => undefined, () => undefined);
   }, []);
 
   const loadChatTelemetry = useCallback(async () => {
@@ -2628,6 +2701,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             [chatMessage.client_message_id]: URL.createObjectURL(blob),
           };
         });
+        // "Listen once": decrypting a view-once voice note is the view event,
+        // so it burns the same way an opened view-once file does.
+        await markViewOnceAttachmentOpened(chatMessage);
       } else {
         downloadBlob(attachment.name, blob);
         await markViewOnceAttachmentOpened(chatMessage);
@@ -2979,7 +3055,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
       setStatus("Message sealed");
       resetComposeControls();
-      await loadConversationMessages();
+      // The local echo is already on screen; the reload reconciles server rows
+      // in the background. Awaiting it here kept the composer stuck on
+      // "Sending" for the whole history round-trip.
+      void loadConversationMessages();
       onSent();
     } catch (err) {
       // Restore the text so a failed send never silently loses the message,
@@ -3286,9 +3365,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           </div>
           <div className="flex items-center gap-2">
             <CallButton
-              disabled={!call.supported || !callPeer || call.state.phase !== "idle" && call.state.phase !== "ended"}
+              disabled={!call.supported || !callPeer || !activeConversation || call.state.phase !== "idle" && call.state.phase !== "ended"}
               title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
-              onClick={() => void call.startCall()}
+              onClick={() => { if (callPeer && activeConversation) void call.startCall(callPeer, activeConversation.id); }}
             />
             <span className="status-pill bg-emerald-50 text-emerald-600">{status}</span>
           </div>
@@ -3321,7 +3400,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 <div key={chatMessage.client_message_id} className={`flex items-start gap-2 ${mine ? "justify-end" : "justify-start"}`}>
                   {!mine && (
                     <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-violet-600 shadow-tight">
-                      {activeContact ? visibleContactName(activeContact).slice(0, 2).toUpperCase() : "QG"}
+                      {(activeContact
+                        ? visibleContactName(activeContact)
+                        : activeConversation
+                          ? conversationTitle(activeConversation)
+                          : "QG").slice(0, 2).toUpperCase()}
                     </div>
                   )}
                   <div className={`group relative max-w-[74%] ${mine ? "order-1" : ""}`}>
@@ -3521,7 +3604,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                   if (event.target.value) setDisappearSeconds(0);
                 }}
                 type="datetime-local"
-                min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+                min={new Date(Date.now() + 60_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16)}
                 className="bg-transparent outline-none disabled:cursor-not-allowed"
                 aria-label="Exact disappearance date and time"
                 title="Exact disappearance date and time"
@@ -3662,8 +3745,42 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                     placeholder="Search a user to add"
                   />
                 </div>
-                <button onClick={searchUsers} className="icon-button" title="Search"><QrCode size={16} /></button>
+                <button
+                  onClick={() => {
+                    setShowMyQrPayload((value) => !value);
+                    setMyQrPayloadCopied(false);
+                  }}
+                  className={`icon-button ${showMyQrPayload ? "border-violet-300 bg-violet-50 text-violet-600" : ""}`}
+                  title="Show my contact QR payload"
+                  aria-label="Show my contact QR payload"
+                >
+                  <QrCode size={16} />
+                </button>
               </div>
+              {showMyQrPayload && (
+                <div className="mt-2 rounded-lg border border-violet-100 bg-violet-50/60 p-3">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-violet-600">My contact QR payload</div>
+                  <div className="mt-1.5 break-all rounded-md border border-line bg-white px-2 py-1.5 font-mono text-xs text-ink-700">
+                    qguard-user:{userId}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`qguard-user:${userId}`).then(
+                        () => setMyQrPayloadCopied(true),
+                        () => setMyQrPayloadCopied(false),
+                      );
+                    }}
+                    className="mt-2 w-full rounded-lg bg-violet-600 py-1.5 text-xs font-bold text-white transition hover:bg-violet-700"
+                  >
+                    {myQrPayloadCopied ? "Copied — share it securely" : "Copy payload"}
+                  </button>
+                  <div className="mt-2 text-[11px] leading-4 text-ink-500">
+                    Share this payload (or its QR code) with a teammate. Pasting it into the search box above resolves the exact
+                    account — no name lookup, no typos.
+                  </div>
+                </div>
+              )}
               {blockedContactCount > 0 && (
                 <div className="mt-2 text-[11px] font-semibold text-rose-500">{blockedContactCount} blocked contact{blockedContactCount === 1 ? "" : "s"}</div>
               )}
@@ -3990,15 +4107,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         </div>
       </div>
     )}
-    {call.state.phase === "ringing" && (
-      <IncomingCallModal callerName={callPeer?.displayName ?? "Contact"} onAccept={() => void call.accept()} onReject={() => call.reject()} />
-    )}
-    {["calling", "connecting", "connected"].includes(call.state.phase) && (
-      <InCallOverlay state={call.state} localStream={call.localStream} remoteStream={call.remoteStream}
-        micEnabled={call.micEnabled} cameraEnabled={call.cameraEnabled} peerName={callPeer?.displayName ?? "Contact"}
-        quality={call.quality} onSetQuality={(q) => void call.setQuality(q)}
-        onHangup={() => call.hangup()} onToggleMic={() => call.toggleMic()} onToggleCamera={() => call.toggleCamera()} />
-    )}
+    {/* Incoming-call modal and in-call overlay render app-wide in CallProvider. */}
     </>
   );
 }

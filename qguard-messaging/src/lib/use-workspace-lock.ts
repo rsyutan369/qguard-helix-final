@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
 import { safeInvoke } from "@/lib/tauri";
 import { isNativeDialogOpen } from "@/lib/native-dialog-guard";
 
@@ -99,11 +100,15 @@ export function useWorkspaceLock(userId: string | null) {
   );
 
   const lock = useCallback(async (scope: WorkspaceScope) => {
+    // Locking chat must also wipe the in-memory decrypted history cache — the
+    // Rust side drops its cache too; plaintext never outlives the lock.
+    if (scope === "chat") clearChatPlaintextCaches();
     const result = await safeInvoke<ScopeStatus>("workspace_lock", { scope });
     setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), [scope]: result }));
   }, []);
 
   const lockAll = useCallback(async () => {
+    clearChatPlaintextCaches();
     await safeInvoke("workspace_lock_all", undefined, null);
     setStatus((current) =>
       current

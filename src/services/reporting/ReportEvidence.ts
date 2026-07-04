@@ -47,6 +47,7 @@ import {
   type ReportBranding,
   type ReportFinding,
   type ReportKind,
+  type ReportScope,
   type ReportKpi,
   type ReportTable,
   type RiskCategory,
@@ -188,7 +189,7 @@ function internetFacingLabels(snapshot: QuantumReadinessSnapshot): string[] {
  * single key. Prevents a single scanned domain from being counted as several
  * distinct "affected assets" in finding-group consolidation.
  */
-function normalizeAssetKey(asset: string): string {
+export function normalizeAssetKey(asset: string): string {
   return (asset || '')
     .toLowerCase()
     .trim()
@@ -1784,10 +1785,22 @@ export function buildReportModel(
   branding: ReportBranding,
   kind: ReportKind,
   generatedBy: string,
+  scope?: ReportScope,
 ): EnterpriseAssessmentReport {
   const now = new Date();
   const s = snapshot.scores;
   const inv = snapshot.inventory;
+  // Asset scope — when the caller pre-scoped the snapshot (ReportEngine /
+  // reports API) it passes the matching scope block; otherwise the report
+  // covers the full assessment.
+  const reportScope: ReportScope = scope ?? {
+    type: 'full',
+    selectedAssetCount: inv.assetsAssessed,
+    totalAssetCount: inv.assetsAssessed,
+    assets: [],
+    note: `This report covers the full assessment scope (${inv.assetsAssessed} discovered asset${inv.assetsAssessed === 1 ? '' : 's'}).`,
+    methodology: '',
+  };
 
   const domains = buildReadinessDomains(snapshot);
   // Evidence-filtered, calibrated risk decomposition — the single source that
@@ -1853,7 +1866,7 @@ export function buildReportModel(
   });
 
   const executiveSummary = snapshot.hasData
-    ? `As of ${format(now, 'PPP')}, ${branding.companyName} holds a quantum readiness score of ${s.quantumReadiness}/100 (${s.quantumReadinessLevel}) against a quantum risk score of ${s.quantumRisk}/100 (${s.quantumRiskLevel}). A funded ${snapshot.estimates.migrationTimelineWeeks || 'TBD'}-week migration programme can raise readiness to a target of ${executiveBlock.targetReadiness}/100 and reduce quantum risk by ${executiveBlock.expectedRiskReductionPct}%. Discovery assessed ${inv.assetsAssessed} cryptographic assets, identifying ${inv.quantumVulnerableAssets} as quantum-vulnerable with ${s.pqcAdoption}% PQC adoption. Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} with an estimated quantum exposure window of ${executiveBlock.quantumExposureWindow}. ${executiveBlock.executiveRecommendation}`
+    ? `As of ${format(now, 'PPP')}, ${branding.companyName} holds a quantum readiness score of ${s.quantumReadiness}/100 (${s.quantumReadinessLevel}) against a quantum risk score of ${s.quantumRisk}/100 (${s.quantumRiskLevel}). A funded ${snapshot.estimates.migrationTimelineWeeks || 'TBD'}-week migration programme can raise readiness to a target of ${executiveBlock.targetReadiness}/100 and reduce quantum risk by ${executiveBlock.expectedRiskReductionPct}%. Discovery assessed ${inv.assetsAssessed} cryptographic assets, identifying ${inv.quantumVulnerableAssets} as quantum-vulnerable with ${s.pqcAdoption}% PQC adoption. Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} with an estimated quantum exposure window of ${executiveBlock.quantumExposureWindow}. ${executiveBlock.executiveRecommendation}${reportScope.type === 'custom' ? ` Report scope: ${reportScope.selectedAssetCount} of ${reportScope.totalAssetCount} discovered assets selected by the report owner — every figure in this report reflects the selected scope only.` : ''}`
     : `No assessment evidence is available for ${branding.companyName} yet. Run a PQC discovery scan to populate this report. All sections below reflect an empty evidence state.`;
 
   const distribution = snapshot.riskDistribution;
@@ -1869,6 +1882,7 @@ export function buildReportModel(
       tenantScoped: true,
       sourceGeneratedAt: snapshot.generatedAt,
     },
+    scope: reportScope,
     branding,
     executiveSummary,
     executiveBlock,

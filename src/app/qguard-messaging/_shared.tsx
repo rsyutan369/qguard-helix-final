@@ -11,6 +11,7 @@ import { motion } from 'motion/react';
 import {
   ArrowRight,
   ChevronDown,
+  Download,
   Github,
   Globe,
   Linkedin,
@@ -121,6 +122,41 @@ export function GhostButton({
   );
   if (to) return <Link to={to} className={cls}>{children}</Link>;
   return <a href={href ?? '#'} className={cls}>{children}</a>;
+}
+
+/* --------------------------------------------------------------- download --- */
+
+/**
+ * Windows installer served from public/downloads (built by `npx tauri build`
+ * in qguard-messaging — see Qguard_Wiki/Messaging_Installer_Distribution).
+ * Update `sizeMb` when shipping a new installer build.
+ */
+export const MESSAGING_INSTALLER = {
+  href: '/downloads/QGuard-Messaging-Setup.exe',
+  version: '1.1.0',
+  sizeMb: 4,
+  requirements: 'Windows 10/11 · 64-bit',
+};
+
+/** Primary "Download for Windows" CTA used on all QGuard Messaging pages. */
+export function DownloadButton({ className }: { className?: string }) {
+  return (
+    <a
+      href={MESSAGING_INSTALLER.href}
+      download
+      title={`QGuard Messaging v${MESSAGING_INSTALLER.version} · ${MESSAGING_INSTALLER.requirements}`}
+      className={cn(
+        'group inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-sm font-bold uppercase tracking-wide !text-white [&_*]:!text-white no-underline shadow-[0_12px_34px_rgba(37,99,235,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0',
+        className,
+      )}
+    >
+      <Download className="h-4 w-4 transition-transform group-hover:translate-y-0.5" />
+      Download for Windows
+      <span className="ml-1 hidden rounded bg-white/15 px-2 py-0.5 font-mono text-[10px] font-bold normal-case tracking-normal sm:inline">
+        v{MESSAGING_INSTALLER.version} · ~{MESSAGING_INSTALLER.sizeMb} MB
+      </span>
+    </a>
+  );
 }
 
 /* ------------------------------------------------------------- primitives --- */

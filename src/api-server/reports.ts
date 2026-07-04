@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { getServerUser, getToken } from '@/lib/supabase-server'
 import { buildSnapshot } from './quantum-readiness'
 import { buildReportModel } from '@/services/reporting/ReportEvidence'
+import { buildReportScope, scopeSnapshotToAssets } from '@/services/reporting/ReportScope'
 import { brandingSchema, REPORT_FORMATS, REPORT_KINDS, type ReportKind } from '@/services/reporting/schemas/ReportSchema'
 
 /**
@@ -42,8 +43,15 @@ router.post('/generate', async (req: Request, res: Response) => {
     const kind: ReportKind = REPORT_KINDS.includes(body.kind) ? body.kind : 'executive'
     const branding = brandingSchema.parse(body.branding || {})
 
+    // Optional asset scope — names/keys of assets the report should cover.
+    const scopeAssets: string[] | null = Array.isArray(body.scopeAssets)
+      ? body.scopeAssets.map((a: unknown) => String(a)).filter(Boolean)
+      : null
+
     const snapshot = await buildSnapshot(token!, user!.id)
-    const model = buildReportModel(snapshot, branding, kind, user!.email || 'QGuard Helix')
+    const scope = buildReportScope(snapshot, scopeAssets?.length ? scopeAssets : null)
+    const effectiveSnapshot = scope.type === 'custom' ? scopeSnapshotToAssets(snapshot, scopeAssets!) : snapshot
+    const model = buildReportModel(effectiveSnapshot, branding, kind, user!.email || 'QGuard Helix', scope)
 
     return res.json({
       data: model,

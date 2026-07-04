@@ -3,6 +3,7 @@ import {
   BadgeCheck,
   Camera,
   CheckCircle2,
+  Cpu,
   Download,
   KeyRound,
   LockKeyhole,
@@ -20,9 +21,88 @@ import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
+import { safeInvoke } from "@/lib/tauri";
 import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
 import type { ThemeMode } from "@/lib/use-theme";
 import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
+
+interface GpuSafeModeStatus {
+  active: boolean;
+  appliedThisSession: boolean;
+  enabledAt: string | null;
+  reason: string | null;
+}
+
+/**
+ * Shows whether video calls run with the normal GPU-composited UI or in the
+ * self-healing "GPU safe mode" (full software rendering) that engages after an
+ * unexpected shutdown during a call, and lets the user return to hardware
+ * rendering once their graphics driver is fixed. Hidden outside the desktop app.
+ */
+function CallDeviceProtectionCard() {
+  const [gpuStatus, setGpuStatus] = useState<GpuSafeModeStatus | null>(null);
+  const [restartNeeded, setRestartNeeded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void safeInvoke<GpuSafeModeStatus | null>("call_gpu_safe_mode_status", undefined, null)
+      .then(setGpuStatus)
+      .catch(() => setGpuStatus(null));
+  }, []);
+
+  if (!gpuStatus) return null;
+
+  const exitSafeMode = async () => {
+    setBusy(true);
+    try {
+      const next = await safeInvoke<GpuSafeModeStatus | null>("call_gpu_safe_mode_clear", undefined, null);
+      if (next) setGpuStatus(next);
+      setRestartNeeded(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enabledAt = gpuStatus.enabledAt ? new Date(gpuStatus.enabledAt).toLocaleString() : null;
+
+  return (
+    <section className="shell-card p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-bold text-ink-950"><Cpu size={18} /> Call Device Protection</div>
+        <span className={`status-pill ${gpuStatus.active ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-600"}`}>
+          <ShieldCheck size={12} /> {gpuStatus.active ? "GPU safe mode" : "Protected"}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-ink-600">
+        Video calls always run on crash-proof software codecs, so a faulty graphics driver can never freeze this device.
+        If the app ever shuts down unexpectedly during a call, the next launch also draws the whole interface in software
+        (GPU safe mode) as an extra safeguard.
+      </p>
+      {gpuStatus.active && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          <div className="font-semibold">GPU safe mode is on{enabledAt ? ` (since ${enabledAt})` : ""}.</div>
+          <p className="mt-1 text-[13px]">
+            {gpuStatus.reason ?? "The app shut down unexpectedly during a call."} Update your graphics driver
+            (Intel, NVIDIA, or AMD — via Windows Update or the manufacturer's tool) before returning to hardware rendering.
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void exitSafeMode()}
+            className="mt-3 rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-60"
+          >
+            I've updated my driver — return to hardware rendering
+          </button>
+        </div>
+      )}
+      {restartNeeded && (
+        <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
+          Done — hardware rendering returns the next time you open QGuard Messaging.
+        </div>
+      )}
+    </section>
+  );
+}
 
 interface SettingsPageProps {
   theme: ThemeMode;
@@ -655,6 +735,8 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
           </button>
         </div>
       </section>
+
+      <CallDeviceProtectionCard />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
         <section className="grid gap-4">

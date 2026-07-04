@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use base64::Engine;
 use serde::Serialize;
 use tauri::State;
@@ -109,6 +111,124 @@ pub fn call_callee_setup(
     Ok(setup)
 }
 
+// ---------------------------------------------------------------------------
+// GPU freeze watchdog / safe mode
+//
+// On some Windows machines (seen on Intel Iris Xe with outdated drivers) the
+// GPU driver can wedge during a video call and freeze the whole machine so
+// hard that only a power cut recovers it — nothing is ever logged. The media
+// pipeline already runs on software codecs (see `run()` in lib.rs), but as a
+// last line of defense the frontend sets a marker file while a call's media
+// pipeline is live and clears it on teardown. If the app starts and the
+// marker is still present, the previous session died mid-call (freeze, crash,
+// power loss), and we permanently switch WebView2 to full software rendering
+// (`--disable-gpu`) until the user opts back in from Settings after fixing
+// their graphics driver. A graceful window close also clears the marker (see
+// `on_window_event`), so normal quits never trip the watchdog.
+// ---------------------------------------------------------------------------
+
+const CALL_ACTIVE_MARKER: &str = "call-active.marker";
+const GPU_SAFE_MODE_FLAG: &str = "gpu-safe-mode.flag";
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuSafeModeStatus {
+    /// The safe-mode flag file exists; software rendering applies now or on next launch.
+    pub active: bool,
+    /// The current process actually launched WebView2 with `--disable-gpu`.
+    pub applied_this_session: bool,
+    pub enabled_at: Option<String>,
+    pub reason: Option<String>,
+}
+
+fn call_marker_path(dir: &Path) -> PathBuf {
+    dir.join(CALL_ACTIVE_MARKER)
+}
+
+fn gpu_safe_mode_path(dir: &Path) -> PathBuf {
+    dir.join(GPU_SAFE_MODE_FLAG)
+}
+
+pub fn write_call_marker(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(call_marker_path(dir), chrono::Utc::now().to_rfc3339());
+}
+
+pub fn clear_call_marker(dir: &Path) {
+    let _ = std::fs::remove_file(call_marker_path(dir));
+}
+
+/// Startup check, called before the WebView2 environment is created. Converts
+/// a stale call marker (unclean shutdown mid-call) into the persistent safe-mode
+/// flag. Returns whether this launch must add `--disable-gpu`. Best-effort IO:
+/// a failure here must never stop the app from starting.
+pub fn gpu_safe_mode_boot_check(dir: &Path) -> bool {
+    let marker = call_marker_path(dir);
+    if marker.exists() {
+        let flag = serde_json::json!({
+            "enabledAt": chrono::Utc::now().to_rfc3339(),
+            "reason": "The app shut down unexpectedly during a call, so video calls now use device-safe software rendering.",
+        });
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(gpu_safe_mode_path(dir), flag.to_string());
+        let _ = std::fs::remove_file(&marker);
+    }
+    gpu_safe_mode_path(dir).exists()
+}
+
+fn disable_gpu_applied() -> bool {
+    // Token match: `--disable-gpu-memory-buffer-video-frames` must NOT count.
+    std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+        .map(|args| args.split_whitespace().any(|t| t == "--disable-gpu"))
+        .unwrap_or(false)
+}
+
+pub fn read_gpu_safe_mode(dir: &Path) -> GpuSafeModeStatus {
+    let path = gpu_safe_mode_path(dir);
+    let mut enabled_at = None;
+    let mut reason = None;
+    let active = path.exists();
+    if active {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                enabled_at = value.get("enabledAt").and_then(|v| v.as_str()).map(String::from);
+                reason = value.get("reason").and_then(|v| v.as_str()).map(String::from);
+            }
+        }
+    }
+    GpuSafeModeStatus { active, applied_this_session: disable_gpu_applied(), enabled_at, reason }
+}
+
+// The watchdog commands deliberately skip `require_auth`: they carry no data,
+// and the end marker must clear during teardown even after a logout mid-call —
+// otherwise the next launch would enter safe mode spuriously.
+
+#[tauri::command]
+pub fn call_watchdog_begin(state: State<'_, AppState>) -> Result<()> {
+    write_call_marker(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn call_watchdog_end(state: State<'_, AppState>) -> Result<()> {
+    clear_call_marker(&state.data_dir);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn call_gpu_safe_mode_status(state: State<'_, AppState>) -> Result<GpuSafeModeStatus> {
+    Ok(read_gpu_safe_mode(&state.data_dir))
+}
+
+/// Settings opt-out: takes effect on the next launch (the WebView2 environment
+/// args are fixed at process start).
+#[tauri::command]
+pub fn call_gpu_safe_mode_clear(state: State<'_, AppState>) -> Result<GpuSafeModeStatus> {
+    let _ = std::fs::remove_file(gpu_safe_mode_path(&state.data_dir));
+    state.audit_info("call_gpu_safe_mode_clear", "GPU safe mode disabled from Settings");
+    Ok(read_gpu_safe_mode(&state.data_dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +255,49 @@ mod tests {
         assert_eq!(caller.safety_number.split('-').count(), 5);
         s_caller.zeroize();
         s_callee.zeroize();
+    }
+
+    fn watchdog_tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qguard-watchdog-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn boot_check_is_clean_without_marker_or_flag() {
+        let dir = watchdog_tmp_dir("clean");
+        assert!(!gpu_safe_mode_boot_check(&dir));
+        assert!(!read_gpu_safe_mode(&dir).active);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_call_marker_promotes_to_persistent_safe_mode() {
+        let dir = watchdog_tmp_dir("promote");
+        write_call_marker(&dir);
+        // Simulated relaunch after a mid-call freeze/crash.
+        assert!(gpu_safe_mode_boot_check(&dir), "safe mode must engage");
+        assert!(!call_marker_path(&dir).exists(), "marker must be consumed");
+        let status = read_gpu_safe_mode(&dir);
+        assert!(status.active);
+        assert!(status.enabled_at.is_some());
+        assert!(status.reason.is_some());
+        // Safe mode persists across further clean launches...
+        assert!(gpu_safe_mode_boot_check(&dir));
+        // ...until the user opts out.
+        let _ = std::fs::remove_file(gpu_safe_mode_path(&dir));
+        assert!(!gpu_safe_mode_boot_check(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graceful_teardown_clears_marker_and_never_trips_safe_mode() {
+        let dir = watchdog_tmp_dir("graceful");
+        write_call_marker(&dir);
+        clear_call_marker(&dir);
+        assert!(!gpu_safe_mode_boot_check(&dir));
+        assert!(!read_gpu_safe_mode(&dir).active);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

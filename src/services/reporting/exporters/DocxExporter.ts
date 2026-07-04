@@ -108,6 +108,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
     para(`Report ID: ${meta.id}`, MUTED),
     para(`Version: ${meta.version}  |  Generated: ${new Date(meta.generatedAt).toLocaleString()}  |  By: ${meta.generatedBy}`, MUTED),
     para(`Report Owner: ${branding.reportOwner || 'Evidence Not Available'}  |  Reviewer: ${branding.reviewer || 'Evidence Not Available'}`, MUTED),
+    para(`Assessment Scope: ${report.scope.type === 'custom' ? `${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets (custom selection)` : `Full assessment (${report.scope.totalAssetCount} asset${report.scope.totalAssetCount === 1 ? '' : 's'})`}`, MUTED),
   );
 
   const kpiTable: ReportTable = { title: 'KPIs', columns: ['KPI', 'Value', 'Level'], rows: report.kpis.map((kpi) => [kpi.label, `${kpi.value}${kpi.unit || ''}`, kpi.level || '—']) };
@@ -152,6 +153,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   ] };
   const governanceTable: ReportTable = { title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) };
   const topTable: ReportTable = { title: 'Top 5', columns: ['#', 'Top Risk', 'Recommended Action'], rows: Array.from({ length: Math.max(ex.topRisks.length, ex.topActions.length, 1) }).map((_, i) => [i + 1, ex.topRisks[i] || '-', ex.topActions[i] || '-']) };
+  const scopeTable: ReportTable = { title: 'Assets In Scope', columns: ['Asset', 'Type', 'Environment', 'Risk', 'Posture'], rows: report.scope.assets.map((a) => [a.name, a.assetType, a.environment, `${a.riskScore}/100`, a.posture]) };
 
   // Report Intelligence (Reports_Enhancements_3) tables
   const methodologyTable: ReportTable = { title: 'Risk Methodology', columns: ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution (Risk×Weight)', 'Share'], rows: [...report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]), ['OVERALL (Σ Contribution)', `${report.riskMethodology.overall}/100`, '100%', report.riskMethodology.overall.toFixed(1), '100%']] };
@@ -230,6 +232,9 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           ...(branding.customNotes ? [para(`Notes: ${branding.customNotes}`, MUTED)] : []),
           docTable(stateTable),
           para(`Executive Recommendation: ${ex.executiveRecommendation}`, INK),
+          heading('Assessment Scope'),
+          para(report.scope.note),
+          ...(report.scope.type === 'custom' ? [para(report.scope.methodology, MUTED), docTable(scopeTable)] : []),
           heading('Top Risks & Recommended Actions'),
           docTable(topTable),
           heading('Top Business Risks'),

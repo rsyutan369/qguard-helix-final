@@ -7,6 +7,9 @@ import {
   BadgeCheck,
   Building2,
   Calendar,
+  CheckSquare,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Eye,
   FileBarChart,
@@ -15,12 +18,14 @@ import {
   FileJson,
   ImagePlus,
   Landmark,
+  ListChecks,
   Loader2,
   Presentation,
   RefreshCw,
   Route as RouteIcon,
   ShieldCheck,
   Sparkles,
+  Square,
 } from 'lucide-react';
 import {
   Badge,
@@ -43,6 +48,7 @@ import {
 } from '../_shared';
 import { useAuth } from '@/contexts/auth-context';
 import { REPORT_TEMPLATES } from '@/services/reporting/templates';
+import { listSnapshotAssets, scopeSnapshotToAssets } from '@/services/reporting/ReportScope';
 import {
   REPORT_FORMATS,
   brandingSchema,
@@ -81,6 +87,31 @@ interface HistoryEntry {
   generatedAt: string;
   generatedBy: string;
   integrityHash: string;
+  scope?: string;
+}
+
+const ASSETS_PER_PAGE = 5;
+
+const POSTURE_META: Record<string, { label: string; color: string }> = {
+  vulnerable: { label: 'Vulnerable', color: RED },
+  pqc: { label: 'PQC-Ready', color: GREEN },
+  hybrid: { label: 'Hybrid', color: AMBER },
+  unknown: { label: 'Unclassified', color: '#94A3B8' },
+};
+
+/** Numbered pagination items — all pages when few, windowed with ellipses when many. */
+function paginationItems(current: number, total: number): Array<number | '…'> {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const keep = new Set([1, 2, total - 1, total, current - 1, current, current + 1]);
+  const pages = Array.from(keep).filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
+  const items: Array<number | '…'> = [];
+  let previous = 0;
+  for (const page of pages) {
+    if (page - previous > 1) items.push('…');
+    items.push(page);
+    previous = page;
+  }
+  return items;
 }
 
 function loadBranding(): ReportBranding {
@@ -122,9 +153,47 @@ export default function ReportCenterPage() {
   const [previewing, setPreviewing] = useState(false);
   const [schedule, setSchedule] = useState<'none' | 'daily' | 'weekly' | 'monthly' | 'quarterly'>('none');
   const [error, setError] = useState<string | null>(null);
+  // Asset scope — null means "all discovered assets" (full assessment scope).
+  const [selectedAssetKeys, setSelectedAssetKeys] = useState<Set<string> | null>(null);
+  const [assetPage, setAssetPage] = useState(1);
 
   const generatedBy = user?.email || 'QGuard Helix';
   const activeTemplate = useMemo(() => REPORT_TEMPLATES.find((t) => t.kind === kind)!, [kind]);
+
+  const assetOptions = useMemo(() => listSnapshotAssets(snapshot), [snapshot]);
+  const selectedKeys = useMemo(
+    () => (selectedAssetKeys === null ? new Set(assetOptions.map((a) => a.key)) : selectedAssetKeys),
+    [selectedAssetKeys, assetOptions],
+  );
+  const selectedCount = useMemo(() => assetOptions.filter((a) => selectedKeys.has(a.key)).length, [assetOptions, selectedKeys]);
+  const isFullScope = assetOptions.length === 0 || selectedCount === assetOptions.length;
+  // Normalised keys handed to the report engine — null when the full scope is selected.
+  const scopeKeys = useMemo(
+    () => (isFullScope ? null : assetOptions.filter((a) => selectedKeys.has(a.key)).map((a) => a.key)),
+    [isFullScope, assetOptions, selectedKeys],
+  );
+  const scopeLabel = isFullScope ? `All assets (${assetOptions.length || snapshot.inventory.assetsAssessed})` : `${selectedCount} of ${assetOptions.length} assets`;
+
+  const assetPageCount = Math.max(1, Math.ceil(assetOptions.length / ASSETS_PER_PAGE));
+  useEffect(() => {
+    setAssetPage((page) => Math.min(page, assetPageCount));
+  }, [assetPageCount]);
+  const pagedAssets = useMemo(
+    () => assetOptions.slice((assetPage - 1) * ASSETS_PER_PAGE, assetPage * ASSETS_PER_PAGE),
+    [assetOptions, assetPage],
+  );
+
+  const toggleAsset = useCallback(
+    (key: string) => {
+      setSelectedAssetKeys((current) => {
+        const base = current === null ? new Set(assetOptions.map((a) => a.key)) : new Set(current);
+        if (base.has(key)) base.delete(key);
+        else base.add(key);
+        return base;
+      });
+    },
+    [assetOptions],
+  );
 
   useEffect(() => {
     try {
@@ -161,6 +230,10 @@ export default function ReportCenterPage() {
         setError('No assessment evidence available — run a discovery scan before generating reports.');
         return;
       }
+      if (assetOptions.length > 0 && selectedCount === 0) {
+        setError('Select at least one asset in the Report Asset Scope panel to include in the report.');
+        return;
+      }
       setBusy(fmt);
       setError(null);
       try {
@@ -168,7 +241,7 @@ export default function ReportCenterPage() {
           import('@/services/reporting/ReportEngine'),
           import('@/services/reporting/ReportExporter'),
         ]);
-        const report = buildReport({ snapshot, branding, kind, generatedBy, withCharts: fmt !== 'csv' && fmt !== 'json' });
+        const report = buildReport({ snapshot, branding, kind, generatedBy, withCharts: fmt !== 'csv' && fmt !== 'json', scopeAssetKeys: scopeKeys });
         const result = await exportReport(report, fmt);
         downloadResult(result);
         const entry: HistoryEntry = {
@@ -180,6 +253,7 @@ export default function ReportCenterPage() {
           generatedAt: report.meta.generatedAt,
           generatedBy,
           integrityHash: report.integrity?.hash.slice(0, 16) || '—',
+          scope: scopeLabel,
         };
         persistHistory([entry, ...history]);
         // Auto-increment version for the next generation (Phase 10 versioning).
@@ -191,12 +265,16 @@ export default function ReportCenterPage() {
         setBusy(null);
       }
     },
-    [snapshot, branding, kind, generatedBy, history, persistHistory, updateBranding],
+    [snapshot, branding, kind, generatedBy, history, persistHistory, updateBranding, assetOptions, selectedCount, scopeKeys, scopeLabel],
   );
 
   const preview = useCallback(async () => {
     if (!snapshot.hasData) {
       setError('No assessment evidence available to preview.');
+      return;
+    }
+    if (assetOptions.length > 0 && selectedCount === 0) {
+      setError('Select at least one asset in the Report Asset Scope panel to include in the report.');
       return;
     }
     setBusy('preview');
@@ -206,27 +284,29 @@ export default function ReportCenterPage() {
         import('@/services/reporting/ReportEngine'),
         import('@/services/reporting/ReportExporter'),
       ]);
-      const report = buildReport({ snapshot, branding, kind, generatedBy });
+      const report = buildReport({ snapshot, branding, kind, generatedBy, scopeAssetKeys: scopeKeys });
       previewHtml(report);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Preview failed');
     } finally {
       setBusy(null);
     }
-  }, [snapshot, branding, kind, generatedBy]);
+  }, [snapshot, branding, kind, generatedBy, assetOptions, selectedCount, scopeKeys]);
 
   const loadPreviews = useCallback(async () => {
     if (!snapshot.hasData) return;
     setPreviewing(true);
     try {
       const { renderReportCharts } = await import('@/services/reporting/ReportCharts');
-      setPreviews(renderReportCharts(snapshot));
+      // Chart previews reflect the selected asset scope, matching the exports.
+      const chartSnapshot = scopeKeys ? scopeSnapshotToAssets(snapshot, scopeKeys) : snapshot;
+      setPreviews(renderReportCharts(chartSnapshot));
     } catch (err) {
       console.error('Chart preview failed:', err);
     } finally {
       setPreviewing(false);
     }
-  }, [snapshot]);
+  }, [snapshot, scopeKeys]);
 
   return (
     <QuantumReadinessShell
@@ -390,17 +470,146 @@ export default function ReportCenterPage() {
         </Panel>
       ) : null}
 
+      {/* Asset scope — choose which discovered assets the generated reports cover */}
+      <Panel className="p-5">
+        <SectionTitle
+          suffix={
+            assetOptions.length ? (
+              <Badge color={isFullScope ? GREEN : BLUE}>{isFullScope ? `All ${assetOptions.length} assets included` : `${selectedCount} of ${assetOptions.length} selected`}</Badge>
+            ) : (
+              <span className="text-[11px] text-white/40">No discovered assets</span>
+            )
+          }
+        >
+          Report Asset Scope
+        </SectionTitle>
+        <p className="mb-3 text-[11px] text-white/45">
+          Choose which discovered assets are included in generated reports. Scores, findings, migration waves, timelines and costs are recomputed for the
+          selected assets only, and every export records the scope for auditability.
+        </p>
+        {assetOptions.length ? (
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedAssetKeys(null)}
+                disabled={isFullScope}
+                className="inline-flex items-center gap-1.5 rounded border border-white/10 bg-white/[0.025] px-2.5 py-1.5 text-[11px] font-bold text-white/65 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ListChecks className="h-3.5 w-3.5" /> Select All
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedAssetKeys(new Set<string>())}
+                disabled={selectedCount === 0}
+                className="inline-flex items-center gap-1.5 rounded border border-white/10 bg-white/[0.025] px-2.5 py-1.5 text-[11px] font-bold text-white/65 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Square className="h-3.5 w-3.5" /> Clear Selection
+              </button>
+              {selectedCount === 0 ? (
+                <span className="text-[11px] font-semibold text-red-300/90">Select at least one asset — reports cannot be generated from an empty scope.</span>
+              ) : !isFullScope ? (
+                <span className="text-[11px] text-amber-200/80">Custom scope active — reports cover only the {selectedCount} selected asset{selectedCount === 1 ? '' : 's'}.</span>
+              ) : (
+                <span className="text-[11px] text-white/40">Full assessment scope — every discovered asset is included.</span>
+              )}
+            </div>
+
+            <div className="overflow-hidden rounded-md border border-white/8">
+              {pagedAssets.map((asset, index) => {
+                const checked = selectedKeys.has(asset.key);
+                const posture = POSTURE_META[asset.posture] || POSTURE_META.unknown;
+                return (
+                  <button
+                    key={asset.key}
+                    type="button"
+                    onClick={() => toggleAsset(asset.key)}
+                    aria-pressed={checked}
+                    className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition ${index > 0 ? 'border-t border-white/5' : ''} ${checked ? 'bg-blue-500/[0.06] hover:bg-blue-500/10' : 'bg-black/10 hover:bg-white/[0.03]'}`}
+                  >
+                    {checked ? <CheckSquare className="h-4 w-4 shrink-0 text-blue-300" /> : <Square className="h-4 w-4 shrink-0 text-white/30" />}
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate text-xs font-bold ${checked ? 'text-white/90' : 'text-white/50'}`}>{asset.name}</span>
+                      <span className="block truncate text-[10px] text-white/40 capitalize">
+                        {asset.assetType} · {asset.environment}
+                        {asset.internetFacing ? ' · internet-facing' : ''}
+                        {asset.findingsCount > 0 ? ` · ${asset.findingsCount} finding${asset.findingsCount === 1 ? '' : 's'}` : ''}
+                      </span>
+                    </span>
+                    <span className="hidden rounded px-1.5 py-0.5 text-[10px] font-black sm:inline" style={{ color: posture.color, backgroundColor: `${posture.color}1a` }}>
+                      {posture.label}
+                    </span>
+                    <span className="w-14 shrink-0 text-right font-mono text-[11px] font-bold" style={{ color: asset.riskScore >= 75 ? RED : asset.riskScore >= 50 ? ORANGE : asset.riskScore >= 25 ? AMBER : GREEN }}>
+                      {asset.riskScore}/100
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {assetPageCount > 1 ? (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-white/40">
+                  Showing {(assetPage - 1) * ASSETS_PER_PAGE + 1}–{Math.min(assetPage * ASSETS_PER_PAGE, assetOptions.length)} of {assetOptions.length} assets
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setAssetPage((page) => Math.max(1, page - 1))}
+                    disabled={assetPage === 1}
+                    aria-label="Previous page"
+                    className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-white/[0.025] text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-35"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  {paginationItems(assetPage, assetPageCount).map((item, index) =>
+                    item === '…' ? (
+                      <span key={`gap-${index}`} className="px-1 text-[11px] text-white/35">…</span>
+                    ) : (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => setAssetPage(item)}
+                        aria-current={assetPage === item ? 'page' : undefined}
+                        className={`h-7 min-w-7 rounded border px-1.5 text-[11px] font-bold transition ${assetPage === item ? 'border-blue-400/50 bg-blue-500/15 text-blue-200' : 'border-white/10 bg-white/[0.025] text-white/55 hover:border-blue-400/35 hover:text-blue-200'}`}
+                      >
+                        {item}
+                      </button>
+                    ),
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAssetPage((page) => Math.min(assetPageCount, page + 1))}
+                    disabled={assetPage === assetPageCount}
+                    aria-label="Next page"
+                    className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-white/[0.025] text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-35"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <EmptyState
+            label="No discovered assets available yet."
+            hint="Run a discovery scan to populate the asset inventory — until then, reports cover the full assessment evidence."
+          />
+        )}
+      </Panel>
+
       {/* Audit trail / history */}
       <Panel className="p-5">
         <SectionTitle suffix={<span className="text-[11px] text-white/40">Versioning & audit trail</span>}>Report History</SectionTitle>
         {history.length ? (
           <div className="overflow-x-auto">
-            <table className="min-w-[760px] w-full text-left text-xs">
+            <table className="min-w-[860px] w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-white/8 text-[9px] uppercase tracking-[0.08em] text-white/35">
                   <th className="pb-3 font-black">Report</th>
                   <th className="pb-3 font-black">Version</th>
                   <th className="pb-3 font-black">Format</th>
+                  <th className="pb-3 font-black">Scope</th>
                   <th className="pb-3 font-black">Generated By</th>
                   <th className="pb-3 font-black">Generated</th>
                   <th className="pb-3 font-black">Integrity (SHA3-256)</th>
@@ -415,6 +624,7 @@ export default function ReportCenterPage() {
                       <td className="py-3 font-medium text-white/82">{entry.name}</td>
                       <td className="py-3 font-mono">v{entry.version}</td>
                       <td className="py-3"><span className="rounded px-1.5 py-0.5 text-[10px] font-black" style={{ color: meta.color, backgroundColor: `${meta.color}1a` }}>{meta.label}</span></td>
+                      <td className="py-3 text-white/55">{entry.scope || 'All assets'}</td>
                       <td className="max-w-[160px] truncate py-3 text-white/55">{entry.generatedBy}</td>
                       <td className="py-3 text-white/50">{longDate(entry.generatedAt)}</td>
                       <td className="py-3 font-mono text-[10px] text-white/45">{entry.integrityHash}…</td>

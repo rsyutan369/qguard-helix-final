@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { QuantumReadinessSnapshot } from '../src/app/dashboard/quantum-readiness/_shared';
 import { buildReportModel } from '../src/services/reporting/ReportEvidence';
+import { buildReportScope, listSnapshotAssets, scopeSnapshotToAssets } from '../src/services/reporting/ReportScope';
 import { exportReport } from '../src/services/reporting/ReportExporter';
 import { brandingSchema, REPORT_FORMATS, enterpriseAssessmentReportSchema } from '../src/services/reporting/schemas/ReportSchema';
 
@@ -295,6 +296,62 @@ function verifyImprovements03(report: ReturnType<typeof buildReportModel>, snaps
   void jsonStr;
 }
 
+// Asset-scoped reporting — select the top-2 risk assets of the enterprise
+// snapshot, scope the snapshot, rebuild the model and assert the scoped report
+// is filtered, recomputed and still internally consistent (validation = PASS).
+async function runScoped(outDir: string) {
+  console.log('  --- Asset-scope assertions ---');
+  const branding = brandingSchema.parse({ companyName: 'QGuard Helix', businessUnit: 'PQC Program Office' });
+
+  // Universe = exposure nodes (portal/api/auth/kms) ∪ top-risk assets (+legacy)
+  // ∪ finding locations (no new ones) = 5 deduped assets, risk-sorted.
+  const universe = listSnapshotAssets(ENTERPRISE);
+  assert(universe.length === 5 && universe[0].key === 'portal.qguardhelix.com', `Scope universe: ${universe.length} deduped assets, top-risk first (${universe[0].key} @ ${universe[0].riskScore})`);
+
+  // Full-scope / empty selections must pass the snapshot through untouched.
+  assert(scopeSnapshotToAssets(ENTERPRISE, universe.map((a) => a.key)) === ENTERPRISE, 'Scope passthrough: selecting every asset returns the original snapshot');
+  assert(scopeSnapshotToAssets(ENTERPRISE, []) === ENTERPRISE, 'Scope passthrough: empty selection returns the original snapshot');
+  assert(buildReportScope(ENTERPRISE, null).type === 'full', 'Scope block: null selection = full scope');
+
+  const scopeKeys = universe.slice(0, 2).map((a) => a.key); // portal + api
+  const scoped = scopeSnapshotToAssets(ENTERPRISE, scopeKeys);
+  const scope = buildReportScope(ENTERPRISE, scopeKeys);
+  assert(scope.type === 'custom' && scope.selectedAssetCount === 2 && scope.totalAssetCount === 5 && scope.assets.length === 2 && scope.methodology.length > 0, `Scope block: custom ${scope.selectedAssetCount}/${scope.totalAssetCount}, assets listed, methodology disclosed`);
+
+  // Evidence filtered to the selection: portal carries FND-001/002, api FND-003.
+  assert(scoped.criticalFindings.length === 3 && scoped.criticalFindings.every((f) => /^(portal|api)\./.test(f.asset)), `Scoped findings: ${scoped.criticalFindings.length} rows, all on selected assets`);
+  assert(scoped.topRiskAssets.length === 2 && scoped.exposureGraph.nodes.length === 2 && scoped.exposureGraph.edges.length === 1, `Scoped graph: ${scoped.exposureGraph.nodes.length} nodes, ${scoped.exposureGraph.edges.length} edge (portal→api kept, api→auth/kms dropped)`);
+  assert(scoped.inventory.assetsAssessed === 2 && scoped.inventory.quantumVulnerableAssets === 2 && scoped.inventory.pqcReadyAssets === 0, `Scoped inventory: 2 assessed, 2 vulnerable, 0 PQC-ready`);
+  assert(scoped.riskDistribution.critical === 2 && scoped.riskDistribution.high === 1, `Scoped severity: critical=${scoped.riskDistribution.critical}, high=${scoped.riskDistribution.high} (asset-attributed)`);
+
+  // Scores recomputed with the backend formulas for the scoped inputs:
+  //   comps: vuln=3 (finding rows), pqc=0 (0 of 2 pqc assets selected), hybrid=round(85×2/24)=7 → total 10
+  //   sp=((2×4+1×2.5+1×1+1×0.4)/5)×22=52.36; vs=30; is=100 (both assets internet-facing)
+  //   risk = round(52.36×.45+30×.4+100×.15) = 51
+  //   pqcAdoption=(0+7×0.5)/10×100=35; readiness = round(35×.45+49×.25+100×.15+60×.15) = 52
+  assert(scoped.scores.quantumRisk === 51, `Scoped quantum risk recomputed: ${scoped.scores.quantumRisk} (was ${ENTERPRISE.scores.quantumRisk} tenant-wide)`);
+  assert(scoped.scores.quantumReadiness === 52 && scoped.scores.pqcAdoption === 35, `Scoped readiness/adoption recomputed: readiness=${scoped.scores.quantumReadiness}, pqcAdoption=${scoped.scores.pqcAdoption}%`);
+  assert(scoped.estimates.migrationCostUsd > 0 && scoped.estimates.migrationCostUsd < ENTERPRISE.estimates.migrationCostUsd, `Scoped cost rescaled: $${scoped.estimates.migrationCostUsd.toLocaleString()} < tenant $${ENTERPRISE.estimates.migrationCostUsd.toLocaleString()}`);
+
+  // Build + validate the scoped report model end-to-end.
+  const report = buildReportModel(scoped, branding, 'executive', 'Export Smoke', scope);
+  enterpriseAssessmentReportSchema.parse(report);
+  assert(report.scope.type === 'custom' && report.scope.assets.length === 2, `Report carries scope: ${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets`);
+  assert(/Report scope: 2 of 5/.test(report.executiveSummary), 'Executive summary states the custom scope');
+  assert(report.reportValidation.overall === 'PASS', `Scoped report validation badge: ${report.reportValidation.overall}`);
+
+  let ok = 0;
+  for (const fmt of REPORT_FORMATS) {
+    const result = await exportReport(report, fmt);
+    const bytes = Buffer.from(await result.blob.arrayBuffer());
+    if (bytes.byteLength <= 0) throw new Error(`scoped ${fmt} produced an empty artefact`);
+    writeFileSync(resolve(outDir, `scoped-${result.filename}`), bytes);
+    console.log(`  ✓ ${fmt.padEnd(4)} ${String(bytes.byteLength).padStart(8)} bytes  scoped-${result.filename}`);
+    ok++;
+  }
+  console.log(`  [scoped] ${ok}/${REPORT_FORMATS.length} formats generated, waves=${report.migrationWaves.length}\n`);
+}
+
 async function run(name: string, snapshot: QuantumReadinessSnapshot, outDir: string, checkPhases = false) {
   const branding = brandingSchema.parse({ companyName: 'QGuard Helix', businessUnit: 'PQC Program Office' });
   const report = buildReportModel(snapshot, branding, 'executive', 'Export Smoke');
@@ -325,6 +382,8 @@ async function main() {
   await run('enterprise', ENTERPRISE, outDir, true);
   console.log('Single-asset (compact) snapshot:');
   await run('single', SINGLE_ASSET, outDir);
+  console.log('Asset-scoped (custom selection) report:');
+  await runScoped(outDir);
   console.log(`All artefacts written to ${outDir}`);
   if (phaseFailures > 0) { console.error(`\n${phaseFailures} phase assertion(s) FAILED`); process.exit(1); }
   console.log('\nAll phase assertions + 14 formats passed.');

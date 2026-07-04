@@ -313,19 +313,9 @@ export default function KeyManagementPage({
         REQUEST_TIMEOUT_MS,
       );
 
-      const deactivateResult = await withTimeout(
-        supabase
-          .from("messaging_signed_prekeys")
-          .update({ is_active: false })
-          .eq("user_id", bundle.user_id)
-          .eq("device_id", prekey.device_id)
-          .eq("is_active", true)
-          .neq("id", prekey.prekey_id),
-        "Deactivate previous signed prekeys",
-        20_000,
-      );
-      if (deactivateResult.error) throw deactivateResult.error;
-
+      // Publish the NEW prekey first, deactivate old ones after. The reverse
+      // order stranded the device keyless (unreachable for messages/calls)
+      // whenever the publish step failed between the two writes.
       pushLog("Relay publish", "Publishing active signed prekey", "running");
       const publishResult = await withTimeout(
         supabase.from("messaging_signed_prekeys").upsert({
@@ -344,6 +334,19 @@ export default function KeyManagementPage({
         20_000,
       );
       if (publishResult.error) throw publishResult.error;
+
+      const deactivateResult = await withTimeout(
+        supabase
+          .from("messaging_signed_prekeys")
+          .update({ is_active: false })
+          .eq("user_id", bundle.user_id)
+          .eq("device_id", prekey.device_id)
+          .eq("is_active", true)
+          .neq("id", prekey.prekey_id),
+        "Deactivate previous signed prekeys",
+        20_000,
+      );
+      if (deactivateResult.error) throw deactivateResult.error;
 
       pushLog("Inventory refresh", "Refreshing key inventory", "running");
       await Promise.resolve(onRefresh());

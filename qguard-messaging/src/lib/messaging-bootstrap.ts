@@ -211,14 +211,11 @@ async function ensureSignedPrekey(client: SupabaseClient, userId: string, device
   });
   if (currentPrekeyAlreadyActive && !staleActivePrekeyExists && prekey.mlkem_public.length === currentMlKemPublicKeyLength) return;
 
-  const { error: deactivateError } = await client
-    .from("messaging_signed_prekeys")
-    .update({ is_active: false })
-    .eq("user_id", userId)
-    .eq("device_id", deviceId)
-    .neq("id", prekey.prekey_id);
-  if (deactivateError) throw deactivateError;
-
+  // ORDER MATTERS: publish the new active prekey FIRST, deactivate the old ones
+  // second. The previous order (deactivate → publish) stranded a device with
+  // ZERO active prekeys whenever the publish step failed mid-flight, making it
+  // unreachable for messages and calls ("Awaiting prekey material"). A brief
+  // overlap of two active prekeys is harmless — peers pick the newest.
   const { error } = await client.from("messaging_signed_prekeys").upsert({
     id: prekey.prekey_id,
     user_id: userId,
@@ -232,6 +229,14 @@ async function ensureSignedPrekey(client: SupabaseClient, userId: string, device
     created_at: prekey.created_at,
   }, { onConflict: "id" });
   if (error) throw error;
+
+  const { error: deactivateError } = await client
+    .from("messaging_signed_prekeys")
+    .update({ is_active: false })
+    .eq("user_id", userId)
+    .eq("device_id", deviceId)
+    .neq("id", prekey.prekey_id);
+  if (deactivateError) throw deactivateError;
 }
 
 async function ensureOneTimePrekeys(client: SupabaseClient, userId: string, deviceId: string): Promise<void> {

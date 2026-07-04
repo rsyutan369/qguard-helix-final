@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
+import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
 import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase, supabaseAuthTarget } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 
@@ -464,6 +465,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     const userId = user?.id;
+    clearChatPlaintextCaches();
     await supabase.auth.signOut();
     await safeInvoke("auth_logout", userId ? { userId } : {}, false);
     activeSessionTokenRef.current = null;

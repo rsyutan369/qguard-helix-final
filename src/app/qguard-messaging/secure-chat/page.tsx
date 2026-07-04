@@ -30,6 +30,7 @@ import {
   TrustStrip,
   StepCard,
   CTASection,
+  DownloadButton,
   type Feature,
 } from '../_shared';
 
@@ -80,6 +81,7 @@ export default function SecureChatPage() {
               End-to-end encrypted messages, calls, and files — protected by NIST post-quantum cryptography. Not even QGuard can read them.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
+              <DownloadButton />
               <GoldButton href="/login">Start a secure chat</GoldButton>
               <GhostButton to="/qguard-messaging/quantum-vault">See Quantum Vault</GhostButton>
             </div>

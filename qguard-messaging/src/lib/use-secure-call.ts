@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { buildRtcConfiguration } from "@/lib/call-ice";
+import { resolveRtcConfiguration } from "@/lib/call-ice";
 import { callReducer, INITIAL_CALL_STATE } from "@/lib/call-state";
 import { sendCallSignal, subscribeCallSignals } from "@/lib/call-signaling";
 import type { CallSignalRow } from "@/lib/call-types";
@@ -14,16 +14,26 @@ import {
 } from "@/lib/call-quality";
 
 interface CallSetup { hybridCiphertext: unknown; sendKeyB64: string; recvKeyB64: string; safetyNumber: string; }
-interface Peer { userId: string; deviceId: string; x25519: number[]; mlkem: number[]; displayName: string; }
+
+export interface CallPeer { userId: string; deviceId: string; x25519: number[]; mlkem: number[]; displayName: string; }
+
+/** Signal-addressing for the active call: where offers/answers/ice/hangup go. */
+interface CallRoute { conversationId: string; toUserId: string; toDeviceId: string; }
 
 const AUDIO_CTX = [1, 0, 0, 0];
 const VIDEO_CTX = [2, 0, 0, 0];
 const callSupported = () =>
   typeof RTCPeerConnection !== "undefined" && typeof RTCRtpScriptTransform !== "undefined";
 
-export function useSecureCall(args: {
-  userId: string; deviceId: string; conversationId: string | null; peer: Peer | null;
-}) {
+/**
+ * Quantum-encrypted call engine. Runs APP-WIDE (see CallProvider): the signal
+ * subscription only needs the local user + device, and everything a callee
+ * needs to answer (conversation, caller ids, hybrid KEM ciphertext) arrives in
+ * the offer row itself — so incoming calls ring on every page, not just while
+ * Secure Chat is open. Outgoing calls pass the peer + conversation explicitly
+ * to `startCall`.
+ */
+export function useSecureCall(args: { userId: string; deviceId: string }) {
   const [state, dispatch] = useReducer(callReducer, INITIAL_CALL_STATE);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -36,6 +46,7 @@ export function useSecureCall(args: {
   const qualityRef = useRef<CallQuality>(DEFAULT_CALL_QUALITY);
   const workerRef = useRef<Worker | null>(null);
   const setupRef = useRef<CallSetup | null>(null);
+  const routeRef = useRef<CallRoute | null>(null);
   const pendingOfferRef = useRef<CallSignalRow | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const phaseRef = useRef(state.phase);
@@ -72,6 +83,7 @@ export function useSecureCall(args: {
     workerRef.current?.terminate();
     workerRef.current = null;
     setupRef.current = null;
+    routeRef.current = null;
     pendingOfferRef.current = null;
     pendingCandidatesRef.current = [];
     if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
@@ -83,6 +95,8 @@ export function useSecureCall(args: {
     localStreamRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
+    // Call media fully released — stand down the freeze watchdog.
+    void safeInvoke("call_watchdog_end", undefined, null);
   }, []);
 
   const armTimeout = useCallback((ms: number) => {
@@ -96,14 +110,17 @@ export function useSecureCall(args: {
     }, ms);
   }, [cleanup]);
 
-  const buildPeerConnection = useCallback((callId: string, peer: Peer) => {
-    const pc = new RTCPeerConnection(buildRtcConfiguration());
+  const buildPeerConnection = useCallback(async (callId: string, route: CallRoute) => {
+    // Live STUN/TURN resolution (operator relay config → env → Open Relay):
+    // cached + short-timeout, so it adds ~0ms in the steady state and can
+    // never block a call — see call-ice.ts.
+    const pc = new RTCPeerConnection(await resolveRtcConfiguration());
     pc.onicecandidate = (e) => {
-      if (!e.candidate || !args.conversationId) return;
+      if (!e.candidate) return;
       void sendCallSignal({
-        call_id: callId, conversation_id: args.conversationId,
+        call_id: callId, conversation_id: route.conversationId,
         from_user_id: args.userId, from_device_id: args.deviceId,
-        to_user_id: peer.userId, to_device_id: peer.deviceId,
+        to_user_id: route.toUserId, to_device_id: route.toDeviceId,
         signal_type: "ice", payload: { candidate: e.candidate.toJSON() },
       });
     };
@@ -127,9 +144,15 @@ export function useSecureCall(args: {
     };
     pcRef.current = pc;
     return pc;
-  }, [args.conversationId, args.deviceId, args.userId, worker]);
+  }, [args.deviceId, args.userId, worker]);
 
   const getMedia = useCallback(async () => {
+    // Freeze watchdog: mark that a call is about to engage the media pipeline
+    // BEFORE the camera opens. If the machine/app dies while the marker is set
+    // (GPU driver wedge → hard restart), the next launch boots WebView2 in
+    // GPU-safe software rendering. Cleared in cleanup() and on graceful close.
+    // Fallback `null` keeps non-Tauri environments (tests, web preview) working.
+    await safeInvoke("call_watchdog_begin", undefined, null);
     const constraints = mediaConstraints(qualityRef.current);
     let stream: MediaStream;
     try {
@@ -152,9 +175,10 @@ export function useSecureCall(args: {
     await applyTrackConstraints(localStream, next);
   }, [localStream]);
 
-  const startCall = useCallback(async () => {
-    if (!supported || !args.peer || !args.conversationId) return;
-    const peer = args.peer;
+  const startCall = useCallback(async (peer: CallPeer, conversationId: string) => {
+    if (!supported || !args.deviceId || !conversationId) return;
+    const route: CallRoute = { conversationId, toUserId: peer.userId, toDeviceId: peer.deviceId };
+    routeRef.current = route;
     const callId = crypto.randomUUID();
     dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.deviceId });
     armTimeout(45000);
@@ -162,30 +186,34 @@ export function useSecureCall(args: {
       const setup = await safeInvoke<CallSetup>("call_caller_setup", { peerX25519Public: peer.x25519, peerMlkemPublic: peer.mlkem, callId });
       setupRef.current = setup;
       const stream = await getMedia();
-      const pc = buildPeerConnection(callId, peer);
+      const pc = await buildPeerConnection(callId, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       attachSenderTransforms(pc, setup);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await applySenderParams(pc, qualityRef.current);
-      await sendCallSignal({ call_id: callId, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: peer.userId, to_device_id: peer.deviceId, signal_type: "ring", payload: {} });
-      await sendCallSignal({ call_id: callId, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: peer.userId, to_device_id: peer.deviceId, signal_type: "offer", payload: { sdp: offer.sdp, hybridCiphertext: setup.hybridCiphertext } });
+      await sendCallSignal({ call_id: callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "ring", payload: {} });
+      await sendCallSignal({ call_id: callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "offer", payload: { sdp: offer.sdp, hybridCiphertext: setup.hybridCiphertext } });
     } catch (e) {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Call failed" });
       cleanup();
     }
-  }, [args, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, getMedia, supported]);
+  }, [args.deviceId, args.userId, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, getMedia, supported]);
 
   const accept = useCallback(async () => {
     const offer = pendingOfferRef.current;
-    if (!offer || !args.peer || !args.conversationId) return;
+    if (!offer) return;
+    // Everything the callee needs travels in the offer row: the conversation,
+    // the caller's user/device ids, and the hybrid KEM ciphertext.
+    const route: CallRoute = { conversationId: offer.conversation_id, toUserId: offer.from_user_id, toDeviceId: offer.from_device_id };
+    routeRef.current = route;
     dispatch({ type: "accept" });
     armTimeout(45000);
     try {
       const setup = await safeInvoke<CallSetup>("call_callee_setup", { hybridCiphertext: (offer.payload as { hybridCiphertext: unknown }).hybridCiphertext, callId: offer.call_id });
       setupRef.current = setup;
       const stream = await getMedia();
-      const pc = buildPeerConnection(offer.call_id, args.peer);
+      const pc = await buildPeerConnection(offer.call_id, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       attachSenderTransforms(pc, setup);
       await pc.setRemoteDescription({ type: "offer", sdp: String((offer.payload as { sdp: string }).sdp) });
@@ -193,28 +221,29 @@ export function useSecureCall(args: {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await applySenderParams(pc, qualityRef.current);
-      await sendCallSignal({ call_id: offer.call_id, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: offer.from_user_id, to_device_id: offer.from_device_id, signal_type: "answer", payload: { sdp: answer.sdp } });
+      await sendCallSignal({ call_id: offer.call_id, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "answer", payload: { sdp: answer.sdp } });
     } catch (e) {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Accept failed" });
       cleanup();
     }
-  }, [args, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia]);
+  }, [args.deviceId, args.userId, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia]);
 
   const endCall = useCallback((notify: boolean) => {
-    if (notify && state.callId && state.peerUserId && state.peerDeviceId && args.conversationId) {
-      void sendCallSignal({ call_id: state.callId, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: state.peerUserId, to_device_id: state.peerDeviceId, signal_type: "hangup", payload: {} });
+    const route = routeRef.current;
+    if (notify && state.callId && route) {
+      void sendCallSignal({ call_id: state.callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "hangup", payload: {} });
     }
     dispatch({ type: "ended" });
     cleanup();
-  }, [args, cleanup, state]);
+  }, [args.deviceId, args.userId, cleanup, state.callId]);
 
   const reject = useCallback(() => {
     const offer = pendingOfferRef.current;
-    if (offer && args.conversationId) {
-      void sendCallSignal({ call_id: offer.call_id, conversation_id: args.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: offer.from_user_id, to_device_id: offer.from_device_id, signal_type: "reject", payload: {} });
+    if (offer) {
+      void sendCallSignal({ call_id: offer.call_id, conversation_id: offer.conversation_id, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: offer.from_user_id, to_device_id: offer.from_device_id, signal_type: "reject", payload: {} });
     }
     endCall(false);
-  }, [args, endCall]);
+  }, [args.deviceId, args.userId, endCall]);
 
   const hangup = useCallback(() => endCall(true), [endCall]);
   const toggleMic = useCallback(() => { localStream?.getAudioTracks().forEach((t) => (t.enabled = !t.enabled)); setMicEnabled((v) => !v); }, [localStream]);
@@ -231,14 +260,12 @@ export function useSecureCall(args: {
           case "offer": {
             const busy = ["ringing", "calling", "connecting", "connected"].includes(phaseRef.current);
             if (busy) {
-              if (args.conversationId) {
-                void sendCallSignal({
-                  call_id: row.call_id, conversation_id: args.conversationId,
-                  from_user_id: args.userId, from_device_id: args.deviceId,
-                  to_user_id: row.from_user_id, to_device_id: row.from_device_id,
-                  signal_type: "busy", payload: {},
-                });
-              }
+              void sendCallSignal({
+                call_id: row.call_id, conversation_id: row.conversation_id,
+                from_user_id: args.userId, from_device_id: args.deviceId,
+                to_user_id: row.from_user_id, to_device_id: row.from_device_id,
+                signal_type: "busy", payload: {},
+              });
               return;
             }
             pendingOfferRef.current = row;
@@ -268,7 +295,7 @@ export function useSecureCall(args: {
       },
     });
     return unsub;
-  }, [args.conversationId, args.deviceId, args.userId, endCall, flushPendingCandidates, state.role]);
+  }, [args.deviceId, args.userId, endCall, flushPendingCandidates, state.role]);
 
   // Keep a synchronous mirror of the current phase for ref-based decisions
   // (busy detection, timeouts) inside callbacks that must not re-subscribe.

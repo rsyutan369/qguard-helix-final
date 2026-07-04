@@ -41,6 +41,7 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   cover.addText(report.meta.title, { x: 0.6, y: 2.4, w: 12, h: 1.2, fontSize: 40, bold: true, color: INK });
   cover.addText(`${report.branding.companyName}${report.branding.businessUnit ? ` — ${report.branding.businessUnit}` : ''}`, { x: 0.6, y: 3.6, w: 12, h: 0.6, fontSize: 20, color: MUTED });
   cover.addText(`Version ${report.meta.version}  ·  Generated ${new Date(report.meta.generatedAt).toLocaleString()}  ·  ${report.meta.generatedBy}`, { x: 0.6, y: 4.4, w: 12, h: 0.4, fontSize: 12, color: MUTED });
+  cover.addText(`Assessment Scope: ${report.scope.type === 'custom' ? `${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets (custom selection)` : `Full assessment (${report.scope.totalAssetCount} asset${report.scope.totalAssetCount === 1 ? '' : 's'})`}`, { x: 0.6, y: 4.9, w: 12, h: 0.4, fontSize: 12, color: MUTED });
   footer(cover);
 
   // KPI summary
@@ -84,6 +85,15 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
     ['Timeline', '-', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
     ['Budget', '-', usd(ex.estimatedCostUsd), ''],
   ], [3.6, 2.9, 2.9, 2.9]);
+
+  // Assessment scope — which assets this report covers (custom selections list
+  // the assets; the note slide always states the scope explicitly).
+  if (report.scope.type === 'custom') {
+    const scopeRows: Array<Array<string | number>> = report.scope.assets.slice(0, 14).map((a) => [a.name, a.assetType, a.environment, `${a.riskScore}/100`, a.posture]);
+    if (report.scope.assets.length > 14) scopeRows.push([`… and ${report.scope.assets.length - 14} more selected asset(s)`, '', '', '', '']);
+    const scopeSlide = tableSlide(`Assessment Scope — ${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} Assets`, ['Asset', 'Type', 'Environment', 'Risk', 'Posture'], scopeRows, [4.6, 2.2, 2.2, 1.5, 1.8]);
+    scopeSlide.addText(report.scope.note, { x: 0.5, y: 6.4, w: 12.3, h: 0.5, fontSize: 10, color: MUTED });
+  }
 
   // Top Business Risks (I2#8) — board-language risk register
   tableSlide('Top Business Risks', ['#', 'Business Risk', 'Level', 'Evidence Driver'], ex.topBusinessRisks.length ? ex.topBusinessRisks.map((r, i) => [i + 1, r.risk, r.level, r.driver]) : [['-', 'Evidence Not Available', '-', '-']], [0.6, 3.4, 1.3, 7]);

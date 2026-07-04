@@ -1,0 +1,63 @@
+# Messaging: Missed Incoming Calls, "Awaiting Prekey Material", Slow History (2026-07-03)
+
+Cross-machine test (host + TestVM with the packaged installer) surfaced three
+defects. All were root-caused with live DB evidence (service-role REST reads of
+messaging_devices / messaging_signed_prekeys / messaging_call_signals).
+
+## 1. Incoming video calls never rang on the callee
+**Evidence:** ring/offer/ice rows from the VM (teslagreat101, device 5506f752)
+sat in `messaging_call_signals` correctly targeted at threathunter369's device
+c7a12249 — transport and device-targeting were fine; the callee just wasn't
+listening. The signal subscription lived inside `useSecureCall`, which only
+mounted with SecureChatPage (chat open AND workspace-unlocked).
+
+**Fix:** app-level `CallProvider` (src/components/call/CallProvider.tsx),
+mounted in App.tsx ABOVE the router and the workspace lock:
+- owns the refactored `useSecureCall({ userId, deviceId })` engine; resolves
+  the local device id itself (retried `keys_upload_identity_bundle`);
+- `use-secure-call.ts` now derives all signal addressing from a `CallRoute` —
+  outgoing: `startCall(peer, conversationId)`; incoming: conversation + caller
+  ids + hybrid KEM ciphertext all come from the offer row, so answering works
+  from ANY page (answering never unlocks chat history — Rust callee setup only
+  needs auth + identity);
+- renders IncomingCallModal + InCallOverlay globally; resolves caller display
+  name from profiles; WebAudio two-tone ringtone (no asset; autoplay already
+  allowed via WebView2 flag); `requestUserAttention` taskbar flash (new
+  capability `core:window:allow-request-user-attention`);
+- SecureChatPage consumes `useCall()` and only supplies the outgoing target.
+
+## 2. "Awaiting prekey material" (device stranded with no active signed prekey)
+**Evidence:** TG's older device c045b6c5 had its only signed-prekey row
+`is_active=false` with no replacement — the rotation/publish flows ran
+"deactivate old" BEFORE "publish new", so a failure between the two writes
+left the device keyless → unsendable → unreachable for messages AND calls.
+
+**Fix:** publish-first-then-deactivate in BOTH
+`messaging-bootstrap.ts::ensureSignedPrekey` and
+`KeyManagementPage::rotateAndPublishPrekey`. A transient two-active overlap is
+harmless — the device join in use-dashboard-data already picks the newest by
+created_at. Stranded devices self-heal on next launch/chat-open (bootstrap
+re-upserts the local prekey active).
+
+## 3. Slow "Loading encrypted history..." + composer stuck on "Sending"
+Root causes: (a) `messaging_receive_encrypted_message` and
+`messaging_send_encrypted_message` were SYNC Tauri commands → every decrypt ran
+on the MAIN Rust thread (same class as the vault freeze); (b) hydration
+decrypted every group sequentially, one awaited IPC at a time; (c) the
+envelope query fetched the OLDEST 250 (`ascending+limit`) so long chats never
+even showed recent messages; (d) plaintext caches were per-mount refs — every
+page visit re-decrypted everything; (e) `sendMessage` awaited the full history
+reload before clearing "Sending".
+
+**Fixes:** commands → `async fn` (runtime thread pool); hydration newest-first
+in parallel chunks of 6 with progressive `onPartial` flushes (newest messages
+render immediately); query flipped to newest-250; module-scope plaintext cache
+(`src/lib/chat-plaintext-cache.ts`) keyed to user+device, wiped on chat lock
+(`use-workspace-lock`), logout (`auth-context`), and owner change; send now
+fire-and-forgets the reconcile reload (local echo already on screen).
+
+## Verification
+- cargo test --lib 45/45; tsc, vitest 15/15, vite build green.
+- Installer rebuilt and republished to public/downloads (see
+  Messaging_Installer_Distribution). Live two-machine call/message test =
+  user verification.

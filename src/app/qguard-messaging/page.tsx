@@ -31,6 +31,7 @@ import {
   TrustStrip,
   AlgoSuiteTable,
   CTASection,
+  DownloadButton,
   type Feature,
 } from './_shared';
 
@@ -117,6 +118,7 @@ export default function QguardMessagingOverview() {
               QGuard Messaging combines end-to-end encrypted Secure Chat and a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography. Your conversations and files stay private, even from us.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
+              <DownloadButton />
               <GoldButton href="/login">Launch the App</GoldButton>
               <GhostButton to="/qguard-messaging/secure-chat">Explore Secure Chat</GhostButton>
             </div>

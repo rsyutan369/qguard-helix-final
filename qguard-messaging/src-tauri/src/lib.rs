@@ -31,18 +31,43 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Force WebRTC video onto the software codec path on Windows BEFORE the
-    // WebView2 environment is created. WebView2's hardware H.264/VP8 encode+decode
-    // can hang the GPU driver — freezing the entire machine (hard-restart) — during
-    // a video call on many GPUs/drivers. Call media is already capped to <=360p@24fps
-    // by default (see call-quality.ts), so the software codec costs little CPU; this
-    // trades a sliver of CPU for never hanging the host. Respects an existing override.
+    let data_dir = dirs_fallback().join("qguard-messaging");
+
+    // Force EVERY WebRTC media path onto software on Windows BEFORE the WebView2
+    // environment is created. Hardware media pipelines can wedge flaky/outdated
+    // GPU drivers (seen live on Intel Iris Xe 31.0.101.4502) so hard the whole
+    // machine freezes without even a TDR event — only a power cut recovers it.
+    // Disabling encode/decode alone was NOT enough: the camera-capture pipeline
+    // (hardware MJPEG decode of webcam frames, D3D11 zero-copy Media Foundation
+    // capture, GPU-memory frame buffers) and DirectComposition video overlays
+    // still exercised the driver. Call media is capped to <=360p@24fps by default
+    // (see call-quality.ts), so full software media costs little CPU; the app UI
+    // itself stays GPU-composited and smooth. Respects an existing override.
+    //
+    // `--disable-features` REPLACES (not merges with) any earlier occurrence of
+    // the switch, and the loader appends these env args after wry's programmatic
+    // ones — so wry's own defaults (msWebOOUI, msPdfOOUI, msSmartScreenProtection)
+    // must be repeated here to survive.
     #[cfg(target_os = "windows")]
-    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
-        std::env::set_var(
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--disable-accelerated-video-decode --disable-accelerated-video-encode",
-        );
+    {
+        // Self-healing: if the previous session died mid-call (machine froze,
+        // hard restart), render everything in software from now on so the GPU
+        // driver can never be wedged again. Cleared from Settings.
+        let gpu_safe_mode = commands::calls::gpu_safe_mode_boot_check(&data_dir);
+        if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+            let mut args = String::from(concat!(
+                "--disable-accelerated-video-decode ",
+                "--disable-accelerated-video-encode ",
+                "--disable-accelerated-mjpeg-decode ",
+                "--disable-gpu-memory-buffer-video-frames ",
+                "--disable-direct-composition-video-overlays ",
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaFoundationD3D11VideoCapture",
+            ));
+            if gpu_safe_mode {
+                args.push_str(" --disable-gpu");
+            }
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
+        }
     }
 
     tracing_subscriber::registry()
@@ -55,8 +80,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let data_dir = dirs_fallback().join("qguard-messaging");
+        // Signed auto-updates (minisign pubkey + endpoints in tauri.conf.json)
+        // and relaunch-after-update support.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .setup(move |app| {
             let state = AppState::new(data_dir)?;
             app.manage(state);
 
@@ -106,6 +134,15 @@ pub fn run() {
 
             Ok(())
         })
+        // A graceful quit during a live call must not trip the freeze watchdog:
+        // frontend unmount effects are not guaranteed to run when the window is
+        // destroyed, so the call-active marker is cleared here too.
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let state = window.state::<AppState>();
+                commands::calls::clear_call_marker(&state.data_dir);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             auth_register_user,
             auth_login,
@@ -138,6 +175,7 @@ pub fn run() {
             vault_setup_recovery,
             vault_enable_recovery_with_phrase,
             vault_rewrap_path,
+            vault_verify_path,
             vault_decrypt_path_with_recovery,
             vault_decrypt_folder_path_with_recovery,
             vault_decrypt_path_with_enterprise,
@@ -155,6 +193,10 @@ pub fn run() {
             telemetry_dashboard_snapshot,
             call_caller_setup,
             call_callee_setup,
+            call_watchdog_begin,
+            call_watchdog_end,
+            call_gpu_safe_mode_status,
+            call_gpu_safe_mode_clear,
             telemetry_recent_events
         ])
         .run(tauri::generate_context!())

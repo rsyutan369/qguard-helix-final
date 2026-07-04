@@ -28,10 +28,11 @@ interface SidebarProps {
   activePage: Page;
   modules: MessagingModule[];
   snapshot: DashboardSnapshot;
+  unreadMessages?: number;
   onNavigate: (page: Page) => void;
 }
 
-export default function Sidebar({ activePage, modules, snapshot, onNavigate }: SidebarProps) {
+export default function Sidebar({ activePage, modules, snapshot, unreadMessages = 0, onNavigate }: SidebarProps) {
   const visibleModules = modules.filter((item) => item.module_id !== "admin" && item.route !== "admin");
 
   return (
@@ -69,6 +70,14 @@ export default function Sidebar({ activePage, modules, snapshot, onNavigate }: S
             >
               <Icon size={18} />
               <span>{item.label}</span>
+              {item.route === "chat" && unreadMessages > 0 && (
+                <span
+                  className="ml-auto flex h-5 min-w-[20px] items-center justify-center rounded-full bg-violet-600 px-1.5 text-[11px] font-bold leading-none text-white"
+                  title={`${unreadMessages} unread encrypted message${unreadMessages === 1 ? "" : "s"}`}
+                >
+                  {unreadMessages > 99 ? "99+" : unreadMessages}
+                </span>
+              )}
             </button>
           );
         })}

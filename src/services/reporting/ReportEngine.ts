@@ -2,6 +2,7 @@ import { sha3_256 } from '@noble/hashes/sha3.js';
 import { UnsecuredJWT } from 'jose';
 import type { QuantumReadinessSnapshot } from '@/app/dashboard/quantum-readiness/_shared';
 import { buildReportModel } from './ReportEvidence';
+import { buildReportScope, scopeSnapshotToAssets } from './ReportScope';
 import { renderReportCharts } from './ReportCharts';
 import type { EnterpriseAssessmentReport, ReportBranding, ReportKind } from './schemas/ReportSchema';
 import { enterpriseAssessmentReportSchema } from './schemas/ReportSchema';
@@ -39,6 +40,13 @@ export interface BuildReportOptions {
   kind: ReportKind;
   generatedBy: string;
   withCharts?: boolean;
+  /**
+   * Optional asset scope — asset names/keys to include in the report. When the
+   * selection is a strict subset of the discovered assets, the snapshot is
+   * re-scoped (evidence filtered + scores recomputed) before the model is
+   * built, so every section and chart reflects the selected assets only.
+   */
+  scopeAssetKeys?: string[] | null;
 }
 
 /**
@@ -47,11 +55,13 @@ export interface BuildReportOptions {
  * against the schema and attaches an integrity hash + verification token.
  */
 export function buildReport(options: BuildReportOptions): EnterpriseAssessmentReport {
-  const { snapshot, branding, kind, generatedBy, withCharts = true } = options;
-  const model = buildReportModel(snapshot, branding, kind, generatedBy);
+  const { snapshot, branding, kind, generatedBy, withCharts = true, scopeAssetKeys } = options;
+  const scope = buildReportScope(snapshot, scopeAssetKeys?.length ? scopeAssetKeys : null);
+  const effectiveSnapshot = scope.type === 'custom' ? scopeSnapshotToAssets(snapshot, scopeAssetKeys!) : snapshot;
+  const model = buildReportModel(effectiveSnapshot, branding, kind, generatedBy, scope);
   if (withCharts) {
     try {
-      model.charts = renderReportCharts(snapshot);
+      model.charts = renderReportCharts(effectiveSnapshot);
     } catch (error) {
       console.warn('Report chart rendering failed:', error);
       model.charts = [];

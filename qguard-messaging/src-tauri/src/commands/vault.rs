@@ -160,68 +160,92 @@ fn part_path(dest_path: &str) -> String {
     format!("{dest_path}.qguard-part")
 }
 
+/// Run a blocking vault stream job on the Tauri blocking thread pool.
+///
+/// Vault containers can be many gigabytes; a synchronous Tauri command executes
+/// on the MAIN thread, so running the chunk loop there blocks the window event
+/// loop for the whole stream — the app goes "Not Responding", progress Channel
+/// delivery stalls, and the UI freezes. Every stream command below is therefore
+/// async and does its file I/O + crypto inside `spawn_blocking`, keeping the
+/// event loop free and progress events flowing in real time.
+async fn run_stream_blocking<T, F>(job: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(job)
+        .await
+        .map_err(|e| QGuardError::Storage(format!("vault stream worker failed: {e}")))?
+}
+
 #[tauri::command]
-pub fn vault_encrypt_path(
+pub async fn vault_encrypt_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
-    let metadata = std::fs::metadata(&source_path)
-        .map_err(|e| QGuardError::Storage(format!("read source file: {e}")))?;
-    if !metadata.is_file() {
-        return Err(QGuardError::InvalidInput(
-            "selected source is not a file".to_string(),
-        ));
-    }
-    let original_size = metadata.len();
-    let name = Path::new(&source_path)
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".to_string());
-
-    let tmp = part_path(&dest_path);
-    let mut reader = BufReader::new(
-        File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open source: {e}")))?,
-    );
-    let summary = {
-        let mut writer = BufWriter::new(
-            File::create(&tmp)
-                .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
-        );
-        match vault_stream::encrypt_stream_with_progress(
-            &mut reader,
-            &mut writer,
-            vault_stream::KIND_FILE,
-            &name,
-            "application/octet-stream",
-            original_size,
-            &ctx.user_id,
-            &ctx.device_id,
-            &ctx.kem_x25519_public,
-            &ctx.kem_mlkem_public,
-            &ctx.vault_master.vmk,
-            &ctx.vault_master.signer,
-            ctx.recovery_wrap_key.as_ref(),
-            ctx.enterprise().as_ref(),
-            &mut |p| { let _ = on_progress.send(p); },
-        ) {
-            Ok(summary) => {
-                writer
-                    .flush()
-                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                summary
-            }
-            Err(error) => {
-                drop(writer);
-                let _ = std::fs::remove_file(&tmp);
-                return Err(error);
-            }
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_path.clone();
+    let summary = run_stream_blocking(move || {
+        let metadata = std::fs::metadata(&source_path)
+            .map_err(|e| QGuardError::Storage(format!("read source file: {e}")))?;
+        if !metadata.is_file() {
+            return Err(QGuardError::InvalidInput(
+                "selected source is not a file".to_string(),
+            ));
         }
-    };
-    std::fs::rename(&tmp, &dest_path)
-        .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+        let original_size = metadata.len();
+        let name = Path::new(&source_path)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        let tmp = part_path(&dest_path);
+        let mut reader = BufReader::new(
+            File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open source: {e}")))?,
+        );
+        let summary = {
+            let mut writer = BufWriter::new(
+                File::create(&tmp)
+                    .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
+            );
+            match vault_stream::encrypt_stream_with_progress(
+                &mut reader,
+                &mut writer,
+                vault_stream::KIND_FILE,
+                &name,
+                "application/octet-stream",
+                original_size,
+                &ctx.user_id,
+                &ctx.device_id,
+                &ctx.kem_x25519_public,
+                &ctx.kem_mlkem_public,
+                &ctx.vault_master.vmk,
+                &ctx.vault_master.signer,
+                ctx.recovery_wrap_key.as_ref(),
+                ctx.enterprise().as_ref(),
+                &mut |p| { let _ = on_progress.send(p); },
+            ) {
+                Ok(summary) => {
+                    writer
+                        .flush()
+                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                    summary
+                }
+                Err(error) => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(error);
+                }
+            }
+        };
+        std::fs::rename(&tmp, &dest_path)
+            .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+        Ok(summary)
+    })
+    .await?;
 
     state.audit_info(
         "vault_local_encrypt",
@@ -232,11 +256,11 @@ pub fn vault_encrypt_path(
         "Local file sealed with X25519+ML-KEM-1024 / AES-256-GCM streaming container",
         100,
     );
-    Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_path))
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 #[tauri::command]
-pub fn vault_decrypt_path(
+pub async fn vault_decrypt_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
@@ -245,112 +269,125 @@ pub fn vault_decrypt_path(
     let ctx = local_vault_context(&state)?;
     state.check_decrypt_rate_limit("vault_local_file", &source_path, 60, 300)?;
 
-    let tmp = part_path(&dest_path);
-    let mut last_error: Option<QGuardError> = None;
-    for kem in &ctx.recipient_kems {
-        let mut reader = match File::open(&source_path) {
-            Ok(file) => BufReader::new(file),
-            Err(e) => return Err(QGuardError::Storage(format!("open encrypted source: {e}"))),
-        };
-        let mut writer = BufWriter::new(
-            File::create(&tmp)
-                .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
-        );
-        match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
-            Ok(summary) => {
-                writer
-                    .flush()
-                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                drop(writer);
-                std::fs::rename(&tmp, &dest_path)
-                    .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
-                state.audit_info(
-                    "vault_local_decrypt",
-                    "Local quantum-safe vault stream decrypted on-device",
-                );
-                state.touch_telemetry(
-                    "vault_decrypt",
-                    "Local vault stream decrypted with device-bound ML-KEM-1024 key",
-                    100,
-                );
-                return Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_path));
-            }
-            Err(error) => {
-                drop(writer);
-                let _ = std::fs::remove_file(&tmp);
-                last_error = Some(error);
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_path.clone();
+    let summary = run_stream_blocking(move || {
+        let tmp = part_path(&dest_path);
+        let mut last_error: Option<QGuardError> = None;
+        for kem in &ctx.recipient_kems {
+            let mut reader = match File::open(&source_path) {
+                Ok(file) => BufReader::new(file),
+                Err(e) => return Err(QGuardError::Storage(format!("open encrypted source: {e}"))),
+            };
+            let mut writer = BufWriter::new(
+                File::create(&tmp)
+                    .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
+            );
+            match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
+                Ok(summary) => {
+                    writer
+                        .flush()
+                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                    drop(writer);
+                    std::fs::rename(&tmp, &dest_path)
+                        .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+                    return Ok(summary);
+                }
+                Err(error) => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&tmp);
+                    last_error = Some(error);
+                }
             }
         }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        QGuardError::Crypto("local vault stream could not be decrypted on this device".to_string())
-    }))
+        Err(last_error.unwrap_or_else(|| {
+            QGuardError::Crypto("local vault stream could not be decrypted on this device".to_string())
+        }))
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_local_decrypt",
+        "Local quantum-safe vault stream decrypted on-device",
+    );
+    state.touch_telemetry(
+        "vault_decrypt",
+        "Local vault stream decrypted with device-bound ML-KEM-1024 key",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 #[tauri::command]
-pub fn vault_encrypt_folder_path(
+pub async fn vault_encrypt_folder_path(
     state: State<'_, AppState>,
     source_dir: String,
     dest_path: String,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
-    let root = PathBuf::from(&source_dir);
-    if !root.is_dir() {
-        return Err(QGuardError::InvalidInput(
-            "selected source is not a folder".to_string(),
-        ));
-    }
-    let (entries, total) = vault_stream::collect_folder_entries(&root)?;
-    if entries.is_empty() {
-        return Err(QGuardError::InvalidInput(
-            "selected folder has no files to encrypt".to_string(),
-        ));
-    }
-    let name = root
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| "vault-folder".to_string());
-
-    let tmp = part_path(&dest_path);
-    let mut reader = FolderReader::new(entries);
-    let summary = {
-        let mut writer = BufWriter::new(
-            File::create(&tmp)
-                .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
-        );
-        match vault_stream::encrypt_stream_with_progress(
-            &mut reader,
-            &mut writer,
-            vault_stream::KIND_FOLDER,
-            &name,
-            "application/qguard-folder-archive",
-            total,
-            &ctx.user_id,
-            &ctx.device_id,
-            &ctx.kem_x25519_public,
-            &ctx.kem_mlkem_public,
-            &ctx.vault_master.vmk,
-            &ctx.vault_master.signer,
-            ctx.recovery_wrap_key.as_ref(),
-            ctx.enterprise().as_ref(),
-            &mut |p| { let _ = on_progress.send(p); },
-        ) {
-            Ok(summary) => {
-                writer
-                    .flush()
-                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                summary
-            }
-            Err(error) => {
-                drop(writer);
-                let _ = std::fs::remove_file(&tmp);
-                return Err(error);
-            }
+    let source_for_result = source_dir.clone();
+    let dest_for_result = dest_path.clone();
+    let summary = run_stream_blocking(move || {
+        let root = PathBuf::from(&source_dir);
+        if !root.is_dir() {
+            return Err(QGuardError::InvalidInput(
+                "selected source is not a folder".to_string(),
+            ));
         }
-    };
-    std::fs::rename(&tmp, &dest_path)
-        .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+        let (entries, total) = vault_stream::collect_folder_entries(&root)?;
+        if entries.is_empty() {
+            return Err(QGuardError::InvalidInput(
+                "selected folder has no files to encrypt".to_string(),
+            ));
+        }
+        let name = root
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "vault-folder".to_string());
+
+        let tmp = part_path(&dest_path);
+        let mut reader = FolderReader::new(entries);
+        let summary = {
+            let mut writer = BufWriter::new(
+                File::create(&tmp)
+                    .map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
+            );
+            match vault_stream::encrypt_stream_with_progress(
+                &mut reader,
+                &mut writer,
+                vault_stream::KIND_FOLDER,
+                &name,
+                "application/qguard-folder-archive",
+                total,
+                &ctx.user_id,
+                &ctx.device_id,
+                &ctx.kem_x25519_public,
+                &ctx.kem_mlkem_public,
+                &ctx.vault_master.vmk,
+                &ctx.vault_master.signer,
+                ctx.recovery_wrap_key.as_ref(),
+                ctx.enterprise().as_ref(),
+                &mut |p| { let _ = on_progress.send(p); },
+            ) {
+                Ok(summary) => {
+                    writer
+                        .flush()
+                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                    summary
+                }
+                Err(error) => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(error);
+                }
+            }
+        };
+        std::fs::rename(&tmp, &dest_path)
+            .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+        Ok(summary)
+    })
+    .await?;
 
     state.audit_info(
         "vault_local_encrypt_folder",
@@ -361,11 +398,11 @@ pub fn vault_encrypt_folder_path(
         "Local folder sealed into a single X25519+ML-KEM-1024 / AES-256-GCM archive",
         100,
     );
-    Ok(VaultLocalStreamSummary::from_stream(summary, source_dir, dest_path))
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 #[tauri::command]
-pub fn vault_decrypt_folder_path(
+pub async fn vault_decrypt_folder_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_dir: String,
@@ -373,38 +410,46 @@ pub fn vault_decrypt_folder_path(
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
     state.check_decrypt_rate_limit("vault_local_folder", &source_path, 30, 300)?;
-    std::fs::create_dir_all(&dest_dir)
-        .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
 
-    let mut last_error: Option<QGuardError> = None;
-    for kem in &ctx.recipient_kems {
-        let mut reader = match File::open(&source_path) {
-            Ok(file) => BufReader::new(file),
-            Err(e) => return Err(QGuardError::Storage(format!("open encrypted source: {e}"))),
-        };
-        let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
-        match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
-            Ok(summary) => {
-                writer
-                    .flush()
-                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                state.audit_info(
-                    "vault_local_decrypt_folder",
-                    "Local quantum-safe folder archive decrypted on-device",
-                );
-                state.touch_telemetry(
-                    "vault_decrypt",
-                    "Local folder archive restored with device-bound ML-KEM-1024 key",
-                    100,
-                );
-                return Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_dir));
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_dir.clone();
+    let summary = run_stream_blocking(move || {
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
+
+        let mut last_error: Option<QGuardError> = None;
+        for kem in &ctx.recipient_kems {
+            let mut reader = match File::open(&source_path) {
+                Ok(file) => BufReader::new(file),
+                Err(e) => return Err(QGuardError::Storage(format!("open encrypted source: {e}"))),
+            };
+            let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
+            match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
+                Ok(summary) => {
+                    writer
+                        .flush()
+                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                    return Ok(summary);
+                }
+                Err(error) => last_error = Some(error),
             }
-            Err(error) => last_error = Some(error),
         }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        QGuardError::Crypto("local vault folder archive could not be decrypted on this device".to_string())
-    }))
+        Err(last_error.unwrap_or_else(|| {
+            QGuardError::Crypto("local vault folder archive could not be decrypted on this device".to_string())
+        }))
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_local_decrypt_folder",
+        "Local quantum-safe folder archive decrypted on-device",
+    );
+    state.touch_telemetry(
+        "vault_decrypt",
+        "Local folder archive restored with device-bound ML-KEM-1024 key",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 // ---------------------------------------------------------------------------
@@ -588,50 +633,55 @@ pub fn vault_enable_recovery_with_phrase(
 /// Use this on a working device to upgrade older v1/v2 files (and to make files
 /// that predate recovery setup recoverable).
 #[tauri::command]
-pub fn vault_rewrap_path(
+pub async fn vault_rewrap_path(
     state: State<'_, AppState>,
     source_path: String,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state)?;
 
-    let tmp = part_path(&source_path);
-    let summary = {
-        let mut reader = BufReader::new(
-            File::open(&source_path)
-                .map_err(|e| QGuardError::Storage(format!("open vault file: {e}")))?,
-        );
-        let mut writer = BufWriter::new(
-            File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
-        );
-        match vault_stream::rewrap_stream_to_v3_with_progress(
-            &mut reader,
-            &mut writer,
-            &ctx.recipient_kems,
-            &ctx.kem_x25519_public,
-            &ctx.kem_mlkem_public,
-            &ctx.vault_master.vmk,
-            &ctx.vault_master.signer,
-            ctx.recovery_wrap_key.as_ref(),
-            ctx.enterprise().as_ref(),
-            &mut |p| { let _ = on_progress.send(p); },
-        ) {
-            Ok(summary) => {
-                writer
-                    .flush()
-                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                summary
+    let source_for_result = source_path.clone();
+    let summary = run_stream_blocking(move || {
+        let tmp = part_path(&source_path);
+        let summary = {
+            let mut reader = BufReader::new(
+                File::open(&source_path)
+                    .map_err(|e| QGuardError::Storage(format!("open vault file: {e}")))?,
+            );
+            let mut writer = BufWriter::new(
+                File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
+            );
+            match vault_stream::rewrap_stream_to_v3_with_progress(
+                &mut reader,
+                &mut writer,
+                &ctx.recipient_kems,
+                &ctx.kem_x25519_public,
+                &ctx.kem_mlkem_public,
+                &ctx.vault_master.vmk,
+                &ctx.vault_master.signer,
+                ctx.recovery_wrap_key.as_ref(),
+                ctx.enterprise().as_ref(),
+                &mut |p| { let _ = on_progress.send(p); },
+            ) {
+                Ok(summary) => {
+                    writer
+                        .flush()
+                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                    summary
+                }
+                Err(error) => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(error);
+                }
             }
-            Err(error) => {
-                drop(writer);
-                let _ = std::fs::remove_file(&tmp);
-                return Err(error);
-            }
-        }
-        // reader + writer are dropped here, releasing the file handles before rename.
-    };
-    std::fs::rename(&tmp, &source_path)
-        .map_err(|e| QGuardError::Storage(format!("finalize re-protected file: {e}")))?;
+            // reader + writer are dropped here, releasing the file handles before rename.
+        };
+        std::fs::rename(&tmp, &source_path)
+            .map_err(|e| QGuardError::Storage(format!("finalize re-protected file: {e}")))?;
+        Ok(summary)
+    })
+    .await?;
     state.audit_info(
         "vault_recovery_rewrap",
         "Existing vault container upgraded to the v3 VMK envelope (ML-DSA-87)",
@@ -643,13 +693,58 @@ pub fn vault_rewrap_path(
     );
     Ok(VaultLocalStreamSummary::from_stream(
         summary,
-        source_path.clone(),
-        source_path,
+        source_for_result.clone(),
+        source_for_result,
+    ))
+}
+
+/// Fully verify a local `.qvault` container on-device: the ML-DSA-signed header,
+/// the device KEM unwrap, and every chunk's AES-256-GCM tag. Plaintext is never
+/// written anywhere — this proves the container is complete and untampered.
+#[tauri::command]
+pub async fn vault_verify_path(
+    state: State<'_, AppState>,
+    source_path: String,
+    on_progress: Channel<vault_stream::VaultProgress>,
+) -> Result<VaultLocalStreamSummary> {
+    let ctx = local_vault_context(&state)?;
+    let source_for_result = source_path.clone();
+    let summary = run_stream_blocking(move || {
+        let mut last_error: Option<QGuardError> = None;
+        for kem in &ctx.recipient_kems {
+            let mut reader = BufReader::new(
+                File::open(&source_path)
+                    .map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
+            );
+            match vault_stream::verify_stream_with_progress(&mut reader, kem, &mut |p| { let _ = on_progress.send(p); }) {
+                Ok(summary) => return Ok(summary),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            QGuardError::Crypto("vault container could not be verified with this device's keys".to_string())
+        }))
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_verify",
+        "Local vault container integrity verified on-device",
+    );
+    state.touch_telemetry(
+        "vault",
+        "Vault container verified · signed header + per-chunk AES-256-GCM tags intact",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(
+        summary,
+        source_for_result.clone(),
+        source_for_result,
     ))
 }
 
 #[tauri::command]
-pub fn vault_decrypt_path_with_recovery(
+pub async fn vault_decrypt_path_with_recovery(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
@@ -657,48 +752,56 @@ pub fn vault_decrypt_path_with_recovery(
 ) -> Result<VaultLocalStreamSummary> {
     state.require_auth()?;
     state.check_decrypt_rate_limit("vault_recovery_file", &source_path, 30, 300)?;
-    let mut root = vault_recovery::decode_recovery_key(&recovery_key)?;
-    let mut wrap_key = vault_recovery::derive_wrap_key(&root)?;
-    root.zeroize();
 
-    let tmp = part_path(&dest_path);
-    let mut reader = BufReader::new(
-        File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
-    );
-    let mut writer = BufWriter::new(
-        File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
-    );
-    let result = vault_stream::decrypt_stream_with_recovery(&mut reader, &mut writer, &wrap_key);
-    wrap_key.zeroize();
-    match result {
-        Ok(summary) => {
-            writer
-                .flush()
-                .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-            drop(writer);
-            std::fs::rename(&tmp, &dest_path)
-                .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
-            state.audit_info(
-                "vault_recovery_decrypt",
-                "Vault file recovered with quantum-safe recovery key",
-            );
-            state.touch_telemetry(
-                "vault_decrypt",
-                "Vault file recovered on a new device using the recovery key",
-                100,
-            );
-            Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_path))
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_path.clone();
+    let summary = run_stream_blocking(move || {
+        let mut root = vault_recovery::decode_recovery_key(&recovery_key)?;
+        let mut wrap_key = vault_recovery::derive_wrap_key(&root)?;
+        root.zeroize();
+
+        let tmp = part_path(&dest_path);
+        let mut reader = BufReader::new(
+            File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
+        );
+        let mut writer = BufWriter::new(
+            File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
+        );
+        let result = vault_stream::decrypt_stream_with_recovery(&mut reader, &mut writer, &wrap_key);
+        wrap_key.zeroize();
+        match result {
+            Ok(summary) => {
+                writer
+                    .flush()
+                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                drop(writer);
+                std::fs::rename(&tmp, &dest_path)
+                    .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+                Ok(summary)
+            }
+            Err(error) => {
+                drop(writer);
+                let _ = std::fs::remove_file(&tmp);
+                Err(error)
+            }
         }
-        Err(error) => {
-            drop(writer);
-            let _ = std::fs::remove_file(&tmp);
-            Err(error)
-        }
-    }
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_recovery_decrypt",
+        "Vault file recovered with quantum-safe recovery key",
+    );
+    state.touch_telemetry(
+        "vault_decrypt",
+        "Vault file recovered on a new device using the recovery key",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 #[tauri::command]
-pub fn vault_decrypt_folder_path_with_recovery(
+pub async fn vault_decrypt_folder_path_with_recovery(
     state: State<'_, AppState>,
     source_path: String,
     dest_dir: String,
@@ -706,42 +809,50 @@ pub fn vault_decrypt_folder_path_with_recovery(
 ) -> Result<VaultLocalStreamSummary> {
     state.require_auth()?;
     state.check_decrypt_rate_limit("vault_recovery_folder", &source_path, 20, 300)?;
-    std::fs::create_dir_all(&dest_dir)
-        .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
-    let mut root = vault_recovery::decode_recovery_key(&recovery_key)?;
-    let mut wrap_key = vault_recovery::derive_wrap_key(&root)?;
-    root.zeroize();
 
-    let mut reader = BufReader::new(
-        File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
-    );
-    let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
-    let result = vault_stream::decrypt_stream_with_recovery(&mut reader, &mut writer, &wrap_key);
-    wrap_key.zeroize();
-    match result {
-        Ok(summary) => {
-            writer
-                .flush()
-                .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-            state.audit_info(
-                "vault_recovery_decrypt_folder",
-                "Vault folder recovered with quantum-safe recovery key",
-            );
-            state.touch_telemetry(
-                "vault_decrypt",
-                "Vault folder recovered on a new device using the recovery key",
-                100,
-            );
-            Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_dir))
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_dir.clone();
+    let summary = run_stream_blocking(move || {
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
+        let mut root = vault_recovery::decode_recovery_key(&recovery_key)?;
+        let mut wrap_key = vault_recovery::derive_wrap_key(&root)?;
+        root.zeroize();
+
+        let mut reader = BufReader::new(
+            File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
+        );
+        let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
+        let result = vault_stream::decrypt_stream_with_recovery(&mut reader, &mut writer, &wrap_key);
+        wrap_key.zeroize();
+        match result {
+            Ok(summary) => {
+                writer
+                    .flush()
+                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                Ok(summary)
+            }
+            Err(error) => Err(error),
         }
-        Err(error) => Err(error),
-    }
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_recovery_decrypt_folder",
+        "Vault folder recovered with quantum-safe recovery key",
+    );
+    state.touch_telemetry(
+        "vault_decrypt",
+        "Vault folder recovered on a new device using the recovery key",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 /// Recover a local `.qvault` file with the enterprise ML-KEM-1024 recovery key.
 /// For hybrid containers, the personal `recovery_key` is also required.
 #[tauri::command]
-pub fn vault_decrypt_path_with_enterprise(
+pub async fn vault_decrypt_path_with_enterprise(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
@@ -750,49 +861,57 @@ pub fn vault_decrypt_path_with_enterprise(
 ) -> Result<VaultLocalStreamSummary> {
     state.require_auth()?;
     state.check_decrypt_rate_limit("vault_enterprise_file", &source_path, 30, 300)?;
-    let recipient = vault_recovery::decode_enterprise_private_key(&enterprise_key)?;
-    let root = match recovery_key {
-        Some(key) if !key.trim().is_empty() => Some(vault_recovery::decode_recovery_key(&key)?),
-        _ => None,
-    };
 
-    let tmp = part_path(&dest_path);
-    let mut reader = BufReader::new(
-        File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
-    );
-    let mut writer = BufWriter::new(
-        File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
-    );
-    let result = vault_stream::decrypt_stream_with_enterprise(&mut reader, &mut writer, &recipient, root.as_ref());
-    match result {
-        Ok(summary) => {
-            writer
-                .flush()
-                .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-            drop(writer);
-            std::fs::rename(&tmp, &dest_path)
-                .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
-            state.audit_info(
-                "vault_enterprise_recovery_decrypt",
-                "Vault file recovered with enterprise ML-KEM-1024 key",
-            );
-            state.touch_telemetry(
-                "vault_decrypt",
-                "Vault file recovered with enterprise ML-KEM-1024 recovery key",
-                100,
-            );
-            Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_path))
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_path.clone();
+    let summary = run_stream_blocking(move || {
+        let recipient = vault_recovery::decode_enterprise_private_key(&enterprise_key)?;
+        let root = match recovery_key {
+            Some(key) if !key.trim().is_empty() => Some(vault_recovery::decode_recovery_key(&key)?),
+            _ => None,
+        };
+
+        let tmp = part_path(&dest_path);
+        let mut reader = BufReader::new(
+            File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
+        );
+        let mut writer = BufWriter::new(
+            File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
+        );
+        let result = vault_stream::decrypt_stream_with_enterprise(&mut reader, &mut writer, &recipient, root.as_ref());
+        match result {
+            Ok(summary) => {
+                writer
+                    .flush()
+                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                drop(writer);
+                std::fs::rename(&tmp, &dest_path)
+                    .map_err(|e| QGuardError::Storage(format!("finalize output: {e}")))?;
+                Ok(summary)
+            }
+            Err(error) => {
+                drop(writer);
+                let _ = std::fs::remove_file(&tmp);
+                Err(error)
+            }
         }
-        Err(error) => {
-            drop(writer);
-            let _ = std::fs::remove_file(&tmp);
-            Err(error)
-        }
-    }
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_enterprise_recovery_decrypt",
+        "Vault file recovered with enterprise ML-KEM-1024 key",
+    );
+    state.touch_telemetry(
+        "vault_decrypt",
+        "Vault file recovered with enterprise ML-KEM-1024 recovery key",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 #[tauri::command]
-pub fn vault_decrypt_folder_path_with_enterprise(
+pub async fn vault_decrypt_folder_path_with_enterprise(
     state: State<'_, AppState>,
     source_path: String,
     dest_dir: String,
@@ -801,36 +920,44 @@ pub fn vault_decrypt_folder_path_with_enterprise(
 ) -> Result<VaultLocalStreamSummary> {
     state.require_auth()?;
     state.check_decrypt_rate_limit("vault_enterprise_folder", &source_path, 20, 300)?;
-    std::fs::create_dir_all(&dest_dir)
-        .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
-    let recipient = vault_recovery::decode_enterprise_private_key(&enterprise_key)?;
-    let root = match recovery_key {
-        Some(key) if !key.trim().is_empty() => Some(vault_recovery::decode_recovery_key(&key)?),
-        _ => None,
-    };
-    let mut reader = BufReader::new(
-        File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
-    );
-    let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
-    let result = vault_stream::decrypt_stream_with_enterprise(&mut reader, &mut writer, &recipient, root.as_ref());
-    match result {
-        Ok(summary) => {
-            writer
-                .flush()
-                .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-            state.audit_info(
-                "vault_enterprise_recovery_decrypt_folder",
-                "Vault folder recovered with enterprise ML-KEM-1024 key",
-            );
-            state.touch_telemetry(
-                "vault_decrypt",
-                "Vault folder recovered with enterprise ML-KEM-1024 recovery key",
-                100,
-            );
-            Ok(VaultLocalStreamSummary::from_stream(summary, source_path, dest_dir))
+
+    let source_for_result = source_path.clone();
+    let dest_for_result = dest_dir.clone();
+    let summary = run_stream_blocking(move || {
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
+        let recipient = vault_recovery::decode_enterprise_private_key(&enterprise_key)?;
+        let root = match recovery_key {
+            Some(key) if !key.trim().is_empty() => Some(vault_recovery::decode_recovery_key(&key)?),
+            _ => None,
+        };
+        let mut reader = BufReader::new(
+            File::open(&source_path).map_err(|e| QGuardError::Storage(format!("open encrypted source: {e}")))?,
+        );
+        let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
+        let result = vault_stream::decrypt_stream_with_enterprise(&mut reader, &mut writer, &recipient, root.as_ref());
+        match result {
+            Ok(summary) => {
+                writer
+                    .flush()
+                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                Ok(summary)
+            }
+            Err(error) => Err(error),
         }
-        Err(error) => Err(error),
-    }
+    })
+    .await?;
+
+    state.audit_info(
+        "vault_enterprise_recovery_decrypt_folder",
+        "Vault folder recovered with enterprise ML-KEM-1024 key",
+    );
+    state.touch_telemetry(
+        "vault_decrypt",
+        "Vault folder recovered with enterprise ML-KEM-1024 recovery key",
+        100,
+    );
+    Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
 /// Permanently delete a local `.qvault` container from disk. Restricted to the

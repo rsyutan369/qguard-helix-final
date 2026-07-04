@@ -218,7 +218,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
       ] = await Promise.all([
         client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }),
         client.from("messaging_conversations").select("id,owner_user_id,conversation_type,encrypted_title,updated_at,created_at").order("updated_at", { ascending: false }).limit(100),
-        client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at").order("created_at", { ascending: false }).limit(50),
+        client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at,expires_at,lifecycle").order("created_at", { ascending: false }).limit(500),
         emptyResult(),
         client.from("messaging_security_events").select("id,device_id,event_type,severity,encrypted_details,event_hash,previous_hash,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_org_members").select("org_id,user_id,role,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
@@ -326,6 +326,40 @@ export function useDashboardData(user: User | null, session: Session | null) {
       const userConversationIds = new Set(memberRows
         .filter((member) => String(member.user_id) === user.id)
         .map((member) => String(member.conversation_id)));
+      const contactRows = contactsResult.error ? [] : (contactsResult.data ?? []) as Array<Record<string, unknown>>;
+      // Resolve real usernames for conversation members and contacts so direct
+      // chats show who the messages come from instead of the generic
+      // "Encrypted direct conversation" label. Only public directory fields
+      // (username/name/email) are read; message content stays encrypted.
+      const directoryUserIds = Array.from(new Set([
+        ...memberRows.map((member) => String(member.user_id)),
+        ...contactRows.map((contact) => String(contact.contact_user_id)),
+        // Envelope participants cover conversations whose membership rows are
+        // not visible to this account (older threads), so DM titles still resolve.
+        ...envelopeRows.map((envelope) => String(envelope.sender_user_id)),
+        ...envelopeRows.map((envelope) => String(envelope.recipient_user_id)),
+      ])).filter((id) => id && id !== user.id);
+      const profileDirectory = new Map<string, { username: string | null; name: string | null; email: string | null }>();
+      if (directoryUserIds.length > 0) {
+        const { data: directoryRows, error: directoryError } = await client
+          .from("profiles")
+          .select("id,username,name,email")
+          .in("id", directoryUserIds);
+        if (!directoryError) {
+          ((directoryRows ?? []) as Array<Record<string, unknown>>).forEach((row) => {
+            profileDirectory.set(String(row.id), {
+              username: row.username ? String(row.username) : null,
+              name: row.name ? String(row.name) : null,
+              email: row.email ? String(row.email) : null,
+            });
+          });
+        }
+      }
+      const memberDisplayName = (memberId: string): string | null => {
+        const profile = profileDirectory.get(memberId);
+        if (!profile) return null;
+        return profile.username || profile.name || (profile.email ? profile.email.split("@")[0] : null);
+      };
       const conversations = (conversationsResult.error ? [] : (conversationsResult.data ?? []) as Array<Record<string, unknown>>)
         .filter((conversation) => String(conversation.owner_user_id) === user.id || userConversationIds.has(String(conversation.id)))
         .filter((conversation) => !conversationStatesById.get(String(conversation.id))?.deleted_at)
@@ -334,7 +368,19 @@ export function useDashboardData(user: User | null, session: Session | null) {
         const latestEnvelope = conversationEnvelopeRows[0] ?? null;
         const unreadGroups = new Set<string>();
         conversationEnvelopeRows
-          .filter((envelope) => String(envelope.recipient_user_id) === user.id)
+          // Own sent messages also arrive as self-device sync envelopes with
+          // recipient_user_id = me; they must never count as unread.
+          .filter((envelope) => String(envelope.recipient_user_id) === user.id && String(envelope.sender_user_id) !== user.id)
+          // Reaction/edit control envelopes and already-expired disappearing
+          // messages are never rendered as readable messages, so they must not
+          // keep the unread bubble alive.
+          .filter((envelope) => {
+            const lifecycle = (envelope.lifecycle ?? {}) as Record<string, unknown>;
+            if (lifecycle.control_type) return false;
+            const expiresAtMs = envelope.expires_at ? new Date(String(envelope.expires_at)).getTime() : Number.NaN;
+            if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return false;
+            return true;
+          })
           .forEach((envelope) => {
             const state = messageStatesByClientId.get(messageGroupId(envelope));
             if (!state?.first_read_at && !state?.hidden_at) unreadGroups.add(messageGroupId(envelope));
@@ -342,12 +388,22 @@ export function useDashboardData(user: User | null, session: Session | null) {
         const memberUserIds = Array.from(new Set(memberRows
           .filter((member) => String(member.conversation_id) === String(conversation.id))
           .map((member) => String(member.user_id))));
+        const peerUserIds = Array.from(new Set([
+          ...memberUserIds,
+          ...conversationEnvelopeRows.flatMap((envelope) => [String(envelope.sender_user_id), String(envelope.recipient_user_id)]),
+        ])).filter((memberId) => memberId && memberId !== user.id);
+        const peerNames = peerUserIds
+          .map((memberId) => memberDisplayName(memberId))
+          .filter((value): value is string => Boolean(value));
+        const peerTitle = peerNames.length > 3
+          ? `${peerNames.slice(0, 3).join(", ")} +${peerNames.length - 3}`
+          : peerNames.join(", ");
         const state = conversationStatesById.get(String(conversation.id));
         const updatedAt = latestIso(conversation.updated_at, conversation.created_at, latestEnvelope?.created_at);
         return {
           id: String(conversation.id),
           conversation_type: String(conversation.conversation_type),
-          title: `Encrypted ${String(conversation.conversation_type)} conversation`,
+          title: peerTitle || `Encrypted ${String(conversation.conversation_type)} conversation`,
           last_activity: latestEnvelope ? messageKindLabel(latestEnvelope.message_kind) : "No encrypted messages yet",
           unread_count: unreadGroups.size,
           updated_at: updatedAt,
@@ -358,16 +414,16 @@ export function useDashboardData(user: User | null, session: Session | null) {
         } satisfies ConversationSummary;
       }).sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
-      const contactRows = contactsResult.error ? [] : (contactsResult.data ?? []) as Array<Record<string, unknown>>;
       const contacts = contactRows.map((contact) => {
         const contactUserId = String(contact.contact_user_id);
         const alias = contact.alias ? String(contact.alias) : null;
+        const profile = profileDirectory.get(contactUserId);
         return {
           id: String(contact.id),
           contact_user_id: contactUserId,
           alias,
-          display_name: alias ?? `Contact ${contactUserId.slice(0, 8)}`,
-          username: contactUserId,
+          display_name: alias ?? profile?.name ?? profile?.username ?? `Contact ${contactUserId.slice(0, 8)}`,
+          username: profile?.username ?? (profile?.email ? profile.email.split("@")[0] : contactUserId),
           trust_state: String(contact.trust_state) as ContactSummary["trust_state"],
           created_at: String(contact.created_at),
           updated_at: String(contact.updated_at),

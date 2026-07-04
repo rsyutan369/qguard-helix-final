@@ -1,0 +1,64 @@
+# Quantum Vault — Large File/Folder Freeze Fix + Integrity Verify
+
+Date: 2026-07-03
+Scope: qguard-messaging (Tauri desktop app), Quantum Vault page
+
+## Symptom
+
+Encrypting (or decrypting) a large file or folder froze the whole application:
+the window went "Not Responding", the Vault Crypto Terminal progress suddenly
+stopped, and after the operation the user could not tell whether the `.qvault`
+container had actually been completed.
+
+## Root Cause
+
+Every vault stream command in `src-tauri/src/commands/vault.rs` was a
+**synchronous** Tauri command (`pub fn`). In Tauri v2, synchronous commands
+execute on the **main thread**. A multi-GB AES-256-GCM chunk stream (plus
+ML-KEM-1024 encapsulation and ML-DSA-87 signing) therefore blocked the window
+event loop for the entire operation:
+
+- Windows marked the app "Not Responding" (the hang/freeze)
+- Channel progress delivery to the WebView stalled (terminal stopped)
+- The success/summary UI never rendered until the very end
+
+The cryptography itself was always correct: containers are written to a
+`<dest>.qguard-part` temp file and atomically renamed to the final `.qvault`
+path only after a fully flushed, size-verified stream. A `.qvault` file on disk
+is a complete container; a leftover `.qguard-part` is an aborted run.
+
+## Fix
+
+1. **All 9 stream commands are now `async` and run their file I/O + crypto in
+   `tauri::async_runtime::spawn_blocking`** (see `run_stream_blocking` in
+   `commands/vault.rs`): encrypt/decrypt file, encrypt/decrypt folder, rewrap,
+   recovery decrypt (file+folder), enterprise decrypt (file+folder).
+   The main thread stays free → no freeze, real-time progress, responsive UI.
+
+2. **New `vault_verify_path` command** (+ `verify_stream_with_progress` in
+   `vault_stream.rs`): fully verifies a `.qvault` container on-device by
+   decrypting every chunk to an in-memory sink — checks the ML-DSA-signed
+   header, the device KEM unwrap, every chunk's AES-256-GCM tag/AAD binding,
+   and the declared chunk count/size. Plaintext is never written anywhere.
+
+3. **Frontend** (`QuantumVaultPage.tsx`, `vault-progress.ts`):
+   - New per-entry "Verify integrity" action (FileCheck2 icon) in the Vault
+     Explorer, streaming live `verify` progress into the Crypto Terminal.
+   - `runVaultStream` now serializes stream operations with an in-flight guard
+     (commands genuinely run concurrently now that they are off the main
+     thread, and two ops would interleave progress in the one terminal).
+   - `op: "verify"` added to the progress model ("Verifying" label).
+
+## Verification
+
+- `cargo check` clean; `cargo test --lib` 42/42 passing, including the new
+  `verify_stream_accepts_intact_and_rejects_tampered_containers` test
+  (intact container verifies; single flipped ciphertext byte fails; wrong
+  device key fails).
+- `tsc --noEmit` clean; `vitest run` 15/15 passing.
+
+## Rule for future commands
+
+Never do heavy work (file streaming, bulk crypto, archive walking) inside a
+synchronous Tauri command — it runs on the main thread. Make the command
+`async` and wrap the blocking work in `tauri::async_runtime::spawn_blocking`.

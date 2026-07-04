@@ -48,6 +48,7 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   summary.addRow([report.meta.title]).font = { bold: true, size: 16 };
   summary.addRow([`${report.branding.companyName}${report.branding.businessUnit ? ` — ${report.branding.businessUnit}` : ''}`]);
   summary.addRow([`Classification: ${report.branding.classification} | Version: ${report.meta.version} | Generated: ${new Date(report.meta.generatedAt).toLocaleString()}`]);
+  summary.addRow([`Assessment Scope: ${report.scope.type === 'custom' ? `${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets (custom selection)` : `Full assessment (${report.scope.totalAssetCount} asset${report.scope.totalAssetCount === 1 ? '' : 's'})`}`]);
   summary.addRow([]);
   const kpiHeader = summary.addRow(['KPI', 'Value', 'Level']);
   styleHeader(kpiHeader);
@@ -91,6 +92,13 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
     ['Budget', '-', usd(report.executiveBlock.estimatedCostUsd)],
     ['Expected Risk Reduction', '-', `${report.executiveBlock.expectedRiskReductionPct}%`],
   ] }, 'Executive Summary');
+  addTableSheet(workbook, { title: 'Assessment Scope', columns: ['Scope Detail', 'Value'], rows: [
+    ['Scope Type', report.scope.type === 'custom' ? 'Custom asset selection' : 'Full assessment'],
+    ['Assets In Scope', report.scope.type === 'custom' ? `${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount}` : `${report.scope.totalAssetCount}`],
+    ['Scope Note', report.scope.note],
+    ...(report.scope.methodology ? [['Attribution Methodology', report.scope.methodology] as Array<string | number>] : []),
+    ...report.scope.assets.map((a, i) => [`Asset ${i + 1}`, `${a.name} (${a.assetType} · ${a.environment} · risk ${a.riskScore}/100 · ${a.posture})`] as Array<string | number>),
+  ] }, 'Assessment Scope');
   addTableSheet(workbook, { title: 'Business Impact', columns: ['Dimension', 'Value'], rows: [
     ['Customer-Facing Systems', report.businessImpact.customerFacingSystems], ['Mission-Critical Systems', report.businessImpact.missionCriticalSystems],
     ['Third-Party Dependencies', report.businessImpact.thirdPartyDependencies], ['Revenue Impact', report.businessImpact.revenueImpact],

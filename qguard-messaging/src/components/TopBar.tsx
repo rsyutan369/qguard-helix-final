@@ -13,6 +13,8 @@ interface TopBarProps {
   activePage: string;
   liveStatus: QGuardLiveStatus;
   lastLiveEvent: QGuardLiveEvent | null;
+  unreadMessages?: number;
+  onOpenChat?: () => void;
   onToggleTheme: () => void;
   onSignOut: () => void;
   onStartTour: () => void;
@@ -28,7 +30,7 @@ function initials(user: User): string {
     .join("") || "U";
 }
 
-export default function TopBar({ title, subtitle, user, theme, activePage, liveStatus, lastLiveEvent, onToggleTheme, onSignOut, onStartTour }: TopBarProps) {
+export default function TopBar({ title, subtitle, user, theme, activePage, liveStatus, lastLiveEvent, unreadMessages = 0, onOpenChat, onToggleTheme, onSignOut, onStartTour }: TopBarProps) {
   const [panel, setPanel] = useState<"search" | "notifications" | "help" | null>(null);
   const [search, setSearch] = useState("");
   const headerRef = useRef<HTMLElement>(null);
@@ -82,8 +84,13 @@ export default function TopBar({ title, subtitle, user, theme, activePage, liveS
         <span className={`status-pill ${liveTone}`} title={liveStatusLabel(liveStatus.state)}>
           {liveStatus.state}
         </span>
-        <button className="icon-button" title="Notifications" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>
+        <button className="icon-button relative" title="Notifications" onClick={() => setPanel(panel === "notifications" ? null : "notifications")}>
           <Bell size={18} />
+          {unreadMessages > 0 && (
+            <span className="absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold leading-none text-white shadow-tight">
+              {unreadMessages > 99 ? "99+" : unreadMessages}
+            </span>
+          )}
         </button>
         <button data-tour="help" className="icon-button" title="Security help" onClick={() => setPanel(panel === "help" ? null : "help")}>
           <CircleHelp size={18} />
@@ -115,6 +122,26 @@ export default function TopBar({ title, subtitle, user, theme, activePage, liveS
           {panel === "notifications" && (
             <div>
               <div className="text-sm font-bold text-ink-950">Live Activity</div>
+              {unreadMessages > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPanel(null);
+                    onOpenChat?.();
+                  }}
+                  className="focus-ring mt-3 flex w-full items-center gap-3 rounded-lg border border-violet-100 bg-violet-50 p-3 text-left transition hover:bg-violet-100"
+                >
+                  <span className="flex h-6 min-w-[24px] items-center justify-center rounded-full bg-violet-600 px-1.5 text-[11px] font-bold text-white">
+                    {unreadMessages > 99 ? "99+" : unreadMessages}
+                  </span>
+                  <span>
+                    <span className="block text-sm font-semibold text-ink-900">
+                      Unread encrypted message{unreadMessages === 1 ? "" : "s"}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-ink-500">Open Secure Chat to read and mark as read.</span>
+                  </span>
+                </button>
+              )}
               {lastLiveEvent ? (
                 <div className="mt-3 rounded-lg border border-line bg-canvas p-3">
                   <div className="text-sm font-semibold text-ink-900">{describeLiveEvent(lastLiveEvent).title}</div>

@@ -1,0 +1,62 @@
+# Video Call Machine Freeze — Root Cause & Permanent Fix (2026-07-03)
+
+## Symptom
+Starting a video call in QGuard Messaging froze the app AND the entire Windows
+laptop (mouse dead, hard power-off required). Confirmed by Kernel-Power 41 +
+EventLog 6008 events on 25/06, 26/06 and 03/07 11:06 — the last one on a build
+that already contained the round-2 fix.
+
+## Evidence trail
+- Host: HP Pavilion 15-eg1xxx, i7-1195G7 (4C/8T), 16 GB RAM, Intel Iris Xe,
+  driver 31.0.101.4502 (July 2023 — ~3 years outdated).
+- No Display-driver TDR recovery events (4101), no WHEA, no resource-exhaustion
+  events, no WebView2 crash dumps → the GPU driver wedges and never recovers;
+  nothing in userspace ever crashes. Only video calls trigger it — normal app
+  use (GPU-composited UI) never freezes.
+- Round 1 (media caps ≤360p@24, sender bitrate caps) and round 2
+  (`--disable-accelerated-video-decode/encode`, teardown-race fix) reduced but
+  did not eliminate the freeze.
+
+## Root cause (round 3)
+Disabling accelerated encode/decode still left the WebView2 **camera-capture
+pipeline** on the GPU: hardware **MJPEG decode** of webcam frames (most laptop
+cameras deliver MJPEG), the **D3D11 zero-copy Media Foundation capture** path,
+GPU-memory video frame buffers, and DirectComposition video overlays during
+playback. Any of these can wedge an outdated Intel Iris Xe driver at kernel
+level — freezing the whole machine with no TDR recovery and no log trace.
+
+## Permanent fix (defense in depth)
+1. **All hardware media paths off** (`src-tauri/src/lib.rs run()`), Windows-only,
+   set in `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` before the WebView2 env exists:
+   `--disable-accelerated-video-decode --disable-accelerated-video-encode
+   --disable-accelerated-mjpeg-decode --disable-gpu-memory-buffer-video-frames
+   --disable-direct-composition-video-overlays
+   --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaFoundationD3D11VideoCapture`
+   Notes: `--disable-features` REPLACES earlier occurrences, so wry's defaults
+   are repeated; env-var args are appended after wry's, so ours win. Media is
+   capped ≤360p@24 (call-quality.ts) so the software pipeline is cheap; the app
+   UI itself stays GPU-composited and smooth.
+2. **Self-healing GPU safe mode** (`src-tauri/src/commands/calls.rs`):
+   - `call_watchdog_begin/end` write/clear `call-active.marker` in the app data
+     dir around the call media lifecycle (`use-secure-call.ts` getMedia/cleanup).
+   - Graceful window close also clears the marker (`on_window_event`
+     CloseRequested in lib.rs) so normal quits never trip it.
+   - On startup, `gpu_safe_mode_boot_check` converts a stale marker (= previous
+     session died mid-call: freeze/crash/power loss) into a persistent
+     `gpu-safe-mode.flag`; every launch with the flag adds `--disable-gpu`
+     (full software rendering — machine physically cannot be frozen by the GPU
+     driver again).
+   - Settings → "Call Device Protection" card (SettingsPage.tsx) shows the mode
+     and offers "return to hardware rendering" (via `call_gpu_safe_mode_clear`,
+     effective next launch) once the user updates their graphics driver.
+3. **Operator action (this machine):** update the Intel Iris Xe driver
+   (31.0.101.4502 → current 32.0.101.x via Intel Driver & Support Assistant or
+   HP Support Assistant). The stale driver is the underlying defect; the app is
+   now hardened to survive it either way.
+
+## Verification
+- Rust: `cargo test --lib` 45/45 (3 new watchdog lifecycle tests), clean build.
+- Frontend: `tsc --noEmit`, `vite build`, `vitest run` all green.
+- Runtime: launched the app and confirmed the msedgewebview2 browser process
+  command line carries every flag.
+- Live two-party call: requires two machines — user verification.

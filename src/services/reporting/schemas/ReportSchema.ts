@@ -546,6 +546,38 @@ export const chartImageSchema = z.object({
 });
 export type ReportChartImage = z.infer<typeof chartImageSchema>;
 
+// Asset-scoped reporting — records exactly which discovered assets the report
+// covers. `full` = whole assessment; `custom` = user-selected subset, with the
+// selected assets listed and the attribution methodology disclosed.
+export const reportScopeAssetSchema = z.object({
+  name: z.string(),
+  key: z.string().default(''),
+  assetType: z.string().default('asset'),
+  environment: z.string().default('unknown'),
+  riskScore: z.number().default(0),
+  posture: z.string().default('unknown'),
+});
+export type ReportScopeAsset = z.infer<typeof reportScopeAssetSchema>;
+
+export const reportScopeSchema = z.object({
+  type: z.enum(['full', 'custom']).default('full'),
+  selectedAssetCount: z.number().default(0),
+  totalAssetCount: z.number().default(0),
+  assets: z.array(reportScopeAssetSchema).default([]),
+  note: z.string().default(''),
+  methodology: z.string().default(''),
+});
+export type ReportScope = z.infer<typeof reportScopeSchema>;
+
+export const DEFAULT_REPORT_SCOPE: ReportScope = {
+  type: 'full',
+  selectedAssetCount: 0,
+  totalAssetCount: 0,
+  assets: [],
+  note: '',
+  methodology: '',
+};
+
 export const reportMetaSchema = z.object({
   id: z.string(),
   kind: z.enum(REPORT_KINDS),
@@ -568,6 +600,8 @@ export type ReportIntegrity = z.infer<typeof integritySchema>;
 
 export const enterpriseAssessmentReportSchema = z.object({
   meta: reportMetaSchema,
+  // Default keeps previously-saved report JSON parseable (pre-scope reports = full scope).
+  scope: reportScopeSchema.default(DEFAULT_REPORT_SCOPE),
   branding: brandingSchema,
   executiveSummary: z.string(),
   executiveBlock: executiveBlockSchema,

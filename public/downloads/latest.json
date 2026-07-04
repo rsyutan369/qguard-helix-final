@@ -1,0 +1,11 @@
+{
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2pGaUlMZGdDc2loUC9Tb1QyYjZ0QkZVR3FFcDE2Wkg2b1Yvc1NRRDRHanJrdzdhZldwV2NvNmprNXY1YytiTHpyUytDR1NLTXBXZHZERnlOZDczclE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzMTc0ODk5CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjEuMF94NjQtc2V0dXAuZXhlCjNqYXd1dmRyVStmR2RIays1TnFrYzVtSWRiQTlJOStLSVI0ZllBMUJIOXNkOHVzTkdyOXdSWTFHSGhLQWd4Q0NwRzRTN1hXaFgrdU9Sb1l2QTJreEN3PT0K",
+                                             "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
+                                         }
+                  },
+    "pub_date":  "2026-07-04T14:21:43Z",
+    "version":  "1.1.0",
+    "notes":  "Security and reliability improvements."
+}

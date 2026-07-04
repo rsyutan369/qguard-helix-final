@@ -72,8 +72,13 @@ pub struct DeliveryReceipt {
     pub status: String,
 }
 
+// Send/receive are `async` so Tauri runs them on the runtime thread pool
+// instead of the MAIN thread: a history load fires dozens of decrypts, and as
+// sync commands each one stalled the UI (same root cause as the vault
+// large-file freeze). The heavy crypto still serializes on `lock_key_scope`,
+// but the app stays responsive and IPC round-trips overlap.
 #[tauri::command]
-pub fn messaging_send_encrypted_message(
+pub async fn messaging_send_encrypted_message(
     state: State<'_, AppState>,
     request: SendMessageRequest,
 ) -> Result<EncryptedMessageEnvelope> {
@@ -205,7 +210,7 @@ fn verify_recipient_prekey(
 }
 
 #[tauri::command]
-pub fn messaging_receive_encrypted_message(
+pub async fn messaging_receive_encrypted_message(
     state: State<'_, AppState>,
     envelope: EncryptedMessageEnvelope,
 ) -> Result<DecryptedMessage> {

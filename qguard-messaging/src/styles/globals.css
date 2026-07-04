@@ -284,7 +284,8 @@ button:not(:disabled):hover {
 .theme-dark .bg-white\/70,
 .theme-dark .bg-white\/75,
 .theme-dark .bg-white\/80,
-.theme-dark .bg-white\/90 {
+.theme-dark .bg-white\/90,
+.theme-dark .bg-white\/95 {
   background-color: rgba(17, 24, 39, 0.78) !important;
 }
 
@@ -310,6 +311,10 @@ button:not(:disabled):hover {
 
 .theme-dark .bg-violet-50 {
   background-color: rgba(124, 58, 237, 0.16) !important;
+}
+
+.theme-dark .bg-violet-50\/60 {
+  background-color: rgba(124, 58, 237, 0.18) !important;
 }
 
 .theme-dark .bg-violet-50\/90 {
@@ -442,6 +447,7 @@ button:not(:disabled):hover {
 }
 
 .theme-dark .hover\:bg-violet-50:hover,
+.theme-dark .hover\:bg-violet-100:hover,
 .theme-dark .hover\:bg-cyan-50:hover,
 .theme-dark .hover\:bg-cyan-50\/50:hover,
 .theme-dark .hover\:bg-emerald-50:hover,

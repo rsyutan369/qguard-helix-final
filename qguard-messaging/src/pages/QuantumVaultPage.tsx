@@ -88,7 +88,7 @@ interface VaultRegistryEntry {
 interface VaultActivityEntry {
   id: string;
   at: string;
-  source: "encrypt" | "decrypt" | "recover" | "reprotect" | "delete";
+  source: "encrypt" | "decrypt" | "recover" | "reprotect" | "verify" | "delete";
   title: string;
   detail: string;
   status: "success" | "failed" | "info";
@@ -324,8 +324,17 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   // stay genuinely real-time. No values are fabricated — percentage is stage-weighted
   // over the steps that actually ran, and throughput/ETA use each event's real
   // arrival time.
+  // Commands now run on a background worker thread (Rust spawn_blocking), so two
+  // stream ops COULD run concurrently — but they would interleave their progress
+  // in the one terminal/live panel. Serialize them explicitly instead.
+  const streamInFlightRef = useRef(false);
+
   const runVaultStream = useCallback(
     async (command: string, args: Record<string, unknown>): Promise<VaultLocalStreamSummary> => {
+      if (streamInFlightRef.current) {
+        throw new Error("Another vault crypto operation is still running. Let it finish first.");
+      }
+      streamInFlightRef.current = true;
       if (drainTimerRef.current !== undefined) {
         window.clearTimeout(drainTimerRef.current);
         drainTimerRef.current = undefined;
@@ -406,6 +415,8 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         stepQueueRef.current = [];
         setLiveStep(null);
         throw error;
+      } finally {
+        streamInFlightRef.current = false;
       }
     },
     [appendLog],
@@ -849,6 +860,29 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     }
   }
 
+  async function verifyRegistryEntry(entry: VaultRegistryEntry) {
+    if (actionBusy) return;
+    setActionBusy(`verify-${entry.id}`);
+    try {
+      setStatus(`Verifying ${entry.name}`);
+      appendLog("info", `Verifying ${pathBasename(entry.qvaultPath)} · signed header + every chunk tag (nothing is written to disk)`);
+      const summary = await runVaultStream("vault_verify_path", { sourcePath: entry.qvaultPath });
+      updateRegistryEntry(entry.id, { integrity: "verified", sizeBytes: summary.original_size, totalChunks: summary.total_chunks });
+      const line = `Verified ${summary.name} (${formatBytes(summary.original_size)}, ${summary.total_chunks} chunk${summary.total_chunks === 1 ? "" : "s"}) · container intact`;
+      appendLog("success", line);
+      pushActivity({ source: "verify", title: "Integrity verified", detail: line, status: "success" });
+      setStatus("Vault container verified");
+    } catch (error) {
+      const message = describeError(error);
+      updateRegistryEntry(entry.id, { integrity: "pending" });
+      appendLog("error", `Verification failed for ${entry.name}: ${message}`);
+      pushActivity({ source: "verify", title: "Verification failed", detail: `${entry.name}: ${message}`, status: "failed" });
+      setStatus(message);
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   async function deleteRegistryFile(entry: VaultRegistryEntry) {
     if (actionBusy) return;
     setActionBusy(`delete-${entry.id}`);
@@ -907,6 +941,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
   function renderEntryActions(entry: VaultRegistryEntry) {
     const decryptBusy = actionBusy === `decrypt-${entry.id}`;
+    const verifyBusy = actionBusy === `verify-${entry.id}`;
     const reprotectBusy = actionBusy === `reprotect-${entry.id}`;
     const deleteBusy = actionBusy === `delete-${entry.id}`;
     const disabled = Boolean(actionBusy);
@@ -914,6 +949,9 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       <div className="flex flex-nowrap items-center gap-2">
         <button type="button" disabled={disabled} onClick={() => decryptRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Decrypt (choose destination)">
           {decryptBusy ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />}
+        </button>
+        <button type="button" disabled={disabled} onClick={() => verifyRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Verify integrity (checks every chunk, writes nothing)">
+          {verifyBusy ? <Loader2 className="animate-spin" size={16} /> : <FileCheck2 size={16} />}
         </button>
         <button type="button" disabled={disabled} onClick={() => reprotectRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Re-protect (upgrade to v3 / add recovery)">
           {reprotectBusy ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}

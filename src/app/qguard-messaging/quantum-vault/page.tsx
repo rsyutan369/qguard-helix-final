@@ -29,6 +29,7 @@ import {
   TrustStrip,
   StepCard,
   CTASection,
+  DownloadButton,
   type Feature,
 } from '../_shared';
 
@@ -79,6 +80,7 @@ export default function QuantumVaultPage() {
               Encrypt any file or folder on your device with post-quantum cryptography. Strictly local, zero-knowledge — your data never leaves your machine.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
+              <DownloadButton />
               <GoldButton href="/login">Open the Quantum Vault</GoldButton>
               <GhostButton to="/qguard-messaging/secure-chat">See Secure Chat</GhostButton>
             </div>
