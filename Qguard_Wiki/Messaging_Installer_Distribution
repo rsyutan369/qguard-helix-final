@@ -60,15 +60,29 @@ HTML `download` attribute in the hero of:
 - /qguard-messaging/secure-chat
 - /qguard-messaging/quantum-vault
 
-## Build reliability — os error 32 root cause (fixed 2026-07-03)
-Release builds repeatedly failed with `failed to build archive ... os error 32`
-(temp archive locked). Root cause: the repo lives under `C:\Users\HP\Music` — a
-Windows profile LIBRARY folder that Search indexing/AV watch aggressively, and
-they lock freshly written .rlib/.lib files mid-build. release-installer.ps1 now
-sets `CARGO_TARGET_DIR=%LOCALAPPDATA%\qguard-messaging-target` (not indexed),
-which removes the race entirely; the retry loop remains as belt-and-braces.
-For manual `cargo`/`npx tauri build` runs, set the same env var (or move the
-repo out of Music) if os error 32 appears.
+## Build reliability — os error 32 PERMANENT fix (2026-07-05)
+Builds (release AND plain `npm run tauri build` / `cargo run`) failed with
+`failed to build archive ... os error 32` (temp archive locked). Root cause:
+the repo lives under `C:\Users\HP\Music` — a Windows "known folder" LIBRARY that
+Search indexing + Defender real-time scan aggressively, opening transient
+handles on freshly written .rlib/.temp-archive files so cargo can't rename/remove
+them.
+
+**Permanent fix (applies to ALL build commands, no admin needed):**
+`qguard-messaging/src-tauri/.cargo/config.toml`:
+
+    [build]
+    target-dir = "C:/Users/HP/AppData/Local/qguard-messaging-target"
+
+%LOCALAPPDATA% is not indexed, so the race is gone. This redirects every cargo
+invocation for the crate — `npm run tauri build`, `cargo run/build/test`, and
+rust-analyzer — to the same non-indexed dir. It's GITIGNORED (machine-specific
+absolute path); on another machine delete it or repoint at that machine's
+%LOCALAPPDATA%. release-installer.ps1 also sets a matching `CARGO_TARGET_DIR`
+env var + keeps its 4x retry loop as belt-and-braces. If it ever recurs, add a
+Defender exclusion (elevated): `Add-MpPreference -ExclusionPath "<target-dir>"`.
+Note: `npx tauri build` now emits the bundle under the redirected target dir,
+so the setup exe is at `%LOCALAPPDATA%\qguard-messaging-target\release\bundle\nsis\`.
 
 ## Known limitation — code signing
 The installer is NOT code-signed (no certificate configured). Windows

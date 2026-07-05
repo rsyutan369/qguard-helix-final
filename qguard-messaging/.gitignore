@@ -7,3 +7,6 @@ src-tauri/gen/
 .env.local
 env.local
 src-tauri/updater-keys/
+
+# Machine-specific build target redirect (out of the Search-indexed Music library)
+src-tauri/.cargo/
