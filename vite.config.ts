@@ -99,6 +99,15 @@ export default defineConfig(({mode}) => {
     }
   }
 
+  // Server-side payment config (PayPal secret, plan ids, webhook id) must reach
+  // process.env for the Vite-mounted API in dev. These are NOT VITE_-prefixed,
+  // so they are never exposed to the browser bundle.
+  for (const key of Object.keys(env)) {
+    if ((key.startsWith('PAYPAL_') || key === 'APP_ORIGIN' || key === 'PUBLIC_APP_ORIGIN') && !process.env[key]) {
+      process.env[key] = env[key];
+    }
+  }
+
   const connectSrc = resolveConnectSrc(env);
 
   return {

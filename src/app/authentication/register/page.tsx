@@ -18,7 +18,7 @@ import {
 import { useAuth } from "@/contexts/auth-context";
 import { useTheme } from "@/contexts/theme-context";
 import ThemeToggle from "@/components/theme/ThemeToggle";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CyberBackground } from "@/components/CyberBackground";
 
 const REGISTER_SIGNALS = [
@@ -37,6 +37,10 @@ export default function RegisterPage() {
   const { signUp, signInWithGoogle } = useAuth();
   const { theme } = useTheme();
   const isLightTheme = theme === "light";
+  const [searchParams] = useSearchParams();
+  const nextParam = searchParams.get("next");
+  // Preserve a checkout target across register -> verify email -> sign in.
+  const nextQuery = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? `?next=${encodeURIComponent(nextParam)}` : "";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,7 +118,7 @@ export default function RegisterPage() {
             <Home size={15} />
             Home
           </Link>
-          <Link to="/login" className="qc-auth-nav-cta">
+          <Link to={`/login${nextQuery}`} className="qc-auth-nav-cta">
             Login
           </Link>
         </div>
@@ -262,7 +266,7 @@ export default function RegisterPage() {
 
               <p className="qc-card-footer">
                 Existing node?{" "}
-                <Link to="/login" className="qc-card-link">
+                <Link to={`/login${nextQuery}`} className="qc-card-link">
                   Login here
                 </Link>
               </p>

@@ -95,17 +95,20 @@ function statusTone(status: string) {
 }
 
 function planOrder(plan: BillingPlan) {
-  return plan === 'Elite' ? 3 : plan === 'Pro' ? 2 : 1
+  return plan === 'Elite' ? 4 : plan === 'Pro' ? 3 : plan === 'Basic' ? 2 : 1
 }
 
 function nextPlan(plan: BillingPlan): BillingPlan {
-  if (plan === 'Starter') return 'Pro'
+  if (plan === 'Starter') return 'Basic'
+  if (plan === 'Basic') return 'Pro'
   if (plan === 'Pro') return 'Elite'
   return 'Elite'
 }
 
 function previousPlan(plan: BillingPlan): BillingPlan {
   if (plan === 'Elite') return 'Pro'
+  if (plan === 'Pro') return 'Basic'
+  if (plan === 'Basic') return 'Starter'
   return 'Starter'
 }
 

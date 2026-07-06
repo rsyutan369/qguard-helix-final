@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getServiceClient } from '@/lib/supabase-server'
+import { createSubscription, reviseSubscription, cancelSubscription, resolveOrigin, isPaypalConfigured } from './paypal'
 
 type AuthedRequest = Request & {
   user?: User
@@ -9,7 +10,7 @@ type AuthedRequest = Request & {
   authClient?: SupabaseClient
 }
 
-type PlanName = 'Starter' | 'Pro' | 'Elite'
+type PlanName = 'Starter' | 'Basic' | 'Pro' | 'Elite'
 type BillingCycle = 'monthly' | 'annual'
 type SubscriptionAction =
   | 'upgrade'
@@ -42,8 +43,8 @@ const PLAN_CATALOG: Record<PlanName, {
 }> = {
   Starter: {
     name: 'Starter',
-    monthlyCents: 1000,
-    annualCents: 9600,
+    monthlyCents: 300,
+    annualCents: 3600,
     teamMembers: 3,
     storageBytes: 5 * 1024 * 1024 * 1024,
     scanQuota: 25,
@@ -54,13 +55,30 @@ const PLAN_CATALOG: Record<PlanName, {
     qrngQuota: 0,
     activeJobs: 1,
     retentionDays: 30,
-    features: ['Quantum Vault and Quantum Messaging App', 'Basic cryptographic asset discovery', 'Starter Q-Score and weekly posture report'],
-    advancedModules: ['Quantum Vault', 'Quantum Messaging App', 'Basic PQC Scanner and CBOM inventory'],
+    features: ['Desktop Quantum Vault and Quantum Messaging access', 'End-to-end encrypted chat, voice and video calls', 'On-device, zero-knowledge file and folder encryption'],
+    advancedModules: ['Quantum Vault (strictly on-device)', 'Quantum Messaging (E2E, multi-device trust)', 'ML-KEM-1024 and ML-DSA post-quantum protection'],
+  },
+  Basic: {
+    name: 'Basic',
+    monthlyCents: 800,
+    annualCents: 6000,
+    teamMembers: 5,
+    storageBytes: 10 * 1024 * 1024 * 1024,
+    scanQuota: 25,
+    deepScanQuota: 5,
+    apiQuota: 15000,
+    webhookQuota: 0,
+    vaultCapacityBytes: 10 * 1024 * 1024 * 1024,
+    qrngQuota: 0,
+    activeJobs: 2,
+    retentionDays: 60,
+    features: ['Quantum Readiness & Assessment Engine', 'Risk Analysis and Migration Planner', 'AI Migration Advisor and AI Executive Advisor'],
+    advancedModules: ['Quantum Readiness & Assessment Engine', 'Risk Analysis and Migration Planner', 'Enterprise-grade readiness and assessment reports'],
   },
   Pro: {
     name: 'Pro',
-    monthlyCents: 5000,
-    annualCents: 48000,
+    monthlyCents: 3000,
+    annualCents: 24000,
     teamMembers: 15,
     storageBytes: 100 * 1024 * 1024 * 1024,
     scanQuota: 500,
@@ -77,7 +95,7 @@ const PLAN_CATALOG: Record<PlanName, {
   Elite: {
     name: 'Elite',
     monthlyCents: 19900,
-    annualCents: 190800,
+    annualCents: 180000,
     teamMembers: 250,
     storageBytes: 1024 * 1024 * 1024 * 1024,
     scanQuota: 5000,
@@ -152,6 +170,7 @@ function normalizePlan(value: unknown): PlanName {
   const text = String(value || '').toLowerCase()
   if (text.includes('elite') || text.includes('enterprise')) return 'Elite'
   if (text.includes('pro') || text.includes('professional')) return 'Pro'
+  if (text.includes('basic')) return 'Basic'
   return 'Starter'
 }
 
@@ -1098,22 +1117,82 @@ router.post('/subscription/actions', async (req: AuthedRequest, res: Response) =
     const { subscription, profile } = await ensureSubscription(client, user)
     if (!canManageBilling(user, profile)) return jsonError(res, 403, 'FORBIDDEN', 'Billing management requires account administrator permissions')
 
-    if ((action === 'upgrade' || action === 'renew') && targetPlan !== 'Starter') {
+    // Any plan-changing action creates a PayPal subscription and redirects the
+    // user to approve it. The PayPal webhook is the single source of activation
+    // (it upserts billing_subscriptions + profiles.tier and cancels the prior
+    // subscription), so we do not mutate the plan here.
+    const paymentActions: SubscriptionAction[] = ['upgrade', 'downgrade', 'renew', 'switch-cycle', 'reactivate']
+    if (paymentActions.includes(action)) {
+      if (!isPaypalConfigured()) {
+        return jsonError(res, 503, 'PAYMENT_PROVIDER_NOT_CONFIGURED', 'PayPal is not configured')
+      }
+      const origin = resolveOrigin(req)
+      if (!origin) {
+        return jsonError(res, 503, 'APP_ORIGIN_NOT_CONFIGURED', 'Set APP_ORIGIN to the public site URL so PayPal return URLs can be built safely.')
+      }
+      const desiredPlan = req.body?.plan ? normalizePlan(req.body.plan) : normalizePlan(subscription?.plan)
+      const desiredCycle = req.body?.billingCycle ? normalizeCycle(req.body.billingCycle) : normalizeCycle(subscription?.billing_cycle)
+      const paypalCycle = desiredCycle === 'annual' ? 'yearly' : 'monthly'
+      const returnUrl = `${origin}/dashboard/settings?tab=billing&billing=success`
+      const cancelUrl = `${origin}/dashboard/settings?tab=billing&billing=cancelled`
+      // Change an existing PayPal subscription in place (prorated, same id) when
+      // one is live; otherwise create a fresh subscription.
+      const existingPaypalSub = subscription?.provider === 'paypal'
+        && ['active', 'past_due', 'suspended', 'pending_renewal'].includes(String(subscription?.status || '').toLowerCase())
+        && subscription?.provider_subscription_id
+        ? String(subscription.provider_subscription_id)
+        : null
       try {
-        const checkout = await createStripeCheckout(req, user, subscription, targetPlan, targetCycle)
-        await recordBillingAudit(client, user.id, req, action, `Billing checkout session created for ${targetPlan} ${targetCycle}`, {
-          checkoutSessionId: checkout.id,
-          plan: targetPlan,
-          billingCycle: targetCycle,
+        if (existingPaypalSub) {
+          const revised = await reviseSubscription({
+            providerSubscriptionId: existingPaypalSub,
+            tier: desiredPlan,
+            cycle: paypalCycle,
+            returnUrl,
+            cancelUrl,
+          })
+          await recordBillingAudit(client, user.id, req, action, `PayPal subscription revised to ${desiredPlan} ${desiredCycle}`, {
+            plan: desiredPlan,
+            billingCycle: desiredCycle,
+            providerSubscriptionId: existingPaypalSub,
+          })
+          if (revised.approvalUrl) {
+            return res.json({ data: { action, status: 'checkout_required', redirectUrl: revised.approvalUrl } })
+          }
+          // Applied without re-approval; BILLING.SUBSCRIPTION.UPDATED will sync our record.
+          return res.json({ data: { action, status: 'updated' } })
+        }
+
+        const result = await createSubscription({
+          userId: user.id,
+          email: user.email,
+          tier: desiredPlan,
+          cycle: paypalCycle,
+          returnUrl,
+          cancelUrl,
         })
-        return res.json({ data: { action, status: 'checkout_required', redirectUrl: checkout.url } })
-      } catch (err) {
-        return jsonError(res, 503, 'PAYMENT_PROVIDER_NOT_CONFIGURED', err instanceof Error ? err.message : 'Payment provider is not configured')
+        await recordBillingAudit(client, user.id, req, action, `PayPal subscription checkout created for ${desiredPlan} ${desiredCycle}`, {
+          plan: desiredPlan,
+          billingCycle: desiredCycle,
+          providerSubscriptionId: result.subscriptionId,
+        })
+        return res.json({ data: { action, status: 'checkout_required', redirectUrl: result.approvalUrl } })
+      } catch (err: any) {
+        const code = err?.code === 'PLAN_NOT_CONFIGURED' ? 'PLAN_NOT_CONFIGURED' : 'PAYMENT_PROVIDER_NOT_CONFIGURED'
+        return jsonError(res, 503, code, err instanceof Error ? err.message : 'Payment provider is not configured')
       }
     }
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (action === 'cancel') {
+      // Cancel the live PayPal subscription first, then record the state change.
+      if (subscription?.provider === 'paypal' && subscription?.provider_subscription_id) {
+        try {
+          await cancelSubscription(subscription.provider_subscription_id, 'Customer cancelled from billing settings')
+        } catch (err) {
+          console.warn('[billing] PayPal cancellation failed:', err)
+        }
+      }
       updates.status = 'cancelled'
       updates.auto_renew = false
       updates.cancel_at_period_end = true

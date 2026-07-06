@@ -1407,6 +1407,7 @@ function TenantsTab(props: {
         <EnterpriseSelect label="Plan filter" value={props.planFilter} onChange={props.setPlanFilter}>
           <option value="all">All Plans</option>
           <option value="starter">Starter</option>
+          <option value="basic">Basic</option>
           <option value="pro">Pro</option>
           <option value="elite">Elite</option>
         </EnterpriseSelect>
@@ -1837,6 +1838,7 @@ function SubscriptionsTab(props: {
             <select className="h-10 rounded-lg border border-[#12305a] bg-[#061329] px-4 text-sm font-bold text-slate-200 outline-none focus:border-blue-400" value={props.planFilter} onChange={(event) => props.setPlanFilter(event.target.value)}>
               <option value="all">All Plans</option>
               <option value="starter">Starter</option>
+              <option value="basic">Basic</option>
               <option value="pro">Pro</option>
               <option value="elite">Elite</option>
             </select>

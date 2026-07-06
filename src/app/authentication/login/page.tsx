@@ -17,7 +17,7 @@ import {
 import { useAuth } from "@/contexts/auth-context";
 import { useTheme } from "@/contexts/theme-context";
 import ThemeToggle from "@/components/theme/ThemeToggle";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { CyberBackground } from "@/components/CyberBackground";
 
 const LOGIN_SIGNALS = [
@@ -34,6 +34,11 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const nextParam = searchParams.get("next");
+  // Only allow internal, non-protocol-relative paths as a redirect target.
+  const safeNext = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/dashboard";
+  const nextQuery = nextParam && safeNext !== "/dashboard" ? `?next=${encodeURIComponent(safeNext)}` : "";
   const { signIn, signInWithGoogle } = useAuth();
   const { theme } = useTheme();
   const isLightTheme = theme === "light";
@@ -54,7 +59,17 @@ export default function LoginPage() {
         return;
       }
       setIsLoading(false);
-      navigate("/dashboard");
+      // If no explicit next survived (e.g. lost across email verification) but a
+      // checkout intent was stashed, resume it.
+      let target = safeNext;
+      if (safeNext === "/dashboard") {
+        try {
+          if (localStorage.getItem("qguard.pendingCheckout")) target = "/checkout";
+        } catch {
+          // ignore
+        }
+      }
+      navigate(target);
     } catch (err: any) {
       setIsLoading(false);
       setError(err.message || "System error. Try again.");
@@ -103,7 +118,7 @@ export default function LoginPage() {
             <Home size={15} />
             Home
           </Link>
-          <Link to="/register" className="qc-auth-nav-cta">
+          <Link to={`/register${nextQuery}`} className="qc-auth-nav-cta">
             Get Started
           </Link>
         </div>
@@ -246,7 +261,7 @@ export default function LoginPage() {
 
               <p className="qc-card-footer">
                 New deployment?{" "}
-                <Link to="/register" className="qc-card-link">
+                <Link to={`/register${nextQuery}`} className="qc-card-link">
                   Request Credentials
                 </Link>
               </p>

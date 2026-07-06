@@ -2,6 +2,8 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './contexts/auth-context';
 import { ThemeProvider } from './contexts/theme-context';
 import Landing from './pages/Landing';
+import SubscriptionThankYou from './pages/SubscriptionThankYou';
+import Checkout from './pages/Checkout';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
@@ -11,6 +13,7 @@ import QuantumSimulationPage from './app/resources/quantum-simulation/page';
 import QguardMessagingOverview from './app/qguard-messaging/page';
 import QguardMessagingSecureChat from './app/qguard-messaging/secure-chat/page';
 import QguardMessagingQuantumVault from './app/qguard-messaging/quantum-vault/page';
+import QuantumReadinessAssessmentPage from './app/quantum-readiness-assessment/page';
 import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
@@ -120,6 +123,9 @@ export default function App() {
           <Route path="/qguard-messaging" element={<QguardMessagingOverview />} />
           <Route path="/qguard-messaging/secure-chat" element={<QguardMessagingSecureChat />} />
           <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />
+          <Route path="/quantum-readiness-assessment" element={<QuantumReadinessAssessmentPage />} />
+          <Route path="/checkout" element={<Checkout />} />
+          <Route path="/subscription/thank-you" element={<SubscriptionThankYou />} />
           <Route path="/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/localhost/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/resources/quantum-simulation" element={<QuantumSimulationPage />} />

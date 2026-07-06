@@ -610,73 +610,81 @@ type PricingPlan = {
 const PRICING_PLANS: PricingPlan[] = [
   {
     name: "Starter",
-    description: "Entry-level crypto discovery for small teams that need essential asset visibility, secure storage, and protected messaging.",
-    priceMonthly: 10,
-    priceYearly: 8,
-    badge: "ESSENTIAL DISCOVERY",
+    description: "On-device Quantum Vault and encrypted Quantum Messaging for individuals who need private, post-quantum secure storage and communication.",
+    priceMonthly: 3,
+    priceYearly: 3,
+    badge: "SECURE DESKTOP",
     icon: Shield,
     features: [
-      "Quantum Vault and Quantum Messaging App access",
-      "Discover up to 25 cryptographic assets",
-      "Basic PQC Scanner with CBOM inventory snapshot",
-      "Starter Quantum Risk Score summary",
-      "Weekly automated posture scan",
-      "5 GB encrypted vault storage with 30-day retention",
-      "Email support for onboarding and billing"
+      "Desktop application Quantum Vault and Quantum Messaging access",
+      "End-to-End encrypted Secure Chat and a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography.",
+      "End-to-end encrypted messages, voice & video calls, with disappearing messages, multi-device trust, and one-tap call verification.",
+      "Encrypt any file or folder on your device into a sealed, tamper-evident container. Strictly local and zero-knowledge — your data never leaves your machine.",
+      "Post-Quantum by Default — every message, call, and file is secured with ML-KEM-1024 and ML-DSA, the NIST-standardized algorithms built to withstand quantum computers."
     ],
-    notIncluded: [
-      "Quantum QRNG, QKMS, PKI, OTP, and tokenization tools",
-      "PQC orchestration, migration sandbox, and rollback automation",
-      "Runtime, API, certificate, and multi-cloud telemetry",
-      "Advanced compliance evidence packs and SIEM webhooks"
+    notIncluded: [],
+    ctaText: "Choose Starter",
+    popular: false
+  },
+  {
+    name: "Basic",
+    description: "Quantum readiness and assessment for teams that need to understand exposure, plan migration, and act on AI-guided advisory reports.",
+    priceMonthly: 8,
+    priceYearly: 5,
+    badge: "READINESS & ASSESSMENT",
+    icon: Search,
+    features: [
+      "Quantum Readiness & Assessment Engine",
+      "Risk Analysis and Migration Planner",
+      "AI Migration Advisor",
+      "AI Executive Advisor",
+      "Enterprise Grade Quantum Readiness and Assessment Reports"
     ],
-    ctaText: "Start Scanning Today",
+    notIncluded: [],
+    ctaText: "Choose Basic",
     popular: false
   },
   {
     name: "Pro",
     description: "Operational PQC readiness for teams that need active monitoring, migration planning, and production crypto tooling.",
-    priceMonthly: 50,
-    priceYearly: 40,
+    priceMonthly: 30,
+    priceYearly: 20,
     badge: "MOST POPULAR",
     icon: Zap,
     features: [
-      "Everything in Starter, including Vault and Messaging",
-      "Discover and monitor up to 500 crypto assets",
-      "Agent collector scanners and 10 active monitoring jobs",
-      "Quantum QRNG, key generation, OTP, PKI, and tokenization",
-      "Migration Planner, Hybrid Crypto Lab, and sandbox analysis",
-      "TLS, certificate, runtime, and API encryption telemetry",
-      "NIST PQC, CNSA 2.0, and compliance evidence reports",
-      "Priority email support with next-business-day response"
+      "Everything in Starter and Basic",
+      "Scan, Discover and Monitor up to 500 crypto assets",
+      "Assets and CBOM Explorer",
+      "Migration Planner, Timeline and Sandbox Analysis",
+      "PQC-Auth Identity Migration Engine",
+      "PQC orchestration, Live Migration ops, Rollback",
+      "Runtime & Cryptographic Intelligence",
+      "Supply Chain Readiness Center",
+      "Harvest Now, Decrypt Later Center",
+      "Trust Chain Analysis",
+      "Crypto Agility Engine",
+      "Email Support"
     ],
-    notIncluded: [
-      "Enterprise-scale QKMS governance and HSM/KMS integrations",
-      "Dedicated post-quantum architect, custom MSA, and SLA",
-      "Custom compliance mapping and executive migration workshops"
-    ],
-    ctaText: "Elevate Your Security",
+    notIncluded: [],
+    ctaText: "Choose Pro",
     popular: true
   },
   {
     name: "Elite",
     description: "Enterprise-grade crypto-agility for organizations that require governed migration, QKMS operations, and live assurance.",
     priceMonthly: 199,
-    priceYearly: 159,
+    priceYearly: 150,
     badge: "ENTERPRISE AGILITY",
     icon: Sparkles,
     features: [
-      "Everything in Pro, including Vault and Messaging",
+      "Everything in Starter, Basic, and Pro",
       "Discover and govern up to 5,000 crypto assets",
       "Full QKMS overview, inventory, governance, and readiness",
-      "PQC orchestration, live migration ops, rollback, and sandboxing",
-      "Runtime, TLS, certificate, API, and multi-cloud telemetry grid",
-      "HNDL defense workflows, audit vault, and policy enforcement",
-      "SOC 2, PCI-DSS 4.0, NIST, and custom compliance mapping",
-      "Priority engineering support with enterprise SLA options"
+      "Email Support",
+      "SOC 2, PCI-DSS 4.0, NIST, and custom compliance mapping"
     ],
     notIncluded: [],
-    ctaText: "Establish Quantum Agility",
+    ctaText: "Choose Elite",
     popular: false
   }
 ];
@@ -2071,6 +2079,16 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
     setBillingPeriod(period);
   };
 
+  const [checkoutPlan, setCheckoutPlan] = useState<string | null>(null);
+
+  const handleSubscribe = (planName: string) => {
+    if (checkoutPlan) return;
+    setCheckoutPlan(planName);
+    // Route through the auth-gated checkout bridge: it requires sign-in, then
+    // creates the PayPal subscription and redirects the user to PayPal.
+    window.location.href = `/checkout?plan=${encodeURIComponent(planName)}&cycle=${billingPeriod}`;
+  };
+
   return (
     <motion.section
       id="pricing"
@@ -2141,7 +2159,7 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
           </div>
         </div>
 
-        <div className="mt-16 grid grid-cols-1 items-stretch gap-8 lg:grid-cols-3">
+        <div className="mt-16 grid grid-cols-1 items-stretch gap-8 md:grid-cols-2 lg:grid-cols-4">
           {PRICING_PLANS.map((plan, idx) => {
             const Icon = plan.icon;
             const price = billingPeriod === "monthly" ? plan.priceMonthly : plan.priceYearly;
@@ -2251,14 +2269,15 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
                 <div className="border-t border-dashed border-slate-200 bg-slate-50 p-6 md:p-8">
                   <button
                     type="button"
-                    onClick={onRequestDemo}
-                    className={`w-full cursor-pointer rounded-none border-2 px-4 py-3 text-center font-mono text-xs font-bold uppercase tracking-wider transition-all duration-150 active:scale-[0.98] ${
+                    onClick={() => handleSubscribe(plan.name)}
+                    disabled={checkoutPlan !== null}
+                    className={`w-full cursor-pointer rounded-none border-2 px-4 py-3 text-center font-mono text-xs font-bold uppercase tracking-wider transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70 ${
                       plan.popular
                         ? "border-[#00c5eb] bg-[#00c5eb] text-slate-950 shadow-[2px_2px_0px_#090d16] hover:bg-[#00c5eb]/90"
                         : "border-slate-950 bg-slate-950 text-[#fff] shadow-[2px_2px_0px_rgba(2,6,23,0.3)] hover:bg-slate-800"
                     }`}
                   >
-                    {plan.ctaText}
+                    {checkoutPlan === plan.name ? "Redirecting to PayPal…" : plan.ctaText}
                   </button>
                   <p className="mt-3 select-none text-center font-mono text-[9px] uppercase tracking-widest text-slate-400">
                     Deployable in under 15 minutes

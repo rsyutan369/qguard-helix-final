@@ -1,0 +1,39 @@
+In Pricing Section in http://localhost:3000/ , Please edit the price and capabilities as per below:
+
+STARTER: 3$ Monthly / 3$ Yearly
+- Desktop application Quantum Vault and Quantum Messaging access
+- End-to-End encrypted Secure Chat and a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography.
+- End-to-end encrypted messages, voice & video calls, with disappearing messages, multi-device trust, and one-tap call verification.
+- Encrypt any file or folder on your device into a sealed, tamper-evident container. Strictly local and zero-knowledge — your data never leaves your machine.
+- Post-Quantum by Default Every message, call, and file is secured with ML-KEM-1024 and ML-DSA — the NIST-standardized algorithms built to withstand quantum computers.
+
+
+BASIC 8$ Monthly / 5$ Yearly  
+- Quantum Readiness & Assessment Engine
+- Risk Analysis and Migration Planner
+- AI Migration Advisor
+- AI Executive Advisor
+- Enterprise Grade Quantum Readiness and Assessment Reports
+
+PRO 30% Monthly / 20$ Yearly
+- Everything in STARTER and BASIC
+- Scan, Discover and Monitor up to 500 crypto assets
+- Assets and CBOM Explorer
+- Migration Planner, Timeline and Sandbox Analysis
+- PQC-Auth Identity Migration Engine
+- PQC orchestration, Live Migration ops, Rollback
+- Runtime & Cryptographic Intelligence
+- Supply Chain Readiness Center
+- Harvest Now, Decrypt Later Center
+- Trust Chain Analysis
+- Crypto Agility Engine
+- Email Support
+
+ELITE 199$ Monthly / 150% Yearly
+- Everything in STARTER, BASIC, and PRO
+- Discover and govern up to 5,000 crypto assets
+- Full QKMS overview, inventory, governance, and readiness
+- Email Support
+- SOC 2, PCI-DSS 4.0, NIST, and custom compliance mapping
+
+And Change the Buttons to Choose Starter, Choose Basic, Choose Pro, Choose Elite

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 
-export type BillingPlan = 'Starter' | 'Pro' | 'Elite'
+export type BillingPlan = 'Starter' | 'Basic' | 'Pro' | 'Elite'
 export type BillingCycle = 'monthly' | 'annual'
 export type BillingStatus = 'active' | 'trial' | 'expired' | 'suspended' | 'pending_renewal' | 'cancelled' | 'past_due' | 'incomplete'
 export type BillingAction = 'upgrade' | 'downgrade' | 'renew' | 'cancel' | 'reactivate' | 'switch-cycle' | 'enable-auto-renew' | 'disable-auto-renew'
