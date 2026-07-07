@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import { useMigrationPlan, type MigrationStrategy } from '@/hooks/use-migration-plan';
+import { clearMigrationHandoff, readMigrationHandoff, type MigrationHandoff } from '@/app/dashboard/quantum-readiness/_advisor';
 import {
   Badge,
   BarList,
@@ -95,6 +96,14 @@ export default function MigrationPlanner() {
   const [exporting, setExporting] = useState<string | null>(null);
   const [heatmapFilter, setHeatmapFilter] = useState<string>('all');
   const [notice, setNotice] = useState<string | null>(null);
+  // Roadmap handed off from the AI Migration Advisor™ (localStorage payload —
+  // the exact waves/prioritization/rollback plan the advisor displayed).
+  const [handoff, setHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff());
+
+  const dismissHandoff = useCallback(() => {
+    clearMigrationHandoff();
+    setHandoff(null);
+  }, []);
 
   const selectedStrategy = useMemo<MigrationStrategy | undefined>(
     () => plan.strategies.find((s) => s.key === strategyKey) || plan.strategies.find((s) => s.recommended) || plan.strategies[0],
@@ -168,6 +177,56 @@ export default function MigrationPlanner() {
 
         {error ? <div className="rounded-md border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div> : null}
         {notice ? <div className="rounded-md border border-blue-400/25 bg-blue-500/10 px-4 py-3 text-sm text-blue-100">{notice}</div> : null}
+        {handoff ? (
+          <div className="rounded-md border border-violet-400/30 bg-violet-500/[0.08] px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-violet-400/40 bg-violet-500/10 text-violet-300">
+                  <BrainCircuit className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-white">
+                    Roadmap received from AI Migration Advisor™
+                    <span className="ml-2 text-[11px] font-semibold text-white/45">{longDate(handoff.generatedAt)} · confidence {handoff.confidencePct}%</span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-white/65">
+                    <span className="font-semibold text-violet-200">{handoff.recommendation}</span>
+                    {' — '}
+                    {handoff.waves.length} wave(s) · {handoff.assetPrioritization.length} prioritized asset(s) · {handoff.rollbackStrategy.length} rollback runbook(s)
+                    {handoff.estimates.migrationTimelineWeeks ? ` · ${integerFmt(handoff.estimates.migrationTimelineWeeks)}w` : ''}
+                    {handoff.estimates.migrationCostUsd ? ` · ${currencyFmt(handoff.estimates.migrationCostUsd)}` : ''}
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {handoff.waves.map((wave) => (
+                      <span key={wave.wave} className="rounded border border-white/10 bg-black/20 px-1.5 py-0.5 text-[10px] font-semibold text-white/55">
+                        W{wave.wave} {wave.name} · {wave.durationWeeks}w · −{wave.riskReductionPct}%
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <HeaderButton icon={Download} onClick={() => {
+                  const blob = new Blob([JSON.stringify(handoff, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const anchor = document.createElement('a');
+                  anchor.href = url;
+                  anchor.download = `migration-roadmap-handoff-${new Date().toISOString().slice(0, 10)}.json`;
+                  anchor.click();
+                  URL.revokeObjectURL(url);
+                }}>
+                  Download
+                </HeaderButton>
+                <HeaderButton icon={CheckCircle2} onClick={dismissHandoff}>
+                  Acknowledge
+                </HeaderButton>
+              </div>
+            </div>
+            <p className="mt-2 text-[10px] leading-snug text-white/35">
+              The planner's stages, waves and costs below derive from the same live evidence engine — the handed-off roadmap and this plan reconcile by construction. Acknowledging clears the handoff.
+            </p>
+          </div>
+        ) : null}
         {!plan.hasData && state === 'success' ? (
           <div className="rounded-md border border-amber-400/25 bg-amber-400/[0.07] px-4 py-3 text-sm text-amber-100/90">
             No assessment evidence found for this tenant. Run a PQC discovery scan to populate the migration plan.

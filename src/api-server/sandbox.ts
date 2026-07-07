@@ -129,6 +129,42 @@ function boolMeta(value: unknown) {
   return value === true || value === 'true' || value === 1 || value === '1'
 }
 
+// Derives the real cryptographic seed for simulating one tenant asset:
+// source algorithm comes from scanned crypto inventory / exposures, never
+// from hardcoded defaults, so the simulation reflects what the scanner found.
+function assetSimulationSeed(asset: any, invItems: any[], expItems: any[]) {
+  const vulnerableItems = invItems.filter((i: any) => i.is_vulnerable || i.is_quantum_safe === false)
+  const sourceAlgorithm = String(
+    vulnerableItems[0]?.algorithm
+    || expItems[0]?.detected_value
+    || invItems[0]?.algorithm
+    || ''
+  ).trim() || 'Classical'
+  const context = `${asset?.type || ''} ${asset?.name || ''} ${invItems[0]?.protocol || ''} ${expItems[0]?.exposure_type || ''}`
+  const targetAlgorithm = pqcAlgoRec(sourceAlgorithm, context)
+  return {
+    sourceAlgorithm,
+    targetAlgorithm,
+    riskLevel: quantumRisk(sourceAlgorithm),
+    inventoryItems: invItems.length,
+    vulnerableItems: vulnerableItems.length,
+    exposures: expItems.length,
+    criticalExposures: expItems.filter((e: any) => String(e.severity || '').toLowerCase() === 'critical').length,
+    algorithms: Array.from(new Set(invItems.map((i: any) => String(i.algorithm || '').trim()).filter(Boolean))).slice(0, 8),
+  }
+}
+
+function groupRowsByAsset(rows: any[]) {
+  const map = new Map<string, any[]>()
+  for (const row of rows || []) {
+    if (!row?.asset_id) continue
+    const list = map.get(row.asset_id) || []
+    list.push(row)
+    map.set(row.asset_id, list)
+  }
+  return map
+}
+
 function textMeta(rec: Record<string, unknown>, keys: string[], fallback = '') {
   const value = pickStr(rec, keys)
   return value || fallback
@@ -223,6 +259,9 @@ function engineEta(job: any, status: string, progress: number, meta: Record<stri
   if (status === 'paused') return 'Paused'
   if (status === 'stopped') return 'Stopped'
   if (status === 'rolled_back') return 'Rolled back'
+  // Operational (non-sandbox) rollbacks are requests: they wait for an
+  // approved executor and are never auto-completed by the sandbox engine.
+  if (status === 'rollback_requested' && !isSandboxSimulationJob(job)) return 'Rollback awaiting approved executor'
   if (status === 'queued') return textMeta(meta, ['queueReason'], 'Awaiting executor')
   const started = dateMs(String(job?.started_at || meta.engineStartedAt || job?.updated_at || job?.created_at || ''))
   if (!started || progress <= 0) return 'Calculating'
@@ -779,7 +818,9 @@ async function buildSandboxPayload(client: any, userId: string) {
       riskLevel,
       phase: phase.label,
       phaseId: phase.id,
-      phaseDetail: textMeta(meta, ['phaseDetail'], phase.detail),
+      phaseDetail: status === 'rollback_requested' && !isSandbox
+        ? textMeta(meta, ['phaseDetail'], 'Rollback request recorded; awaiting an approved executor to restore the previous cryptographic posture.')
+        : textMeta(meta, ['phaseDetail'], phase.detail),
       startedAt: job.started_at || null,
       completedAt: job.completed_at || null,
       updatedAt: job.updated_at || job.created_at,
@@ -1209,6 +1250,77 @@ async function buildSandboxPayload(client: any, userId: string) {
   }
 }
 
+// ── GET /api/v1/sandbox/assets ───────────────────────────────────────────────
+// Simulation targets: the tenant's real scanned assets enriched with the
+// cryptographic evidence (inventory + exposures) a simulation will exercise.
+router.get('/assets', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  try {
+    const userId = req.user!.id
+    const [assets, inventory, exposures, jobs] = await Promise.all([
+      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
+      safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).limit(1000)),
+      safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value').eq('user_id', userId).limit(1000)),
+      safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, status, metadata').eq('user_id', userId).limit(500)),
+    ])
+
+    const inventoryByAsset = groupRowsByAsset(inventory)
+    const exposuresByAsset = groupRowsByAsset(exposures)
+    const activeSimulationsByAsset = new Map<string, number>()
+    for (const job of jobs || []) {
+      if (!job?.asset_id || !isSandboxSimulationJob(job)) continue
+      if (!ACTIVE_JOB_STATUSES.includes(normalizeStatus(job.status))) continue
+      activeSimulationsByAsset.set(job.asset_id, (activeSimulationsByAsset.get(job.asset_id) || 0) + 1)
+    }
+
+    const rows = (assets || []).map((asset: any) => {
+      const invItems = inventoryByAsset.get(asset.id) || []
+      const expItems = exposuresByAsset.get(asset.id) || []
+      const seed = assetSimulationSeed(asset, invItems, expItems)
+      return {
+        id: asset.id,
+        name: asset.name || 'Unnamed asset',
+        type: asset.type || 'service',
+        environment: asset.environment || 'unknown',
+        region: asset.region || null,
+        owner: asset.service_owner || 'Unassigned',
+        criticality: String(asset.criticality || 'medium').toLowerCase(),
+        status: asset.status || 'active',
+        sourceAlgorithm: seed.sourceAlgorithm,
+        targetAlgorithm: seed.targetAlgorithm,
+        riskLevel: seed.riskLevel,
+        inventoryItems: seed.inventoryItems,
+        vulnerableItems: seed.vulnerableItems,
+        exposures: seed.exposures,
+        criticalExposures: seed.criticalExposures,
+        algorithms: seed.algorithms,
+        activeSimulations: activeSimulationsByAsset.get(asset.id) || 0,
+        hasEvidence: seed.inventoryItems > 0 || seed.exposures > 0,
+        lastSeen: asset.updated_at || asset.created_at || null,
+      }
+    }).sort((a: any, b: any) => {
+      const rank = severityRank(b.riskLevel) - severityRank(a.riskLevel)
+      if (rank !== 0) return rank
+      return (b.vulnerableItems + b.criticalExposures) - (a.vulnerableItems + a.criticalExposures)
+    })
+
+    return res.json({
+      data: {
+        generatedAt: new Date().toISOString(),
+        totalAssets: rows.length,
+        vulnerableAssets: rows.filter((row: any) => row.vulnerableItems > 0 || row.criticalExposures > 0).length,
+        assetsWithEvidence: rows.filter((row: any) => row.hasEvidence).length,
+        assets: rows,
+      },
+    })
+  } catch (err) {
+    console.error('[sandbox] assets error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to load simulation targets' } })
+  }
+})
+
 // ── GET /api/v1/sandbox/snapshot ──────────────────────────────────────────────
 router.get('/snapshot', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
@@ -1328,24 +1440,99 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
   const client = clientFor(req)
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
-  const { assetId, fromAlgo, toAlgo, migrationType, dryRun, environment } = req.body || {}
-  if (!fromAlgo && !assetId) {
-    return res.status(400).json({ error: { code: 'MISSING_PARAMS', message: 'Either assetId or fromAlgo is required' } })
+  const { assetId, assetIds, fromAlgo, toAlgo, migrationType, dryRun, environment } = req.body || {}
+  const requestedAssetIds: string[] = Array.from(new Set(
+    [...(Array.isArray(assetIds) ? assetIds : []), ...(assetId ? [assetId] : [])]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  ))
+  if (!fromAlgo && requestedAssetIds.length === 0) {
+    return res.status(400).json({ error: { code: 'MISSING_PARAMS', message: 'Either assetIds or fromAlgo is required' } })
+  }
+  if (requestedAssetIds.length > 25) {
+    return res.status(400).json({ error: { code: 'TOO_MANY_ASSETS', message: 'A single simulation batch supports up to 25 assets.' } })
   }
 
   const now = new Date().toISOString()
-  const targetAlgo = toAlgo || pqcAlgoRec(fromAlgo || 'rsa', migrationType || '')
-  const jobName = dryRun
-    ? `[DRY RUN] ${fromAlgo || 'Crypto'} → ${targetAlgo}`
-    : `Sandbox: ${fromAlgo || 'Crypto'} → ${targetAlgo}`
-  const simulatedDurationMs = dryRun ? 110_000 : 240_000
+  const userId = req.user!.id
+  const baseMeta = {
+    dryRun: !!dryRun,
+    sandboxMode: true,
+    executionMode: dryRun ? 'dry_run' : 'sandbox_simulation',
+    engine: ENGINE_NAME,
+    phase: 'queued',
+    queueReason: 'Awaiting sandbox executor slot',
+    queuedAt: now,
+    initiatedBy: req.user!.email,
+    initiatedAt: now,
+  }
 
-  const { data: newJob, error: insertError } = await client
-    .from('migration_jobs')
-    .insert({
-      user_id: req.user!.id,
-      asset_id: assetId || null,
-      name: jobName,
+  let jobRows: any[] = []
+
+  if (requestedAssetIds.length > 0) {
+    // Simulations against assets must run against the tenant's REAL scanned
+    // evidence: validate ownership, then seed each job from crypto inventory
+    // and exposure records discovered by the scanners.
+    const [ownedAssets, invRows, expRows] = await Promise.all([
+      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status').eq('user_id', userId).in('id', requestedAssetIds)),
+      safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
+      safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
+    ])
+    const ownedById = new Map<string, any>((ownedAssets || []).map((a: any) => [String(a.id), a]))
+    const missing = requestedAssetIds.filter((id) => !ownedById.has(id))
+    if (missing.length > 0) {
+      return res.status(404).json({ error: { code: 'ASSET_NOT_FOUND', message: `${missing.length} selected asset(s) were not found in your scanned inventory.` } })
+    }
+
+    const inventoryByAsset = groupRowsByAsset(invRows)
+    const exposuresByAsset = groupRowsByAsset(expRows)
+
+    jobRows = requestedAssetIds.map((id, index) => {
+      const asset = ownedById.get(id)
+      const seed = assetSimulationSeed(asset, inventoryByAsset.get(id) || [], exposuresByAsset.get(id) || [])
+      const source = String(fromAlgo || seed.sourceAlgorithm)
+      const target = String(toAlgo || (fromAlgo ? pqcAlgoRec(source, migrationType || '') : seed.targetAlgorithm))
+      const complexityMs = Math.min(120_000, seed.vulnerableItems * 8_000 + seed.criticalExposures * 12_000)
+      return {
+        user_id: userId,
+        asset_id: id,
+        name: `${dryRun ? '[DRY RUN] ' : 'Sandbox: '}${asset.name || 'Asset'} (${source} → ${target})`,
+        job_type: `sandbox_${migrationType || 'asset_migration'}`,
+        status: 'queued',
+        target_algorithm: target,
+        strategy: `${source} → ${target}`,
+        progress: 0,
+        started_at: null,
+        created_at: now,
+        updated_at: now,
+        metadata: {
+          ...baseMeta,
+          sourceAlgorithm: source,
+          targetAlgorithm: target,
+          assetName: asset.name || 'Unnamed asset',
+          assetType: asset.type || 'service',
+          environment: environment || asset.environment || 'sandbox',
+          owner: asset.service_owner || 'Unassigned',
+          criticality: String(asset.criticality || 'medium').toLowerCase(),
+          riskLevel: seed.riskLevel,
+          evidence: {
+            inventoryItems: seed.inventoryItems,
+            vulnerableItems: seed.vulnerableItems,
+            exposures: seed.exposures,
+            criticalExposures: seed.criticalExposures,
+            algorithms: seed.algorithms,
+            source: 'crypto_inventory + crypto_exposures',
+          },
+          simulatedDurationMs: (dryRun ? 110_000 : 220_000) + complexityMs + index * 8_000,
+        },
+      }
+    })
+  } else {
+    const targetAlgo = toAlgo || pqcAlgoRec(fromAlgo || 'rsa', migrationType || '')
+    jobRows = [{
+      user_id: userId,
+      asset_id: null,
+      name: dryRun ? `[DRY RUN] ${fromAlgo || 'Crypto'} → ${targetAlgo}` : `Sandbox: ${fromAlgo || 'Crypto'} → ${targetAlgo}`,
       job_type: `sandbox_${migrationType || 'pqc_migration'}`,
       status: 'queued',
       target_algorithm: targetAlgo,
@@ -1355,68 +1542,87 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
       created_at: now,
       updated_at: now,
       metadata: {
+        ...baseMeta,
         sourceAlgorithm: fromAlgo || 'Classical',
         targetAlgorithm: targetAlgo,
         environment: environment || 'sandbox',
-        dryRun: !!dryRun,
-        sandboxMode: true,
-        executionMode: dryRun ? 'dry_run' : 'sandbox_simulation',
-        engine: ENGINE_NAME,
-        phase: 'queued',
-        queueReason: 'Awaiting sandbox executor slot',
-        queuedAt: now,
-        simulatedDurationMs,
-        initiatedBy: req.user!.email,
-        initiatedAt: now,
+        simulatedDurationMs: dryRun ? 110_000 : 240_000,
       },
-    })
-    .select()
-    .single()
-
-  if (insertError || !newJob) {
-    console.error('[sandbox] simulate insert error:', insertError)
-    return res.status(500).json({ error: { code: 'INSERT_FAILED', message: 'Failed to create simulation job' } })
+    }]
   }
 
-  // Emit initial event
-  const migrationEventInsert = await client.from('migration_events').insert({
-    user_id: req.user!.id,
-    migration_id: newJob.id,
-    event_type: 'simulation-started',
-    severity: 'info',
-    message: `Sandbox simulation queued: ${fromAlgo || 'Classical'} → ${targetAlgo}${dryRun ? ' (Dry Run)' : ''}`,
-    metadata: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, dryRun: !!dryRun, engine: ENGINE_NAME, status: 'queued' },
-    created_at: now,
-  })
+  const { data: newJobs, error: insertError } = await client
+    .from('migration_jobs')
+    .insert(jobRows)
+    .select()
+
+  if (insertError || !newJobs || newJobs.length === 0) {
+    console.error('[sandbox] simulate insert error:', insertError)
+    return res.status(500).json({ error: { code: 'INSERT_FAILED', message: 'Failed to create simulation job(s)' } })
+  }
+
+  // Emit initial events per job so execution logs trace every simulation.
+  const migrationEventInsert = await client.from('migration_events').insert(newJobs.map((job: any) => {
+    const meta = asRecord(job.metadata)
+    return {
+      user_id: userId,
+      migration_id: job.id,
+      event_type: 'simulation-started',
+      severity: 'info',
+      message: `Sandbox simulation queued: ${job.name}`,
+      metadata: {
+        sourceAlgorithm: meta.sourceAlgorithm,
+        targetAlgorithm: meta.targetAlgorithm,
+        assetName: meta.assetName || null,
+        dryRun: !!dryRun,
+        engine: ENGINE_NAME,
+        status: 'queued',
+      },
+      created_at: now,
+    }
+  }))
   if (migrationEventInsert.error && !isMissingTable(migrationEventInsert.error)) console.warn('[sandbox] simulation event insert failed:', migrationEventInsert.error.message)
 
+  const primaryJob = newJobs[0]
   const securityEventInsert = await client.from('security_events').insert({
-    user_id: req.user!.id,
+    user_id: userId,
     event_type: 'sandbox-simulation-started',
     severity: 'info',
-    message: `Migration sandbox simulation started: ${jobName}`,
-    asset_id: assetId || null,
-    resource_name: jobName,
+    message: newJobs.length > 1
+      ? `Migration sandbox started ${newJobs.length} simulations against scanned assets.`
+      : `Migration sandbox simulation started: ${primaryJob.name}`,
+    asset_id: primaryJob.asset_id || null,
+    resource_name: newJobs.length > 1 ? 'Migration Sandbox' : primaryJob.name,
     resource_type: 'migration-sandbox',
-    metadata: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, migrationType, dryRun: !!dryRun, jobId: newJob.id },
+    metadata: { migrationType, dryRun: !!dryRun, jobIds: newJobs.map((job: any) => job.id), assetIds: requestedAssetIds },
     created_at: now,
   })
   if (securityEventInsert.error && !isMissingTable(securityEventInsert.error)) console.warn('[sandbox] simulation security event insert failed:', securityEventInsert.error.message)
 
   const auditLogInsert = await client.from('audit_logs').insert({
-    user_id: req.user!.id,
+    user_id: userId,
     action: 'sandbox_simulation_started',
-    entity_type: 'migration_job',
-    entity_id: newJob.id,
-    details: { sourceAlgorithm: fromAlgo, targetAlgorithm: targetAlgo, migrationType, dryRun: !!dryRun },
+    entity_type: newJobs.length > 1 ? 'migration_jobs' : 'migration_job',
+    entity_id: newJobs.length > 1 ? null : primaryJob.id,
+    details: { migrationType, dryRun: !!dryRun, jobIds: newJobs.map((job: any) => job.id), assetIds: requestedAssetIds },
     ip_address: req.ip?.replace('::ffff:', '') || null,
     user_agent: String(req.headers['user-agent'] || '').slice(0, 500),
     created_at: now,
   })
   if (auditLogInsert.error && !isMissingTable(auditLogInsert.error)) console.warn('[sandbox] simulation audit log insert failed:', auditLogInsert.error.message)
 
-  const payload = await buildSandboxPayload(client, req.user!.id)
-  return res.json({ data: { success: true, jobId: newJob.id, jobName, status: 'queued', snapshot: payload } })
+  const payload = await buildSandboxPayload(client, userId)
+  return res.json({
+    data: {
+      success: true,
+      jobId: primaryJob.id,
+      jobName: primaryJob.name,
+      jobIds: newJobs.map((job: any) => job.id),
+      count: newJobs.length,
+      status: 'queued',
+      snapshot: payload,
+    },
+  })
 })
 
 // ── POST /api/v1/sandbox/bulk-action ─────────────────────────────────────────

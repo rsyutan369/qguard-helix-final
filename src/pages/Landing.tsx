@@ -605,6 +605,7 @@ type PricingPlan = {
   notIncluded: string[];
   ctaText: string;
   popular: boolean;
+  learnMoreHref?: string;
 };
 
 const PRICING_PLANS: PricingPlan[] = [
@@ -624,6 +625,7 @@ const PRICING_PLANS: PricingPlan[] = [
     ],
     notIncluded: [],
     ctaText: "Choose Starter",
+    learnMoreHref: "/qguard-messaging",
     popular: false
   },
   {
@@ -642,6 +644,7 @@ const PRICING_PLANS: PricingPlan[] = [
     ],
     notIncluded: [],
     ctaText: "Choose Basic",
+    learnMoreHref: "/quantum-readiness-assessment",
     popular: false
   },
   {
@@ -667,6 +670,7 @@ const PRICING_PLANS: PricingPlan[] = [
     ],
     notIncluded: [],
     ctaText: "Choose Pro",
+    learnMoreHref: "/post-quantum-migration-platform",
     popular: true
   },
   {
@@ -685,6 +689,7 @@ const PRICING_PLANS: PricingPlan[] = [
     ],
     notIncluded: [],
     ctaText: "Choose Elite",
+    learnMoreHref: "/quantum-trust-governance-center",
     popular: false
   }
 ];
@@ -2263,6 +2268,16 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
                         </li>
                       ))}
                     </ul>
+
+                    {plan.learnMoreHref && (
+                      <a
+                        href={plan.learnMoreHref}
+                        className="inline-flex items-center gap-1 font-mono text-[11px] font-bold uppercase tracking-wider text-[#00c5eb] underline-offset-4 transition-colors hover:text-slate-950 hover:underline"
+                      >
+                        Learn More
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </a>
+                    )}
                   </div>
                 </div>
 
@@ -2991,12 +3006,6 @@ export default function App() {
                 <span className="homepage-nav__menu-kicker">Solution Suites</span>
                 {[
                   {
-                    title: 'Post-Quantum Migration Platform',
-                    description: 'Plan, orchestrate, and validate hybrid PQC migrations with rollback-safe controls.',
-                    href: '/dashboard/migration-planner',
-                    icon: RefreshCcw
-                  },
-                  {
                     title: 'Qguard Messaging',
                     description: 'End-to-end encrypted Secure Chat and an on-device Quantum Vault, built on NIST post-quantum cryptography.',
                     href: '/qguard-messaging',
@@ -3005,26 +3014,20 @@ export default function App() {
                   {
                     title: 'Quantum Readiness & Assessment',
                     description: 'Score quantum risk, model exposure, and generate executive readiness reports.',
-                    href: '/dashboard/quantum-readiness',
-                    icon: Shield
+                    href: '/quantum-readiness-assessment',
+                    icon: Search
                   },
                   {
-                    title: 'Cryptographic Asset Management',
-                    description: 'Discover, inventory, and govern certificates, keys, and CBOM evidence across your estate.',
-                    href: '/dashboard/scanner',
-                    icon: Database
+                    title: 'Post-Quantum Migration Platform',
+                    description: 'Discover your crypto estate, then plan, orchestrate, and validate PQC migration with rollback-safe controls.',
+                    href: '/post-quantum-migration-platform',
+                    icon: RefreshCcw
                   },
                   {
-                    title: 'Quantum Key & Trust Services',
-                    description: 'QRNG, key generation, QKMS, PKI, and continuous trust validation.',
-                    href: '/dashboard/qkms/overview',
-                    icon: KeyRound
-                  },
-                  {
-                    title: 'Cyber Resilience & Compliance',
-                    description: 'Governance, audit evidence, NIST/CNSA alignment, and compliance reporting.',
-                    href: '/dashboard/compliance',
-                    icon: FileCheck
+                    title: 'Quantum Trust & Governance Center',
+                    description: 'Enterprise governance, full QKMS, and SOC 2 / PCI-DSS / NIST compliance across your estate.',
+                    href: '/quantum-trust-governance-center',
+                    icon: ShieldCheck
                   }
                 ].map((entry) => (
                   <a

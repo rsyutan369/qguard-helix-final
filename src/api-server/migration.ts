@@ -46,6 +46,8 @@ type LiveMigrationJob = {
   updatedAt: string
   executionStatus: string
   executionBacked: boolean
+  isSandbox: boolean
+  runMode: string
   agentId: string | null
   agentName: string | null
   agentStatus: string
@@ -645,6 +647,18 @@ function groupRowsByMigration(rows: any[], key = 'migration_id') {
   return map
 }
 
+// Sandbox simulations are executed by the qguard-sandbox-orchestrator engine,
+// not by tenant agents. They must surface with their real engine progress on
+// the live migration view instead of appearing stuck "waiting for agent".
+function isSandboxSimulationRow(row: any, metadata: Record<string, unknown>) {
+  const executionMode = pickString(metadata, ['executionMode', 'runMode', 'mode']).toLowerCase()
+  const jobType = String(row?.job_type || '').toLowerCase()
+  return metadata.sandboxMode === true
+    || ['sandbox_simulation', 'dry_run', 'simulation'].includes(executionMode)
+    || /sandbox|simulation|dry_run|dry-run/.test(jobType)
+    || /^\[dry run\]|^sandbox:/i.test(String(row?.name || ''))
+}
+
 function executionEvidenceInMetadata(metadata: Record<string, unknown>) {
   const executorState = asRecord(metadata.executorState)
   const lastExecutorEvent = asRecord(metadata.lastExecutorEvent)
@@ -774,7 +788,9 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     const executorState = asRecord(metadata.executorState)
     const jobTelemetryRows = telemetryByJob.get(row.id) || []
     const jobValidationRows = validationByJob.get(row.id) || []
-    const executionBacked = Boolean(executionRow || jobTelemetryRows.length || executionEvidenceInMetadata(metadata))
+    const isSandbox = isSandboxSimulationRow(row, metadata)
+    const sandboxEngineBacked = isSandbox && Boolean(metadata.engine || metadata.lastEngineTickAt || metadata.sandboxMode === true)
+    const executionBacked = Boolean(executionRow || jobTelemetryRows.length || executionEvidenceInMetadata(metadata)) || sandboxEngineBacked
     const executionStatus = String(executionRow?.status || executorState.status || (executionBacked ? row.status || 'running' : 'waiting_for_agent'))
     let status = normalizeStatus(executionStatus)
     if (!executionBacked && (rowStatus === 'running' || String(row.status || '').toLowerCase() === 'executing')) status = 'queued'
@@ -824,7 +840,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     const toAlgo = deriveTargetAlgorithm(row, metadata, `${fromAlgo} ${strategy} ${asset?.type || ''} ${asset?.name || ''}`)
     const agentId = String(executionRow?.agent_id || pickString(metadata, ['assignedAgentId', 'assigned_agent_id']) || '')
     const agent = agentId ? agentsById.get(agentId) : null
-    const agentName = String(agent?.name || pickString(metadata, ['assignedAgentName', 'assigned_agent_name']) || agent?.hostname || '')
+    const agentName = String(agent?.name || pickString(metadata, ['assignedAgentName', 'assigned_agent_name']) || agent?.hostname || (sandboxEngineBacked ? pickString(metadata, ['engine']) || 'qguard-sandbox-orchestrator' : ''))
     const validationStatus = validationStatusFromRows(jobValidationRows, metadata)
     const startedAt = executionBacked ? executionRow?.started_at || row.started_at || null : null
     const completedAt = status === 'completed' ? executionRow?.completed_at || row.completed_at || null : null
@@ -852,10 +868,18 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       updatedAt: row.updated_at || row.completed_at || row.started_at || row.created_at || new Date().toISOString(),
       executionStatus,
       executionBacked,
+      isSandbox,
+      runMode: isSandbox ? (metadata.dryRun === true ? 'dry_run' : 'sandbox_simulation') : 'migration_workflow',
       agentId: agentId || null,
       agentName: agentName || null,
-      agentStatus: String(agent?.status || (executionBacked ? 'assigned' : 'unassigned')),
-      currentStep: String(executionRow?.current_step || executorState.currentStep || pickString(executionMetadata, ['currentStep']) || (executionBacked ? 'Agent execution reported' : 'Waiting for agent claim')),
+      agentStatus: String(agent?.status || (sandboxEngineBacked && !agentId ? 'sandbox-engine' : executionBacked ? 'assigned' : 'unassigned')),
+      currentStep: String(
+        executionRow?.current_step
+        || executorState.currentStep
+        || pickString(executionMetadata, ['currentStep'])
+        || (sandboxEngineBacked ? pickString(metadata, ['phaseDetail', 'phase']) || 'Sandbox engine executing' : '')
+        || (executionBacked ? 'Agent execution reported' : 'Waiting for agent claim')
+      ),
       telemetryCount: jobTelemetryRows.length,
       validationCount: jobValidationRows.length,
       validationStatus,
@@ -889,8 +913,9 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     queued: jobs.filter((job) => job.status === 'queued').length,
     paused: jobs.filter((job) => job.status === 'paused').length,
     completionRate: total ? Math.round((jobs.filter((job) => job.status === 'completed').length / total) * 100) : 0,
-    waitingForAgent: jobs.filter((job) => job.status === 'queued' && !job.executionBacked).length,
+    waitingForAgent: jobs.filter((job) => job.status === 'queued' && !job.executionBacked && !job.isSandbox).length,
     agentBacked: jobs.filter((job) => job.executionBacked).length,
+    sandboxSimulations: jobs.filter((job) => job.isSandbox).length,
     verified: jobs.filter((job) => /pass|success|valid/.test(job.validationStatus)).length,
     agentsOnline: agentRows.filter((agent: any) => ['active', 'online', 'telemetry'].includes(String(agent?.status || '').toLowerCase())).length,
     totalAssets,

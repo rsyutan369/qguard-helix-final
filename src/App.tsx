@@ -3,7 +3,10 @@ import { AuthProvider } from './contexts/auth-context';
 import { ThemeProvider } from './contexts/theme-context';
 import Landing from './pages/Landing';
 import SubscriptionThankYou from './pages/SubscriptionThankYou';
+import VerifyReport from './pages/VerifyReport';
 import Checkout from './pages/Checkout';
+import PostQuantumMigrationPlatform from './pages/PostQuantumMigrationPlatform';
+import QuantumTrustGovernanceCenter from './pages/QuantumTrustGovernanceCenter';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
@@ -124,8 +127,11 @@ export default function App() {
           <Route path="/qguard-messaging/secure-chat" element={<QguardMessagingSecureChat />} />
           <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />
           <Route path="/quantum-readiness-assessment" element={<QuantumReadinessAssessmentPage />} />
+          <Route path="/post-quantum-migration-platform" element={<PostQuantumMigrationPlatform />} />
+          <Route path="/quantum-trust-governance-center" element={<QuantumTrustGovernanceCenter />} />
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/subscription/thank-you" element={<SubscriptionThankYou />} />
+          <Route path="/verify-report" element={<VerifyReport />} />
           <Route path="/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/localhost/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/resources/quantum-simulation" element={<QuantumSimulationPage />} />

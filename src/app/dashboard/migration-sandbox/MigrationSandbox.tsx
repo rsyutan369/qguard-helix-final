@@ -52,6 +52,7 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { clearMigrationHandoff, readMigrationHandoff, type MigrationHandoff } from '@/app/dashboard/quantum-readiness/_advisor'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES
@@ -748,7 +749,7 @@ function useSandbox() {
     }
   }, [token, fetchSnapshot, applySnapshot, showNotice])
 
-  const startSimulation = useCallback(async (params: { fromAlgo: string; toAlgo?: string; migrationType?: string; dryRun?: boolean; assetId?: string }) => {
+  const startSimulation = useCallback(async (params: { fromAlgo?: string; toAlgo?: string; migrationType?: string; dryRun?: boolean; assetId?: string; assetIds?: string[] }) => {
     if (!token) return null
     setPendingAction('simulate')
     try {
@@ -760,7 +761,10 @@ function useSandbox() {
       const j = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(j?.error?.message || 'Failed to start simulation')
       applySnapshot(j?.data?.snapshot)
-      showNotice('success', 'New sandbox simulation started and synchronized.')
+      const count = Number(j?.data?.count || 1)
+      showNotice('success', count > 1
+        ? `${count} sandbox simulations started against your scanned assets.`
+        : 'New sandbox simulation started and synchronized.')
       await fetchSnapshot()
       return j?.data || null
     } catch (err) {
@@ -1017,11 +1021,81 @@ function ScoreGauge({ value, size = 120, label }: { value: number; size?: number
    NEW SIMULATION MODAL
    ═══════════════════════════════════════════════════════════════════════════ */
 
+type SimulationAsset = {
+  id: string
+  name: string
+  type: string
+  environment: string
+  owner: string
+  criticality: string
+  sourceAlgorithm: string
+  targetAlgorithm: string
+  riskLevel: string
+  inventoryItems: number
+  vulnerableItems: number
+  exposures: number
+  criticalExposures: number
+  algorithms: string[]
+  activeSimulations: number
+  hasEvidence: boolean
+  lastSeen: string | null
+}
+
 function NewSimulationModal({ open, onClose, onStart }: { open: boolean; onClose: () => void; onStart: (p: any) => void }) {
+  const { session } = useAuth()
+  const token = session?.access_token
+  const [mode, setMode] = useState<'assets' | 'custom'>('assets')
+  const [assets, setAssets] = useState<SimulationAsset[]>([])
+  const [assetsLoading, setAssetsLoading] = useState(false)
+  const [assetsError, setAssetsError] = useState<string | null>(null)
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set())
+  const [assetSearch, setAssetSearch] = useState('')
   const [fromAlgo, setFromAlgo] = useState('RSA-2048')
   const [toAlgo, setToAlgo] = useState('ML-KEM-768')
   const [migType, setMigType] = useState('key_exchange')
   const [dryRun, setDryRun] = useState(true)
+
+  // Load the tenant's real scanned assets (with crypto evidence) each time
+  // the modal opens, so simulations always target current inventory.
+  useEffect(() => {
+    if (!open || !token) return
+    let cancelled = false
+    setSelectedAssets(new Set())
+    setAssetSearch('')
+    setAssetsLoading(true)
+    setAssetsError(null)
+    fetch('/api/v1/sandbox/assets', { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`)
+        return j?.data
+      })
+      .then((d) => {
+        if (cancelled) return
+        const rows: SimulationAsset[] = Array.isArray(d?.assets) ? d.assets : []
+        setAssets(rows)
+        setMode(rows.length > 0 ? 'assets' : 'custom')
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setAssetsError(err instanceof Error ? err.message : 'Failed to load scanned assets')
+        setMode('custom')
+      })
+      .finally(() => { if (!cancelled) setAssetsLoading(false) })
+    return () => { cancelled = true }
+  }, [open, token])
+
+  const filteredAssets = useMemo(() => {
+    if (!assetSearch.trim()) return assets
+    const q = assetSearch.trim().toLowerCase()
+    return assets.filter((a) =>
+      a.name.toLowerCase().includes(q)
+      || a.type.toLowerCase().includes(q)
+      || a.environment.toLowerCase().includes(q)
+      || a.sourceAlgorithm.toLowerCase().includes(q)
+      || a.algorithms.some((algo) => algo.toLowerCase().includes(q))
+    )
+  }, [assets, assetSearch])
 
   if (!open) return null
 
@@ -1036,38 +1110,151 @@ function NewSimulationModal({ open, onClose, onStart }: { open: boolean; onClose
     { label: 'Key Rotation', from: 'ECDSA P-384', to: 'ML-DSA-87', type: 'key_rotation' },
   ]
 
+  const vulnerableAssetIds = assets.filter((a) => a.vulnerableItems > 0 || a.criticalExposures > 0).map((a) => a.id)
+  const toggleAsset = (id: string) => {
+    setSelectedAssets((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else if (next.size < 25) next.add(id)
+      return next
+    })
+  }
+
+  const startDisabled = mode === 'assets' ? selectedAssets.size === 0 : !fromAlgo.trim()
+  const handleStart = () => {
+    if (mode === 'assets') {
+      onStart({ assetIds: Array.from(selectedAssets), dryRun, migrationType: 'asset_migration' })
+    } else {
+      onStart({ fromAlgo, toAlgo, migrationType: migType, dryRun })
+    }
+    onClose()
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-2xl rounded-2xl border border-gold/25 bg-[#0A1525]/95 p-6 shadow-2xl backdrop-blur-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-5 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-gold/25 bg-[#0A1525]/95 p-6 shadow-2xl backdrop-blur-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
           <h3 className="flex items-center gap-2 text-lg font-black text-white"><FlaskConical className="h-5 w-5 text-gold" /> New Migration Simulation</h3>
           <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-white/40 hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>
         </div>
 
-        <div className="mb-5">
-          <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-white/40">Quick Presets</div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {presets.map((p) => (
-              <button key={p.label} type="button" onClick={() => { setFromAlgo(p.from); setToAlgo(p.to); setMigType(p.type) }}
-                className={cn('rounded-lg border px-3 py-2.5 text-left text-[11px] font-bold transition-all',
-                  fromAlgo === p.from && toAlgo === p.to ? 'border-gold/50 bg-gold/12 text-gold' : 'border-white/10 bg-white/[0.02] text-white/60 hover:border-gold/30 hover:text-white'
-                )}>
-                {p.label}
+        <div className="mb-4 flex gap-2">
+          {[
+            { key: 'assets' as const, label: `Scanned Assets (${assets.length})`, icon: Server },
+            { key: 'custom' as const, label: 'Custom Algorithms', icon: Key },
+          ].map((m) => {
+            const Icon = m.icon
+            return (
+              <button key={m.key} type="button" onClick={() => setMode(m.key)}
+                className={cn('flex items-center gap-1.5 rounded-lg border px-3 py-2 text-[11px] font-bold transition',
+                  mode === m.key ? 'border-gold/50 bg-gold/12 text-gold' : 'border-white/10 bg-white/[0.02] text-white/50 hover:border-gold/25 hover:text-white')}>
+                <Icon className="h-3.5 w-3.5" />
+                {m.label}
               </button>
-            ))}
-          </div>
+            )
+          })}
         </div>
 
-        <div className="mb-5 grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-white/40">Source Algorithm</label>
-            <input value={fromAlgo} onChange={(e) => setFromAlgo(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-gold/50" />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-white/40">Target Algorithm (PQC)</label>
-            <input value={toAlgo} onChange={(e) => setToAlgo(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-gold/50" />
-          </div>
-        </div>
+        {mode === 'assets' && (
+          <>
+            <p className="mb-3 text-[11px] leading-relaxed text-white/40">
+              Select assets from your scanned inventory. Each simulation loads the asset's real cryptographic
+              evidence (inventory + exposures) and validates the recommended PQC migration against it in the sandbox.
+            </p>
+
+            {assetsLoading ? (
+              <div className="flex items-center justify-center gap-3 rounded-lg border border-white/8 bg-white/[0.02] py-10">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-gold/20 border-t-gold" />
+                <span className="text-xs font-bold text-white/45">Loading scanned assets…</span>
+              </div>
+            ) : assetsError ? (
+              <EmptyBlock label={`Could not load scanned assets: ${assetsError}`} />
+            ) : assets.length === 0 ? (
+              <EmptyBlock label="No scanned assets found. Run a discovery scan in the PQC Scanner first, then simulate migrations against the discovered assets." />
+            ) : (
+              <>
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <input
+                    value={assetSearch}
+                    onChange={(e) => setAssetSearch(e.target.value)}
+                    placeholder="Search assets, algorithms, environments…"
+                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white outline-none placeholder:text-white/25 focus:border-gold/40"
+                  />
+                  <button type="button" onClick={() => setSelectedAssets(new Set(vulnerableAssetIds.slice(0, 25)))}
+                    className="rounded-lg border border-red-500/25 bg-red-500/8 px-2.5 py-2 text-[10px] font-bold text-red-300 transition hover:bg-red-500/15">
+                    Select Vulnerable ({vulnerableAssetIds.length})
+                  </button>
+                  <button type="button" onClick={() => setSelectedAssets(new Set())}
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-[10px] font-bold text-white/50 transition hover:bg-white/8">
+                    Clear
+                  </button>
+                </div>
+
+                <div className="mb-4 max-h-[300px] space-y-1.5 overflow-y-auto pr-1">
+                  {filteredAssets.length === 0 ? (
+                    <EmptyBlock label="No assets match this search." />
+                  ) : filteredAssets.map((asset) => {
+                    const checked = selectedAssets.has(asset.id)
+                    return (
+                      <label key={asset.id} className={cn('flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition',
+                        checked ? 'border-gold/40 bg-gold/[0.06]' : 'border-white/8 bg-white/[0.015] hover:border-gold/20')}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleAsset(asset.id)} className="h-4 w-4 shrink-0 rounded border-white/20 bg-white/5 accent-gold" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate text-xs font-bold text-white/85">{asset.name}</span>
+                            <Pill className={riskBadge(asset.riskLevel)}>{asset.riskLevel}</Pill>
+                            {asset.activeSimulations > 0 && <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{asset.activeSimulations} active</Pill>}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-white/40">
+                            <span className="font-mono">{asset.sourceAlgorithm}</span>
+                            <span className="text-gold">→</span>
+                            <span className="font-mono text-emerald-300">{asset.targetAlgorithm}</span>
+                            <span className="text-white/20">|</span>
+                            <span>{asset.type} · {asset.environment}</span>
+                          </div>
+                          <div className="mt-0.5 text-[9px] font-semibold text-white/30">
+                            {asset.hasEvidence
+                              ? `${fmt(asset.vulnerableItems)} vulnerable item(s) · ${fmt(asset.exposures)} exposure(s) · ${fmt(asset.inventoryItems)} inventory record(s)`
+                              : 'No crypto evidence yet — simulation will validate the recommended baseline migration'}
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {mode === 'custom' && (
+          <>
+            <div className="mb-5">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-white/40">Quick Presets</div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {presets.map((p) => (
+                  <button key={p.label} type="button" onClick={() => { setFromAlgo(p.from); setToAlgo(p.to); setMigType(p.type) }}
+                    className={cn('rounded-lg border px-3 py-2.5 text-left text-[11px] font-bold transition-all',
+                      fromAlgo === p.from && toAlgo === p.to ? 'border-gold/50 bg-gold/12 text-gold' : 'border-white/10 bg-white/[0.02] text-white/60 hover:border-gold/30 hover:text-white'
+                    )}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-5 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-white/40">Source Algorithm</label>
+                <input value={fromAlgo} onChange={(e) => setFromAlgo(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-gold/50" />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-white/40">Target Algorithm (PQC)</label>
+                <input value={toAlgo} onChange={(e) => setToAlgo(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-gold/50" />
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="mb-5 flex items-center gap-4">
           <label className="flex cursor-pointer items-center gap-2 text-xs text-white/60">
@@ -1079,10 +1266,10 @@ function NewSimulationModal({ open, onClose, onStart }: { open: boolean; onClose
 
         <div className="flex items-center justify-end gap-3">
           <button type="button" onClick={onClose} className="rounded-lg border border-white/10 px-4 py-2 text-xs font-bold text-white/50 hover:bg-white/5">Cancel</button>
-          <button type="button" onClick={() => { onStart({ fromAlgo, toAlgo, migrationType: migType, dryRun }); onClose() }}
-            className="rounded-lg border border-gold bg-gold px-5 py-2 text-xs font-black text-black shadow-[0_0_20px_rgba(251,191,36,0.3)] transition hover:bg-[#FFE08A]">
+          <button type="button" onClick={handleStart} disabled={startDisabled}
+            className={cn('rounded-lg border border-gold bg-gold px-5 py-2 text-xs font-black text-black shadow-[0_0_20px_rgba(251,191,36,0.3)] transition hover:bg-[#FFE08A]', startDisabled && 'pointer-events-none opacity-40')}>
             <Play className="mr-1.5 inline h-3.5 w-3.5" />
-            Start Simulation
+            {mode === 'assets' ? `Simulate ${selectedAssets.size} Asset${selectedAssets.size === 1 ? '' : 's'}` : 'Start Simulation'}
           </button>
         </div>
       </div>
@@ -1451,6 +1638,8 @@ export default function MigrationSandbox() {
     return new URLSearchParams(window.location.search).get('planId') || ''
   }, [])
   const [tab, setTab] = useState<ActiveTab>(() => plannerHandoffPlanId ? 'simulations' : 'overview')
+  // Roadmap handed off from the AI Migration Advisor™ (localStorage payload).
+  const [advisorHandoff, setAdvisorHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff())
   const [showNewSim, setShowNewSim] = useState(false)
   const [selectedSimulation, setSelectedSimulation] = useState<Simulation | null>(null)
   const [logFilter, setLogFilter] = useState('')
@@ -1739,6 +1928,39 @@ export default function MigrationSandbox() {
       </header>
 
       <div className="space-y-4 p-3 lg:p-4">
+        {advisorHandoff && (
+          <Panel className="border-violet-400/25 bg-violet-500/[0.03] p-5">
+            <SectionHead
+              icon={Bot}
+              suffix={
+                <div className="flex flex-wrap items-center gap-2">
+                  <Pill className="border-violet-400/25 bg-violet-500/10 text-violet-300">confidence {advisorHandoff.confidencePct}%</Pill>
+                  <ActionBtn icon={CheckCircle2} label="Acknowledge" onClick={() => { clearMigrationHandoff(); setAdvisorHandoff(null) }} small />
+                </div>
+              }
+            >
+              AI Migration Advisor™ Roadmap Handoff
+            </SectionHead>
+            <p className="text-xs leading-relaxed text-white/65">
+              <span className="font-bold text-violet-200">{advisorHandoff.recommendation}</span>
+              {' — '}
+              {advisorHandoff.waves.length} wave(s) · {advisorHandoff.assetPrioritization.length} prioritized asset(s) · {advisorHandoff.rollbackStrategy.length} rollback runbook(s)
+              {advisorHandoff.estimates.migrationTimelineWeeks ? ` · ${advisorHandoff.estimates.migrationTimelineWeeks}w programme` : ''}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {advisorHandoff.waves.map((wave) => (
+                <span key={wave.wave}>
+                  <Pill className="border-white/10 bg-black/20 text-white/55">
+                    W{wave.wave} {wave.name} · {wave.durationWeeks}w · −{wave.riskReductionPct}%
+                  </Pill>
+                </span>
+              ))}
+            </div>
+            <p className="mt-2 text-[10px] leading-snug text-white/35">
+              Use the roadmap's waves to scope simulations below — target algorithms resolve through the {advisorHandoff.cryptoPolicyProfile?.profile || 'active'} crypto-policy profile. Acknowledging clears the handoff.
+            </p>
+          </Panel>
+        )}
         {plannerHandoffPlanId && (
           <Panel className="border-gold/30 bg-gold/[0.025] p-5">
             <SectionHead icon={FlaskConical} suffix={
@@ -2240,8 +2462,13 @@ export default function MigrationSandbox() {
                 ].map((item) => {
                   const Icon = item.icon
                   const isSnapshot = item.action === 'snapshot'
+                  const confirmBulk = () => {
+                    if (isSnapshot || window.confirm(`${item.label}: request rollback for ALL eligible workflows?\n\nSandbox simulations roll back immediately. Operational migrations are marked rollback-requested and wait for an approved executor.`)) {
+                      doBulkAction(item.action, 'all')
+                    }
+                  }
                   return (
-                    <button key={item.label} type="button" onClick={() => doBulkAction(item.action, 'all')} disabled={pendingAction === `bulk:all:${item.action}`}
+                    <button key={item.label} type="button" onClick={confirmBulk} disabled={pendingAction === `bulk:all:${item.action}`}
                       className={cn('flex flex-col items-center gap-3 rounded-xl border p-5 text-center transition disabled:pointer-events-none disabled:opacity-45',
                         isSnapshot ? 'border-gold/20 bg-gold/[0.04] hover:border-gold/35 hover:bg-gold/[0.07]' : 'border-red-500/15 bg-red-500/[0.03] hover:border-red-500/30 hover:bg-red-500/[0.06]')}>
                       <div className={cn('flex h-12 w-12 items-center justify-center rounded-full border', isSnapshot ? 'border-gold/30 bg-gold/10' : 'border-red-500/25 bg-red-500/10')}>

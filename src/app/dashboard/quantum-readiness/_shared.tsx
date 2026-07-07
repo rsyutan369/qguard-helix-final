@@ -805,21 +805,28 @@ export function useQuantumReadiness() {
     void refresh();
   }, [token, user, refresh]);
 
-  // Supabase realtime — refresh on any tenant evidence mutation.
+  // Supabase realtime — refresh on any tenant evidence mutation. The table list
+  // mirrors EXACTLY the evidence sources buildSnapshot() aggregates (the live
+  // Express pipeline writes pqc_scan_* / crypto_inventory / scanner_* — the
+  // legacy Next-era names scan_sessions/scan_results/web_scan_findings are dead
+  // and never fired). Tables must be in the `supabase_realtime` publication —
+  // see supabase/quantum-readiness-realtime.sql.
   useEffect(() => {
     if (!user) return;
     const tables = [
       'assets',
       'asset_relationships',
-      'scan_sessions',
-      'scan_results',
-      'web_scan_findings',
+      'pqc_scan_sessions',
+      'pqc_scan_results',
+      'crypto_inventory',
+      'crypto_exposures',
       'certificates',
       'generated_keys',
-      'crypto_exposures',
       'runtime_crypto_events',
-      'migration_assessments',
-      'migration_logs',
+      'scanner_alerts',
+      'scanner_evidence',
+      'connector_accounts',
+      'vault_files',
     ];
     const channels = tables.map((table) =>
       supabase

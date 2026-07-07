@@ -231,8 +231,29 @@ export const advisorValidationSchema = z.object({
 export type AdvisorValidation = z.infer<typeof advisorValidationSchema>;
 
 // Phase 3 — Cost Forecast Intelligence™
-export const costLineDetailSchema = z.object({ category: z.string(), hours: z.number(), engineers: z.number(), rateUsd: z.number(), costUsd: z.number(), formula: z.string() });
-export const costBreakdownSchema = z.object({ blendedRateUsd: z.number(), totalHours: z.number(), totalUsd: z.number(), lines: z.array(costLineDetailSchema) });
+// I4#4 — effort is expressed the way enterprise planners consume it: raw hours
+// PLUS engineer-weeks (hours ÷ 40) and FTE over the programme window.
+export const costLineDetailSchema = z.object({
+  category: z.string(),
+  hours: z.number(),
+  engineers: z.number(),
+  rateUsd: z.number(),
+  costUsd: z.number(),
+  formula: z.string(),
+  engineerWeeks: z.number().default(0),
+  fte: z.number().default(0),
+  effort: z.string().default(''),
+});
+export const costBreakdownSchema = z.object({
+  blendedRateUsd: z.number(),
+  totalHours: z.number(),
+  totalUsd: z.number(),
+  lines: z.array(costLineDetailSchema),
+  windowWeeks: z.number().default(0),
+  totalEngineerWeeks: z.number().default(0),
+  totalFte: z.number().default(0),
+  effortNote: z.string().default(''),
+});
 export type CostBreakdown = z.infer<typeof costBreakdownSchema>;
 
 // Phase 5 — Asset Criticality Engine™
@@ -270,6 +291,9 @@ export const executiveDecisionSchema = z.object({ decision: z.string(), type: z.
 export type ExecutiveDecision = z.infer<typeof executiveDecisionSchema>;
 
 // Phase 11 — Enterprise Remediation Playbook™
+// I4#6 — operational execution fields (downtime / window / rollback duration /
+// validation owner / success KPI / automation / SLA impact) so each playbook
+// reads as a change-management-ready runbook.
 export const playbookDetailSchema = z.object({
   finding: z.string(),
   currentState: z.string(),
@@ -280,6 +304,13 @@ export const playbookDetailSchema = z.object({
   validationSteps: z.array(z.string()),
   rollbackSteps: z.array(z.string()),
   successCriteria: z.array(z.string()),
+  estimatedDowntime: z.string().default(EVIDENCE_UNAVAILABLE),
+  maintenanceWindow: z.string().default(EVIDENCE_UNAVAILABLE),
+  rollbackDuration: z.string().default(EVIDENCE_UNAVAILABLE),
+  validationOwner: z.string().default(EVIDENCE_UNAVAILABLE),
+  successKpi: z.string().default(EVIDENCE_UNAVAILABLE),
+  automationStatus: z.string().default(EVIDENCE_UNAVAILABLE),
+  slaImpact: z.string().default(EVIDENCE_UNAVAILABLE),
 });
 export type PlaybookDetail = z.infer<typeof playbookDetailSchema>;
 
@@ -340,6 +371,10 @@ export const roadmapPhaseSchema = z.object({
 export type RoadmapPhase = z.infer<typeof roadmapPhaseSchema>;
 
 // #9 — Executive Risk Acceptance register
+// I4#5 — formal Risk Owner Approval fields (approver / status / date / method).
+// Approvals are never fabricated: entries are generated as "Pending Executive
+// Sign-off" and the approval is executed against the report's digital
+// signature (SHA3-256 integrity hash + verification token).
 export const riskAcceptanceSchema = z.object({
   risk: z.string(),
   decision: z.enum(['Mitigate', 'Accept', 'Transfer', 'Defer']),
@@ -347,10 +382,19 @@ export const riskAcceptanceSchema = z.object({
   rationale: z.string(),
   residualRisk: z.string(),
   reviewDate: z.string().default(EVIDENCE_UNAVAILABLE),
+  approver: z.string().default('CISO'),
+  approvalStatus: z.string().default('Pending Executive Sign-off'),
+  approvalDate: z.string().default('Pending sign-off'),
+  approvalMethod: z.string().default('Digital signature — report SHA3-256 integrity hash + verification token'),
 });
 export type RiskAcceptance = z.infer<typeof riskAcceptanceSchema>;
 
 // #10 — Asset-Level Readiness
+// I4#3/#7 — enriched into an executive asset inventory: business context
+// (unit / environment / criticality / platform / cloud) plus per-asset crypto
+// posture (TLS version, cert expiry, primary algorithm, key size, PQC status,
+// HNDL exposure). Fields the evidence pipeline has not observed are
+// `Evidence Not Available`, never invented.
 export const assetReadinessSchema = z.object({
   asset: z.string(),
   readiness: z.number(),
@@ -359,6 +403,17 @@ export const assetReadinessSchema = z.object({
   internetFacing: z.boolean(),
   primaryDriver: z.string(),
   owner: z.string(),
+  businessUnit: z.string().default(EVIDENCE_UNAVAILABLE),
+  environment: z.string().default(EVIDENCE_UNAVAILABLE),
+  criticality: z.string().default(EVIDENCE_UNAVAILABLE),
+  platform: z.string().default(EVIDENCE_UNAVAILABLE),
+  cloudProvider: z.string().default(EVIDENCE_UNAVAILABLE),
+  tlsVersion: z.string().default(EVIDENCE_UNAVAILABLE),
+  certExpiry: z.string().default(EVIDENCE_UNAVAILABLE),
+  primaryAlgorithm: z.string().default(EVIDENCE_UNAVAILABLE),
+  keySize: z.string().default(EVIDENCE_UNAVAILABLE),
+  pqcStatus: z.string().default(EVIDENCE_UNAVAILABLE),
+  hndlExposure: z.string().default(EVIDENCE_UNAVAILABLE),
 });
 export type AssetReadiness = z.infer<typeof assetReadinessSchema>;
 
@@ -425,16 +480,95 @@ export const resourceLoadSchema = z.object({
 });
 export type ResourceLoad = z.infer<typeof resourceLoadSchema>;
 
-// I3#1 — Confidence taxonomy: four distinct confidence concepts, clearly labelled
+// I3#1 — Confidence taxonomy: distinct confidence concepts, clearly labelled
 // so "72% assessment confidence" is never confused with per-wave confidence.
+// I4#1 — adds Migration Forecast Confidence (the entire-programme simulation
+// confidence) as its own labelled measure, removing the last ambiguity between
+// assessment-evidence confidence and forecast confidence.
 export const confidenceSummarySchema = z.object({
   assessmentConfidencePct: z.number(),
   migrationPlanConfidencePct: z.number(),
+  migrationForecastConfidencePct: z.number().default(0),
   waveConfidenceRange: z.string(),
   evidenceConfidencePct: z.number(),
   note: z.string(),
 });
 export type ConfidenceSummary = z.infer<typeof confidenceSummarySchema>;
+
+// I4#2 — Readiness Progression Ladder™: executive wording for the migration
+// simulation ("Current Readiness → Projected After Wave 1 → … → Target
+// Readiness") instead of bare "19 → 47" arrows.
+export const readinessProgressionStepSchema = z.object({
+  stage: z.string(),
+  readiness: z.number(),
+  risk: z.number(),
+  detail: z.string().default(''),
+});
+export type ReadinessProgressionStep = z.infer<typeof readinessProgressionStepSchema>;
+
+// I4#9 — Executive Certification Summary™: the report's final page. Every
+// value is copied from already-validated report sections; certification status
+// is COMPUTED from published criteria, never asserted.
+// I5#4 — carries the dated migration milestone schedule (from the programme
+// roadmap) so the certification page reads as an actionable executive roadmap.
+export const certificationCriterionSchema = z.object({
+  criterion: z.string(),
+  required: z.string(),
+  actual: z.string(),
+  met: z.boolean(),
+});
+export type CertificationCriterion = z.infer<typeof certificationCriterionSchema>;
+export const certificationMilestoneSchema = z.object({
+  milestone: z.string(),
+  window: z.string(),
+  gate: z.string().default(''),
+});
+export type CertificationMilestone = z.infer<typeof certificationMilestoneSchema>;
+export const certificationSummarySchema = z.object({
+  overallReadiness: z.number(),
+  readinessLevel: z.string(),
+  assessmentConfidencePct: z.number(),
+  migrationForecastConfidencePct: z.number(),
+  residualRisk: z.number(),
+  residualRiskLevel: z.string(),
+  migrationStatus: z.string(),
+  scopeStatement: z.string(),
+  certificationStatus: z.string(),
+  certified: z.boolean(),
+  criteria: z.array(certificationCriterionSchema),
+  milestones: z.array(certificationMilestoneSchema).default([]),
+  attestation: z.string(),
+  signedBy: z.string(),
+  signedRole: z.string(),
+  verificationHint: z.string().default(''),
+});
+export type CertificationSummary = z.infer<typeof certificationSummarySchema>;
+
+// I5#5 — Executive Decision Package™: the one-look decision summary leadership
+// needs alongside the decision register (budget, resources, accepted/deferred
+// risks, timeline, ROI, business impact) — every line sourced from validated
+// report sections.
+export const decisionPackageLineSchema = z.object({ item: z.string(), value: z.string(), detail: z.string() });
+export type DecisionPackageLine = z.infer<typeof decisionPackageLineSchema>;
+
+export const DEFAULT_CERTIFICATION: CertificationSummary = {
+  overallReadiness: 0,
+  readinessLevel: '',
+  assessmentConfidencePct: 0,
+  migrationForecastConfidencePct: 0,
+  residualRisk: 0,
+  residualRiskLevel: '',
+  migrationStatus: EVIDENCE_UNAVAILABLE,
+  scopeStatement: '',
+  certificationStatus: 'Not Certified — No Assessment Evidence',
+  certified: false,
+  criteria: [],
+  milestones: [],
+  attestation: '',
+  signedBy: '',
+  signedRole: '',
+  verificationHint: '',
+};
 
 // I3#8 — Operational (non-financial) business value beyond ROI
 export const operationalBenefitSchema = z.object({ benefit: z.string(), impact: z.string(), evidence: z.string() });
@@ -642,9 +776,14 @@ export const enterpriseAssessmentReportSchema = z.object({
   cryptoPolicy: cryptoPolicySchema.default({ activeProfile: '', profiles: [], note: '' }),
   definitions: z.array(definitionSchema).default([]),
   // Improvements_03 — refinements (defaults keep older report JSON parseable)
-  confidenceSummary: confidenceSummarySchema.default({ assessmentConfidencePct: 0, migrationPlanConfidencePct: 0, waveConfidenceRange: EVIDENCE_UNAVAILABLE, evidenceConfidencePct: 0, note: '' }),
+  confidenceSummary: confidenceSummarySchema.default({ assessmentConfidencePct: 0, migrationPlanConfidencePct: 0, migrationForecastConfidencePct: 0, waveConfidenceRange: EVIDENCE_UNAVAILABLE, evidenceConfidencePct: 0, note: '' }),
   operationalBenefits: z.array(operationalBenefitSchema).default([]),
   maturityModel: maturityModelSchema.default({ scale: '', domains: [], note: EVIDENCE_UNAVAILABLE }),
+  // Improvements_04 — refinements (defaults keep older report JSON parseable)
+  readinessProgression: z.array(readinessProgressionStepSchema).default([]),
+  certification: certificationSummarySchema.default(DEFAULT_CERTIFICATION),
+  // Improvements_05 — refinements (defaults keep older report JSON parseable)
+  decisionPackage: z.array(decisionPackageLineSchema).default([]),
   findings: z.array(findingSchema),
   assets: tableSchema,
   certificates: tableSchema,
@@ -662,7 +801,10 @@ export const enterpriseAssessmentReportSchema = z.object({
   riskForecast: riskForecastSchema,
   governance: z.array(governanceRoleSchema),
   remediation: tableSchema,
-  evidence: z.object({ sources: z.array(z.string()), notes: z.string() }),
+  // I5#2 — sources that produced evidence vs telemetry that is not yet available
+  // are listed separately, so unavailable sources are never implied to have
+  // contributed evidence.
+  evidence: z.object({ sources: z.array(z.string()), unavailableSources: z.array(z.string()).default([]), notes: z.string() }),
   charts: z.array(chartImageSchema),
   integrity: integritySchema.optional(),
 });

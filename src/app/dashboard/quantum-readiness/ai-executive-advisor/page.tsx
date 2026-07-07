@@ -2,18 +2,25 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
+import { Link } from 'react-router-dom';
 import {
+  ArrowRight,
   BadgeCheck,
   Banknote,
   Building2,
   CheckCircle2,
   Download,
+  FileText,
+  Gauge,
   History,
   Landmark,
+  ListChecks,
   RefreshCw,
   ScrollText,
+  ShieldAlert,
   Sparkles,
   TrendingUp,
+  XCircle,
 } from 'lucide-react';
 import {
   Badge,
@@ -26,11 +33,10 @@ import {
   currencyFmt,
   integerFmt,
   longDate,
-  percentLabel,
   readinessTone,
   riskTone,
+  severityColor,
   useQuantumReadiness,
-  type QuantumReadinessSnapshot,
   BLUE,
   EMERALD,
   GREEN,
@@ -38,152 +44,63 @@ import {
   RED,
   VIOLET,
 } from '../_shared';
+import { useAuth } from '@/contexts/auth-context';
+import type { EnterpriseAssessmentReport } from '@/services/reporting/schemas/ReportSchema';
+import { useAdvisorModel } from '../_advisor';
 
-interface AdvisorySection {
-  key: string;
-  title: string;
-  icon: typeof Building2;
-  color: string;
-  body: string;
-  evidence: string[];
-}
+/**
+ * AI Executive Advisor™ — the executive intelligence layer.
+ *
+ * Every section renders from the SAME unified enterprise report model the
+ * Report Center exports (buildReportModel): risk decomposition, business
+ * risks, ROI, decisions, confidence and the evidence chain all reconcile and
+ * self-validate. The advisor translates that validated evidence into board
+ * language — it never invents findings the assessment did not produce.
+ */
 
 interface Advisory {
   id: string;
   generatedAt: string;
+  approved: boolean;
   readiness: number;
   risk: number;
-  approved: boolean;
-  sections: AdvisorySection[];
+  validation: 'PASS' | 'FAIL';
+  model: EnterpriseAssessmentReport;
 }
 
-/** Build an evidence-grounded advisory deterministically from assessment data. */
-function buildAdvisory(snapshot: QuantumReadinessSnapshot): Advisory {
-  const { scores, inventory, estimates, riskDistribution } = snapshot;
-  const ev = (...lines: string[]) => lines.filter(Boolean);
+function EvidenceChips({ items }: { items: string[] }) {
+  if (!items.length) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {items.filter(Boolean).map((item) => (
+        <span key={item} className="inline-flex items-center gap-1 rounded border border-emerald-400/20 bg-emerald-400/[0.07] px-2 py-0.5 text-[10px] font-semibold text-emerald-200/80">
+          <CheckCircle2 className="h-3 w-3" /> {item}
+        </span>
+      ))}
+    </div>
+  );
+}
 
-  const sections: AdvisorySection[] = [
-    {
-      key: 'summary',
-      title: 'Executive Summary',
-      icon: Building2,
-      color: BLUE,
-      body: `The organization presents a quantum readiness score of ${scores.quantumReadiness}/100 (${scores.quantumReadinessLevel}) against a quantum risk score of ${scores.quantumRisk}/100 (${scores.quantumRiskLevel}). Discovery has assessed ${integerFmt(
-        inventory.assetsAssessed,
-      )} cryptographic assets, of which ${integerFmt(inventory.quantumVulnerableAssets)} remain quantum-vulnerable and ${percentLabel(
-        scores.pqcAdoption,
-      )} are quantum-safe or hybrid.`,
-      evidence: ev(
-        `${integerFmt(inventory.assetsAssessed)} assets assessed`,
-        `${integerFmt(inventory.certificatesAnalyzed)} certificates analyzed`,
-        `${integerFmt(inventory.keysDiscovered)} keys discovered`,
-      ),
-    },
-    {
-      key: 'business',
-      title: 'Business Impact',
-      icon: TrendingUp,
-      color: ORANGE,
-      body: `Quantum-vulnerable cryptography concentrated in ${integerFmt(
-        inventory.quantumVulnerableAssets,
-      )} assets exposes confidentiality and integrity of dependent business services. ${
-        riskDistribution.critical > 0
-          ? `${integerFmt(riskDistribution.critical)} critical findings require remediation within the current quarter to avoid material risk.`
-          : 'No critical findings are currently open, indicating contained near-term business impact.'
-      }`,
-      evidence: ev(
-        `${integerFmt(riskDistribution.critical)} critical findings`,
-        `${integerFmt(riskDistribution.high)} high findings`,
-        `${integerFmt(inventory.trustRelationships)} trust relationships in blast radius`,
-      ),
-    },
-    {
-      key: 'financial',
-      title: 'Financial Impact',
-      icon: Banknote,
-      color: EMERALD,
-      body: estimates.migrationCostUsd
-        ? `The estimated migration investment to reach a quantum-safe posture is ${currencyFmt(
-            estimates.migrationCostUsd,
-          )} over approximately ${integerFmt(estimates.migrationTimelineWeeks)} weeks. This estimate is derived from the remaining quantum-vulnerable surface and assessed migration complexity (${scores.migrationComplexity}/100).`
-        : 'Insufficient remediation scope to produce a financial estimate. Complete discovery to model migration investment.',
-      evidence: ev(
-        estimates.migrationCostUsd ? `Estimated cost ${currencyFmt(estimates.migrationCostUsd)}` : '',
-        estimates.migrationTimelineWeeks ? `Estimated timeline ${integerFmt(estimates.migrationTimelineWeeks)} weeks` : '',
-        `Migration complexity ${scores.migrationComplexity}/100`,
-      ),
-    },
-    {
-      key: 'regulatory',
-      title: 'Regulatory Risk',
-      icon: Landmark,
-      color: VIOLET,
-      body: `With Harvest-Now-Decrypt-Later exposure rated ${scores.hndlRiskLevel} (${scores.hndlRisk}/100), long-lived regulated data may fall outside emerging post-quantum mandates (NIST FIPS 203/204/205, CNSA 2.0). ${
-        scores.pqcAdoption < 50 ? 'Current PQC adoption is below the threshold expected by forthcoming compliance timelines.' : 'PQC adoption is progressing toward regulatory expectations.'
-      }`,
-      evidence: ev(`HNDL risk ${scores.hndlRisk}/100`, `PQC adoption ${percentLabel(scores.pqcAdoption)}`, 'Mapped to NIST FIPS 203/204/205'),
-    },
-    {
-      key: 'strategy',
-      title: 'Strategic Recommendation',
-      icon: Sparkles,
-      color: BLUE,
-      body: `${
-        scores.quantumRisk >= 45
-          ? 'Establish a funded, executive-sponsored post-quantum migration program now.'
-          : 'Maintain the current trajectory while extending crypto-agility coverage.'
-      } Prioritize remediation of quantum-vulnerable, internet-facing and long-retention assets, adopting hybrid X25519+ML-KEM and Ed25519+ML-DSA where compatibility allows.`,
-      evidence: ev(
-        `Quantum risk ${scores.quantumRisk}/100`,
-        `${integerFmt(inventory.quantumVulnerableAssets)} vulnerable assets to sequence`,
-        `${integerFmt(inventory.hybridAssets)} hybrid assets in progress`,
-      ),
-    },
-    {
-      key: 'board',
-      title: 'Board-Level Risk Statement',
-      icon: ScrollText,
-      color: scores.quantumRisk >= 45 ? RED : GREEN,
-      body: `${
-        scores.quantumRisk >= 70
-          ? 'Quantum risk is SEVERE and represents a material exposure requiring board oversight and immediate investment.'
-          : scores.quantumRisk >= 45
-            ? 'Quantum risk is ELEVATED and warrants a board-approved migration mandate with quarterly progress reporting.'
-            : scores.quantumRisk >= 20
-              ? 'Quantum risk is MODERATE and is being actively managed; continued investment is recommended.'
-              : 'Quantum risk is LOW relative to peers; sustain governance and monitoring.'
-      }`,
-      evidence: ev(`Composite risk ${scores.quantumRisk}/100`, `Readiness ${scores.quantumReadiness}/100`),
-    },
-    {
-      key: 'investment',
-      title: 'Investment Recommendation',
-      icon: Banknote,
-      color: EMERALD,
-      body: estimates.migrationCostUsd
-        ? `Allocate an estimated ${currencyFmt(
-            estimates.migrationCostUsd,
-          )} across the ${integerFmt(estimates.migrationTimelineWeeks)}-week program, front-loading remediation of critical and internet-facing assets to maximize early risk reduction.`
-        : 'Fund an initial discovery and crypto-agility uplift phase to establish a defensible migration baseline before committing program-level investment.',
-      evidence: ev(
-        estimates.migrationCostUsd ? `Program budget ${currencyFmt(estimates.migrationCostUsd)}` : 'Discovery phase funding',
-        `${integerFmt(riskDistribution.critical + riskDistribution.high)} priority findings`,
-      ),
-    },
-  ];
-
-  return {
-    id: `adv-${Date.now()}`,
-    generatedAt: new Date().toISOString(),
-    readiness: scores.quantumReadiness,
-    risk: scores.quantumRisk,
-    approved: false,
-    sections,
-  };
+function StateRow({ label, current, target, betterHigh }: { label: string; current: number; target: number; betterHigh: boolean }) {
+  const currentColor = betterHigh ? readinessTone(current) : riskTone(current);
+  const targetColor = betterHigh ? readinessTone(target) : riskTone(target);
+  return (
+    <div className="rounded-md border border-white/8 bg-black/20 px-3 py-2.5">
+      <div className="text-[9px] font-black uppercase tracking-wide text-white/40">{label}</div>
+      <div className="mt-1 flex items-center gap-2 font-mono text-lg font-bold">
+        <span style={{ color: currentColor }}>{integerFmt(current)}</span>
+        <ArrowRight className="h-3.5 w-3.5 text-white/30" />
+        <span style={{ color: targetColor }}>{integerFmt(target)}</span>
+        <span className="text-[10px] font-semibold text-white/35">/100</span>
+      </div>
+    </div>
+  );
 }
 
 export default function AiExecutiveAdvisorPage() {
+  const { user } = useAuth();
   const { snapshot, state, sseConnected, refresh, downloadJson } = useQuantumReadiness();
+  const model = useAdvisorModel(snapshot, user?.email || 'QGuard Helix');
   const [advisory, setAdvisory] = useState<Advisory | null>(null);
   const [history, setHistory] = useState<Advisory[]>([]);
   const [generating, setGenerating] = useState(false);
@@ -191,14 +108,23 @@ export default function AiExecutiveAdvisorPage() {
   const generate = useCallback(() => {
     if (!snapshot.hasData) return;
     setGenerating(true);
-    // Synchronous, deterministic, evidence-grounded synthesis (no fabricated findings).
+    // Deterministic synthesis from the validated report model — same engine as
+    // the Report Center, so the advisory can never contradict the report.
     window.setTimeout(() => {
-      const next = buildAdvisory(snapshot);
+      const next: Advisory = {
+        id: `adv-${Date.now()}`,
+        generatedAt: new Date().toISOString(),
+        approved: false,
+        readiness: snapshot.scores.quantumReadiness,
+        risk: snapshot.scores.quantumRisk,
+        validation: model.reportValidation.overall,
+        model,
+      };
       setAdvisory(next);
       setHistory((prev) => [next, ...prev].slice(0, 10));
       setGenerating(false);
     }, 450);
-  }, [snapshot]);
+  }, [snapshot, model]);
 
   const approve = useCallback(() => {
     if (!advisory) return;
@@ -207,22 +133,56 @@ export default function AiExecutiveAdvisorPage() {
     setHistory((prev) => prev.map((a) => (a.id === approved.id ? approved : a)));
   }, [advisory]);
 
+  const exportAdvisory = useCallback(() => {
+    if (!advisory) return;
+    const m = advisory.model;
+    downloadJson('ai-executive-advisory', {
+      generatedAt: advisory.generatedAt,
+      approved: advisory.approved,
+      reportValidation: m.reportValidation,
+      executiveSummary: m.executiveSummary,
+      executiveBlock: m.executiveBlock,
+      impactReasons: m.impactReasons,
+      roiAnalysis: m.roiAnalysis,
+      riskScenarios: m.riskForecast.scenarios,
+      executiveDecisions: m.executiveDecisions,
+      riskAcceptance: m.riskAcceptance,
+      decisionChain: m.decisionChain,
+      confidenceSummary: m.confidenceSummary,
+      benchmarking: m.benchmarking,
+      certification: m.certification,
+    });
+  }, [advisory, downloadJson]);
+
   const inputs = useMemo(
     () => [
       { label: 'Assets', value: integerFmt(snapshot.inventory.assetsAssessed) },
+      { label: 'CBOM Components', value: integerFmt(snapshot.inventory.cryptoComponents) },
       { label: 'Certificates', value: integerFmt(snapshot.inventory.certificatesAnalyzed) },
       { label: 'Keys', value: integerFmt(snapshot.inventory.keysDiscovered) },
       { label: 'Critical Findings', value: integerFmt(snapshot.riskDistribution.critical) },
-      { label: 'Readiness', value: `${integerFmt(snapshot.scores.quantumReadiness)}/100` },
-      { label: 'Risk', value: `${integerFmt(snapshot.scores.quantumRisk)}/100` },
+      { label: 'Evidence Confidence', value: `${integerFmt(model.confidenceSummary.assessmentConfidencePct)}%` },
+      { label: 'Self-Validation', value: model.reportValidation.overall },
     ],
-    [snapshot],
+    [snapshot, model],
   );
+
+  const m = advisory?.model;
+  const ex = m?.executiveBlock;
+
+  const boardStatement = useMemo(() => {
+    if (!advisory) return '';
+    const risk = advisory.risk;
+    if (risk >= 70) return 'Quantum risk is SEVERE and represents a material exposure requiring board oversight and immediate, funded remediation.';
+    if (risk >= 45) return 'Quantum risk is ELEVATED and warrants a board-approved migration mandate with quarterly progress reporting.';
+    if (risk >= 20) return 'Quantum risk is MODERATE and is being actively managed; sustain the funded migration trajectory.';
+    return 'Quantum risk is LOW relative to the assessed evidence; sustain governance, monitoring and crypto-agility investment.';
+  }, [advisory]);
 
   return (
     <QuantumReadinessShell
       title="AI Executive Advisor™"
-      subtitle="Generates business-level explanations and board-ready recommendations. Every statement is grounded in assessment evidence — the advisor never invents unsupported findings."
+      subtitle="Generates business-level explanations and board-ready recommendations from the same validated evidence engine that powers the enterprise reports. Every statement is grounded in assessment evidence — the advisor never invents unsupported findings."
       badge={advisory?.approved ? <Badge color={GREEN}>Approved for Report</Badge> : <Badge color={VIOLET}>AI Advisory</Badge>}
       sseConnected={sseConnected}
       state={state}
@@ -237,7 +197,7 @@ export default function AiExecutiveAdvisorPage() {
               <HeaderButton icon={Sparkles} onClick={generate}>
                 Regenerate
               </HeaderButton>
-              <HeaderButton icon={Download} onClick={() => downloadJson('ai-executive-advisory', advisory)}>
+              <HeaderButton icon={Download} onClick={exportAdvisory}>
                 Export
               </HeaderButton>
               <PrimaryButton icon={BadgeCheck} onClick={approve} disabled={advisory.approved}>
@@ -272,51 +232,229 @@ export default function AiExecutiveAdvisorPage() {
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         {/* Advisory body */}
         <div className="space-y-4 xl:col-span-8">
-          {advisory ? (
+          {advisory && m && ex ? (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+              {/* Header card */}
               <Panel className="p-5">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <span className="grid h-10 w-10 place-items-center rounded-md border border-violet-400/40 bg-violet-500/10 text-violet-300">
                       <Sparkles className="h-5 w-5" />
                     </span>
                     <div>
                       <div className="text-sm font-bold text-white">Executive Advisory</div>
-                      <div className="text-[11px] text-white/45">Generated {longDate(advisory.generatedAt)}</div>
+                      <div className="text-[11px] text-white/45">Generated {longDate(advisory.generatedAt)} · self-validated at generation time</div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <Badge color={readinessTone(advisory.readiness)}>Readiness {advisory.readiness}</Badge>
                     <Badge color={riskTone(advisory.risk)}>Risk {advisory.risk}</Badge>
+                    <Badge color={advisory.validation === 'PASS' ? GREEN : RED}>Validation {advisory.validation}</Badge>
                   </div>
                 </div>
               </Panel>
 
-              {advisory.sections.map((section) => {
-                const Icon = section.icon;
-                return (
-                  <div key={section.key}>
-                  <Panel className="p-5">
-                    <div className="mb-3 flex items-center gap-2.5">
-                      <span className="grid h-8 w-8 place-items-center rounded-md border" style={{ borderColor: `${section.color}40`, color: section.color, backgroundColor: `${section.color}12` }}>
-                        <Icon className="h-4 w-4" />
-                      </span>
-                      <h3 className="text-sm font-bold text-white">{section.title}</h3>
-                    </div>
-                    <p className="text-sm leading-relaxed text-white/70">{section.body}</p>
-                    {section.evidence.length ? (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {section.evidence.map((item) => (
-                          <span key={item} className="inline-flex items-center gap-1 rounded border border-emerald-400/20 bg-emerald-400/[0.07] px-2 py-0.5 text-[10px] font-semibold text-emerald-200/80">
-                            <CheckCircle2 className="h-3 w-3" /> {item}
-                          </span>
-                        ))}
+              {/* Executive Summary */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-blue-400/40 bg-blue-500/10 text-blue-300">
+                    <Building2 className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Executive Summary</h3>
+                </div>
+                <p className="text-sm leading-relaxed text-white/70">{m.executiveSummary}</p>
+                <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                  <StateRow label="Quantum Readiness" current={ex.currentReadiness} target={ex.targetReadiness} betterHigh />
+                  <StateRow label="Quantum Risk" current={ex.currentRisk} target={ex.targetRisk} betterHigh={false} />
+                  <StateRow label="HNDL Exposure" current={ex.currentHndl} target={ex.targetHndl} betterHigh={false} />
+                </div>
+                <div className="mt-3 rounded-md border border-blue-400/20 bg-blue-500/[0.06] px-3.5 py-2.5 text-xs leading-relaxed text-white/70">
+                  <span className="font-bold text-blue-200">Recommendation: </span>
+                  {ex.executiveRecommendation}
+                </div>
+                <EvidenceChips
+                  items={[
+                    `${integerFmt(snapshot.inventory.assetsAssessed)} assets assessed`,
+                    `${integerFmt(snapshot.inventory.quantumVulnerableAssets)} quantum-vulnerable`,
+                    ex.estimatedDurationWeeks ? `${integerFmt(ex.estimatedDurationWeeks)}-week programme` : '',
+                    ex.estimatedCostUsd ? `Investment ${currencyFmt(ex.estimatedCostUsd)}` : '',
+                    `Expected risk reduction ${integerFmt(ex.expectedRiskReductionPct)}%`,
+                  ]}
+                />
+              </Panel>
+
+              {/* Top Business Risks */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-orange-400/40 bg-orange-500/10 text-orange-300">
+                    <ShieldAlert className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Top Business Risks</h3>
+                  <span className="ml-auto text-[10px] text-white/35">Board language · each risk cites its evidence driver</span>
+                </div>
+                {ex.topBusinessRisks.length ? (
+                  <div className="space-y-2.5">
+                    {ex.topBusinessRisks.map((risk, index) => (
+                      <div key={risk.risk} className="rounded-md border border-white/8 bg-black/20 p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="grid h-6 w-6 place-items-center rounded border border-white/15 bg-white/[0.04] font-mono text-[11px] font-black text-white/60">{index + 1}</span>
+                          <span className="text-xs font-bold text-white/85">{risk.risk}</span>
+                          <Badge color={severityColor(risk.level)}>{risk.level}</Badge>
+                        </div>
+                        <p className="mt-1.5 pl-8 text-[11px] leading-snug text-white/55">
+                          <span className="font-bold text-emerald-300/80">Evidence: </span>
+                          {risk.driver}
+                        </p>
                       </div>
-                    ) : null}
-                  </Panel>
+                    ))}
                   </div>
-                );
-              })}
+                ) : (
+                  <EmptyState label="No evidence-backed business risks derived." />
+                )}
+              </Panel>
+
+              {/* Business Impact Intelligence */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-amber-400/40 bg-amber-500/10 text-amber-300">
+                    <TrendingUp className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Business Impact Intelligence</h3>
+                </div>
+                <div className="space-y-2.5">
+                  {m.impactReasons.map((impact) => (
+                    <div key={impact.dimension} className="rounded-md border border-white/8 bg-black/20 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold text-white/85">{impact.dimension}</span>
+                        <Badge color={severityColor(impact.level)}>{impact.level}</Badge>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-snug text-white/60">{impact.reason}</p>
+                      <EvidenceChips items={impact.evidence} />
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+
+              {/* Investment & ROI */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-emerald-400/40 bg-emerald-500/10 text-emerald-300">
+                    <Banknote className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Investment & Value Intelligence</h3>
+                </div>
+                <div className="rounded-md border border-emerald-400/20 bg-emerald-500/[0.05] px-3.5 py-2.5 text-xs leading-relaxed text-white/70">
+                  {m.roiAnalysis.paybackNarrative}
+                </div>
+                {m.roiAnalysis.lines.length ? (
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="min-w-[540px] w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-white/8 text-[9px] uppercase tracking-[0.08em] text-white/35">
+                          <th className="pb-2 font-black">Value Metric</th>
+                          <th className="pb-2 font-black">Expected Outcome</th>
+                          <th className="pb-2 font-black">Basis / Formula</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {m.roiAnalysis.lines.map((line) => (
+                          <tr key={line.metric} className="border-b border-white/5 text-white/65 align-top">
+                            <td className="py-2 pr-3 font-semibold text-white/80">{line.metric}</td>
+                            <td className="py-2 pr-3">{line.value}</td>
+                            <td className="py-2 text-white/45">{line.basis}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    <EmptyState label="Run a discovery scan to model migration investment and ROI." />
+                  </div>
+                )}
+              </Panel>
+
+              {/* Strategic scenarios */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-blue-400/40 bg-blue-500/10 text-blue-300">
+                    <Gauge className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Strategic Scenarios</h3>
+                  <span className="ml-auto text-[10px] text-white/35">Quantum risk trajectory /100 — evidence-derived planning bands</span>
+                </div>
+                <div className="space-y-2.5">
+                  <div className="rounded-md border p-3" style={{ borderColor: `${RED}30`, backgroundColor: `${RED}0d` }}>
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-bold text-white/85">Do Nothing</span>
+                      <Badge color={RED}>Not Recommended</Badge>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-snug text-white/60">
+                      Quantum risk remains at {snapshot.scores.quantumRisk}/100 with {integerFmt(snapshot.inventory.vulnerableComponents)} quantum-vulnerable component(s) in place, while
+                      Harvest-Now-Decrypt-Later exposure ({snapshot.scores.hndlRiskLevel}) accumulates on every day of captured traffic.
+                    </p>
+                  </div>
+                  {m.riskForecast.scenarios.map((scenario) => {
+                    const color = scenario.scenario === 'Best Case' ? EMERALD : scenario.scenario === 'Expected' ? BLUE : ORANGE;
+                    const label = scenario.scenario === 'Best Case' ? 'Accelerated Programme' : scenario.scenario === 'Expected' ? 'Recommended Programme' : 'Constrained / Slipped';
+                    return (
+                      <div key={scenario.scenario} className="rounded-md border p-3" style={{ borderColor: `${color}30`, backgroundColor: `${color}0d` }}>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-bold text-white/85">{label}</span>
+                          <Badge color={color}>{scenario.scenario}</Badge>
+                          <span className="ml-auto font-mono text-[11px] text-white/60">
+                            12mo {scenario.month12} · 24mo {scenario.month24} · 36mo {scenario.month36}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-snug text-white/55">{scenario.assumption}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Panel>
+
+              {/* Executive Decision Register */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-violet-400/40 bg-violet-500/10 text-violet-300">
+                    <ListChecks className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Executive Decision Register</h3>
+                  <span className="ml-auto text-[10px] text-white/35">Decisions leadership must make today</span>
+                </div>
+                <div className="space-y-2.5">
+                  {m.executiveDecisions.map((decision) => (
+                    <div key={decision.decision} className="rounded-md border border-white/8 bg-black/20 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold text-white/85">{decision.decision}</span>
+                        <Badge color={VIOLET}>{decision.type}</Badge>
+                        <span className="ml-auto text-[10px] font-bold text-white/45">Owner: {decision.owner}</span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-snug text-white/55">{decision.rationale}</p>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+
+              {/* Decision traceability */}
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center gap-2.5">
+                  <span className="grid h-8 w-8 place-items-center rounded-md border border-emerald-400/40 bg-emerald-500/10 text-emerald-300">
+                    <ScrollText className="h-4 w-4" />
+                  </span>
+                  <h3 className="text-sm font-bold text-white">Decision Traceability</h3>
+                </div>
+                <p className="mb-3 text-[11px] text-white/45">{m.decisionChain.headline}</p>
+                <div className="space-y-1.5">
+                  {m.decisionChain.steps.map((step, index) => (
+                    <div key={step.stage} className="grid grid-cols-[24px_130px_1fr] items-start gap-2 rounded border border-white/5 bg-black/15 px-2.5 py-1.5 text-[11px]">
+                      <span className="font-mono font-black text-white/35">{index + 1}</span>
+                      <span className="font-bold text-blue-200/90">{step.stage}</span>
+                      <span className="leading-snug text-white/60">{step.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
             </motion.div>
           ) : (
             <Panel className="p-10">
@@ -328,7 +466,7 @@ export default function AiExecutiveAdvisorPage() {
                   <div className="text-base font-bold text-white">{snapshot.hasData ? 'Generate an executive advisory' : 'Assessment evidence required'}</div>
                   <p className="mx-auto mt-1 max-w-md text-sm text-white/55">
                     {snapshot.hasData
-                      ? 'Synthesize business impact, financial and regulatory guidance — grounded entirely in your assessment evidence.'
+                      ? 'Synthesize board-ready business risks, investment guidance, strategic scenarios and the executive decision register — every statement grounded in your assessment evidence and self-validated before display.'
                       : 'Run a discovery scan to collect the evidence the advisor requires before it can generate guidance.'}
                   </p>
                 </div>
@@ -342,17 +480,75 @@ export default function AiExecutiveAdvisorPage() {
           )}
         </div>
 
-        {/* Guardrails + audit trail */}
+        {/* Right rail: board statement, confidence, benchmarking, guardrails, audit */}
         <div className="space-y-4 xl:col-span-4">
+          {advisory && m ? (
+            <>
+              <Panel className="p-5">
+                <SectionTitle suffix={<ScrollText className="h-4 w-4 text-white/40" />}>Board-Level Risk Statement</SectionTitle>
+                <p className="text-sm leading-relaxed" style={{ color: advisory.risk >= 45 ? '#FCA5A5' : '#86EFAC' }}>
+                  {boardStatement}
+                </p>
+                <p className="mt-2 text-[11px] leading-snug text-white/45">{m.benchmarking.percentileNarrative}</p>
+                <p className="mt-2 text-[10px] leading-snug text-white/30">{m.benchmarking.note}</p>
+              </Panel>
+
+              <Panel className="p-5">
+                <SectionTitle suffix={<Gauge className="h-4 w-4 text-white/40" />}>Advisory Confidence</SectionTitle>
+                <div className="space-y-2.5">
+                  {[
+                    { label: 'Assessment Evidence Confidence', value: m.confidenceSummary.assessmentConfidencePct },
+                    { label: 'Migration Plan Confidence', value: m.confidenceSummary.migrationPlanConfidencePct },
+                    { label: 'Migration Forecast Confidence', value: m.confidenceSummary.migrationForecastConfidencePct },
+                    { label: 'Evidence Source Confidence', value: m.confidenceSummary.evidenceConfidencePct },
+                  ].map((row) => (
+                    <div key={row.label} className="text-[11px]">
+                      <div className="flex items-center justify-between text-white/60">
+                        <span>{row.label}</span>
+                        <span className="font-mono font-bold text-white/80">{integerFmt(row.value)}%</span>
+                      </div>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/5">
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(100, row.value)}%`, backgroundColor: row.value >= 75 ? GREEN : row.value >= 40 ? ORANGE : RED }} />
+                      </div>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between text-[11px] text-white/60">
+                    <span>Wave Confidence (range)</span>
+                    <span className="font-mono font-bold text-white/80">{m.confidenceSummary.waveConfidenceRange}</span>
+                  </div>
+                </div>
+                <p className="mt-3 text-[10px] leading-snug text-white/35">{m.confidenceSummary.note}</p>
+              </Panel>
+
+              <Panel className="p-5">
+                <SectionTitle suffix={<Landmark className="h-4 w-4 text-white/40" />}>Risk Acceptance Positions</SectionTitle>
+                <div className="space-y-2">
+                  {m.riskAcceptance.slice(0, 4).map((item) => (
+                    <div key={item.risk} className="rounded border border-white/8 bg-black/20 px-2.5 py-2 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-semibold text-white/75">{item.risk}</span>
+                        <Badge color={item.decision === 'Mitigate' ? GREEN : item.decision === 'Accept' ? ORANGE : item.decision === 'Transfer' ? BLUE : VIOLET}>{item.decision}</Badge>
+                      </div>
+                      <div className="mt-1 text-[10px] text-white/40">
+                        {item.approver} · {item.approvalStatus}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            </>
+          ) : null}
+
           <Panel className="p-5">
             <SectionTitle suffix={<BadgeCheck className="h-4 w-4 text-emerald-400" />}>Guardrails</SectionTitle>
             <ul className="space-y-2 text-xs text-white/60">
               {[
-                'No unsupported findings are generated',
-                'Every statement traces to assessment data',
-                'Scores derive from scan, certificate & key evidence',
-                'Regulatory mapping references NIST FIPS 203/204/205',
-                'Approval is required before inclusion in reports',
+                'Same evidence engine as the enterprise reports — the advisory can never contradict them',
+                'No unsupported findings: every statement traces to scan, CBOM, certificate, key or runtime evidence',
+                'Arithmetic and cross-section consistency self-validate at generation time (PASS/FAIL badge)',
+                'Target algorithms resolve through the active crypto-policy profile (NIST FIPS 203/204/205)',
+                'Peer benchmarks are labelled modeled reference points — never presented as tenant telemetry',
+                'Approval is required before inclusion in board reports',
               ].map((rule) => (
                 <li key={rule} className="flex items-start gap-2">
                   <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
@@ -377,7 +573,11 @@ export default function AiExecutiveAdvisorPage() {
                   >
                     <span className="min-w-0">
                       <span className="block truncate font-semibold text-white/80">{longDate(item.generatedAt)}</span>
-                      <span className="text-[10px] text-white/40">Readiness {item.readiness} · Risk {item.risk}</span>
+                      <span className="inline-flex items-center gap-1.5 text-[10px] text-white/40">
+                        Readiness {item.readiness} · Risk {item.risk} ·
+                        {item.validation === 'PASS' ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <XCircle className="h-3 w-3 text-red-400" />}
+                        {item.validation}
+                      </span>
                     </span>
                     {item.approved ? <Badge color={GREEN}>Approved</Badge> : <Badge color={BLUE}>Draft</Badge>}
                   </button>
@@ -386,6 +586,12 @@ export default function AiExecutiveAdvisorPage() {
             ) : (
               <EmptyState label="No advisories generated yet." />
             )}
+          </Panel>
+
+          <Panel className="p-4">
+            <Link to="/dashboard/quantum-readiness/reports" className="inline-flex items-center gap-2 text-xs font-bold text-blue-300 no-underline transition hover:text-blue-200">
+              <FileText className="h-4 w-4" /> Generate the full board report in the Report Center
+            </Link>
           </Panel>
         </div>
       </section>

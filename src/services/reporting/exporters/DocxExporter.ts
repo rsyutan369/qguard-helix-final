@@ -16,6 +16,7 @@ import {
   BorderStyle,
 } from 'docx';
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
+import { qrPngDataUrl, reportVerificationUrl } from '../ReportQr';
 
 function dataUrlToBytes(dataUrl: string): Uint8Array {
   const base64 = dataUrl.split(',')[1] || '';
@@ -166,22 +167,27 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   ] };
   const confidenceTable: ReportTable = { title: 'Assessment Confidence', columns: ['Coverage Factor', 'Coverage'], rows: report.migrationConfidence.factors.map((f) => [f.label, `${f.coveragePct}%`]) };
   const confidenceSummaryTable: ReportTable = { title: 'Confidence Overview', columns: ['Confidence Measure', 'Value', 'What it means'], rows: [
-    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind the assessment'],
+    ['Assessment Evidence Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind the assessment'],
     ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the recommended plan achieves its target'],
+    ['Migration Forecast Confidence', `${report.confidenceSummary.migrationForecastConfidencePct}%`, 'Confidence in the entire-programme simulation outcome'],
     ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
     ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
   ] };
   const operationalBenefitsTable: ReportTable = { title: 'Operational Benefits', columns: ['Operational Benefit', 'Impact', 'Evidence'], rows: report.operationalBenefits.length ? report.operationalBenefits.map((b) => [b.benefit, b.impact, b.evidence]) : [['Evidence Not Available', '-', '-']] };
   const maturityTable: ReportTable = { title: 'Executive Maturity Model', columns: ['Domain', 'Current', 'Target', 'Gap', 'Timeline', 'Investment', 'Owner', 'Dependencies'], rows: report.maturityModel.domains.length ? report.maturityModel.domains.map((d) => [d.domain, d.currentLabel, d.targetLabel, `${d.gap} level(s)`, d.timeline, d.investment, d.owner, d.dependencies]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
-  const costBreakdownTable: ReportTable = { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] };
+  const costBreakdownTable: ReportTable = { title: 'Cost Breakdown', columns: ['Category', 'Hours', '≈ Engineer-Weeks', '≈ FTE', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineerWeeks, l.fte, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, report.costBreakdown.totalEngineerWeeks, report.costBreakdown.totalFte, '', '', usd(report.costForecast.totalUsd), '']] };
   const criticalityTable: ReportTable = { title: 'Asset Criticality', columns: ['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue', 'Compliance', 'Data'], rows: report.assetCriticality.length ? report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join(', '), a.dataSensitivity]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] };
   const impactReasonTable: ReportTable = { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why', 'Evidence'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]) };
-  const assetReadinessTable: ReportTable = { title: 'Asset-Level Readiness', columns: ['Asset', 'Readiness', 'Risk', 'Posture', 'Internet-Facing', 'Primary Driver', 'Owner'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver, a.owner]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] };
+  const assetReadinessTable: ReportTable = { title: 'Asset-Level Readiness', columns: ['Asset', 'Readiness', 'Risk', 'Criticality', 'Environment', 'Business Unit', 'Owner', 'Internet-Facing', 'Primary Driver'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.criticality, a.environment, a.businessUnit, a.owner, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-']] };
+  const assetCryptoProfileTable: ReportTable = { title: 'Asset Crypto Profile', columns: ['Asset', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] };
   const riskAcceptanceTable: ReportTable = { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) };
+  const riskApprovalTable: ReportTable = { title: 'Risk Owner Approval', columns: ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) };
   const decisionChainTable: ReportTable = { title: 'Decision Traceability', columns: ['Stage', 'Detail'], rows: report.decisionChain.steps.map((st) => [st.stage, st.detail]) };
   const findingGroupTable: ReportTable = { title: 'Consolidated Findings', columns: ['Finding', 'Occurrences', 'Affected Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join(', ') || '-']) };
   const decisionTable: ReportTable = { title: 'Executive Decisions', columns: ['Decision Required', 'Type', 'Rationale', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]) };
+  const decisionPackageTable: ReportTable = { title: 'Executive Decision Package', columns: ['Decision Item', 'Value', 'Detail / Source'], rows: report.decisionPackage.length ? report.decisionPackage.map((d) => [d.item, d.value, d.detail]) : [['Evidence Not Available', '-', '-']] };
   const simulationTable: ReportTable = { title: 'Migration Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom} -> ${w.readinessTo}`, `${w.riskFrom} -> ${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) };
+  const progressionTable: ReportTable = { title: 'Readiness Progression', columns: ['Stage', 'Readiness', 'Risk', 'Detail'], rows: report.readinessProgression.length ? report.readinessProgression.map((st) => [st.stage, `${st.readiness}/100`, `${st.risk}/100`, st.detail]) : [['Evidence Not Available', '-', '-', '-']] };
   const gateTable: ReportTable = { title: 'Approval Gates', columns: ['Gate', 'Owner', 'Success Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) };
   const evidenceConfTable: ReportTable = { title: 'Evidence Confidence', columns: ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`, e.note || '-']) };
 
@@ -201,12 +207,46 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
     docTable({ title: 'Playbook', columns: ['Step', 'Detail'], rows: [
       ['Current State', p.currentState], ['Target State', p.targetState], ['Pre-Requisites', p.prerequisites.join('; ')], ['Dependencies', p.dependencies.join('; ')],
       ['Execution', p.executionSteps.map((st, i) => `${i + 1}. ${st}`).join('  ')], ['Validation', p.validationSteps.join('; ')], ['Rollback', p.rollbackSteps.join('; ')], ['Success Criteria', p.successCriteria.join('; ')],
+      ['Expected Downtime', p.estimatedDowntime], ['Maintenance Window', p.maintenanceWindow], ['Rollback Duration', p.rollbackDuration], ['Validation Owner', p.validationOwner],
+      ['Success KPI', p.successKpi], ['Automation Status', p.automationStatus], ['SLA Impact', p.slaImpact],
     ] }),
   ]);
   const explainChildren = report.explainability.flatMap((x) => [
     para(x.metric, INK),
     docTable({ title: x.metric, columns: ['Question', 'Answer'], rows: [['What was calculated?', x.what], ['How was it calculated?', x.how], ['Which evidence was used?', x.evidence], ['Why does it matter?', x.why], ['What action should be taken?', x.action]] }),
   ]);
+
+  // I4#9 — Executive Certification Summary (closing section with QR + signature)
+  const cert = report.certification;
+  const verifyUrl = reportVerificationUrl(report);
+  let qrParagraphs: Paragraph[] = [];
+  if (verifyUrl) {
+    try {
+      const qrPng = await qrPngDataUrl(verifyUrl, 220);
+      qrParagraphs = [new Paragraph({ spacing: { before: 120, after: 40 }, children: [new ImageRun({ type: 'png', data: dataUrlToBytes(qrPng), transformation: { width: 120, height: 120 } })] })];
+    } catch {
+      /* QR not embeddable in this runtime */
+    }
+  }
+  const certChildren = [
+    heading('Executive Certification Summary'),
+    para(`Certification Status: ${cert.certificationStatus}`, cert.certified ? '16A34A' : INK),
+    docTable({ title: 'Certification Snapshot', columns: ['Measure', 'Value'], rows: [
+      ['Overall Quantum Readiness', `${cert.overallReadiness}/100 (${cert.readinessLevel || '-'})`],
+      ['Assessment Evidence Confidence', `${cert.assessmentConfidencePct}%`],
+      ['Migration Forecast Confidence', `${cert.migrationForecastConfidencePct}%`],
+      ['Projected Residual Risk', `${cert.residualRisk}/100 (${cert.residualRiskLevel || '-'})`],
+      ['Migration Status', cert.migrationStatus],
+      ['Assessment Scope', cert.scopeStatement],
+    ] }),
+    ...(cert.milestones.length ? [docTable({ title: 'Migration Milestones', columns: ['Milestone', 'Window', 'Approval Gate'], rows: cert.milestones.map((ms) => [ms.milestone, ms.window, ms.gate || '-']) })] : []),
+    ...(cert.criteria.length ? [docTable({ title: 'Certification Criteria', columns: ['Certification Criterion', 'Required', 'Measured', 'Met'], rows: cert.criteria.map((c) => [c.criterion, c.required, c.actual, c.met ? 'YES' : 'NO']) })] : []),
+    para(cert.attestation, '475569'),
+    para(`Digitally signed by: ${cert.signedBy || 'Evidence Not Available'} (${cert.signedRole || '-'})${report.integrity ? `  |  Signed at: ${new Date(report.integrity.signedAt).toLocaleString()}` : ''}`, INK),
+    ...(report.integrity ? [para(`Report integrity (${report.integrity.algorithm}): ${report.integrity.hash}`, MUTED)] : [para('The integrity hash, digital signature and verification QR code are attached when the report is signed at generation time.', MUTED)]),
+    ...qrParagraphs,
+    ...(verifyUrl ? [para(cert.verificationHint, MUTED), para(`Verification URL: ${verifyUrl.split('?')[0]}?token=…`, MUTED)] : []),
+  ];
 
   const doc = new Document({
     creator: branding.companyName,
@@ -247,6 +287,8 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(impactReasonTable),
           heading('Executive Decision Center'),
           docTable(decisionTable),
+          para('Executive Decision Package — the one-look decision summary; every line is sourced from the validated report sections referenced in its detail.', MUTED),
+          docTable(decisionPackageTable),
           heading('Quantum Readiness Breakdown'),
           docTable(domainsTable),
           heading('Quantum Readiness Index'),
@@ -334,13 +376,20 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(maturityTable),
           heading('Migration Simulation (What-If)'),
           docTable(simulationTable),
+          heading('Readiness Progression'),
+          para('The migration simulation restated as an executive progression: current readiness, projected readiness after each completed wave, and the programme target.', MUTED),
+          docTable(progressionTable),
           heading('Risk Reduction Forecast'),
           docTable(forecastTable),
           docTable(scenarioTable),
-          heading('Asset-Level Readiness'),
+          heading('Asset-Level Readiness & Intelligence'),
+          para('Business context and per-asset crypto posture joined onto the readiness drivers. Unobserved fields are Evidence Not Available — never fabricated.', MUTED),
           docTable(assetReadinessTable),
+          docTable(assetCryptoProfileTable),
           heading('Executive Risk Acceptance'),
+          para('Approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report digital signature.', MUTED),
           docTable(riskAcceptanceTable),
+          docTable(riskApprovalTable),
           heading('Decision Traceability'),
           para(report.decisionChain.headline, INK),
           docTable(decisionChainTable),
@@ -357,9 +406,11 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(reportValidationTable),
           para(report.reportValidation.note, MUTED),
           heading('Evidence Sources'),
-          para(report.evidence.sources.join(' - '), MUTED),
+          para(`Evidence contributed by: ${report.evidence.sources.length ? report.evidence.sources.map((s) => `✓ ${s}`).join('   ') : 'Evidence Not Available'}`, INK),
+          ...(report.evidence.unavailableSources.length ? [para(`Not available (no telemetry — contributed no evidence): ${report.evidence.unavailableSources.map((s) => `• ${s}`).join('   ')}`, MUTED)] : []),
           para(report.evidence.notes, MUTED),
           ...(report.integrity ? [para(`Integrity (${report.integrity.algorithm}): ${report.integrity.hash}`, MUTED)] : []),
+          ...certChildren,
         ],
       },
     ],

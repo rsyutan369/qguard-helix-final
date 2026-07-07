@@ -101,10 +101,13 @@ export default defineConfig(({mode}) => {
 
   // Server-side payment config (PayPal secret, plan ids, webhook id) must reach
   // process.env for the Vite-mounted API in dev. These are NOT VITE_-prefixed,
-  // so they are never exposed to the browser bundle.
+  // so they are never exposed to the browser bundle. .env is authoritative in
+  // dev, so ALWAYS override (no `!process.env[key]` guard) — otherwise a
+  // changed credential/plan id stays pinned to the first value the server saw
+  // and edits appear to "not take" until a full restart.
   for (const key of Object.keys(env)) {
-    if ((key.startsWith('PAYPAL_') || key === 'APP_ORIGIN' || key === 'PUBLIC_APP_ORIGIN') && !process.env[key]) {
-      process.env[key] = env[key];
+    if (key.startsWith('PAYPAL_') || key === 'APP_ORIGIN' || key === 'PUBLIC_APP_ORIGIN') {
+      if (env[key]) process.env[key] = env[key];
     }
   }
 

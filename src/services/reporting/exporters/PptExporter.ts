@@ -1,5 +1,6 @@
 import pptxgen from 'pptxgenjs';
 import type { EnterpriseAssessmentReport } from '../schemas/ReportSchema';
+import { qrPngDataUrl, reportVerificationUrl } from '../ReportQr';
 
 // pptxgenjs ships CJS; depending on the runtime (Vite/browser vs Node ESM) the
 // default import resolves either to the constructor or to a { default } wrapper.
@@ -129,10 +130,11 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   tableSlide('Migration Wave Planning', ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk-', 'Status'], report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]), [1, 2.6, 1.4, 2.3, 1.2, 1.6, 1, 1.2]);
   tableSlide('Cost Forecast', ['Category', 'Estimated Cost'], [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)]], [8, 4.3]);
 
-  // Confidence Overview™ (I3#1) — four distinct confidence measures
+  // Confidence Overview™ (I3#1 / I4#1) — five distinct confidence measures
   tableSlide('Confidence Overview™', ['Confidence Measure', 'Value', 'What it means'], [
-    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of evidence behind the assessment'],
+    ['Assessment Evidence Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of evidence behind the assessment'],
     ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the plan achieves its target'],
+    ['Migration Forecast Confidence', `${report.confidenceSummary.migrationForecastConfidencePct}%`, 'Confidence in the entire-programme simulation outcome'],
     ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
     ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
   ], [3.2, 1.8, 7.3]);
@@ -151,9 +153,14 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
 
   // Report Intelligence (Reports_Enhancements_3) board slides
   tableSlide('Risk Scoring Methodology™', ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution', 'Share'], [...report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]), ['OVERALL = Σ Contribution', `${report.riskMethodology.overall}/100`, '100%', report.riskMethodology.overall.toFixed(1), '100%']], [4.3, 2.3, 2, 2.2, 1.5]);
-  tableSlide('Cost Forecast Intelligence™', ['Category', 'Hours', 'Eng.', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.costUsd), l.formula]), [2.6, 1.2, 1, 1.8, 5.7]);
+  const costSlide = tableSlide('Cost Forecast Intelligence™', ['Category', 'Hours', '≈ Wks', '≈ FTE', 'Eng.', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineerWeeks, l.fte, l.engineers, usd(l.costUsd), l.formula]), [2.5, 1, 1, 1, 0.8, 1.6, 4.4]);
+  costSlide.addText(report.costBreakdown.effortNote, { x: 0.5, y: 6.5, w: 12.3, h: 0.6, fontSize: 10, color: MUTED });
   tableSlide('Executive Decision Center™', ['Decision Required', 'Type', 'Owner'], report.executiveDecisions.map((d) => [d.decision, d.type, d.owner]), [6.6, 3.2, 2.5]);
+  tableSlide('Executive Decision Package™', ['Decision Item', 'Value', 'Detail / Source'], report.decisionPackage.length ? report.decisionPackage.map((d) => [d.item, d.value, d.detail]) : [['Evidence Not Available', '-', '-']], [2.2, 3, 7.1]);
   tableSlide('Migration Simulation (What-If)™', ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], report.waveSimulation.map((w) => [w.label, `${w.readinessFrom}→${w.readinessTo}`, `${w.riskFrom}→${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]), [3.7, 2, 1.8, 2, 1.4, 1.4]);
+
+  // Readiness Progression (I4#2) — executive wording for the simulation
+  tableSlide('Readiness Progression', ['Stage', 'Readiness', 'Risk', 'Detail'], report.readinessProgression.length ? report.readinessProgression.map((st) => [st.stage, `${st.readiness}/100`, `${st.risk}/100`, st.detail]) : [['Evidence Not Available', '-', '-', '-']], [4.2, 1.4, 1.3, 5.4]);
   tableSlide('Evidence Confidence Dashboard™', ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence'], report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`]), [3.5, 2.2, 2.5, 2.3, 1.8]);
 
   // AI Recommendation Validation™ — narrative + evidence
@@ -180,11 +187,13 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   // Business Impact Intelligence™ (evidence-cited)
   tableSlide('Business Impact Intelligence™', ['Dimension', 'Level', 'Why', 'Evidence'], report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]), [2.4, 1.2, 4.4, 4.3]);
 
-  // Asset-Level Readiness (which assets drive the overall score)
-  tableSlide('Asset-Level Readiness™', ['Asset', 'Readiness', 'Risk', 'Posture', 'Net', 'Primary Driver'], report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]), [3.0, 1.6, 1.4, 2.2, 0.9, 3.2]);
+  // Asset-Level Readiness (which assets drive the overall score) + I4#3/#7 enrichment
+  tableSlide('Asset-Level Readiness™', ['Asset', 'Readiness', 'Risk', 'Criticality', 'Environment', 'Owner', 'Net', 'Primary Driver'], report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.criticality, a.environment, a.owner, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]), [2.4, 1.2, 1, 1.1, 1.3, 1.7, 0.7, 2.9]);
+  tableSlide('Asset Crypto Profile™', ['Asset', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure'], report.assetReadiness.map((a) => [a.asset, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure]), [2.3, 1.9, 1.3, 2.4, 1.3, 1.6, 1.5]);
 
-  // Executive Risk Acceptance (residual-risk disposition)
+  // Executive Risk Acceptance (residual-risk disposition) + I4#5 approvals
   tableSlide('Executive Risk Acceptance™', ['Risk', 'Decision', 'Owner', 'Rationale', 'Review'], report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.reviewDate]), [3.0, 1.4, 1.8, 4.6, 1.5]);
+  tableSlide('Risk Owner Approval™', ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]), [3.2, 1.6, 2, 1.5, 4]);
 
   // Decision Traceability (Evidence → … → Approval)
   tableSlide('Decision Traceability™', ['Stage', 'Detail'], report.decisionChain.steps.map((s) => [s.stage, s.detail]), [2.4, 10]);
@@ -232,8 +241,14 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
     slide.addText(p.finding, { x: 0.5, y: 0.85, w: 12.3, h: 0.5, fontSize: 14, bold: true, color: BRAND });
     slide.addText([
       { text: 'Current State: ', options: { bold: true, color: INK } }, { text: `${p.currentState}\n`, options: { color: '334155' } },
-      { text: 'Target State: ', options: { bold: true, color: INK } }, { text: p.targetState, options: { color: '16A34A' } },
-    ], { x: 0.5, y: 1.4, w: 12.3, h: 0.9, fontSize: 12, valign: 'top' });
+      { text: 'Target State: ', options: { bold: true, color: INK } }, { text: `${p.targetState}\n`, options: { color: '16A34A' } },
+      { text: 'Downtime: ', options: { bold: true, color: INK } }, { text: `${p.estimatedDowntime} · `, options: { color: '334155' } },
+      { text: 'Window: ', options: { bold: true, color: INK } }, { text: `${p.maintenanceWindow} · `, options: { color: '334155' } },
+      { text: 'Rollback: ', options: { bold: true, color: INK } }, { text: `${p.rollbackDuration} · `, options: { color: '334155' } },
+      { text: 'Validation: ', options: { bold: true, color: INK } }, { text: `${p.validationOwner} · `, options: { color: '334155' } },
+      { text: 'Automation: ', options: { bold: true, color: INK } }, { text: `${p.automationStatus} · `, options: { color: '334155' } },
+      { text: 'SLA: ', options: { bold: true, color: INK } }, { text: p.slaImpact, options: { color: '334155' } },
+    ], { x: 0.5, y: 1.4, w: 12.3, h: 1.05, fontSize: 10.5, valign: 'top' });
     const block = (title: string, items: string[], x: number, y: number, w: number, h: number) => {
       slide.addText(title, { x, y, w, h: 0.35, fontSize: 12, bold: true, color: INK });
       slide.addText((items.length ? items : ['Evidence Not Available']).map((s, i) => `${i + 1}. ${s}`).join('\n'), { x, y: y + 0.35, w, h, fontSize: 10, color: '334155', valign: 'top' });
@@ -304,6 +319,56 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   ];
   roadmapSlide.addTable(roadmapRows, { x: 0.5, y: 1.1, w: 12.3, colW: [2.6, 1.3, 1.3, 0.7, 5.4, 1], fontSize: 10, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
   footer(roadmapSlide);
+
+  // Executive Certification Summary (I4#9) — closing slide with QR + signature
+  const cert = report.certification;
+  // I5#4 — dated migration milestone schedule ahead of the certification slide.
+  if (cert.milestones.length) {
+    tableSlide('Migration Milestones', ['Milestone', 'Window', 'Approval Gate'], cert.milestones.map((ms) => [ms.milestone, ms.window, ms.gate || '-']), [5, 2.6, 4.7]);
+  }
+  const certSlide = pptx.addSlide();
+  certSlide.background = { color: 'F8FAFC' };
+  certSlide.addText('Executive Certification Summary', { x: 0.5, y: 0.3, w: 8.6, h: 0.6, fontSize: 24, bold: true, color: INK });
+  certSlide.addText(cert.certificationStatus, { x: 9.2, y: 0.35, w: 3.6, h: 0.5, fontSize: 13, bold: true, color: 'FFFFFF', fill: { color: cert.certified ? '16A34A' : '334155' }, align: 'center' });
+  const certStats: Array<[string, string]> = [
+    ['Quantum Readiness', `${cert.overallReadiness}/100`],
+    ['Assessment Confidence', `${cert.assessmentConfidencePct}%`],
+    ['Forecast Confidence', `${cert.migrationForecastConfidencePct}%`],
+    ['Residual Risk', `${cert.residualRisk}/100`],
+  ];
+  certStats.forEach(([k, v], i) => {
+    const x = 0.5 + i * 3.1;
+    certSlide.addShape(pptx.ShapeType.roundRect, { x, y: 1.1, w: 2.9, h: 1.3, fill: { color: 'FFFFFF' }, line: { color: 'E2E8F0', width: 1 }, rectRadius: 0.08 });
+    certSlide.addText(v, { x, y: 1.25, w: 2.9, h: 0.7, fontSize: 24, bold: true, color: INK, align: 'center' });
+    certSlide.addText(k, { x, y: 1.95, w: 2.9, h: 0.35, fontSize: 10, color: MUTED, align: 'center' });
+  });
+  const certRows: pptxgen.TableRow[] = [
+    headerRow(['Certification Criterion', 'Required', 'Measured', 'Met']),
+    ...(cert.criteria.length
+      ? cert.criteria.map((c) => [
+          { text: c.criterion, options: { color: '334155' } },
+          { text: c.required, options: { color: '334155' } },
+          { text: c.actual, options: { color: '334155' } },
+          { text: c.met ? '✓ Yes' : '✗ No', options: { bold: true, color: c.met ? '16A34A' : 'DC2626' } },
+        ])
+      : [[{ text: 'Evidence Not Available', options: { colspan: 4, color: MUTED } }]]),
+  ];
+  certSlide.addTable(certRows, { x: 0.5, y: 2.7, w: 8.4, colW: [3.4, 1.5, 2.3, 1.2], fontSize: 10, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
+  const verifyUrl = reportVerificationUrl(report);
+  if (verifyUrl) {
+    try {
+      const qrPng = await qrPngDataUrl(verifyUrl, 300);
+      certSlide.addImage({ data: qrPng, x: 9.4, y: 2.7, w: 1.9, h: 1.9 });
+      certSlide.addText('Scan to verify — the decoded SHA3-256 hash must match the printed integrity hash.', { x: 9.2, y: 4.7, w: 3.4, h: 0.8, fontSize: 9, color: MUTED });
+    } catch {
+      /* QR not embeddable in this runtime */
+    }
+  }
+  certSlide.addText(
+    `Digitally signed by: ${cert.signedBy || 'Evidence Not Available'} (${cert.signedRole || '-'})${report.integrity ? `  ·  Signed at: ${new Date(report.integrity.signedAt).toLocaleString()}` : ''}${report.integrity ? `\nReport integrity (${report.integrity.algorithm}): ${report.integrity.hash}` : '\nIntegrity hash and verification QR are attached when the report is signed at generation time.'}\nMigration Status: ${cert.migrationStatus}  ·  Scope: ${cert.scopeStatement}`,
+    { x: 0.5, y: 5.6, w: 12.3, h: 1.2, fontSize: 9.5, color: '334155', valign: 'top' },
+  );
+  footer(certSlide);
 
   const blob = (await pptx.write({ outputType: 'blob' })) as Blob;
   return blob;

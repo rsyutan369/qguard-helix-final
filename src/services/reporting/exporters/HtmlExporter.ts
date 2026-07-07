@@ -1,4 +1,5 @@
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
+import { qrSvg, reportVerificationUrl } from '../ReportQr';
 
 /** HTML-escape all dynamic, evidence-derived strings to prevent injection. */
 function esc(value: unknown): string {
@@ -34,8 +35,9 @@ function gridTable(columns: string[], rows: Array<Array<string | number>>): stri
 
 /** Board-level Enterprise Quantum Readiness & Migration Program Report (HTML). */
 export function exportHtml(report: EnterpriseAssessmentReport): Blob {
-  const { branding, meta, executiveBlock: ex, scope } = report;
+  const { branding, meta, executiveBlock: ex, scope, certification: cert } = report;
   const logo = branding.companyLogo ? `<img class="logo" src="${esc(branding.companyLogo)}" alt="logo" />` : '';
+  const verifyUrl = reportVerificationUrl(report);
 
   const kpis = report.kpis
     .map((kpi) => `<div class="kpi"><div class="kpi-v">${esc(kpi.value)}${esc(kpi.unit || '')}</div><div class="kpi-l">${esc(kpi.label)}</div>${kpi.level ? `<div class="kpi-x">${esc(kpi.level)}</div>` : ''}</div>`)
@@ -107,6 +109,22 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   .charts { display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; }
   .muted { color: var(--muted); }
   .pill { display:inline-block; font-size:10px; padding:2px 8px; border-radius:10px; font-weight:700; }
+  .ladder { margin: 14px 0; }
+  .rung { display:flex; align-items:center; gap:14px; border:1px solid var(--line); border-radius:8px; padding:12px 16px; background:#fff; }
+  .rung-cur { border-left:4px solid #DC2626; } .rung-tgt { border-left:4px solid #16A34A; background:#F0FDF4; }
+  .rung-score { font-size:26px; font-weight:800; color:#0F172A; min-width:86px; } .rung-score span { font-size:12px; color:var(--muted); font-weight:600; }
+  .rung-stage { font-size:13px; font-weight:700; color:#0F172A; } .rung-detail { font-size:11.5px; color:var(--muted); margin-top:2px; }
+  .rung-body { flex:1; } .rung-risk { font-size:11px; font-weight:700; color:#475569; white-space:nowrap; }
+  .ladder-arrow { text-align:center; color:var(--muted); font-size:16px; padding:2px 0; }
+  .cert { border:2px solid var(--brand); border-radius:12px; padding:22px; background:linear-gradient(160deg,#F8FAFC,#fff); page-break-inside:avoid; }
+  .cert-status { display:inline-block; font-size:13px; font-weight:800; letter-spacing:.04em; padding:6px 14px; border-radius:6px; color:#fff; }
+  .cert-grid { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin:16px 0; }
+  .cert-stat { border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:#fff; }
+  .cert-stat .n { font-size:20px; font-weight:800; color:#0F172A; } .cert-stat .k { font-size:9.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:2px; }
+  .cert-sign { display:flex; gap:20px; align-items:flex-start; margin-top:16px; flex-wrap:wrap; }
+  .cert-sign .qr { flex-shrink:0; border:1px solid var(--line); border-radius:8px; padding:8px; background:#fff; }
+  .cert-sign .sig { flex:1; min-width:280px; font-size:12px; color:#334155; }
+  .cert-sign .sig .hash { font-family: ui-monospace, Consolas, monospace; font-size:10.5px; word-break:break-all; background:#F1F5F9; border-radius:6px; padding:8px 10px; margin-top:6px; }
   .foot { margin-top: 40px; border-top:1px solid var(--line); padding-top: 12px; font-size: 11px; color: var(--muted); display:flex; justify-content:space-between; }
 </style></head><body>
 <div class="page">
@@ -167,6 +185,9 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Executive Decision Center&trade;</h2>
   <p class="muted">Decisions requiring executive approval, with rationale and accountable owner.</p>
   ${gridTable(['Decision Required', 'Type', 'Rationale', 'Owner'], report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]))}
+  <h3>Executive Decision Package</h3>
+  <p class="muted">The one-look decision summary — budget, resources, risk dispositions, timeline, ROI and business impact. Every line is sourced from the validated report sections referenced in its detail.</p>
+  ${gridTable(['Decision Item', 'Value', 'Detail / Source'], report.decisionPackage.length ? report.decisionPackage.map((d) => [d.item, d.value, d.detail]) : [['Evidence Not Available', '—', '—']])}
 
   <h2>Quantum Readiness Breakdown</h2>
   <p class="muted">Targets are calculated per domain (baseline + internet-facing exposure), not static — the rationale explains each.</p>
@@ -214,8 +235,9 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Confidence Overview&trade;</h2>
   <p class="muted">${esc(report.confidenceSummary.note)}</p>
   ${gridTable(['Confidence Measure', 'Value', 'What it means'], [
-    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind this assessment'],
+    ['Assessment Evidence Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind this assessment'],
     ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the recommended plan achieves its target'],
+    ['Migration Forecast Confidence', `${report.confidenceSummary.migrationForecastConfidencePct}%`, 'Confidence in the entire-programme simulation outcome'],
     ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
     ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
   ])}
@@ -306,12 +328,20 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     ['Validation Steps', p.validationSteps.join('; ')],
     ['Rollback Steps', p.rollbackSteps.join('; ')],
     ['Success Criteria', p.successCriteria.join('; ')],
+    ['Expected Downtime', p.estimatedDowntime],
+    ['Maintenance Window', p.maintenanceWindow],
+    ['Rollback Duration', p.rollbackDuration],
+    ['Validation Owner', p.validationOwner],
+    ['Success KPI', p.successKpi],
+    ['Automation Status', p.automationStatus],
+    ['SLA Impact', p.slaImpact],
   ])}`).join('') : '<p class="muted">Evidence Not Available — run a discovery scan to generate the remediation playbook.</p>'}
 
   <h2>Cost Forecast Intelligence&trade;</h2>
   <p class="muted">Every cost line is derived from labour hours × blended engineer rate ($${esc(report.costBreakdown.blendedRateUsd)}/hr). Total ${esc(report.costBreakdown.totalHours.toLocaleString())} hours.</p>
-  ${gridTable(['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]))}
-  <p><b>Total Migration Cost:</b> ${esc(usd(report.costForecast.totalUsd))} · <b>Projected Risk-Reduction Value:</b> ${esc(usd(report.costForecast.projectedRiskReductionValueUsd))}</p>
+  <p class="muted">${esc(report.costBreakdown.effortNote)}</p>
+  ${gridTable(['Category', 'Hours', '≈ Engineer-Weeks', '≈ FTE', 'Engineers', 'Rate', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineerWeeks, l.fte, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]))}
+  <p><b>Total Migration Cost:</b> ${esc(usd(report.costForecast.totalUsd))} · <b>Total Effort:</b> ${esc(report.costBreakdown.totalHours.toLocaleString())} hrs ≈ ${esc(report.costBreakdown.totalEngineerWeeks)} engineer-weeks ≈ ${esc(report.costBreakdown.totalFte)} FTE · <b>Projected Risk-Reduction Value:</b> ${esc(usd(report.costForecast.projectedRiskReductionValueUsd))}</p>
 
   <h2>Executive ROI &amp; Value Intelligence&trade;</h2>
   <div class="callout"><b>ROI Summary:</b> ${esc(report.roiAnalysis.paybackNarrative)}</div>
@@ -331,6 +361,15 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     w.label, `${w.readinessFrom} → ${w.readinessTo}`, `${w.riskFrom} → ${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`,
   ]))}
 
+  <h2>Readiness Progression</h2>
+  <p class="muted">The migration simulation restated as an executive progression: current readiness, the projected readiness after each completed wave, and the programme target. Values reconcile with the simulation above by construction.</p>
+  ${report.readinessProgression.length ? `<div class="ladder">${report.readinessProgression.map((step, i) => `
+    <div class="rung${i === 0 ? ' rung-cur' : ''}${i === report.readinessProgression.length - 1 ? ' rung-tgt' : ''}">
+      <div class="rung-score">${esc(step.readiness)}<span>/100</span></div>
+      <div class="rung-body"><div class="rung-stage">${esc(step.stage)}</div><div class="rung-detail">${esc(step.detail)}</div></div>
+      <div class="rung-risk">Risk ${esc(step.risk)}/100</div>
+    </div>`).join('<div class="ladder-arrow">&darr;</div>')}</div>` : '<p class="muted">Evidence Not Available — run a discovery scan to project the readiness progression.</p>'}
+
   <h2>Risk Reduction Forecast</h2>
   ${gridTable(['Metric', 'Value'], [
     ['Current Risk', `${report.riskForecast.currentRisk}/100`],
@@ -344,13 +383,13 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${report.riskForecast.scenarios.length ? `<h3>Scenario Bands (Best / Expected / Worst Case)</h3>
   ${gridTable(['Scenario', '12-Month', '24-Month', '36-Month', 'Planning Assumption'], report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}/100`, `${sc.month24}/100`, `${sc.month36}/100`, sc.assumption]))}` : ''}
 
-  <h2>Asset-Level Readiness</h2>
-  <p class="muted">Which assets drive the overall readiness score, with their primary risk driver.</p>
-  ${gridTable(['Asset', 'Readiness', 'Risk', 'Posture', 'Internet-Facing', 'Primary Driver', 'Owner'], report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver, a.owner]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—']])}
+  <h2>Asset-Level Readiness &amp; Intelligence</h2>
+  <p class="muted">Which assets drive the overall readiness score, enriched with the business context (owner, unit, environment, criticality, platform) and per-asset crypto posture (TLS, certificate expiry, primary algorithm, key size, PQC status, HNDL exposure) teams need to assign work immediately. Unobserved fields are Evidence Not Available — never fabricated.</p>
+  ${gridTable(['Asset', 'Readiness', 'Risk', 'Owner', 'Business Unit', 'Environment', 'Criticality', 'Platform / Cloud', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure', 'Internet-Facing', 'Primary Driver'], report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.owner, a.businessUnit, a.environment, a.criticality, `${a.platform} / ${a.cloudProvider}`, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Executive Risk Acceptance</h2>
-  <p class="muted">Formal disposition of residual risk — mitigate, accept, transfer or defer — for governance and audit.</p>
-  ${gridTable(['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], report.riskAcceptance.length ? report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) : [['Evidence Not Available', '—', '—', '—', '—', '—']])}
+  <p class="muted">Formal disposition of residual risk — mitigate, accept, transfer or defer — for governance and audit. Each disposition carries a Risk Owner Approval block: approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report's digital signature (SHA3-256 integrity hash + verification token).</p>
+  ${gridTable(['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], report.riskAcceptance.length ? report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Decision Traceability</h2>
   <p class="muted">${esc(report.decisionChain.headline)}</p>
@@ -383,9 +422,34 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <p class="muted">${esc(report.reportValidation.note)}</p>
 
   <h2>Evidence Sources</h2>
-  <p class="muted">${esc(report.evidence.sources.join(' · '))}</p>
+  <p><b>Evidence contributed by:</b> ${report.evidence.sources.length ? report.evidence.sources.map((s) => `<span style="color:#16A34A">✓</span> ${esc(s)}`).join(' &nbsp;·&nbsp; ') : '<span class="muted">Evidence Not Available</span>'}</p>
+  ${report.evidence.unavailableSources.length ? `<p class="muted"><b>Not available (no telemetry — contributed no evidence):</b> ${report.evidence.unavailableSources.map((s) => `• ${esc(s)}`).join(' &nbsp; ')}</p>` : ''}
   <p class="muted">${esc(report.evidence.notes)}</p>
   ${report.integrity ? `<p class="muted"><b>Integrity (${esc(report.integrity.algorithm)}):</b> ${esc(report.integrity.hash)}</p>` : ''}
+
+  <h2>Executive Certification Summary</h2>
+  <div class="cert">
+    <span class="cert-status" style="background:${cert.certified ? '#16A34A' : '#334155'}">${esc(cert.certificationStatus)}</span>
+    <div class="cert-grid">
+      <div class="cert-stat"><div class="n">${esc(cert.overallReadiness)}/100</div><div class="k">Quantum Readiness (${esc(cert.readinessLevel || '—')})</div></div>
+      <div class="cert-stat"><div class="n">${esc(cert.assessmentConfidencePct)}%</div><div class="k">Assessment Evidence Confidence</div></div>
+      <div class="cert-stat"><div class="n">${esc(cert.migrationForecastConfidencePct)}%</div><div class="k">Migration Forecast Confidence</div></div>
+      <div class="cert-stat"><div class="n">${esc(cert.residualRisk)}/100</div><div class="k">Projected Residual Risk (${esc(cert.residualRiskLevel || '—')})</div></div>
+    </div>
+    <p style="font-size:12.5px;color:#334155;margin:6px 0"><b>Migration Status:</b> ${esc(cert.migrationStatus)}</p>
+    <p style="font-size:12.5px;color:#334155;margin:6px 0"><b>Assessment Scope:</b> ${esc(cert.scopeStatement)}</p>
+    ${cert.milestones.length ? `<h3>Migration Milestones</h3>${gridTable(['Milestone', 'Window', 'Approval Gate'], cert.milestones.map((ms) => [ms.milestone, ms.window, ms.gate || '—']))}` : ''}
+    ${cert.criteria.length ? gridTable(['Certification Criterion', 'Required', 'Measured', 'Met'], cert.criteria.map((c) => [c.criterion, c.required, c.actual, c.met ? '✓ Yes' : '✗ No'])) : ''}
+    <p style="font-size:12px;color:#475569">${esc(cert.attestation)}</p>
+    <div class="cert-sign">
+      ${verifyUrl ? `<div class="qr">${qrSvg(verifyUrl, 128)}</div>` : ''}
+      <div class="sig">
+        <div><b>Digitally signed by:</b> ${esc(cert.signedBy || 'Evidence Not Available')} (${esc(cert.signedRole || '—')})${report.integrity ? ` · <b>Signed at:</b> ${esc(new Date(report.integrity.signedAt).toLocaleString())}` : ''}</div>
+        ${report.integrity ? `<div class="hash"><b>Report integrity (${esc(report.integrity.algorithm)}):</b> ${esc(report.integrity.hash)}</div>` : '<div style="margin-top:6px;color:#64748B">Integrity hash is attached when the report is signed at generation time.</div>'}
+        ${verifyUrl ? `<div style="margin-top:8px;color:#64748B">${esc(cert.verificationHint)}<br/>Verification URL: <a href="${esc(verifyUrl)}">${esc(verifyUrl.split('?')[0])}?token=…</a></div>` : ''}
+      </div>
+    </div>
+  </div>
 
   <div class="foot"><span>${esc(branding.companyName)} · ${esc(meta.title)}</span><span>${esc(branding.classification)} · v${esc(meta.version)}</span></div>
 </div>

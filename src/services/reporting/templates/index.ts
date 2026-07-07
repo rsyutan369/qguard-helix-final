@@ -19,8 +19,8 @@ export const REPORT_TEMPLATES: ReportTemplate[] = [
     kind: 'executive',
     name: 'Executive Report™',
     audience: 'CEO · Board · CISO',
-    description: 'KPI cards, risk scores, findings summary, roadmap and an executive narrative.',
-    sections: ['KPI Cards', 'Risk Scores', 'Findings Summary', 'Roadmap', 'Executive Narrative'],
+    description: 'KPI cards, risk scores, findings summary, roadmap, executive narrative and a signed certification summary.',
+    sections: ['KPI Cards', 'Risk Scores', 'Findings Summary', 'Roadmap', 'Executive Narrative', 'Certification Summary'],
     formats: ['pdf', 'pptx', 'docx', 'html', 'json'],
   },
   {

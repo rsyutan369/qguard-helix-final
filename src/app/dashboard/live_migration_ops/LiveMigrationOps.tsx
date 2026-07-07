@@ -65,6 +65,8 @@ type LiveMigrationJob = {
   updatedAt: string
   executionStatus: string
   executionBacked: boolean
+  isSandbox?: boolean
+  runMode?: string
   agentId: string | null
   agentName: string | null
   agentStatus: string
@@ -924,8 +926,9 @@ export default function LiveMigrationOperations() {
                         <span className="truncate">{job.fromAlgo}</span>
                         <ArrowRight className="h-3 w-3 shrink-0 text-[#d4af37]/55" />
                         <span className="truncate text-[#d4af37]/80">{job.toAlgo}</span>
-                        <span className={cn('rounded border px-1.5 py-0.5 text-[8px] font-black uppercase', job.executionBacked ? 'border-[#30d158]/30 text-[#30d158]' : 'border-[#d4af37]/24 text-[#d4af37]/70')}>
-                          {job.executionBacked ? 'Agent' : 'Waiting'}
+                        <span className={cn('rounded border px-1.5 py-0.5 text-[8px] font-black uppercase',
+                          job.isSandbox ? 'border-[#a78bfa]/30 text-[#a78bfa]' : job.executionBacked ? 'border-[#30d158]/30 text-[#30d158]' : 'border-[#d4af37]/24 text-[#d4af37]/70')}>
+                          {job.isSandbox ? (job.runMode === 'dry_run' ? 'Dry Run' : 'Sandbox') : job.executionBacked ? 'Agent' : 'Waiting'}
                         </span>
                       </div>
                       <div className="mt-2 grid grid-cols-[1fr_auto] items-center gap-3">

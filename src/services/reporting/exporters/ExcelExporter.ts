@@ -114,12 +114,13 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
 
   // Report Intelligence (Reports_Enhancements_3) sheets
   addTableSheet(workbook, { title: 'Risk Methodology', columns: ['Risk Domain', 'Domain Risk', 'Weight %', 'Contribution (Risk×Weight)', 'Share %'], rows: [...report.riskMethodology.weights.map((w) => [w.domain, w.score, w.weightPct, w.contribution, w.contributionPct]), ['OVERALL (Σ Contribution)', report.riskMethodology.overall, 100, report.riskMethodology.overall, 100]] }, 'Risk Methodology');
-  addTableSheet(workbook, { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineers', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] }, 'Cost Breakdown');
+  addTableSheet(workbook, { title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Engineer-Weeks', 'FTE', 'Engineers', 'Rate', 'Cost', 'Formula', 'Effort'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineerWeeks, l.fte, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula, l.effort]), ['TOTAL', report.costBreakdown.totalHours, report.costBreakdown.totalEngineerWeeks, report.costBreakdown.totalFte, '', '', usd(report.costForecast.totalUsd), '', report.costBreakdown.effortNote]] }, 'Cost Breakdown');
   addTableSheet(workbook, { title: 'Consolidated Findings', columns: ['Finding', 'Occurrences', 'Affected Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join('; ')]) }, 'Finding Groups');
   addTableSheet(workbook, { title: 'Asset Criticality', columns: ['Asset', 'Business', 'Operational', 'Customer-Facing', 'Internet-Facing', 'Revenue', 'Compliance', 'Data Sensitivity'], rows: report.assetCriticality.map((a) => [a.asset, a.businessCriticality, a.operationalCriticality, a.customerFacing ? 'Yes' : 'No', a.internetFacing ? 'Yes' : 'No', a.revenueImpact, a.complianceScope.join('; '), a.dataSensitivity]) }, 'Asset Criticality');
   addTableSheet(workbook, { title: 'Confidence Overview', columns: ['Confidence Measure', 'Value %', 'What it means'], rows: [
-    ['Assessment Confidence', report.confidenceSummary.assessmentConfidencePct, 'Completeness of the evidence behind the assessment'],
+    ['Assessment Evidence Confidence', report.confidenceSummary.assessmentConfidencePct, 'Completeness of the evidence behind the assessment'],
     ['Migration Plan Confidence', report.confidenceSummary.migrationPlanConfidencePct, 'Likelihood the recommended plan achieves its target'],
+    ['Migration Forecast Confidence', report.confidenceSummary.migrationForecastConfidencePct, 'Confidence in the entire-programme simulation outcome'],
     ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
     ['Evidence Confidence', report.confidenceSummary.evidenceConfidencePct, 'Mean quality across evidence sources'],
   ] }, 'Confidence Overview');
@@ -136,12 +137,13 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
     ['Top Contributing Assets', report.advisorValidation.topContributingAssets.join('; ') || 'Evidence Not Available'],
   ] }, 'Advisor Validation');
   addTableSheet(workbook, { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Reason', 'Evidence'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]) }, 'Impact Intelligence');
-  addTableSheet(workbook, { title: 'Asset-Level Readiness', columns: ['Asset', 'Readiness', 'Risk', 'Posture', 'Internet-Facing', 'Primary Driver', 'Owner'], rows: report.assetReadiness.map((a) => [a.asset, a.readiness, a.risk, a.posture, a.internetFacing ? 'Yes' : 'No', a.primaryDriver, a.owner]) }, 'Asset Readiness');
-  addTableSheet(workbook, { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) }, 'Risk Acceptance');
+  addTableSheet(workbook, { title: 'Asset-Level Readiness & Intelligence', columns: ['Asset', 'Readiness', 'Risk', 'Posture', 'Owner', 'Business Unit', 'Environment', 'Criticality', 'Platform', 'Cloud Provider', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure', 'Internet-Facing', 'Primary Driver'], rows: report.assetReadiness.map((a) => [a.asset, a.readiness, a.risk, a.posture, a.owner, a.businessUnit, a.environment, a.criticality, a.platform, a.cloudProvider, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]) }, 'Asset Readiness');
+  addTableSheet(workbook, { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) }, 'Risk Acceptance');
   addTableSheet(workbook, { title: 'Decision Traceability', columns: ['Stage', 'Detail'], rows: report.decisionChain.steps.map((s) => [s.stage, s.detail]) }, 'Decision Chain');
-  addTableSheet(workbook, { title: 'Remediation Playbook', columns: ['Finding', 'Current State', 'Target State', 'Prerequisites', 'Dependencies', 'Execution Steps', 'Validation Steps', 'Rollback Steps', 'Success Criteria'], rows: report.playbookDetail.map((p) => [
+  addTableSheet(workbook, { title: 'Remediation Playbook', columns: ['Finding', 'Current State', 'Target State', 'Prerequisites', 'Dependencies', 'Execution Steps', 'Validation Steps', 'Rollback Steps', 'Success Criteria', 'Expected Downtime', 'Maintenance Window', 'Rollback Duration', 'Validation Owner', 'Success KPI', 'Automation Status', 'SLA Impact'], rows: report.playbookDetail.map((p) => [
     p.finding, p.currentState, p.targetState, p.prerequisites.join('; '), p.dependencies.join('; '),
     p.executionSteps.map((s, i) => `${i + 1}. ${s}`).join('  '), p.validationSteps.join('; '), p.rollbackSteps.join('; '), p.successCriteria.join('; '),
+    p.estimatedDowntime, p.maintenanceWindow, p.rollbackDuration, p.validationOwner, p.successKpi, p.automationStatus, p.slaImpact,
   ]) }, 'Remediation Playbook');
   addTableSheet(workbook, { title: 'Governance Gates', columns: ['Approval Gate', 'Owner', 'Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) }, 'Governance Gates');
   addTableSheet(workbook, { title: 'Report Explainability', columns: ['Metric', 'What', 'How', 'Evidence', 'Why It Matters', 'Action'], rows: report.explainability.map((e) => [e.metric, e.what, e.how, e.evidence, e.why, e.action]) }, 'Explainability');
@@ -160,6 +162,34 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   addTableSheet(workbook, { title: 'Crypto-Policy Profiles', columns: ['Profile', 'Active', 'Key Establishment', 'Digital Signature', 'Certificate Chain', 'Symmetric', 'Hash', 'Guidance'], rows: report.cryptoPolicy.profiles.map((p) => [p.profile, p.profile === report.cryptoPolicy.activeProfile ? 'ACTIVE' : '', p.keyEstablishment, p.digitalSignature, p.certificateChain, p.symmetric, p.hash, p.guidance]) }, 'Crypto Policy');
   addTableSheet(workbook, { title: 'Terminology & Definitions', columns: ['Term', 'Definition'], rows: report.definitions.map((d) => [d.term, d.definition]) }, 'Definitions');
   addTableSheet(workbook, { title: `Report Validation — ${report.reportValidation.overall}`, columns: ['Validation Check', 'Result', 'Detail'], rows: [...report.reportValidation.checks.map((c) => [c.check, c.status.toUpperCase(), c.detail]), ['OVERALL', report.reportValidation.overall, report.reportValidation.note]] }, 'Report Validation');
+
+  // Improvements_04 sheets
+  addTableSheet(workbook, { title: 'Readiness Progression', columns: ['Stage', 'Readiness', 'Risk', 'Detail'], rows: report.readinessProgression.length ? report.readinessProgression.map((st) => [st.stage, st.readiness, st.risk, st.detail]) : [['Evidence Not Available', '-', '-', '-']] }, 'Readiness Progression');
+
+  // Improvements_05 sheets
+  addTableSheet(workbook, { title: 'Executive Decision Package', columns: ['Decision Item', 'Value', 'Detail / Source'], rows: report.decisionPackage.length ? report.decisionPackage.map((d) => [d.item, d.value, d.detail]) : [['Evidence Not Available', '-', '-']] }, 'Decision Package');
+  addTableSheet(workbook, { title: 'Evidence Sources', columns: ['Source', 'Status'], rows: [
+    ...report.evidence.sources.map((s) => [s, 'Contributed evidence'] as Array<string | number>),
+    ...report.evidence.unavailableSources.map((s) => [s, 'Not available — no telemetry, contributed no evidence'] as Array<string | number>),
+    ['Notes', report.evidence.notes],
+  ] }, 'Evidence Sources');
+  const cert = report.certification;
+  addTableSheet(workbook, { title: 'Executive Certification Summary', columns: ['Field', 'Value'], rows: [
+    ['Certification Status', cert.certificationStatus],
+    ['Overall Quantum Readiness', `${cert.overallReadiness}/100 (${cert.readinessLevel || '-'})`],
+    ['Assessment Evidence Confidence', `${cert.assessmentConfidencePct}%`],
+    ['Migration Forecast Confidence', `${cert.migrationForecastConfidencePct}%`],
+    ['Projected Residual Risk', `${cert.residualRisk}/100 (${cert.residualRiskLevel || '-'})`],
+    ['Migration Status', cert.migrationStatus],
+    ['Assessment Scope', cert.scopeStatement],
+    ...cert.milestones.map((ms) => [`Milestone — ${ms.milestone}`, `${ms.window}${ms.gate ? ` — ${ms.gate}` : ''}`] as Array<string | number>),
+    ...cert.criteria.map((c) => [`Criterion — ${c.criterion}`, `${c.actual} (required ${c.required}) — ${c.met ? 'MET' : 'NOT MET'}`] as Array<string | number>),
+    ['Attestation', cert.attestation],
+    ['Digitally Signed By', `${cert.signedBy || 'Evidence Not Available'} (${cert.signedRole || '-'})`],
+    ...(report.integrity
+      ? ([['Signed At', new Date(report.integrity.signedAt).toLocaleString()], [`Report Integrity (${report.integrity.algorithm})`, report.integrity.hash], ['Verification Token', report.integrity.verificationToken || '-'], ['Verification', cert.verificationHint]] as Array<Array<string | number>>)
+      : ([['Integrity', 'Attached when the report is signed at generation time']] as Array<Array<string | number>>)),
+  ] }, 'Certification');
 
   // Inventory sheets
   addTableSheet(workbook, report.assets, 'Assets');

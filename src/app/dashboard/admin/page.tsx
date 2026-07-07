@@ -756,6 +756,7 @@ function UsersTab(props: {
           <input className="q-input" placeholder="Temporary password" type="password" value={props.newUser.password} required onChange={(event) => props.setNewUser({ ...props.newUser, password: event.target.value })} />
           <select className="q-select" value={props.newUser.tier} onChange={(event) => props.setNewUser({ ...props.newUser, tier: event.target.value })}>
             <option value="starter">Starter</option>
+            <option value="basic">Basic</option>
             <option value="pro">Pro</option>
             <option value="elite">Elite</option>
           </select>
@@ -799,6 +800,7 @@ function UsersTab(props: {
         <EnterpriseSelect label="Subscription filter" value={props.subscriptionFilter} onChange={props.setSubscriptionFilter}>
           <option value="all">All Subscriptions</option>
           <option value="starter">Starter</option>
+          <option value="basic">Basic</option>
           <option value="pro">Pro</option>
           <option value="elite">Elite</option>
         </EnterpriseSelect>
@@ -923,6 +925,7 @@ function UsersTab(props: {
             </select>
             <select className="q-select" defaultValue={selectedUser.tier} onChange={(event) => void props.updateUser(selectedUser.id, { tier: event.target.value })}>
               <option value="starter">Starter</option>
+              <option value="basic">Basic</option>
               <option value="pro">Pro</option>
               <option value="elite">Elite</option>
             </select>
@@ -1383,6 +1386,7 @@ function TenantsTab(props: {
           <input className="q-input" placeholder="Slug" value={props.newTenant.slug} onChange={(event) => props.setNewTenant({ ...props.newTenant, slug: event.target.value })} />
           <select className="q-select" value={props.newTenant.plan} onChange={(event) => props.setNewTenant({ ...props.newTenant, plan: event.target.value })}>
             <option value="starter">Starter</option>
+            <option value="basic">Basic</option>
             <option value="pro">Pro</option>
             <option value="elite">Elite</option>
           </select>
@@ -1613,6 +1617,7 @@ function BillingActionsMenu({ subscription, subscriptionAction }: {
   const approvalStatus = String(subscription.approval_status || '').toLowerCase()
   const needsApproval = Boolean(approvalStatus && !['approved', 'not_required'].includes(approvalStatus))
   const proAction = plan === 'elite' ? 'downgrade' : 'upgrade'
+  const basicAction = plan === 'starter' ? 'upgrade' : 'downgrade'
 
   return (
     <details className="relative">
@@ -1633,6 +1638,9 @@ function BillingActionsMenu({ subscription, subscriptionAction }: {
         )}
         {plan !== 'pro' && (
           <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, proAction, { plan: 'Pro' })}>Move to Pro</button>
+        )}
+        {plan !== 'basic' && (
+          <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, basicAction, { plan: 'Basic' })}>Move to Basic</button>
         )}
         {plan !== 'starter' && (
           <button type="button" className="w-full rounded-md px-3 py-2 text-left text-xs font-bold text-slate-200 hover:bg-white/10" onClick={() => void subscriptionAction(subscription.id, 'downgrade', { plan: 'Starter' })}>Downgrade to Starter</button>

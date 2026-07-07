@@ -1,0 +1,819 @@
+You are a Senior Principal Software Architect, Principal Security Engineer, Principal Cryptographer, Principal DevOps Engineer, Principal AI Engineer, and Principal UX Designer.
+
+Your mission is to design and implement a new flagship module called Quantum Intelligence Engine™ within the existing QGuard Helix Platform.
+
+This module must become the central decision-making engine of QGuard Helix and continuously optimize Post-Quantum Cryptography (PQC) deployments using real-time telemetry, AI-assisted recommendations, policy-driven automation, benchmarking, and crypto agility.
+
+This is NOT a simple dashboard.
+
+It is an enterprise-grade orchestration platform similar in concept to:
+
+Microsoft Defender XDR
+Azure Policy
+AWS Security Hub
+Cisco ThousandEyes
+Cloudflare Zero Trust
+Palo Alto Cortex
+VMware Aria Operations
+
+except focused entirely on Quantum Security Operations (QSecOps).
+
+Core Mission
+
+Transform QGuard Helix from a passive assessment platform into an intelligent Quantum Security Operations Platform capable of:
+
+continuously monitoring
+continuously benchmarking
+continuously optimizing
+continuously recommending
+eventually orchestrating
+
+enterprise quantum-safe cryptography deployments.
+
+Design Principles
+
+The implementation must follow these principles:
+
+Enterprise-grade architecture
+Modular architecture
+Microservice-ready
+Event-driven
+API-first
+Zero Trust
+Crypto Agility
+Cloud Native
+AI-assisted
+Highly scalable
+Observable
+Extensible through plugins
+Multi-tenant
+Role-based access control (RBAC)
+New Core Module
+
+Create a new primary navigation item:
+
+Quantum Intelligence™
+
+Position:
+
+Overview
+
+Quantum Readiness Assessment Engine™
+
+Migration Planner™
+
+Migration Sandbox™
+
+Live Migration Ops™
+
+Quantum Intelligence™ ⭐
+
+Inside Quantum Intelligence create the following pages.
+
+Quantum Intelligence
+
+├── Dashboard
+├── Crypto Agility Engine
+├── Policy Engine
+├── Network Intelligence
+├── Hardware Optimizer
+├── Handshake Optimizer
+├── Benchmark Center
+├── Recommendation Engine
+├── Optimization History
+├── Telemetry Center
+├── AI Insights
+├── Analytics
+└── Settings
+Dashboard
+
+The Dashboard must become the command center.
+
+Display:
+
+Current Quantum Health Score
+
+Current Crypto Policy
+
+Current Recommended Algorithm
+
+Current Network Status
+
+Current Hardware Capability
+
+Current TLS Configuration
+
+Current QUIC Status
+
+Current Optimization Level
+
+Current Risk Level
+
+Current Readiness Score
+
+Current Compliance Status
+
+Current AI Recommendation
+
+Current Active Policies
+
+Recent Optimizations
+
+Live Telemetry
+
+Display enterprise KPI cards:
+
+Quantum Readiness
+
+98%
+
+Current PQC
+
+ML-KEM-768
+
+Optimization
+
+Balanced
+
+Crypto Agility
+
+Enabled
+
+Network Health
+
+97%
+
+Hardware Score
+
+95%
+
+Handshake Success
+
+99.99%
+
+Quantum Risk
+
+Low
+Crypto Agility Engine
+
+This is the heart of the system.
+
+Purpose
+
+Continuously determine the optimal cryptographic profile.
+
+Supported algorithms:
+
+ML-KEM-512
+
+ML-KEM-768
+
+ML-KEM-1024
+
+Hybrid TLS
+
+ECDHE + ML-KEM
+
+Future algorithms
+
+SLH-DSA
+
+ML-DSA
+
+HQC (if standardized)
+
+Future NIST algorithms
+
+Support:
+
+Algorithm Profiles
+
+Algorithm Switching
+
+Policy-driven Selection
+
+Priority Levels
+
+Security Levels
+
+Fallback Policies
+
+Performance Profiles
+
+Risk Profiles
+
+Example Decision Engine
+
+IF latency < 20 ms
+
+THEN
+
+Recommend
+
+ML-KEM-1024
+
+IF packet loss > 3%
+
+Recommend
+
+ML-KEM-768
+
+Enable
+
+TLS Session Resumption
+
+IF IoT device
+
+Recommend
+
+ML-KEM-512
+
+IF satellite link
+
+Enable
+
+Hybrid Mode
+
+IF hardware supports AVX512
+
+Enable Vector Acceleration
+
+IF bandwidth constrained
+
+Recommend optimized record sizing
+
+IF compliance requires NIST Level 5
+
+Recommend ML-KEM-1024
+
+Rules must be editable using a visual Rule Builder.
+
+Policy Engine
+
+Create a no-code enterprise policy builder.
+
+Similar to:
+
+Azure Policy
+
+Cloudflare Rules
+
+Microsoft Conditional Access
+
+Support:
+
+IF
+
+THEN
+
+ELSE
+
+Nested Rules
+
+Policy Groups
+
+Priority
+
+Policy Versioning
+
+Rollback
+
+Audit Logs
+
+Approval Workflow
+
+Example:
+
+IF
+
+Latency > 100ms
+
+AND
+
+Packet Loss > 2%
+
+THEN
+
+Switch
+
+ML-KEM-768
+
+Enable QUIC
+
+Enable Session Tickets
+
+Reduce TLS Record Size
+
+Notify Administrator
+Network Intelligence
+
+Integrate with:
+
+Linux tc
+
+NetEm
+
+Mininet
+
+iperf3
+
+Ping
+
+Traceroute
+
+eBPF
+
+SNMP
+
+Telemetry Sources
+
+Measure:
+
+Latency
+
+Jitter
+
+Packet Loss
+
+Bandwidth
+
+MTU
+
+Retransmissions
+
+RTT
+
+Handshake Duration
+
+TLS Errors
+
+Connection Success
+
+Visualize:
+
+Real-time charts
+
+Heatmaps
+
+Network topology
+
+Latency maps
+
+Bandwidth graphs
+
+Packet-loss timelines
+
+Historical trends
+
+Hardware Optimizer
+
+Automatically detect:
+
+CPU
+
+Architecture
+
+AVX2
+
+AVX512
+
+ARM NEON
+
+AES-NI
+
+Memory
+
+GPU
+
+CUDA
+
+OpenCL
+
+FPGA
+
+TPM
+
+HSM
+
+Provide recommendations.
+
+Example:
+
+Hardware Score
+
+94%
+
+Enable AVX2
+
+Expected Gain
+
+32%
+
+Parallel NTT
+
+18%
+
+GPU Acceleration
+
+Available
+
+Memory
+
+Excellent
+Handshake Optimizer
+
+Analyze:
+
+TLS 1.3
+
+QUIC
+
+PSK
+
+Session Tickets
+
+Session Resumption
+
+0-RTT
+
+Handshake Size
+
+Certificate Chains
+
+Handshake Duration
+
+Display:
+
+Average handshake time
+
+Bandwidth used
+
+Saved bandwidth
+
+Optimization opportunities
+
+Benchmark Center
+
+Create enterprise benchmarking laboratory.
+
+Benchmark:
+
+TLS
+
+QUIC
+
+ML-KEM
+
+Hybrid TLS
+
+Handshake latency
+
+Encryption throughput
+
+CPU usage
+
+Memory
+
+Bandwidth
+
+Packet fragmentation
+
+Different MTUs
+
+WAN
+
+LAN
+
+Satellite
+
+Mobile
+
+IoT
+
+Allow custom benchmark scenarios.
+
+Generate reports.
+
+Recommendation Engine
+
+AI-assisted recommendation engine.
+
+Inputs:
+
+Network telemetry
+
+Hardware telemetry
+
+Scanner results
+
+Quantum Readiness Score
+
+Migration Planner
+
+Threat Intelligence
+
+Compliance
+
+Outputs:
+
+Recommended algorithm
+
+Recommended policy
+
+Expected latency
+
+Expected performance
+
+Expected risk reduction
+
+Migration complexity
+
+Confidence score
+
+Example:
+
+Recommendation
+
+Switch to
+
+ML-KEM-768
+
+Reason
+
+Packet loss increased
+
+Expected latency improvement
+
+22%
+
+Confidence
+
+98%
+
+Apply Recommendation?
+Optimization History
+
+Maintain complete audit trail.
+
+Track:
+
+Policy Changes
+
+Algorithm Changes
+
+Optimization Events
+
+Administrator Actions
+
+Rollback Events
+
+Historical Recommendations
+
+Performance Improvements
+
+Export CSV/PDF.
+
+Telemetry Center
+
+Real-time telemetry.
+
+Collect:
+
+System Metrics
+
+Application Metrics
+
+TLS Metrics
+
+Crypto Metrics
+
+Network Metrics
+
+Hardware Metrics
+
+Security Metrics
+
+Store:
+
+Time-series database
+
+Support:
+
+Prometheus
+
+OpenTelemetry
+
+Grafana
+
+AI Insights
+
+Build AI assistant capable of:
+
+Analyzing telemetry
+
+Explaining recommendations
+
+Predicting failures
+
+Forecasting congestion
+
+Predicting migration impact
+
+Risk analysis
+
+Natural language search
+
+Example:
+
+"Why did latency increase?"
+
+"What is the safest algorithm?"
+
+"Recommend best configuration for branch office."
+
+Analytics
+
+Create executive dashboards.
+
+Charts:
+
+Quantum Readiness Trend
+
+Migration Progress
+
+Algorithm Distribution
+
+Hardware Capability
+
+Latency Trends
+
+Handshake Success
+
+Risk Trend
+
+Optimization Savings
+
+Compliance Score
+
+Executive KPIs.
+
+Security
+
+Implement:
+
+RBAC
+
+SSO
+
+OIDC
+
+OAuth2
+
+MFA
+
+Audit Logs
+
+Immutable Logs
+
+Encryption at Rest
+
+TLS 1.3
+
+Hybrid TLS Support
+
+API Authentication
+
+Backend
+
+Use:
+
+Node.js
+
+Express
+
+TypeScript
+
+REST API
+
+Server-Sent Events (SSE)
+
+WebSockets
+
+Redis
+
+BullMQ
+
+PostgreSQL
+
+TimescaleDB
+
+Prometheus
+
+OpenTelemetry
+
+Docker
+
+Frontend
+
+Use:
+
+React
+
+Next.js
+
+TypeScript
+
+TailwindCSS
+
+shadcn/ui
+
+Framer Motion
+
+Recharts
+
+TanStack Query
+
+TanStack Table
+
+Zustand
+
+React Flow (for policy builder)
+
+Monaco Editor (for advanced rule editing)
+
+Design language:
+
+Modern
+
+Enterprise
+
+Cybersecurity
+
+Dark mode
+
+Glassmorphism
+
+Responsive
+
+WCAG AA compliant
+
+API Endpoints
+
+Create REST APIs for:
+
+/api/intelligence/dashboard
+
+/api/intelligence/recommendations
+
+/api/intelligence/network
+
+/api/intelligence/hardware
+
+/api/intelligence/crypto
+
+/api/intelligence/policies
+
+/api/intelligence/benchmarks
+
+/api/intelligence/telemetry
+
+/api/intelligence/history
+
+/api/intelligence/analytics
+
+Support SSE/WebSockets for real-time updates.
+
+Integration with Existing QGuard Helix Modules
+
+The Quantum Intelligence Engine must consume and enrich data from existing modules rather than duplicate functionality.
+
+Quantum Readiness Assessment Engine → Uses discovered cryptographic assets and readiness scores to generate optimization recommendations.
+Migration Planner → Refines migration plans using real-time telemetry, hardware capabilities, and business policies.
+Migration Sandbox → Executes benchmark scenarios, validates PQC configurations, and feeds performance results back into the recommendation engine.
+Live Migration Ops → Applies approved policies, monitors deployment health, and supports rollback based on live telemetry.
+Scanner → Supplies algorithm inventories, vulnerable assets, and quantum risk findings to the intelligence engine.
+Threat Intelligence → Influences recommendations based on emerging PQC vulnerabilities, advisories, and threat campaigns.
+Harvest Now, Decrypt Later Dashboard → Correlates high-value assets with adaptive PQC recommendations to prioritize protection.
+QGuard Messaging → Applies handshake optimization, crypto agility, and secure session management recommendations.
+Quantum Vault → Optimizes encryption policies, key management strategies, and hardware acceleration where applicable.
+Deliverables
+
+The completed implementation must include:
+
+Enterprise-ready frontend with responsive dashboards.
+Fully implemented backend services and APIs.
+Real-time telemetry using SSE/WebSockets.
+Policy engine with visual rule builder.
+AI-assisted recommendation engine.
+Benchmarking laboratory integrated with Migration Sandbox.
+Crypto Agility Engine with configurable policies.
+Hardware and Network Intelligence modules.
+Comprehensive audit logging and optimization history.
+Interactive analytics and executive reporting.
+Unit, integration, and end-to-end tests.
+OpenAPI/Swagger documentation.
+Deployment via Docker and Docker Compose.
+Production-ready logging, monitoring, health checks, and observability.
+Architecture documentation, API documentation, user guides, and administrator guides.
+
+Success Criteria: The Quantum Intelligence Engine™ should become the central orchestration and optimization layer of QGuard Helix, enabling data-driven, policy-based, and adaptive post-quantum cryptography management across the entire platform while remaining aligned with NIST standards and enterprise operational best practices.

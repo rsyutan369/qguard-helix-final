@@ -79,5 +79,29 @@ async function main() {
   const pillarSum = Math.round(r.readinessIndex.pillars.reduce((s, p) => s + p.contribution, 0))
   pass(r.readinessIndex.pillars.length === 8 && Math.abs(pillarSum - r.readinessIndex.overall) <= 1, `I2#11 Readiness index: Σ pillar contributions ${pillarSum} ≈ overall ${r.readinessIndex.overall}`)
   pass(r.cryptoPolicy.profiles.length === 3 && !JSON.stringify(r).includes('Ed25519 + ML-DSA-65'), `I2#12 Policy-driven algorithms (active: ${r.cryptoPolicy.activeProfile})`)
+
+  console.log('\n=== Improvements_04 live checks ===')
+  const program = r.waveSimulation[r.waveSimulation.length - 1]
+  pass(r.confidenceSummary.migrationForecastConfidencePct === (program?.confidencePct ?? 0), `I4#1 Forecast confidence ${r.confidenceSummary.migrationForecastConfidencePct}% == programme sim ${program?.confidencePct}%`)
+  pass(r.readinessProgression.length === r.waveSimulation.length + 1 && r.readinessProgression[0]?.readiness === snapshot.scores.quantumReadiness, `I4#2 Readiness progression: ${r.readinessProgression.map((s) => s.readiness).join(' → ')}`)
+  const ar0 = r.assetReadiness[0]
+  pass(!!ar0 && !!ar0.pqcStatus && !!ar0.hndlExposure && !!ar0.criticality, `I4#3/#7 Asset inventory enrichment: ${ar0?.asset} crit=${ar0?.criticality} pqc=${ar0?.pqcStatus}`)
+  pass(r.costBreakdown.totalFte > 0 && /engineer-weeks/.test(r.costBreakdown.effortNote), `I4#4 Effort: ${r.costBreakdown.totalHours} hrs ≈ ${r.costBreakdown.totalEngineerWeeks} eng-wks ≈ ${r.costBreakdown.totalFte} FTE`)
+  pass(r.riskAcceptance.every((x) => x.approver && /pending/i.test(x.approvalStatus)), `I4#5 Risk-owner approvals pending sign-off on ${r.riskAcceptance.length} entries`)
+  pass(r.playbookDetail.every((p) => p.estimatedDowntime !== 'Evidence Not Available' && p.slaImpact !== 'Evidence Not Available'), `I4#6 Playbook ops fields on ${r.playbookDetail.length} playbooks`)
+  pass(r.certification.criteria.length === 6 && r.certification.overallReadiness === snapshot.scores.quantumReadiness, `I4#9 Certification: "${r.certification.certificationStatus}" (${r.certification.criteria.filter((c) => c.met).length}/6 criteria met)`)
+
+  console.log('\n=== Improvements_05 live checks ===')
+  // NOTE: buildReportModel without a scope block uses inventory.assetsAssessed as
+  // the canonical count; via the Report Center (buildReport) the scope universe
+  // drives it. Both paths are internally consistent by construction.
+  const assetDef = r.definitions.find((d) => d.term === 'Asset')
+  const canonical = r.scope.totalAssetCount || snapshot.inventory.assetsAssessed
+  pass(!!assetDef && assetDef.definition.includes(`${canonical} discovered asset`) && r.certification.scopeStatement.includes(`${canonical} discovered asset`) && r.executiveSummary.includes(`identified ${canonical} cryptographic asset`), `I5#1 Canonical asset count ${canonical} across definitions/summary/certification`)
+  pass(r.evidence.sources.length + r.evidence.unavailableSources.length === r.evidenceConfidence.length && r.evidence.unavailableSources.every((s) => (r.evidenceConfidence.find((e) => e.source === s)?.confidencePct || 0) === 0), `I5#2 Evidence split: ${r.evidence.sources.join(', ')} | unavailable: ${r.evidence.unavailableSources.join(', ') || 'none'}`)
+  const msArr = r.certification.milestones
+  pass(msArr.length === r.roadmap.length + 1 && /Certification Eligibility/.test(msArr[msArr.length - 1]?.milestone || ''), `I5#4 Milestones: ${msArr.slice(0, 3).map((m) => `${m.milestone} [${m.window}]`).join(' | ')} …`)
+  pass(r.decisionPackage.length >= 7, `I5#5 Decision package: ${r.decisionPackage.map((d) => `${d.item}=${d.value}`).join(' | ')}`)
+  pass(/\(\d+\.\d%\)/.test(r.evidence.notes), `I5#6 Severity %: ${r.evidence.notes.slice(0, 120)}…`)
 }
 main().catch((e) => { console.error(e); process.exit(1) })

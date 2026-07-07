@@ -1,5 +1,6 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, degrees, rgb, type RGB } from 'pdf-lib';
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
+import { qrMatrix, reportVerificationUrl } from '../ReportQr';
 
 /**
  * Enterprise PDF exporter built on pdf-lib (pure JS — identical in dev and
@@ -186,6 +187,23 @@ class PdfLayout {
     this.y -= 8;
   }
 
+  /** Crisp vector QR — dark modules drawn as filled squares (I4#9). */
+  qr(matrix: boolean[][], sizePt: number) {
+    const quiet = 4;
+    const total = matrix.length + quiet * 2;
+    const module = sizePt / total;
+    this.ensure(sizePt + 10);
+    const top = this.y;
+    this.page.drawRectangle({ x: MARGIN, y: top - sizePt, width: sizePt, height: sizePt, color: WHITE, borderColor: LINE, borderWidth: 0.75 });
+    matrix.forEach((row, r) =>
+      row.forEach((dark, c) => {
+        if (!dark) return;
+        this.page.drawRectangle({ x: MARGIN + (c + quiet) * module, y: top - (r + quiet + 1) * module, width: module, height: module, color: INK });
+      }),
+    );
+    this.y -= sizePt + 10;
+  }
+
   findings(report: EnterpriseAssessmentReport) {
     if (!report.findings.length) {
       this.paragraph('Evidence Not Available — no findings recorded.', 9.5, MUTED);
@@ -325,6 +343,8 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
 
   layout.heading('Executive Decision Center');
   layout.table({ title: 'Decisions', columns: ['Decision Required', 'Type', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.owner]) }, [54, 26, 20]);
+  layout.paragraph('Executive Decision Package — the one-look decision summary; every line is sourced from the validated report sections referenced in its detail.', 9, MUTED);
+  layout.table({ title: 'Decision Package', columns: ['Decision Item', 'Value', 'Detail / Source'], rows: report.decisionPackage.length ? report.decisionPackage.map((d) => [d.item, d.value, d.detail]) : [['Evidence Not Available', '-', '-']] }, [18, 22, 60]);
 
   layout.heading('Quantum Readiness Breakdown');
   layout.paragraph('Targets are calculated per domain (baseline + internet-facing exposure), not static — rationale below.', 9, MUTED);
@@ -360,8 +380,9 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Confidence Overview');
   layout.paragraph(report.confidenceSummary.note, 9, MUTED);
   layout.table({ title: 'Confidence', columns: ['Confidence Measure', 'Value', 'What it means'], rows: [
-    ['Assessment Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind the assessment'],
+    ['Assessment Evidence Confidence', `${report.confidenceSummary.assessmentConfidencePct}%`, 'Completeness of the evidence behind the assessment'],
     ['Migration Plan Confidence', `${report.confidenceSummary.migrationPlanConfidencePct}%`, 'Likelihood the recommended plan achieves target'],
+    ['Migration Forecast Confidence', `${report.confidenceSummary.migrationForecastConfidencePct}%`, 'Confidence in the entire-programme simulation outcome'],
     ['Wave Confidence (range)', report.confidenceSummary.waveConfidenceRange, 'Per-wave execution confidence (declines across waves)'],
     ['Evidence Confidence', `${report.confidenceSummary.evidenceConfidencePct}%`, 'Mean quality across evidence sources'],
   ] }, [26, 14, 60]);
@@ -447,12 +468,20 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
       ['Validation', p.validationSteps.join('; ')],
       ['Rollback', p.rollbackSteps.join('; ')],
       ['Success Criteria', p.successCriteria.join('; ')],
+      ['Expected Downtime', p.estimatedDowntime],
+      ['Maintenance Window', p.maintenanceWindow],
+      ['Rollback Duration', p.rollbackDuration],
+      ['Validation Owner', p.validationOwner],
+      ['Success KPI', p.successKpi],
+      ['Automation Status', p.automationStatus],
+      ['SLA Impact', p.slaImpact],
     ] }, [18, 82]);
   }
 
   layout.heading('Cost Forecast Intelligence');
   layout.paragraph(`Blended rate $${report.costBreakdown.blendedRateUsd}/hr - total ${report.costBreakdown.totalHours.toLocaleString()} hours.`, 9, MUTED);
-  layout.table({ title: 'Cost Breakdown', columns: ['Category', 'Hours', 'Eng.', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, '', '', usd(report.costForecast.totalUsd), '']] }, [22, 10, 8, 12, 16, 32]);
+  layout.paragraph(report.costBreakdown.effortNote, 9, MUTED);
+  layout.table({ title: 'Cost Breakdown', columns: ['Category', 'Hours', '~Wks', '~FTE', 'Eng.', 'Rate', 'Cost', 'Formula'], rows: [...report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineerWeeks, l.fte, l.engineers, usd(l.rateUsd), usd(l.costUsd), l.formula]), ['TOTAL', report.costBreakdown.totalHours, report.costBreakdown.totalEngineerWeeks, report.costBreakdown.totalFte, '', '', usd(report.costForecast.totalUsd), '']] }, [20, 8, 7, 7, 6, 10, 13, 29]);
 
   layout.heading('Executive ROI & Value Intelligence');
   layout.paragraph(report.roiAnalysis.paybackNarrative, 9.5, INK);
@@ -470,6 +499,10 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Migration Simulation (What-If)');
   layout.table({ title: 'Simulation', columns: ['Scenario', 'Readiness', 'Risk', 'Cost', 'Timeline', 'Confidence'], rows: report.waveSimulation.map((w) => [w.label, `${w.readinessFrom}->${w.readinessTo}`, `${w.riskFrom}->${w.riskTo}`, usd(w.costUsd), `${w.timelineWeeks}w`, `${w.confidencePct}%`]) }, [34, 16, 14, 14, 10, 12]);
 
+  layout.heading('Readiness Progression');
+  layout.paragraph('The simulation restated as an executive progression: current readiness, projected readiness after each completed wave, and the programme target. Values reconcile with the simulation above by construction.', 9, MUTED);
+  layout.table({ title: 'Readiness Progression', columns: ['Stage', 'Readiness', 'Risk', 'Detail'], rows: report.readinessProgression.length ? report.readinessProgression.map((st) => [st.stage, `${st.readiness}/100`, `${st.risk}/100`, st.detail]) : [['Evidence Not Available', '-', '-', '-']] }, [32, 11, 10, 47]);
+
   layout.heading('Risk Reduction Forecast');
   layout.table({ title: 'Forecast', columns: ['Metric', 'Value'], rows: [
     ['Current Risk', `${report.riskForecast.currentRisk}/100`], ['Target Risk', `${report.riskForecast.targetRisk}/100`], ['Risk Reduction', `${report.riskForecast.reductionPct}%`],
@@ -479,13 +512,15 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     layout.table({ title: 'Scenario Bands', columns: ['Scenario', '12-Mo', '24-Mo', '36-Mo', 'Planning Assumption'], rows: report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}`, `${sc.month24}`, `${sc.month36}`, sc.assumption]) }, [16, 10, 10, 10, 54]);
   }
 
-  layout.heading('Asset-Level Readiness');
-  layout.paragraph('Which assets drive the overall readiness score, with their primary risk driver.', 9, MUTED);
-  layout.table({ title: 'Asset Readiness', columns: ['Asset', 'Ready', 'Risk', 'Posture', 'Net', 'Primary Driver', 'Owner'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}`, `${a.risk}`, a.posture, a.internetFacing ? 'Y' : 'N', a.primaryDriver, a.owner]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [20, 8, 8, 18, 6, 28, 12]);
+  layout.heading('Asset-Level Readiness & Intelligence');
+  layout.paragraph('Which assets drive the overall readiness score, with the business context and per-asset crypto posture teams need to assign work immediately. Unobserved fields are Evidence Not Available - never fabricated.', 9, MUTED);
+  layout.table({ title: 'Asset Readiness', columns: ['Asset', 'Ready', 'Risk', 'Crit', 'Environment', 'Business Unit', 'Owner', 'Net', 'Primary Driver'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}`, `${a.risk}`, a.criticality, a.environment, a.businessUnit, a.owner, a.internetFacing ? 'Y' : 'N', a.primaryDriver]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-']] }, [16, 6, 6, 7, 10, 12, 12, 5, 26]);
+  layout.table({ title: 'Asset Crypto Profile', columns: ['Asset', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [16, 15, 11, 20, 11, 13, 14]);
 
   layout.heading('Executive Risk Acceptance');
-  layout.paragraph('Formal disposition of residual risk (mitigate / accept / transfer / defer) for governance and audit.', 9, MUTED);
+  layout.paragraph('Formal disposition of residual risk (mitigate / accept / transfer / defer) for governance and audit. Each disposition carries a Risk Owner Approval block; approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report digital signature.', 9, MUTED);
   layout.table({ title: 'Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual', 'Review'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) }, [22, 12, 14, 30, 14, 8]);
+  layout.table({ title: 'Risk Owner Approval', columns: ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) }, [26, 12, 16, 12, 34]);
 
   layout.heading('Decision Traceability');
   layout.paragraph(report.decisionChain.headline, 9, INK);
@@ -517,9 +552,50 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.paragraph(report.reportValidation.note, 8.5, MUTED);
 
   layout.heading('Evidence Sources');
-  layout.paragraph(report.evidence.sources.join(' - '), 9, MUTED);
+  layout.paragraph(`Evidence contributed by: ${report.evidence.sources.length ? report.evidence.sources.map((s) => `[x] ${s}`).join('   ') : 'Evidence Not Available'}`, 9, INK);
+  if (report.evidence.unavailableSources.length) {
+    layout.paragraph(`Not available (no telemetry - contributed no evidence): ${report.evidence.unavailableSources.map((s) => `- ${s}`).join('   ')}`, 9, MUTED);
+  }
   layout.paragraph(report.evidence.notes, 9, MUTED);
   if (report.integrity) layout.paragraph(`Integrity (${report.integrity.algorithm}): ${report.integrity.hash}`, 8, MUTED);
+
+  // ---- Executive Certification Summary (I4#9) — dedicated closing page ----
+  const cert = report.certification;
+  layout.newPage();
+  layout.heading('Executive Certification Summary');
+  layout.ensure(26);
+  const statusColor = cert.certified ? rgb(0.09, 0.64, 0.29) : rgb(0.2, 0.25, 0.33);
+  const statusText = san(cert.certificationStatus);
+  layout.page.drawRectangle({ x: MARGIN, y: layout.y - 18, width: bold.widthOfTextAtSize(statusText, 11) + 20, height: 22, color: statusColor });
+  layout.page.drawText(statusText, { x: MARGIN + 10, y: layout.y - 11, size: 11, font: bold, color: WHITE });
+  layout.y -= 32;
+  layout.table({ title: 'Certification Snapshot', columns: ['Measure', 'Value'], rows: [
+    ['Overall Quantum Readiness', `${cert.overallReadiness}/100 (${cert.readinessLevel || '-'})`],
+    ['Assessment Evidence Confidence', `${cert.assessmentConfidencePct}%`],
+    ['Migration Forecast Confidence', `${cert.migrationForecastConfidencePct}%`],
+    ['Projected Residual Risk', `${cert.residualRisk}/100 (${cert.residualRiskLevel || '-'})`],
+    ['Migration Status', cert.migrationStatus],
+    ['Assessment Scope', cert.scopeStatement],
+  ] }, [34, 66]);
+  if (cert.milestones.length) {
+    layout.table({ title: 'Migration Milestones', columns: ['Milestone', 'Window', 'Approval Gate'], rows: cert.milestones.map((ms) => [ms.milestone, ms.window, ms.gate || '-']) }, [40, 22, 38]);
+  }
+  if (cert.criteria.length) {
+    layout.table({ title: 'Certification Criteria', columns: ['Certification Criterion', 'Required', 'Measured', 'Met'], rows: cert.criteria.map((c) => [c.criterion, c.required, c.actual, c.met ? 'YES' : 'NO']) }, [40, 18, 28, 14]);
+  }
+  layout.paragraph(cert.attestation, 9, rgb(0.2, 0.25, 0.33));
+  layout.paragraph(`Digitally signed by: ${cert.signedBy || 'Evidence Not Available'} (${cert.signedRole || '-'})${report.integrity ? `   |   Signed at: ${new Date(report.integrity.signedAt).toLocaleString()}` : ''}`, 9.5, INK);
+  if (report.integrity) {
+    layout.paragraph(`Report integrity (${report.integrity.algorithm}): ${report.integrity.hash}`, 8.5, MUTED);
+    const verifyUrl = reportVerificationUrl(report);
+    if (verifyUrl) {
+      layout.qr(qrMatrix(verifyUrl), 118);
+      layout.paragraph(cert.verificationHint, 8.5, MUTED);
+      layout.paragraph(`Verification URL: ${verifyUrl.split('?')[0]}?token=...`, 8, MUTED);
+    }
+  } else {
+    layout.paragraph('The integrity hash, digital signature and verification QR code are attached when the report is signed at generation time.', 8.5, MUTED);
+  }
 
   // ---- Header / footer / watermark on every page (skip watermark on cover) ----
   const pages = doc.getPages();

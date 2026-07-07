@@ -677,9 +677,11 @@ function planAmountCents(plan: string, cycle: string) {
   const normalizedPlan = plan.toLowerCase()
   const normalizedCycle = cycle.toLowerCase()
   const annual = normalizedCycle.includes('annual') || normalizedCycle.includes('year')
-  if (normalizedPlan.includes('elite')) return annual ? 190800 : 19900
-  if (normalizedPlan.includes('pro')) return annual ? 48000 : 5000
-  if (normalizedPlan.includes('starter')) return annual ? 9600 : 1000
+  // Pricing mirrors billing.ts PLAN_CATALOG and the landing pricing page.
+  if (normalizedPlan.includes('elite')) return annual ? 180000 : 19900
+  if (normalizedPlan.includes('pro')) return annual ? 24000 : 3000
+  if (normalizedPlan.includes('basic')) return annual ? 6000 : 800
+  if (normalizedPlan.includes('starter')) return annual ? 3600 : 300
   return 0
 }
 

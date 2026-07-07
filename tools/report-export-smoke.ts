@@ -14,8 +14,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { QuantumReadinessSnapshot } from '../src/app/dashboard/quantum-readiness/_shared';
 import { buildReportModel } from '../src/services/reporting/ReportEvidence';
+import { attachIntegrity } from '../src/services/reporting/ReportEngine';
 import { buildReportScope, listSnapshotAssets, scopeSnapshotToAssets } from '../src/services/reporting/ReportScope';
 import { exportReport } from '../src/services/reporting/ReportExporter';
+import { reportVerificationUrl } from '../src/services/reporting/ReportQr';
 import { brandingSchema, REPORT_FORMATS, enterpriseAssessmentReportSchema } from '../src/services/reporting/schemas/ReportSchema';
 
 const ENTERPRISE: QuantumReadinessSnapshot = {
@@ -296,6 +298,88 @@ function verifyImprovements03(report: ReturnType<typeof buildReportModel>, snaps
   void jsonStr;
 }
 
+// Improvements_04 assertions — refinements.
+function verifyImprovements04(report: ReturnType<typeof buildReportModel>, snapshot: QuantumReadinessSnapshot) {
+  console.log('  --- Improvements_04 assertions ---');
+
+  // I4#1 Confidence separation: forecast confidence = entire-programme simulation
+  // confidence, and explainability carries BOTH labelled confidence metrics.
+  const program = report.waveSimulation[report.waveSimulation.length - 1];
+  assert(report.confidenceSummary.migrationForecastConfidencePct === (program?.confidencePct ?? 0), `I4#1 Forecast confidence ${report.confidenceSummary.migrationForecastConfidencePct}% == entire-programme sim ${program?.confidencePct}%`);
+  const evidenceConf = report.explainability.find((x) => x.metric === 'Assessment Evidence Confidence');
+  const forecastConf = report.explainability.find((x) => x.metric === 'Migration Forecast Confidence');
+  assert(!!evidenceConf && !!forecastConf && !report.explainability.some((x) => x.metric === 'Migration Confidence'), `I4#1 Explainability separates evidence vs forecast confidence (no ambiguous "Migration Confidence" metric)`);
+
+  // I4#2 Readiness progression ladder: baseline + one step per wave + target,
+  // reconciling exactly with the simulation and executive block.
+  const prog = report.readinessProgression;
+  const first = prog[0];
+  const lastStep = prog[prog.length - 1];
+  assert(prog.length === report.waveSimulation.length + 1 && first?.stage === 'Current Readiness' && first.readiness === snapshot.scores.quantumReadiness, `I4#2 Progression: ${prog.length} steps starting at current readiness ${first?.readiness}`);
+  assert(!!lastStep && /Target Readiness/.test(lastStep.stage) && lastStep.readiness === report.executiveBlock.targetReadiness && prog.slice(1, -1).every((st, i) => /Projected After Wave/.test(st.stage) && st.readiness === report.waveSimulation[i].readinessTo), `I4#2 Progression reconciles: …→ ${lastStep?.readiness} (target ${report.executiveBlock.targetReadiness})`);
+
+  // I4#3/#7 Asset readiness enriched into an executive inventory.
+  const ar0 = report.assetReadiness[0];
+  assert(!!ar0 && [ar0.businessUnit, ar0.environment, ar0.criticality, ar0.platform, ar0.cloudProvider, ar0.tlsVersion, ar0.certExpiry, ar0.primaryAlgorithm, ar0.keySize, ar0.pqcStatus, ar0.hndlExposure].every((v) => typeof v === 'string' && v.length > 0), `I4#3/#7 Asset inventory fields: ${ar0?.asset} env=${ar0?.environment} crit=${ar0?.criticality} tls=${ar0?.tlsVersion} alg=${ar0?.primaryAlgorithm} pqc=${ar0?.pqcStatus} hndl=${ar0?.hndlExposure}`);
+
+  // I4#4 Cost effort expressed as engineer-weeks + FTE, arithmetically exact.
+  const cb = report.costBreakdown;
+  const effortOk = cb.lines.every((l) => l.category === 'Evidence Not Available' || (Math.abs(l.engineerWeeks - l.hours / 40) < 0.06 && Math.abs(l.fte - l.hours / (cb.windowWeeks * 40)) < 0.006 && /FTE/.test(l.effort)));
+  assert(effortOk && cb.windowWeeks > 0 && /engineer-weeks/.test(cb.effortNote), `I4#4 Effort expression: total ${cb.totalHours} hrs ≈ ${cb.totalEngineerWeeks} eng-wks ≈ ${cb.totalFte} FTE over ${cb.windowWeeks} wk`);
+
+  // I4#5 Risk-owner approval block on every acceptance entry (never fabricated).
+  assert(report.riskAcceptance.every((r) => r.approver.length > 0 && /pending/i.test(r.approvalStatus) && /signature/i.test(r.approvalMethod)), `I4#5 Risk approvals: ${report.riskAcceptance.length} entries pending sign-off (approvers: ${[...new Set(report.riskAcceptance.map((r) => r.approver))].join(', ')})`);
+
+  // I4#6 Playbook operational fields.
+  const pb0 = report.playbookDetail[0];
+  assert(!!pb0 && [pb0.estimatedDowntime, pb0.maintenanceWindow, pb0.rollbackDuration, pb0.validationOwner, pb0.successKpi, pb0.automationStatus, pb0.slaImpact].every((v) => v && v !== 'Evidence Not Available'), `I4#6 Playbook ops: downtime="${pb0?.estimatedDowntime}" rollback="${pb0?.rollbackDuration}" sla="${pb0?.slaImpact}"`);
+
+  // I4#8 Decimal consistency: count-derived shares print one decimal.
+  const readinessBasis = report.readinessMethodology.factors.find((f) => /pqc adoption/i.test(f.factor))?.basis || '';
+  assert(/\d+\.\d%/.test(readinessBasis), `I4#8 One-decimal component share in readiness basis: "${readinessBasis.match(/\([^)]*%\)/)?.[0] || readinessBasis.slice(0, 60)}"`);
+
+  // I4#9 Executive Certification Summary — computed, criteria-driven.
+  const cert = report.certification;
+  const allMet = cert.criteria.every((c) => c.met);
+  assert(cert.criteria.length === 6 && cert.certified === (snapshot.hasData && allMet) && /Certified|Not Yet Certified|No Assessment Evidence/.test(cert.certificationStatus), `I4#9 Certification: "${cert.certificationStatus}" (${cert.criteria.filter((c) => c.met).length}/${cert.criteria.length} criteria met)`);
+  assert(cert.overallReadiness === snapshot.scores.quantumReadiness && cert.residualRisk === report.riskForecast.residualRisk && cert.assessmentConfidencePct === report.confidenceSummary.assessmentConfidencePct, `I4#9 Certification values copied from validated sections (readiness ${cert.overallReadiness}, residual ${cert.residualRisk})`);
+  assert(cert.signedBy.length > 0 && /verify-report|QR/i.test(cert.verificationHint), `I4#9 Signature block: signed by "${cert.signedBy}" (${cert.signedRole}); verification hint present`);
+}
+
+// Improvements_05 assertions — refinements. `report` must be integrity-signed.
+function verifyImprovements05(report: ReturnType<typeof buildReportModel>, snapshot: QuantumReadinessSnapshot) {
+  console.log('  --- Improvements_05 assertions ---');
+
+  // I5#1 Canonical asset count: definitions, executive summary and certification
+  // all state the same discovered-asset figure (scope-derived).
+  const discovered = report.scope.type === 'custom' ? report.scope.selectedAssetCount : (report.scope.totalAssetCount || snapshot.inventory.assetsAssessed);
+  const assetDef = report.definitions.find((d) => d.term === 'Asset');
+  assert(!!assetDef && assetDef.definition.includes(`${discovered} `) && /discovered asset/.test(assetDef.definition), `I5#1 Asset definition uses canonical discovered count (${discovered}): "${assetDef?.definition.match(/This (assessment|report's scope)[^.]*\./)?.[0]}"`);
+  assert(report.executiveSummary.includes(`identified ${discovered} cryptographic asset`), `I5#1 Executive summary states ${discovered} discovered asset(s)`);
+  assert(report.certification.scopeStatement.includes(`${report.scope.totalAssetCount || snapshot.inventory.assetsAssessed} discovered asset`) || report.certification.scopeStatement.includes(`${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount}`), `I5#1 Certification scope consistent: "${report.certification.scopeStatement}"`);
+
+  // I5#2 Evidence sources: only contributing sources listed; unavailable split out.
+  const confBySource = new Map(report.evidenceConfidence.map((e) => [e.source, e.confidencePct]));
+  const sourcesOk = report.evidence.sources.every((s) => (confBySource.get(s) || 0) > 0);
+  const unavailableOk = report.evidence.unavailableSources.every((s) => (confBySource.get(s) || 0) === 0);
+  assert(sourcesOk && unavailableOk && report.evidence.sources.length + report.evidence.unavailableSources.length === report.evidenceConfidence.length, `I5#2 Evidence split: ${report.evidence.sources.length} contributing / ${report.evidence.unavailableSources.length} unavailable [${report.evidence.unavailableSources.join(', ') || 'none'}]`);
+
+  // I5#3 Verification URL never carries a development host (Node fallback = prod domain).
+  const vurl = reportVerificationUrl(report);
+  assert(!!vurl && vurl.startsWith('https://') && !/localhost|127\.0\.0\.1/.test(vurl), `I5#3 Verification URL production-safe: ${vurl?.split('?')[0]}`);
+
+  // I5#4 Certification carries dated milestones = roadmap phases + eligibility review.
+  const ms = report.certification.milestones;
+  assert(ms.length === report.roadmap.length + 1 && /Certification Eligibility/.test(ms[ms.length - 1]?.milestone || '') && ms.slice(0, -1).every((x) => /\d{4}-\d{2}-\d{2}/.test(x.window)), `I5#4 Milestones: ${ms.length} (roadmap ${report.roadmap.length} + eligibility review); first window "${ms[0]?.window}"`);
+
+  // I5#5 Executive Decision Package: budget/resources/risk dispositions/timeline/ROI/impact.
+  const items = report.decisionPackage.map((d) => d.item).join('|');
+  assert(report.decisionPackage.length >= 7 && /Budget/.test(items) && /Resource/.test(items) && /Accepted Risks/.test(items) && /Deferred Risks/.test(items) && /Timeline/.test(items) && /ROI/.test(items) && /Business Impact/.test(items), `I5#5 Decision package: ${report.decisionPackage.length} lines [${items}]`);
+
+  // I5#6 Severity distribution carries one-decimal percentage context.
+  assert(/Critical: \d+ \(\d+\.\d%\)/.test(report.evidence.notes), `I5#6 Severity percentages: "${report.evidence.notes.match(/Critical[^,]+,/)?.[0]}"`);
+}
+
 // Asset-scoped reporting — select the top-2 risk assets of the enterprise
 // snapshot, scope the snapshot, rebuild the model and assert the scoped report
 // is filtered, recomputed and still internally consistent (validation = PASS).
@@ -333,12 +417,17 @@ async function runScoped(outDir: string) {
   assert(scoped.scores.quantumReadiness === 52 && scoped.scores.pqcAdoption === 35, `Scoped readiness/adoption recomputed: readiness=${scoped.scores.quantumReadiness}, pqcAdoption=${scoped.scores.pqcAdoption}%`);
   assert(scoped.estimates.migrationCostUsd > 0 && scoped.estimates.migrationCostUsd < ENTERPRISE.estimates.migrationCostUsd, `Scoped cost rescaled: $${scoped.estimates.migrationCostUsd.toLocaleString()} < tenant $${ENTERPRISE.estimates.migrationCostUsd.toLocaleString()}`);
 
-  // Build + validate the scoped report model end-to-end.
-  const report = buildReportModel(scoped, branding, 'executive', 'Export Smoke', scope);
+  // Build + validate the scoped report model end-to-end (signed, so the
+  // certification page carries the integrity hash + verification QR).
+  const report = attachIntegrity(buildReportModel(scoped, branding, 'executive', 'Export Smoke', scope));
   enterpriseAssessmentReportSchema.parse(report);
   assert(report.scope.type === 'custom' && report.scope.assets.length === 2, `Report carries scope: ${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets`);
   assert(/Report scope: 2 of 5/.test(report.executiveSummary), 'Executive summary states the custom scope');
   assert(report.reportValidation.overall === 'PASS', `Scoped report validation badge: ${report.reportValidation.overall}`);
+  // I5#1 — the Asset definition mirrors the custom scope's canonical counts.
+  const scopedAssetDef = report.definitions.find((d) => d.term === 'Asset');
+  assert(!!scopedAssetDef && scopedAssetDef.definition.includes('2 of 5 discovered asset(s)'), `I5#1 scoped Asset definition: "${scopedAssetDef?.definition.match(/This report's scope[^.]*\./)?.[0]}"`);
+  verifyImprovements05(report, scoped);
 
   let ok = 0;
   for (const fmt of REPORT_FORMATS) {
@@ -354,13 +443,17 @@ async function runScoped(outDir: string) {
 
 async function run(name: string, snapshot: QuantumReadinessSnapshot, outDir: string, checkPhases = false) {
   const branding = brandingSchema.parse({ companyName: 'QGuard Helix', businessUnit: 'PQC Program Office' });
-  const report = buildReportModel(snapshot, branding, 'executive', 'Export Smoke');
+  // Signed like production (buildReport): the certification page carries the
+  // integrity hash + verification QR in every export format.
+  const report = attachIntegrity(buildReportModel(snapshot, branding, 'executive', 'Export Smoke'));
 
   // Schema validation: the model must conform exactly.
   enterpriseAssessmentReportSchema.parse(report);
   if (checkPhases) verifyPhases(report, snapshot);
   verifyImprovements02(report, snapshot);
   verifyImprovements03(report, snapshot);
+  verifyImprovements04(report, snapshot);
+  verifyImprovements05(report, snapshot);
 
   let ok = 0;
   for (const fmt of REPORT_FORMATS) {
