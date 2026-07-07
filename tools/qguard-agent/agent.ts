@@ -440,6 +440,11 @@ function normalizeKeyAlgorithm(keyType: string | undefined, details: Record<stri
 
 async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
   return new Promise((resolve, reject) => {
+    // Discovery probe, not a data channel: this handshake only OBSERVES the
+    // endpoint's negotiated protocol/cipher/certificate so the scanner can
+    // inventory misconfigured, self-signed, and legacy endpoints — the exact
+    // assets it exists to find. No application data is sent over this socket.
+    // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
     const socket = tls.connect({
       host: target.host,
       port: target.port,
@@ -1134,13 +1139,22 @@ function positiveConfigValidationEvidence(job: RemediationJob, filePath: string)
 async function collectRemediationValidationEvidence(job: RemediationJob, policy: AgentPolicy) {
   const evidence: ScannerEvidence[] = []
   let scanned = false
+  let probeFailure: string | null = null
   const target = remediationTargetFromJob(job)
   const parsedTarget = target ? parseTarget(target) : null
 
+  // Network probes are discovery, not a gate: an unreachable target (asset
+  // names are not always resolvable hosts from this agent) must not abort the
+  // remediation — local file evidence and connector validation still apply.
   if (parsedTarget) {
-    scanned = true
-    if (parsedTarget.type === 'tls') evidence.push(...await scanTlsTarget(parsedTarget))
-    if (parsedTarget.type === 'ssh') evidence.push(...await scanSshTarget(parsedTarget))
+    try {
+      if (parsedTarget.type === 'tls') evidence.push(...await scanTlsTarget(parsedTarget))
+      if (parsedTarget.type === 'ssh') evidence.push(...await scanSshTarget(parsedTarget))
+      scanned = true
+    } catch (error) {
+      probeFailure = `${parsedTarget.host}:${parsedTarget.port} probe failed: ${(error as Error).message}`
+      console.warn(`Remediation probe skipped for ${job.name}: ${probeFailure}`)
+    }
   }
 
   const filePath = remediationFilePathFromJob(job)
@@ -1151,7 +1165,7 @@ async function collectRemediationValidationEvidence(job: RemediationJob, policy:
     if (fileEvidence.length === 0) evidence.push(positiveConfigValidationEvidence(job, filePath))
   }
 
-  return { evidence, scanned }
+  return { evidence, scanned, probeFailure }
 }
 
 function validationFromEvidence(evidence: ScannerEvidence[], scanned: boolean): RemediationValidation {
@@ -1453,6 +1467,7 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       workflowStage: 'ANALYZE',
       precheckValidation,
       beforeState,
+      probeFailure: precheck.probeFailure,
       mandatoryPqcStack: MANDATORY_PQC_STACK,
       cryptographicStack: stack,
     },
@@ -1527,6 +1542,7 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
       beforeState,
       afterState,
       verification,
+      probeFailure: validationProbe.probeFailure,
       mandatoryPqcStack: MANDATORY_PQC_STACK,
       cryptographicStack: stack,
     },

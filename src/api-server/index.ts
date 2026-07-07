@@ -284,6 +284,19 @@ function setNoStoreShareHeaders(res: express.Response) {
  * In production, this can be run as a standalone server or mounted under an API gateway.
  */
 export function createApiServer() {
+  // Express 4 does not catch rejections from async route handlers; on Node's
+  // default --unhandled-rejections=throw, one uncaught handler failure kills
+  // the entire server process. Keep the server alive and log loudly instead —
+  // individual requests still fail with their own error responses.
+  const globalScope = globalThis as { __qguardRejectionGuardInstalled?: boolean }
+  if (!globalScope.__qguardRejectionGuardInstalled) {
+    globalScope.__qguardRejectionGuardInstalled = true
+    process.on('unhandledRejection', (reason) => {
+      const detail = reason instanceof Error ? (reason.stack || reason.message) : JSON.stringify(reason)
+      console.error('[api] Unhandled promise rejection (server kept alive):', detail)
+    })
+  }
+
   const app = express()
   app.set('trust proxy', true)
 

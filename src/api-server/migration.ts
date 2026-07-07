@@ -143,6 +143,61 @@ function isMissingRelation(error: any) {
   return text.includes('pgrst200') || text.includes('relationship') || text.includes('foreign key')
 }
 
+function isSchemaShapeError(error: any) {
+  const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
+  return isMissingTable(error)
+    || isMissingRelation(error)
+    || text.includes('42703')
+    || text.includes('pgrst204')
+    || text.includes('could not find')
+    || text.includes('column')
+}
+
+// Transient infrastructure failures (dropped keep-alive sockets, gateway
+// hiccups, throttling) must never be mistaken for "tenant has no data".
+const TRANSIENT_RETRY_DELAYS_MS = [250, 750]
+
+function isTransientQueryError(error: any) {
+  const text = `${error?.name || ''} ${error?.code || ''} ${error?.message || ''} ${error?.details || ''} ${error?.cause?.code || ''} ${error?.cause?.message || ''}`.toLowerCase()
+  return /fetch failed|network|socket|econnreset|econnrefused|etimedout|epipe|und_err|other side closed|terminated|timeout|timed out|too many requests|rate limit|\b429\b|\b502\b|\b503\b|\b504\b|bad gateway|service unavailable/.test(text)
+}
+
+class SnapshotUnavailableError extends Error {
+  table: string
+  constructor(table: string, detail: string) {
+    super(`Live migration snapshot aborted: "${table}" query failed (${detail})`)
+    this.name = 'SnapshotUnavailableError'
+    this.table = table
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Rows for one live-migration snapshot table. "Table/column not provisioned"
+// is a legitimate empty result; any other failure is retried and then ABORTS
+// the snapshot — serving a fabricated empty snapshot would make running
+// migrations vanish from the UI until the next successful poll.
+async function liveRows(label: string, exec: () => any): Promise<any[]> {
+  let lastError: any = null
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(TRANSIENT_RETRY_DELAYS_MS[attempt - 1])
+    try {
+      const { data, error } = await exec()
+      if (!error) return data || []
+      if (isSchemaShapeError(error)) return []
+      lastError = error
+      if (!isTransientQueryError(error)) break
+    } catch (err) {
+      lastError = err
+      if (!isTransientQueryError(err)) break
+    }
+  }
+  console.warn(`[migration-live] ${label} query failed; aborting snapshot instead of fabricating empty data:`, lastError?.message || lastError)
+  throw new SnapshotUnavailableError(label, String(lastError?.message || 'query failed'))
+}
+
 function plannerNetworkErrorMessage(error: any, action: string) {
   const text = `${error?.name || ''} ${error?.message || ''} ${error?.cause?.code || ''} ${error?.cause?.message || ''}`
   if (/fetch failed|und_err_socket|socketerror|other side closed/i.test(text)) {
@@ -444,6 +499,29 @@ async function safeCount(client: any, table: string, userId: string, apply?: (qu
   }
 }
 
+// KPI counts for the live snapshot: same abort-instead-of-fabricate contract
+// as liveRows, so a transient failure can't flash the dashboard KPIs to zero.
+async function liveCount(client: any, table: string, userId: string, apply?: (query: any) => any): Promise<number> {
+  let lastError: any = null
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(TRANSIENT_RETRY_DELAYS_MS[attempt - 1])
+    try {
+      let query = client.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
+      if (apply) query = apply(query)
+      const { count, error } = await query
+      if (!error) return count || 0
+      if (isSchemaShapeError(error)) return 0
+      lastError = error
+      if (!isTransientQueryError(error)) break
+    } catch (err) {
+      lastError = err
+      if (!isTransientQueryError(err)) break
+    }
+  }
+  console.warn(`[migration-live] ${table} count failed; aborting snapshot instead of fabricating zero KPIs:`, lastError?.message || lastError)
+  throw new SnapshotUnavailableError(table, String(lastError?.message || 'count failed'))
+}
+
 async function safeRows(client: any, table: string, userId: string, apply: (query: any) => any) {
   try {
     const { data, error } = await apply(client.from(table)).eq('user_id', userId)
@@ -473,158 +551,111 @@ function matchesPlanId(row: any, planId?: string | null) {
 async function fetchJobs(client: any, userId: string, planId?: string | null) {
   const baseSelect = 'id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at'
   const withAsset = `${baseSelect}, assets(id, name, type, environment, criticality, service_owner, status)`
-  const primary = await client
+  const jobsQuery = (select: string) => client
     .from('migration_jobs')
-    .select(withAsset)
+    .select(select)
     .eq('user_id', userId)
     .order('updated_at', { ascending: false })
     .limit(100)
 
+  const primary = await jobsQuery(withAsset)
   if (!primary.error) return (primary.data || []).filter((row: any) => matchesPlanId(row, planId))
   if (isMissingRelation(primary.error)) {
-    const fallback = await client
-      .from('migration_jobs')
-      .select(baseSelect)
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false })
-      .limit(100)
-    if (!fallback.error) return (fallback.data || []).filter((row: any) => matchesPlanId(row, planId))
-    if (!isMissingTable(fallback.error)) console.warn('[migration-live] Jobs query failed:', fallback.error.message)
-    return []
+    // Assets relation not provisioned in this tenant: fall back to the plain
+    // shape (liveRows retries transient failures / aborts on real ones).
+    const fallback = await liveRows('migration_jobs', () => jobsQuery(baseSelect))
+    return fallback.filter((row: any) => matchesPlanId(row, planId))
   }
-
-  if (!isMissingTable(primary.error)) console.warn('[migration-live] Jobs query failed:', primary.error.message)
-  return []
+  if (isMissingTable(primary.error)) return []
+  // Transient failure on the joined query: retry it before giving up.
+  const retried = await liveRows('migration_jobs', () => jobsQuery(withAsset))
+  return retried.filter((row: any) => matchesPlanId(row, planId))
 }
 
 async function fetchEvents(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  const { data, error } = await client
+  return liveRows('migration_events', () => client
     .from('migration_events')
     .select('id, migration_id, event_type, message, severity, metadata, created_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
     .order('created_at', { ascending: true })
-    .limit(600)
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Events query failed:', error.message)
-    return []
-  }
-  return data || []
+    .limit(600))
 }
 
 async function fetchExecutionRows(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  const { data, error } = await client
+  return liveRows('migration_execution', () => client
     .from('migration_execution')
     .select('id, migration_id, plan_id, agent_id, status, progress, current_step, started_at, completed_at, metadata, created_at, updated_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
     .order('updated_at', { ascending: true })
-    .limit(1000)
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Execution query failed:', error.message)
-    return []
-  }
-  return data || []
+    .limit(1000))
 }
 
 async function fetchTelemetryRows(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  const { data, error } = await client
+  return liveRows('migration_telemetry', () => client
     .from('migration_telemetry')
     .select('id, migration_id, agent_id, event_type, metric_type, metric_value, message, metadata, observed_at, created_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
     .order('observed_at', { ascending: true })
-    .limit(1200)
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Telemetry query failed:', error.message)
-    return []
-  }
-  return data || []
+    .limit(1200))
 }
 
 async function fetchValidationRows(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  const { data, error } = await client
+  return liveRows('migration_validation_logs', () => client
     .from('migration_validation_logs')
     .select('id, migration_id, agent_id, validation_type, status, evidence, metadata, created_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
     .order('created_at', { ascending: true })
-    .limit(1000)
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Validation query failed:', error.message)
-    return []
-  }
-  return data || []
+    .limit(1000))
 }
 
 async function fetchAuditRows(client: any, userId: string, planId?: string | null) {
-  const query = client
-    .from('migration_audit_logs')
-    .select('id, plan_id, action, stage, result, details, created_at')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(500)
-  const { data, error } = planId ? await query.eq('plan_id', planId) : await query
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Audit query failed:', error.message)
-    return []
-  }
-  return data || []
+  return liveRows('migration_audit_logs', () => {
+    const query = client
+      .from('migration_audit_logs')
+      .select('id, plan_id, action, stage, result, details, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(500)
+    return planId ? query.eq('plan_id', planId) : query
+  })
 }
 
 async function fetchAgentRows(client: any, userId: string) {
-  const { data, error } = await client
+  return liveRows('scanner_agents', () => client
     .from('scanner_agents')
     .select('id, name, hostname, status, version, last_seen_at, metadata')
     .eq('user_id', userId)
-    .limit(500)
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Agent query failed:', error.message)
-    return []
-  }
-  return data || []
+    .limit(500))
 }
 
 async function fetchInventory(client: any, userId: string, assetIds: string[]) {
   if (assetIds.length === 0) return []
-  const { data, error } = await client
+  return liveRows('crypto_inventory', () => client
     .from('crypto_inventory')
     .select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at')
     .eq('user_id', userId)
     .in('asset_id', assetIds)
     .order('discovered_at', { ascending: false })
-    .limit(500)
-
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[migration-live] Inventory query failed:', error.message)
-    return []
-  }
-  return data || []
+    .limit(500))
 }
 
 async function latestScanAt(client: any, userId: string) {
-  try {
-    const { data, error } = await client
-      .from('pqc_scan_sessions')
-      .select('completed_at, started_at, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-    if (error || !data?.length) return null
-    return data[0].completed_at || data[0].started_at || data[0].created_at || null
-  } catch {
-    return null
-  }
+  const rows = await liveRows('pqc_scan_sessions', () => client
+    .from('pqc_scan_sessions')
+    .select('completed_at, started_at, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(1))
+  if (!rows.length) return null
+  return rows[0].completed_at || rows[0].started_at || rows[0].created_at || null
 }
 
 function latestByMigration(rows: any[], key = 'migration_id') {
@@ -742,10 +773,10 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     fetchAuditRows(client, userId, planId),
     fetchAgentRows(client, userId),
     fetchInventory(client, userId, assetIds),
-    safeCount(client, 'assets', userId, (query) => query.eq('status', 'active')),
-    safeCount(client, 'pqc_scan_results', userId),
-    safeCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'critical')),
-    safeCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'high')),
+    liveCount(client, 'assets', userId, (query) => query.eq('status', 'active')),
+    liveCount(client, 'pqc_scan_results', userId),
+    liveCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'critical')),
+    liveCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'high')),
     latestScanAt(client, userId),
   ])
 
@@ -936,6 +967,18 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     health: buildHealth(jobs),
     algorithmSummary: buildAlgorithmSummary(jobs),
     telemetry: buildLiveTelemetry(jobs, telemetryRows, validationRows, auditRows),
+  }
+}
+
+// Operator actions must not fail (or lose their result) because the trailing
+// snapshot rebuild hit a transient failure — callers treat a null snapshot as
+// "keep current data and refetch".
+async function buildLiveMigrationSnapshotOrNull(client: any, userId: string, planId?: string | null) {
+  try {
+    return await buildLiveMigrationSnapshot(client, userId, planId)
+  } catch (err) {
+    if (err instanceof SnapshotUnavailableError) return null
+    throw err
   }
 }
 
@@ -1768,7 +1811,9 @@ async function upsertPlannerRows(client: any, table: string, rows: any[], onConf
     console.warn(`[migration-planner] ${table} table is missing; planner details remained in migration_plans metadata.`)
     return
   }
-  if (error) throw error
+  // Wrap in a real Error: Supabase errors are plain objects, and a plain-object
+  // rejection escaping an async route handler kills the whole Node process.
+  if (error) throw new Error(`[migration-planner] ${table} upsert failed: ${error.message || error.code || 'unknown error'}`)
 }
 
 async function insertPlannerRows(client: any, table: string, rows: any[]) {
@@ -1778,7 +1823,7 @@ async function insertPlannerRows(client: any, table: string, rows: any[]) {
     console.warn(`[migration-planner] ${table} table is missing; planner audit detail was skipped.`)
     return
   }
-  if (error) throw error
+  if (error) throw new Error(`[migration-planner] ${table} insert failed: ${error.message || error.code || 'unknown error'}`)
 }
 
 function planJobForAsset(plan: MigrationPlanPayload, asset: any) {
@@ -2211,6 +2256,28 @@ function jobDispatchPriority(job: any) {
   return 35
 }
 
+// The dispatch bookkeeping tables (deployment_packages / orchestration_jobs /
+// execution_queues) carry a foreign key to migration_plans. Jobs re-queued from
+// the live-migration page may reference a planId that only exists in job
+// metadata (HNDL remediations, standalone jobs), so the plan row must exist
+// before the FK-dependent rows are written.
+async function ensureDispatchPlanRow(client: any, userId: string, plan: MigrationPlanPayload, now: string) {
+  const { error } = await client.from('migration_plans').upsert({
+    id: plan.id,
+    user_id: userId,
+    status: plan.status || 'awaiting_agent',
+    selected_asset_ids: (plan.selectedAssets || []).map((asset: any) => asset.assetId || asset.id).filter(Boolean),
+    configuration: plan.configuration || {},
+    risk_data: plan.riskData || {},
+    metadata: { ...asRecord(plan.migrationMetadata), dispatchSource: 'execution-dispatch' },
+    created_at: plan.createdAt || now,
+    updated_at: now,
+  }, { onConflict: 'id', ignoreDuplicates: true })
+  if (error && !isMissingTable(error)) {
+    throw new Error(`[migration-planner] migration_plans ensure failed: ${error.message || error.code || 'unknown error'}`)
+  }
+}
+
 async function persistExecutionDispatch(client: any, userId: string, plan: MigrationPlanPayload, jobs: any[], action: string, phaseToStart: number | null | undefined, now: string) {
   if (!['start', 'start_execution', 'resume', 'retry', 'approve_next_phase'].includes(action) || jobs.length === 0) return
   const controls = asRecord(plan.configuration.controls)
@@ -2315,9 +2382,17 @@ async function persistExecutionDispatch(client: any, userId: string, plan: Migra
     })
   }
 
-  await upsertPlannerRows(client, 'deployment_packages', packageRows, 'plan_id,user_id,migration_job_id')
-  await upsertPlannerRows(client, 'orchestration_jobs', orchestrationRows, 'plan_id,user_id,migration_job_id')
-  await upsertPlannerRows(client, 'execution_queues', queueRows, 'plan_id,user_id,migration_job_id')
+  // Bookkeeping must never fail the operator action (or crash the server):
+  // agents claim work from migration_jobs directly, so a failed queue write
+  // degrades visibility, not execution.
+  try {
+    await ensureDispatchPlanRow(client, userId, plan, now)
+    await upsertPlannerRows(client, 'deployment_packages', packageRows, 'plan_id,user_id,migration_job_id')
+    await upsertPlannerRows(client, 'orchestration_jobs', orchestrationRows, 'plan_id,user_id,migration_job_id')
+    await upsertPlannerRows(client, 'execution_queues', queueRows, 'plan_id,user_id,migration_job_id')
+  } catch (error) {
+    console.warn('[migration] execution dispatch bookkeeping failed; jobs remain queued in migration_jobs for agent claim:', error instanceof Error ? error.message : error)
+  }
 }
 
 function dispatchPlanFromJob(job: any, now: string): MigrationPlanPayload | null {
@@ -3194,7 +3269,7 @@ router.post('/plans/:planId/action', requireAuth, async (req: AuthenticatedReque
 
   const [updatedPlan, liveSnapshot] = await Promise.all([
     loadMigrationPlan(client, req.user!.id, planId),
-    buildLiveMigrationSnapshot(client, req.user!.id, planId),
+    buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId),
   ])
 
   return res.json({
@@ -3213,8 +3288,18 @@ router.get('/live', requireAuth, async (req: AuthenticatedRequest, res) => {
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const planId = typeof req.query.planId === 'string' ? req.query.planId : null
-  const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId)
-  res.json({ data: snapshot })
+  try {
+    const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId)
+    res.json({ data: snapshot })
+  } catch (err) {
+    if (err instanceof SnapshotUnavailableError) {
+      // Explicit 503 instead of a fabricated empty snapshot: the dashboard
+      // keeps its last-known-good data and surfaces the degradation.
+      return res.status(503).json({ error: { code: 'SNAPSHOT_UNAVAILABLE', message: err.message } })
+    }
+    console.error('[migration-live] snapshot error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to build live migration snapshot' } })
+  }
 })
 
 router.get('/live/export', requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -3222,7 +3307,16 @@ router.get('/live/export', requireAuth, async (req: AuthenticatedRequest, res) =
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const planId = typeof req.query.planId === 'string' ? req.query.planId : null
-  const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId)
+  let snapshot: Awaited<ReturnType<typeof buildLiveMigrationSnapshot>>
+  try {
+    snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId)
+  } catch (err) {
+    if (err instanceof SnapshotUnavailableError) {
+      return res.status(503).json({ error: { code: 'SNAPSHOT_UNAVAILABLE', message: err.message } })
+    }
+    console.error('[migration-live] export snapshot error:', err)
+    return res.status(500).json({ error: { code: 'EXPORT_FAILED', message: 'Failed to build live migration export' } })
+  }
   const format = String(req.query.format || 'json').toLowerCase()
   const baseName = `qguard-live-migration-${new Date().toISOString().slice(0, 10)}`
 
@@ -3296,7 +3390,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     const dispatchPlan = dispatchPlanFromJob(job, new Date().toISOString())
     if (dispatchPlan) await persistExecutionDispatch(client, req.user!.id, dispatchPlan, [job], action, null, new Date().toISOString())
   }
-  const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id)
+  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
   return res.json({ data: { action, jobId: job.id, snapshot } })
 })
 
@@ -3350,7 +3444,7 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
     }
   }
 
-  const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id)
+  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
   return res.json({ data: { action, affected: ids.length, snapshot } })
 })
 

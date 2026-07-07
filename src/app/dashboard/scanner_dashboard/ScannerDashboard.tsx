@@ -344,7 +344,9 @@ const MANDATORY_QUANTUM_STACK_GROUPS = [
   { title: 'Libraries', items: MANDATORY_QUANTUM_STACK.requiredLibraries },
   { title: 'Key Exchange', items: [MANDATORY_QUANTUM_STACK.keyExchange.primary, MANDATORY_QUANTUM_STACK.keyExchange.hybrid] },
   { title: 'Signatures', items: [MANDATORY_QUANTUM_STACK.signatures.primary, MANDATORY_QUANTUM_STACK.signatures.hybrid] },
-  { title: 'Data Protection', items: [MANDATORY_QUANTUM_STACK.encryption.symmetric, MANDATORY_QUANTUM_STACK.kdf.primary, ...MANDATORY_QUANTUM_STACK.hashes] },
+  { title: 'Data Protection', items: [MANDATORY_QUANTUM_STACK.encryption.symmetric, MANDATORY_QUANTUM_STACK.kdf.primary, `${MANDATORY_QUANTUM_STACK.kdf.compatibilityFallback} (fallback)`, ...MANDATORY_QUANTUM_STACK.hashes] },
+  { title: 'TLS Policy', items: [MANDATORY_QUANTUM_STACK.tls.minProtocol, `${MANDATORY_QUANTUM_STACK.tls.preferredGroup} preferred`, 'Hybrid TLS enabled', 'Classical fallback: policy-controlled'] },
+  { title: 'High Security Profile', items: [MANDATORY_QUANTUM_STACK.highSecurityProfile.keyExchange, ...MANDATORY_QUANTUM_STACK.highSecurityProfile.signatures] },
 ];
 const REMEDIATION_READINESS_GROUPS = [
   {

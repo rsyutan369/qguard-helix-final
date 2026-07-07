@@ -20,8 +20,11 @@ export const MANDATORY_PQC_STACK = {
   tls: {
     minProtocol: 'TLSv1.3',
     keyExchange: 'X25519 + ML-KEM-768',
+    preferredGroup: 'X25519MLKEM768',
     groups: ['X25519MLKEM768', 'X25519 + ML-KEM-768', 'ML-KEM-768'],
     cipherSuites: ['TLS_AES_256_GCM_SHA384'],
+    hybridEnabled: true,
+    classicalFallback: 'policy-controlled',
   },
   signatures: {
     primary: 'ML-DSA-65',
@@ -33,8 +36,17 @@ export const MANDATORY_PQC_STACK = {
   },
   kdf: {
     primary: 'HKDF-SHA3-256',
+    compatibilityFallback: 'HKDF-SHA-256',
   },
   hashes: ['SHA3-256', 'SHA3-512'],
+  // Reserved for assets that anchor long-term trust (Quantum Vault, QKMS root
+  // keys, HSM-backed roots): stronger parameter sets from the approved stack.
+  highSecurityProfile: {
+    label: 'High Security Profile (Quantum Vault / QKMS / HSM roots)',
+    keyExchange: 'ML-KEM-1024',
+    signatures: ['ML-DSA-87', 'SLH-DSA'],
+    appliesTo: ['quantum-vault', 'qkms-root', 'hsm-root', 'long-term-trust-anchor'],
+  },
   validationSignals: [
     'liboqs-present',
     'oqs-provider-loaded',
@@ -55,6 +67,8 @@ export const MANDATORY_PQC_TARGET_ALGORITHMS = [
   MANDATORY_PQC_STACK.encryption.symmetric,
   MANDATORY_PQC_STACK.kdf.primary,
   ...MANDATORY_PQC_STACK.hashes,
+  MANDATORY_PQC_STACK.highSecurityProfile.keyExchange,
+  ...MANDATORY_PQC_STACK.highSecurityProfile.signatures,
 ] as const
 
 export const MANDATORY_PQC_REQUIRED_CAPABILITIES = [
@@ -81,6 +95,7 @@ export const MANDATORY_PQC_CONFIG_VALUES = {
   pqcSignature: MANDATORY_PQC_STACK.signatures.primary,
   symmetricCipher: MANDATORY_PQC_STACK.encryption.symmetric,
   kdf: MANDATORY_PQC_STACK.kdf.primary,
+  kdfCompatibilityFallback: MANDATORY_PQC_STACK.kdf.compatibilityFallback,
   hashAlgorithm: 'SHA3-256',
   integrityHash: 'SHA3-512',
   opensslProvider: 'oqsprovider',
@@ -97,12 +112,26 @@ function lower(value: unknown) {
   return String(value || '').toLowerCase()
 }
 
+function isHighSecurityContext(normalized: string) {
+  return /quantum.?vault|qkms.?root|hsm.?root|root.?of.?trust|trust.?anchor|high.?security|long.?term.?secret|cnsa/.test(normalized)
+}
+
 export function mandatoryPqcTargetForContext(sourceAlgorithm: unknown, context = '') {
   const text = `${sourceAlgorithm || ''} ${context || ''}`
   const normalized = lower(text)
   const sourceNormalized = lower(sourceAlgorithm).trim()
   const contextNormalized = lower(context)
   const compacted = compact(text)
+
+  // High-security profile: explicit stronger parameter sets are approved and
+  // must never be downgraded to the standard profile.
+  if (/mlkem1024|kyber1024/.test(compacted)) return MANDATORY_PQC_STACK.highSecurityProfile.keyExchange
+  if (/mldsa87|dilithium5/.test(compacted)) return 'ML-DSA-87'
+  if (/slhdsa|sphincs/.test(compacted)) return 'SLH-DSA'
+  if (isHighSecurityContext(normalized)) {
+    if (/certificate|cert|pki|sign|signature|jwt|saml|identity|dsa|ed25519/.test(normalized)) return 'ML-DSA-87'
+    return MANDATORY_PQC_STACK.highSecurityProfile.keyExchange
+  }
 
   if (/x25519mlkem768|x25519kyber768|mlkem768x25519/.test(compacted)) return MANDATORY_PQC_STACK.tls.keyExchange
   if (/ed25519mldsa65|mldsa65ed25519/.test(compacted)) return MANDATORY_PQC_STACK.signatures.hybrid
@@ -149,6 +178,7 @@ export function mandatoryPqcStackMetadata(sourceAlgorithm?: unknown, context = '
     encryption: MANDATORY_PQC_STACK.encryption,
     kdf: MANDATORY_PQC_STACK.kdf,
     hashes: MANDATORY_PQC_STACK.hashes,
+    highSecurityProfile: MANDATORY_PQC_STACK.highSecurityProfile,
     requiredCapabilities: MANDATORY_PQC_REQUIRED_CAPABILITIES,
     validationSignals: MANDATORY_PQC_STACK.validationSignals,
   }

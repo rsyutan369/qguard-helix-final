@@ -610,9 +610,15 @@ function useSandbox() {
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [sseActive, setSseActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
+  const lastGeneratedAtRef = useRef(0)
 
   const applySnapshot = useCallback((snapshot?: SandboxSnapshot | null) => {
     if (snapshot) {
+      // Snapshots arrive from three async sources (REST, SSE, action
+      // responses); never let an older snapshot overwrite a newer one.
+      const generatedMs = Date.parse(String(snapshot.generatedAt || '')) || Date.now()
+      if (generatedMs < lastGeneratedAtRef.current) return
+      lastGeneratedAtRef.current = generatedMs
       const simulations = Array.isArray(snapshot.simulations) ? snapshot.simulations : []
       setData({
         ...snapshot,
@@ -636,7 +642,10 @@ function useSandbox() {
       const r = await fetch('/api/v1/sandbox/snapshot', { headers: { Authorization: `Bearer ${token}` } })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`)
-      applySnapshot(j.data || EMPTY)
+      // A 200 with a missing/truncated body must not wipe the dashboard to the
+      // empty state — keep last-known-good data and surface the error instead.
+      if (!j?.data) throw new Error('Snapshot response was empty or malformed')
+      applySnapshot(j.data)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed')
@@ -674,9 +683,20 @@ function useSandbox() {
     return () => { if (retry) clearTimeout(retry); esRef.current?.close(); esRef.current = null; setSseActive(false) }
   }, [token, applySnapshot])
 
-  // Supabase realtime
+  // Supabase realtime. Refetches are debounced: while a simulation runs, the
+  // engine updates migration_jobs every couple of seconds, and refetching on
+  // every event turns each write into another snapshot build (which itself
+  // advances the engine and writes again) — a self-sustaining request storm.
   useEffect(() => {
     if (!user) return
+    let refetchTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleRefetch = () => {
+      if (refetchTimer) return
+      refetchTimer = setTimeout(() => {
+        refetchTimer = null
+        void fetchSnapshot()
+      }, 1200)
+    }
     const tables = [
       'migration_jobs',
       'migration_events',
@@ -693,9 +713,12 @@ function useSandbox() {
       'audit_logs',
     ]
     const channels = tables.map((t) =>
-      supabase.channel(`sandbox-${t}`).on('postgres_changes', { event: '*', schema: 'public', table: t, filter: `user_id=eq.${user.id}` }, () => fetchSnapshot()).subscribe()
+      supabase.channel(`sandbox-${t}`).on('postgres_changes', { event: '*', schema: 'public', table: t, filter: `user_id=eq.${user.id}` }, scheduleRefetch).subscribe()
     )
-    return () => { channels.forEach((c) => supabase.removeChannel(c)) }
+    return () => {
+      if (refetchTimer) clearTimeout(refetchTimer)
+      channels.forEach((c) => supabase.removeChannel(c))
+    }
   }, [user, fetchSnapshot])
 
   // Actions

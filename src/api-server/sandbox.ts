@@ -70,6 +70,28 @@ function isSchemaShapeError(error: any) {
     || text.includes('column')
 }
 
+// Transient infrastructure failures (dropped keep-alive sockets, gateway
+// hiccups, throttling) must never be mistaken for "tenant has no data".
+const TRANSIENT_RETRY_DELAYS_MS = [250, 750]
+
+function isTransientQueryError(error: any) {
+  const text = `${error?.name || ''} ${error?.code || ''} ${error?.message || ''} ${error?.details || ''} ${error?.cause?.code || ''} ${error?.cause?.message || ''}`.toLowerCase()
+  return /fetch failed|network|socket|econnreset|econnrefused|etimedout|epipe|und_err|other side closed|terminated|timeout|timed out|too many requests|rate limit|\b429\b|\b502\b|\b503\b|\b504\b|bad gateway|service unavailable/.test(text)
+}
+
+class SnapshotUnavailableError extends Error {
+  table: string
+  constructor(table: string, detail: string) {
+    super(`Sandbox snapshot aborted: "${table}" query failed (${detail})`)
+    this.name = 'SnapshotUnavailableError'
+    this.table = table
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   return value as Record<string, unknown>
@@ -286,7 +308,21 @@ async function insertEngineEvent(client: any, job: any, type: string, message: s
   if (error && !isMissingTable(error)) console.warn('[sandbox] engine event insert failed:', error.message)
 }
 
+// Every snapshot build used to run the engine unconditionally. Because engine
+// writes fire Supabase realtime events that make every open dashboard refetch
+// (which builds a snapshot, which runs the engine again...), an unthrottled
+// engine turns one running simulation into a self-sustaining write/refetch
+// storm. A short per-scope interval keeps progress smooth (~1%/1.1s at the
+// fastest) while breaking the feedback loop.
+const ADVANCE_MIN_INTERVAL_MS = 2500
+const lastAdvanceAt = new Map<string, number>()
+
 async function advanceSandboxJobs(client: any, userId?: string) {
+  const throttleKey = userId || '__all__'
+  const lastRun = lastAdvanceAt.get(throttleKey) || 0
+  if (Date.now() - lastRun < ADVANCE_MIN_INTERVAL_MS) return { advanced: 0 }
+  lastAdvanceAt.set(throttleKey, Date.now())
+
   let query = client
     .from('migration_jobs')
     .select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at')
@@ -326,15 +362,21 @@ async function advanceSandboxJobs(client: any, userId?: string) {
       const queuedAt = dateMs(String(meta.queuedAt || job.created_at || job.updated_at || ''))
       const queueDelay = Math.min(45_000, 8_000 + index * 1500)
       if (queuedAt && now.getTime() - queuedAt < queueDelay) {
-        update = {
-          status: 'queued',
-          progress: 0,
-          updated_at: nowIso,
-          metadata: {
-            ...updateMeta,
-            phase: 'queued',
-            queueReason: `Executor slot ${index + 1} of ${sandboxRows.length}`,
-          },
+        const queueReason = `Executor slot ${index + 1} of ${sandboxRows.length}`
+        // Only write when the queue bookkeeping actually changed — an
+        // unconditional write here re-triggers realtime → refetch → advance
+        // in a tight loop for the whole queue window.
+        if (meta.phase !== 'queued' || meta.queueReason !== queueReason || meta.sandboxMode !== true) {
+          update = {
+            status: 'queued',
+            progress: 0,
+            updated_at: nowIso,
+            metadata: {
+              ...updateMeta,
+              phase: 'queued',
+              queueReason,
+            },
+          }
         }
       } else {
         update = {
@@ -362,7 +404,11 @@ async function advanceSandboxJobs(client: any, userId?: string) {
       const duration = estimateSandboxDurationMs(job)
       const elapsed = Math.max(0, now.getTime() - startedAt)
       const nextProgress = clamp((elapsed / duration) * 100)
-      const phase = phaseForProgress(nextProgress, 'running', meta)
+      // Recompute the phase from real progress ({} = no stored-phase override):
+      // passing `meta` here made phaseForProgress echo the previously written
+      // phase back, so the engine never detected a transition and never emitted
+      // phase events.
+      const phase = phaseForProgress(nextProgress, 'running', {})
       const previousPhase = textMeta(meta, ['lastEnginePhase', 'phase'])
 
       if (nextProgress >= 100) {
@@ -653,17 +699,27 @@ async function recordOperatorTelemetry(client: any, req: AuthenticatedRequest, j
   if (auditError && !isMissingTable(auditError)) console.warn('[sandbox] audit log insert failed:', auditError.message)
 }
 
-async function safeRows(client: any, table: string, build: (q: any) => any) {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      if (!isMissingTable(error)) console.warn(`[sandbox] ${table}:`, error.message)
-      return []
+// Rows for one snapshot table. "Table/column not provisioned" is a legitimate
+// empty result; any other failure is retried and then ABORTS the snapshot —
+// serving a fabricated empty snapshot would make running simulations vanish
+// from the UI until the next successful poll.
+async function safeRows(client: any, table: string, build: (q: any) => any): Promise<any[]> {
+  let lastError: any = null
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(TRANSIENT_RETRY_DELAYS_MS[attempt - 1])
+    try {
+      const { data, error } = await build(client.from(table))
+      if (!error) return data || []
+      if (isSchemaShapeError(error)) return []
+      lastError = error
+      if (!isTransientQueryError(error)) break
+    } catch (err) {
+      lastError = err
+      if (!isTransientQueryError(err)) break
     }
-    return data || []
-  } catch {
-    return []
   }
+  console.warn(`[sandbox] ${table} query failed; aborting snapshot instead of fabricating empty data:`, lastError?.message || lastError)
+  throw new SnapshotUnavailableError(table, String(lastError?.message || 'query failed'))
 }
 
 async function safeCount(client: any, table: string, userId: string, apply?: (q: any) => any): Promise<number> {
@@ -1250,6 +1306,18 @@ async function buildSandboxPayload(client: any, userId: string) {
   }
 }
 
+// Operator actions must not fail (or lose their result) because the trailing
+// snapshot rebuild hit a transient failure — callers treat a null snapshot as
+// "keep current data and refetch".
+async function buildSandboxPayloadOrNull(client: any, userId: string) {
+  try {
+    return await buildSandboxPayload(client, userId)
+  } catch (err) {
+    if (err instanceof SnapshotUnavailableError) return null
+    throw err
+  }
+}
+
 // ── GET /api/v1/sandbox/assets ───────────────────────────────────────────────
 // Simulation targets: the tenant's real scanned assets enriched with the
 // cryptographic evidence (inventory + exposures) a simulation will exercise.
@@ -1329,6 +1397,11 @@ router.get('/snapshot', requireAuth, async (req: AuthenticatedRequest, res) => {
     const payload = await buildSandboxPayload(client, req.user!.id)
     return res.json({ data: payload })
   } catch (err) {
+    if (err instanceof SnapshotUnavailableError) {
+      // Explicit 503 instead of a fabricated empty snapshot: the dashboard
+      // keeps its last-known-good data and surfaces the degradation.
+      return res.status(503).json({ error: { code: 'SNAPSHOT_UNAVAILABLE', message: err.message } })
+    }
     console.error('[sandbox] snapshot error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to build sandbox snapshot' } })
   }
@@ -1407,12 +1480,12 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
       return res.status(500).json({ error: { code: 'DELETE_FAILED', message: 'Failed to delete simulation' } })
     }
 
-    const payload = await buildSandboxPayload(client, req.user!.id)
+    const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
     return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
   }
 
   const context = action === 'snapshot' || action === 'restore_snapshot'
-    ? await buildSandboxPayload(client, req.user!.id)
+    ? (await buildSandboxPayloadOrNull(client, req.user!.id)) || undefined
     : undefined
   const update = actionUpdate(job, action, now, {
     snapshotId: typeof req.body?.snapshotId === 'string' ? req.body.snapshotId : undefined,
@@ -1431,7 +1504,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
 
   await recordOperatorTelemetry(client, req, [job], action, now, 'single')
 
-  const payload = await buildSandboxPayload(client, req.user!.id)
+  const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
   return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
 })
 
@@ -1473,11 +1546,21 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
     // Simulations against assets must run against the tenant's REAL scanned
     // evidence: validate ownership, then seed each job from crypto inventory
     // and exposure records discovered by the scanners.
-    const [ownedAssets, invRows, expRows] = await Promise.all([
-      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status').eq('user_id', userId).in('id', requestedAssetIds)),
-      safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
-      safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
-    ])
+    let ownedAssets: any[] = []
+    let invRows: any[] = []
+    let expRows: any[] = []
+    try {
+      ;[ownedAssets, invRows, expRows] = await Promise.all([
+        safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status').eq('user_id', userId).in('id', requestedAssetIds)),
+        safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
+        safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
+      ])
+    } catch (err) {
+      if (err instanceof SnapshotUnavailableError) {
+        return res.status(503).json({ error: { code: 'SNAPSHOT_UNAVAILABLE', message: 'Scanned asset evidence is temporarily unavailable; please retry the simulation.' } })
+      }
+      throw err
+    }
     const ownedById = new Map<string, any>((ownedAssets || []).map((a: any) => [String(a.id), a]))
     const missing = requestedAssetIds.filter((id) => !ownedById.has(id))
     if (missing.length > 0) {
@@ -1611,7 +1694,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
   })
   if (auditLogInsert.error && !isMissingTable(auditLogInsert.error)) console.warn('[sandbox] simulation audit log insert failed:', auditLogInsert.error.message)
 
-  const payload = await buildSandboxPayload(client, userId)
+  const payload = await buildSandboxPayloadOrNull(client, userId)
   return res.json({
     data: {
       success: true,
@@ -1675,7 +1758,7 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
   }
 
   await recordOperatorTelemetry(client, req, affectedJobs, action, now, 'bulk')
-  const payload = await buildSandboxPayload(client, req.user!.id)
+  const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
   return res.json({ data: { success: true, action, scope, affected, snapshot: payload } })
 })
 

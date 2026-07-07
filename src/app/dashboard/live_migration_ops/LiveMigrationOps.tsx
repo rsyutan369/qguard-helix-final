@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Activity,
@@ -513,6 +513,18 @@ export default function LiveMigrationOperations() {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }), [token])
   const planQuery = planId ? `planId=${encodeURIComponent(planId)}` : ''
+  const lastGeneratedAtRef = useRef(0)
+
+  // Snapshots arrive from three async sources (REST, SSE, action responses);
+  // never let an older snapshot overwrite a newer one, and never replace live
+  // data with a missing payload.
+  const applySnapshot = useCallback((next?: LiveMigrationSnapshot | null) => {
+    if (!next) return
+    const generatedMs = Date.parse(String(next.generatedAt || '')) || Date.now()
+    if (generatedMs < lastGeneratedAtRef.current) return
+    lastGeneratedAtRef.current = generatedMs
+    setSnapshot(next)
+  }, [])
 
   const fetchSnapshot = useCallback(async () => {
     if (!token) return
@@ -520,14 +532,17 @@ export default function LiveMigrationOperations() {
       const res = await fetch(`/api/v1/migration/live${planQuery ? `?${planQuery}` : ''}`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
-      setSnapshot(json.data || EMPTY_SNAPSHOT)
+      // A 200 with a missing/truncated body must not wipe the dashboard to the
+      // empty state — keep last-known-good data and surface the error instead.
+      if (!json?.data) throw new Error('Snapshot response was empty or malformed')
+      applySnapshot(json.data)
     } catch (error) {
       console.error('Live migration sync failed:', error)
       setNotice('Live migration data is temporarily unavailable.')
     } finally {
       setLoading(false)
     }
-  }, [authHeaders, planQuery, token])
+  }, [applySnapshot, authHeaders, planQuery, token])
 
   useEffect(() => {
     fetchSnapshot()
@@ -548,7 +563,7 @@ export default function LiveMigrationOperations() {
     source.addEventListener('connected', () => setStreamConnected(true))
     source.addEventListener('migration-update', (event) => {
       try {
-        setSnapshot(JSON.parse(event.data))
+        applySnapshot(JSON.parse(event.data))
         setLoading(false)
       } catch (error) {
         console.error('Invalid live migration stream payload:', error)
@@ -558,24 +573,36 @@ export default function LiveMigrationOperations() {
       source.close()
       setStreamConnected(false)
     }
-  }, [planId, token])
+  }, [applySnapshot, planId, token])
 
   useEffect(() => {
     if (!user?.id) return
+    // Debounced: while a migration runs, migration_jobs updates land every
+    // couple of seconds; refetching on every event creates a request storm
+    // (each snapshot build advances the sandbox engine, which writes again).
+    let refetchTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleRefetch = () => {
+      if (refetchTimer) return
+      refetchTimer = setTimeout(() => {
+        refetchTimer = null
+        void fetchSnapshot()
+      }, 1200)
+    }
     const channel = supabase
       .channel(`live-migration-ops-${user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_jobs', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_plans', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_events', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_execution', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_telemetry', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_validation_logs', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'execution_queues', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pqc_scan_results', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'crypto_exposures', filter: `user_id=eq.${user.id}` }, fetchSnapshot)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_jobs', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_plans', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_events', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_execution', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_telemetry', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_validation_logs', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'execution_queues', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pqc_scan_results', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'crypto_exposures', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
       .subscribe((status) => setRealtimeStatus(status))
 
     return () => {
+      if (refetchTimer) clearTimeout(refetchTimer)
       supabase.removeChannel(channel)
     }
   }, [fetchSnapshot, user?.id])
@@ -619,14 +646,14 @@ export default function LiveMigrationOperations() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
-      if (json.data?.snapshot) setSnapshot(json.data.snapshot)
+      applySnapshot(json.data?.snapshot)
       setNotice(`Migration action recorded: ${action}.`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Migration action failed.')
     } finally {
       setActionPending('')
     }
-  }, [authHeaders, token])
+  }, [applySnapshot, authHeaders, token])
 
   const runBulkAction = useCallback(async (action: 'pause' | 'resume' | 'retry') => {
     if (!token) return
@@ -640,14 +667,14 @@ export default function LiveMigrationOperations() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
-      if (json.data?.snapshot) setSnapshot(json.data.snapshot)
+      applySnapshot(json.data?.snapshot)
       setNotice(`${numberFmt(json.data?.affected || 0)} migration job(s) updated.`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Bulk migration action failed.')
     } finally {
       setActionPending('')
     }
-  }, [authHeaders, planId, token])
+  }, [applySnapshot, authHeaders, planId, token])
 
   const downloadExport = useCallback(async (format: 'csv' | 'json') => {
     if (!token) return
