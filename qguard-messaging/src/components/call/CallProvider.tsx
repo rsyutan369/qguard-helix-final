@@ -87,7 +87,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
     <CallContext.Provider value={value}>
       {children}
       {call.state.phase === "ringing" && call.state.role === "callee" && (
-        <IncomingCallModal callerName={peerName} onAccept={() => void call.accept()} onReject={() => call.reject()} />
+        <IncomingCallModal callerName={peerName} callerUserId={call.state.peerUserId ?? null} onAccept={() => void call.accept()} onReject={() => call.reject()} />
       )}
       {["calling", "connecting", "connected"].includes(call.state.phase) && (
         <InCallOverlay
@@ -97,6 +97,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
           micEnabled={call.micEnabled}
           cameraEnabled={call.cameraEnabled}
           peerName={peerName}
+          peerUserId={call.state.peerUserId ?? null}
           quality={call.quality}
           onSetQuality={(q) => void call.setQuality(q)}
           onHangup={() => call.hangup()}

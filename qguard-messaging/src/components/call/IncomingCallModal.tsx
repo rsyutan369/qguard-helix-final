@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { PhoneIncoming, PhoneOff, Video } from "lucide-react";
+import { UserAvatar } from "@/components/UserAvatar";
 
 /**
  * Gentle two-tone ring while the modal is visible. Synthesised with WebAudio
@@ -53,12 +54,18 @@ function useRingtone() {
   }, []);
 }
 
-export function IncomingCallModal({ callerName, onAccept, onReject }: { callerName: string; onAccept: () => void; onReject: () => void }) {
+export function IncomingCallModal({ callerName, callerUserId, onAccept, onReject }: { callerName: string; callerUserId: string | null; onAccept: () => void; onReject: () => void }) {
   useRingtone();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-sm rounded-xl border border-white/30 bg-white p-6 text-center shadow-soft">
-        <div className="mx-auto flex h-16 w-16 animate-pulse items-center justify-center rounded-full bg-cyan-50 text-cyan-600"><Video size={28} /></div>
+        <div className="relative mx-auto h-20 w-20">
+          <span className="absolute inset-0 animate-ping rounded-full bg-cyan-400/40" />
+          <UserAvatar userId={callerUserId} name={callerName} size={80} className="relative ring-4 ring-cyan-100" />
+          <span className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500 text-white ring-2 ring-white">
+            <Video size={15} />
+          </span>
+        </div>
         <div className="mt-4 text-lg font-bold text-ink-950">{callerName}</div>
         <div className="text-sm text-ink-600">Incoming quantum-encrypted video call</div>
         <div className="mt-6 flex justify-center gap-4">

@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { BadgeCheck, Mic, MicOff, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
 import type { CallState } from "@/lib/call-state";
 import { qualityLabel, type CallQuality } from "@/lib/call-quality";
+import { UserAvatar } from "@/components/UserAvatar";
 
 const QUALITY_OPTIONS: CallQuality[] = ["low", "auto", "hd"];
 
 export function InCallOverlay(props: {
   state: CallState; localStream: MediaStream | null; remoteStream: MediaStream | null;
-  micEnabled: boolean; cameraEnabled: boolean; peerName: string;
+  micEnabled: boolean; cameraEnabled: boolean; peerName: string; peerUserId: string | null;
   quality: CallQuality; onSetQuality: (quality: CallQuality) => void;
   onHangup: () => void; onToggleMic: () => void; onToggleCamera: () => void;
 }) {
@@ -50,9 +51,12 @@ export function InCallOverlay(props: {
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-ink-950">
       <div className="flex items-center justify-between px-5 py-3 text-white">
-        <div>
-          <div className="text-sm font-bold">{props.peerName}</div>
-          <div className="text-xs text-white/70">{phaseLabel}</div>
+        <div className="flex min-w-0 items-center gap-3">
+          <UserAvatar userId={props.peerUserId} name={props.peerName} size={36} className="ring-2 ring-white/20" />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-bold">{props.peerName}</div>
+            <div className="text-xs text-white/70">{phaseLabel}</div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center rounded-full bg-white/10 p-0.5" role="radiogroup" aria-label="Call quality">
@@ -83,6 +87,16 @@ export function InCallOverlay(props: {
       </div>
       <div className="relative flex-1">
         <video ref={remoteRef} autoPlay playsInline className="h-full w-full bg-black object-cover" />
+        {!props.remoteStream && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950/60">
+            <div className="relative">
+              <span className="absolute inset-0 animate-ping rounded-full bg-violet-500/30" />
+              <UserAvatar userId={props.peerUserId} name={props.peerName} size={104} className="relative ring-4 ring-white/20" />
+            </div>
+            <div className="text-sm font-semibold text-white/80">{props.peerName}</div>
+            <div className="text-xs text-white/60">{phaseLabel}</div>
+          </div>
+        )}
         <video ref={localRef} autoPlay playsInline muted className="absolute bottom-24 right-5 h-36 w-48 rounded-lg border border-white/30 object-cover" />
         {sasVisible && props.state.safetyNumber && (
           <div className="absolute left-1/2 top-4 z-10 w-[min(92vw,420px)] -translate-x-1/2 rounded-xl border border-emerald-300/50 bg-white/95 p-4 text-center shadow-soft backdrop-blur">

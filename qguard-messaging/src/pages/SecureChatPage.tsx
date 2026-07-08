@@ -19,6 +19,7 @@ import { safeInvoke } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
 import { useCall } from "@/components/call/CallProvider";
 import { CallButton } from "@/components/call/CallButton";
+import { UserAvatar } from "@/components/UserAvatar";
 
 interface SecureChatPageProps {
   userId: string;
@@ -1068,11 +1069,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const callPeer = useMemo(() => {
     if (activeConversation?.conversation_type !== "direct") return null;
     const device = sendableRecipientDevices[0];
-    if (!device) return null;
+    if (!device?.identity_signature) return null;
     return {
       userId: device.user_id, deviceId: device.device_id,
       x25519: Array.from(device.x25519_identity_public),
       mlkem: Array.from(device.mlkem_identity_public),
+      ed25519: Array.from(device.ed25519_identity_public),
+      mldsa: Array.from(device.mldsa_identity_public),
+      identitySignature: {
+        ed25519: Array.from(device.identity_signature.ed25519),
+        ml_dsa_65: Array.from(device.identity_signature.ml_dsa_65),
+      },
       displayName: activeConversation ? conversationTitle(activeConversation) : "Contact",
     };
   }, [activeConversation, sendableRecipientDevices]);
@@ -1265,6 +1272,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   function conversationTitle(conversation: ConversationSummary): string {
     const contact = contacts.find((item) => conversation.member_user_ids.includes(item.contact_user_id));
     return contact ? visibleContactName(contact) : conversation.title;
+  }
+
+  /** The other participant of a direct conversation (drives its avatar). */
+  function conversationPeerUserId(conversation: ConversationSummary): string | null {
+    if (conversation.conversation_type !== "direct") return null;
+    const contact = contacts.find((item) => conversation.member_user_ids.includes(item.contact_user_id));
+    return contact?.contact_user_id
+      ?? conversation.member_user_ids.find((memberId) => memberId && memberId !== userId)
+      ?? null;
   }
 
   function describeMessageError(error: unknown): string {
@@ -3258,9 +3274,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                   onClick={() => openConversation(thread)}
                   className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-sm font-bold text-white">
-                    {conversationTitle(thread).slice(0, 2).toUpperCase()}
-                  </div>
+                  {conversationPeerUserId(thread) ? (
+                    <UserAvatar userId={conversationPeerUserId(thread)} name={conversationTitle(thread)} size={40} />
+                  ) : (
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
+                      <Users size={18} />
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-bold text-ink-950">{conversationTitle(thread)}</div>
                     <div className="truncate text-xs text-ink-600">{thread.last_activity}</div>
@@ -3356,11 +3376,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
       <section className="shell-card flex min-h-0 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b border-line p-4">
-          <div>
-            <h2 className="text-sm font-bold text-ink-950">{activeConversation ? conversationTitle(activeConversation) : "Select or start a private chat"}</h2>
-            <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-600">
-              <ShieldCheck size={14} />
-              E2EE active - ML-KEM-1024 - Forward secrecy
+          <div className="flex min-w-0 items-center gap-3">
+            {activeConversation && (
+              conversationPeerUserId(activeConversation) ? (
+                <UserAvatar userId={conversationPeerUserId(activeConversation)} name={conversationTitle(activeConversation)} size={40} />
+              ) : (
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
+                  <Users size={18} />
+                </div>
+              )
+            )}
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-bold text-ink-950">{activeConversation ? conversationTitle(activeConversation) : "Select or start a private chat"}</h2>
+              <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-600">
+                <ShieldCheck size={14} />
+                E2EE active - ML-KEM-1024 - Forward secrecy
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -3399,13 +3430,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               return (
                 <div key={chatMessage.client_message_id} className={`flex items-start gap-2 ${mine ? "justify-end" : "justify-start"}`}>
                   {!mine && (
-                    <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-violet-600 shadow-tight">
-                      {(activeContact
+                    <UserAvatar
+                      userId={chatMessage.sender_user_id}
+                      name={activeContact
                         ? visibleContactName(activeContact)
                         : activeConversation
                           ? conversationTitle(activeConversation)
-                          : "QG").slice(0, 2).toUpperCase()}
-                    </div>
+                          : "QG"}
+                      size={32}
+                      className="mt-1 shadow-tight"
+                    />
                   )}
                   <div className={`group relative max-w-[74%] ${mine ? "order-1" : ""}`}>
                     <div className={`rounded-2xl px-4 py-3 shadow-tight ${mine ? "rounded-br-md bg-violet-600 text-white" : "rounded-bl-md border border-line bg-white text-ink-900"}`}>
@@ -3823,11 +3857,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               return (
                 <div key={contact.id} className="rounded-lg border border-line p-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-bold text-ink-950">{visibleContactName(contact)}</div>
-                      <div className="mt-1 truncate font-mono text-xs text-ink-400">{contact.username}</div>
-                      <div className="mt-1 text-xs font-semibold text-ink-500">
-                        {readyDeviceCount > 0 ? `${readyDeviceCount} trusted device${readyDeviceCount === 1 ? "" : "s"} ready` : "No trusted device ready yet"}
+                    <div className="flex min-w-0 items-start gap-3">
+                      <UserAvatar userId={contact.contact_user_id} name={visibleContactName(contact)} size={36} />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-bold text-ink-950">{visibleContactName(contact)}</div>
+                        <div className="mt-1 truncate font-mono text-xs text-ink-400">{contact.username}</div>
+                        <div className="mt-1 text-xs font-semibold text-ink-500">
+                          {readyDeviceCount > 0 ? `${readyDeviceCount} trusted device${readyDeviceCount === 1 ? "" : "s"} ready` : "No trusted device ready yet"}
+                        </div>
                       </div>
                     </div>
                     <span className={`status-pill ${contact.trust_state === "blocked" ? "bg-rose-50 text-rose-500" : "bg-emerald-50 text-emerald-600"}`}>
@@ -4084,9 +4121,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                     onClick={() => startChatWithUser(result)}
                     className="group flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-left transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-sm font-bold text-white">
-                      {(result.display_name || result.username || "QG").slice(0, 2).toUpperCase()}
-                    </div>
+                    <UserAvatar userId={result.user_id} name={result.display_name || result.username || "QG"} size={40} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-bold text-ink-950">{result.display_name}</div>
                       <div className="truncate font-mono text-xs text-ink-400">{result.username || result.user_id}</div>

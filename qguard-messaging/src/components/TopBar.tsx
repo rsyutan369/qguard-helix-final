@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { describeLiveEvent, liveStatusLabel } from "@/lib/live-sse";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import type { ThemeMode } from "@/lib/use-theme";
+import { UserAvatar } from "@/components/UserAvatar";
 
 interface TopBarProps {
   title: string;
@@ -20,14 +21,8 @@ interface TopBarProps {
   onStartTour: () => void;
 }
 
-function initials(user: User): string {
-  const name = String(user.user_metadata?.full_name ?? user.email ?? "User");
-  return name
-    .split(/[\s@.]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("") || "U";
+function displayName(user: User): string {
+  return String(user.user_metadata?.full_name ?? user.email ?? "User");
 }
 
 export default function TopBar({ title, subtitle, user, theme, activePage, liveStatus, lastLiveEvent, unreadMessages = 0, onOpenChat, onToggleTheme, onSignOut, onStartTour }: TopBarProps) {
@@ -101,9 +96,7 @@ export default function TopBar({ title, subtitle, user, theme, activePage, liveS
         <button className="icon-button" title="Sign out" onClick={onSignOut}>
           <LogOut size={18} />
         </button>
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-600 text-sm font-bold text-white">
-          {initials(user)}
-        </div>
+        <UserAvatar userId={user.id} name={displayName(user)} size={40} />
       </div>
       {panel && (
         <div className="absolute right-7 top-[66px] z-50 w-[360px] rounded-lg border border-line bg-white/95 p-4 shadow-soft backdrop-blur-xl">

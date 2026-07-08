@@ -15,7 +15,22 @@ import {
 
 interface CallSetup { hybridCiphertext: unknown; sendKeyB64: string; recvKeyB64: string; safetyNumber: string; }
 
-export interface CallPeer { userId: string; deviceId: string; x25519: number[]; mlkem: number[]; displayName: string; }
+/**
+ * Outgoing-call target. Carries the peer device's FULL published identity
+ * bundle (KEM keys + signing keys + dual signature): the Rust side refuses to
+ * encapsulate a call media key until the Ed25519 + ML-DSA-65 identity
+ * signature validates, so a relay that swaps KEM keys cannot MITM a call.
+ */
+export interface CallPeer {
+  userId: string;
+  deviceId: string;
+  x25519: number[];
+  mlkem: number[];
+  ed25519: number[];
+  mldsa: number[];
+  identitySignature: { ed25519: number[]; ml_dsa_65: number[] };
+  displayName: string;
+}
 
 /** Signal-addressing for the active call: where offers/answers/ice/hangup go. */
 interface CallRoute { conversationId: string; toUserId: string; toDeviceId: string; }
@@ -183,7 +198,18 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.deviceId });
     armTimeout(45000);
     try {
-      const setup = await safeInvoke<CallSetup>("call_caller_setup", { peerX25519Public: peer.x25519, peerMlkemPublic: peer.mlkem, callId });
+      const setup = await safeInvoke<CallSetup>("call_caller_setup", {
+        peer: {
+          user_id: peer.userId,
+          device_id: peer.deviceId,
+          x25519_identity_public: peer.x25519,
+          mlkem_identity_public: peer.mlkem,
+          ed25519_identity_public: peer.ed25519,
+          mldsa_identity_public: peer.mldsa,
+          identity_signature: peer.identitySignature,
+        },
+        callId,
+      });
       setupRef.current = setup;
       const stream = await getMedia();
       const pc = await buildPeerConnection(callId, route);

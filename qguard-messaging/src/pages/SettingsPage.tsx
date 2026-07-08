@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { invalidateAvatar } from "@/lib/avatars";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
@@ -474,6 +475,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
       if (profileError) throw profileError;
       const { data: avatarBlob, error: downloadError } = await supabase.storage.from("profile-avatars").download(path);
       setAvatarPreviewUrl(URL.createObjectURL(downloadError || !avatarBlob ? blob : avatarBlob));
+      invalidateAvatar(user.id);
       await audit("avatar_updated");
       setStatus("Avatar updated");
       onRefresh();

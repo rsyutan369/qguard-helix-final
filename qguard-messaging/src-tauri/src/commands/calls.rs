@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use zeroize::Zeroize;
 
 use crate::crypto::hybrid_kex::{decapsulate, encapsulate};
-use crate::crypto::HybridCiphertext;
+use crate::crypto::{DualSignature, HybridCiphertext};
 use crate::crypto::kdf::{hkdf_sha3_256, sha3_256};
 use crate::error::{QGuardError, Result};
+use crate::identity::verify_identity_bundle;
 use crate::state::AppState;
 
 const INFO_C2A: &[u8] = b"qguard-call-media-v1:caller-to-callee";
@@ -62,21 +63,55 @@ fn safety_number(shared: &[u8; 32]) -> String {
     groups.join("-")
 }
 
+/// Peer identity material for an outgoing call, as published in the device
+/// registry. The KEM keys are only trusted after the identity-bundle dual
+/// signature (Ed25519 + ML-DSA-65) validates — a relay that swaps KEM keys
+/// without the matching signing keys is rejected before any media key exists.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CallPeerIdentity {
+    pub user_id: String,
+    pub device_id: String,
+    pub x25519_identity_public: Vec<u8>,
+    pub mlkem_identity_public: Vec<u8>,
+    pub ed25519_identity_public: Vec<u8>,
+    pub mldsa_identity_public: Vec<u8>,
+    pub identity_signature: DualSignature,
+}
+
 #[tauri::command]
 pub fn call_caller_setup(
     state: State<'_, AppState>,
-    peer_x25519_public: Vec<u8>,
-    peer_mlkem_public: Vec<u8>,
+    peer: CallPeerIdentity,
     call_id: String,
 ) -> Result<CallSetup> {
     state.require_auth()?;
+    verify_identity_bundle(
+        &peer.user_id,
+        &peer.device_id,
+        &peer.x25519_identity_public,
+        &peer.mlkem_identity_public,
+        &peer.ed25519_identity_public,
+        &peer.mldsa_identity_public,
+        &peer.identity_signature,
+    )
+    .map_err(|_| {
+        QGuardError::Crypto(
+            "peer device identity signature failed verification; call refused".to_string(),
+        )
+    })?;
     let info = format!("{KEM_INFO_PREFIX}{call_id}");
-    let (ciphertext, mut shared) =
-        encapsulate(&peer_x25519_public, &peer_mlkem_public, info.as_bytes())?;
+    let (ciphertext, mut shared) = encapsulate(
+        &peer.x25519_identity_public,
+        &peer.mlkem_identity_public,
+        info.as_bytes(),
+    )?;
     let result = derive_call_setup(&shared, "caller", Some(ciphertext));
     shared.zeroize();
     let setup = result?;
-    state.audit_info("call_caller_setup", "Quantum-safe call media key established (caller)");
+    state.audit_info(
+        "call_caller_setup",
+        "Peer identity verified (Ed25519 + ML-DSA-65); quantum-safe call media key established (caller)",
+    );
     Ok(setup)
 }
 
@@ -255,6 +290,36 @@ mod tests {
         assert_eq!(caller.safety_number.split('-').count(), 5);
         s_caller.zeroize();
         s_callee.zeroize();
+    }
+
+    #[test]
+    fn caller_setup_rejects_swapped_peer_kem_keys() {
+        let identity = crate::identity::LocalIdentity::generate("user-1", "Desktop").unwrap();
+        let bundle = identity.public_bundle().unwrap();
+        // The registry-published bundle verifies as-is.
+        verify_identity_bundle(
+            &bundle.user_id,
+            &bundle.device_id,
+            &bundle.x25519_identity_public,
+            &bundle.mlkem_identity_public,
+            &bundle.ed25519_identity_public,
+            &bundle.mldsa_identity_public,
+            &bundle.signature,
+        )
+        .unwrap();
+        // A relay that substitutes its own KEM keys (MITM attempt) must fail the
+        // dual-signature check that gates every outgoing call.
+        let attacker = LocalKemKeypair::generate();
+        assert!(verify_identity_bundle(
+            &bundle.user_id,
+            &bundle.device_id,
+            &attacker.x25519_public,
+            &attacker.mlkem_public,
+            &bundle.ed25519_identity_public,
+            &bundle.mldsa_identity_public,
+            &bundle.signature,
+        )
+        .is_err());
     }
 
     fn watchdog_tmp_dir(tag: &str) -> PathBuf {

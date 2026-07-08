@@ -30,6 +30,23 @@ Messages use a Double Ratchet-style model:
 - AEAD tags are verified before plaintext is returned.
 - Nonces are generated with the OS CSPRNG.
 
+## Call Media Encryption
+
+Voice/video calls are end-to-end encrypted independently of the transport
+(WebRTC/DTLS-SRTP is treated as untrusted):
+
+1. The caller loads the callee device's published identity bundle and the Rust
+   core verifies its Ed25519 + ML-DSA-65 dual signature before any key
+   material is derived — a relay that swaps KEM keys cannot complete a call.
+2. The caller encapsulates against the verified X25519 + ML-KEM-1024 identity
+   keys (HKDF-SHA3-256 binds the shared secret to the call ID).
+3. Two directional AES-256-GCM frame keys are derived (caller→callee,
+   callee→caller); every media frame is sealed in an RTCRtpScriptTransform
+   worker with a per-frame counter nonce before it reaches the transport.
+4. Both ends derive the same short authentication string (SAS) from the shared
+   secret; the UI requires verbal/typed confirmation so a full relay
+   compromise is still detectable out of band.
+
 ## File Encryption
 
 Files use envelope encryption:
