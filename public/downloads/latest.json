@@ -1,11 +1,11 @@
 {
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb202dE1UbzN6Qk1lYW1TeDJvUStvUm9DV3p3S0phNm5TczRkRTB3MmFiQ1VKQjZ3YUJOMjJFSmM0eFQyRUJMYTZRV0hPQXJMMzZ6QVBtQ3g3RTVDbGdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzMTgyNjkzCWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjEuMF94NjQtc2V0dXAuZXhlCmxMRERpQTVPa1BPNjlvL3gwMGpZQys3bW4yU2lITm5qVGZVUm80SlpEbzROWW1yTjBvN0I0WjVOYklYS081S0F3N29jL216bGlnSXkzUFZVc0swN0J3PT0K",
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2dEcmxsQ2w5UTJHWVJISk5MMFRXRFVwaHFYR3g5ckxLbzlvNEdqTXFxL2c1N3FLd0c1R2hqQ3JsaGoxUU1wVktGaHNWVm8xZWlOcEpJbURVQTFLOFEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNDc2OTk0CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjIuMF94NjQtc2V0dXAuZXhlClJJUzhQY3hnRXc3WEEzMlZ5YXdoTXJ6Z1dPRTR3QzZEQWRnL252dTdKOWF0NU5ERGd4OHRkZCtGR002bGdDTFBjUDVwSnhEVjBETmo1d1BwOHk1eENBPT0K",
                                              "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
                                          }
                   },
-    "pub_date":  "2026-07-04T16:31:35Z",
-    "version":  "1.1.0",
-    "notes":  "Security and reliability improvements."
+    "pub_date":  "2026-07-08T02:16:36Z",
+    "version":  "1.2.0",
+    "notes":  "Profile avatars in Secure Chat and calls, quantum-safe call identity verification (anti-MITM), and PIN/password recovery for the Secure Chat and Quantum Vault workspace locks."
 }

@@ -99,6 +99,31 @@ export function useWorkspaceLock(userId: string | null) {
     [],
   );
 
+  // Reset the Secure Chat lock (verifier-only, so no messages are lost). The
+  // caller must re-authenticate the account before invoking this.
+  const resetChatLock = useCallback(async () => {
+    clearChatPlaintextCaches();
+    const result = await safeInvoke<ScopeStatus>("workspace_reset_chat_lock");
+    setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), chat: result }));
+    return result;
+  }, []);
+
+  // Reset the Quantum Vault lock with a fresh Vault Master Key. `recoveryKey`
+  // proves possession of the recovery key; when omitted the caller must have
+  // re-authenticated the account password first (destructive "start fresh").
+  const resetVault = useCallback(
+    async (args: { recoveryKey?: string; method: UnlockMethod; secret: string }) => {
+      const result = await safeInvoke<ScopeStatus>("workspace_reset_vault", {
+        recoveryKey: args.recoveryKey ?? null,
+        method: args.method,
+        secret: args.secret,
+      });
+      setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), vault: result }));
+      return result;
+    },
+    [],
+  );
+
   const lock = useCallback(async (scope: WorkspaceScope) => {
     // Locking chat must also wipe the in-memory decrypted history cache — the
     // Rust side drops its cache too; plaintext never outlives the lock.
@@ -196,6 +221,8 @@ export function useWorkspaceLock(userId: string | null) {
     setup,
     lock,
     lockAll,
+    resetChatLock,
+    resetVault,
     inactivityMinutes,
     setInactivityMinutes,
     ...helpers,

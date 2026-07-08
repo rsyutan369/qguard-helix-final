@@ -8,7 +8,8 @@ import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
-import { useWorkspaceLock, type WorkspaceScope } from "@/lib/use-workspace-lock";
+import { useWorkspaceLock, type UnlockMethod, type WorkspaceScope } from "@/lib/use-workspace-lock";
+import { createEphemeralSupabaseClient } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import { useTheme } from "@/lib/use-theme";
 import LoginPage from "@/pages/LoginPage";
@@ -177,6 +178,18 @@ function ProtectedMessagingApp() {
     // Zero-Trust Workspace Lock: Secure Chat and Quantum Vault require their own
     // password/PIN before the module mounts. While locked, render the gate; the
     // heavy page component only mounts once the scope is unlocked.
+    // Verify the account password WITHOUT touching the live session (ephemeral
+    // client, persistSession: false) — the identity proof that gates a lossless
+    // chat reset and the destructive "start fresh" vault reset.
+    const verifyAccountPassword = async (password: string): Promise<void> => {
+      const email = auth.user?.email;
+      if (!email) throw new Error("No account email is on file for this session.");
+      const ephemeral = createEphemeralSupabaseClient();
+      const { error: authError } = await ephemeral.auth.signInWithPassword({ email, password });
+      await ephemeral.auth.signOut().catch(() => undefined);
+      if (authError) throw new Error("That account password is incorrect.");
+    };
+
     const renderProtected = (scope: WorkspaceScope, pageElement: ReactNode): ReactNode => {
       const scopeStatus = lockState.status?.[scope];
       if (!scopeStatus) return <ModuleFallback />;
@@ -190,6 +203,28 @@ function ProtectedMessagingApp() {
             onUnlock={(method, secret) => lockState.unlock(scope, method, secret)}
             onSetup={(method, secret) => lockState.setup(scope, method, secret)}
             onCancel={() => setPage("dashboard")}
+            onRecoverChat={
+              scope === "chat"
+                ? async (accountPassword: string) => {
+                    await verifyAccountPassword(accountPassword);
+                    await lockState.resetChatLock();
+                  }
+                : undefined
+            }
+            onRecoverVaultWithKey={
+              scope === "vault"
+                ? (recoveryKey: string, method: UnlockMethod, secret: string) =>
+                    lockState.resetVault({ recoveryKey, method, secret })
+                : undefined
+            }
+            onRecoverVaultWithAccount={
+              scope === "vault"
+                ? async (accountPassword: string, method: UnlockMethod, secret: string) => {
+                    await verifyAccountPassword(accountPassword);
+                    await lockState.resetVault({ method, secret });
+                  }
+                : undefined
+            }
           />
         );
       }

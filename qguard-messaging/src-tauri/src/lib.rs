@@ -185,6 +185,8 @@ pub fn run() {
             workspace_unlock,
             workspace_lock,
             workspace_lock_all,
+            workspace_reset_chat_lock,
+            workspace_reset_vault,
             security_verify_fingerprint,
             security_report_key_change,
             security_export_report,

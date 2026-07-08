@@ -15,9 +15,11 @@ use tauri::State;
 use zeroize::Zeroize;
 
 use crate::crypto::kdf::{derive_32_with_salt, sha3_hex};
+use crate::crypto::signatures::VaultSigningKeypair;
 use crate::crypto::symmetric::{self, KEY_SIZE};
+use crate::crypto::{vault_recovery, EncryptedEnvelope};
 use crate::error::{QGuardError, Result};
-use crate::state::{AppState, PersistedWorkspaceScope, WorkspaceCredential};
+use crate::state::{AppState, PersistedVaultMaster, PersistedWorkspaceScope, WorkspaceCredential};
 
 const SCOPE_CHAT: &str = "chat";
 const SCOPE_VAULT: &str = "vault";
@@ -97,6 +99,24 @@ fn derive_verifier(salt: &[u8], secret: &[u8]) -> Result<String> {
 /// HKDF-SHA3-256 unlock key (distinct context from the verifier) that wraps the VMK.
 fn derive_vault_wrap_key(salt: &[u8], secret: &[u8]) -> Result<[u8; KEY_SIZE]> {
     derive_32_with_salt(salt, secret, &crate::security::obf::workspace_vault_unlock_info())
+}
+
+/// AES-256-GCM-wrap a serialized `PersistedVaultMaster` under the secret-derived
+/// unlock key. Shared by vault setup and vault reset so the wrap format stays in
+/// lockstep. The secret is passed as bytes; both the derived key and the plaintext
+/// serialization are zeroized before returning.
+fn wrap_master_under_secret(
+    salt: &[u8],
+    secret: &[u8],
+    master: &PersistedVaultMaster,
+) -> Result<EncryptedEnvelope> {
+    let mut serialized = serde_json::to_vec(master)
+        .map_err(|e| QGuardError::Storage(format!("encode vault master for wrap: {e}")))?;
+    let mut wrap_key = derive_vault_wrap_key(salt, secret)?;
+    let wrapped = symmetric::encrypt(&wrap_key, &serialized, &crate::security::obf::workspace_vault_wrap_aad());
+    wrap_key.zeroize();
+    serialized.zeroize();
+    wrapped
 }
 
 fn credential_for<'a>(scope: &'a PersistedWorkspaceScope, method: &str) -> Option<&'a WorkspaceCredential> {
@@ -344,6 +364,135 @@ pub fn workspace_lock_all(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+/// Reset the Secure Chat lock after the user re-proves their account identity.
+///
+/// SAFE BY DESIGN: the chat scope is a *verifier only* — it gates local access
+/// but does not encrypt any message data (messages decrypt with the device
+/// identity keys, independent of this PIN). Clearing it therefore loses no
+/// conversations. The caller (frontend) must re-authenticate the account
+/// (Supabase sign-in) before invoking this, so a forgotten PIN can be replaced
+/// without weakening security. Also clears any brute-force lockout/lockdown.
+#[tauri::command]
+pub fn workspace_reset_chat_lock(state: State<'_, AppState>) -> Result<ScopeStatus> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    // A fresh scope drops both credentials and all lockout state; the gate then
+    // shows the setup screen so the user picks a new PIN/password.
+    let record = PersistedWorkspaceScope::new(SCOPE_CHAT);
+    state.save_workspace_scope(&user_id, &record)?;
+    state.clear_chat_session();
+    state.mark_workspace_locked(SCOPE_CHAT)?;
+    state.audit_info(
+        "workspace_chat_reset",
+        "Secure Chat lock reset after account re-authentication",
+    );
+    let loaded = state.load_workspace_scope(&user_id, SCOPE_CHAT)?;
+    Ok(scope_status(&state, SCOPE_CHAT, &loaded))
+}
+
+/// Reset the Quantum Vault lock when the PIN/password is forgotten.
+///
+/// The old VMK is wrapped only under the forgotten secret and cannot be
+/// recovered, so this installs a NEW Vault Master Key under a new secret and
+/// unlocks the (now empty) vault. Files encrypted under the OLD VMK are NOT
+/// destroyed — they remain on disk and are recoverable through the recovery-key
+/// decrypt tools, which do not depend on this lock.
+///
+/// Two honest gates, both requiring the user to already be signed in:
+/// * `recovery_key = Some(..)` — verified against the stored recovery verifier
+///   (proves the user holds their recovery key). Preferred path.
+/// * `recovery_key = None` — a "start fresh" reset; the frontend must first
+///   re-authenticate the account password. Old files are only recoverable if
+///   the user still has their recovery key.
+#[tauri::command]
+pub fn workspace_reset_vault(
+    state: State<'_, AppState>,
+    recovery_key: Option<String>,
+    method: String,
+    mut secret: String,
+) -> Result<ScopeStatus> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    if let Err(e) = validate_secret(&method, &secret) {
+        secret.zeroize();
+        return Err(e);
+    }
+
+    // Recovery-key path: prove possession of the recovery key before resetting.
+    if let Some(ref key) = recovery_key {
+        let material = state.load_vault_recovery(&user_id)?.ok_or_else(|| {
+            QGuardError::InvalidInput(
+                "No recovery key is configured for this account.".to_string(),
+            )
+        })?;
+        let root = match vault_recovery::decode_recovery_key(key) {
+            Ok(root) => root,
+            Err(_) => {
+                secret.zeroize();
+                return Err(QGuardError::Trust("That recovery key isn't valid.".to_string()));
+            }
+        };
+        let mut root = root;
+        let verifier = vault_recovery::derive_verifier(&root)?;
+        root.zeroize();
+        if material.verifier.is_empty() || verifier != material.verifier {
+            secret.zeroize();
+            return Err(QGuardError::Trust(
+                "That recovery key doesn't match this account.".to_string(),
+            ));
+        }
+    }
+
+    // Fresh master: a new VMK + new ML-DSA-87 signer, wrapped under the new secret.
+    let new_master = PersistedVaultMaster {
+        version: 1,
+        vmk: symmetric::random_key(),
+        signer: VaultSigningKeypair::generate(),
+        configured_at: Utc::now(),
+    };
+    let salt = random_salt();
+    let verifier = derive_verifier(&salt, secret.as_bytes())?;
+    let wrapped = wrap_master_under_secret(&salt, secret.as_bytes(), &new_master);
+    let wrapped = match wrapped {
+        Ok(w) => w,
+        Err(e) => {
+            secret.zeroize();
+            return Err(e);
+        }
+    };
+    let credential = WorkspaceCredential { salt, verifier, wrapped_master: Some(wrapped) };
+
+    let mut record = PersistedWorkspaceScope::new(SCOPE_VAULT);
+    match method.as_str() {
+        METHOD_PASSWORD => record.password = Some(credential),
+        METHOD_PIN => record.pin = Some(credential),
+        _ => {
+            secret.zeroize();
+            return Err(QGuardError::InvalidInput(format!("unknown unlock method: {method}")));
+        }
+    }
+    secret.zeroize();
+
+    // Legacy keychain VMK (if any) must not linger — the VMK stays password-wrapped.
+    state.delete_vault_master_file(&user_id)?;
+    state.save_workspace_scope(&user_id, &record)?;
+    state.set_vault_session(new_master)?;
+    state.mark_workspace_unlocked(SCOPE_VAULT)?;
+
+    let via = if recovery_key.is_some() { "recovery key" } else { "account re-authentication" };
+    state.audit_info(
+        "workspace_vault_reset",
+        &format!("Quantum Vault lock reset via {via}; new Vault Master Key generated"),
+    );
+    state.touch_telemetry(
+        "vault",
+        "Quantum Vault lock reset — new VMK sealed under the new unlock secret",
+        100,
+    );
+    let loaded = state.load_workspace_scope(&user_id, SCOPE_VAULT)?;
+    Ok(scope_status(&state, SCOPE_VAULT, &loaded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +552,30 @@ mod tests {
         }
         assert!(scope.lockdown);
         assert!(check_lockout(&scope).is_err());
+    }
+
+    #[test]
+    fn reset_wrapped_master_round_trips_only_with_its_secret() {
+        // The vault-reset wrap must behave exactly like the setup wrap: the new
+        // master is recoverable with the new secret and no other.
+        let master = PersistedVaultMaster {
+            version: 1,
+            vmk: symmetric::random_key(),
+            signer: VaultSigningKeypair::generate(),
+            configured_at: Utc::now(),
+        };
+        let salt = random_salt();
+        let secret = b"a-fresh-strong-secret-123";
+        let env = wrap_master_under_secret(&salt, secret, &master).unwrap();
+        let aad = crate::security::obf::workspace_vault_wrap_aad();
+
+        let good = derive_vault_wrap_key(&salt, secret).unwrap();
+        let plaintext = symmetric::decrypt(&good, &env, &aad).unwrap();
+        let restored: PersistedVaultMaster = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(restored.vmk, master.vmk, "reset must preserve the new VMK exactly");
+
+        let bad = derive_vault_wrap_key(&salt, b"the-wrong-secret-000").unwrap();
+        assert!(symmetric::decrypt(&bad, &env, &aad).is_err());
     }
 
     #[test]

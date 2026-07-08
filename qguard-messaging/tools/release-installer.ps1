@@ -38,6 +38,13 @@ if (-not $env:CARGO_TARGET_DIR) {
 }
 $targetDir = $env:CARGO_TARGET_DIR
 
+# npx / node / tauri write normal progress ("Info ...") to STDERR. Under
+# ErrorActionPreference=Stop that becomes a terminating NativeCommandError when
+# run non-interactively, aborting before the exit code is even checked. Drop to
+# Continue for the native build and judge success only by $LASTEXITCODE (which
+# the retry loop already gates on).
+$previousEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $built = $false
 for ($attempt = 1; $attempt -le 4; $attempt++) {
   Write-Host "=== tauri build attempt $attempt ==="
@@ -46,6 +53,7 @@ for ($attempt = 1; $attempt -le 4; $attempt++) {
   Write-Host "Build failed (often a transient AV file lock) - retrying in 10s..."
   Start-Sleep -Seconds 10
 }
+$ErrorActionPreference = $previousEap
 if (-not $built) { throw "tauri build failed after 4 attempts" }
 
 $conf = Get-Content (Join-Path $root "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json
