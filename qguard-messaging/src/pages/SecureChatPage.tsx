@@ -1767,24 +1767,43 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         // first_read_at doubles as the burn trigger for ephemeral messages.
         // An already-recorded first_read_at is preserved so re-renders never
         // reset or bump the original read timestamp.
-        const existingReadAt = existingStates?.get(item.client_message_id)?.first_read_at ?? null;
+        const existing = existingStates?.get(item.client_message_id);
+        const existingReadAt = existing?.first_read_at ?? null;
         const markAsRead = item.sender_user_id !== userId && !(item.view_once && item.attachment);
+        const nextReadAt = existingReadAt ?? (markAsRead ? readAt : null);
+        const nextVerification = item.authenticated ? "valid" : "tampered";
+        // Only rows whose persisted state actually CHANGED are written. Writing
+        // unchanged rows (just bumping updated_at) fired this client's own
+        // messaging_message_user_states realtime subscription, which re-ran the
+        // whole conversation load — a write-on-read feedback loop that kept the
+        // chat re-decrypting forever and starved sends. Comparing against the
+        // states we just loaded makes the write a no-op once reads are recorded,
+        // so the loop terminates after a single cycle.
+        const changed =
+          nextReadAt !== existingReadAt ||
+          nextVerification !== (existing?.verification_state ?? "pending") ||
+          item.threat.score !== (existing?.threat_score ?? 0);
         return {
-          user_id: userId,
-          conversation_id: activeConversation.id,
-          client_message_id: item.client_message_id,
-          first_read_at: existingReadAt ?? (markAsRead ? readAt : null),
-          verification_state: item.authenticated ? "valid" : "tampered",
-          threat_score: item.threat.score,
-          threat_flags: item.threat.flags,
-          proof: {
-            suite: "X25519 + ML-KEM-1024, HKDF-SHA3-256, AES-256-GCM, Ed25519 + ML-DSA-65",
-            replay_protected: item.replay_protected,
-            local_only_plaintext: true,
+          changed,
+          row: {
+            user_id: userId,
+            conversation_id: activeConversation.id,
+            client_message_id: item.client_message_id,
+            first_read_at: nextReadAt,
+            verification_state: nextVerification,
+            threat_score: item.threat.score,
+            threat_flags: item.threat.flags,
+            proof: {
+              suite: "X25519 + ML-KEM-1024, HKDF-SHA3-256, AES-256-GCM, Ed25519 + ML-DSA-65",
+              replay_protected: item.replay_protected,
+              local_only_plaintext: true,
+            },
+            updated_at: readAt,
           },
-          updated_at: new Date().toISOString(),
         };
-      });
+      })
+      .filter((entry) => entry.changed)
+      .map((entry) => entry.row);
     if (rows.length === 0) return;
     await supabase
       .from("messaging_message_user_states")
@@ -2911,7 +2930,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const threat = options.controlType ? emptyThreat() : assessThreatLocally(parseSecurePlaintext(plaintext).body);
     const lifecycle = options.lifecycle ?? parseSecurePlaintext(plaintext).lifecycle;
 
-    await recordCryptoTelemetry({
+    // Telemetry is audit-only and must never sit on the send critical path — a
+    // couple of awaited Supabase writes here made every send wait on two extra
+    // network round-trips. Fire-and-forget so the message seals immediately.
+    void recordCryptoTelemetry({
       userId,
       deviceId: senderDevice.device_id,
       scope: "message",
@@ -2920,7 +2942,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       progress: 15,
       status: "started",
       metadata: { conversation_id: activeConversation.id, recipients: deliveryRecipientDevices.length, client_message_id: clientMessageId },
-    });
+    }).catch(() => undefined);
     for (const recipientDevice of deliveryDevices) {
       const isLocalArchive = recipientDevice.user_id === userId;
       const oneTimePrekey = null;
@@ -2985,7 +3007,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       if (error) throw error;
     }
 
-    await recordCryptoTelemetry({
+    void recordCryptoTelemetry({
       userId,
       deviceId: senderDevice.device_id,
       scope: "message",
@@ -2994,7 +3016,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       progress: 100,
       status: "complete",
       metadata: { conversation_id: activeConversation.id, recipients: deliveryRecipientDevices.length, client_message_id: clientMessageId },
-    });
+    }).catch(() => undefined);
 
     const cachedAt = new Date().toISOString();
     const control = parseSecureControl(plaintext);

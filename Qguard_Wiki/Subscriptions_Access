@@ -1,0 +1,351 @@
+Implement Subscription-Based Access Control (RBAC) & Feature Gating
+Objective
+
+Implement a production-ready subscription and authorization system for the QGuard Helix Platform that securely controls access to pages, dashboards, APIs, features, modules, downloads, and capabilities based on the user's active subscription plan.
+
+The subscription system must be enforced both on the frontend and backend. Frontend route protection alone is insufficient—every protected API and server action must validate the user's subscription before granting access.
+
+Subscription Plans
+
+Implement the following subscription tiers:
+
+STARTER
+BASIC
+PRO
+ELITE
+
+Each tier inherits access from the previous tier unless otherwise specified.
+
+Authentication & Subscription Verification
+
+Each authenticated user must have:
+
+Unique User ID
+Email Address
+Subscription ID
+Customer ID
+Subscription Plan
+Subscription Status
+Billing Cycle
+Subscription Start Date
+Subscription Expiration Date
+Auto-Renew Status
+Payment Provider
+Payment Status
+
+Example:
+
+User
+ ├── User ID
+ ├── Email
+ ├── Customer ID
+ ├── Subscription ID
+ ├── Plan
+ ├── Status
+ ├── Billing Cycle
+ ├── Expires At
+ ├── Auto Renew
+ └── Payment Provider
+
+Subscription validation should always be performed using the authenticated user's account rather than relying solely on client-side state.
+
+Subscription Status
+
+Support the following states:
+
+Active
+Trial
+Pending Payment
+Grace Period
+Past Due
+Suspended
+Cancelled
+Expired
+
+Only Active subscriptions should unlock protected features.
+
+Grace Period behavior should be configurable.
+
+Access Control Model
+
+Implement role-based subscription authorization.
+
+Starter
+     │
+     ▼
+Basic
+     │
+     ▼
+Pro
+     │
+     ▼
+Elite
+
+Each higher tier inherits the permissions of lower tiers.
+
+Users Without an Active Subscription
+
+If a user has no active subscription:
+
+Prevent access to all dashboards
+Prevent access to all platform modules
+Prevent access to all APIs
+Prevent access to protected downloads
+Redirect protected routes to the Pricing page
+Display an "Upgrade Required" screen with a call-to-action to subscribe
+
+No premium functionality should be accessible until a valid subscription has been verified.
+
+STARTER Plan Access
+
+The STARTER subscription is intended exclusively for QGuard Messaging.
+
+Users may access only:
+
+QGuard Messaging landing page
+Secure Chat
+Quantum Vault
+Messaging application download
+Desktop installer download
+Mobile installer download (when available)
+
+Create a dedicated Starter Dashboard.
+
+The Starter Dashboard should include:
+
+Profile
+User information
+Avatar
+Email
+Account status
+Subscription
+Current plan
+Monthly / Annual billing
+Renewal date
+Payment status
+Subscription status
+Auto-renew toggle
+Cancel subscription
+Reactivate subscription
+Upgrade plan
+Switch Monthly ⇄ Annual
+Downloads
+
+Display only:
+
+Windows installer
+macOS installer
+Linux installer
+Android APK
+iOS download/TestFlight (or App Store link)
+
+No other platform pages or modules should be accessible to STARTER users.
+
+BASIC Plan Access
+
+The BASIC plan includes:
+
+QGuard Messaging
+All STARTER functionality
+Quantum Readiness & Assessment Engine
+
+Grant access to:
+
+Dashboard
+Executive Dashboard
+Quantum Readiness Assessment Engine
+Assessment Reports
+AI Executive Advisor
+AI Migration Advisor
+Migration
+
+Grant access to:
+
+Migration Planner
+Migration Sandbox
+
+No access should be granted to Discovery, Operations, Intelligence, Trust Center, PQAuth, or other enterprise modules.
+
+PRO Plan Access
+
+The PRO plan includes everything in STARTER and BASIC, plus:
+
+Discovery
+Asset Discovery
+Crypto Discovery
+CBOM Explorer
+Crypto Inventory
+Operations
+Migration Timeline
+Live Migration Operations
+PQC Orchestration
+Crypto Agility Engine
+Ecosystem & Supply Chain
+Vendor Readiness Center
+Supply Chain Readiness
+Trust Chain Analysis
+Intelligence
+Runtime Cryptographic Intelligence
+Behavioral Analytics
+Quantum Risk Intelligence
+PQAuth
+PQAuth Dashboard
+Identity Discovery
+Token Intelligence
+JWT Intelligence
+Observability
+Runtime Telemetry
+Monitoring
+Metrics
+Alerts
+Trust Center
+Trust Dashboard
+Trust Reports
+Security Status
+ELITE Plan Access
+
+The ELITE plan grants unrestricted access to the entire QGuard Helix platform.
+
+This includes:
+
+All STARTER features
+All BASIC features
+All PRO features
+All enterprise modules
+Future premium modules
+Administrative capabilities (where applicable)
+
+ELITE users should automatically receive access to any newly released premium features unless explicitly configured otherwise.
+
+Route Protection
+
+Every protected route must verify the user's subscription before rendering.
+
+Example:
+
+User Requests Route
+        │
+        ▼
+Authenticate User
+        │
+        ▼
+Validate Subscription
+        │
+        ▼
+Check Module Permissions
+        │
+ ┌──────┴──────┐
+ │             │
+Allow      Redirect to Pricing
+
+Both client-side navigation and server-side requests must enforce this logic.
+
+Backend Authorization
+
+Every protected API endpoint must validate:
+
+Authenticated user
+Subscription status
+Subscription tier
+Module permission
+
+Never rely solely on the frontend for authorization.
+
+Permission Matrix
+
+Implement a centralized permission system.
+
+Example:
+
+Starter
+
+✔ Messaging
+✔ Quantum Vault
+✔ Downloads
+
+Basic
+
+✔ Starter
+✔ Assessment Engine
+✔ Reports
+✔ Migration Planner
+✔ Migration Sandbox
+
+Pro
+
+✔ Basic
+✔ Discovery
+✔ Operations
+✔ Ecosystem
+✔ Intelligence
+✔ PQAuth
+✔ Observability
+✔ Trust Center
+
+Elite
+
+✔ Everything
+
+Permissions should be configurable and easy to extend.
+
+Subscription Management
+
+Allow users to:
+
+View current subscription
+Upgrade
+Downgrade
+Renew
+Cancel
+Resume
+Switch Monthly ⇄ Annual
+View invoices
+View billing history
+Update payment method
+Manage auto-renewal
+UI Requirements
+
+Display the current subscription throughout the application.
+
+Examples:
+
+Starter Badge
+Basic Badge
+Pro Badge
+Elite Badge
+
+If a user attempts to access a restricted feature:
+
+Blur or lock the feature
+Display a lock icon
+Show the required subscription tier
+Provide an "Upgrade Plan" button
+
+The experience should encourage upgrades without exposing unauthorized functionality.
+
+Security Requirements
+
+Implement enterprise-grade security controls:
+
+Server-side authorization
+JWT/session validation
+Secure subscription verification
+Protected download endpoints
+API permission checks
+Audit logging for authorization decisions
+Graceful handling of expired subscriptions
+
+Users must never be able to bypass feature restrictions by manipulating frontend code or API requests.
+
+Success Criteria
+
+The implementation is complete only when:
+
+✅ Users without an active subscription cannot access protected pages, modules, APIs, or downloads.
+✅ STARTER users can access only the QGuard Messaging dashboard and messaging-related downloads.
+✅ BASIC users can access STARTER features plus the Quantum Readiness & Assessment Engine, Migration Planner, and Migration Sandbox.
+✅ PRO users inherit STARTER and BASIC access and additionally gain access to Discovery, Operations, Ecosystem & Supply Chain, Intelligence, PQAuth, Observability, and Trust Center.
+✅ ELITE users have unrestricted access to all current and future platform modules.
+✅ Every protected frontend route and backend API enforces subscription validation.
+✅ The permission system is centralized, extensible, maintainable, and production-ready.
+✅ The solution is secure, scalable, and suitable for enterprise customer deployment.

@@ -5,6 +5,7 @@ import OnboardingTour from "@/components/onboarding/OnboardingTour";
 import { CallProvider } from "@/components/call/CallProvider";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
@@ -292,7 +293,9 @@ function ProtectedMessagingApp() {
             onStartTour={onboarding.replay}
           />
           <main className="min-h-0 flex-1 overflow-y-auto p-5">
-            <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
+            <ErrorBoundary resetKey={page}>
+              <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
+            </ErrorBoundary>
           </main>
         </div>
         <OnboardingTour

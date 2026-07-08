@@ -5,8 +5,8 @@
  * CyberBackground particle field. Copy is drawn from the verified marketing docs
  * in docs/secure-chat and docs/quantum-vault.
  */
-import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
 import {
   ArrowRight,
@@ -15,14 +15,19 @@ import {
   Github,
   Globe,
   Linkedin,
+  Loader2,
   Lock,
   MessageSquareLock,
   ShieldCheck,
+  Sparkles,
   Twitter,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { CyberBackground } from '../../components/CyberBackground';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/contexts/auth-context';
+import { useSubscription } from '@/hooks/use-subscription';
 
 /* ---------------------------------------------------------------- motion ---- */
 
@@ -138,24 +143,180 @@ export const MESSAGING_INSTALLER = {
   requirements: 'Windows 10/11 · 64-bit',
 };
 
-/** Primary "Download for Windows" CTA used on all QGuard Messaging pages. */
-export function DownloadButton({ className }: { className?: string }) {
+/**
+ * Plans shown in the download gate modal. Prices mirror the landing pricing
+ * section; each choice routes into the existing auth-gated checkout → PayPal
+ * flow (`/checkout?plan=&cycle=`).
+ */
+const DOWNLOAD_PLANS = [
+  { name: 'Starter', priceMonthly: 3, priceYearly: 3, tagline: 'QGuard Messaging — Secure Chat & Quantum Vault' },
+  { name: 'Basic', priceMonthly: 8, priceYearly: 5, tagline: '+ Quantum Readiness Assessment Engine, Migration Planner & Sandbox', featured: true },
+  { name: 'Pro', priceMonthly: 30, priceYearly: 20, tagline: '+ Discovery, Operations, Ecosystem, Intelligence, PQAuth, Observability, Trust' },
+  { name: 'Elite', priceMonthly: 199, priceYearly: 150, tagline: 'Everything — all modules' },
+] as const;
+
+/** Actually fetch the installer (only reached once the user is entitled). */
+function startInstallerDownload() {
+  const anchor = document.createElement('a');
+  anchor.href = MESSAGING_INSTALLER.href;
+  anchor.download = '';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+/**
+ * Plan-selection modal: shows every plan with a monthly/annual toggle and sends
+ * the choice to the auth-gated checkout, which redirects to PayPal to pay before
+ * access unlocks. Reused by the download gate and the Starter dashboard upgrade
+ * button — copy is configurable so it reads correctly in each context.
+ */
+export function PlanGateModal({
+  onClose,
+  badge = 'Choose a plan to download',
+  title = 'Subscribe to unlock QGuard Messaging',
+  subtitle = 'An active subscription (Starter or above) is required to download and use the app.',
+}: {
+  onClose: () => void;
+  badge?: string;
+  title?: string;
+  subtitle?: string;
+}) {
+  const [cycle, setCycle] = useState<'monthly' | 'annual'>('monthly');
+  const choose = (plan: string) => {
+    window.location.href = `/checkout?plan=${encodeURIComponent(plan)}&cycle=${cycle}`;
+  };
   return (
-    <a
-      href={MESSAGING_INSTALLER.href}
-      download
-      title={`QGuard Messaging v${MESSAGING_INSTALLER.version} · ${MESSAGING_INSTALLER.requirements}`}
-      className={cn(
-        'group inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-sm font-bold uppercase tracking-wide !text-white [&_*]:!text-white no-underline shadow-[0_12px_34px_rgba(37,99,235,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0',
-        className,
-      )}
-    >
-      <Download className="h-4 w-4 transition-transform group-hover:translate-y-0.5" />
-      Download for Windows
-      <span className="ml-1 hidden rounded bg-white/15 px-2 py-0.5 font-mono text-[10px] font-bold normal-case tracking-normal sm:inline">
-        v{MESSAGING_INSTALLER.version} · ~{MESSAGING_INSTALLER.sizeMb} MB
-      </span>
-    </a>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="relative max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl sm:p-8"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button type="button" onClick={onClose} aria-label="Close" className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">
+          <X className="h-5 w-5" />
+        </button>
+
+        <div className="text-center">
+          <div className="mx-auto inline-flex items-center gap-1.5 rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-[11px] font-black uppercase tracking-wide text-cyan-700">
+            <Sparkles className="h-3 w-3" /> {badge}
+          </div>
+          <h2 className="mt-3 text-2xl font-black tracking-tight text-slate-900">{title}</h2>
+          <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
+        </div>
+
+        <div className="mt-5 flex justify-center">
+          <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-1" role="radiogroup" aria-label="Billing cycle">
+            {(['monthly', 'annual'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={cycle === option}
+                onClick={() => setCycle(option)}
+                className={cn(
+                  'rounded-full px-4 py-1.5 text-xs font-bold capitalize transition',
+                  cycle === option ? 'bg-blue-600 text-slate-50 shadow' : 'text-slate-500 hover:text-slate-800',
+                )}
+              >
+                {option}{option === 'annual' ? ' · save' : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
+          {DOWNLOAD_PLANS.map((plan) => {
+            const price = cycle === 'annual' ? plan.priceYearly : plan.priceMonthly;
+            const featured = 'featured' in plan && plan.featured;
+            return (
+              <div
+                key={plan.name}
+                className={cn(
+                  'flex flex-col rounded-xl border p-5 transition',
+                  featured ? 'border-blue-300 bg-blue-50/50 ring-1 ring-blue-200' : 'border-slate-200 bg-white',
+                )}
+              >
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm font-black uppercase tracking-wide text-slate-900">{plan.name}</span>
+                  {featured && <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-black uppercase text-slate-50">Popular</span>}
+                </div>
+                <div className="mt-2 flex items-end gap-1">
+                  <span className="text-3xl font-black text-slate-900">${price}</span>
+                  <span className="pb-1 text-xs font-semibold text-slate-400">/mo{cycle === 'annual' ? ', billed yearly' : ''}</span>
+                </div>
+                <p className="mt-2 flex-1 text-xs leading-relaxed text-slate-500">{plan.tagline}</p>
+                <button
+                  type="button"
+                  onClick={() => choose(plan.name)}
+                  className={cn(
+                    'mt-4 inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2.5 text-xs font-black uppercase tracking-wide transition',
+                    featured ? 'bg-blue-600 text-slate-50 hover:bg-blue-700' : 'border border-slate-300 text-slate-800 hover:border-blue-400 hover:text-blue-700',
+                  )}
+                >
+                  Choose {plan.name} <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <p className="mt-5 flex items-center justify-center gap-1.5 text-center text-[11px] text-slate-400">
+          <Lock className="h-3 w-3" /> Secure checkout via PayPal. Your subscription unlocks the download instantly after payment.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Primary "Download for Windows" CTA used on all QGuard Messaging pages.
+ * Feature-gated: the installer only downloads for a signed-in user with an
+ * active subscription. Guests are sent to login; signed-in users without a plan
+ * see the plan-selection modal (→ PayPal).
+ */
+export function DownloadButton({ className }: { className?: string }) {
+  const { user } = useAuth();
+  const subscription = useSubscription();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+
+  const gating = Boolean(user) && subscription.loading;
+
+  const handleClick = () => {
+    if (!user) {
+      // Send guests to sign in / register, returning to this page afterwards.
+      navigate(`/login?next=${encodeURIComponent(location.pathname)}`);
+      return;
+    }
+    if (subscription.loading) return; // entitlement still resolving
+    if (!subscription.isActive) {
+      setPlanModalOpen(true);
+      return;
+    }
+    startInstallerDownload();
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={gating}
+        title={`QGuard Messaging v${MESSAGING_INSTALLER.version} · ${MESSAGING_INSTALLER.requirements}`}
+        className={cn(
+          'group inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-sm font-bold uppercase tracking-wide !text-white [&_*]:!text-white no-underline shadow-[0_12px_34px_rgba(37,99,235,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 disabled:cursor-wait disabled:opacity-70',
+          className,
+        )}
+      >
+        {gating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4 transition-transform group-hover:translate-y-0.5" />}
+        Download for Windows
+        <span className="ml-1 hidden rounded bg-white/15 px-2 py-0.5 font-mono text-[10px] font-bold normal-case tracking-normal sm:inline">
+          v{MESSAGING_INSTALLER.version} · ~{MESSAGING_INSTALLER.sizeMb} MB
+        </span>
+      </button>
+      {planModalOpen && <PlanGateModal onClose={() => setPlanModalOpen(false)} />}
+    </>
   );
 }
 

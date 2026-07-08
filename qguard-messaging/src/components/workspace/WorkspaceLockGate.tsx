@@ -78,19 +78,6 @@ export function WorkspaceLockGate(props: {
   const recoverySupported =
     scope === "chat" ? Boolean(props.onRecoverChat) : Boolean(props.onRecoverVaultWithKey || props.onRecoverVaultWithAccount);
 
-  if (view === "recover" && recoverySupported) {
-    return (
-      <WorkspaceRecoveryPanel
-        scope={scope}
-        recoveryEnabled={props.recoveryEnabled}
-        onBack={() => setView("unlock")}
-        onRecoverChat={props.onRecoverChat}
-        onRecoverVaultWithKey={props.onRecoverVaultWithKey}
-        onRecoverVaultWithAccount={props.onRecoverVaultWithAccount}
-      />
-    );
-  }
-
   // Tick once a second so the lockout countdown stays live.
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -144,6 +131,22 @@ export function WorkspaceLockGate(props: {
           { label: "End-to-end Encrypted", tone: "ok" },
           { label: props.inactivityMinutes > 0 ? "Auto-Lock Enabled" : "Auto-Lock Off", tone: props.inactivityMinutes > 0 ? "ok" : "warn" },
         ];
+
+  // Recovery view — placed AFTER every hook above so switching views never
+  // changes the hook count (an early return before the hooks violates the
+  // Rules of Hooks and blanks the whole app).
+  if (view === "recover" && recoverySupported) {
+    return (
+      <WorkspaceRecoveryPanel
+        scope={scope}
+        recoveryEnabled={props.recoveryEnabled}
+        onBack={() => setView("unlock")}
+        onRecoverChat={props.onRecoverChat}
+        onRecoverVaultWithKey={props.onRecoverVaultWithKey}
+        onRecoverVaultWithAccount={props.onRecoverVaultWithAccount}
+      />
+    );
+  }
 
   return (
     <div className="flex min-h-full items-center justify-center p-4">

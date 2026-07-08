@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import { PlanGateModal } from '@/app/qguard-messaging/_shared'
 import {
   AlertTriangle,
   ArrowRight,
@@ -345,7 +346,7 @@ function PaymentMethodModal({
   )
 }
 
-function SubscriptionOverview({ billing, openAction, onCompare }: { billing: BillingBundle; openAction: (action: PendingAction) => void; onCompare: () => void }) {
+function SubscriptionOverview({ billing, openAction, onCompare, onUpgrade }: { billing: BillingBundle; openAction: (action: PendingAction) => void; onCompare: () => void; onUpgrade: () => void }) {
   const { subscription, usage } = billing
   const topMetrics = usage.metrics.filter((metric) => ['api_requests', 'scans', 'vault_storage', 'generated_keys'].includes(metric.key))
   const cycleTarget = subscription.billingCycle === 'monthly' ? 'annual' : 'monthly'
@@ -375,13 +376,7 @@ function SubscriptionOverview({ billing, openAction, onCompare }: { billing: Bil
             type="button"
             className={primaryButtonClass}
             disabled={!billing.permissions.canManageBilling || subscription.currentPlan === 'Elite'}
-            onClick={() => openAction({
-              action: 'upgrade',
-              plan: nextPlan(subscription.currentPlan),
-              billingCycle: subscription.billingCycle,
-              title: `Upgrade to ${nextPlan(subscription.currentPlan)}`,
-              description: 'A secure provider checkout session will be created for paid upgrades.',
-            })}
+            onClick={onUpgrade}
           >
             <Sparkles className="h-3.5 w-3.5" />
             Upgrade
@@ -844,6 +839,7 @@ export default function BillingTab({
   onNotice: (message: string) => void
 }) {
   const [compareOpen, setCompareOpen] = useState(false)
+  const [planGateOpen, setPlanGateOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null)
   const [editingMethod, setEditingMethod] = useState<BillingPaymentMethod | null>(null)
 
@@ -900,6 +896,10 @@ export default function BillingTab({
     )
   }
 
+  // Basic / Pro get a lean billing tab — the enterprise usage, notification,
+  // compliance, and quick-links panels are hidden for them and kept for Elite.
+  const showEnterpriseBillingPanels = billing.subscription.currentPlan === 'Elite'
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gold/15 bg-[#07101e]/70 p-4">
@@ -933,47 +933,57 @@ export default function BillingTab({
         </div>
       )}
 
-      <SubscriptionOverview billing={billing} openAction={setPendingAction} onCompare={() => setCompareOpen(true)} />
+      <SubscriptionOverview billing={billing} openAction={setPendingAction} onCompare={() => setCompareOpen(true)} onUpgrade={() => setPlanGateOpen(true)} />
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <PaymentMethodsSection
-          methods={billing.paymentMethods}
-          providerConfigured={billing.providerStatus.stripeConfigured}
-          saving={saving}
-          canManage={billing.permissions.canManageBilling}
-          onSetup={setupPaymentMethod}
-          onSetDefault={(method) => onUpdatePaymentMethod(method.id, { isDefault: true }).then(() => onNotice('Default payment method updated.'))}
-          onRemove={(method) => onRemovePaymentMethod(method.id).then(() => onNotice('Payment method removed.'))}
-          onEdit={setEditingMethod}
-        />
-
-        <Panel>
-          <SectionTitle icon={KeyRound} title="Quick Links" />
-          <div className="space-y-3">
-            {[
-              ['/dashboard/scanner', 'Review scan quota and scanner jobs'],
-              ['/dashboard/vault', 'Inspect Quantum Vault storage'],
-              ['/dashboard/qrng', 'Review QRNG key usage'],
-              ['/dashboard/runtime-telemetry', 'Monitor runtime telemetry'],
-            ].map(([href, label]) => (
-              <Link key={href} to={href} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-3 text-sm font-bold text-white/70 transition hover:border-gold/30 hover:text-gold">
-                {label}
-                <ExternalLink className="h-3.5 w-3.5" />
-              </Link>
-            ))}
-          </div>
-        </Panel>
-      </div>
-
-      <UsageAnalytics billing={billing} />
+      <PaymentMethodsSection
+        methods={billing.paymentMethods}
+        providerConfigured={billing.providerStatus.stripeConfigured}
+        saving={saving}
+        canManage={billing.permissions.canManageBilling}
+        onSetup={setupPaymentMethod}
+        onSetDefault={(method) => onUpdatePaymentMethod(method.id, { isDefault: true }).then(() => onNotice('Default payment method updated.'))}
+        onRemove={(method) => onRemovePaymentMethod(method.id).then(() => onNotice('Payment method removed.'))}
+        onEdit={setEditingMethod}
+      />
 
       <InvoicesSection invoices={billing.invoices} saving={saving} onDownload={download} />
 
-      <NotificationsSection notifications={billing.notifications} settings={billing.notificationSettings} saving={saving} onSave={onUpdateNotifications} />
+      {showEnterpriseBillingPanels && (
+        <>
+          <UsageAnalytics billing={billing} />
 
-      <SecurityCompliance billing={billing} />
+          <NotificationsSection notifications={billing.notifications} settings={billing.notificationSettings} saving={saving} onSave={onUpdateNotifications} />
+
+          <SecurityCompliance billing={billing} />
+
+          <Panel>
+            <SectionTitle icon={KeyRound} title="Quick Links" />
+            <div className="space-y-3">
+              {[
+                ['/dashboard/scanner', 'Review scan quota and scanner jobs'],
+                ['/dashboard/vault', 'Inspect Quantum Vault storage'],
+                ['/dashboard/qrng', 'Review QRNG key usage'],
+                ['/dashboard/runtime-telemetry', 'Monitor runtime telemetry'],
+              ].map(([href, label]) => (
+                <Link key={href} to={href} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-3 text-sm font-bold text-white/70 transition hover:border-gold/30 hover:text-gold">
+                  {label}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Link>
+              ))}
+            </div>
+          </Panel>
+        </>
+      )}
 
       {compareOpen && <PlanComparisonModal plans={billing.planCatalog} currentPlan={billing.subscription.currentPlan} onClose={() => setCompareOpen(false)} />}
+      {planGateOpen && (
+        <PlanGateModal
+          onClose={() => setPlanGateOpen(false)}
+          badge="Upgrade your plan"
+          title="Choose a new plan"
+          subtitle="Pick a plan below — you'll be redirected to PayPal to complete payment before the new features unlock."
+        />
+      )}
       {pendingAction && <ConfirmModal pending={pendingAction} saving={saving} onConfirm={confirmAction} onClose={() => setPendingAction(null)} />}
       {editingMethod && (
         <PaymentMethodModal

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSearchParams } from 'react-router-dom';
+import { useSubscription } from '@/hooks/use-subscription';
+import { tierMeets } from '@/lib/subscription-access';
+import { isOwnerEmail } from '@/lib/admin-access';
 import {
   Play, Pause, Shield, AlertTriangle, Activity, Terminal,
   Radio, Target, Search, ChevronRight, CheckCircle2, XCircle,
@@ -797,6 +800,11 @@ export default function ScannerDashboard() {
   const requestedTab = scannerTabFromParam(searchParams.get('tab'));
   const { session, user } = useAuth();
 
+  // Agent Collector Scanners are a PRO+ capability. Basic can run scans and view
+  // findings, but not the agent-collector tab or its API. Owner is always Elite.
+  const subscription = useSubscription();
+  const canUseAgents = isOwnerEmail(user?.email) || (subscription.isActive && tierMeets(subscription.tier, 'pro'));
+
   // Floating notifications
   const [toast, setToast] = useState<string | null>(null);
   const showToast = useCallback((msg: string) => {
@@ -1015,11 +1023,19 @@ export default function ScannerDashboard() {
 
   useEffect(() => {
     fetchHistory();
-    fetchAgents();
-  }, [fetchAgents, fetchHistory]);
+    if (canUseAgents) fetchAgents();
+  }, [fetchAgents, fetchHistory, canUseAgents]);
+
+  // A Basic user who deep-links ?tab=agents is bounced to the scanner tab once
+  // the entitlement resolves (the tab is also hidden from the tab bar below).
+  useEffect(() => {
+    if (activeTab === 'agents' && !canUseAgents && !subscription.loading) {
+      setActiveTab('setup');
+    }
+  }, [activeTab, canUseAgents, subscription.loading]);
 
   useEffect(() => {
-    if (!session?.access_token || !['agents', 'settings'].includes(activeTab)) {
+    if (!session?.access_token || !canUseAgents || !['agents', 'settings'].includes(activeTab)) {
       setAgentSyncConnected(false);
       return;
     }
@@ -2447,7 +2463,7 @@ npm run agent:watch`;
           { id: 'overview' as TabId, label: 'Live Dashboard' },
           { id: 'findings' as TabId, label: `Findings (${findings.length})` },
           { id: 'logs' as TabId, label: 'Telemetry' },
-        ].map((tab) => (
+        ].filter((tab) => tab.id !== 'agents' || canUseAgents).map((tab) => (
           <button
             key={tab.id}
             onClick={() => handleTabSelect(tab.id)}
@@ -2763,7 +2779,7 @@ npm run agent:watch`;
       </div>
       )}
 
-      {activeTab === 'agents' && (
+      {activeTab === 'agents' && canUseAgents && (
         <div className="space-y-6">
           {agentsError && (
             <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-300 flex items-start gap-3">

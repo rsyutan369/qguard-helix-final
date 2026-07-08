@@ -1,0 +1,305 @@
+Build Native Android & iOS Versions of QGuard Messaging
+Objective
+
+Design, build, and productionize native-quality Android and iOS versions of the QGuard Messaging application so users can securely install and use the application on their mobile devices.
+
+The mobile applications must provide the same security posture, user experience, and post-quantum capabilities as the desktop application while following Android and Apple platform best practices.
+
+The final applications must be suitable for deployment to:
+
+Google Play Store
+Apple App Store
+Primary Goals
+
+Build a production-ready mobile application that is:
+
+Enterprise-grade
+Lightweight
+Responsive
+Mobile-first
+Highly optimized
+Secure by default
+Easy to use
+Battery efficient
+Offline-capable where appropriate
+Fully production deployable
+
+The mobile application should feel like a premium messaging application comparable to Signal, WhatsApp, or Proton Mail while incorporating QGuard's Post-Quantum Cryptography stack.
+
+Platform Support
+
+Develop and maintain support for:
+
+Android (latest SDK)
+iPhone (latest iOS)
+Tablet layouts where appropriate
+Dark Mode
+Light Mode
+Feature Parity
+
+Ensure that all existing desktop features are fully implemented and supported on mobile.
+
+This includes, but is not limited to:
+
+Quantum Messaging
+End-to-End Encrypted Messaging
+Post-Quantum Encryption
+Hybrid Classical + PQC Support
+One-to-One Chat
+Group Chat
+Voice Calls
+Video Calls
+Secure File Sharing
+Disappearing Messages
+Message Recall
+Read Receipts
+Typing Indicators
+Multi-device Trust
+Contact Verification
+QR Device Pairing
+Quantum Vault
+
+Implement the complete Quantum Vault experience on mobile.
+
+Support:
+
+Local encrypted vault
+Strictly on-device storage
+Folder encryption
+File encryption
+Photo encryption
+Video encryption
+Document encryption
+Recovery key generation
+Vault backup
+Vault restore
+Vault locking
+Biometric unlock
+Secure export/import
+
+No user data should leave the device unless explicitly synchronized through an encrypted service.
+
+Post-Quantum Cryptography
+
+Ensure all mobile cryptographic operations use the same mandatory security architecture as the desktop version.
+
+Support:
+
+ML-KEM-1024
+ML-DSA
+AES-256-GCM
+SHA3-256
+HKDF-SHA3
+Hybrid cryptography
+Crypto-agility architecture
+Perfect Forward Secrecy
+Secure key rotation
+
+The mobile applications must never fall back to weaker cryptography unless explicitly allowed by policy.
+
+Mobile UX Requirements
+
+The application should be optimized for mobile usability.
+
+Implement:
+
+Smooth animations
+Native navigation
+Gesture support
+Pull-to-refresh
+Swipe actions
+Responsive layouts
+Tablet optimization
+Fast startup
+Instant screen transitions
+Minimal battery consumption
+Efficient memory usage
+Authentication
+
+Implement a secure authentication flow.
+
+Support:
+
+Login
+Registration
+Forgot Password
+Email Verification
+Multi-Factor Authentication
+Biometric Login
+Face ID
+Touch ID
+Fingerprint Authentication
+Passcode Unlock
+Subscription Flow
+
+Add a dedicated Subscription option on the Login / Register screen.
+
+The onboarding flow should be:
+
+Register
+Verify Email
+Select Subscription
+Complete Payment
+Activate Account
+Access QGuard Messaging
+
+Users should not be able to use premium messaging features until an active subscription has been confirmed.
+
+Pricing
+
+Use the existing pricing configuration from:
+
+http://localhost:3000/
+
+Implement the Starter Plan:
+
+$3 USD/month
+Annual Billing
+PayPal Subscription
+
+The application should retrieve pricing dynamically from the backend whenever possible rather than hardcoding plan details.
+
+Payment Integration
+
+Integrate:
+
+PayPal Subscription API
+
+Support:
+
+Monthly subscriptions
+Annual subscriptions
+Subscription renewal
+Upgrade
+Downgrade
+Cancellation
+Payment history
+Subscription status
+Receipt verification
+Automatic entitlement updates
+
+The payment implementation should be production-ready and compatible with Google Play and Apple App Store policies where applicable.
+
+Backend Integration
+
+Ensure the mobile applications integrate seamlessly with the existing backend.
+
+Support:
+
+Authentication
+Messaging API
+Quantum Vault API (if applicable)
+Notifications
+WebSockets / SSE
+File uploads
+Media uploads
+Profile management
+Device registration
+Push notifications
+Subscription verification
+
+All existing APIs should remain compatible.
+
+Push Notifications
+
+Implement secure push notifications.
+
+Support:
+
+New messages
+Calls
+Group invitations
+Subscription updates
+Security alerts
+Login alerts
+Device verification
+
+Notifications must never expose message contents unless permitted by the user's privacy settings.
+
+Mobile Security Requirements
+
+The applications must follow enterprise mobile security best practices.
+
+Implement:
+
+Secure Key Storage
+Android Keystore
+Apple Secure Enclave
+Certificate Pinning
+Anti-Tampering
+Root/Jailbreak Detection
+Secure Local Storage
+SQL Injection Protection
+API Rate Limiting
+Secure Session Management
+Token Rotation
+TLS 1.3
+Hybrid PQC Transport
+Runtime Integrity Checks
+Performance Requirements
+
+Optimize for:
+
+Fast launch time
+Low battery usage
+Low memory consumption
+Small application size
+Efficient network usage
+Background synchronization
+Large chat histories
+Thousands of encrypted messages
+App Store Readiness
+
+Prepare both applications for production deployment.
+
+Ensure compliance with:
+
+Google Play Store
+Production build
+Release signing
+Privacy requirements
+Permission declarations
+Data Safety section
+Store assets
+Play Integrity API
+Apple App Store
+App Store Review Guidelines
+Privacy Manifest
+App Transport Security
+Required permissions
+App Store Connect metadata
+TestFlight support
+Production signing
+Deliverables
+
+Provide a complete production-ready mobile solution including:
+
+Android application
+iOS application
+Shared architecture where appropriate
+Production build configurations
+Release builds
+Store-ready assets
+Subscription integration
+Backend integration
+Push notification support
+Complete documentation
+Deployment guide
+Testing guide
+Success Criteria
+
+The project will be considered complete only when:
+
+✅ Android application builds successfully.
+✅ iOS application builds successfully.
+✅ All desktop messaging features are available on mobile.
+✅ Quantum Vault is fully functional.
+✅ All Post-Quantum Cryptography features are implemented.
+✅ Subscription flow is operational.
+✅ PayPal subscription integration is functional.
+✅ Mobile UI is polished, responsive, and enterprise-grade.
+✅ Applications meet Google Play and Apple App Store submission requirements.
+✅ No placeholder implementations remain.
+✅ The solution is fully production-ready and suitable for customer deployment.
+
+Note: For distribution through the Google Play Store and Apple App Store, it is generally recommended to use each platform's native in-app subscription system (Google Play Billing and Apple In-App Purchases) for digital subscriptions, as this is required by their current policies in most cases. If you also support PayPal, it should be architected in a way that complies with each store's review guidelines. This will maximize the likelihood of successful app approval while maintaining a consistent subscription experience.

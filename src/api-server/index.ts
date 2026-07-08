@@ -27,6 +27,7 @@ import serviceRecordRoutes from './service-records'
 import migrationRoutes from './migration'
 import sandboxRoutes, { startSandboxScheduler } from './sandbox'
 import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
+import { subscriptionGateway } from './subscription-guard'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
 
 const shareIpAttempts = new Map<string, { count: number; windowStart: number }>()
@@ -732,6 +733,11 @@ export function createApiServer() {
       unsubscribe()
     })
   })
+
+  // Server-side subscription enforcement — authoritative gate ahead of every
+  // module router. Ungated paths (billing, paypal, profile, admin, overview)
+  // pass straight through; gated modules require the caller's active plan tier.
+  app.use('/api', subscriptionGateway)
 
   // Dashboard API routes
   app.use('/api/v1/dashboard/behavioral-analytics', behavioralAnalyticsRoutes)

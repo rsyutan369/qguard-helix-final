@@ -13,6 +13,10 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
 import { isOwnerEmail } from '@/lib/admin-access';
 import ThemeToggle from '@/components/theme/ThemeToggle';
+import { useSubscription } from '@/hooks/use-subscription';
+import { canAccessPath, resolveRequiredTier, type AccessTier } from '@/lib/subscription-access';
+import { StarterDashboard } from '@/app/dashboard/_components/StarterDashboard';
+import { UpgradeRequired } from '@/components/subscription/UpgradeRequired';
 
 const NAV_SECTIONS = [
   {
@@ -180,9 +184,40 @@ const NAV_SECTIONS = [
   },
 ];
 
+function DashboardShell() {
+  return (
+    <div className="qg-dashboard-shell grid min-h-screen place-items-center bg-[var(--qg-dashboard-bg)] text-[var(--qg-accent-cyan)]">
+      <div className="rounded-lg border border-blue-400/20 bg-blue-500/[0.06] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] shadow-[0_18px_60px_rgba(0,0,0,0.32)]">
+        Securing session
+      </div>
+    </div>
+  );
+}
+
+// Minimal header for the no-subscription screen (no sidebar / modules exposed).
+function NoAccessHeader() {
+  return (
+    <header className="flex items-center justify-between border-b border-slate-700/40 bg-slate-950/85 px-5 py-3.5 backdrop-blur-xl">
+      <Link to="/" className="flex items-center gap-2.5 no-underline">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-blue-400/30 bg-blue-500/10">
+          <ShieldAlert className="h-5 w-5 text-cyan-300" />
+        </div>
+        <span className="text-sm font-black uppercase tracking-[0.06em] text-slate-50">Qguard Helix</span>
+      </Link>
+      <button
+        onClick={async () => { await supabase.auth.signOut(); window.location.href = '/'; }}
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-[11px] font-bold text-white/40 transition-colors hover:bg-red-500/10 hover:text-red-400"
+      >
+        <LogOut className="h-4 w-4" /> Sign out
+      </button>
+    </header>
+  );
+}
+
 export default function DashboardLayout() {
   const location = useLocation();
   const { user, loading } = useAuth();
+  const subscription = useSubscription();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -211,25 +246,54 @@ export default function DashboardLayout() {
 
   const sidebarWidth = collapsed ? 'w-[72px]' : 'w-[260px]';
   const isOwner = isOwnerEmail(user?.email);
+  // Owner/admin bypasses subscription gating (treated as full Elite access);
+  // everyone else is gated by their active subscription tier.
+  const effectiveTier: AccessTier = isOwner ? 'elite' : subscription.isActive ? subscription.tier : 'none';
+
+  // Only show nav items the tier can actually open; drop sections left empty.
+  const tierNavSections = NAV_SECTIONS
+    .map(section => ({ ...section, items: section.items.filter(item => canAccessPath(effectiveTier, item.path)) }))
+    .filter(section => section.items.length > 0);
   const navSections = isOwner
-    ? NAV_SECTIONS.map(section => section.label === 'System'
+    ? tierNavSections.map(section => section.label === 'System'
       ? { ...section, items: [{ name: 'Owner Administrator', path: '/dashboard/admin', icon: Crown }, ...section.items] }
       : section)
-    : NAV_SECTIONS;
+    : tierNavSections;
 
-  if (loading) {
-    return (
-      <div className="qg-dashboard-shell grid min-h-screen place-items-center bg-[var(--qg-dashboard-bg)] text-[var(--qg-accent-cyan)]">
-        <div className="rounded-lg border border-blue-400/20 bg-blue-500/[0.06] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] shadow-[0_18px_60px_rgba(0,0,0,0.32)]">
-          Securing session
-        </div>
-      </div>
-    );
+  if (loading || (user && subscription.loading)) {
+    return <DashboardShell />;
   }
 
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
+
+  // No active subscription (and not the owner) — block the whole dashboard.
+  if (!isOwner && !subscription.isActive) {
+    return (
+      <div className="qg-dashboard-shell min-h-screen bg-[var(--qg-dashboard-bg)] text-slate-100">
+        <NoAccessHeader />
+        <UpgradeRequired requiredTier="starter" currentTier={subscription.tier} variant="no-subscription" />
+      </div>
+    );
+  }
+
+  // STARTER is scoped to QGuard Messaging — its own dashboard, no enterprise shell.
+  if (effectiveTier === 'starter') {
+    return <StarterDashboard />;
+  }
+
+  // The Owner/Administrator dashboard is OWNER-ONLY — it is NOT a subscription
+  // tier. No plan (not even Elite) unlocks it; only the platform owner. This
+  // mirrors the backend `requireOwner` guard on /api/v1/admin. Non-owners who
+  // deep-link here are bounced back to their own dashboard.
+  const isAdminRoute = location.pathname === '/dashboard/admin' || location.pathname.startsWith('/dashboard/admin/');
+  const adminForbidden = isAdminRoute && !isOwner;
+
+  // Direct navigation to a module above the plan renders the upgrade screen
+  // instead of the module (defense-in-depth alongside the hidden nav + the
+  // server-side check). The owner is never tier-gated.
+  const pageAllowed = !adminForbidden && (isOwner || canAccessPath(effectiveTier, location.pathname));
 
   return (
     <div className="qg-dashboard-shell flex h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)] font-sans overflow-hidden">
@@ -400,7 +464,13 @@ export default function DashboardLayout() {
         </div>
 
         <div className="dashboard-theme-scope relative z-10 min-h-full">
-          <Outlet />
+          {adminForbidden ? (
+            <Navigate to="/dashboard" replace />
+          ) : pageAllowed ? (
+            <Outlet />
+          ) : (
+            <UpgradeRequired requiredTier={resolveRequiredTier(location.pathname)} currentTier={effectiveTier} />
+          )}
         </div>
       </main>
     </div>
