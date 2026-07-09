@@ -80,6 +80,20 @@ function defineClientEnv(env: Partial<Record<ClientSupabaseEnvKey, string>>) {
   );
 }
 
+// Single source of truth for the application version: the Tauri bundle config
+// (src-tauri/tauri.conf.json). Injected as a build-time constant so the About
+// dialog and sidebar always display the exact version that ships in the signed
+// installer — no manual bumping, no drift against the frontend package.json.
+function readAppVersion(): string {
+  try {
+    const confPath = path.join(appRoot, "src-tauri", "tauri.conf.json");
+    const conf = JSON.parse(fs.readFileSync(confPath, "utf8")) as { version?: string };
+    return typeof conf.version === "string" && conf.version.trim() ? conf.version.trim() : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 function collectBuildFiles(directory: string): string[] {
   if (!fs.existsSync(directory)) return [];
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -130,7 +144,10 @@ export default defineConfig(({ mode }) => {
   return {
     envDir: workspaceRoot,
     plugins: [react(), qguardSecurityManifest()],
-    define: defineClientEnv(clientEnv),
+    define: {
+      ...defineClientEnv(clientEnv),
+      __APP_VERSION__: JSON.stringify(readAppVersion()),
+    },
     resolve: {
       alias: {
         "@": path.resolve(appRoot, "./src"),

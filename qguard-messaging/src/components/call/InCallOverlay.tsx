@@ -8,7 +8,7 @@ const QUALITY_OPTIONS: CallQuality[] = ["low", "auto", "hd"];
 
 export function InCallOverlay(props: {
   state: CallState; localStream: MediaStream | null; remoteStream: MediaStream | null;
-  micEnabled: boolean; cameraEnabled: boolean; peerName: string; peerUserId: string | null;
+  micEnabled: boolean; cameraEnabled: boolean; reconnecting?: boolean; peerName: string; peerUserId: string | null;
   quality: CallQuality; onSetQuality: (quality: CallQuality) => void;
   onHangup: () => void; onToggleMic: () => void; onToggleCamera: () => void;
 }) {
@@ -44,7 +44,8 @@ export function InCallOverlay(props: {
     }
   };
 
-  const phaseLabel = props.state.phase === "connected" ? "Connected"
+  const phaseLabel = props.reconnecting ? "Reconnecting…"
+    : props.state.phase === "connected" ? "Connected"
     : props.state.phase === "connecting" ? "Connecting..."
     : props.state.phase === "calling" ? "Calling..." : props.state.phase;
 
@@ -55,7 +56,10 @@ export function InCallOverlay(props: {
           <UserAvatar userId={props.peerUserId} name={props.peerName} size={36} className="ring-2 ring-white/20" />
           <div className="min-w-0">
             <div className="truncate text-sm font-bold">{props.peerName}</div>
-            <div className="text-xs text-white/70">{phaseLabel}</div>
+            <div className={`flex items-center gap-1.5 text-xs ${props.reconnecting ? "font-semibold text-amber-300" : "text-white/70"}`}>
+              {props.reconnecting && <span className="h-1.5 w-1.5 animate-ping rounded-full bg-amber-300" />}
+              {phaseLabel}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">

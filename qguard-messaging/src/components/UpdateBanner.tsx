@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DownloadCloud, RefreshCcw, X } from "lucide-react";
 import { isTauriRuntime } from "@/lib/tauri";
+import { checkForAppUpdate, downloadAndInstallUpdate, relaunchApp } from "@/lib/app-update";
 
 type UpdatePhase =
   | { kind: "hidden" }
@@ -30,8 +31,7 @@ export function UpdateBanner() {
     let cancelled = false;
     (async () => {
       try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
+        const update = await checkForAppUpdate();
         if (cancelled || !update) return;
         updateRef.current = update;
         setPhase({ kind: "available", version: update.version });
@@ -47,18 +47,8 @@ export function UpdateBanner() {
     if (!update) return;
     setPhase({ kind: "downloading", version: update.version, percent: null });
     try {
-      let total = 0;
-      let received = 0;
-      await update.downloadAndInstall((event) => {
-        if (event.event === "Started") total = event.data.contentLength ?? 0;
-        if (event.event === "Progress") {
-          received += event.data.chunkLength;
-          setPhase({
-            kind: "downloading",
-            version: update.version,
-            percent: total > 0 ? Math.min(100, Math.round((received / total) * 100)) : null,
-          });
-        }
+      await downloadAndInstallUpdate(update, ({ percent }) => {
+        setPhase({ kind: "downloading", version: update.version, percent });
       });
       setPhase({ kind: "ready", version: update.version });
     } catch (error) {
@@ -68,8 +58,7 @@ export function UpdateBanner() {
 
   const relaunchNow = async () => {
     try {
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
+      await relaunchApp();
     } catch {
       setPhase({ kind: "error", message: "Installed — restart QGuard Messaging to finish the update." });
     }

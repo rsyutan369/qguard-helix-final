@@ -1,6 +1,6 @@
 [package]
 name = "qguard-messaging"
-version = "1.2.0"
+version = "1.2.18"
 description = "QGuard Messaging - hybrid post-quantum secure desktop messaging"
 authors = ["QGuard Team"]
 edition = "2021"

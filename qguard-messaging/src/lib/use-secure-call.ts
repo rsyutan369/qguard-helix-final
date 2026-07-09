@@ -54,6 +54,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
   const [quality, setQualityState] = useState<CallQuality>(DEFAULT_CALL_QUALITY);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -66,7 +67,13 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const phaseRef = useRef(state.phase);
   const timeoutRef = useRef<number | undefined>(undefined);
+  // Grace window for a transient ICE `disconnected` blip before we give up. A
+  // WebRTC connection frequently flips connected → disconnected → connected on a
+  // network path change or brief packet loss; tearing down on the first blip
+  // drops calls that would have recovered on their own.
+  const reconnectTimerRef = useRef<number | undefined>(undefined);
   const supported = useMemo(callSupported, []);
+  const RECONNECT_GRACE_MS = 12000;
 
   const worker = useCallback(() => {
     if (!workerRef.current) {
@@ -75,13 +82,29 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     return workerRef.current;
   }, []);
 
-  const attachSenderTransforms = useCallback((pc: RTCPeerConnection, setup: CallSetup) => {
-    pc.getSenders().forEach((sender) => {
-      const kind = sender.track?.kind === "audio" ? "audio" : "video";
-      (sender as RTCRtpSender).transform = new RTCRtpScriptTransform(worker(), {
-        operation: "encrypt", keyB64: setup.sendKeyB64, kind, contextTag: kind === "audio" ? AUDIO_CTX : VIDEO_CTX,
+  // Attach the E2EE media transforms for BOTH directions on every transceiver,
+  // up-front — right after addTrack and BEFORE createOffer/createAnswer.
+  //
+  // The receive (decrypt) transform MUST be attached here, not in the async
+  // `ontrack` event. In WebView2/Chromium, setting `receiver.transform` from
+  // `ontrack` lands after the inbound pipeline is already wired, so the
+  // transform never inserts and remote frames reach the decoders still
+  // encrypted — the exact "loud static audio + no video" symptom. Attaching at
+  // the transceiver level (the receiver exists the moment addTrack creates the
+  // transceiver) guarantees the decryptor is in place before the first frame.
+  const attachMediaTransforms = useCallback((pc: RTCPeerConnection, setup: CallSetup) => {
+    const w = worker();
+    for (const transceiver of pc.getTransceivers()) {
+      const kind = transceiver.sender.track?.kind;
+      if (kind !== "audio" && kind !== "video") continue;
+      const contextTag = kind === "audio" ? AUDIO_CTX : VIDEO_CTX;
+      (transceiver.sender as RTCRtpSender).transform = new RTCRtpScriptTransform(w, {
+        operation: "encrypt", keyB64: setup.sendKeyB64, kind, contextTag,
       });
-    });
+      (transceiver.receiver as RTCRtpReceiver).transform = new RTCRtpScriptTransform(w, {
+        operation: "decrypt", keyB64: setup.recvKeyB64, kind, contextTag,
+      });
+    }
   }, [worker]);
 
   const flushPendingCandidates = useCallback(() => {
@@ -102,6 +125,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     pendingOfferRef.current = null;
     pendingCandidatesRef.current = [];
     if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
+    if (reconnectTimerRef.current !== undefined) { window.clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = undefined; }
+    setReconnecting(false);
     // Read the live stream from a ref so `cleanup` keeps a STABLE identity. If it
     // depended on `localStream` state, the unmount effect below would re-run on
     // every stream change and tear the active call down mid-negotiation (closing
@@ -139,27 +164,43 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         signal_type: "ice", payload: { candidate: e.candidate.toJSON() },
       });
     };
+    // Inbound decryption is wired up-front in attachMediaTransforms (before
+    // negotiation) — see that function. Here we only surface the remote stream
+    // to the UI.
     pc.ontrack = (e) => {
-      const setup = setupRef.current;
-      if (setup) {
-        const kind = e.track.kind === "audio" ? "audio" : "video";
-        (e.receiver as RTCRtpReceiver).transform = new RTCRtpScriptTransform(worker(), {
-          operation: "decrypt", keyB64: setup.recvKeyB64, kind, contextTag: kind === "audio" ? AUDIO_CTX : VIDEO_CTX,
-        });
-      }
       setRemoteStream(e.streams[0] ?? null);
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected" && setupRef.current) {
+      const cs = pc.connectionState;
+      if (cs === "connected") {
+        // Cleared the setup timeout and any in-flight reconnect grace: the media
+        // path is (re)established.
         if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
-        dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber });
-        void recordCryptoTelemetry({ userId: args.userId, scope: "call", stage: "call_connected", detail: "Quantum-encrypted call connected", progress: 100, status: "complete", metadata: { call_id: callId } });
+        if (reconnectTimerRef.current !== undefined) { window.clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = undefined; }
+        setReconnecting(false);
+        if (setupRef.current) {
+          dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber });
+          void recordCryptoTelemetry({ userId: args.userId, scope: "call", stage: "call_connected", detail: "Quantum-encrypted call connected", progress: 100, status: "complete", metadata: { call_id: callId } });
+        }
+        return;
       }
-      if (["failed", "disconnected", "closed"].includes(pc.connectionState)) endCall(false);
+      // A hard, non-recoverable end: tear down immediately.
+      if (cs === "failed" || cs === "closed") { endCall(false); return; }
+      // A transient blip: surface "Reconnecting…" and let ICE try to recover for
+      // a grace window instead of dropping the call outright.
+      if (cs === "disconnected") {
+        setReconnecting(true);
+        if (reconnectTimerRef.current === undefined) {
+          reconnectTimerRef.current = window.setTimeout(() => {
+            reconnectTimerRef.current = undefined;
+            if (pcRef.current && pcRef.current.connectionState !== "connected") endCall(false);
+          }, RECONNECT_GRACE_MS);
+        }
+      }
     };
     pcRef.current = pc;
     return pc;
-  }, [args.deviceId, args.userId, worker]);
+  }, [args.deviceId, args.userId]);
 
   const getMedia = useCallback(async () => {
     // Freeze watchdog: mark that a call is about to engage the media pipeline
@@ -214,7 +255,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const stream = await getMedia();
       const pc = await buildPeerConnection(callId, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-      attachSenderTransforms(pc, setup);
+      attachMediaTransforms(pc, setup);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await applySenderParams(pc, qualityRef.current);
@@ -224,7 +265,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Call failed" });
       cleanup();
     }
-  }, [args.deviceId, args.userId, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, getMedia, supported]);
+  }, [args.deviceId, args.userId, armTimeout, attachMediaTransforms, buildPeerConnection, cleanup, getMedia, supported]);
 
   const accept = useCallback(async () => {
     const offer = pendingOfferRef.current;
@@ -241,7 +282,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const stream = await getMedia();
       const pc = await buildPeerConnection(offer.call_id, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-      attachSenderTransforms(pc, setup);
+      attachMediaTransforms(pc, setup);
       await pc.setRemoteDescription({ type: "offer", sdp: String((offer.payload as { sdp: string }).sdp) });
       flushPendingCandidates();
       const answer = await pc.createAnswer();
@@ -252,7 +293,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Accept failed" });
       cleanup();
     }
-  }, [args.deviceId, args.userId, armTimeout, attachSenderTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia]);
+  }, [args.deviceId, args.userId, armTimeout, attachMediaTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia]);
 
   const endCall = useCallback((notify: boolean) => {
     const route = routeRef.current;
@@ -329,5 +370,5 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
 
   useEffect(() => () => cleanup(), [cleanup]);
 
-  return { state, localStream, remoteStream, micEnabled, cameraEnabled, quality, setQuality, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
+  return { state, localStream, remoteStream, micEnabled, cameraEnabled, reconnecting, quality, setQuality, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
 }

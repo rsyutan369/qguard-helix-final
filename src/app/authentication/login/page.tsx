@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import "../auth.css";
 import {
   Activity,
@@ -8,9 +8,9 @@ import {
   ArrowRight,
   Cpu,
   Home,
-  KeyRound,
   Lock,
   Mail,
+  Radar,
   Shield,
   ShieldCheck
 } from "lucide-react";
@@ -22,7 +22,7 @@ import { CyberBackground } from "@/components/CyberBackground";
 
 const LOGIN_SIGNALS = [
   { icon: ShieldCheck, label: "PQC Session", value: "ML-KEM Ready" },
-  { icon: KeyRound, label: "Entropy", value: "QRNG Seeded" },
+  { icon: Radar, label: "Crypto Discovery", value: "CBOM Live" },
   { icon: Activity, label: "Threat Feed", value: "Live" }
 ];
 
@@ -40,8 +40,16 @@ export default function LoginPage() {
   const safeNext = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/dashboard";
   const nextQuery = nextParam && safeNext !== "/dashboard" ? `?next=${encodeURIComponent(safeNext)}` : "";
   const { signIn, signInWithGoogle } = useAuth();
-  const { theme } = useTheme();
+  const { mode, theme, setMode } = useTheme();
   const isLightTheme = theme === "light";
+  const restoreModeRef = useRef(mode);
+
+  // Present the login experience in light mode by default while preserving
+  // whatever global theme the user had set for the rest of the app.
+  useEffect(() => {
+    setMode("light");
+    return () => setMode(restoreModeRef.current);
+  }, [setMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

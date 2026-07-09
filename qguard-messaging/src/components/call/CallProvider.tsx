@@ -96,6 +96,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
           remoteStream={call.remoteStream}
           micEnabled={call.micEnabled}
           cameraEnabled={call.cameraEnabled}
+          reconnecting={call.reconnecting}
           peerName={peerName}
           peerUserId={call.state.peerUserId ?? null}
           quality={call.quality}

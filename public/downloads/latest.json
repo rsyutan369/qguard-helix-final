@@ -1,11 +1,11 @@
 {
-    "platforms":  {
-                      "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb3N2dlhYRTdQQWk0ZzlNM0UxWDhpbnNBM3ExVWRSbHMxQXhEK2FWZ3lJMFFaNEtUVmcwYzVLMnRHODRyVitIdmNsTi94ZkxHSUlBOE5ocGZDOWtMSFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNDg0MjE4CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjIuMF94NjQtc2V0dXAuZXhlCitTczVrbW1kZmNibmptYVlkbE5KUzdOT0k0VWJpREJYRWxIbmRpU09abWVHY0VDMGdZN29FRXpSUGIvcW8vUFdhZkQ4cGxraTFHZjJ5dUVqZVZTRUJBPT0K",
-                                             "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
-                                         }
-                  },
-    "pub_date":  "2026-07-08T04:17:00Z",
-    "version":  "1.2.0",
-    "notes":  "Fix: Forgot-PIN blank page (hook-order crash) + ErrorBoundary safety net; Secure Chat load/send responsiveness (removed read-state feedback loop, telemetry off the send path)."
+  "version": "1.2.18",
+  "notes": "Security and reliability improvements.",
+  "pub_date": "2026-07-09T03:59:10Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2lmU2k3TTF4WE12RjBkbmtQalhvMS82Wk1RZFg3Ry9oWTR1QWRYRkxsMjV3QXNKdVNMZ2sxWDRoQjlLTk5MMUpVOUlDUEtPTlFBL2kyeEtsNHZTV0FjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNTY5NDU3CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjIuMThfeDY0LXNldHVwLmV4ZQpPbGhJM3Q2QU9ueWU5RG5LUmtQYmJWUVRvRHM2b0pQak1Ia2FBdVhBTC9JeGowWVNHczlHcjhQeHBid1o5RFRzNkNHUE43WXRxYkpPU3N0KzFwTjlEdz09Cg==",
+      "url": "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
+    }
+  }
 }

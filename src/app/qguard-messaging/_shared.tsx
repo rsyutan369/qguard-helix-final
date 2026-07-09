@@ -138,7 +138,7 @@ export function GhostButton({
  */
 export const MESSAGING_INSTALLER = {
   href: '/downloads/QGuard-Messaging-Setup.exe',
-  version: '1.2.0',
+  version: '1.2.18',
   sizeMb: 4,
   requirements: 'Windows 10/11 · 64-bit',
 };

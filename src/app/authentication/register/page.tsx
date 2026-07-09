@@ -1,14 +1,14 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import "../auth.css";
 import {
   Activity,
   AlertTriangle,
   ArrowRight,
   Cpu,
+  GitBranch,
   Home,
-  KeyRound,
   Lock,
   Mail,
   Shield,
@@ -23,7 +23,7 @@ import { CyberBackground } from "@/components/CyberBackground";
 
 const REGISTER_SIGNALS = [
   { icon: ShieldCheck, label: "PQC Generation", value: "ML-KEM Keypair" },
-  { icon: KeyRound, label: "Entropy", value: "QRNG Seeded" },
+  { icon: GitBranch, label: "PQC Migration", value: "Crypto-Agile" },
   { icon: Activity, label: "Identity Sync", value: "Real-Time" }
 ];
 
@@ -35,8 +35,16 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const { signUp, signInWithGoogle } = useAuth();
-  const { theme } = useTheme();
+  const { mode, theme, setMode } = useTheme();
   const isLightTheme = theme === "light";
+  const restoreModeRef = useRef(mode);
+
+  // Present the registration experience in light mode by default while
+  // preserving whatever global theme the user had set for the rest of the app.
+  useEffect(() => {
+    setMode("light");
+    return () => setMode(restoreModeRef.current);
+  }, [setMode]);
   const [searchParams] = useSearchParams();
   const nextParam = searchParams.get("next");
   // Preserve a checkout target across register -> verify email -> sign in.
@@ -135,7 +143,6 @@ export default function RegisterPage() {
           </h1>
           <p className="qc-auth-lede">
             Initialize your quantum credentials to establish a secure node.
-            Your keys are generated using post-quantum QRNG entropy.
           </p>
 
           <div className="qc-signal-grid" aria-label="Identity provisioning security checks">

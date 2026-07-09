@@ -78,8 +78,17 @@ pub struct CallPeerIdentity {
     pub identity_signature: DualSignature,
 }
 
+// `async` is load-bearing, not cosmetic: a synchronous `#[tauri::command]` runs
+// on the WebView's main thread, so the KEM math + identity/keyring access below
+// would freeze the whole UI event loop for the duration. During a call that is
+// catastrophic — a frozen event loop cannot process WebRTC ICE/DTLS negotiation
+// or realtime call signals, so the peer connection stalls and drops on BOTH
+// ends the moment the callee accepts. Declaring the command `async` makes Tauri
+// run it on the async runtime's worker pool instead, keeping the UI thread free
+// (mirrors the vault_* off-main-thread pattern). The bodies contain no `.await`,
+// so nothing is held across a suspend point and the future stays `Send`.
 #[tauri::command]
-pub fn call_caller_setup(
+pub async fn call_caller_setup(
     state: State<'_, AppState>,
     peer: CallPeerIdentity,
     call_id: String,
@@ -115,8 +124,12 @@ pub fn call_caller_setup(
     Ok(setup)
 }
 
+// Async for the same reason as `call_caller_setup`: this runs the instant the
+// callee taps Accept and touches the OS keyring + encrypted identity material
+// (`ensure_identity`) plus KEM decapsulation. On the main thread that stall is
+// exactly what froze the app and dropped the call at connect time.
 #[tauri::command]
-pub fn call_callee_setup(
+pub async fn call_callee_setup(
     state: State<'_, AppState>,
     hybrid_ciphertext: HybridCiphertext,
     call_id: String,
