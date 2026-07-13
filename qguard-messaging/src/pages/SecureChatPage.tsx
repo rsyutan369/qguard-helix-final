@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, ArchiveRestore, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { byteaToBytes, bytesToBytea } from "@/lib/encoding";
@@ -20,6 +20,7 @@ import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySu
 import { useCall } from "@/components/call/CallProvider";
 import { CallButton } from "@/components/call/CallButton";
 import { UserAvatar } from "@/components/UserAvatar";
+import { useIsMobile } from "@/lib/use-mobile";
 
 interface SecureChatPageProps {
   userId: string;
@@ -495,6 +496,17 @@ function visibleContactName(contact: ContactSummary): string {
   return contact.alias || contact.display_name || contact.username || contact.contact_user_id.slice(0, 8);
 }
 
+// Lightweight breadcrumb logging for the Secure Chat open/navigation flow.
+// Printed to the webview console, which surfaces in `adb logcat` on Android and
+// devtools on desktop, so a failed "open conversation" is never silent.
+function logChatFlow(event: string, detail?: Record<string, unknown>): void {
+  try {
+    console.info(`[secure-chat] ${event}`, detail ?? "");
+  } catch {
+    // Never let diagnostics throw on the navigation path.
+  }
+}
+
 // --- Resizable chat columns ---------------------------------------------------
 // Lightweight, dependency-free panel resizing. Widths are clamped, persisted per
 // user, and updated directly on the DOM while dragging so we never trigger a
@@ -852,6 +864,18 @@ function recipientKeyBundle(device: TrustedDevice, oneTimePrekey: SignedPrekeySu
 
 export default function SecureChatPage({ userId, conversations, devices, contacts, onSent }: SecureChatPageProps) {
   const [activeConversationId, setActiveConversationId] = useState(conversations[0]?.id ?? "");
+  // Optimistic overlay for conversations we just created locally. The parent
+  // `conversations` prop only updates after an async refresh + realtime round
+  // trip, so a freshly created conversation is briefly absent from it. Without
+  // this overlay the "keep a valid selection" effect below would immediately
+  // reset `activeConversationId` away from the new conversation (landing the
+  // user on the wrong/self-only thread, or bouncing back to the list). Entries
+  // are pruned once the real row arrives in `conversations`.
+  const [pendingConversations, setPendingConversations] = useState<ConversationSummary[]>([]);
+  // Phone layout shows one pane at a time: the conversation list, or the
+  // active thread (opened by tapping a conversation, closed with Back).
+  const isMobile = useIsMobile();
+  const [mobilePane, setMobilePane] = useState<"list" | "thread">("list");
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("Ready");
   const [query, setQuery] = useState("");
@@ -1005,9 +1029,28 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     window.addEventListener("pointerup", onUp);
   }, [chatColumnWidths, persistChatColumnWidths]);
 
-  const effectiveConversations = useMemo(() => conversations
-    .map((conversation) => ({ ...conversation, ...(conversationStateOverrides[conversation.id] ?? {}) }))
-    .filter((conversation) => !conversation.deleted_at), [conversationStateOverrides, conversations]);
+  const effectiveConversations = useMemo(() => {
+    const known = new Set(conversations.map((conversation) => conversation.id));
+    // Server rows first, then any still-unmerged optimistic rows we created.
+    const merged = [
+      ...conversations,
+      ...pendingConversations.filter((conversation) => !known.has(conversation.id)),
+    ];
+    return merged
+      .map((conversation) => ({ ...conversation, ...(conversationStateOverrides[conversation.id] ?? {}) }))
+      .filter((conversation) => !conversation.deleted_at);
+  }, [conversationStateOverrides, conversations, pendingConversations]);
+
+  // Drop optimistic conversations once the real row lands in the prop. Returning
+  // the same reference when nothing changed avoids a re-render loop.
+  useEffect(() => {
+    setPendingConversations((current) => {
+      if (current.length === 0) return current;
+      const known = new Set(conversations.map((conversation) => conversation.id));
+      const next = current.filter((conversation) => !known.has(conversation.id));
+      return next.length === current.length ? current : next;
+    });
+  }, [conversations]);
   const activeConversations = useMemo(() => effectiveConversations.filter((conversation) => !conversation.archived_at && !conversation.hidden_at), [effectiveConversations]);
   const archivedConversations = useMemo(() => effectiveConversations.filter((conversation) => Boolean(conversation.archived_at) && !conversation.hidden_at), [effectiveConversations]);
   const hiddenConversations = useMemo(() => effectiveConversations.filter((conversation) => Boolean(conversation.hidden_at)), [effectiveConversations]);
@@ -1182,13 +1225,24 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   useEffect(() => {
     if (visibleConversations.length === 0) {
-      setActiveConversationId("");
+      if (activeConversationId) setActiveConversationId("");
       return;
     }
-    if (!visibleConversations.some((conversation) => conversation.id === activeConversationId)) {
+    if (!activeConversationId) {
+      setActiveConversationId(visibleConversations[0].id);
+      return;
+    }
+    // Recover a fallback selection ONLY when the current conversation has truly
+    // disappeared from the full set (deleted/left) — never merely because it is
+    // filtered out by the active/archived/hidden view, or is still settling in
+    // the optimistic overlay after being created. Clobbering a just-created
+    // conversation here is exactly what stranded users on the wrong/self-only
+    // thread (or bounced them back to the list) right after tapping a user.
+    const stillExists = effectiveConversations.some((conversation) => conversation.id === activeConversationId);
+    if (!stillExists) {
       setActiveConversationId(visibleConversations[0].id);
     }
-  }, [activeConversationId, visibleConversations]);
+  }, [activeConversationId, effectiveConversations, visibleConversations]);
 
   useEffect(() => {
     if (localDeviceId && rawLocalDevice && !localSignedPrekeyId) setStatus("Syncing this desktop signed prekey");
@@ -1960,25 +2014,38 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   useEffect(() => {
     if (!activeConversation) return undefined;
+    // Coalesce realtime bursts into ONE reload per window. Every envelope insert
+    // (a send writes one per recipient device) and every read-state write (ours
+    // AND the peer's — the filter is conversation-scoped) previously triggered a
+    // full re-fetch. When both users were in the chat the read-state ping-pong
+    // fired reloads faster than a load could finish, and each new load superseded
+    // the previous one before it set `chatMessages` — so the view was pinned on
+    // "Loading encrypted history..." forever. Throttling lets a reload complete
+    // before the next starts, and collapses the post-send churn to a single tick.
+    let reloadTimer: number | undefined;
+    const scheduleReload = () => {
+      if (reloadTimer !== undefined) return;
+      reloadTimer = window.setTimeout(() => {
+        reloadTimer = undefined;
+        loadConversationMessages();
+      }, 500);
+    };
     const channel = supabase
       .channel(`qguard-chat-messages-${activeConversation.id}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "messaging_message_envelopes", filter: `conversation_id=eq.${activeConversation.id}` },
-        () => {
-          loadConversationMessages();
-        },
+        scheduleReload,
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "messaging_message_user_states", filter: `conversation_id=eq.${activeConversation.id}` },
-        () => {
-          loadConversationMessages();
-        },
+        scheduleReload,
       )
       .subscribe();
 
     return () => {
+      if (reloadTimer !== undefined) window.clearTimeout(reloadTimer);
       supabase.removeChannel(channel);
     };
   }, [activeConversation, loadConversationMessages]);
@@ -2298,7 +2365,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setConversationView("active");
       setActiveConversationId(thread.id);
     }
+    // Phone layout: tapping a conversation slides to the thread pane.
+    setMobilePane("thread");
     setStatus("Private chat ready");
+    logChatFlow("openConversation", { conversationId: thread.id, view: target });
   }
 
   async function submitProtectionDialog() {
@@ -2331,7 +2401,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         [protectionDialog.target]: Date.now() + protectedConversationUnlockMs,
       }));
       setConversationView(protectionDialog.target);
-      if (protectionDialog.conversationId) setActiveConversationId(protectionDialog.conversationId);
+      if (protectionDialog.conversationId) {
+        setActiveConversationId(protectionDialog.conversationId);
+        setMobilePane("thread");
+      }
       setProtectionDialog(null);
       setProtectionSecret("");
       setProtectionConfirm("");
@@ -2397,6 +2470,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
       if (activeConversationId === thread.id && (action === "archive" || action === "hide" || action === "delete")) {
         setActiveConversationId("");
+        setMobilePane("list");
       }
       if (action === "archive") setConversationView("active");
       if (action === "hide") setConversationView("active");
@@ -2413,31 +2487,41 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return loadTrustedDevicesForUsers([contact.contact_user_id]);
   }
 
-  async function startPrivateChat(contact: ContactSummary) {
-    if (contactChatBusyId) return;
+  // Opens (or creates) the direct conversation with `contact` and navigates to
+  // its thread. Returns true when the thread was opened, false when it could not
+  // be (blocked contact, missing local/recipient keys, or an error) — the caller
+  // uses this to decide whether to close the New Chat modal. Every failure path
+  // sets a visible `contactAction` message and logs a breadcrumb, so a tap can
+  // never fail silently or bounce the user back with no explanation.
+  async function startPrivateChat(contact: ContactSummary): Promise<boolean> {
+    if (contactChatBusyId) return false;
 
     setContactChatBusyId(contact.id);
     setContactAction(null);
     setStatus(`Opening private chat with ${visibleContactName(contact)}`);
+    logChatFlow("startPrivateChat:begin", { contactUserId: contact.contact_user_id });
 
     try {
       if (contact.trust_state === "blocked") {
         setStatus("Unblock this contact before starting a chat");
         setContactAction(`${visibleContactName(contact)} is blocked. Restore the contact before opening chat.`);
-        return;
+        logChatFlow("startPrivateChat:blocked", { contactUserId: contact.contact_user_id });
+        return false;
       }
 
       const existing = effectiveConversations.find((conversation) => conversation.member_user_ids.includes(contact.contact_user_id));
       if (existing) {
         openConversation(existing);
         setContactAction(`Opened chat with ${visibleContactName(contact)}.`);
-        return;
+        logChatFlow("startPrivateChat:openExisting", { conversationId: existing.id });
+        return true;
       }
 
       if (myDevices.length === 0) {
-        setStatus("Open the desktop app to activate this device");
-        setContactAction("This account needs a registered QGuard desktop device before it can start encrypted chats.");
-        return;
+        setStatus("Activate this device first");
+        setContactAction("This account has no trusted device yet. Open QGuard Messaging on this device (or desktop) to publish its keys, then try again.");
+        logChatFlow("startPrivateChat:noLocalDevice");
+        return false;
       }
 
       const localDevices = localDeviceId
@@ -2445,8 +2529,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         : selectDeliveryDevicesForUsers(myDevices, [userId], localDeviceId);
       if (localDevices.length === 0) {
         setStatus("Local device is missing signed PQC prekeys");
-        setContactAction("This account needs a trusted QGuard desktop device with active signed PQC prekeys before it can start encrypted chats.");
-        return;
+        setContactAction("This device is still publishing its quantum-safe prekeys. Wait a moment, then try again.");
+        logChatFlow("startPrivateChat:noLocalSendableDevice");
+        return false;
       }
 
       const latestContactDevices = await loadContactDevices(contact);
@@ -2457,16 +2542,18 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
       if (trustedContactDevices.length === 0) {
         setStatus("This contact has no trusted device yet");
-        setContactAction(`${visibleContactName(contact)} has not registered a trusted QGuard desktop device yet. Ask them to sign in to QGuard Messaging on desktop, then press Chat again.`);
+        setContactAction(`${visibleContactName(contact)} has not set up a QGuard device yet. Ask them to sign in to QGuard Messaging (desktop or Android) so their quantum-safe keys are published, then try again.`);
+        logChatFlow("startPrivateChat:recipientNoDevice", { contactUserId: contact.contact_user_id });
         await Promise.resolve(onSent());
-        return;
+        return false;
       }
 
       if (sendableContactDevices.length === 0) {
         setStatus("Waiting for recipient PQC prekeys");
-        setContactAction(`${visibleContactName(contact)} has a device, but it has not published active PQC prekeys yet. Ask them to open QGuard Messaging once more, then press Chat again.`);
+        setContactAction(`${visibleContactName(contact)} has a device, but it has not published active PQC prekeys yet. Ask them to open QGuard Messaging once more, then try again.`);
+        logChatFlow("startPrivateChat:recipientNoPrekeys", { contactUserId: contact.contact_user_id });
         await Promise.resolve(onSent());
-        return;
+        return false;
       }
 
       const { data: conversation, error: conversationError } = await supabase
@@ -2501,18 +2588,48 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         .insert(rows);
       if (memberError) throw memberError;
 
+      logChatFlow("startPrivateChat:created", { conversationId });
+      // Register the conversation in the optimistic overlay BEFORE selecting it,
+      // so it is already present in the visible list when the "keep a valid
+      // selection" effect runs — otherwise that effect would reset the selection
+      // (the new row is not in the `conversations` prop until the async refresh
+      // lands) and strand the user on the wrong thread.
+      registerOptimisticConversation(conversationId, contact);
       setActiveConversationId(conversationId);
       setConversationView("active");
+      setMobilePane("thread");
       setStatus("Private chat ready");
       setContactAction(`Private chat opened with ${visibleContactName(contact)}.`);
       await Promise.resolve(onSent());
+      return true;
     } catch (error) {
       const detail = describeMessageError(error);
       setStatus(detail);
       setContactAction(detail);
+      logChatFlow("startPrivateChat:error", { message: detail });
+      return false;
     } finally {
       setContactChatBusyId(null);
     }
+  }
+
+  // Adds a minimal, immediately-usable conversation row to the optimistic
+  // overlay so the thread resolves the recipient (and can send) the instant it
+  // is created, before the server row round-trips back through the data hook.
+  function registerOptimisticConversation(conversationId: string, contact: ContactSummary) {
+    const optimistic: ConversationSummary = {
+      id: conversationId,
+      conversation_type: "direct",
+      title: visibleContactName(contact),
+      last_activity: "No encrypted messages yet",
+      unread_count: 0,
+      updated_at: new Date().toISOString(),
+      member_user_ids: Array.from(new Set([userId, contact.contact_user_id])),
+      archived_at: null,
+      hidden_at: null,
+      deleted_at: null,
+    };
+    setPendingConversations((current) => [optimistic, ...current.filter((conversation) => conversation.id !== conversationId)]);
   }
 
   function openNewChat() {
@@ -2532,11 +2649,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }
 
   // One-motion "New Chat": add the person as a contact (so RLS lets us read
-  // their published PQC prekeys) and immediately open the encrypted thread.
+  // their published PQC prekeys) and immediately open the encrypted thread. The
+  // modal is closed ONLY once the thread actually opens; if opening fails, the
+  // modal stays open showing the reason (via `contactAction`) instead of
+  // silently closing and dropping the user back on the list — the exact bounce
+  // this flow used to produce.
   async function startChatWithUser(result: UserSearchResult) {
     if (newChatBusyId) return;
     setNewChatBusyId(result.user_id);
     setContactAction(null);
+    logChatFlow("startChatWithUser:begin", { userId: result.user_id, username: result.username });
     try {
       await ensureCurrentUserProfile();
       const { data, error } = await supabase
@@ -2564,10 +2686,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       };
 
       await Promise.resolve(onSent());
-      closeNewChat();
-      await startPrivateChat(contact);
+      const opened = await startPrivateChat(contact);
+      if (opened) {
+        closeNewChat();
+      }
+      logChatFlow("startChatWithUser:done", { userId: result.user_id, opened });
     } catch (error) {
       setContactAction(describeMessageError(error));
+      logChatFlow("startChatWithUser:error", { message: describeMessageError(error) });
     } finally {
       setNewChatBusyId(null);
     }
@@ -2911,17 +3037,24 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (recipientUserIds.length === 0) {
       throw new Error("Open a direct chat with a contact before sending");
     }
-    let latestRecipientDevices: TrustedDevice[] = [];
-    try {
-      latestRecipientDevices = await loadTrustedDevicesForUsers(recipientUserIds);
-    } catch {
-      latestRecipientDevices = [];
-    }
-    const deliveryRecipientDevices = selectDeliveryDevicesForUsers(
-      latestRecipientDevices.length > 0 ? latestRecipientDevices : recipientDevices,
+    // Use the already-loaded, realtime-maintained device list so a send never
+    // blocks on a fresh device query (a full network round-trip on the critical
+    // path of every message). Only fall back to an awaited fetch when nothing is
+    // cached yet — e.g. the very first send right after opening the chat.
+    let deliveryRecipientDevices = selectDeliveryDevicesForUsers(
+      recipientDevices,
       recipientUserIds,
       localDeviceId,
     );
+    if (deliveryRecipientDevices.length === 0) {
+      let fetched: TrustedDevice[] = [];
+      try {
+        fetched = await loadTrustedDevicesForUsers(recipientUserIds);
+      } catch {
+        fetched = [];
+      }
+      deliveryRecipientDevices = selectDeliveryDevicesForUsers(fetched, recipientUserIds, localDeviceId);
+    }
     if (deliveryRecipientDevices.length === 0) {
       throw new Error("Recipient device is missing signed PQC prekeys");
     }
@@ -2943,69 +3076,77 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       status: "started",
       metadata: { conversation_id: activeConversation.id, recipients: deliveryRecipientDevices.length, client_message_id: clientMessageId },
     }).catch(() => undefined);
-    for (const recipientDevice of deliveryDevices) {
-      const isLocalArchive = recipientDevice.user_id === userId;
-      const oneTimePrekey = null;
-      const recipient = recipientKeyBundle(recipientDevice, oneTimePrekey);
-      if (!recipient) throw new Error("Recipient key bundle is incomplete");
-      const envelope = await safeInvoke<EncryptedMessageEnvelope>("messaging_send_encrypted_message", {
-        request: {
-          conversationId: activeConversation.id,
-          senderUserId: userId,
-          recipientUserId: recipientDevice.user_id,
-          recipientDeviceId: recipientDevice.device_id,
-          plaintext,
-          kind: options.messageKind ?? "Text",
-          recipient,
-        },
-      });
+    // Seal every recipient-device envelope, then write them all in ONE insert.
+    // The seals fire together (the Rust side serializes the key ops internally),
+    // and collapsing N per-device inserts into a single batched write is what
+    // removes the "send scales with device count x relay latency" delay — the
+    // dominant cost of a slow send on a constrained relay.
+    const sealed = await Promise.all(
+      deliveryDevices.map(async (recipientDevice) => {
+        const recipient = recipientKeyBundle(recipientDevice, null);
+        if (!recipient) throw new Error("Recipient key bundle is incomplete");
+        const envelope = await safeInvoke<EncryptedMessageEnvelope>("messaging_send_encrypted_message", {
+          request: {
+            conversationId: activeConversation.id,
+            senderUserId: userId,
+            recipientUserId: recipientDevice.user_id,
+            recipientDeviceId: recipientDevice.device_id,
+            plaintext,
+            kind: options.messageKind ?? "Text",
+            recipient,
+          },
+        });
+        return { recipientDevice, isLocalArchive: recipientDevice.user_id === userId, envelope };
+      }),
+    );
 
-      const { error } = await supabase.from("messaging_message_envelopes").insert({
-        id: envelope.message_id,
-        conversation_id: envelope.conversation_id,
+    const envelopeRows = sealed.map(({ recipientDevice, isLocalArchive, envelope }) => ({
+      id: envelope.message_id,
+      conversation_id: envelope.conversation_id,
+      client_message_id: clientMessageId,
+      parent_client_message_id: options.parentClientMessageId ?? null,
+      sender_user_id: userId,
+      sender_device_id: envelope.sender_device_id,
+      recipient_user_id: recipientDevice.user_id,
+      recipient_device_id: envelope.recipient_device_id,
+      message_kind: toMessageKind(envelope.kind),
+      sealed_sender_envelope: {
+        sealed_sender: envelope.sealed_sender,
+        desktop_envelope_version: 2,
         client_message_id: clientMessageId,
         parent_client_message_id: options.parentClientMessageId ?? null,
-        sender_user_id: userId,
-        sender_device_id: envelope.sender_device_id,
-        recipient_user_id: recipientDevice.user_id,
-        recipient_device_id: envelope.recipient_device_id,
-        message_kind: toMessageKind(envelope.kind),
-        sealed_sender_envelope: {
-          sealed_sender: envelope.sealed_sender,
-          desktop_envelope_version: 2,
-          client_message_id: clientMessageId,
-          parent_client_message_id: options.parentClientMessageId ?? null,
-          control_type: options.controlType ?? null,
-          local_archive: isLocalArchive,
-          original_sender_user_id: userId,
-          original_sender_device_id: senderDevice.device_id,
-          hybrid_ciphertext: envelope.hybrid_ciphertext,
-          prekey_id: envelope.prekey_id,
-          prekey_kind: envelope.prekey_kind,
-          message_signature: envelope.message_signature,
-          sender_ed25519_public: envelope.sender_ed25519_public,
-          sender_mldsa_public: envelope.sender_mldsa_public,
-        },
-        ciphertext: bytesToBytea(envelope.envelope.ciphertext),
-        nonce: bytesToBytea(envelope.envelope.nonce),
-        auth_tag: bytesToBytea(envelope.envelope.tag),
-        aad: bytesToBytea(envelope.aad),
-        ratchet_counter: envelope.counter,
-        suite: envelope.suite,
-        expires_at: lifecycle.expires_at,
-        lifecycle: {
-          ...lifecycle,
-          reply_to: options.parentClientMessageId ?? null,
-          control_type: options.controlType ?? null,
-        },
-        verification_state: "valid",
-        threat_result: {
-          score: threat.score,
-          flags: threat.flags,
-        },
-      });
-      if (error) throw error;
-    }
+        control_type: options.controlType ?? null,
+        local_archive: isLocalArchive,
+        original_sender_user_id: userId,
+        original_sender_device_id: senderDevice.device_id,
+        hybrid_ciphertext: envelope.hybrid_ciphertext,
+        prekey_id: envelope.prekey_id,
+        prekey_kind: envelope.prekey_kind,
+        message_signature: envelope.message_signature,
+        sender_ed25519_public: envelope.sender_ed25519_public,
+        sender_mldsa_public: envelope.sender_mldsa_public,
+      },
+      ciphertext: bytesToBytea(envelope.envelope.ciphertext),
+      nonce: bytesToBytea(envelope.envelope.nonce),
+      auth_tag: bytesToBytea(envelope.envelope.tag),
+      aad: bytesToBytea(envelope.aad),
+      ratchet_counter: envelope.counter,
+      suite: envelope.suite,
+      expires_at: lifecycle.expires_at,
+      lifecycle: {
+        ...lifecycle,
+        reply_to: options.parentClientMessageId ?? null,
+        control_type: options.controlType ?? null,
+      },
+      verification_state: "valid",
+      threat_result: {
+        score: threat.score,
+        flags: threat.flags,
+      },
+    }));
+
+    const { error } = await supabase.from("messaging_message_envelopes").insert(envelopeRows);
+    if (error) throw error;
 
     void recordCryptoTelemetry({
       userId,
@@ -3221,9 +3362,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     <div
       ref={chatGridRef}
       className="grid h-[calc(100vh-124px)] gap-0"
-      style={{ gridTemplateColumns: chatGridTemplate(chatColumnWidths) }}
+      style={{ gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : chatGridTemplate(chatColumnWidths) }}
     >
-      <section className="shell-card overflow-hidden">
+      <section className={`shell-card overflow-hidden ${isMobile && mobilePane !== "list" ? "hidden" : ""}`}>
         <div className="border-b border-line p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -3396,9 +3537,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         <div className="h-16 w-1 rounded-full bg-line transition group-hover:bg-violet-400 group-active:bg-violet-500" />
       </div>
 
-      <section className="shell-card flex min-h-0 flex-col overflow-hidden">
+      <section className={`shell-card flex min-h-0 flex-col overflow-hidden ${isMobile && mobilePane !== "thread" ? "hidden" : ""}`}>
         <div className="flex items-center justify-between border-b border-line p-4">
           <div className="flex min-w-0 items-center gap-3">
+            {isMobile && (
+              <button
+                type="button"
+                onClick={() => setMobilePane("list")}
+                className="icon-button shrink-0"
+                title="Back to conversations"
+              >
+                <ArrowLeft size={16} />
+              </button>
+            )}
             {activeConversation && (
               conversationPeerUserId(activeConversation) ? (
                 <UserAvatar userId={conversationPeerUserId(activeConversation)} name={conversationTitle(activeConversation)} size={40} />
@@ -3749,7 +3900,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         <div className="h-16 w-1 rounded-full bg-line transition group-hover:bg-violet-400 group-active:bg-violet-500" />
       </div>
 
-      <section className="shell-card flex min-h-0 flex-col overflow-hidden">
+      <section className={`shell-card flex min-h-0 flex-col overflow-hidden ${isMobile ? "hidden" : ""}`}>
         <div className="border-b border-line p-2">
           <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1">
             <button

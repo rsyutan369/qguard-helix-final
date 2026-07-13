@@ -21,7 +21,6 @@ use commands::devices::*;
 use commands::keys::*;
 use commands::messaging::*;
 use commands::security::*;
-use commands::telemetry::*;
 use commands::calls::*;
 use commands::vault::*;
 use commands::workspace::*;
@@ -31,6 +30,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // On Android there is no APPDATA/HOME convention — the sandboxed app data
+    // dir is only knowable from the app handle, so it is resolved in setup().
+    #[cfg(not(mobile))]
     let data_dir = dirs_fallback().join("qguard-messaging");
 
     // Force EVERY WebRTC media path onto software on Windows BEFORE the WebView2
@@ -77,14 +79,26 @@ pub fn run() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init())
-        // Signed auto-updates (minisign pubkey + endpoints in tauri.conf.json)
-        // and relaunch-after-update support.
+        .plugin(tauri_plugin_dialog::init());
+
+    // Signed auto-updates (minisign pubkey + endpoints in tauri.conf.json) and
+    // relaunch-after-update support. Desktop-only: Android updates ship through
+    // APK/Play distribution, and neither plugin compiles for mobile targets.
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+
+    builder
         .setup(move |app| {
+            #[cfg(mobile)]
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("android app data dir is always available")
+                .join("qguard-messaging");
             let state = AppState::new(data_dir)?;
             app.manage(state);
 
@@ -144,11 +158,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            auth_register_user,
-            auth_login,
             auth_logout,
             auth_sync_session,
-            devices_register_current_device,
             devices_list_trust_center,
             devices_verify_qr,
             devices_approve_qr,
@@ -157,20 +168,19 @@ pub fn run() {
             keys_upload_identity_bundle,
             keys_upload_signed_prekey,
             keys_upload_one_time_prekeys,
-            keys_fetch_recipient_bundle,
+            keys_replenish_one_time_prekeys,
             keys_unlock_private_key,
             keys_rotate_prekeys,
-            keys_revoke_device,
             messaging_send_encrypted_message,
             messaging_receive_encrypted_message,
-            messaging_sync_queue,
             messaging_delete_encrypted_message,
-            messaging_mark_delivery_receipt,
             vault_encrypt_path,
             vault_decrypt_path,
             vault_encrypt_folder_path,
             vault_decrypt_folder_path,
             vault_delete_file,
+            vault_resolve_name,
+            vault_default_encrypt_dest,
             vault_recovery_status,
             vault_setup_recovery,
             vault_enable_recovery_with_phrase,
@@ -188,23 +198,21 @@ pub fn run() {
             workspace_reset_chat_lock,
             workspace_reset_vault,
             security_verify_fingerprint,
-            security_report_key_change,
             security_export_report,
             security_hardening_status,
             security_quantum_report,
-            telemetry_dashboard_snapshot,
             call_caller_setup,
             call_callee_setup,
             call_watchdog_begin,
             call_watchdog_end,
             call_gpu_safe_mode_status,
-            call_gpu_safe_mode_clear,
-            telemetry_recent_events
+            call_gpu_safe_mode_clear
         ])
         .run(tauri::generate_context!())
         .expect("error running QGuard Messaging");
 }
 
+#[cfg(not(mobile))]
 fn dirs_fallback() -> std::path::PathBuf {
     std::env::var_os("APPDATA")
         .map(std::path::PathBuf::from)

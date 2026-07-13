@@ -537,7 +537,9 @@ export default function SecurityVerificationPage({
   }
 
   return (
-    <div className="grid gap-4">
+    // grid-cols-[minmax(0,1fr)] keeps the wide device matrix scrolling inside
+    // its card instead of inflating the page past a phone viewport.
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       <div className="grid gap-4 lg:grid-cols-4">
         <section className="shell-card p-4">
           <ShieldCheck className="text-emerald-600" size={24} />

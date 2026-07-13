@@ -2,11 +2,14 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNo
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import OnboardingTour from "@/components/onboarding/OnboardingTour";
+import MobileShell from "@/components/mobile/MobileShell";
+import MobileOnboarding, { isMobileOnboardingPending } from "@/components/mobile/MobileOnboarding";
 import { CallProvider } from "@/components/call/CallProvider";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { useIsMobile } from "@/lib/use-mobile";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useWorkspaceLock, type UnlockMethod, type WorkspaceScope } from "@/lib/use-workspace-lock";
@@ -67,6 +70,8 @@ function ModuleFallback() {
 
 function ProtectedMessagingApp() {
   const auth = useAuth();
+  const isMobile = useIsMobile();
+  const [showMobileOnboarding, setShowMobileOnboarding] = useState(isMobileOnboardingPending);
   const { theme, toggleTheme } = useTheme();
   const { data, loading, error, refresh, liveEvents, liveStatus } = useDashboardData(auth.user, auth.session);
   const [page, setPage] = useState<Page>("dashboard");
@@ -137,6 +142,10 @@ function ProtectedMessagingApp() {
   }
 
   if (!auth.user || !auth.session) {
+    // First launch on a phone: branded splash + quantum-security tour before login.
+    if (isMobile && showMobileOnboarding) {
+      return <MobileOnboarding onDone={() => setShowMobileOnboarding(false)} />;
+    }
     return (
       <LoginPage
         loading={auth.loading}
@@ -269,6 +278,35 @@ function ProtectedMessagingApp() {
     }
   }
 
+  const moduleContent = (
+    <ErrorBoundary resetKey={page}>
+      <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
+    </ErrorBoundary>
+  );
+
+  // Phone layout (Android build + narrow windows): compact header, floating
+  // bottom navigation, and a module sheet replace the sidebar/top-bar chrome.
+  if (isMobile) {
+    return (
+      <CallProvider userId={auth.user.id}>
+        <UpdateBanner />
+        <MobileShell
+          activePage={page}
+          title={title}
+          modules={data.modules}
+          unreadMessages={unreadMessages}
+          liveStatus={liveStatus}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onNavigate={navigate}
+          onSignOut={auth.signOut}
+        >
+          {moduleContent}
+        </MobileShell>
+      </CallProvider>
+    );
+  }
+
   return (
     // CallProvider sits ABOVE the router and the workspace lock: incoming
     // quantum-encrypted calls ring on every page (dashboard, settings, locked
@@ -293,9 +331,7 @@ function ProtectedMessagingApp() {
             onStartTour={onboarding.replay}
           />
           <main className="min-h-0 flex-1 overflow-y-auto p-5">
-            <ErrorBoundary resetKey={page}>
-              <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
-            </ErrorBoundary>
+            {moduleContent}
           </main>
         </div>
         <OnboardingTour

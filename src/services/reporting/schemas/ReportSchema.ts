@@ -161,9 +161,12 @@ export const costForecastSchema = z.object({
 });
 export type CostForecast = z.infer<typeof costForecastSchema>;
 
-// I3#7 — Risk-trend scenario band (best / expected / worst case)
+// I3#7 — Risk-trend scenario band. Free-form label: scenarios are anchored to
+// the programme schedule (e.g. "Funded Programme (Expected)", "No Funded
+// Programme (Baseline)") — a fixed Best/Expected/Worst enum can't express them,
+// and older reports' labels remain valid strings.
 export const riskScenarioSchema = z.object({
-  scenario: z.enum(['Best Case', 'Expected', 'Worst Case']),
+  scenario: z.string(),
   month12: z.number(),
   month24: z.number(),
   month36: z.number(),

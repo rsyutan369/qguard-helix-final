@@ -370,7 +370,11 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
   }
 
   return (
-    <div className="grid gap-4">
+    // grid-cols-[minmax(0,1fr)]: without an explicit track, the wide audit table
+    // (min-w inside its scroller) inflates the implicit column past a phone
+    // viewport and drags EVERY card with it — the whole page pans sideways
+    // instead of the table scrolling inside its own card.
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       <div className="grid gap-4 lg:grid-cols-4">
         <section className="shell-card p-4">
           <ShieldCheck className="text-emerald-600" size={24} />

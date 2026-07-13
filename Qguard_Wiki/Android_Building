@@ -1,0 +1,305 @@
+Prompt: Build the Android Version of QGuard Messaging (Quantum-Safe Secure Messaging)
+
+Objective
+
+Inside:
+
+C:\Users\HP\Music\qguard-helix-final\qguard-messaging\src-tauri
+
+Design, build, and fully implement the Android version of the QGuard Messaging application.
+
+The Android application must be production-ready, modern, responsive, visually polished, and use the same enterprise-grade security architecture as the desktop version.
+
+Primary Goal
+
+Develop a complete Android application that provides:
+
+Secure Quantum-Safe Messaging
+Secure Voice Calls
+Secure Video Calls
+Secure File Sharing
+Quantum Vault (Local Encrypted Storage)
+Secure Contact Management
+Multi-device Login
+Authentication
+End-to-End Encryption
+Beautiful Material Design 3 Interface
+
+The application should feel comparable in quality to:
+
+Signal
+WhatsApp
+Telegram
+Proton Messenger
+
+while using the QGuard Helix Post-Quantum Cryptography architecture.
+
+Cryptographic Requirements (Mandatory)
+
+The Android application MUST ONLY use the QGuard Helix approved cryptographic stack.
+
+Key Exchange
+
+Default Profile
+
+ML-KEM-768
+X25519 + ML-KEM-768 Hybrid
+
+High Security Profile (Quantum Vault)
+
+ML-KEM-1024
+Digital Signatures
+
+Default
+
+ML-DSA-65
+Ed25519 + ML-DSA-65 Hybrid
+
+High Security Profile
+
+ML-DSA-87
+SLH-DSA
+Symmetric Encryption
+
+Use only:
+
+AES-256-GCM
+Key Derivation Function
+
+Primary
+
+HKDF-SHA3-256
+
+Compatibility Fallback
+
+HKDF-SHA-256
+Hashing
+
+Use
+
+SHA3-256
+SHA3-512
+TLS Configuration
+
+Implement
+
+TLS 1.3
+Hybrid TLS
+X25519MLKEM768 Preferred
+Controlled Classical Fallback Policy
+
+All secure connections must negotiate Hybrid PQC whenever supported.
+
+Security Requirements
+
+Verify that every cryptographic operation is actually using the approved algorithms.
+
+Review every module for:
+
+Hardcoded secrets
+Weak randomness
+Insecure storage
+Insecure API communication
+Certificate validation
+Key lifecycle
+Key rotation
+Secure memory handling
+Replay protection
+Perfect Forward Secrecy
+Authentication integrity
+
+Use Android Keystore whenever applicable.
+
+Android Features
+
+Implement:
+
+Secure Chat
+One-to-one messaging
+Group messaging
+Encrypted attachments
+Typing indicators
+Read receipts
+Message reactions
+Message editing
+Message deletion
+Message forwarding
+Reply threading
+Voice messages
+Disappearing messages
+Secure media sharing
+Voice Calls
+
+Implement:
+
+End-to-End encrypted voice calls
+Hybrid PQC session establishment
+ICE/STUN/TURN support
+Call quality monitoring
+Secure reconnect
+Video Calls
+
+Implement:
+
+End-to-End encrypted video calls
+Quantum-safe session negotiation
+Screen sharing
+Camera switching
+Noise suppression
+Adaptive bitrate
+Quantum Vault
+
+Implement a local encrypted vault for Android.
+
+Capabilities include:
+
+Encrypt files
+Encrypt folders
+Encrypt photos
+Encrypt videos
+Encrypt documents
+Encrypt backups
+Secure notes
+Recovery Key
+Local-only storage (no automatic cloud upload)
+
+High Security Mode must use:
+
+ML-KEM-1024
+ML-DSA-87
+AES-256-GCM
+User Interface
+
+Redesign the Android application using the provided UI inspiration.
+
+The uploaded image is a visual design reference only.
+
+Adopt the same visual language while maintaining the QGuard Helix branding.
+
+Design Goals:
+
+Clean
+Modern
+Premium
+Minimal
+Enterprise-grade
+Smooth animations
+Rounded cards
+Floating UI
+Soft shadows
+Glassmorphism (light version)
+Material Design 3
+Excellent spacing
+Professional typography
+Theme
+
+Create a beautiful Light Mode inspired by the provided Android UI reference.
+
+Design characteristics:
+
+White background
+Soft gray surfaces
+Purple gradient accents
+Light Blue QGuard highlights
+Rounded components
+Floating cards
+Beautiful onboarding
+Large illustrations
+Smooth transitions
+Material You styling
+Premium dashboard appearance
+
+Also maintain support for:
+
+Dark Mode
+
+Both themes should be switchable from Settings.
+
+Android Screens
+
+Design every screen from scratch.
+
+Include:
+
+Splash Screen
+Onboarding
+Login
+Register
+Verify Email
+Home
+Chats
+Contacts
+Calls
+Video Calls
+Quantum Vault
+Vault Details
+Encryption Progress
+Decryption
+Settings
+Privacy
+Security
+Notifications
+Devices
+Appearance
+Backup
+Recovery Key
+Profile
+About
+Performance
+
+Optimize for:
+
+Fast startup
+Low battery consumption
+Smooth scrolling
+Lazy loading
+Efficient caching
+Background synchronization
+Offline messaging queue
+Network resiliency
+Android Best Practices
+
+Use modern Android architecture.
+
+Preferred stack:
+
+Kotlin
+Jetpack Compose
+Material Design 3
+MVVM Architecture
+Hilt Dependency Injection
+Coroutines
+Flow
+Room Database
+Android Keystore
+WorkManager
+Navigation Compose
+
+Ensure clean architecture with modular, maintainable code.
+
+Compatibility
+
+Support:
+
+Android 10+
+Phones
+Tablets
+Foldables
+Portrait
+Landscape
+Verification
+
+Before considering the implementation complete, verify that:
+
+All approved cryptographic algorithms are correctly integrated.
+Secure chat uses authenticated end-to-end encryption.
+Voice and video calls establish hybrid post-quantum encrypted sessions.
+Quantum Vault correctly encrypts and decrypts local files using the approved cryptographic profile.
+Light and Dark themes are fully implemented and visually polished.
+The UI matches the quality of the provided Android design inspiration while preserving the QGuard Helix identity.
+The application builds successfully in Android Studio without errors or warnings.
+All unit, integration, and UI tests pass.
+No placeholder screens, mock data, or unfinished features remain.
+Expected Deliverable
+
+Produce a production-ready Android application that reflects the quality of leading secure messaging platforms such as Signal, Telegram, and WhatsApp, while uniquely integrating QGuard Helix's Post-Quantum Cryptography architecture. The final application should feature a polished Material Design 3 interface with both Light and Dark themes, complete functionality for secure messaging, encrypted voice/video communication, and a Quantum Vault, all built on a verified, enterprise-grade cryptographic foundation ready for deployment.

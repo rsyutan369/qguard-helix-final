@@ -2,11 +2,17 @@
 //! and Quantum Vault workspaces, enforced locally (no secret ever leaves the
 //! device or is sent to a server).
 //!
-//! * Both scopes store only a salt + an HKDF-SHA3-256 verifier (never the secret).
+//! * Both scopes store only a salt + a derived verifier (never the secret).
 //! * The **vault** scope additionally wraps the Vault Master Key (VMK) under a
 //!   password/PIN-derived key, so unlocking cryptographically decrypts the VMK
-//!   (`password -> HKDF-SHA3-256 -> unlock key -> VMK`). The legacy keychain-only
-//!   VMK copy is deleted at setup, so vault access truly requires the secret.
+//!   (`password -> Argon2id -> HKDF-SHA3-256 -> unlock key -> VMK`). The legacy
+//!   keychain-only VMK copy is deleted at setup, so vault access truly requires
+//!   the secret.
+//! * The secret is stretched with **Argon2id** (memory-hard) before any HKDF
+//!   subkey derivation, so an attacker who copies the encrypted credential file
+//!   off disk cannot brute-force a PIN/password at HKDF speed. Credentials
+//!   written before this hardening (`kdf_version` 0) still verify and are
+//!   re-sealed under Argon2id on their next successful unlock.
 //! * Anti-bruteforce: 5 fails -> 30s, 10 -> 5min, 20 -> lockdown (re-login).
 
 use chrono::Utc;
@@ -87,32 +93,90 @@ fn random_salt() -> Vec<u8> {
     salt.to_vec()
 }
 
-/// HKDF-SHA3-256 verifier (hash of an independent derived key) — validates a
-/// re-entered secret without revealing the unlock key.
-fn derive_verifier(salt: &[u8], secret: &[u8]) -> Result<String> {
-    let mut k = derive_32_with_salt(salt, secret, &crate::security::obf::workspace_chat_verifier_info())?;
+/// KDF versions for `WorkspaceCredential::kdf_version`.
+const KDF_LEGACY_HKDF: u8 = 0;
+const KDF_ARGON2ID_V1: u8 = 1;
+
+/// Argon2id parameters: 64 MiB, 3 passes, 1 lane (OWASP-recommended class).
+/// ~0.3–1s per stretch — slow enough to make offline brute force of a stolen
+/// credential file expensive, fast enough for an interactive unlock gate.
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+const ARGON2_ITERATIONS: u32 = 3;
+const ARGON2_LANES: u32 = 1;
+
+/// Memory-hard Argon2id prehash of the unlock secret.
+fn argon2id_prehash(salt: &[u8], secret: &[u8]) -> Result<[u8; 32]> {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    let params = Params::new(ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_LANES, Some(32))
+        .map_err(|e| QGuardError::Crypto(format!("argon2id params: {e}")))?;
+    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut out = [0u8; 32];
+    argon
+        .hash_password_into(secret, salt, &mut out)
+        .map_err(|e| QGuardError::Crypto(format!("argon2id stretch failed: {e}")))?;
+    Ok(out)
+}
+
+/// Stretch the unlock secret into the input keying material every HKDF subkey
+/// (verifier + VMK wrap key) is derived from. Legacy (v0) feeds the raw secret
+/// straight into HKDF — kept only so pre-upgrade credentials still verify.
+fn secret_ikm(kdf_version: u8, salt: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
+    match kdf_version {
+        KDF_LEGACY_HKDF => Ok(secret.to_vec()),
+        KDF_ARGON2ID_V1 => Ok(argon2id_prehash(salt, secret)?.to_vec()),
+        other => Err(QGuardError::Crypto(format!(
+            "workspace credential uses unsupported KDF version {other}; update QGuard Messaging"
+        ))),
+    }
+}
+
+/// Run the (deliberately slow, memory-hard) secret stretch on the blocking
+/// thread pool. Workspace commands are async so the Argon2id pass never runs on
+/// the MAIN thread — a sync command would freeze the window event loop for the
+/// full stretch (the same freeze class the vault stream commands fixed).
+async fn stretch_secret(kdf_version: u8, salt: Vec<u8>, mut secret: Vec<u8>) -> Result<Vec<u8>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ikm = secret_ikm(kdf_version, &salt, &secret);
+        secret.zeroize();
+        ikm
+    })
+    .await
+    .map_err(|e| QGuardError::Crypto(format!("secret stretch worker failed: {e}")))?
+}
+
+/// Verifier (hash of an independent HKDF subkey) — validates a re-entered
+/// secret without revealing the unlock key.
+fn derive_verifier_from_ikm(salt: &[u8], ikm: &[u8]) -> Result<String> {
+    let mut k = derive_32_with_salt(salt, ikm, &crate::security::obf::workspace_chat_verifier_info())?;
     let verifier = sha3_hex(&k);
     k.zeroize();
     Ok(verifier)
 }
 
-/// HKDF-SHA3-256 unlock key (distinct context from the verifier) that wraps the VMK.
-fn derive_vault_wrap_key(salt: &[u8], secret: &[u8]) -> Result<[u8; KEY_SIZE]> {
-    derive_32_with_salt(salt, secret, &crate::security::obf::workspace_vault_unlock_info())
+/// Unlock key (distinct HKDF context from the verifier) that wraps the VMK.
+fn derive_vault_wrap_key_from_ikm(salt: &[u8], ikm: &[u8]) -> Result<[u8; KEY_SIZE]> {
+    derive_32_with_salt(salt, ikm, &crate::security::obf::workspace_vault_unlock_info())
 }
 
-/// AES-256-GCM-wrap a serialized `PersistedVaultMaster` under the secret-derived
-/// unlock key. Shared by vault setup and vault reset so the wrap format stays in
-/// lockstep. The secret is passed as bytes; both the derived key and the plaintext
-/// serialization are zeroized before returning.
-fn wrap_master_under_secret(
+/// AES-256-GCM-wrap a serialized `PersistedVaultMaster` under the unlock key
+/// derived from the stretched secret. Shared by vault setup, vault reset, and
+/// the KDF upgrade so the wrap format stays in lockstep. Both the derived key
+/// and the plaintext serialization are zeroized before returning.
+fn wrap_master_under_ikm(
     salt: &[u8],
-    secret: &[u8],
+    ikm: &[u8],
     master: &PersistedVaultMaster,
 ) -> Result<EncryptedEnvelope> {
     let mut serialized = serde_json::to_vec(master)
         .map_err(|e| QGuardError::Storage(format!("encode vault master for wrap: {e}")))?;
-    let mut wrap_key = derive_vault_wrap_key(salt, secret)?;
+    let wrap_key = derive_vault_wrap_key_from_ikm(salt, ikm);
+    let mut wrap_key = match wrap_key {
+        Ok(key) => key,
+        Err(e) => {
+            serialized.zeroize();
+            return Err(e);
+        }
+    };
     let wrapped = symmetric::encrypt(&wrap_key, &serialized, &crate::security::obf::workspace_vault_wrap_aad());
     wrap_key.zeroize();
     serialized.zeroize();
@@ -191,7 +255,7 @@ pub fn workspace_status(state: State<'_, AppState>) -> Result<WorkspaceStatus> {
 }
 
 #[tauri::command]
-pub fn workspace_setup_credential(
+pub async fn workspace_setup_credential(
     state: State<'_, AppState>,
     scope: String,
     method: String,
@@ -213,8 +277,23 @@ pub fn workspace_setup_credential(
     }
 
     let salt = random_salt();
-    let verifier = derive_verifier(&salt, secret.as_bytes())?;
-    let mut credential = WorkspaceCredential { salt: salt.clone(), verifier, wrapped_master: None };
+    let stretched = stretch_secret(KDF_ARGON2ID_V1, salt.clone(), secret.as_bytes().to_vec()).await;
+    secret.zeroize();
+    let mut ikm = stretched?;
+    let verifier = derive_verifier_from_ikm(&salt, &ikm);
+    let verifier = match verifier {
+        Ok(v) => v,
+        Err(e) => {
+            ikm.zeroize();
+            return Err(e);
+        }
+    };
+    let mut credential = WorkspaceCredential {
+        salt: salt.clone(),
+        verifier,
+        wrapped_master: None,
+        kdf_version: KDF_ARGON2ID_V1,
+    };
 
     let mut first_vault_setup = false;
     if scope_name == SCOPE_VAULT {
@@ -222,24 +301,34 @@ pub fn workspace_setup_credential(
         // (and migrate away from the legacy keychain copy). Adding a second method:
         // the vault must already be unlocked so we wrap the in-session VMK.
         let master = if record.configured() {
-            state.unlocked_vault_master()?
+            state.unlocked_vault_master()
         } else {
             first_vault_setup = true;
-            state.load_or_generate_vault_master(&user_id)?
+            state.load_or_generate_vault_master(&user_id)
         };
-        let mut serialized = serde_json::to_vec(&master)
-            .map_err(|e| QGuardError::Storage(format!("encode vault master for wrap: {e}")))?;
-        let mut wrap_key = derive_vault_wrap_key(&salt, secret.as_bytes())?;
-        let wrapped = symmetric::encrypt(&wrap_key, &serialized, &crate::security::obf::workspace_vault_wrap_aad());
-        wrap_key.zeroize();
-        serialized.zeroize();
-        credential.wrapped_master = Some(wrapped?);
+        let master = match master {
+            Ok(m) => m,
+            Err(e) => {
+                ikm.zeroize();
+                return Err(e);
+            }
+        };
+        let wrapped = wrap_master_under_ikm(&salt, &ikm, &master);
+        let wrapped = match wrapped {
+            Ok(w) => w,
+            Err(e) => {
+                ikm.zeroize();
+                return Err(e);
+            }
+        };
+        credential.wrapped_master = Some(wrapped);
 
         if first_vault_setup {
             state.delete_vault_master_file(&user_id)?;
             state.set_vault_session(master)?;
         }
     }
+    ikm.zeroize();
 
     match method.as_str() {
         METHOD_PASSWORD => record.password = Some(credential),
@@ -252,7 +341,6 @@ pub fn workspace_setup_credential(
     state.save_workspace_scope(&user_id, &record)?;
     state.mark_workspace_unlocked(scope_name)?;
 
-    secret.zeroize();
     state.audit_info(
         "workspace_credential_set",
         &format!("Workspace {scope_name} {method} configured"),
@@ -260,7 +348,7 @@ pub fn workspace_setup_credential(
     if first_vault_setup {
         state.touch_telemetry(
             "vault",
-            "Quantum Vault unlock configured (password -> HKDF-SHA3-256 -> VMK)",
+            "Quantum Vault unlock configured (password -> Argon2id -> HKDF-SHA3-256 -> VMK)",
             100,
         );
     }
@@ -269,7 +357,7 @@ pub fn workspace_setup_credential(
 }
 
 #[tauri::command]
-pub fn workspace_unlock(
+pub async fn workspace_unlock(
     state: State<'_, AppState>,
     scope: String,
     method: String,
@@ -279,23 +367,48 @@ pub fn workspace_unlock(
     let user_id = state.user_id()?;
     let scope_name = normalize_scope(&scope)?;
 
+    // Keep one owned copy of the secret for the whole flow (verification +
+    // optional KDF upgrade), zeroized on every exit path below.
+    let mut secret_bytes = secret.as_bytes().to_vec();
+    secret.zeroize();
+
+    let outcome = unlock_with_secret(&state, &user_id, scope_name, &method, &secret_bytes).await;
+    secret_bytes.zeroize();
+    outcome
+}
+
+async fn unlock_with_secret(
+    state: &State<'_, AppState>,
+    user_id: &str,
+    scope_name: &'static str,
+    method: &str,
+    secret_bytes: &[u8],
+) -> Result<ScopeStatus> {
     let mut record = state
-        .load_workspace_scope(&user_id, scope_name)?
+        .load_workspace_scope(user_id, scope_name)?
         .ok_or_else(|| QGuardError::NotFound("workspace is not configured yet".to_string()))?;
     check_lockout(&record)?;
 
-    let credential = credential_for(&record, &method)
+    let credential = credential_for(&record, method)
         .ok_or_else(|| QGuardError::InvalidInput(format!("{method} is not set up for this workspace")))?
         .clone();
 
-    let verifier = derive_verifier(&credential.salt, secret.as_bytes())?;
+    let mut ikm = stretch_secret(credential.kdf_version, credential.salt.clone(), secret_bytes.to_vec()).await?;
+    let verifier = derive_verifier_from_ikm(&credential.salt, &ikm);
+    let verifier = match verifier {
+        Ok(v) => v,
+        Err(e) => {
+            ikm.zeroize();
+            return Err(e);
+        }
+    };
     let ok = verifier == credential.verifier;
 
     if !ok {
+        ikm.zeroize();
         apply_failed_attempt(&mut record);
         let lockdown = record.lockdown;
-        state.save_workspace_scope(&user_id, &record)?;
-        secret.zeroize();
+        state.save_workspace_scope(user_id, &record)?;
         state.audit_info("workspace_unlock_failed", &format!("Failed {scope_name} unlock"));
         if lockdown {
             return Err(QGuardError::Trust(
@@ -306,38 +419,95 @@ pub fn workspace_unlock(
     }
 
     // For the vault, the real unlock is decrypting the VMK with the derived key.
+    let mut unlocked_master: Option<PersistedVaultMaster> = None;
     if scope_name == SCOPE_VAULT {
-        let envelope = credential
-            .wrapped_master
-            .as_ref()
-            .ok_or_else(|| QGuardError::Crypto("vault credential is missing its wrapped key".to_string()))?;
-        let mut wrap_key = derive_vault_wrap_key(&credential.salt, secret.as_bytes())?;
+        let envelope = match credential.wrapped_master.as_ref() {
+            Some(e) => e,
+            None => {
+                ikm.zeroize();
+                return Err(QGuardError::Crypto("vault credential is missing its wrapped key".to_string()));
+            }
+        };
+        let wrap_key = derive_vault_wrap_key_from_ikm(&credential.salt, &ikm);
+        let mut wrap_key = match wrap_key {
+            Ok(key) => key,
+            Err(e) => {
+                ikm.zeroize();
+                return Err(e);
+            }
+        };
         let decrypted = symmetric::decrypt(&wrap_key, envelope, &crate::security::obf::workspace_vault_wrap_aad());
         wrap_key.zeroize();
         let mut plaintext = match decrypted {
             Ok(p) => p,
             Err(_) => {
+                ikm.zeroize();
                 apply_failed_attempt(&mut record);
-                state.save_workspace_scope(&user_id, &record)?;
-                secret.zeroize();
+                state.save_workspace_scope(user_id, &record)?;
                 return Err(QGuardError::Trust("Incorrect password or PIN.".to_string()));
             }
         };
         let master = serde_json::from_slice(&plaintext)
-            .map_err(|e| QGuardError::Storage(format!("decode unlocked vault master: {e}")))?;
+            .map_err(|e| QGuardError::Storage(format!("decode unlocked vault master: {e}")));
         plaintext.zeroize();
+        let master: PersistedVaultMaster = match master {
+            Ok(m) => m,
+            Err(e) => {
+                ikm.zeroize();
+                return Err(e);
+            }
+        };
+        unlocked_master = Some(master);
+    }
+    ikm.zeroize();
+
+    // Transparent KDF hardening: a credential verified under the legacy
+    // direct-HKDF derivation is re-sealed under Argon2id (fresh salt) now that
+    // the secret is proven. Best-effort — a failure keeps the legacy credential
+    // working and the next successful unlock retries the upgrade.
+    if credential.kdf_version < KDF_ARGON2ID_V1 {
+        let upgrade: Result<WorkspaceCredential> = async {
+            let new_salt = random_salt();
+            let mut new_ikm = stretch_secret(KDF_ARGON2ID_V1, new_salt.clone(), secret_bytes.to_vec()).await?;
+            let new_verifier = derive_verifier_from_ikm(&new_salt, &new_ikm);
+            let wrapped = unlocked_master
+                .as_ref()
+                .map(|master| wrap_master_under_ikm(&new_salt, &new_ikm, master))
+                .transpose();
+            new_ikm.zeroize();
+            Ok(WorkspaceCredential {
+                salt: new_salt,
+                verifier: new_verifier?,
+                wrapped_master: wrapped?,
+                kdf_version: KDF_ARGON2ID_V1,
+            })
+        }
+        .await;
+        if let Ok(upgraded) = upgrade {
+            match method {
+                METHOD_PASSWORD => record.password = Some(upgraded),
+                METHOD_PIN => record.pin = Some(upgraded),
+                _ => {}
+            }
+            state.audit_info(
+                "workspace_kdf_upgraded",
+                &format!("Workspace {scope_name} {method} credential re-sealed with Argon2id"),
+            );
+        }
+    }
+
+    if let Some(master) = unlocked_master {
         state.set_vault_session(master)?;
     }
 
     record.failed_attempts = 0;
     record.lockout_until = None;
-    state.save_workspace_scope(&user_id, &record)?;
+    state.save_workspace_scope(user_id, &record)?;
     state.mark_workspace_unlocked(scope_name)?;
-    secret.zeroize();
 
     state.audit_info("workspace_unlock", &format!("Workspace {scope_name} unlocked"));
-    let loaded = state.load_workspace_scope(&user_id, scope_name)?;
-    Ok(scope_status(&state, scope_name, &loaded))
+    let loaded = state.load_workspace_scope(user_id, scope_name)?;
+    Ok(scope_status(state, scope_name, &loaded))
 }
 
 #[tauri::command]
@@ -405,7 +575,7 @@ pub fn workspace_reset_chat_lock(state: State<'_, AppState>) -> Result<ScopeStat
 ///   re-authenticate the account password. Old files are only recoverable if
 ///   the user still has their recovery key.
 #[tauri::command]
-pub fn workspace_reset_vault(
+pub async fn workspace_reset_vault(
     state: State<'_, AppState>,
     recovery_key: Option<String>,
     method: String,
@@ -451,27 +621,28 @@ pub fn workspace_reset_vault(
         configured_at: Utc::now(),
     };
     let salt = random_salt();
-    let verifier = derive_verifier(&salt, secret.as_bytes())?;
-    let wrapped = wrap_master_under_secret(&salt, secret.as_bytes(), &new_master);
-    let wrapped = match wrapped {
-        Ok(w) => w,
-        Err(e) => {
-            secret.zeroize();
-            return Err(e);
-        }
+    let stretched = stretch_secret(KDF_ARGON2ID_V1, salt.clone(), secret.as_bytes().to_vec()).await;
+    secret.zeroize();
+    let mut ikm = stretched?;
+    let sealed = derive_verifier_from_ikm(&salt, &ikm)
+        .and_then(|verifier| Ok((verifier, wrap_master_under_ikm(&salt, &ikm, &new_master)?)));
+    ikm.zeroize();
+    let (verifier, wrapped) = sealed?;
+    let credential = WorkspaceCredential {
+        salt,
+        verifier,
+        wrapped_master: Some(wrapped),
+        kdf_version: KDF_ARGON2ID_V1,
     };
-    let credential = WorkspaceCredential { salt, verifier, wrapped_master: Some(wrapped) };
 
     let mut record = PersistedWorkspaceScope::new(SCOPE_VAULT);
     match method.as_str() {
         METHOD_PASSWORD => record.password = Some(credential),
         METHOD_PIN => record.pin = Some(credential),
         _ => {
-            secret.zeroize();
             return Err(QGuardError::InvalidInput(format!("unknown unlock method: {method}")));
         }
     }
-    secret.zeroize();
 
     // Legacy keychain VMK (if any) must not linger — the VMK stays password-wrapped.
     state.delete_vault_master_file(&user_id)?;
@@ -497,15 +668,44 @@ pub fn workspace_reset_vault(
 mod tests {
     use super::*;
 
+    fn verifier_for(kdf_version: u8, salt: &[u8], secret: &[u8]) -> String {
+        let ikm = secret_ikm(kdf_version, salt, secret).unwrap();
+        derive_verifier_from_ikm(salt, &ikm).unwrap()
+    }
+
     #[test]
     fn verifier_is_deterministic_and_secret_specific() {
         let salt = random_salt();
-        let a = derive_verifier(&salt, b"correct horse battery staple").unwrap();
-        assert_eq!(a, derive_verifier(&salt, b"correct horse battery staple").unwrap());
-        assert_ne!(a, derive_verifier(&salt, b"a different secret entirely").unwrap());
+        let a = verifier_for(KDF_ARGON2ID_V1, &salt, b"correct horse battery staple");
+        assert_eq!(a, verifier_for(KDF_ARGON2ID_V1, &salt, b"correct horse battery staple"));
+        assert_ne!(a, verifier_for(KDF_ARGON2ID_V1, &salt, b"a different secret entirely"));
         // A different salt yields a different verifier for the same secret.
         let salt2 = random_salt();
-        assert_ne!(a, derive_verifier(&salt2, b"correct horse battery staple").unwrap());
+        assert_ne!(a, verifier_for(KDF_ARGON2ID_V1, &salt2, b"correct horse battery staple"));
+    }
+
+    #[test]
+    fn kdf_versions_are_domain_separated_and_legacy_matches_old_formula() {
+        let salt = random_salt();
+        let secret = b"correct horse battery staple";
+
+        // Legacy (v0) ikm is the raw secret — exactly what the pre-upgrade code
+        // fed HKDF, so credentials written before the upgrade keep verifying.
+        let legacy_ikm = secret_ikm(KDF_LEGACY_HKDF, &salt, secret).unwrap();
+        assert_eq!(legacy_ikm, secret.to_vec());
+
+        // Argon2id ikm is deterministic but different from the raw secret, so
+        // the two versions can never validate against each other's verifier.
+        let hardened_ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, secret).unwrap();
+        assert_eq!(hardened_ikm, secret_ikm(KDF_ARGON2ID_V1, &salt, secret).unwrap());
+        assert_ne!(hardened_ikm, legacy_ikm);
+        assert_ne!(
+            verifier_for(KDF_LEGACY_HKDF, &salt, secret),
+            verifier_for(KDF_ARGON2ID_V1, &salt, secret),
+        );
+
+        // Unknown future versions must fail closed, never fall back to legacy.
+        assert!(secret_ikm(99, &salt, secret).is_err());
     }
 
     #[test]
@@ -515,16 +715,59 @@ mod tests {
         let vmk_blob: &[u8] = b"serialized-persisted-vault-master-stand-in-bytes";
         let aad = crate::security::obf::workspace_vault_wrap_aad();
 
-        let key = derive_vault_wrap_key(&salt, secret).unwrap();
+        let ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, secret).unwrap();
+        let key = derive_vault_wrap_key_from_ikm(&salt, &ikm).unwrap();
         let env = symmetric::encrypt(&key, vmk_blob, &aad).unwrap();
 
         // Correct secret re-derives the key and recovers the VMK material.
-        let good = derive_vault_wrap_key(&salt, secret).unwrap();
+        let good_ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, secret).unwrap();
+        let good = derive_vault_wrap_key_from_ikm(&salt, &good_ikm).unwrap();
         assert_eq!(symmetric::decrypt(&good, &env, &aad).unwrap(), vmk_blob);
 
         // Wrong secret -> AEAD authentication fails (no VMK recovered).
-        let bad = derive_vault_wrap_key(&salt, b"the-wrong-password-000").unwrap();
+        let bad_ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, b"the-wrong-password-000").unwrap();
+        let bad = derive_vault_wrap_key_from_ikm(&salt, &bad_ikm).unwrap();
         assert!(symmetric::decrypt(&bad, &env, &aad).is_err());
+    }
+
+    #[test]
+    fn legacy_wrapped_master_upgrades_to_argon2id_and_round_trips() {
+        // Simulates the transparent unlock-time upgrade: a VMK wrapped under the
+        // legacy direct-HKDF key is recovered with the legacy derivation, then
+        // re-sealed under Argon2id, and the hardened credential recovers the
+        // exact same VMK afterwards.
+        let master = PersistedVaultMaster {
+            version: 1,
+            vmk: symmetric::random_key(),
+            signer: VaultSigningKeypair::generate(),
+            configured_at: Utc::now(),
+        };
+        let secret = b"an-older-strong-secret-42";
+        let aad = crate::security::obf::workspace_vault_wrap_aad();
+
+        // Legacy credential (as written before the upgrade).
+        let legacy_salt = random_salt();
+        let legacy_ikm = secret_ikm(KDF_LEGACY_HKDF, &legacy_salt, secret).unwrap();
+        let legacy_env = wrap_master_under_ikm(&legacy_salt, &legacy_ikm, &master).unwrap();
+
+        // Unlock with the legacy derivation still recovers the VMK.
+        let legacy_key = derive_vault_wrap_key_from_ikm(&legacy_salt, &legacy_ikm).unwrap();
+        let plaintext = symmetric::decrypt(&legacy_key, &legacy_env, &aad).unwrap();
+        let recovered: PersistedVaultMaster = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(recovered.vmk, master.vmk);
+
+        // Upgrade path: re-seal the recovered master under Argon2id + new salt.
+        let new_salt = random_salt();
+        let new_ikm = secret_ikm(KDF_ARGON2ID_V1, &new_salt, secret).unwrap();
+        let upgraded_env = wrap_master_under_ikm(&new_salt, &new_ikm, &recovered).unwrap();
+        let upgraded_key = derive_vault_wrap_key_from_ikm(&new_salt, &new_ikm).unwrap();
+        let upgraded_plain = symmetric::decrypt(&upgraded_key, &upgraded_env, &aad).unwrap();
+        let upgraded: PersistedVaultMaster = serde_json::from_slice(&upgraded_plain).unwrap();
+        assert_eq!(upgraded.vmk, master.vmk, "KDF upgrade must preserve the VMK exactly");
+
+        // The legacy derivation can no longer open the upgraded envelope.
+        let stale_key = derive_vault_wrap_key_from_ikm(&new_salt, secret).unwrap();
+        assert!(symmetric::decrypt(&stale_key, &upgraded_env, &aad).is_err());
     }
 
     #[test]
@@ -566,15 +809,17 @@ mod tests {
         };
         let salt = random_salt();
         let secret = b"a-fresh-strong-secret-123";
-        let env = wrap_master_under_secret(&salt, secret, &master).unwrap();
+        let ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, secret).unwrap();
+        let env = wrap_master_under_ikm(&salt, &ikm, &master).unwrap();
         let aad = crate::security::obf::workspace_vault_wrap_aad();
 
-        let good = derive_vault_wrap_key(&salt, secret).unwrap();
+        let good = derive_vault_wrap_key_from_ikm(&salt, &ikm).unwrap();
         let plaintext = symmetric::decrypt(&good, &env, &aad).unwrap();
         let restored: PersistedVaultMaster = serde_json::from_slice(&plaintext).unwrap();
         assert_eq!(restored.vmk, master.vmk, "reset must preserve the new VMK exactly");
 
-        let bad = derive_vault_wrap_key(&salt, b"the-wrong-secret-000").unwrap();
+        let bad_ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, b"the-wrong-secret-000").unwrap();
+        let bad = derive_vault_wrap_key_from_ikm(&salt, &bad_ikm).unwrap();
         assert!(symmetric::decrypt(&bad, &env, &aad).is_err());
     }
 

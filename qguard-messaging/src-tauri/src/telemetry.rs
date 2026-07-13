@@ -54,14 +54,3 @@ impl Default for QuantumSecurityReport {
         }
     }
 }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DashboardSnapshot {
-    pub e2ee_status: String,
-    pub pqc_status: String,
-    pub active_sessions: u32,
-    pub vault_storage: String,
-    pub device_count: u32,
-    pub quantum_safe_score: u8,
-    pub hndl_status: String,
-}

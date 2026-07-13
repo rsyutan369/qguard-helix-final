@@ -2096,11 +2096,15 @@ async function loadScannerTables(client: any, userId: string) {
   }
 
   try {
+    // Explicit limits: without .limit() PostgREST silently caps at its default
+    // page size (1000 rows) — an undocumented truncation for large estates.
+    // These caps are deliberate and generous; tenant-wide headline counts come
+    // from exact COUNT queries in quantum-readiness.ts, not from page lengths.
     const [assets, inventory, exposures, results, sessions, vulnerabilities] = await Promise.all([
-      client.from('assets').select('*').eq('user_id', userId).order('updated_at', { ascending: false }),
-      client.from('crypto_inventory').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-      client.from('crypto_exposures').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
-      client.from('pqc_scan_results').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      client.from('assets').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(4000),
+      client.from('crypto_inventory').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(6000),
+      client.from('crypto_exposures').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
+      client.from('pqc_scan_results').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
       client.from('pqc_scan_sessions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
       client.from('vulnerabilities').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000),
     ])

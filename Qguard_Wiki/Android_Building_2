@@ -1,0 +1,578 @@
+QGuard Messaging Android Native Cryptography Implementation Prompt
+Mission
+
+Inside the Android project, completely integrate the Android Native Development Kit (NDK r27) and migrate all cryptographic operations from JVM-managed implementations to high-performance native libraries.
+
+The objective is to build a production-ready Android secure messaging platform using the official QGuard Helix Post-Quantum Cryptography Architecture.
+
+Primary Objectives
+
+Implement the following native stack:
+
+Android NDK r27
+CMake
+JNI Bridge
+liboqs
+OQS-OpenSSL
+OpenSSL 3.x
+WebRTC Native
+libsodium (if required)
+Android Keystore
+Secure Memory Handling
+
+The Android application must use native code for all security-critical cryptographic operations.
+
+Architecture
+
+Implement the following architecture:
+
+Jetpack Compose UI
+        │
+ViewModels
+        │
+Repositories
+        │
+Security Layer
+        │
+JNI Bridge
+        │
+──────────────────────────────────────
+Native Layer (NDK r27)
+──────────────────────────────────────
+liboqs
+OpenSSL 3.x
+OQS Provider
+WebRTC
+libsodium
+Quantum Engine
+        │
+Android ARM64 Device
+
+The native layer must be isolated from UI logic.
+
+Configure Android NDK
+
+Install and configure:
+
+Android NDK r27 (latest stable)
+CMake
+Ninja
+LLVM/Clang
+
+Configure Gradle to build native libraries.
+
+Example ABI targets:
+
+arm64-v8a (primary)
+armeabi-v7a (optional)
+x86_64 (emulator support)
+
+Enable Release and Debug builds.
+
+CMake Project
+
+Create a modular CMake structure.
+
+Example:
+
+native/
+
+    CMakeLists.txt
+
+    crypto/
+        liboqs
+        openssl
+        oqs-provider
+
+    webrtc/
+
+    quantum/
+
+    vault/
+
+    jni/
+
+    memory/
+
+    utils/
+
+Avoid a monolithic build.
+
+JNI Layer
+
+Create a clean JNI bridge.
+
+Example modules:
+
+QuantumCryptoJNI
+
+QuantumVaultJNI
+
+MessagingJNI
+
+SignatureJNI
+
+TLSJNI
+
+WebRTCJNI
+
+RandomJNI
+
+HashJNI
+
+KDFJNI
+
+JNI should expose only secure APIs to Kotlin.
+
+Do not expose internal cryptographic details directly.
+
+Integrate liboqs
+
+Compile and integrate:
+
+Open Quantum Safe (liboqs)
+
+Enable:
+
+ML-KEM
+
+ML-DSA
+
+SLH-DSA
+
+Future algorithm upgrades must be configurable through Crypto Agility policies.
+
+Implement Approved Cryptographic Stack
+Key Exchange
+
+Default
+
+ML-KEM-768
+
+Hybrid
+
+X25519 + ML-KEM-768
+
+Quantum Vault Profile
+
+ML-KEM-1024
+Digital Signatures
+
+Default
+
+ML-DSA-65
+
+Hybrid
+
+Ed25519 + ML-DSA-65
+
+High Security
+
+ML-DSA-87
+
+Fallback
+
+SLH-DSA
+Symmetric Encryption
+
+Only
+
+AES-256-GCM
+
+Never use:
+
+AES-CBC
+
+ECB
+
+RC4
+
+DES
+
+3DES
+
+ChaCha20 unless explicitly allowed by policy.
+
+KDF
+
+Primary
+
+HKDF-SHA3-256
+
+Compatibility
+
+HKDF-SHA-256
+
+Hashing
+
+Implement:
+
+SHA3-256
+
+SHA3-512
+
+Optional:
+
+SHAKE256
+
+TLS
+
+Compile OQS-OpenSSL.
+
+Implement:
+
+TLS 1.3
+
+Hybrid TLS
+
+Preferred:
+
+X25519MLKEM768
+
+Support:
+
+ML-KEM-768
+
+ML-KEM-1024
+
+Controlled fallback:
+
+X25519
+
+Fallback must be policy-driven.
+
+Secure Chat
+
+Native encryption pipeline:
+
+Message
+
+↓
+
+Compress
+
+↓
+
+HKDF
+
+↓
+
+AES-256-GCM
+
+↓
+
+Sign (ML-DSA)
+
+↓
+
+Hybrid Key Exchange
+
+↓
+
+TLS 1.3
+
+↓
+
+Network
+
+All session keys must originate from the native layer.
+
+Voice and Video Calls
+
+Integrate native WebRTC.
+
+Secure session establishment using:
+
+Hybrid PQC handshake
+
+Encrypt:
+
+Audio
+
+Video
+
+Screen sharing
+
+File transfer
+
+Call metadata
+
+Implement:
+
+Perfect Forward Secrecy
+
+Session rekeying
+
+ICE
+
+TURN
+
+STUN
+
+Adaptive bitrate
+
+Packet loss recovery
+
+Quantum Vault
+
+Create a native encryption engine.
+
+Support:
+
+Photos
+
+Videos
+
+Documents
+
+ZIP
+
+PDF
+
+Backups
+
+Database exports
+
+Encrypted archives
+
+High Security Mode:
+
+ML-KEM-1024
+
+ML-DSA-87
+
+AES-256-GCM
+
+Generate encrypted container format:
+
+.qvault
+
+Implement:
+
+Encrypt
+
+Decrypt
+
+Integrity verification
+
+Recovery Key generation
+
+Secure metadata
+
+Android Keystore
+
+Store:
+
+Master keys
+
+Device identity
+
+Recovery keys
+
+Signing keys
+
+Never expose private keys to Kotlin.
+
+Use hardware-backed security when available.
+
+Secure Memory
+
+Implement native secure memory.
+
+Include:
+
+Zeroization
+
+Locked memory
+
+Constant-time comparison
+
+Protected buffers
+
+Automatic cleanup
+
+Prevent sensitive data from remaining in RAM after use.
+
+Random Number Generation
+
+Use:
+
+Android SecureRandom
+
+Native entropy
+
+Hardware RNG (when available)
+
+Never use insecure pseudo-random generators.
+
+Performance
+
+Optimize:
+
+ARM64
+
+NEON instructions
+
+Hardware AES
+
+SIMD
+
+Thread pools
+
+Memory allocation
+
+Zero-copy buffers
+
+Minimize JNI overhead.
+
+Security Review
+
+Verify:
+
+No hardcoded secrets
+
+No plaintext keys
+
+No insecure logging
+
+No weak algorithms
+
+No deprecated crypto
+
+No insecure JNI exposure
+
+No buffer overflows
+
+No memory leaks
+
+No race conditions
+
+No timing attacks
+
+No replay attacks
+
+No certificate bypass
+
+No insecure fallback logic
+
+Testing
+
+Implement:
+
+Unit Tests
+
+Instrumentation Tests
+
+Native Tests
+
+JNI Tests
+
+Cryptographic Validation Tests
+
+TLS Handshake Tests
+
+Quantum Vault Tests
+
+Messaging Tests
+
+Video Call Tests
+
+Voice Call Tests
+
+Performance Benchmarks
+
+Stress Tests
+
+Fuzz Testing
+
+Memory Leak Detection
+
+Android Compatibility
+
+Support:
+
+Android 10+
+
+Android 11
+
+Android 12
+
+Android 13
+
+Android 14
+
+Android 15
+
+Support:
+
+Phones
+
+Tablets
+
+Foldables
+
+ARM64
+
+Landscape
+
+Portrait
+
+Build System
+
+Verify:
+
+Gradle
+
+CMake
+
+NDK r27
+
+Android Studio
+
+Release build
+
+Debug build
+
+CI/CD compatibility
+
+Reproducible builds
+
+No compiler warnings
+
+No linker warnings
+
+No deprecated APIs
+
+Documentation
+
+Generate comprehensive documentation:
+
+ANDROID_NATIVE_ARCHITECTURE.md
+JNI_GUIDE.md
+CRYPTOGRAPHY.md
+WEBRTC_SECURITY.md
+QUANTUM_VAULT.md
+TLS_CONFIGURATION.md
+BUILD_NATIVE.md
+NDK_SETUP.md
+PERFORMANCE_TUNING.md
+SECURITY_CHECKLIST.md
+
+Document every native module, build dependency, JNI interface, cryptographic flow, and deployment step.
+
+Acceptance Criteria
+
+The implementation is complete only when all of the following are true:
+
+Android NDK r27 is fully configured and builds successfully.
+liboqs, OQS-OpenSSL, OpenSSL, and WebRTC are compiled and integrated as native libraries.
+All approved QGuard Helix cryptographic algorithms are implemented and verified.
+Secure messaging, encrypted voice/video calls, and Quantum Vault operations use the native cryptography layer.
+Android Keystore protects device-bound secrets and key material.
+JNI interfaces are minimal, secure, and well documented.
+The project builds without warnings or errors in Android Studio.
+Performance benchmarks demonstrate low-latency cryptographic operations suitable for production use.
+Security reviews, memory safety checks, and automated tests all pass successfully.
+Documentation is complete, accurate, and ready for long-term maintenance.
+
+This prompt aligns well with your vision for QGuard Helix: a high-performance, enterprise-grade, post-quantum secure messaging platform that leverages native Android capabilities for both performance and security while remaining maintainable and ready for future cryptographic agility.

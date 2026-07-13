@@ -103,7 +103,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [notice, setNotice] = useState<string | null>(null);
   const activeSessionTokenRef = useRef<string | null>(null);
 
-  const syncBackend = useCallback(async (activeSession: Session) => {
+  // freshLogin distinguishes an interactive sign-in (password + optional MFA)
+  // from a background token refresh / session restore. Only a fresh login
+  // clears workspace brute-force lockdowns and re-locks the protected
+  // workspaces backend-side — a refresh must never do either.
+  const syncBackend = useCallback(async (activeSession: Session, freshLogin = false) => {
     if (!isTauriRuntime()) return;
     const activeUser = activeSession.user;
     await withTimeout(safeInvoke("auth_sync_session", {
@@ -112,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       tier: String(activeUser.app_metadata?.tier ?? activeUser.user_metadata?.tier ?? "user"),
       accessToken: activeSession.access_token,
       expiresAt: activeSession.expires_at ?? 0,
+      freshLogin,
     }), desktopSessionSyncTimeoutMs, "Desktop session sync");
   }, []);
 
@@ -195,10 +200,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return false;
   }, [auditAuthEvent]);
 
-  const completeAuthenticatedSession = useCallback(async (activeSession: Session): Promise<boolean> => {
+  const completeAuthenticatedSession = useCallback(async (activeSession: Session, freshLogin = false): Promise<boolean> => {
     const mfaSatisfied = await requireMfaIfNeeded(activeSession);
     if (!mfaSatisfied) return false;
-    await syncBackend(activeSession);
+    await syncBackend(activeSession, freshLogin);
     activeSessionTokenRef.current = activeSession.access_token;
     setUser(activeSession.user);
     setSession(activeSession);
@@ -322,7 +327,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (signInError || !data.session) {
         throw signInError ?? new Error("Sign in failed.");
       }
-      const completed = await completeAuthenticatedSession(data.session);
+      const completed = await completeAuthenticatedSession(data.session, true);
       if (!completed) return false;
       void auditAuthEvent("login_success", "info", cleanEmail, {}, data.session.user.id);
       return true;
@@ -375,7 +380,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       );
       if (sessionError || !sessionData.session) throw sessionError ?? new Error("MFA session could not be restored.");
       activeSessionTokenRef.current = sessionData.session.access_token;
-      await syncBackend(sessionData.session);
+      await syncBackend(sessionData.session, true);
       setUser(sessionData.session.user);
       setSession(sessionData.session);
       setPendingMfa(null);

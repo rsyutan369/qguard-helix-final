@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- QGuard Messaging brand palette (matches the web theme tokens) -->
+    <color name="qguard_violet_500">#FF7C3AED</color>
+    <color name="qguard_violet_600">#FF6D28D9</color>
+    <color name="qguard_cyan_500">#FF06B6D4</color>
+    <color name="qguard_canvas">#FFF7F8FB</color>
+    <color name="qguard_canvas_dark">#FF0F172A</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

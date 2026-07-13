@@ -103,6 +103,30 @@ type ActivityRow = {
   score: number;
 };
 
+type ThreatClassRow = {
+  findings: number;
+  share: number;
+  affectedAssets: number;
+  averageRisk: number;
+  trend: number;
+  topAssets: string[];
+  label: string;
+  detail: string;
+  urgency: string;
+};
+
+const EMPTY_THREAT_CLASS: ThreatClassRow = {
+  findings: 0,
+  share: 0,
+  affectedAssets: 0,
+  averageRisk: 0,
+  trend: 0,
+  topAssets: [],
+  label: '',
+  detail: '',
+  urgency: 'clear',
+};
+
 type QuantumRiskSnapshot = {
   generatedAt: string | null;
   latestActivityAt: string | null;
@@ -128,6 +152,13 @@ type QuantumRiskSnapshot = {
   timeline: TimelinePoint[];
   breakdown: BreakdownRow[];
   distribution: DistributionRow[];
+  threatModel: {
+    shorExposed: ThreatClassRow;
+    groverWatch: ThreatClassRow;
+    hashLegacy: ThreatClassRow;
+    pqcProtected: ThreatClassRow;
+    guidance: string;
+  };
   topAssets: TopAssetRow[];
   heatmap: HeatmapRegion[];
   riskFactors: RiskFactorRow[];
@@ -189,6 +220,13 @@ const EMPTY_SNAPSHOT: QuantumRiskSnapshot = {
     { label: 'Low', count: 0, percent: 0 },
     { label: 'Minimal', count: 0, percent: 0 },
   ],
+  threatModel: {
+    shorExposed: { ...EMPTY_THREAT_CLASS, label: 'Shor-exposed public-key trust' },
+    groverWatch: { ...EMPTY_THREAT_CLASS, label: 'Grover symmetric margin' },
+    hashLegacy: { ...EMPTY_THREAT_CLASS, label: 'Legacy hash functions' },
+    pqcProtected: { ...EMPTY_THREAT_CLASS, label: 'PQC / hybrid protected', urgency: 'protected' },
+    guidance: 'No classified findings yet — run scans or connect agents to build the threat-model decomposition.',
+  },
   topAssets: [],
   heatmap: [],
   riskFactors: [],
@@ -364,6 +402,14 @@ function useQuantumRiskScoring() {
         ...data,
         filters: { ...EMPTY_SNAPSHOT.filters, ...(data.filters || {}) },
         metrics: { ...EMPTY_SNAPSHOT.metrics, ...(data.metrics || {}) },
+        threatModel: {
+          ...EMPTY_SNAPSHOT.threatModel,
+          ...(data.threatModel || {}),
+          shorExposed: { ...EMPTY_SNAPSHOT.threatModel.shorExposed, ...(data.threatModel?.shorExposed || {}) },
+          groverWatch: { ...EMPTY_SNAPSHOT.threatModel.groverWatch, ...(data.threatModel?.groverWatch || {}) },
+          hashLegacy: { ...EMPTY_SNAPSHOT.threatModel.hashLegacy, ...(data.threatModel?.hashLegacy || {}) },
+          pqcProtected: { ...EMPTY_SNAPSHOT.threatModel.pqcProtected, ...(data.threatModel?.pqcProtected || {}) },
+        },
         telemetry: { ...EMPTY_SNAPSHOT.telemetry, ...(data.telemetry || {}) },
       });
       setState('success');
@@ -862,6 +908,60 @@ function ActivityStrip({ rows }: { rows: ActivityRow[] }) {
   );
 }
 
+const THREAT_URGENCY_TONES: Record<string, string> = {
+  migrate: RED,
+  replace: RED,
+  plan: GOLD,
+  protected: GREEN,
+  clear: GREEN,
+};
+
+function ThreatClassCard({ row, icon: Icon }: { row: ThreatClassRow; icon: LucideIcon }) {
+  const color = THREAT_URGENCY_TONES[row.urgency] || BLUE;
+  return (
+    <div className="flex flex-col rounded-md border border-white/8 bg-white/[0.025] p-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="grid h-8 w-8 place-items-center rounded-md border" style={{ borderColor: `${color}45`, color, backgroundColor: `${color}12` }}>
+          <Icon className="h-4 w-4" />
+        </span>
+        <span className="rounded border px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.08em]" style={{ borderColor: `${color}40`, color }}>
+          {row.urgency}
+        </span>
+      </div>
+      <div className="mt-3 text-[10px] font-black uppercase tracking-[0.08em] text-white/45">{row.label}</div>
+      <div className="mt-1 flex items-baseline gap-2">
+        <span className="text-2xl font-semibold text-white">{integerFmt(row.findings)}</span>
+        <span className="text-[11px] text-white/45">
+          finding{row.findings === 1 ? '' : 's'} · {integerFmt(row.affectedAssets)} asset{row.affectedAssets === 1 ? '' : 's'} · {percentLabel(row.share)}
+        </span>
+      </div>
+      <p className="mt-2 flex-1 text-[11px] leading-relaxed text-white/55">{row.detail}</p>
+      {row.topAssets.length > 0 ? (
+        <div className="mt-2 truncate text-[10px] text-white/40" title={row.topAssets.join(', ')}>
+          Top: {row.topAssets.join(', ')}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ThreatModelPanel({ model }: { model: QuantumRiskSnapshot['threatModel'] }) {
+  return (
+    <div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <ThreatClassCard row={model.shorExposed} icon={KeyRound} />
+        <ThreatClassCard row={model.groverWatch} icon={LockKeyhole} />
+        <ThreatClassCard row={model.hashLegacy} icon={AlertTriangle} />
+        <ThreatClassCard row={model.pqcProtected} icon={Shield} />
+      </div>
+      <div className="mt-4 flex items-start gap-2 rounded-md border border-white/8 bg-black/22 p-3">
+        <Target className="mt-0.5 h-4 w-4 shrink-0 text-gold" />
+        <p className="text-[11.5px] leading-relaxed text-white/65">{model.guidance}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function QuantumRiskScoringPage() {
   const { snapshot, state, error, sseConnected, refresh } = useQuantumRiskScoring();
 
@@ -1016,6 +1116,15 @@ export default function QuantumRiskScoringPage() {
                 View All Assets <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>
+          </Panel>
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <Panel className="p-5 xl:col-span-12">
+            <SectionTitle suffix={<span className="text-[10px] font-bold uppercase tracking-[0.08em] text-white/35">Shor vs Grover · derived from classified findings</span>}>
+              Quantum Threat Model
+            </SectionTitle>
+            <ThreatModelPanel model={snapshot.threatModel} />
           </Panel>
         </section>
 

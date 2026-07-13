@@ -6,11 +6,13 @@ import { brandingSchema } from '../src/services/reporting/schemas/ReportSchema'
 const url = process.env.VITE_SUPABASE_URL || ''
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const anonKey = process.env.VITE_SUPABASE_ANON_KEY || ''
-const ORIGIN = 'http://localhost:3000'
+const ORIGIN = process.env.REPORT_CHECK_ORIGIN || 'http://localhost:3000'
 
 async function main() {
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
-  const { data: link } = await admin.auth.admin.generateLink({ type: 'magiclink', email: 'cybersniper26@gmail.com' })
+  // Account must be Basic tier or higher — the subscription gateway 403s the
+  // quantum-readiness module for Starter accounts.
+  const { data: link } = await admin.auth.admin.generateLink({ type: 'magiclink', email: process.env.REPORT_CHECK_EMAIL || 'cybersniper26@gmail.com' })
   const tokenHash = (link!.properties as { hashed_token?: string }).hashed_token!
   const anon = createClient(url, anonKey, { auth: { persistSession: false } })
   const { data } = await anon.auth.verifyOtp({ type: 'magiclink', token_hash: tokenHash })
@@ -74,7 +76,8 @@ async function main() {
   pass(r.compliance.every((c) => c.targetPct > 0 && c.gapPct === Math.max(0, c.targetPct - c.currentPct)), `I2#7 Compliance gap tracking on ${r.compliance.length} frameworks`)
   pass(r.executiveBlock.topBusinessRisks.length >= 3, `I2#8 Top business risks: ${r.executiveBlock.topBusinessRisks.map((b) => b.risk).join(' | ')}`)
   pass(r.benchmarking.rows.length === 5 && r.benchmarking.rows[0].readiness === snapshot.scores.quantumReadiness, `I2#9 Benchmarking: org=${r.benchmarking.rows[0]?.readiness} vs avg=${r.benchmarking.rows[1]?.readiness}`)
-  pass(r.reportValidation.checks.length === 6 && r.reportValidation.overall === 'PASS', `I2#10 Report validation: ${r.reportValidation.overall} (${r.reportValidation.checks.filter((c) => c.status === 'pass').length}/6)`)
+  // 7 checks since R7 added "Target Reconciliation Verified".
+  pass(r.reportValidation.checks.length === 7 && r.reportValidation.overall === 'PASS', `I2#10 Report validation: ${r.reportValidation.overall} (${r.reportValidation.checks.filter((c) => c.status === 'pass').length}/7)`)
   for (const c of r.reportValidation.checks.filter((x) => x.status === 'fail')) console.log(`    ✗ failing check: ${c.check} — ${c.detail}`)
   const pillarSum = Math.round(r.readinessIndex.pillars.reduce((s, p) => s + p.contribution, 0))
   pass(r.readinessIndex.pillars.length === 8 && Math.abs(pillarSum - r.readinessIndex.overall) <= 1, `I2#11 Readiness index: Σ pillar contributions ${pillarSum} ≈ overall ${r.readinessIndex.overall}`)

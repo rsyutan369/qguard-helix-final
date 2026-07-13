@@ -18,6 +18,7 @@ import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import type { PublicIdentityBundle } from "@/lib/messaging-bootstrap";
+import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { KeyInventory, SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
@@ -203,9 +204,12 @@ export default function KeyManagementPage({
   const displayDevices = ownDevices.slice(0, 8);
   const hiddenDeviceCount = Math.max(0, ownDevices.length - displayDevices.length);
   const duplicateCurrentDeviceCount = ownDevices.filter((device) => device.trust_state === "ThisDevice").length;
-  const signedPrekeyTarget = Math.max(1, activeOwnDevices.length);
+  // Per-device readiness floors shared with security-score.ts — never scaled
+  // by the registered device count (stale reinstall rows would make the
+  // target unattainable and pin the page at "Needs Sync" forever).
+  const signedPrekeyTarget = SIGNED_PREKEY_MIN;
   const signedPrekeyLabel = `${keyInventory.active_signed_prekeys}/${signedPrekeyTarget}`;
-  const prekeyTarget = Math.max(8, activeOwnDevices.length * 8);
+  const prekeyTarget = ONE_TIME_PREKEY_MIN;
   const oneTimePrekeyLabel = `${keyInventory.available_one_time_prekeys}/${prekeyTarget}`;
   const signedPrekeysReady = keyInventory.active_signed_prekeys >= signedPrekeyTarget;
   const oneTimePrekeysReady = keyInventory.available_one_time_prekeys >= prekeyTarget;
@@ -363,7 +367,9 @@ export default function KeyManagementPage({
   }
 
   return (
-    <div className="grid gap-4">
+    // grid-cols-[minmax(0,1fr)] keeps the wide key-material table scrolling
+    // inside its card instead of inflating the page past a phone viewport.
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       <div className="grid gap-4 lg:grid-cols-4">
         <section className="shell-card p-4">
           <KeyRound className="text-violet-600" size={24} />

@@ -260,6 +260,7 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <p class="muted"><b>Potential Failure Points:</b> ${esc(report.dependencyAnalysis.failurePoints.join(', '))}</p>
 
   <h2>Quantum Risk Analysis</h2>
+  <p class="muted">Per-domain current and target risk. Domain values are the calibrated risk-domain model (see Risk Scoring Methodology), and the targets use the same reduction engine as the executive summary — the weighted blend of the targets below reproduces the programme target risk of ${esc(report.executiveBlock.targetRisk)}/100 (verified in Report Validation).</p>
   ${gridTable(['Risk Category', 'Current', 'Target', 'Reduction Potential'], report.riskCategories.map((r) => [r.category, `${r.currentScore}/100`, `${r.targetScore}/100`, `${r.reductionPotentialPct}%`]))}
 
   <h2>Risk Scoring Methodology&trade;</h2>
@@ -271,7 +272,7 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
 
   <h2>HNDL Exposure Analysis</h2>
   <p>${esc(report.hndl.summary)}</p>
-  ${gridTable(['Data Category', 'Retention', 'Current Protection', 'HNDL Risk', 'Recommended Protection'], report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]))}
+  ${gridTable(['Data Category', 'Retention', 'Current Protection', 'HNDL Exposure', 'Recommended Protection'], report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]))}
 
   <h2>Visual Analysis</h2>
   <div class="charts">${charts || '<p class="muted">Charts unavailable.</p>'}</div>
@@ -311,7 +312,7 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ]))}
 
   <h2>Migration Roadmap &amp; Program Plan</h2>
-  <p class="muted">Sequential dates, milestones, approval gates and critical-path/slack — a true program-management plan.</p>
+  <p class="muted">Sequential dates, milestones, approval gates and critical-path/slack — a true program-management plan. Elapsed window: the "migration programme" duration cited in the executive summary counts the migration waves only; the schedule below adds the discovery and validation phases, so the end-to-end elapsed window is ${esc(report.roadmap.reduce((sum, p) => sum + (Number(p.effortWeeks) || 0), 0))} weeks.</p>
   ${gridTable(['Phase', 'Start', 'Finish', 'Effort (wks)', 'Milestone', 'Approval Gate', 'Critical Path', 'Slack'], report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, p.milestone || '—', p.gate || '—', p.criticalPath ? 'Yes' : 'No', `${p.slackWeeks}w`]))}
 
   <h2>Migration Resource Loading&trade;</h2>
@@ -380,7 +381,8 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     ['24-Month Projection (Expected)', `${report.riskForecast.month24}/100`],
     ['36-Month Projection (Expected)', `${report.riskForecast.month36}/100`],
   ])}
-  ${report.riskForecast.scenarios.length ? `<h3>Scenario Bands (Best / Expected / Worst Case)</h3>
+  ${report.riskForecast.scenarios.length ? `<h3>Scenario Bands — Anchored to the Programme Schedule</h3>
+  <p class="muted">Projections follow the printed roadmap: risk reaches the migration target when the waves complete and the residual level after validation &amp; optimization — not an arbitrary multi-year glide. The no-programme baseline shows the cost of inaction.</p>
   ${gridTable(['Scenario', '12-Month', '24-Month', '36-Month', 'Planning Assumption'], report.riskForecast.scenarios.map((sc) => [sc.scenario, `${sc.month12}/100`, `${sc.month24}/100`, `${sc.month36}/100`, sc.assumption]))}` : ''}
 
   <h2>Asset-Level Readiness &amp; Intelligence</h2>

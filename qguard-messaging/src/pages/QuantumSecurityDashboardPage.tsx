@@ -19,6 +19,7 @@ import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { isAdminEmail } from "@/lib/admin";
+import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import type { DashboardData, SecurityHardeningCheck, TelemetryEvent, TrustedDevice, VaultFileSummary } from "@/lib/types";
 
@@ -214,9 +215,13 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
   const hybridSignatureReady = activeMyDevices.some(deviceHasHybridSignatures);
   const deviceSuiteReady = activeMyDevices.some(deviceSuiteUsesRequiredStack);
   const vaultStackReady = vaultFiles.every(vaultSuiteUsesRequiredStack);
-  const signedPrekeyTarget = Math.max(1, activeMyDevices.length);
+  // Prekey readiness is a PER-DEVICE floor (this device publishes its own
+  // pool), never scaled by the registered device count — stale device rows
+  // from reinstalls would make a device-count target unattainable forever.
+  // Same thresholds as buildSecurityPosture in security-score.ts.
+  const signedPrekeyTarget = SIGNED_PREKEY_MIN;
   const signedPrekeysReady = activeMyDevices.length > 0 && keyInventory.active_signed_prekeys >= signedPrekeyTarget;
-  const oneTimePrekeyTarget = Math.max(8, activeMyDevices.length * 8);
+  const oneTimePrekeyTarget = ONE_TIME_PREKEY_MIN;
   const oneTimePrekeysReady = keyInventory.available_one_time_prekeys >= oneTimePrekeyTarget;
   const tamperAuditActive = hardeningCheck(hardeningChecks, "tamper_evident_audit_chain")?.status === "active";
   const webIntegrityActive = hardeningCheck(hardeningChecks, "web_asset_integrity")?.status === "active";

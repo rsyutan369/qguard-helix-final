@@ -99,7 +99,9 @@ export interface QuantumReadinessSnapshot {
     edges: Array<{ source: string; target: string; type: string }>;
   };
   riskTrend: Array<{ label: string; readiness: number; risk: number }>;
-  estimates: { migrationTimelineWeeks: number; migrationCostUsd: number };
+  // parallelWorkstreams: parallel migration teams assumed by the timeline model
+  // (1 for small estates; >1 bounds the calendar duration for large estates).
+  estimates: { migrationTimelineWeeks: number; migrationCostUsd: number; parallelWorkstreams?: number };
   telemetry: {
     runtimeEvents: number;
     scanResults: number;

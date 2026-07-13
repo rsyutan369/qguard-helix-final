@@ -568,6 +568,89 @@ async function buildTlsTelemetrySnapshot(token: string, userId: string) {
     },
   ]
 
+  // Trust-path cost intelligence (trust as a runtime dependency, not only a
+  // security control). No agent reports handshake timings yet, so nothing here
+  // fabricates latency: every row is deterministic protocol arithmetic over
+  // REAL observed connections — TLS version => handshake round trips,
+  // key-exchange family => compute class, FIPS 203/204 artifact sizes =>
+  // bytes-on-wire deltas for hybrid adoption planning.
+  const rttClassFor = (version: string) => {
+    if (version === 'TLS 1.3') return { id: 'tls13', label: 'TLS 1.3 · 1-RTT handshake', weight: 1 }
+    if (version === 'TLS 1.2') return { id: 'tls12', label: 'TLS 1.2 · 2-RTT handshake', weight: 2 }
+    if (version === 'Unknown' || !version) return { id: 'unknown', label: 'Unknown negotiation path', weight: 2 }
+    return { id: 'legacy', label: `${version} · deprecated, renegotiation-prone`, weight: 3 }
+  }
+  const kexClassFor = (text: string) => {
+    const lower = text.toLowerCase()
+    if (/ml[-_ ]?kem|kyber|hybrid|x25519mlkem|secp256r1mlkem/.test(lower)) return { id: 'hybrid-pqc', label: 'Hybrid PQC (ML-KEM)', weight: 1.4 }
+    if (/ecdhe|x25519|ecdh/.test(lower)) return { id: 'ecdhe', label: 'ECDHE / X25519', weight: 1 }
+    if (/\bdhe\b|dhe-|diffie/.test(lower)) return { id: 'dhe', label: 'Classic DHE (slow group math)', weight: 3 }
+    if (/\brsa\b|rsa-/.test(lower)) return { id: 'rsa-kex', label: 'RSA transport (no forward secrecy)', weight: 2 }
+    return { id: 'unclassified', label: 'Unclassified key exchange', weight: 1.5 }
+  }
+  const costRows = current.map((event) => {
+    const rtt = rttClassFor(event.tlsVersion)
+    const kex = kexClassFor(`${event.cipherSuite} ${event.text}`)
+    const failPenalty = event.failed ? 3 : 0
+    return { event, rtt, kex, costIndex: (rtt.weight + kex.weight + failPenalty) * event.connections }
+  })
+  const profileFrom = (rows: typeof costRows, key: 'rtt' | 'kex') => {
+    const grouped = new Map<string, { label: string; connections: number; weight: number }>()
+    for (const row of rows) {
+      const cls = row[key]
+      const entry = grouped.get(cls.id) || { label: cls.label, connections: 0, weight: cls.weight }
+      entry.connections += row.event.connections
+      grouped.set(cls.id, entry)
+    }
+    return [...grouped.entries()]
+      .map(([id, entry]) => ({ id, label: entry.label, connections: entry.connections, percent: percentOf(entry.connections, Math.max(1, currentConnections)), costWeight: entry.weight }))
+      .sort((a, b) => b.connections - a.connections)
+  }
+  const pathCostMap = new Map<string, { connections: number; costIndex: number; rtt: string; kex: string; failed: number }>()
+  for (const row of costRows) {
+    const path = row.event.domain || row.event.serverIp || row.event.server
+    if (!path || path === 'Unknown') continue
+    const entry = pathCostMap.get(path) || { connections: 0, costIndex: 0, rtt: row.rtt.label, kex: row.kex.label, failed: 0 }
+    entry.connections += row.event.connections
+    entry.costIndex += row.costIndex
+    entry.failed += row.event.failed ? row.event.connections : 0
+    if (row.rtt.weight >= 3) entry.rtt = row.rtt.label
+    if (row.kex.weight >= 2) entry.kex = row.kex.label
+    pathCostMap.set(path, entry)
+  }
+  const maxPathCost = Math.max(1, ...[...pathCostMap.values()].map((entry) => entry.costIndex))
+  const costliestPaths = [...pathCostMap.entries()]
+    .map(([path, entry]) => ({
+      path,
+      connections: entry.connections,
+      failedConnections: entry.failed,
+      rttClass: entry.rtt,
+      kexClass: entry.kex,
+      costIndex: clamp((entry.costIndex / maxPathCost) * 100),
+    }))
+    .sort((a, b) => b.costIndex - a.costIndex)
+    .slice(0, 5)
+  // FIPS 203 ML-KEM-768: public key 1184 B + ciphertext 1088 B added per hybrid handshake.
+  const HYBRID_MLKEM768_ADDED_BYTES = 1184 + 1088
+  const tls13Connections = current.filter((event) => event.tlsVersion === 'TLS 1.3').reduce((sum, event) => sum + event.connections, 0)
+  const hybridReadyConnections = costRows.filter((row) => row.kex.id === 'hybrid-pqc').reduce((sum, row) => sum + row.event.connections, 0)
+  const trustPathCost = {
+    rttProfile: profileFrom(costRows, 'rtt'),
+    kexProfile: profileFrom(costRows, 'kex'),
+    costliestPaths,
+    hybridOutlook: {
+      observedHandshakes: currentConnections,
+      alreadyHybrid: hybridReadyConnections,
+      tls13Eligible: tls13Connections,
+      addedBytesPerHandshake: HYBRID_MLKEM768_ADDED_BYTES,
+      projectedAddedBytes: Math.max(0, tls13Connections - hybridReadyConnections) * HYBRID_MLKEM768_ADDED_BYTES,
+      detail: tls13Connections > 0
+        ? `Moving the ${Math.max(0, tls13Connections - hybridReadyConnections)} observed TLS 1.3 handshake${tls13Connections - hybridReadyConnections === 1 ? '' : 's'} to hybrid X25519+ML-KEM-768 adds ~${HYBRID_MLKEM768_ADDED_BYTES} bytes each (FIPS 203 key + ciphertext), with no extra round trips.`
+        : 'No TLS 1.3 handshakes observed yet — hybrid ML-KEM rollout needs TLS 1.3 paths first.',
+    },
+    methodology: 'Derived from observed connections only: TLS version determines handshake round trips, cipher/key-exchange family determines compute class, FIPS 203 artifact sizes determine hybrid byte overhead. Cost index is relative (0-100 vs the costliest observed path); no latency is fabricated.',
+  }
+
   const latestRuntimeEventAt = latestDate(...runtimeEvents.map((event: any) => event.observed_at || event.created_at))
   const sync = buildTenantTelemetrySync({
     assets,
@@ -622,6 +705,7 @@ async function buildTlsTelemetrySnapshot(token: string, userId: string) {
     topClients,
     topServers,
     insights,
+    trustPathCost,
     telemetry: {
       runtimeEvents: runtimeEvents.length,
       scannerEvidence: scannerEvidence.length,

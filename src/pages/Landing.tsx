@@ -3006,6 +3006,12 @@ export default function App() {
                 <span className="homepage-nav__menu-kicker">Solution Suites</span>
                 {[
                   {
+                    title: 'PQC Solutions',
+                    description: 'The six problems that stall every PQC migration — hidden trust, shadow crypto, unmanaged keys — solved in one platform.',
+                    href: '/pqc-solutions',
+                    icon: CheckCircle2
+                  },
+                  {
                     title: 'Qguard Messaging',
                     description: 'End-to-end encrypted Secure Chat and an on-device Quantum Vault, built on NIST post-quantum cryptography.',
                     href: '/qguard-messaging',

@@ -129,6 +129,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signUp = async (email: string, password: string) => {
+    // Register through the platform API first: client-side auth.signUp sends a
+    // confirmation email via Supabase's built-in mailer (~2/hour quota), so a
+    // few registrations produce 429 "email rate limit exceeded" for everyone.
+    // The server creates the account with the service role — no email, no
+    // mailer quota — and we establish the session with a normal password
+    // sign-in. Deployments without the API (static hosting) fall through to
+    // the original client-side flow below.
+    try {
+      const response = await fetch('/api/v1/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      if (response.status === 201) {
+        return await signIn(email, password);
+      }
+      if ([400, 403, 409, 429].includes(response.status)) {
+        const payload = await response.json().catch(() => null);
+        return { error: new Error(payload?.error?.message || 'Registration failed. Please review your details and try again.') };
+      }
+      // 404/503/5xx → endpoint unavailable or confirmation required on this
+      // deployment; use the standard Supabase signup flow (real confirmation
+      // email) instead.
+    } catch {
+      // API unreachable — fall through to the client-side flow.
+    }
+
     let client = getSupabaseClient();
     let { data, error } = await withAuthTimeout(
       client.auth.signUp({ email, password }),
@@ -157,6 +184,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!error) {
       setSession(data.session);
       setUser(data.user ?? data.session?.user ?? null);
+    }
+    if (error && /rate limit/i.test(error.message)) {
+      // Supabase built-in mailer quota (~2 emails/hour) — translate the raw
+      // 429 into something a person can act on.
+      return { error: new Error('The email service has reached its hourly limit. Please try again in about an hour.') };
     }
     return { error };
   };

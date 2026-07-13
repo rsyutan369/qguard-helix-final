@@ -84,6 +84,23 @@ type InsightRow = {
   severity: string;
 };
 
+type CostProfileRow = {
+  id: string;
+  label: string;
+  connections: number;
+  percent: number;
+  costWeight: number;
+};
+
+type CostPathRow = {
+  path: string;
+  connections: number;
+  failedConnections: number;
+  rttClass: string;
+  kexClass: string;
+  costIndex: number;
+};
+
 type TlsTelemetrySnapshot = {
   generatedAt: string | null;
   latestActivityAt: string | null;
@@ -114,6 +131,20 @@ type TlsTelemetrySnapshot = {
   topClients: ClientRow[];
   topServers: ServerRow[];
   insights: InsightRow[];
+  trustPathCost: {
+    rttProfile: CostProfileRow[];
+    kexProfile: CostProfileRow[];
+    costliestPaths: CostPathRow[];
+    hybridOutlook: {
+      observedHandshakes: number;
+      alreadyHybrid: number;
+      tls13Eligible: number;
+      addedBytesPerHandshake: number;
+      projectedAddedBytes: number;
+      detail: string;
+    };
+    methodology: string;
+  };
   telemetry: {
     runtimeEvents: number;
     scannerEvidence: number;
@@ -172,6 +203,20 @@ const EMPTY_SNAPSHOT: TlsTelemetrySnapshot = {
   topClients: [],
   topServers: [],
   insights: [],
+  trustPathCost: {
+    rttProfile: [],
+    kexProfile: [],
+    costliestPaths: [],
+    hybridOutlook: {
+      observedHandshakes: 0,
+      alreadyHybrid: 0,
+      tls13Eligible: 0,
+      addedBytesPerHandshake: 0,
+      projectedAddedBytes: 0,
+      detail: 'No TLS handshakes observed yet — connect agents or run scans to profile trust-path cost.',
+    },
+    methodology: 'Derived from observed connections only; no latency is fabricated.',
+  },
   telemetry: {
     runtimeEvents: 0,
     scannerEvidence: 0,
@@ -466,6 +511,11 @@ function useTlsTelemetry() {
         ...EMPTY_SNAPSHOT,
         ...data,
         metrics: { ...EMPTY_SNAPSHOT.metrics, ...(data.metrics || {}) },
+        trustPathCost: {
+          ...EMPTY_SNAPSHOT.trustPathCost,
+          ...(data.trustPathCost || {}),
+          hybridOutlook: { ...EMPTY_SNAPSHOT.trustPathCost.hybridOutlook, ...(data.trustPathCost?.hybridOutlook || {}) },
+        },
         telemetry: { ...EMPTY_SNAPSHOT.telemetry, ...(data.telemetry || {}) },
       });
       setState('success');
@@ -927,6 +977,85 @@ function Insights({ rows }: { rows: InsightRow[] }) {
   );
 }
 
+function CostProfileBars({ rows }: { rows: CostProfileRow[] }) {
+  if (!rows.length) return <EmptyState label="No observed handshakes to profile yet." />;
+  return (
+    <div className="space-y-2.5">
+      {rows.map((row) => (
+        <div key={row.id} className="grid grid-cols-[1fr_auto] items-center gap-3 text-xs">
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-white/75">{row.label}</span>
+              <span className="shrink-0 text-white/45">{compactFmt(row.connections)} · {percentFmt(row.percent)}</span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/8">
+              <div
+                className={cn('h-full rounded-full', row.costWeight >= 3 ? 'bg-red-400' : row.costWeight >= 2 ? 'bg-gold' : 'bg-emerald-400')}
+                style={{ width: `${Math.max(3, row.percent)}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TrustPathCostPanel({ cost }: { cost: TlsTelemetrySnapshot['trustPathCost'] }) {
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="xl:col-span-4">
+        <div className="text-[10px] font-black uppercase tracking-[0.08em] text-white/40">Handshake round trips</div>
+        <div className="mt-3"><CostProfileBars rows={cost.rttProfile} /></div>
+        <div className="mt-4 text-[10px] font-black uppercase tracking-[0.08em] text-white/40">Key-exchange compute class</div>
+        <div className="mt-3"><CostProfileBars rows={cost.kexProfile} /></div>
+      </div>
+      <div className="xl:col-span-5">
+        <div className="text-[10px] font-black uppercase tracking-[0.08em] text-white/40">Costliest trust paths (relative index)</div>
+        {cost.costliestPaths.length ? (
+          <div className="mt-3 space-y-2">
+            {cost.costliestPaths.map((row) => (
+              <div key={row.path} className="rounded-md border border-white/8 bg-white/[0.025] p-2.5">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate font-bold text-white/80" title={row.path}>{row.path}</span>
+                  <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-black', row.costIndex >= 70 ? 'border-red-400/40 text-red-300' : row.costIndex >= 40 ? 'border-gold/40 text-gold' : 'border-emerald-400/40 text-emerald-300')}>
+                    cost {integerFmt(row.costIndex)}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-white/45">
+                  <span>{compactFmt(row.connections)} connection{row.connections === 1 ? '' : 's'}</span>
+                  <span>{row.rttClass}</span>
+                  <span>{row.kexClass}</span>
+                  {row.failedConnections > 0 ? <span className="text-red-300">{compactFmt(row.failedConnections)} failed (retry cost)</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-3"><EmptyState label="No trust paths observed in the current window." /></div>
+        )}
+      </div>
+      <div className="xl:col-span-3">
+        <div className="text-[10px] font-black uppercase tracking-[0.08em] text-white/40">Hybrid PQC outlook</div>
+        <div className="mt-3 rounded-md border border-white/8 bg-white/[0.025] p-3 text-xs">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-lg font-semibold text-white">{compactFmt(cost.hybridOutlook.tls13Eligible)}</div>
+              <div className="text-[10px] text-white/45">TLS 1.3 handshakes eligible</div>
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-white">{bytesFmt(cost.hybridOutlook.projectedAddedBytes)}</div>
+              <div className="text-[10px] text-white/45">added wire bytes (ML-KEM-768)</div>
+            </div>
+          </div>
+          <p className="mt-3 leading-relaxed text-white/60">{cost.hybridOutlook.detail}</p>
+        </div>
+        <p className="mt-3 text-[10px] leading-relaxed text-white/35">{cost.methodology}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function TlsTelemetryPage() {
   const { snapshot, state, error, sseConnected, refresh } = useTlsTelemetry();
   const totalSpark = useMemo(() => snapshot.timeline.map((point) => point.total), [snapshot.timeline]);
@@ -1092,6 +1221,15 @@ export default function TlsTelemetryPage() {
                 View all insights <ChevronRight className="h-3.5 w-3.5" />
               </a>
             </div>
+          </Panel>
+        </section>
+
+        <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <Panel className="p-5 xl:col-span-12">
+            <SectionTitle suffix={<span className="text-[10px] font-bold uppercase tracking-[0.08em] text-white/35">Trust as a runtime dependency · derived from observed connections</span>}>
+              Trust Path Cost
+            </SectionTitle>
+            <TrustPathCostPanel cost={snapshot.trustPathCost} />
           </Panel>
         </section>
 

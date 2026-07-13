@@ -1,0 +1,311 @@
+# QGuard Helix Messaging – Enterprise Stabilization, Performance & Quantum Security Enhancement
+
+## Objective
+
+Perform a complete review, debugging, optimization, and permanent stabilization of the **QGuard Messaging Desktop Application** located at:
+
+`C:\Users\HP\Music\qguard-helix-final\qguard-messaging\src-tauri`
+
+The objective is to make the application **production-ready**, **enterprise-grade**, **high-performance**, and **fully reliable** while preserving all Quantum Security protections.
+
+---
+
+# 1. Resolve Forward Secrecy / PreKey Issues
+
+## Critical Issue
+
+The application frequently displays:
+
+* **Forward Secrecy**
+* **Awaiting prekey material**
+
+Please investigate and permanently resolve the root cause.
+
+Reference screenshots:
+
+* `C:\Users\HP\Music\qguard-helix-final\test_images\awaiting-prekey-material_02.png`
+* `C:\Users\HP\Music\qguard-helix-final\test_images\awaiting-prekey-material_03.png`
+
+### Verify
+
+Investigate:
+
+* X3DH key exchange
+* Double Ratchet implementation
+* PreKey generation
+* Signed PreKeys
+* One-Time PreKeys
+* Identity Keys
+* Session initialization
+* Session restoration
+* Session synchronization
+* Key persistence
+* Device registration
+* Offline message handling
+* Reconnection logic
+
+Ensure:
+
+* PreKeys are generated automatically.
+* Missing PreKeys are regenerated automatically.
+* Sessions recover automatically after reconnecting.
+* Users never become permanently stuck in "Awaiting prekey material."
+* Forward Secrecy remains intact throughout all communications.
+
+---
+
+# 2. Messaging Performance
+
+Quantum Secure Messaging must feel instant.
+
+Optimize:
+
+* Message sending
+* Message receiving
+* Message loading
+* Chat history loading
+* Attachment transfers
+* Image loading
+* File transfers
+* Message synchronization
+* Local database queries
+* UI rendering
+
+### Success Criteria
+
+* Messages appear almost instantly.
+* No noticeable delays.
+* No freezing.
+* No blocking UI.
+* No duplicate messages.
+* No lost messages.
+* Smooth scrolling.
+* Fast conversation switching.
+* Efficient memory usage.
+
+---
+
+# 3. Video Calling Stability
+
+Perform a complete audit of the video calling subsystem.
+
+Investigate:
+
+* WebRTC
+* ICE Candidates
+* STUN/TURN configuration
+* Connection negotiation
+* Audio codecs
+* Video codecs
+* Packet loss recovery
+* Reconnection logic
+* NAT traversal
+* Device switching
+
+Fix every bug.
+
+### Requirements
+
+* Crystal-clear voice.
+* Stable HD video.
+* Fast call establishment.
+* No unexpected disconnections.
+* No frozen video.
+* No audio delay.
+* No echo.
+* No crashes.
+* Reliable reconnection after network interruption.
+
+---
+
+# 4. Quantum Security During Calls
+
+Voice and video communications must maintain end-to-end Quantum Security.
+
+Ensure:
+
+* Secure session establishment.
+* Strong forward secrecy.
+* Post-Quantum key exchange.
+* Continuous key rotation.
+* Encrypted signaling.
+* Encrypted media transport.
+* Protection against replay attacks.
+* Protection against MITM attacks.
+* Protection against third-party interception.
+* Protection against future quantum decryption ("Harvest Now, Decrypt Later").
+
+Security must remain active throughout the entire call lifecycle.
+
+---
+
+# 5. Quantum Vault Optimization
+
+Improve the Quantum Vault to deliver fast and reliable local encryption.
+
+Optimize:
+
+* File encryption
+* File decryption
+* Folder encryption
+* Folder decryption
+* Large file processing
+* Streaming encryption
+* Progress reporting
+* Cancellation support
+* Memory efficiency
+* CPU utilization
+
+Support:
+
+* Local drives
+* External HDDs
+* SSDs
+* USB flash drives
+* Removable storage
+
+### Requirements
+
+* Fast encryption.
+* Fast decryption.
+* No corrupted files.
+* Integrity verification after decryption.
+* Large files processed efficiently.
+* Smooth user experience.
+
+---
+
+# 6. Recovery Key & Device Recovery
+
+Audit and validate the complete recovery workflow.
+
+Ensure:
+
+* Recovery Keys are generated correctly.
+* Recovery Keys can be exported.
+* Recovery Keys can be imported.
+* Recovery Keys are validated.
+* Device recovery functions correctly.
+* Users can restore encrypted vaults on a new device.
+* Recovery succeeds after device loss, theft, or hardware failure.
+* Encryption keys remain protected throughout recovery.
+
+Verify every recovery scenario.
+
+---
+
+# 7. Dashboard & Application Responsiveness
+
+Improve the overall responsiveness of the application.
+
+Optimize:
+
+* Dashboard loading
+* Navigation
+* Sidebar
+* Search
+* Settings
+* Theme switching
+* Notifications
+* Window resizing
+* Startup time
+* Background synchronization
+
+Requirements:
+
+* Responsive UI.
+* Smooth animations.
+* No lag.
+* No unnecessary re-renders.
+* Efficient resource utilization.
+* Low CPU usage.
+* Low memory consumption.
+
+---
+
+# 8. Enterprise Quality Assurance
+
+Perform a comprehensive audit of every feature.
+
+Inspect:
+
+* Rust (Tauri backend)
+* TypeScript
+* React
+* API calls
+* State management
+* Local storage
+* Database operations
+* Cryptographic services
+* IPC communication
+* Error handling
+* Logging
+* File handling
+* Authentication
+* Session management
+* Background services
+
+Identify and permanently resolve:
+
+* Bugs
+* Race conditions
+* Deadlocks
+* Memory leaks
+* Panic conditions
+* Thread synchronization issues
+* Performance bottlenecks
+* UI glitches
+* State inconsistencies
+* Unhandled exceptions
+* Security vulnerabilities
+
+---
+
+# 9. Production Readiness Requirements
+
+The application should be suitable for enterprise production deployment.
+
+Requirements:
+
+* Stable
+* Reliable
+* Secure
+* Responsive
+* Maintainable
+* Well-documented
+* Error resilient
+* Scalable
+* Efficient
+* Cross-platform compatible
+* User-friendly
+
+---
+
+# 10. Final Validation Checklist
+
+Before considering the work complete, verify that:
+
+* ✅ Forward Secrecy works correctly.
+* ✅ PreKeys generate automatically.
+* ✅ Secure messaging is instant.
+* ✅ No message delays.
+* ✅ No missing messages.
+* ✅ Video calls are stable.
+* ✅ Audio quality is excellent.
+* ✅ Video quality is excellent.
+* ✅ Quantum Security remains active during messaging and calls.
+* ✅ Quantum Vault encrypts and decrypts quickly.
+* ✅ Recovery Keys work correctly.
+* ✅ Device recovery functions successfully.
+* ✅ External drive encryption works.
+* ✅ Dashboard is responsive.
+* ✅ All application features operate as intended.
+* ✅ No known bugs remain.
+* ✅ No crashes occur during extended use.
+* ✅ No memory leaks are detected.
+* ✅ No security vulnerabilities are introduced.
+* ✅ Performance meets enterprise production standards.
+
+## Expected Outcome
+
+Deliver a **fully functional, enterprise-grade QGuard Messaging application** that provides fast, seamless, and highly secure messaging, voice calling, video calling, and Quantum Vault capabilities with excellent usability, permanent fixes for existing issues, robust recovery mechanisms, and reliable post-quantum cryptographic protections suitable for production deployment.

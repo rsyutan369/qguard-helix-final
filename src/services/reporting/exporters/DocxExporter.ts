@@ -125,10 +125,13 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const roadmapTable: ReportTable = { title: 'Roadmap & Program Plan', columns: ['Phase', 'Start', 'Finish', 'Wks', 'Milestone', 'Approval Gate', 'Critical', 'Slack'], rows: report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, p.milestone || '-', p.gate || '-', p.criticalPath ? 'Yes' : 'No', `${p.slackWeeks}w`]) };
   const ex = report.executiveBlock;
   const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
+  // Improvement is stated in POINTS for every row (reductions also annotate the
+  // relative %) — one column must never mix points and percent units.
+  const hndlDropPct = Math.round(((ex.currentHndl - ex.targetHndl) / Math.max(1, ex.currentHndl)) * 100);
   const stateTable: ReportTable = { title: 'Current vs Target', columns: ['Metric', 'Current', 'Target', 'Improvement'], rows: [
-    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, `+${Math.max(0, ex.targetReadiness - ex.currentReadiness)}`],
-    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, `-${ex.expectedRiskReductionPct}%`],
-    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, `-${Math.max(0, ex.currentHndl - ex.targetHndl)}`],
+    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, ex.targetReadiness > ex.currentReadiness ? `+${ex.targetReadiness - ex.currentReadiness} pts` : '—'],
+    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, ex.currentRisk > ex.targetRisk ? `-${ex.currentRisk - ex.targetRisk} pts (-${ex.expectedRiskReductionPct}%)` : '—'],
+    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, ex.currentHndl > ex.targetHndl ? `-${ex.currentHndl - ex.targetHndl} pts (-${hndlDropPct}%)` : '—'],
     ['Migration Timeline', '-', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
     ['Migration Budget', '-', usd(ex.estimatedCostUsd), ''],
   ] };
@@ -357,6 +360,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           heading('Enterprise Remediation Playbook'),
           ...playbookChildren,
           heading('Migration Roadmap & Program Plan'),
+          para(`Sequential dates, milestones, approval gates and critical-path/slack. Elapsed window: the "migration programme" duration counts the migration waves only; with the discovery and validation phases, the end-to-end elapsed window is ${report.roadmap.reduce((sum, p) => sum + (Number(p.effortWeeks) || 0), 0)} weeks.`, MUTED),
           docTable(roadmapTable),
           heading('Migration Resource Loading'),
           para('Team allocation across the programme window — hours, engineers and percentage loading per team.', MUTED),

@@ -1,7 +1,12 @@
 node_modules/
 dist/
+dist-android/
 src-tauri/target/
-src-tauri/gen/
+# Generated JSON schemas are rebuildable; the Android Studio project under
+# gen/android is real source (manifest, MainActivity, themes, signing) and IS
+# tracked. Its own .gitignore excludes build output and signing secrets.
+src-tauri/gen/schemas/
+src-tauri/gen/android/keystore.properties
 *.log
 .env
 .env.local

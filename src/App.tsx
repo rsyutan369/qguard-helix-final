@@ -7,6 +7,7 @@ import VerifyReport from './pages/VerifyReport';
 import Checkout from './pages/Checkout';
 import PostQuantumMigrationPlatform from './pages/PostQuantumMigrationPlatform';
 import QuantumTrustGovernanceCenter from './pages/QuantumTrustGovernanceCenter';
+import PqcSolutions from './pages/PqcSolutions';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
@@ -129,6 +130,7 @@ export default function App() {
           <Route path="/quantum-readiness-assessment" element={<QuantumReadinessAssessmentPage />} />
           <Route path="/post-quantum-migration-platform" element={<PostQuantumMigrationPlatform />} />
           <Route path="/quantum-trust-governance-center" element={<QuantumTrustGovernanceCenter />} />
+          <Route path="/pqc-solutions" element={<PqcSolutions />} />
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/subscription/thank-you" element={<SubscriptionThankYou />} />
           <Route path="/verify-report" element={<VerifyReport />} />

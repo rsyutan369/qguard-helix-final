@@ -394,9 +394,16 @@ export default function AiExecutiveAdvisorPage() {
                       Harvest-Now-Decrypt-Later exposure ({snapshot.scores.hndlRiskLevel}) accumulates on every day of captured traffic.
                     </p>
                   </div>
-                  {m.riskForecast.scenarios.map((scenario) => {
-                    const color = scenario.scenario === 'Best Case' ? EMERALD : scenario.scenario === 'Expected' ? BLUE : ORANGE;
-                    const label = scenario.scenario === 'Best Case' ? 'Accelerated Programme' : scenario.scenario === 'Expected' ? 'Recommended Programme' : 'Constrained / Slipped';
+                  {m.riskForecast.scenarios.filter((scenario) => !/no funded|baseline/i.test(scenario.scenario)).map((scenario) => {
+                    // Scenario labels are schedule-anchored ("Funded Programme (Expected)" /
+                    // "…(Worst Case — 2× slippage)"); match on keywords so legacy saved
+                    // reports ("Best Case" / "Expected" / "Worst Case") still color correctly.
+                    // The no-programme baseline is excluded — the "Do Nothing" card above
+                    // already presents it with richer evidence copy.
+                    const isBest = /best/i.test(scenario.scenario);
+                    const isExpected = /expected/i.test(scenario.scenario) && !/worst/i.test(scenario.scenario);
+                    const color = isBest ? EMERALD : isExpected ? BLUE : ORANGE;
+                    const label = isBest ? 'Accelerated Programme' : isExpected ? 'Recommended Programme' : 'Constrained / Slipped';
                     return (
                       <div key={scenario.scenario} className="rounded-md border p-3" style={{ borderColor: `${color}30`, backgroundColor: `${color}0d` }}>
                         <div className="flex flex-wrap items-center gap-2 text-xs">

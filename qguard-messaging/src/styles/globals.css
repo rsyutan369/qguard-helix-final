@@ -600,3 +600,65 @@ button:not(:disabled):hover {
     transition: none;
   }
 }
+
+/* ============================================================
+   Mobile / Android layer (phones + narrow windows, <=860px)
+   Light, floating, purple-accented per the Android design refs.
+   ============================================================ */
+
+/* Safe-area helpers for edge-to-edge Android (status/nav bars). */
+.mobile-safe-top {
+  padding-top: max(10px, env(safe-area-inset-top));
+}
+
+.mobile-safe-bottom {
+  padding-bottom: max(0px, env(safe-area-inset-bottom));
+}
+
+@media (max-width: 860px) {
+  body {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* Touch surfaces get no visible scrollbars. */
+  ::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* Desktop KPI rows collapse to a 2-up grid on phones. */
+  .grid-cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Wide data tables scroll inside their card instead of the page. */
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Cards breathe less on small screens. */
+  .shell-card {
+    border-radius: 14px;
+  }
+
+  /* The chat workspace fills the mobile shell (header 64px + nav 84px). */
+  .mobile-shell [class*="h-[calc(100vh-124px)]"] {
+    height: calc(100dvh - 172px) !important;
+  }
+
+  /* Column-resize handles are a pointer-only affordance. */
+  .mobile-shell [role="separator"][aria-orientation="vertical"] {
+    display: none;
+  }
+
+  /* Larger tap targets for form controls inside the mobile shell. */
+  .mobile-shell input,
+  .mobile-shell select,
+  .mobile-shell textarea {
+    font-size: 16px; /* prevents Android WebView focus zoom */
+  }
+}

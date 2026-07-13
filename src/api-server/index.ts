@@ -17,6 +17,7 @@ import { quantumGovernanceRoutes, cryptoPoliciesRoutes, auditVaultRoutes, regula
 import { runtimeTelemetryRoutes, certificateTelemetryRoutes, keyAnalyticsRoutes, apiEncryptionRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
 import qkmsRoutes from './qkms-dashboard'
 import pqauthRoutes from './pqauth-dashboard'
+import authRoutes from './auth'
 import profileRoutes from './profile'
 import billingRoutes from './billing'
 import paypalRoutes from './paypal'
@@ -737,6 +738,10 @@ export function createApiServer() {
   // Server-side subscription enforcement — authoritative gate ahead of every
   // module router. Ungated paths (billing, paypal, profile, admin, overview)
   // pass straight through; gated modules require the caller's active plan tier.
+  // Public (pre-auth) routes: registration must work without a token and is
+  // not tier-gated, so it mounts before the subscription gateway.
+  app.use('/api/v1/auth', authRoutes)
+
   app.use('/api', subscriptionGateway)
 
   // Dashboard API routes

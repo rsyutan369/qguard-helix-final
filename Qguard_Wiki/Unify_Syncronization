@@ -1,0 +1,259 @@
+Unify Desktop and Android Accounts with Real-Time Secure Chat Synchronization
+
+The QGuard Messaging Desktop and QGuard Messaging Android applications must function as one unified ecosystem.
+
+A user should only need one QGuard Helix account to access both applications.
+
+Primary Objective
+
+Implement a unified authentication and synchronization architecture so that:
+
+Desktop and Android use the same login credentials.
+Users sign in with the same email and password.
+The same account is recognized across all devices.
+Secure Chat conversations synchronize in real time between Desktop and Android.
+Subscription status is shared across both applications.
+
+The experience should be similar to applications such as Signal, WhatsApp Multi-Device, or Telegram, where users can seamlessly continue conversations across multiple devices.
+
+Authentication
+
+Implement a single authentication system.
+
+A user should:
+
+Register once.
+Verify their email once.
+Log in using the same credentials on Desktop and Android.
+Have one user profile shared across all devices.
+
+The account should include:
+
+User ID
+Email
+Display Name
+Profile Photo
+Subscription Plan
+Device List
+Public Encryption Keys
+Identity Keys
+Security Settings
+Subscription Synchronization
+
+Subscription information must be shared across devices.
+
+For example:
+
+If a user purchases the STARTER subscription on Desktop:
+
+Android should immediately recognize the active subscription.
+The user should not need to purchase another subscription.
+Premium features should automatically unlock on both Desktop and Android.
+
+Subscription data should be tied to the user's account, not to a specific device.
+
+Secure Chat Synchronization
+
+Secure Chat should synchronize in real time between Desktop and Android.
+
+When a user:
+
+Sends a message from Desktop
+
+the message should instantly appear on Android.
+
+Likewise:
+
+Sending from Android should immediately appear on Desktop.
+
+Synchronization should include:
+
+New messages
+Edited messages (if supported)
+Deleted messages (if supported)
+Read receipts
+Delivery status
+Typing indicators
+Attachments
+Media
+Conversation list
+Last message preview
+Unread counts
+
+All synchronization must occur in real time.
+
+Multi-Device Support
+
+A user may be signed into multiple devices simultaneously.
+
+Examples:
+
+Windows Desktop
+Android Phone
+Future iPhone
+Future macOS
+Future Linux
+
+All devices should remain synchronized.
+
+End-to-End Encryption
+
+Maintain end-to-end encryption across all devices.
+
+Each device should have:
+
+Its own identity key pair.
+Its own session keys.
+Its own prekeys.
+Its own device identifier.
+
+Messages should be encrypted for every authorized device associated with the user's account, ensuring that all registered devices can decrypt messages securely.
+
+Quantum Vault
+
+The Quantum Vault should NOT synchronize automatically between devices.
+
+Each device maintains its own independent encrypted vault.
+
+Example:
+
+Desktop Quantum Vault
+
+Encrypt local folders
+Encrypt local files
+Encrypt local drives
+
+Android Quantum Vault
+
+Encrypt phone storage
+Encrypt downloads
+Encrypt documents
+Encrypt photos
+
+These vaults remain device-specific and should not automatically share encrypted content.
+
+Recovery Keys (Recommended Design)
+
+The Recovery Key should be account-based, not device-based.
+
+A single Recovery Key can securely protect access to the user's Quantum Vaults across all registered devices, while the encrypted vault contents remain stored locally on each device.
+
+Example:
+
+User Account:
+
+john@example.com
+
+Devices:
+
+Windows PC
+Android Phone
+
+Recovery Key:
+
+One Recovery Key associated with the account
+
+Vault Contents:
+
+Windows vault contains Windows-specific encrypted files.
+Android vault contains Android-specific encrypted files.
+
+The Recovery Key enables recovery of the encryption keys on authorized devices but does not synchronize the encrypted files themselves.
+
+Why this design?
+
+It provides:
+
+One Recovery Key to remember.
+Simplified disaster recovery.
+Consistent account experience.
+Reduced user confusion.
+Device independence.
+Better scalability for future platforms (macOS, Linux, iOS).
+
+If a user loses their Android phone, the Windows vault remains unaffected. Likewise, changes to files in one vault do not automatically affect the other.
+
+Device Registration
+
+Implement a trusted device management system.
+
+Each device should have:
+
+Unique Device ID
+Device Name
+Platform
+Registration Date
+Last Active Timestamp
+Device Public Key
+Device Status (Trusted, Revoked, Pending)
+
+Users should be able to view and manage all authorized devices from their account.
+
+Security Requirements
+
+Ensure:
+
+Real-time encrypted synchronization.
+Per-device encryption sessions.
+Perfect Forward Secrecy.
+Post-Quantum Cryptography support.
+Secure device onboarding.
+Secure device revocation.
+Automatic session recovery after reconnecting.
+Protection against replay and impersonation attacks.
+Testing Requirements
+
+Verify the following scenarios:
+
+Authentication
+Register once.
+Log in on Desktop.
+Log in on Android.
+Both devices authenticate successfully.
+Messaging
+Send Desktop → Android.
+Send Android → Desktop.
+Messages appear instantly.
+Attachments synchronize correctly.
+Read receipts update on both devices.
+Typing indicators synchronize.
+Offline messages synchronize upon reconnection.
+Subscription
+Purchase STARTER on Desktop.
+Verify Android immediately reflects the active subscription.
+Confirm premium features are unlocked on both platforms.
+Quantum Vault
+Encrypt files on Desktop.
+Confirm files remain only on Desktop.
+Encrypt files on Android.
+Confirm files remain only on Android.
+Verify that vault contents are not synchronized.
+Recovery
+Recover the Desktop vault using the account Recovery Key.
+Recover the Android vault using the same account Recovery Key.
+Ensure recovery works without synchronizing vault contents.
+Deliverables
+
+Provide:
+
+A unified multi-device architecture diagram.
+The files and modules modified.
+Database schema changes (if any).
+Authentication and synchronization flow.
+Secure Chat synchronization flow.
+Quantum Vault architecture.
+Recovery Key architecture.
+Device registration and trust model.
+Security review of the implementation.
+Comprehensive testing results confirming that Desktop and Android function as a single, secure, multi-device ecosystem.
+💡 Architecture Recommendation
+
+For QGuard Messaging, I recommend the following approach:
+
+✅ One Account per user across all platforms.
+✅ One Subscription shared across all devices.
+✅ Real-time Secure Chat synchronized between devices.
+✅ One account-level Recovery Key used to recover the user's encryption keys on any trusted device.
+✅ Separate Quantum Vaults on each device, with encrypted files remaining local and never synchronized automatically.
+
+This architecture provides an experience comparable to modern secure messaging platforms while preserving the privacy and performance benefits of device-local encrypted storage. It also scales cleanly as you add support for iOS, macOS, Linux, web, and additional platforms in the future.

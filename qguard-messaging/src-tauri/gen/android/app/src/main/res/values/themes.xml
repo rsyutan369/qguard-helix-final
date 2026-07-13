@@ -1,0 +1,13 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- QGuard Messaging light theme: white canvas, purple gradient accents. -->
+    <style name="Theme.qguard_messaging" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/qguard_violet_500</item>
+        <item name="colorPrimaryVariant">@color/qguard_violet_600</item>
+        <item name="colorSecondary">@color/qguard_cyan_500</item>
+        <item name="android:windowBackground">@color/qguard_canvas</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+    </style>
+</resources>

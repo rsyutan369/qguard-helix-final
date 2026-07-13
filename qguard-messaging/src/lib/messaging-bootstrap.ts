@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { byteaToBytes, bytesToBytea, randomHex } from "@/lib/encoding";
+import { ONE_TIME_PREKEY_MIN, ONE_TIME_PREKEY_TARGET } from "@/lib/security-score";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 
 export interface PublicIdentityBundle {
@@ -164,6 +165,37 @@ export async function syncCurrentMessagingDevice(client: SupabaseClient, userId:
   return ensureDesktopDevice(client, userId);
 }
 
+const prekeyReadinessLastRun = new Map<string, number>();
+const prekeyReadinessPromises = new Map<string, Promise<void>>();
+const prekeyReadinessThrottleMs = 60_000;
+
+// Runtime self-healing for prekey depletion. The workspace bootstrap runs once
+// per app session, but peers keep claiming one-time prekeys while the app is
+// open; whenever a dashboard refresh sees the pool below its readiness floor it
+// calls this to republish/replenish. Throttled so realtime-triggered refresh
+// storms cannot loop key generation, and deduped so concurrent refreshes share
+// one pass. The resulting prekey inserts emit realtime events that refresh the
+// dashboard counts on their own.
+export function ensurePrekeyReadiness(client: SupabaseClient, userId: string): Promise<void> {
+  if (!isTauriRuntime()) return Promise.resolve();
+  const inFlight = prekeyReadinessPromises.get(userId);
+  if (inFlight) return inFlight;
+  const lastRun = prekeyReadinessLastRun.get(userId) ?? 0;
+  if (Date.now() - lastRun < prekeyReadinessThrottleMs) return Promise.resolve();
+  prekeyReadinessLastRun.set(userId, Date.now());
+
+  const readiness = ensureDesktopDevice(client, userId)
+    .then(() => undefined)
+    .catch(() => {
+      // Retried by the next low-inventory refresh once the throttle expires.
+    })
+    .finally(() => {
+      prekeyReadinessPromises.delete(userId);
+    });
+  prekeyReadinessPromises.set(userId, readiness);
+  return readiness;
+}
+
 async function ensureDesktopDevice(client: SupabaseClient, userId: string): Promise<PublicIdentityBundle> {
   const bundle = await safeInvoke<PublicIdentityBundle>("keys_upload_identity_bundle", { userId });
 
@@ -240,18 +272,34 @@ async function ensureSignedPrekey(client: SupabaseClient, userId: string, device
 }
 
 async function ensureOneTimePrekeys(client: SupabaseClient, userId: string, deviceId: string): Promise<void> {
-  const { count, error: countError } = await client
+  // Fetch ALL published rows for this device (consumed included). Consumed
+  // rows keep their id forever, so re-upserting the same static local pool
+  // with ignoreDuplicates inserts nothing — the pool must be diffed against
+  // every published id and topped up with FRESH keys, or a device whose 24
+  // initial prekeys were all claimed stays at 0 available permanently
+  // ("Awaiting prekey material").
+  const { data: publishedRows, error: publishedError } = await client
     .from("messaging_one_time_prekeys")
-    .select("id", { count: "exact", head: true })
+    .select("id,consumed_at")
     .eq("user_id", userId)
     .eq("device_id", deviceId)
-    .is("consumed_at", null);
+    .order("created_at", { ascending: false })
+    .limit(1000);
+  if (publishedError) throw publishedError;
 
-  if (countError) throw countError;
-  if ((count ?? 0) >= 8) return;
+  const published = (publishedRows ?? []) as Array<{ id: unknown; consumed_at: unknown }>;
+  const publishedIds = new Set(published.map((row) => String(row.id)));
+  const available = published.filter((row) => !row.consumed_at).length;
+  if (available >= ONE_TIME_PREKEY_MIN) return;
 
-  const prekeys = await safeInvoke<PublicOneTimePrekey[]>("keys_upload_one_time_prekeys", { userId });
-  const rows = prekeys.slice(0, 24).map((prekey) => ({
+  const localPool = await safeInvoke<PublicOneTimePrekey[]>("keys_upload_one_time_prekeys", { userId });
+  const unpublished = localPool.filter((prekey) => !publishedIds.has(prekey.prekey_id));
+  const deficit = ONE_TIME_PREKEY_TARGET - available - unpublished.length;
+  const fresh = deficit > 0
+    ? await safeInvoke<PublicOneTimePrekey[]>("keys_replenish_one_time_prekeys", { userId, needed: deficit })
+    : [];
+
+  const rows = [...unpublished, ...fresh].map((prekey) => ({
     id: prekey.prekey_id,
     user_id: userId,
     device_id: deviceId,
@@ -261,11 +309,34 @@ async function ensureOneTimePrekeys(client: SupabaseClient, userId: string, devi
     fingerprint: prekey.fingerprint,
     created_at: prekey.created_at,
   }));
+  if (rows.length > 0) {
+    const { error } = await client
+      .from("messaging_one_time_prekeys")
+      .upsert(rows, { onConflict: "id", ignoreDuplicates: true });
+    if (error) throw error;
+  }
 
-  const { error } = await client
-    .from("messaging_one_time_prekeys")
-    .upsert(rows, { onConflict: "id", ignoreDuplicates: true });
-  if (error) throw error;
+  // Hygiene: prune consumed rows older than 30 days so the published-rows
+  // select above never outgrows its 1000-row window. Only rows absent from
+  // the CURRENT local pool are deleted — a row still in the pool must stay
+  // published so the diff above can never re-insert (republish) a consumed
+  // one-time prekey. Non-fatal: cleanup must never break replenishment.
+  try {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    let prune = client
+      .from("messaging_one_time_prekeys")
+      .delete()
+      .eq("user_id", userId)
+      .eq("device_id", deviceId)
+      .lt("consumed_at", cutoff);
+    const localIds = localPool.map((prekey) => prekey.prekey_id).filter(Boolean);
+    if (localIds.length > 0) {
+      prune = prune.not("id", "in", `(${localIds.join(",")})`);
+    }
+    await prune;
+  } catch {
+    // Next low-inventory pass retries the prune.
+  }
 }
 
 async function ensureStarterConversation(client: SupabaseClient, userId: string, deviceId: string | null): Promise<void> {

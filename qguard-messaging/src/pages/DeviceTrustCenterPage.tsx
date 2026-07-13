@@ -618,7 +618,9 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
   }[confirmAction.kind] : null;
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+    // Base grid-cols-[minmax(0,1fr)] keeps wide device rows scrolling inside
+    // their card on phones; the xl two-column layout overrides it on desktop.
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
       <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">

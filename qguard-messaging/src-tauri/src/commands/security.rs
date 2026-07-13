@@ -149,21 +149,6 @@ pub fn security_verify_fingerprint(
 }
 
 #[tauri::command]
-pub fn security_report_key_change(
-    state: State<'_, AppState>,
-    device_id: String,
-    new_fingerprint: String,
-) -> Result<bool> {
-    state.require_auth()?;
-    state.audit_info(
-        "key_change_reported",
-        &format!("Key change for {device_id}: {new_fingerprint}"),
-    );
-    state.touch_telemetry("warning", "Key change alert recorded", 100);
-    Ok(true)
-}
-
-#[tauri::command]
 pub fn security_export_report(state: State<'_, AppState>) -> Result<SecurityReport> {
     state.require_auth()?;
     let audit_chain_valid = state.audit.lock().map(|a| a.verify()).unwrap_or(false);

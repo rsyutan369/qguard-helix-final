@@ -65,13 +65,6 @@ pub struct DecryptedMessage {
     pub replay_protected: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct DeliveryReceipt {
-    pub message_id: String,
-    pub recipient_device_id: String,
-    pub status: String,
-}
-
 // Send/receive are `async` so Tauri runs them on the runtime thread pool
 // instead of the MAIN thread: a history load fires dozens of decrypts, and as
 // sync commands each one stalled the UI (same root cause as the vault
@@ -411,13 +404,6 @@ pub async fn messaging_receive_encrypted_message(
 }
 
 #[tauri::command]
-pub fn messaging_sync_queue(state: State<'_, AppState>) -> Result<Vec<EncryptedMessageEnvelope>> {
-    state.require_auth()?;
-    state.touch_telemetry("sync", "Supabase realtime queue sync requested", 35);
-    Ok(Vec::new())
-}
-
-#[tauri::command]
 pub fn messaging_delete_encrypted_message(
     state: State<'_, AppState>,
     message_id: String,
@@ -430,18 +416,3 @@ pub fn messaging_delete_encrypted_message(
     Ok(true)
 }
 
-#[tauri::command]
-pub fn messaging_mark_delivery_receipt(
-    state: State<'_, AppState>,
-    message_id: String,
-    recipient_device_id: String,
-    status: String,
-) -> Result<DeliveryReceipt> {
-    state.require_auth()?;
-    state.audit_info("delivery_receipt", "Encrypted delivery receipt marked");
-    Ok(DeliveryReceipt {
-        message_id,
-        recipient_device_id,
-        status,
-    })
-}

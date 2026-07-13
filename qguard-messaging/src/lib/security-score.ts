@@ -29,6 +29,16 @@ interface SecurityPostureResult {
   report: QuantumSecurityReport;
 }
 
+// Per-device prekey readiness floors (see buildSecurityPosture). A device is
+// forward-secrecy-ready with one active signed prekey and a healthy one-time
+// prekey pool; these are NOT multiplied by the number of registered devices.
+// Exported so every prekey readout uses the same thresholds.
+export const SIGNED_PREKEY_MIN = 1;
+export const ONE_TIME_PREKEY_MIN = 16;
+// Publish target: when the available pool drops below the floor, the device
+// replenishes with fresh keys back up to this count.
+export const ONE_TIME_PREKEY_TARGET = 24;
+
 const requiredSuite = {
   classicalKex: "X25519",
   pqKem: "ML-KEM-1024",
@@ -141,8 +151,13 @@ export function buildSecurityPosture({
   const deviceSuiteReady = activeMyDevices.some(deviceSuiteUsesRequiredStack);
   const vaultStackReady = vaultFiles.every(vaultSuiteUsesRequiredStack);
   const requiredSymmetricStackReady = deviceSuiteReady && vaultStackReady;
-  const signedPrekeysReady = activeMyDevices.length > 0 && keyInventory.active_signed_prekeys >= activeMyDevices.length;
-  const oneTimePrekeysNeeded = Math.max(8, activeMyDevices.length * 8);
+  // Prekeys are PER DEVICE: each device publishes its own signed prekey (1) and
+  // its own one-time-prekey pool. Readiness must therefore be a per-device floor,
+  // NOT scaled by the total device count — otherwise stale device identities left
+  // behind by reinstalls (each inflating activeMyDevices) make a perfectly healthy
+  // device read as "awaiting prekey material" forever.
+  const signedPrekeysReady = activeMyDevices.length > 0 && keyInventory.active_signed_prekeys >= SIGNED_PREKEY_MIN;
+  const oneTimePrekeysNeeded = ONE_TIME_PREKEY_MIN;
   const oneTimePrekeysReady = keyInventory.available_one_time_prekeys >= oneTimePrekeysNeeded;
   const forwardSecrecyReady = signedPrekeysReady && (oneTimePrekeysReady || conversations.length > 0);
   const allActiveDevicesTrusted = activeMyDevices.length > 0 && trustedMyDevices.length === activeMyDevices.length;

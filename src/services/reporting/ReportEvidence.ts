@@ -1,6 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { addWeeks, format } from 'date-fns';
 import type { QuantumReadinessSnapshot } from '@/app/dashboard/quantum-readiness/_shared';
+// Runtime-only function import; the ReportScope↔ReportEvidence cycle is safe
+// because both modules only export hoisted functions consumed at call time.
+import { buildReportScope } from './ReportScope';
 import {
   EVIDENCE_UNAVAILABLE,
   normalizeSeverity,
@@ -110,6 +113,13 @@ function kpiTone(score: number, higherIsWorse: boolean): ReportKpi['tone'] {
   if (score >= 25) return 'high';
   return 'critical';
 }
+
+/**
+ * Quantum Trust Certification™ readiness threshold. The executive programme
+ * target readiness is pinned to this same value so "Target 85/100" in the
+ * executive summary and the certification criterion can never diverge.
+ */
+export const CERTIFICATION_READINESS_THRESHOLD = 85;
 
 function riskLevel(score: number, higherIsBetter: boolean): string {
   const s = higherIsBetter ? 100 - score : score;
@@ -298,10 +308,13 @@ export function buildKpis(snapshot: QuantumReadinessSnapshot): ReportKpi[] {
     { label: 'Quantum Readiness', value: s.quantumReadiness, unit: '/100', level: s.quantumReadinessLevel, tone: kpiTone(s.quantumReadiness, false) },
     { label: 'Quantum Risk', value: s.quantumRisk, unit: '/100', level: s.quantumRiskLevel, tone: kpiTone(s.quantumRisk, true) },
     { label: 'Crypto Exposure', value: s.cryptoExposure, unit: '/100', level: s.cryptoExposureLevel, tone: kpiTone(s.cryptoExposure, true) },
-    { label: 'HNDL Risk', value: s.hndlRisk, unit: '/100', level: s.hndlRiskLevel, tone: kpiTone(s.hndlRisk, true) },
+    { label: 'HNDL Exposure', value: s.hndlRisk, unit: '/100', level: s.hndlRiskLevel, tone: kpiTone(s.hndlRisk, true) },
     { label: 'PQC Adoption', value: s.pqcAdoption, unit: '%', tone: kpiTone(s.pqcAdoption, false) },
     { label: 'Migration Effort', value: s.migrationEffort, unit: '/100', tone: 'neutral' },
-    { label: 'Assets Assessed', value: inv.assetsAssessed, tone: 'neutral' },
+    // "Inventoried" (not "Assessed") — the scope line counts DISCOVERED assets
+    // (inventory ∪ scanned endpoints); this KPI counts the formal inventory only,
+    // and the Terminology section defines the distinction.
+    { label: 'Inventoried Assets', value: inv.assetsAssessed, tone: 'neutral' },
     { label: 'Assets Requiring Migration', value: inv.quantumVulnerableAssets, tone: inv.quantumVulnerableAssets > 0 ? 'high' : 'good' },
     { label: 'Vulnerable Crypto Components', value: inv.vulnerableComponents, tone: inv.vulnerableComponents > 0 ? 'high' : 'good' },
     { label: 'Certificates', value: inv.certificatesAnalyzed, tone: 'neutral' },
@@ -376,14 +389,34 @@ export function buildMigrationAdvisor(snapshot: QuantumReadinessSnapshot, riskDo
     ? DOMAIN_RECOMMENDATION[primaryKey] || `Modernize ${primary?.category || 'cryptographic'} cryptography`
     : 'Establish PQC migration program';
   const firstWave = waves[0];
+  const affectedAssets = internet.length ? internet.slice(0, 8) : snapshot.topRiskAssets.slice(0, 8).map((a) => a.asset);
+  // Execution complexity must reconcile with the per-asset Migration Complexity
+  // printed in the Asset Intelligence Profile (same rule: >3 dependencies or an
+  // internet-facing asset with >2 findings ⇒ High) — the recommendation executes
+  // against these assets, so it is never reported as easier than its hardest asset.
+  const nodeByLabel = new Map(snapshot.exposureGraph.nodes.map((n) => [n.label, n]));
+  const complexityRank: Record<string, number> = { Low: 0, Medium: 1, High: 2, Critical: 3 };
+  const assetComplexity = (asset: string): string => {
+    const key = normalizeAssetKey(asset);
+    const assetFindings = snapshot.criticalFindings.filter((f) => normalizeAssetKey(f.asset) === key).length;
+    const node = nodeByLabel.get(asset);
+    const internetFacing = node?.internetFacing ?? internet.includes(asset);
+    const deps = node ? snapshot.exposureGraph.edges.filter((e) => e.source === node.id || e.target === node.id).length : 0;
+    return deps > 3 || (internetFacing && assetFindings > 2) ? 'High' : internetFacing || assetFindings > 1 ? 'Medium' : 'Low';
+  };
+  const platformComplexity = riskLevel(s.migrationComplexity, false);
+  const complexity = affectedAssets
+    .map(assetComplexity)
+    .concat(platformComplexity)
+    .sort((a, b) => (complexityRank[b] ?? 0) - (complexityRank[a] ?? 0))[0];
   return {
     recommendation,
     reason: `${primary ? primary.category : 'Cryptographic exposure'} is the largest weighted quantum-risk driver (${exposurePct}/100)${isTransport ? ', dominated by legacy RSA/ECC TLS handshakes and certificate signatures,' : ''} concentrated in ${snapshot.inventory.quantumVulnerableAssets || snapshot.inventory.assetsAssessed} asset(s).`,
-    affectedAssets: internet.length ? internet.slice(0, 8) : snapshot.topRiskAssets.slice(0, 8).map((a) => a.asset),
+    affectedAssets,
     riskReductionPct: firstWave ? firstWave.riskReductionPct : clamp(Math.round((s.quantumRisk - Math.max(10, s.quantumRisk * 0.25)) * 0.6)),
     costUsd: firstWave ? firstWave.costUsd : Math.round(snapshot.estimates.migrationCostUsd * 0.2),
     timelineWeeks: firstWave ? firstWave.durationWeeks : Math.max(1, Math.round(snapshot.estimates.migrationTimelineWeeks * 0.2)),
-    complexity: riskLevel(s.migrationComplexity, false),
+    complexity,
     successProbabilityPct: clamp(100 - s.migrationComplexity * 0.5),
     confidencePct: snapshot.hasData ? clamp(78 + (snapshot.inventory.assetsAssessed > 0 ? 8 : 0) + (snapshot.inventory.certificatesAnalyzed > 0 ? 5 : 0)) : 0,
   };
@@ -394,7 +427,7 @@ export function buildMigrationAdvisor(snapshot: QuantumReadinessSnapshot, riskDo
 /* ------------------------------------------------------------------ */
 export function buildMigrationWaves(snapshot: QuantumReadinessSnapshot): MigrationWave[] {
   const weeks = snapshot.estimates.migrationTimelineWeeks || 0;
-  const cost = snapshot.estimates.migrationCostUsd || 0;
+  const cost = normalizeBudgetUsd(snapshot.estimates.migrationCostUsd || 0);
   const internet = internetFacingLabels(snapshot);
   const inv = snapshot.inventory;
 
@@ -422,14 +455,18 @@ export function buildMigrationWaves(snapshot: QuantumReadinessSnapshot): Migrati
   // rounding remainder onto the largest wave. Uses reductionTargets() — the same
   // engine as the executive block and risk forecast — so all three agree.
   const shareSum = specs.reduce((sum, spec) => sum + spec.reductionShare, 0) || 1;
+  // Cost/duration ratios are ALSO renormalised over the surviving specs — when
+  // evidence-less waves are dropped, the raw ratios no longer sum to 1 and the
+  // wave costs would silently total less than the stated migration budget.
+  const ratioSum = specs.reduce((sum, spec) => sum + spec.ratio, 0) || 1;
   const { reductionPct } = reductionTargets(snapshot);
   const waves = specs.map((spec, index) => ({
     wave: index + 1,
     name: spec.name,
     assets: spec.assets.length ? spec.assets.slice(0, 10) : [EVIDENCE_UNAVAILABLE],
     owner: spec.owner,
-    durationWeeks: Math.max(weeks ? 1 : 0, Math.round(weeks * spec.ratio)),
-    costUsd: Math.round(cost * spec.ratio),
+    durationWeeks: Math.max(weeks ? 1 : 0, Math.round(weeks * (spec.ratio / ratioSum))),
+    costUsd: Math.round(cost * (spec.ratio / ratioSum)),
     dependencies: index === 0 ? ['Load Balancer', 'Certificate Authority'] : index === 1 ? ['Certificate Authority', 'HSM / KMS'] : ['Preceding wave validation'],
     riskReductionPct: Math.round(reductionPct * (spec.reductionShare / shareSum)),
     status: spec.assets.length ? (index === 0 ? 'Ready' : 'Planned') : 'Awaiting Discovery',
@@ -440,6 +477,19 @@ export function buildMigrationWaves(snapshot: QuantumReadinessSnapshot): Migrati
     if (diff !== 0) {
       const largest = waves.reduce((mi, w, i, arr) => (w.riskReductionPct > arr[mi].riskReductionPct ? i : mi), 0);
       waves[largest].riskReductionPct = Math.max(0, waves[largest].riskReductionPct + diff);
+    }
+    // Σ wave costs must equal the migration budget to the dollar, and Σ wave
+    // durations must equal the programme weeks — independent per-wave rounding
+    // printed "$156,751" next to the "$156,750" budget.
+    const costDiff = cost - waves.reduce((sum, w) => sum + w.costUsd, 0);
+    if (costDiff !== 0) {
+      const costliest = waves.reduce((mi, w, i, arr) => (w.costUsd > arr[mi].costUsd ? i : mi), 0);
+      waves[costliest].costUsd = Math.max(0, waves[costliest].costUsd + costDiff);
+    }
+    const weekDiff = weeks - waves.reduce((sum, w) => sum + w.durationWeeks, 0);
+    if (weekDiff !== 0) {
+      const longest = waves.reduce((mi, w, i, arr) => (w.durationWeeks > arr[mi].durationWeeks ? i : mi), 0);
+      waves[longest].durationWeeks = Math.max(weeks ? 1 : 0, waves[longest].durationWeeks + weekDiff);
     }
   }
   return waves;
@@ -545,10 +595,16 @@ export function buildDependencyAnalysis(snapshot: QuantumReadinessSnapshot) {
 /* ------------------------------------------------------------------ */
 /* Quantum risk categories (Enhancement)                              */
 /* ------------------------------------------------------------------ */
-export function buildRiskCategories(riskDomainModel: RiskDomainDatum[]): RiskCategory[] {
+export function buildRiskCategories(snapshot: QuantumReadinessSnapshot, riskDomainModel: RiskDomainDatum[]): RiskCategory[] {
+  // Domain targets share the canonical reduction engine (reductionTargets) so the
+  // weighted blend of the per-domain targets reproduces the overall target risk.
+  // Previously domains reduced ×0.30 while the programme target reduced ×0.25,
+  // leaving this table implying a higher overall target than the stated one.
+  const { startRisk, targetRisk } = reductionTargets(snapshot);
+  const ratio = startRisk > 0 ? targetRisk / startRisk : 0.25;
   const cats = riskDomainModel.map((d) => {
     const current = clamp(d.risk);
-    const target = Math.max(8, round(current * 0.3));
+    const target = Math.min(current, Math.max(8, round(current * ratio)));
     return { category: d.category, currentScore: current, targetScore: target, reductionPotentialPct: clamp(((current - target) / Math.max(1, current)) * 100) };
   });
   return cats.length ? cats : [{ category: EVIDENCE_UNAVAILABLE, currentScore: 0, targetScore: 0, reductionPotentialPct: 0 }];
@@ -613,18 +669,41 @@ export function buildCostForecast(snapshot: QuantumReadinessSnapshot): CostForec
 /* ------------------------------------------------------------------ */
 export function buildRiskForecast(snapshot: QuantumReadinessSnapshot): RiskForecast {
   const { startRisk: current, targetRisk: target, reductionPct, residualRisk } = reductionTargets(snapshot);
-  // Waves drive risk to `target`; the Validation/Optimization/Governance phase
-  // then hardens it to the lower `residualRisk` steady state by month 36.
-  const lerp = (t: number) => round(current - (current - target) * t);
-  // I3#7 — best/expected/worst-case bands. Expected = the planned trajectory.
-  // Best = on-schedule + faster wins (reaches residual by month 24). Worst =
-  // slippage (slower burn-down, more residual). Bounded to [0, current].
-  const band = (from: number, to: number, t: number) => clamp(round(from - (from - to) * t), 0, current);
+  // Projections are anchored to the ACTUAL programme schedule — the same
+  // discovery/waves/validation phase model buildRoadmap prints — instead of an
+  // arbitrary 36-month glide. A 26-week programme must show target risk well
+  // before month 12, or this forecast contradicts the printed roadmap dates.
+  const WEEKS_PER_MONTH = 52 / 12;
+  const totalWeeks = snapshot.estimates.migrationTimelineWeeks || 0;
+  const overheadWeeks = Math.max(1, Math.round(totalWeeks * 0.1)); // discovery & validation phases (matches buildRoadmap)
+  const wavesEndMonths = totalWeeks ? (overheadWeeks + totalWeeks) / WEEKS_PER_MONTH : 12;
+  const programmeEndMonths = totalWeeks ? (overheadWeeks + totalWeeks + overheadWeeks) / WEEKS_PER_MONTH : 18;
+  /** Risk at `month` when the schedule is stretched by `stretch` (1 = on plan); post-programme risk floors at `floor`. */
+  const riskAt = (month: number, stretch: number, floor: number) => {
+    const wavesEnd = wavesEndMonths * stretch;
+    const progEnd = programmeEndMonths * stretch;
+    if (month >= progEnd) return floor;
+    if (month >= wavesEnd) return target;
+    return clamp(round(current - (current - target) * (month / Math.max(0.1, wavesEnd))), floor, current);
+  };
+  const fmtMonths = (m: number) => Math.max(1, Math.ceil(m));
   const scenarios: RiskScenario[] = snapshot.hasData
     ? [
-        { scenario: 'Best Case', month12: band(current, target, 0.55), month24: band(current, residualRisk, 0.9), month36: residualRisk, assumption: 'On-schedule waves, dedicated resourcing, no rollback events; residual posture reached ~1 year early.' },
-        { scenario: 'Expected', month12: lerp(0.4), month24: lerp(0.75), month36: residualRisk, assumption: 'Planned wave cadence with standard change windows and validation gates.' },
-        { scenario: 'Worst Case', month12: band(current, target, 0.2), month24: band(current, target, 0.55), month36: band(current, target, 0.85), assumption: 'Resource contention / rollback slippage; migration target not fully reached until beyond month 36.' },
+        {
+          scenario: 'Funded Programme (Expected)',
+          month12: riskAt(12, 1, residualRisk), month24: riskAt(24, 1, residualRisk), month36: riskAt(36, 1, residualRisk),
+          assumption: `Planned wave cadence: waves complete by month ${fmtMonths(wavesEndMonths)} (risk ${target}/100); residual posture ${residualRisk}/100 from month ${fmtMonths(programmeEndMonths)}, maintained thereafter by drift monitoring and governance.`,
+        },
+        {
+          scenario: 'Funded Programme (Worst Case — 2× slippage)',
+          month12: riskAt(12, 2, target), month24: riskAt(24, 2, target), month36: riskAt(36, 2, target),
+          assumption: `Resource contention / rollback events double the schedule (waves complete ~month ${fmtMonths(wavesEndMonths * 2)}); validation & optimization deferred, so risk holds at the migration target ${target}/100 rather than the optimized residual ${residualRisk}/100.`,
+        },
+        {
+          scenario: 'No Funded Programme (Baseline)',
+          month12: current, month24: current, month36: current,
+          assumption: 'Programme not funded: quantum risk persists at the current level while Harvest-Now-Decrypt-Later ciphertext capture continues to accumulate.',
+        },
       ]
     : [];
   return {
@@ -632,9 +711,9 @@ export function buildRiskForecast(snapshot: QuantumReadinessSnapshot): RiskForec
     targetRisk: target,
     reductionPct,
     residualRisk,
-    month12: lerp(0.4),
-    month24: lerp(0.75),
-    month36: residualRisk,
+    month12: riskAt(12, 1, residualRisk),
+    month24: riskAt(24, 1, residualRisk),
+    month36: riskAt(36, 1, residualRisk),
     scenarios,
   };
 }
@@ -735,19 +814,28 @@ export function buildFindings(snapshot: QuantumReadinessSnapshot): ReportFinding
 /* ------------------------------------------------------------------ */
 export function buildRemediationProgram(snapshot: QuantumReadinessSnapshot, findings: ReportFinding[], waves: MigrationWave[]): RemediationItem[] {
   const now = new Date();
-  const items: RemediationItem[] = waves.slice(0, 5).map((wave, index) => ({
-    priority: index + 1,
-    action: `${wave.name}: deploy hybrid PQC (ML-KEM / ML-DSA) and retire classical primitives.`,
-    owner: wave.owner,
-    affectedAssets: wave.assets,
-    costUsd: wave.costUsd,
-    effort: `${wave.durationWeeks} week(s)`,
-    riskReductionPct: wave.riskReductionPct,
-    targetDate: format(addWeeks(now, (index + 1) * 3), 'yyyy-MM-dd'),
-    status: wave.status,
-    dependencies: wave.dependencies,
-    validation: 'PQC readiness re-scan, trust-chain validation, zero failed crypto operations.',
-  }));
+  // Target dates are each wave's roadmap FINISH date (discovery offset + cumulative
+  // wave durations — the same schedule buildRoadmap prints), so the Remediation
+  // Program and the Migration Roadmap can never disagree on delivery dates.
+  const totalWeeks = snapshot.estimates.migrationTimelineWeeks || waves.reduce((sum, w) => sum + w.durationWeeks, 0);
+  const discoveryWeeks = Math.max(1, Math.round(totalWeeks * 0.1));
+  let cumulativeWeeks = discoveryWeeks;
+  const items: RemediationItem[] = waves.slice(0, 5).map((wave, index) => {
+    cumulativeWeeks += wave.durationWeeks;
+    return {
+      priority: index + 1,
+      action: `${wave.name}: deploy hybrid PQC (ML-KEM / ML-DSA) and retire classical primitives.`,
+      owner: wave.owner,
+      affectedAssets: wave.assets,
+      costUsd: wave.costUsd,
+      effort: `${wave.durationWeeks} week(s)`,
+      riskReductionPct: wave.riskReductionPct,
+      targetDate: format(addWeeks(now, cumulativeWeeks), 'yyyy-MM-dd'),
+      status: wave.status,
+      dependencies: wave.dependencies,
+      validation: 'PQC readiness re-scan, trust-chain validation, zero failed crypto operations.',
+    };
+  });
   // Fold in any critical finding not covered by a wave bucket.
   const topFinding = findings.find((f) => f.severity === 'critical');
   if (topFinding && !items.some((i) => i.affectedAssets.includes(topFinding.affectedAssets[0]))) {
@@ -846,7 +934,7 @@ function buildAssets(snapshot: QuantumReadinessSnapshot): ReportTable {
 /* ------------------------------------------------------------------ */
 function buildExecutiveBlock(snapshot: QuantumReadinessSnapshot, riskDomainModel: RiskDomainDatum[], findingGroups: FindingGroup[]): ExecutiveBlock {
   const s = snapshot.scores;
-  const targetReadiness = Math.max(85, s.quantumReadiness);
+  const targetReadiness = Math.max(CERTIFICATION_READINESS_THRESHOLD, s.quantumReadiness);
   const targetRisk = Math.max(10, round(s.quantumRisk * 0.25));
   const targetHndl = Math.max(8, round(s.hndlRisk * 0.3));
   const compliant = buildCompliance(snapshot);
@@ -869,7 +957,7 @@ function buildExecutiveBlock(snapshot: QuantumReadinessSnapshot, riskDomainModel
     currentHndl: s.hndlRisk,
     targetHndl,
     estimatedDurationWeeks: snapshot.estimates.migrationTimelineWeeks,
-    estimatedCostUsd: snapshot.estimates.migrationCostUsd,
+    estimatedCostUsd: normalizeBudgetUsd(snapshot.estimates.migrationCostUsd),
     expectedRiskReductionPct: clamp(((s.quantumRisk - targetRisk) / Math.max(1, s.quantumRisk)) * 100),
     expectedComplianceImprovementPct: clamp(((compliant.length - aligned) / Math.max(1, compliant.length)) * 100),
     quantumExposureWindow: !snapshot.hasData ? EVIDENCE_UNAVAILABLE : s.hndlRisk >= 60 ? 'Within 5 Years' : s.hndlRisk >= 40 ? '5-10 Years' : '10+ Years',
@@ -887,6 +975,16 @@ function buildExecutiveBlock(snapshot: QuantumReadinessSnapshot, riskDomainModel
 /* ================================================================== */
 
 const BLENDED_RATE_USD = 165; // blended engineer rate used by the estimate model
+
+/**
+ * The migration budget normalised to whole labour-hours at the blended rate —
+ * the SAME rounding buildCostForecast applies. Waves, the executive budget and
+ * the cost forecast all consume this, so a raw estimate that is not an exact
+ * multiple of the rate can never print two different "budget" figures.
+ */
+function normalizeBudgetUsd(rawUsd: number): number {
+  return rawUsd > 0 ? Math.max(1, Math.round(rawUsd / BLENDED_RATE_USD)) * BLENDED_RATE_USD : 0;
+}
 
 // Phase 1 — Risk Scoring Transparency Engine™
 // Domain weights live in buildRiskDomainModel (evidence-filtered + calibrated);
@@ -1032,7 +1130,7 @@ export function buildImpactReasons(snapshot: QuantumReadinessSnapshot, impact: B
       dimension: 'Compliance Impact',
       level: impact.complianceImpact,
       reason: `Harvest-Now-Decrypt-Later exposure (${s.hndlRiskLevel}) places regulated data outside emerging PQC mandates (NIST/FIPS 203-205).`,
-      evidence: [`HNDL risk ${s.hndlRisk}/100 (${s.hndlRiskLevel})`, `${inv.dataRepositories} data repositor(y/ies) in scope`, 'FIPS 203/204/205 migration deadlines'],
+      evidence: [`HNDL exposure ${s.hndlRisk}/100 (${s.hndlRiskLevel})`, `${inv.dataRepositories} data repositor(y/ies) in scope`, 'FIPS 203/204/205 migration deadlines'],
     },
     {
       dimension: 'Brand / Reputational Impact',
@@ -1045,17 +1143,23 @@ export function buildImpactReasons(snapshot: QuantumReadinessSnapshot, impact: B
 
 function findingFamily(algorithm: string, title: string): string {
   const a = `${algorithm} ${title}`.toUpperCase();
+  // Deprecated protocol versions come FIRST and must match the scanner's actual
+  // labels ("Deprecated SSL/TLS Version", "TLSv1.1", "TLSv1") — the old
+  // `TLS 1.0` pattern missed them, so they fell into the catch-all bucket and
+  // "Other Cryptographic Findings" surfaced as the #1 executive top risk.
+  if (/DEPRECATED (SSL|TLS)|TLS\s?V?1(?:\.[01])?(?![.\d])|SSLV[23]|\bSSL\s?[23](\.0)?\b/.test(a)) return 'Deprecated TLS / SSL Protocol Versions';
   if (/TLS_RSA|RSA[_\s].*(CBC|GCM|SHA)/.test(a)) return 'Legacy RSA Cipher Suites';
   if (/FORWARD SECRECY/.test(a)) return 'Missing Forward Secrecy';
+  if (/NO (HYBRID|PQC)|MISSING (HYBRID|PQC)|PQC CIPHER/.test(a)) return 'Missing PQC / Hybrid Negotiation';
   if (/ECDSA/.test(a)) return 'ECDSA Certificate Signatures';
   if (/ECDH/.test(a)) return 'ECDH Key Exchange';
   if (/\bRSA\b/.test(a)) return 'RSA Public-Key Cryptography';
+  if (/QUANTUM.?VULNERABLE OID|VULNERABLE OID/.test(a)) return 'Quantum-Vulnerable Algorithm Identifiers (OIDs)';
   if (/ECC|EC-|P-256|P-384|EC PUBLIC/.test(a)) return 'Elliptic-Curve Cryptography';
   if (/SHA-?1|MD5/.test(a)) return 'Deprecated Hash Functions';
   if (/3DES|\bDES\b|RC4/.test(a)) return 'Weak Symmetric Ciphers';
-  if (/TLS\s?1\.0|TLS\s?1\.1|SSLV/.test(a)) return 'Legacy TLS / SSL Protocols';
   if (/OAUTH|JWT|OIDC|TOKEN/.test(a)) return 'Identity Token Cryptography';
-  if (/HNDL|HARVEST/.test(a)) return 'Harvest-Now-Decrypt-Later Exposure';
+  if (/HNDL|HARVEST|LONG.?TERM DATA/.test(a)) return 'Harvest-Now-Decrypt-Later Exposure';
   if (/WIDE CRYPTO|ATTACK SURFACE/.test(a)) return 'Broad Cryptographic Attack Surface';
   return 'Other Cryptographic Findings';
 }
@@ -1590,17 +1694,31 @@ const TEAM_AVAILABILITY: Record<string, number> = {
 };
 export function buildResourceLoading(snapshot: QuantumReadinessSnapshot, waves: MigrationWave[]): ResourceLoad[] {
   if (!snapshot.hasData || !waves.length) return [];
+  // Largest-remainder hour allocation so Σ per-wave hours equals the programme
+  // total exactly (independent per-wave Math.round drifted the table ±1 hour vs
+  // the Cost Forecast total, failing the report's auditor-exact arithmetic bar).
+  const exactHours = waves.map((wave) => wave.costUsd / BLENDED_RATE_USD);
+  const waveHours = exactHours.map((h) => Math.floor(h));
+  let hourRemainder = Math.round(exactHours.reduce((sum, h) => sum + h, 0)) - waveHours.reduce((sum, h) => sum + h, 0);
+  const byFraction = exactHours
+    .map((h, i) => ({ i, frac: h - Math.floor(h) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (const { i } of byFraction) {
+    if (hourRemainder <= 0) break;
+    waveHours[i] += 1;
+    hourRemainder -= 1;
+  }
   const byTeam = new Map<string, { hours: number; weeks: number; waves: string[]; deps: Set<string> }>();
-  for (const wave of waves) {
+  waves.forEach((wave, waveIndex) => {
     const team = normalizeOwner(wave.owner);
-    const hours = Math.round(wave.costUsd / BLENDED_RATE_USD);
+    const hours = waveHours[waveIndex];
     const entry = byTeam.get(team) || { hours: 0, weeks: 0, waves: [], deps: new Set<string>() };
     entry.hours += hours;
     entry.weeks += wave.durationWeeks;
     entry.waves.push(`W${wave.wave} ${wave.name}`);
     (wave.dependencies || []).forEach((d) => entry.deps.add(d));
     byTeam.set(team, entry);
-  }
+  });
   return Array.from(byTeam.entries()).map(([team, v]) => {
     const availabilityPct = TEAM_AVAILABILITY[team] ?? 60;
     // Engineers sized against AVAILABLE capacity, not 100% — a team at 60%
@@ -1820,7 +1938,7 @@ export function buildCertificationSummary(args: {
   const { snapshot, branding, generatedBy, scope, executiveBlock, confidenceSummary, riskForecast, waves, reportValidation, roadmap } = args;
   const s = snapshot.scores;
   const criteria = [
-    { criterion: 'Quantum Readiness', required: '≥ 85/100', actual: `${s.quantumReadiness}/100`, met: s.quantumReadiness >= 85 },
+    { criterion: 'Quantum Readiness', required: `≥ ${CERTIFICATION_READINESS_THRESHOLD}/100`, actual: `${s.quantumReadiness}/100`, met: s.quantumReadiness >= CERTIFICATION_READINESS_THRESHOLD },
     { criterion: 'PQC Adoption', required: '≥ 60%', actual: `${s.pqcAdoption}%`, met: s.pqcAdoption >= 60 },
     { criterion: 'Current Quantum Risk', required: '≤ 20/100', actual: `${s.quantumRisk}/100`, met: s.quantumRisk <= 20 },
     { criterion: 'HNDL Exposure', required: '≤ 25/100', actual: `${s.hndlRisk}/100 (${s.hndlRiskLevel})`, met: s.hndlRisk <= 25 },
@@ -1975,6 +2093,7 @@ export function buildDefinitions(snapshot: QuantumReadinessSnapshot, scope: Repo
     { term: 'PQC-Ready Asset', definition: `An asset whose observed cryptography is entirely PQC or hybrid. This assessment: ${inv.pqcReadyAssets} of ${inv.assetsAssessed} inventoried asset(s). Distinct from PQC-ready components by definition.` },
     { term: 'Finding vs Consolidated Finding', definition: 'A finding is one detected cryptographic weakness instance; consolidated findings group instances by root cause so an issue is counted once for decision-making.' },
     { term: 'Quantum Readiness vs Quantum Risk', definition: 'Readiness (higher is better) measures migration progress and governance; risk (lower is better) measures exposure to future quantum decryption. They are computed independently and reconciled in their methodology sections.' },
+    { term: 'HNDL Exposure vs HNDL Risk (domain)', definition: `HNDL Exposure (${snapshot.scores.hndlRisk}/100 in this assessment) is the raw Harvest-Now-Decrypt-Later measure shown on the Executive Dashboard and HNDL Exposure Analysis. HNDL Risk inside the Risk Scoring Methodology is that same signal after calibration into the weighted risk-domain model (so Σ domain contributions reproduces the overall quantum risk exactly) — the two values are intentionally related but not identical.` },
     { term: 'Runtime Visibility', definition: `Measured exclusively from live runtime cryptographic telemetry. When no runtime telemetry exists the factor is reported as "${NOT_MEASURED}" and excluded from the readiness formula — it is never approximated from scan activity.` },
   ];
 }
@@ -1988,8 +2107,16 @@ function buildTopBusinessRisks(snapshot: QuantumReadinessSnapshot): BusinessRisk
   const factorScore = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.score ?? 0;
   const out: BusinessRisk[] = [];
   if (internet > 0) out.push({ risk: 'Internet-Facing TLS Exposure', level: s.quantumRisk >= 60 ? 'Critical' : 'High', driver: `${internet} public endpoint(s) negotiate quantum-vulnerable key exchange visible to any network adversary.` });
-  if (s.hndlRisk >= 25) out.push({ risk: 'Harvest-Now-Decrypt-Later Data Capture', level: s.hndlRiskLevel, driver: `HNDL risk ${s.hndlRisk}/100 — ciphertext recorded today becomes readable once a cryptographically-relevant quantum computer exists.` });
-  if (inv.dataRepositories > 0 || s.hndlRisk >= 25) out.push({ risk: 'Long-Lived Sensitive Data Under Classical Encryption', level: s.hndlRisk >= 50 ? 'High' : 'Medium', driver: `${inv.dataRepositories || 'Archived'} data repositor${inv.dataRepositories === 1 ? 'y' : 'ies'} with multi-year retention protected by classical envelopes.` });
+  if (s.hndlRisk >= 25) out.push({ risk: 'Harvest-Now-Decrypt-Later Data Capture', level: s.hndlRiskLevel, driver: `HNDL exposure ${s.hndlRisk}/100 — ciphertext recorded today becomes readable once a cryptographically-relevant quantum computer exists.` });
+  if (inv.dataRepositories > 0 || s.hndlRisk >= 25) out.push({
+    risk: 'Long-Lived Sensitive Data Under Classical Encryption',
+    level: s.hndlRisk >= 50 ? 'High' : 'Medium',
+    // Never assert repositories that were not inventoried — with zero repository
+    // telemetry the driver states the evidence gap instead of fabricating scope.
+    driver: inv.dataRepositories > 0
+      ? `${inv.dataRepositories} data repositor${inv.dataRepositories === 1 ? 'y' : 'ies'} with multi-year retention protected by classical envelopes.`
+      : `No data repositories inventoried yet (storage discovery not connected) — HNDL exposure ${s.hndlRisk}/100 indicates long-lived ciphertext is capturable from quantum-vulnerable transport today; connect storage discovery to quantify at-rest exposure.`,
+  });
   if (inv.certificatesAnalyzed > 0) out.push({ risk: 'Legacy PKI / Certificate Trust Chain', level: factorScore('pki') < 40 ? 'High' : 'Medium', driver: `${inv.certificatesAnalyzed} certificate(s) signed with classical algorithms (PKI maturity ${factorScore('pki')}/100).` });
   out.push({ risk: 'Limited Crypto-Agility', level: factorScore('agility') < 40 ? 'High' : 'Medium', driver: `Algorithm replacement requires per-system change (crypto-agility ${factorScore('agility')}/100) — slows every future cryptographic transition, not just PQC.` });
   return out.slice(0, 5);
@@ -2077,10 +2204,11 @@ export function buildReportValidation(args: {
   waveSimulation: WaveSimulation[];
   advisor: MigrationAdvisor;
   riskDomainModel: RiskDomainDatum[];
+  riskCategories: RiskCategory[];
   findings: ReportFinding[];
   impactReasons: ImpactReason[];
 }): ReportValidation {
-  const { snapshot, costForecast, costBreakdown, riskMethodology, readinessMethodology, waves, executiveBlock, riskForecast, waveSimulation, advisor, riskDomainModel, findings, impactReasons } = args;
+  const { snapshot, costForecast, costBreakdown, riskMethodology, readinessMethodology, waves, executiveBlock, riskForecast, waveSimulation, advisor, riskDomainModel, riskCategories, findings, impactReasons } = args;
   const checks: ReportValidation['checks'] = [];
   const push = (check: string, ok: boolean, detail: string) => checks.push({ check, status: ok ? 'pass' : 'fail', detail });
 
@@ -2095,16 +2223,34 @@ export function buildReportValidation(args: {
   const forecastSum = costForecast.lines.reduce((sum, l) => sum + l.costUsd, 0);
   push('Cost Formula Verified', forecastSum === costForecast.totalUsd, `Cost forecast lines sum to ${forecastSum.toLocaleString()} = stated total ${costForecast.totalUsd.toLocaleString()} at the blended $${BLENDED_RATE_USD}/hr rate.`);
 
-  push('Evidence Traceability Verified', findings.every((f) => f.evidence.length > 0) && impactReasons.every((r) => r.evidence.length > 0), `All ${findings.length} finding(s) carry evidence and all ${impactReasons.length} business-impact dimensions cite their sources.`);
+  // Disclose the population split — "27 findings" here vs "24 scanner findings"
+  // in the advisor validation are different (overlapping) populations, and the
+  // detail must say so or the counts read as a contradiction.
+  const engineRecs = findings.filter((f) => f.source === 'Quantum Readiness Assessment Engine').length;
+  const scannerDerived = findings.length - engineRecs;
+  push('Evidence Traceability Verified', findings.every((f) => f.evidence.length > 0) && impactReasons.every((r) => r.evidence.length > 0), `All ${findings.length} report finding(s) (${scannerDerived} scanner-derived + ${engineRecs} assessment-engine recommendation(s)) carry evidence and all ${impactReasons.length} business-impact dimensions cite their sources.`);
 
   const primaryKey = riskDomainModel[0]?.matchKey || 'business';
   const expectedRec = snapshot.hasData ? DOMAIN_RECOMMENDATION[primaryKey] : advisor.recommendation;
   push('Recommendation Alignment Verified', !snapshot.hasData || advisor.recommendation === expectedRec, `The AI recommendation ("${advisor.recommendation}") targets the dominant weighted-risk domain (${riskDomainModel[0]?.category || 'n/a'}).`);
 
+  // Per-domain target risks must blend (by the same weights as the risk
+  // methodology) back to the programme target — otherwise the Quantum Risk
+  // Analysis table silently implies a different overall target than the
+  // executive summary states.
+  const targetByCategory = new Map(riskCategories.map((c) => [c.category, c.targetScore]));
+  const blendedDomainTarget = Math.round(riskDomainModel.reduce((sum, d) => sum + (targetByCategory.get(d.category) ?? 0) * d.weightFraction, 0));
+  push('Target Reconciliation Verified', !snapshot.hasData || !riskDomainModel.length || Math.abs(blendedDomainTarget - executiveBlock.targetRisk) <= 2, `Weighted blend of per-domain target risks (${blendedDomainTarget}) reconciles with the programme target risk ${executiveBlock.targetRisk}/100 (±2 rounding) — domain targets share the same reduction engine as the executive summary and migration waves.`);
+
   const waveSum = waves.reduce((sum, w) => sum + w.riskReductionPct, 0);
   const lastSim = waveSimulation[waveSimulation.length - 1];
-  const migrationOk = waveSum === executiveBlock.expectedRiskReductionPct && waveSum === riskForecast.reductionPct && (!lastSim || (lastSim.readinessTo === executiveBlock.targetReadiness && lastSim.riskTo <= executiveBlock.targetRisk));
-  push('Migration Consistency Verified', migrationOk, `Σ wave reductions ${waveSum}% = executive ${executiveBlock.expectedRiskReductionPct}% = forecast ${riskForecast.reductionPct}%; full-programme simulation lands on target readiness ${executiveBlock.targetReadiness} with residual risk ≤ ${executiveBlock.targetRisk}.`);
+  // Wave costs must sum to the migration budget to the dollar — independent
+  // per-wave rounding (and dropped-wave ratio loss) once printed "$156,751"
+  // beside the "$156,750" budget.
+  const waveCostSum = waves.reduce((sum, w) => sum + w.costUsd, 0);
+  const waveCostOk = !costForecast.totalUsd || waveCostSum === costForecast.totalUsd;
+  const migrationOk = waveSum === executiveBlock.expectedRiskReductionPct && waveSum === riskForecast.reductionPct && waveCostOk && (!lastSim || (lastSim.readinessTo === executiveBlock.targetReadiness && lastSim.riskTo <= executiveBlock.targetRisk));
+  push('Migration Consistency Verified', migrationOk, `Σ wave reductions ${waveSum}% = executive ${executiveBlock.expectedRiskReductionPct}% = forecast ${riskForecast.reductionPct}%; Σ wave costs $${waveCostSum.toLocaleString()} = migration budget $${costForecast.totalUsd.toLocaleString()}; full-programme simulation lands on target readiness ${executiveBlock.targetReadiness} with residual risk ≤ ${executiveBlock.targetRisk}.`);
 
   const overall = checks.every((c) => c.status === 'pass') ? 'PASS' : 'FAIL';
   return { overall, checks, note: 'All checks are computed from the generated report model at export time — the badge is verified, not asserted. A FAIL indicates an internal inconsistency that must be investigated before distribution.' };
@@ -2124,16 +2270,11 @@ export function buildReportModel(
   const s = snapshot.scores;
   const inv = snapshot.inventory;
   // Asset scope — when the caller pre-scoped the snapshot (ReportEngine /
-  // reports API) it passes the matching scope block; otherwise the report
-  // covers the full assessment.
-  const reportScope: ReportScope = scope ?? {
-    type: 'full',
-    selectedAssetCount: inv.assetsAssessed,
-    totalAssetCount: inv.assetsAssessed,
-    assets: [],
-    note: `This report covers the full assessment scope (${inv.assetsAssessed} discovered asset${inv.assetsAssessed === 1 ? '' : 's'}).`,
-    methodology: '',
-  };
+  // reports API) it passes the matching scope block; otherwise build the full
+  // scope with buildReportScope — the SAME builder the reports page uses, so
+  // the default path can never disagree with the live flow (it previously
+  // duplicated the scope inline and drifted on the count disclosure).
+  const reportScope: ReportScope = scope ?? buildReportScope(snapshot, null);
 
   const domains = buildReadinessDomains(snapshot);
   // Evidence-filtered, calibrated risk decomposition — the single source that
@@ -2148,7 +2289,7 @@ export function buildReportModel(
   const executiveBlock = buildExecutiveBlock(snapshot, riskDomainModel, findingGroups);
 
   // Report Intelligence (Reports_Enhancements_3) — all evidence-derived
-  const riskCategories = buildRiskCategories(riskDomainModel);
+  const riskCategories = buildRiskCategories(snapshot, riskDomainModel);
   const compliance = buildCompliance(snapshot);
   const costForecast = buildCostForecast(snapshot);
   const riskMethodology = buildRiskMethodology(snapshot, riskDomainModel);
@@ -2198,6 +2339,7 @@ export function buildReportModel(
     waveSimulation,
     advisor,
     riskDomainModel,
+    riskCategories,
     findings,
     impactReasons,
   });
@@ -2238,7 +2380,7 @@ export function buildReportModel(
   const unavailableSources = evidenceConfidence.filter((e) => e.confidencePct <= 0).map((e) => e.source);
 
   const executiveSummary = snapshot.hasData
-    ? `As of ${format(now, 'PPP')}, ${branding.companyName} holds a quantum readiness score of ${s.quantumReadiness}/100 (${s.quantumReadinessLevel}) against a quantum risk score of ${s.quantumRisk}/100 (${s.quantumRiskLevel}). A funded ${snapshot.estimates.migrationTimelineWeeks || 'TBD'}-week migration programme can raise readiness to a target of ${executiveBlock.targetReadiness}/100 and reduce quantum risk by ${executiveBlock.expectedRiskReductionPct}%. Discovery identified ${discoveredAssets} cryptographic asset(s)${discoveredAssets !== inv.assetsAssessed ? ` (${inv.assetsAssessed} in the formal asset inventory)` : ''}, of which ${inv.quantumVulnerableAssets} inventoried asset(s) are quantum-vulnerable with ${s.pqcAdoption}% PQC adoption. Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} with an estimated quantum exposure window of ${executiveBlock.quantumExposureWindow}. ${executiveBlock.executiveRecommendation}${reportScope.type === 'custom' ? ` Report scope: ${reportScope.selectedAssetCount} of ${reportScope.totalAssetCount} discovered assets selected by the report owner — every figure in this report reflects the selected scope only.` : ''}`
+    ? `As of ${format(now, 'PPP')}, ${branding.companyName} holds a quantum readiness score of ${s.quantumReadiness}/100 (${s.quantumReadinessLevel}) against a quantum risk score of ${s.quantumRisk}/100 (${s.quantumRiskLevel}). A funded ${snapshot.estimates.migrationTimelineWeeks || 'TBD'}-week migration programme can raise readiness to a target of ${executiveBlock.targetReadiness}/100 (the Quantum Trust Certification™ eligibility threshold) and reduce quantum risk by ${executiveBlock.expectedRiskReductionPct}%. Discovery identified ${discoveredAssets} cryptographic asset(s)${discoveredAssets !== inv.assetsAssessed ? ` (${inv.assetsAssessed} in the formal asset inventory)` : ''}, of which ${inv.quantumVulnerableAssets} inventoried asset(s) are quantum-vulnerable with ${s.pqcAdoption}% PQC adoption. Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} with an estimated quantum exposure window of ${executiveBlock.quantumExposureWindow}. ${executiveBlock.executiveRecommendation}${reportScope.type === 'custom' ? ` Report scope: ${reportScope.selectedAssetCount} of ${reportScope.totalAssetCount} discovered assets selected by the report owner — every figure in this report reflects the selected scope only.` : ''}`
     : `No assessment evidence is available for ${branding.companyName} yet. Run a PQC discovery scan to populate this report. All sections below reflect an empty evidence state.`;
 
   const distribution = snapshot.riskDistribution;
@@ -2311,7 +2453,7 @@ export function buildReportModel(
     hndl: {
       summary: `Harvest-Now-Decrypt-Later exposure is rated ${s.hndlRiskLevel} (${s.hndlRisk}/100). Long-lived sensitive data protected by quantum-vulnerable cryptography can be captured today and decrypted once a cryptographically-relevant quantum computer exists (estimated window: ${executiveBlock.quantumExposureWindow}).`,
       table: safeTable('HNDL Exposure', ['Factor', 'Score'], [
-        ['HNDL Risk Score', s.hndlRisk],
+        ['HNDL Exposure Score', s.hndlRisk],
         ['Crypto Exposure', s.cryptoExposure],
         ['Vulnerable Assets', inv.quantumVulnerableAssets],
       ]),
@@ -2366,7 +2508,7 @@ export function buildReportModel(
             // distribution is executive-readable at a glance.
             const totalSev = distribution.critical + distribution.high + distribution.medium + distribution.low;
             const sev = (label: string, n: number) => `${label}: ${n}${totalSev > 0 ? ` (${countPct(n, totalSev)})` : ''}`;
-            return `Severity distribution of ${totalSev} finding(s) — ${sev('Critical', distribution.critical)}, ${sev('High', distribution.high)}, ${sev('Medium', distribution.medium)}, ${sev('Low', distribution.low)}. Sources listed under "Not Available" have not yet produced telemetry and contributed no evidence to this report.`;
+            return `Severity distribution of ${totalSev} raw scanner finding instance(s) across all severities — ${sev('Critical', distribution.critical)}, ${sev('High', distribution.high)}, ${sev('Medium', distribution.medium)}, ${sev('Low', distribution.low)}. This is the pre-consolidation instance count: the report body consolidates the critical/high instances by root cause (see Consolidated Findings), so it is intentionally larger than the finding counts cited there. Sources listed under "Not Available" have not yet produced telemetry and contributed no evidence to this report.`;
           })()
         : `${EVIDENCE_UNAVAILABLE}. No scans, assets, certificates or runtime telemetry recorded for this tenant.`,
     },

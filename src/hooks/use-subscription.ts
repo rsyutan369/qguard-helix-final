@@ -27,6 +27,9 @@ export interface SubscriptionState {
   loading: boolean;
 }
 
+// Monotonic suffix so every hook instance gets its own realtime channel topic.
+let nextChannelSeq = 0;
+
 const EMPTY: SubscriptionState = {
   tier: 'none',
   status: null,
@@ -103,8 +106,12 @@ export function useSubscription(): SubscriptionState & { refresh: () => Promise<
   // Live updates when the subscription changes (activation, cancel, switch).
   useEffect(() => {
     if (!user) return;
+    // Topic must be unique PER HOOK INSTANCE: supabase.channel() returns the
+    // existing channel for a duplicate topic, and .on() after .subscribe()
+    // throws — two components using this hook on one page (DashboardLayout +
+    // ScannerDashboard) would crash the whole tree to a blank screen.
     const channel = supabase
-      .channel(`subscription-access-${user.id}`)
+      .channel(`subscription-access-${user.id}-${nextChannelSeq++}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'billing_subscriptions', filter: `user_id=eq.${user.id}` },

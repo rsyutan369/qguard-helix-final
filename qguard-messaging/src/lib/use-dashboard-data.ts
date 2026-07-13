@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, User } from "@supabase/supabase-js";
-import { ensureMessagingWorkspace } from "@/lib/messaging-bootstrap";
+import { ensureMessagingWorkspace, ensurePrekeyReadiness } from "@/lib/messaging-bootstrap";
 import { byteaToBytes } from "@/lib/encoding";
 import { requireSupabase } from "@/lib/supabase";
 import { useQGuardLiveSse } from "@/lib/live-sse";
 import { fallbackHardeningStatus, loadSecurityHardeningStatus } from "@/lib/security-hardening";
-import { buildSecurityPosture } from "@/lib/security-score";
+import { buildSecurityPosture, ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import type {
   ConversationSummary,
   ContactSummary,
@@ -473,6 +473,19 @@ export function useDashboardData(user: User | null, session: Session | null) {
         rotation_events: securityEvents.filter((event) => event.event_type.includes("key") || event.event_type.includes("prekey")).length,
         algorithms: Array.from(algorithmNames),
       };
+
+      // Self-heal prekey depletion at runtime: the bootstrap above runs once
+      // per session, but peers consume one-time prekeys continuously. When the
+      // inventory drops below its readiness floor, republish/replenish in the
+      // background (throttled inside ensurePrekeyReadiness); the resulting
+      // prekey inserts arrive as realtime events and refresh these counts.
+      if (
+        myDevices.some((device) => device.trust_state !== "Revoked")
+        && (keyInventory.active_signed_prekeys < SIGNED_PREKEY_MIN
+          || keyInventory.available_one_time_prekeys < ONE_TIME_PREKEY_MIN)
+      ) {
+        void ensurePrekeyReadiness(client, user.id);
+      }
 
       const cryptoTelemetryRows = cryptoTelemetryResult.error ? [] : (cryptoTelemetryResult.data ?? []) as Array<Record<string, unknown>>;
       const vaultOperationRows = vaultOperationsResult.error ? [] : (vaultOperationsResult.data ?? []) as Array<Record<string, unknown>>;

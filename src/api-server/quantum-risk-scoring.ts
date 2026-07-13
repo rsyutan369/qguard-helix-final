@@ -161,6 +161,21 @@ function isOutdatedProtocol(value: string) {
   return /tls\s*1\.[01]|ssl|rc4|3des|des|cbc|sha1|md5|weak tls|deprecated protocol/i.test(value)
 }
 
+// Quantum threat-model classes. Shor's algorithm breaks the public-key trust
+// fabric (RSA/ECC/DH key exchange and signatures) outright, while Grover's
+// only halves symmetric search margins — two very different migration
+// urgencies that must never be lumped into one "weak crypto" bucket.
+type ThreatClass = 'shor' | 'grover' | 'hash' | 'pqc' | 'unclassified'
+
+function threatClassFor(value: string): ThreatClass {
+  const lower = value.toLowerCase()
+  if (isPqcAlgorithm(lower)) return 'pqc'
+  if (/\brsa\b|rsa-?\d|rs256|ps256|ecdsa|ecdh|\becc\b|ed25519|x25519|secp\d|prime256|p-256|p-384|p-521|diffie|dhe?\b|dh-|\bdsa\b/.test(lower)) return 'shor'
+  if (/aes[-_ ]?128|3des|\bdes\b|rc4|blowfish|idea|\b128[- ]?bit key|camellia-?128/.test(lower)) return 'grover'
+  if (/sha-?1\b|\bmd5\b|\bmd4\b|ripemd/.test(lower)) return 'hash'
+  return 'unclassified'
+}
+
 function hasHndlSignal(value: string) {
   return /hndl|harvest now|decrypt later|long.term|long lived|sensitive|regulated|financial|health|pii|confidential/i.test(value)
 }
@@ -777,6 +792,67 @@ async function buildQuantumRiskSnapshot(token: string, userId: string) {
     })
   }
 
+  // Shor vs Grover decomposition: which cryptographic assumptions are at risk,
+  // and how deeply. Shor-exposed findings (public-key trust fabric) set the
+  // migration priority; Grover findings only adjust symmetric key-size margins.
+  const classifyFinding = (finding: RiskFinding) => threatClassFor(`${finding.factor} ${finding.text}`)
+  const threatClassRows = new Map<ThreatClass, RiskFinding[]>([
+    ['shor', []], ['grover', []], ['hash', []], ['pqc', []], ['unclassified', []],
+  ])
+  for (const finding of findings) {
+    threatClassRows.get(classifyFinding(finding))?.push(finding)
+  }
+  const threatClassSummary = (threatClass: ThreatClass) => {
+    const rows = threatClassRows.get(threatClass) || []
+    const current = rows.filter((finding) => finding.ms >= current7dStart).length
+    const previous = rows.filter((finding) => finding.ms >= previous7dStart && finding.ms < current7dStart).length
+    return {
+      findings: rows.length,
+      share: percentOf(rows.length, Math.max(1, findings.length)),
+      affectedAssets: new Set(rows.map((finding) => finding.assetId || `${finding.assetName}:${finding.assetType}`)).size,
+      averageRisk: rows.length ? clamp(rows.reduce((sum, finding) => sum + finding.riskScore, 0) / rows.length) : 0,
+      trend: deltaPercent(current, previous),
+      topAssets: [...new Set(rows.sort((a, b) => b.riskScore - a.riskScore).map((finding) => finding.assetName).filter(Boolean))].slice(0, 3),
+    }
+  }
+  const shorSummary = threatClassSummary('shor')
+  const groverSummary = threatClassSummary('grover')
+  const hashSummary = threatClassSummary('hash')
+  const pqcSummary = threatClassSummary('pqc')
+  const threatModel = {
+    shorExposed: {
+      ...shorSummary,
+      label: 'Shor-exposed public-key trust',
+      detail: 'RSA / ECC / DH key exchange and signatures. Broken outright by Shor — this class sets migration priority.',
+      urgency: shorSummary.findings > 0 ? 'migrate' : 'clear',
+    },
+    groverWatch: {
+      ...groverSummary,
+      label: 'Grover symmetric margin',
+      detail: 'AES-128 / legacy symmetric ciphers. Grover halves brute-force margins; plan key-size upgrades (AES-256), not emergency replacement.',
+      urgency: groverSummary.findings > 0 ? 'plan' : 'clear',
+    },
+    hashLegacy: {
+      ...hashSummary,
+      label: 'Legacy hash functions',
+      detail: 'SHA-1 / MD5 usage is classically broken already — replace independent of the quantum timeline.',
+      urgency: hashSummary.findings > 0 ? 'replace' : 'clear',
+    },
+    pqcProtected: {
+      ...pqcSummary,
+      label: 'PQC / hybrid protected',
+      detail: 'ML-KEM, ML-DSA/SLH-DSA, or hybrid observations already on quantum-safe assumptions.',
+      urgency: 'protected',
+    },
+    guidance: shorSummary.findings > 0
+      ? `Shor sets the priority: ${shorSummary.findings} public-key finding${shorSummary.findings === 1 ? '' : 's'} across ${shorSummary.affectedAssets} asset${shorSummary.affectedAssets === 1 ? '' : 's'} threaten the trust fabric (TLS, certificates, signatures) and should lead the migration roadmap${groverSummary.findings > 0 ? `; ${groverSummary.findings} Grover-class finding${groverSummary.findings === 1 ? '' : 's'} only need key-size margin planning` : ''}.`
+      : groverSummary.findings > 0 || hashSummary.findings > 0
+        ? 'No Shor-exposed public-key findings detected. Remaining work is symmetric key-size margins and legacy hash cleanup.'
+        : findings.length
+          ? 'Telemetry shows no algorithm-classified quantum exposure; keep discovery agents and connectors streaming.'
+          : 'No classified findings yet — run scans or connect agents to build the threat-model decomposition.',
+  }
+
   const latestRuntimeEventAt = latestDate(...runtimeEvents.map((event: any) => event.observed_at || event.created_at))
   const eventPipelineStatus = findings.some((finding) => finding.ms >= current7dStart)
     ? 'active'
@@ -811,6 +887,7 @@ async function buildQuantumRiskSnapshot(token: string, userId: string) {
     timeline,
     breakdown,
     distribution,
+    threatModel,
     topAssets: scoredAssets.slice(0, 6).map((asset) => ({
       asset: asset.name,
       assetType: asset.type,

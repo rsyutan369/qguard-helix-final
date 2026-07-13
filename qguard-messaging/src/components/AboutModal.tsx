@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import type { Update } from "@tauri-apps/plugin-updater";
-import { isTauriRuntime } from "@/lib/tauri";
+import { isAndroidRuntime, isTauriRuntime } from "@/lib/tauri";
 import { checkForAppUpdate, downloadAndInstallUpdate, relaunchApp } from "@/lib/app-update";
 
 interface AboutModalProps {
@@ -29,7 +29,8 @@ type UpdateState =
   | { kind: "downloading"; version: string; percent: number | null }
   | { kind: "ready"; version: string }
   | { kind: "error" }
-  | { kind: "desktop-only" };
+  | { kind: "desktop-only" }
+  | { kind: "android" };
 
 const CRYPTO_BADGES: { icon: typeof KeyRound; label: string; standard: string }[] = [
   { icon: Atom, label: "ML-KEM-1024", standard: "FIPS 203" },
@@ -55,12 +56,25 @@ export function AboutModal({ open, version, onClose }: AboutModalProps) {
       return;
     }
 
+    // Android updates ship as signed APK / Play releases — the in-app updater
+    // plugin isn't registered on mobile, so don't imply a self-update path.
+    if (isAndroidRuntime()) {
+      setState({ kind: "android" });
+      return;
+    }
+
     let cancelled = false;
     setState({ kind: "checking" });
+    // Don't spin forever if the update endpoint is unreachable (e.g. a fresh
+    // install whose endpoint isn't serving yet) — surface a clear message.
+    const timeout = window.setTimeout(() => {
+      if (!cancelled) setState({ kind: "error" });
+    }, 8000);
     (async () => {
       try {
         const update = await checkForAppUpdate();
         if (cancelled) return;
+        window.clearTimeout(timeout);
         if (update) {
           updateRef.current = update;
           setState({ kind: "available", update, version: update.version });
@@ -68,11 +82,13 @@ export function AboutModal({ open, version, onClose }: AboutModalProps) {
           setState({ kind: "current" });
         }
       } catch {
+        window.clearTimeout(timeout);
         if (!cancelled) setState({ kind: "error" });
       }
     })();
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
     };
   }, [open]);
 
@@ -136,7 +152,7 @@ export function AboutModal({ open, version, onClose }: AboutModalProps) {
             type="button"
             aria-label="Close"
             onClick={onClose}
-            className="focus-ring absolute right-3 top-3 rounded-lg p-1.5 text-white/70 transition hover:bg-white/15 hover:text-white"
+            className="focus-ring absolute right-3 top-3 z-10 rounded-lg p-1.5 text-white/70 transition hover:bg-white/15 hover:text-white"
           >
             <X size={18} />
           </button>
@@ -279,6 +295,13 @@ function UpdateStatus({
       return (
         <div className="text-sm font-medium text-ink-500">
           Update status is available in the installed desktop app.
+        </div>
+      );
+    case "android":
+      return (
+        <div className="text-sm font-medium text-ink-500">
+          Updates are delivered through signed app releases. Install the latest
+          version from your app store or provided APK.
         </div>
       );
     case "error":

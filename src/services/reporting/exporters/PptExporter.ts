@@ -79,10 +79,13 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
 
   // Executive current -> target
   const ex = report.executiveBlock;
+  // Improvement is stated in POINTS for every row (reductions also annotate the
+  // relative %) — one column must never mix points and percent units.
+  const hndlDropPct = Math.round(((ex.currentHndl - ex.targetHndl) / Math.max(1, ex.currentHndl)) * 100);
   tableSlide('Executive Summary — Current vs Target', ['Metric', 'Current', 'Target', 'Improvement'], [
-    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, `+${Math.max(0, ex.targetReadiness - ex.currentReadiness)}`],
-    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, `-${ex.expectedRiskReductionPct}%`],
-    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, `-${Math.max(0, ex.currentHndl - ex.targetHndl)}`],
+    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, ex.targetReadiness > ex.currentReadiness ? `+${ex.targetReadiness - ex.currentReadiness} pts` : '—'],
+    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, ex.currentRisk > ex.targetRisk ? `-${ex.currentRisk - ex.targetRisk} pts (-${ex.expectedRiskReductionPct}%)` : '—'],
+    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, ex.currentHndl > ex.targetHndl ? `-${ex.currentHndl - ex.targetHndl} pts (-${hndlDropPct}%)` : '—'],
     ['Timeline', '-', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
     ['Budget', '-', usd(ex.estimatedCostUsd), ''],
   ], [3.6, 2.9, 2.9, 2.9]);

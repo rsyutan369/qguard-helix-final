@@ -12,8 +12,11 @@ import {
   Users,
 } from "lucide-react";
 import { isAdminEmail } from "@/lib/admin";
+import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import type { CSSProperties } from "react";
 import MetricCard from "@/components/MetricCard";
+import MobileDashboard from "@/components/mobile/MobileDashboard";
+import { useIsMobile } from "@/lib/use-mobile";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import type { DashboardData, TelemetryEvent, TrustedDevice } from "@/lib/types";
 
@@ -102,6 +105,14 @@ function telemetryTone(event: TelemetryEvent): string {
 }
 
 export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate }: DashboardPageProps) {
+  const isMobile = useIsMobile();
+  // Phones get a purpose-built vertical-scroll home screen (gradient hero card,
+  // gradient stat tiles, stacked sections) instead of the desktop multi-column
+  // grid, which cannot stack into a natural top-to-bottom scroll.
+  if (isMobile) {
+    return <MobileDashboard data={data} liveStatus={liveStatus} onNavigate={onNavigate} />;
+  }
+
   const { snapshot, devices, conversations, modules, report, keyInventory, telemetry, securityEvents } = data;
   const isAdmin = isAdminEmail(data.profile?.email);
   const myDevices = devices.filter((device) => device.user_id === data.profile?.id);
@@ -120,8 +131,8 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
     ...activeMyDevices.map((device) => device.last_seen_at),
     ...conversations.map((conversation) => conversation.updated_at),
   ]);
-  const prekeyTarget = Math.max(8, activeMyDevices.length * 8);
-  const oneTimePrekeyLabel = `${keyInventory.available_one_time_prekeys}/${prekeyTarget}`;
+  const prekeyTarget = ONE_TIME_PREKEY_MIN;
+  const oneTimePrekeyLabel = `${keyInventory.available_one_time_prekeys}`;
   const scoreRingStyle = {
     "--score-color": scoreColor(snapshot.quantum_safe_score),
     background: `conic-gradient(var(--score-color) ${snapshot.quantum_safe_score * 3.6}deg, rgba(148, 163, 184, 0.28) 0deg)`,
@@ -135,8 +146,8 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
     ["End-to-End Encryption", snapshot.e2ee_status],
     ["Quantum Protection", snapshot.pqc_status],
     ["Forward Secrecy", report.forward_secrecy],
-    ["Signed Prekeys", `${keyInventory.active_signed_prekeys}/${Math.max(1, activeMyDevices.length)} active`],
-    ["One-Time Prekeys", oneTimePrekeyLabel],
+    ["Signed Prekeys", keyInventory.active_signed_prekeys >= SIGNED_PREKEY_MIN ? `${keyInventory.active_signed_prekeys} active` : "Awaiting"],
+    ["One-Time Prekeys", `${oneTimePrekeyLabel} ready`],
     ["Device Security", activeMyDevices.length > 0 ? `${trustedDevices.length}/${activeMyDevices.length} trusted` : "No Devices"],
   ];
 

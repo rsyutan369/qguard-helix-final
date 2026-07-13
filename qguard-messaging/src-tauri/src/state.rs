@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use base64::Engine as _;
 use chrono::Utc;
-use keyring::Error as KeyringError;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
@@ -116,7 +114,7 @@ pub struct PersistedVaultMaster {
 }
 
 /// One unlock credential (password or PIN) for a protected workspace scope.
-/// Stores only a salt + an HKDF-derived verifier (never the secret). For the
+/// Stores only a salt + a derived verifier (never the secret). For the
 /// vault scope it additionally holds the VMK material wrapped under the unlock
 /// key, so the password/PIN cryptographically gates the VMK (zero-knowledge).
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -125,6 +123,13 @@ pub struct WorkspaceCredential {
     pub verifier: String,
     #[serde(default)]
     pub wrapped_master: Option<crate::crypto::EncryptedEnvelope>,
+    /// How the unlock secret is stretched before the HKDF subkey derivation.
+    /// 0 (and records written before this field existed) = the secret feeds
+    /// HKDF-SHA3-256 directly; 1 = Argon2id prehash first, which makes offline
+    /// brute force of a stolen credential file memory-hard and slow. Legacy
+    /// credentials are upgraded in place on their next successful unlock.
+    #[serde(default)]
+    pub kdf_version: u8,
 }
 
 /// Device-local, encrypted-at-rest workspace-lock state for one scope
@@ -437,49 +442,33 @@ impl AppState {
             .join(format!("{safe_user_id}.device-key-material.enc"))
     }
 
-    fn key_material_entry(&self, user_id: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(&crate::security::obf::keyring_service(), &Self::safe_user_key(user_id))
-            .map_err(|e| QGuardError::Storage(format!("open OS keychain entry: {e}")))
-    }
-
     /// Returns the per-user 32-byte data encryption key, creating and persisting
-    /// one in the OS keychain on first use. The keychain only ever holds this
-    /// small key, never the (much larger) key material itself.
+    /// one in the platform secure store on first use (OS keychain on desktop,
+    /// Android Keystore-wrapped file on Android — see security/keystore.rs).
+    /// The secure store only ever holds this small key, never the (much larger)
+    /// key material itself.
     fn device_storage_key(
         &self,
         user_id: &str,
     ) -> Result<[u8; crate::crypto::symmetric::KEY_SIZE]> {
-        let entry = self.key_material_entry(user_id)?;
-        match entry.get_password() {
-            Ok(encoded) => {
-                let decoded = base64::engine::general_purpose::STANDARD
-                    .decode(encoded.trim())
-                    .map_err(|e| {
-                        QGuardError::Storage(format!("decode device storage key: {e}"))
-                    })?;
-                if decoded.len() != crate::crypto::symmetric::KEY_SIZE {
-                    return Err(QGuardError::Storage(
-                        "device storage key has unexpected length".to_string(),
-                    ));
-                }
-                let mut key = [0u8; crate::crypto::symmetric::KEY_SIZE];
-                key.copy_from_slice(&decoded);
-                Ok(key)
+        let account = Self::safe_user_key(user_id);
+        if let Some(mut decoded) =
+            crate::security::keystore::load_secret(&account, &self.data_dir)?
+        {
+            if decoded.len() != crate::crypto::symmetric::KEY_SIZE {
+                decoded.zeroize();
+                return Err(QGuardError::Storage(
+                    "device storage key has unexpected length".to_string(),
+                ));
             }
-            Err(KeyringError::NoEntry) => {
-                let key = crate::crypto::symmetric::random_key();
-                let encoded = base64::engine::general_purpose::STANDARD.encode(key);
-                entry.set_password(&encoded).map_err(|e| {
-                    QGuardError::Storage(format!(
-                        "write device storage key to OS keychain: {e}"
-                    ))
-                })?;
-                Ok(key)
-            }
-            Err(error) => Err(QGuardError::Storage(format!(
-                "read device storage key from OS keychain: {error}"
-            ))),
+            let mut key = [0u8; crate::crypto::symmetric::KEY_SIZE];
+            key.copy_from_slice(&decoded);
+            decoded.zeroize();
+            return Ok(key);
         }
+        let key = crate::crypto::symmetric::random_key();
+        crate::security::keystore::store_secret(&account, &self.data_dir, &key)?;
+        Ok(key)
     }
 
     fn load_device_key_material(
@@ -1105,11 +1094,7 @@ mod tests {
     }
 
     fn cleanup(user_id: &str, dir: &PathBuf) {
-        if let Ok(entry) =
-            keyring::Entry::new(&crate::security::obf::keyring_service(), &AppState::safe_user_key(user_id))
-        {
-            let _ = entry.delete_credential();
-        }
+        let _ = crate::security::keystore::delete_secret(&AppState::safe_user_key(user_id), dir);
         let _ = std::fs::remove_dir_all(dir);
     }
 

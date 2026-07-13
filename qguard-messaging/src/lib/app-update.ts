@@ -1,4 +1,4 @@
-import { isTauriRuntime } from "@/lib/tauri";
+import { isAndroidRuntime, isTauriRuntime } from "@/lib/tauri";
 import type { Update } from "@tauri-apps/plugin-updater";
 
 /**
@@ -26,6 +26,8 @@ export type UpdateProgress = { percent: number | null };
  */
 export async function checkForAppUpdate(): Promise<Update | null> {
   if (!isTauriRuntime()) return null;
+  // Android has no updater plugin — releases ship as signed APK/Play updates.
+  if (isAndroidRuntime()) return null;
   const { check } = await import("@tauri-apps/plugin-updater");
   return await check();
 }

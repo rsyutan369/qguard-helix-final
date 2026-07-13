@@ -161,13 +161,18 @@ export function toScopeKeySet(assetKeys: string[]): Set<string> {
  */
 export function buildReportScope(snapshot: QuantumReadinessSnapshot, selectedKeys: string[] | null): ReportScope {
   const universe = listSnapshotAssets(snapshot);
+  // `universe` is the top-risk asset DETAIL the snapshot carries (the backend
+  // caps it for payload size). The tenant-wide asset count must come from the
+  // inventory tally — a 4,800-asset estate must never print "full assessment
+  // (140 assets)" just because the detail list is capped.
+  const tenantAssetCount = Math.max(universe.length, snapshot.inventory?.assetsAssessed || 0);
   const keySet = selectedKeys ? toScopeKeySet(selectedKeys) : null;
   const selected = keySet ? universe.filter((a) => keySet.has(a.key)) : universe;
   const custom = keySet !== null && selected.length > 0 && selected.length < universe.length;
   return {
     type: custom ? 'custom' : 'full',
-    selectedAssetCount: custom ? selected.length : universe.length,
-    totalAssetCount: universe.length,
+    selectedAssetCount: custom ? selected.length : tenantAssetCount,
+    totalAssetCount: tenantAssetCount,
     assets: custom
       ? selected.map((a) => ({
           name: a.name,
@@ -179,8 +184,8 @@ export function buildReportScope(snapshot: QuantumReadinessSnapshot, selectedKey
         }))
       : [],
     note: custom
-      ? `This report covers ${selected.length} of ${universe.length} discovered assets, selected by the report owner. All scores, findings, migration waves, timelines and costs are recomputed for the selected scope only.`
-      : `This report covers the full assessment scope (${universe.length} discovered asset${universe.length === 1 ? '' : 's'}).`,
+      ? `This report covers ${selected.length} of ${tenantAssetCount} discovered assets, selected by the report owner. All scores, findings, migration waves, timelines and costs are recomputed for the selected scope only.`
+      : `This report covers the full assessment scope (${tenantAssetCount} discovered asset${tenantAssetCount === 1 ? '' : 's'}${universe.length < tenantAssetCount ? `; per-asset detail tables cover the top ${universe.length} assets by risk` : ''}).`,
     methodology: custom
       ? 'Asset-attributed evidence (findings, per-asset risk scores, cryptographic posture, internet exposure, dependency relationships) is filtered to the selected assets and all scores are recomputed with the platform scoring formulas. Tenant-level inventory that is not attributed to individual assets (certificates, keys, cloud accounts, data repositories) is allocated proportionally to the selected asset share.'
       : '',
@@ -298,9 +303,13 @@ export function scopeSnapshotToAssets(snapshot: QuantumReadinessSnapshot, assetK
 
   const remaining = vulnerableComponents + quantumVulnerableAssets;
   const migrationEffort = Math.round(clamp((remaining / Math.max(1, totalCrypto + selCount)) * 100));
-  const baseWeeks = remaining * 0.6 * (1 + migrationComplexity / 200);
-  const migrationTimelineWeeks = Math.max(remaining > 0 ? 2 : 0, Math.round(baseWeeks));
-  const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * 38 * 165) : 0;
+  // Same parallel-workstream model as the backend (quantum-readiness.ts):
+  // effort scales linearly, calendar duration is bounded by adding workstreams
+  // once single-lane execution would exceed ~2 years of wave work (cap 64).
+  const effortWeeks = remaining * 0.6 * (1 + migrationComplexity / 200);
+  const parallelWorkstreams = Math.min(64, Math.max(1, Math.ceil(effortWeeks / 104)));
+  const migrationTimelineWeeks = Math.max(remaining > 0 ? 2 : 0, Math.round(effortWeeks / parallelWorkstreams));
+  const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * parallelWorkstreams * 38 * 165) : 0;
 
   // ---- Factor breakdowns (same labels/order as the backend) ---------------
   const readinessFactors = [
@@ -398,7 +407,7 @@ export function scopeSnapshotToAssets(snapshot: QuantumReadinessSnapshot, assetK
     recommendedActions,
     topRiskAssets,
     exposureGraph: { nodes, edges },
-    estimates: { migrationTimelineWeeks, migrationCostUsd },
+    estimates: { migrationTimelineWeeks, migrationCostUsd, parallelWorkstreams },
     telemetry: {
       ...snapshot.telemetry,
       certificates: certificatesAnalyzed,

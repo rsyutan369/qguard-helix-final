@@ -113,6 +113,45 @@ const SINGLE_ASSET: QuantumReadinessSnapshot = {
   telemetry: { ...ENTERPRISE.telemetry, runtimeEvents: 0 },
 };
 
+// XL estate — thousands of assets/components. Verifies the engine stays
+// enterprise-grade at scale: bounded parallel-workstream calendar (never a
+// multi-thousand-week single lane), exact wave/cost reconciliation, true
+// tenant-wide asset counts with the capped detail tables disclosed.
+// `estimates` mirror the backend parallel-workstream model exactly.
+// Readiness reconciles: 8×.45 + (100−71)×.25 + 35×.15 + 60×.15 = 25.1 → 25.
+const XL_REMAINING = 9800 + 3400; // vulnerable components + vulnerable assets
+const XL_COMPLEXITY = 77;
+const XL_EFFORT_WEEKS = XL_REMAINING * 0.6 * (1 + XL_COMPLEXITY / 200);
+const XL_WORKSTREAMS = Math.min(64, Math.max(1, Math.ceil(XL_EFFORT_WEEKS / 104)));
+const XL_WEEKS = Math.max(2, Math.round(XL_EFFORT_WEEKS / XL_WORKSTREAMS));
+const XL_SCALE: QuantumReadinessSnapshot = {
+  ...ENTERPRISE,
+  scores: {
+    quantumReadiness: 25, quantumReadinessLevel: 'Early Stage',
+    quantumRisk: 71, quantumRiskLevel: 'High',
+    hndlRisk: 66, hndlRiskLevel: 'High',
+    cryptoExposure: 88, cryptoExposureLevel: 'Critical',
+    migrationComplexity: XL_COMPLEXITY, migrationComplexityLevel: 'Critical',
+    migrationEffort: 79, pqcAdoption: 8,
+  },
+  inventory: {
+    assetsAssessed: 4800, certificatesAnalyzed: 2100, keysDiscovered: 3400, trustRelationships: 6200,
+    domainsScanned: 900, identitiesAnalyzed: 1200, cloudAccounts: 12, dataRepositories: 260,
+    pqcReadyAssets: 300, hybridAssets: 1100, quantumVulnerableAssets: 3400,
+    cryptoComponents: 12000, vulnerableComponents: 9800, pqcReadyComponents: 950,
+  },
+  riskDistribution: { critical: 840, high: 2600, medium: 4100, low: 1660 },
+  readinessFactors: [
+    { label: 'TLS / Protocol Maturity', score: 9 },
+    { label: 'PKI Readiness', score: 14 },
+    { label: 'Crypto Agility', score: 11 },
+    { label: 'Governance', score: 60 },
+    { label: 'Runtime Telemetry Coverage', score: 35 },
+  ],
+  estimates: { migrationTimelineWeeks: XL_WEEKS, migrationCostUsd: XL_WEEKS * XL_WORKSTREAMS * 38 * 165, parallelWorkstreams: XL_WORKSTREAMS },
+  telemetry: { ...ENTERPRISE.telemetry, runtimeEvents: 52000, scanResults: 4000, assets: 4800, certificates: 2100, keys: 3400 },
+};
+
 let phaseFailures = 0;
 function assert(cond: boolean, msg: string) {
   console.log(`  ${cond ? '✓' : '✗'} ${msg}`);
@@ -231,7 +270,9 @@ function verifyImprovements02(report: ReturnType<typeof buildReportModel>, snaps
   assert(report.benchmarking.rows.length === 5 && report.benchmarking.rows[0].readiness === snapshot.scores.quantumReadiness && /modeled/i.test(report.benchmarking.note), `I2#9 Benchmarking: ${report.benchmarking.rows.map((r) => `${r.cohort}=${r.readiness}`).join(', ')}`);
 
   // I2#10 Report validation badge: computed at build time and PASSING.
-  assert(report.reportValidation.checks.length === 6 && report.reportValidation.overall === 'PASS', `I2#10 Report validation: ${report.reportValidation.overall} (${report.reportValidation.checks.filter((c) => c.status === 'pass').length}/${report.reportValidation.checks.length} checks)`);
+  // 7 checks since R7 added "Target Reconciliation Verified" (domain targets
+  // blend back to the programme target risk).
+  assert(report.reportValidation.checks.length === 7 && report.reportValidation.checks.some((c) => c.check === 'Target Reconciliation Verified') && report.reportValidation.overall === 'PASS', `I2#10 Report validation: ${report.reportValidation.overall} (${report.reportValidation.checks.filter((c) => c.status === 'pass').length}/${report.reportValidation.checks.length} checks)`);
   for (const c of report.reportValidation.checks.filter((x) => x.status === 'fail')) console.log(`      ✗ FAILING CHECK: ${c.check} — ${c.detail}`);
 
   // I2#11 Quantum Readiness Index: pillars reconcile; evidence-less pillars Not Measured.
@@ -276,10 +317,28 @@ function verifyImprovements03(report: ReturnType<typeof buildReportModel>, snaps
 
   // I3#7 Risk-forecast scenario bands: best/expected/worst present and ordered
   // (worst >= expected >= best at 12 months, since higher risk = worse).
+  // R7: scenarios are schedule-anchored — "Funded Programme (Expected)",
+  // "Funded Programme (Worst Case — 2× slippage)", "No Funded Programme (Baseline)".
   const sc = report.riskForecast.scenarios;
-  const best = sc.find((s) => s.scenario === 'Best Case');
-  const worst = sc.find((s) => s.scenario === 'Worst Case');
-  assert(sc.length === 3 && !!best && !!worst && worst.month12 >= best.month12 && sc.every((s) => s.assumption.length > 15), `I3#7 Risk scenarios: best m12=${best?.month12}, worst m12=${worst?.month12}`);
+  const expected = sc.find((s) => /expected/i.test(s.scenario));
+  const worst = sc.find((s) => /worst/i.test(s.scenario));
+  const baseline = sc.find((s) => /no funded|baseline/i.test(s.scenario));
+  // Programmes shorter than ~36 months must land at target/residual by month
+  // 36; longer programmes (XL estates) are legitimately still gliding, so we
+  // only require a monotonic decline that stays above the residual floor.
+  const forecastWeeks = report.executiveBlock.estimatedDurationWeeks || 0;
+  const forecastOverhead = Math.max(1, Math.round(forecastWeeks * 0.1));
+  const programmeEndMonths = ((forecastWeeks + forecastOverhead * 2) * 12) / 52;
+  assert(
+    sc.length === 3 && !!expected && !!worst && !!baseline
+      && worst.month12 >= expected.month12
+      && baseline.month12 === report.riskForecast.currentRisk
+      && expected.month36 <= expected.month12
+      && expected.month36 >= report.riskForecast.residualRisk
+      && (programmeEndMonths > 36 || expected.month36 <= report.riskForecast.targetRisk)
+      && sc.every((s) => s.assumption.length > 15),
+    `I3#7 Risk scenarios: expected m12=${expected?.month12}, worst m12=${worst?.month12}, baseline m12=${baseline?.month12} (programme ends ~month ${Math.ceil(programmeEndMonths)})`,
+  );
 
   // I3#8 Operational (non-financial) benefits.
   assert(report.operationalBenefits.length >= 5 && report.operationalBenefits.every((b) => b.benefit && b.impact && b.evidence), `I3#8 Operational benefits: ${report.operationalBenefits.length}`);
@@ -400,7 +459,9 @@ async function runScoped(outDir: string) {
   const scopeKeys = universe.slice(0, 2).map((a) => a.key); // portal + api
   const scoped = scopeSnapshotToAssets(ENTERPRISE, scopeKeys);
   const scope = buildReportScope(ENTERPRISE, scopeKeys);
-  assert(scope.type === 'custom' && scope.selectedAssetCount === 2 && scope.totalAssetCount === 5 && scope.assets.length === 2 && scope.methodology.length > 0, `Scope block: custom ${scope.selectedAssetCount}/${scope.totalAssetCount}, assets listed, methodology disclosed`);
+  // totalAssetCount is the TRUE tenant inventory count (24), not the capped
+  // 5-asset detail list — a large estate must never under-report its scope.
+  assert(scope.type === 'custom' && scope.selectedAssetCount === 2 && scope.totalAssetCount === 24 && scope.assets.length === 2 && scope.methodology.length > 0, `Scope block: custom ${scope.selectedAssetCount}/${scope.totalAssetCount}, assets listed, methodology disclosed`);
 
   // Evidence filtered to the selection: portal carries FND-001/002, api FND-003.
   assert(scoped.criticalFindings.length === 3 && scoped.criticalFindings.every((f) => /^(portal|api)\./.test(f.asset)), `Scoped findings: ${scoped.criticalFindings.length} rows, all on selected assets`);
@@ -422,11 +483,11 @@ async function runScoped(outDir: string) {
   const report = attachIntegrity(buildReportModel(scoped, branding, 'executive', 'Export Smoke', scope));
   enterpriseAssessmentReportSchema.parse(report);
   assert(report.scope.type === 'custom' && report.scope.assets.length === 2, `Report carries scope: ${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets`);
-  assert(/Report scope: 2 of 5/.test(report.executiveSummary), 'Executive summary states the custom scope');
+  assert(/Report scope: 2 of 24/.test(report.executiveSummary), 'Executive summary states the custom scope (2 of 24 — true tenant count)');
   assert(report.reportValidation.overall === 'PASS', `Scoped report validation badge: ${report.reportValidation.overall}`);
   // I5#1 — the Asset definition mirrors the custom scope's canonical counts.
   const scopedAssetDef = report.definitions.find((d) => d.term === 'Asset');
-  assert(!!scopedAssetDef && scopedAssetDef.definition.includes('2 of 5 discovered asset(s)'), `I5#1 scoped Asset definition: "${scopedAssetDef?.definition.match(/This report's scope[^.]*\./)?.[0]}"`);
+  assert(!!scopedAssetDef && scopedAssetDef.definition.includes('2 of 24 discovered asset(s)'), `I5#1 scoped Asset definition: "${scopedAssetDef?.definition.match(/This report's scope[^.]*\./)?.[0]}"`);
   verifyImprovements05(report, scoped);
 
   let ok = 0;
@@ -465,6 +526,23 @@ async function run(name: string, snapshot: QuantumReadinessSnapshot, outDir: str
     ok++;
   }
   console.log(`  [${name}] ${ok}/${REPORT_FORMATS.length} formats generated, waves=${report.migrationWaves.length}\n`);
+  return report;
+}
+
+// Scale assertions — a thousands-of-assets estate must produce a bounded,
+// reconciled, fully-disclosed enterprise programme.
+function verifyScale(report: ReturnType<typeof buildReportModel>, snapshot: QuantumReadinessSnapshot) {
+  console.log('  --- XL-scale assertions ---');
+  assert(report.scope.totalAssetCount === snapshot.inventory.assetsAssessed && report.executiveSummary.includes(String(snapshot.inventory.assetsAssessed)), `Scale: full scope reports the true tenant asset count (${report.scope.totalAssetCount})`);
+  assert(/top \d+ assets by risk/.test(report.scope.note), `Scale: scope note discloses capped detail tables: "${report.scope.note}"`);
+  const weeks = snapshot.estimates.migrationTimelineWeeks;
+  assert(weeks > 0 && weeks <= 200, `Scale: calendar bounded at ${weeks} week(s) via ${snapshot.estimates.parallelWorkstreams} parallel workstream(s) (single-lane would be ${Math.round(XL_EFFORT_WEEKS)}w)`);
+  const waveCost = report.migrationWaves.reduce((sum, w) => sum + w.costUsd, 0);
+  assert(waveCost === report.costForecast.totalUsd, `Scale: Σ wave costs $${waveCost.toLocaleString()} == cost-forecast budget $${report.costForecast.totalUsd.toLocaleString()}`);
+  const waveWeeks = report.migrationWaves.reduce((sum, w) => sum + w.durationWeeks, 0);
+  assert(waveWeeks === weeks, `Scale: Σ wave durations ${waveWeeks}w == programme ${weeks}w`);
+  assert(report.reportValidation.overall === 'PASS', `Scale: report validation ${report.reportValidation.overall} (${report.reportValidation.checks.filter((c) => c.status === 'pass').length}/${report.reportValidation.checks.length}) on the XL estate`);
+  for (const c of report.reportValidation.checks.filter((x) => x.status === 'fail')) console.log(`      ✗ FAILING CHECK: ${c.check} — ${c.detail}`);
 }
 
 async function main() {
@@ -475,6 +553,9 @@ async function main() {
   await run('enterprise', ENTERPRISE, outDir, true);
   console.log('Single-asset (compact) snapshot:');
   await run('single', SINGLE_ASSET, outDir);
+  console.log('XL-scale estate (thousands of assets) snapshot:');
+  const xlReport = await run('xl-scale', XL_SCALE, outDir);
+  verifyScale(xlReport, XL_SCALE);
   console.log('Asset-scoped (custom selection) report:');
   await runScoped(outDir);
   console.log(`All artefacts written to ${outDir}`);

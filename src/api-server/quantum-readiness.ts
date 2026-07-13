@@ -105,6 +105,26 @@ async function safeRows(client: any, table: string, build: (query: any) => any):
   }
 }
 
+/**
+ * Exact tenant-wide row count (HEAD + count=exact — no rows transferred).
+ * The detail queries above are row-capped for memory safety, so a tenant with
+ * thousands of assets/components must take its headline counts from these,
+ * never from the capped page length. Returns null when the count is
+ * unavailable so callers can fall back to the fetched-row length.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function exactCount(client: any, table: string, userId: string, refine?: (query: any) => any): Promise<number | null> {
+  try {
+    let query = client.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
+    if (refine) query = refine(query)
+    const { count, error } = await query
+    if (error) return null
+    return typeof count === 'number' ? count : null
+  } catch {
+    return null
+  }
+}
+
 function isInternetFacing(asset: Record<string, unknown>): boolean {
   const env = str(asset.environment).toLowerCase()
   if (['public', 'internet', 'dmz', 'external', 'edge'].some((e) => env.includes(e))) return true
@@ -158,6 +178,31 @@ export async function buildSnapshot(token: string, userId: string) {
     safeRows(client, 'vault_files', (q) => q.select('id, encryption_algorithm, created_at').eq('user_id', userId).limit(800)),
   ])
 
+  // Exact tenant-wide counts (HEAD-only, cheap) so headline inventory numbers
+  // stay truthful past the detail-row caps above — a 5,000-asset tenant must
+  // report 5,000 assets, not the 1,500-row page.
+  const [
+    assetsCount,
+    certificatesCount,
+    keysCount,
+    relationshipsCount,
+    connectorsCount,
+    vaultCount,
+    inventoryCount,
+    inventoryVulnerableCount,
+    inventoryPqcCount,
+  ] = await Promise.all([
+    exactCount(client, 'assets', userId),
+    exactCount(client, 'certificates', userId),
+    exactCount(client, 'generated_keys', userId),
+    exactCount(client, 'asset_relationships', userId),
+    exactCount(client, 'connector_accounts', userId),
+    exactCount(client, 'vault_files', userId),
+    exactCount(client, 'crypto_inventory', userId),
+    exactCount(client, 'crypto_inventory', userId, (q) => q.eq('is_vulnerable', true)),
+    exactCount(client, 'crypto_inventory', userId, (q) => q.eq('is_quantum_safe', true)),
+  ])
+
   // ---- Canonical scanner intelligence ----------------------------------
   // Mirror the platform's scanner-intelligence view (same source as harvest-now,
   // assets, CBOM) so the QR pages display the scanner's *expanded* per-instance
@@ -181,12 +226,14 @@ export async function buildSnapshot(token: string, userId: string) {
   const intelHasData = Boolean(intelSummary && ((intelSummary.totalComponents || 0) > 0 || intelFindings.length > 0))
 
   // ---- Inventory --------------------------------------------------------
-  const assetsAssessed = assets.length
-  const certificatesAnalyzed = certificates.length
-  const keysDiscovered = generatedKeys.length
-  const trustRelationships = assetRelationships.length
-  const cloudAccounts = connectorAccounts.length
-  const dataRepositories = vaultFiles.length
+  // Exact counts floor the fetched-page lengths; identical for small tenants,
+  // truthful for tenants whose tables exceed the detail-row caps.
+  const assetsAssessed = Math.max(assets.length, assetsCount ?? 0)
+  const certificatesAnalyzed = Math.max(certificates.length, certificatesCount ?? 0)
+  const keysDiscovered = Math.max(generatedKeys.length, keysCount ?? 0)
+  const trustRelationships = Math.max(assetRelationships.length, relationshipsCount ?? 0)
+  const cloudAccounts = Math.max(connectorAccounts.length, connectorsCount ?? 0)
+  const dataRepositories = Math.max(vaultFiles.length, vaultCount ?? 0)
   // Scanned domains = distinct scanned targets (evidence/runtime hosts, scan
   // result targets, and discovered web/domain assets). A scanned domain must
   // never read as 0.
@@ -245,10 +292,26 @@ export async function buildSnapshot(token: string, userId: string) {
     hybrid = 0
   }
 
-  const totalCrypto = intelHasData && intelSummary ? Math.max(1, num(intelSummary.totalComponents)) : vulnerable + pqcReady + hybrid
-  const cryptoComponents = intelHasData && intelSummary ? num(intelSummary.totalComponents) : (cryptoInventory.length || totalCrypto)
-  const vulnerableComponents = intelHasData && intelSummary ? num(intelSummary.vulnerableComponents) : vulnerable
-  const pqcReadyComponents = intelHasData && intelSummary ? num(intelSummary.pqcReadyComponents) : pqcReady + hybrid
+  // Exact-count floor: when the authoritative crypto_inventory table holds more
+  // components than either the scanner view or the capped detail page (large
+  // estates past the row caps), adopt its exact posture counts — headline CBOM
+  // numbers and the vulnerable/PQC shares must reflect the full tenant universe.
+  const intelTotal = intelHasData && intelSummary ? num(intelSummary.totalComponents) : 0
+  const cbomExactDominates = inventoryCount !== null && inventoryCount > Math.max(intelTotal, cryptoInventory.length, vulnerable + pqcReady + hybrid)
+  if (cbomExactDominates) {
+    vulnerable = Math.max(vulnerable, inventoryVulnerableCount ?? 0)
+    pqcReady = Math.max(pqcReady, inventoryPqcCount ?? 0)
+    hybrid = 0
+  }
+
+  const totalCrypto = cbomExactDominates
+    ? Math.max(1, inventoryCount ?? 1)
+    : intelHasData && intelSummary ? Math.max(1, intelTotal) : vulnerable + pqcReady + hybrid
+  const cryptoComponents = cbomExactDominates
+    ? (inventoryCount ?? 0)
+    : intelHasData && intelSummary ? intelTotal : (cryptoInventory.length || totalCrypto)
+  const vulnerableComponents = vulnerable
+  const pqcReadyComponents = pqcReady + hybrid
 
   // ---- Per-asset risk ---------------------------------------------------
   const assetRisk = new Map<string, number>()
@@ -381,9 +444,18 @@ export async function buildSnapshot(token: string, userId: string) {
   const remaining = vulnerable + quantumVulnerableAssets
   const migrationEffort = hasData ? Math.round(clamp((remaining / Math.max(1, totalCrypto + assetsAssessed)) * 100)) : 0
 
-  const baseWeeks = remaining * 0.6 * (1 + migrationComplexity / 200)
-  const migrationTimelineWeeks = hasData ? Math.max(remaining > 0 ? 2 : 0, Math.round(baseWeeks)) : 0
-  const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * 38 * 165) : 0
+  // Effort scales linearly with remaining scope; CALENDAR duration must not — a
+  // large estate runs parallel migration workstreams (app teams migrate their
+  // own stacks). Workstreams are added once single-lane execution would exceed
+  // ~2 years of wave work (capped at 64 parallel lanes ≈ one team per ~110
+  // components on a mega estate), so a 5,000-component estate plans a bounded
+  // multi-year calendar instead of an absurd multi-thousand-week single lane.
+  // For small estates (1 workstream) the numbers are identical to the original
+  // model.
+  const effortWeeks = remaining * 0.6 * (1 + migrationComplexity / 200)
+  const parallelWorkstreams = Math.min(64, Math.max(1, Math.ceil(effortWeeks / 104)))
+  const migrationTimelineWeeks = hasData ? Math.max(remaining > 0 ? 2 : 0, Math.round(effortWeeks / parallelWorkstreams)) : 0
+  const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * parallelWorkstreams * 38 * 165) : 0
 
   // ---- Factor breakdowns ------------------------------------------------
   // Terminology: this factor measures the CBOM component share (pqcReady /
@@ -642,7 +714,7 @@ export async function buildSnapshot(token: string, userId: string) {
     topRiskAssets,
     exposureGraph: { nodes, edges },
     riskTrend,
-    estimates: { migrationTimelineWeeks, migrationCostUsd },
+    estimates: { migrationTimelineWeeks, migrationCostUsd, parallelWorkstreams },
     telemetry: {
       runtimeEvents: runtimeEvents.length,
       scanResults: scanResults.length,

@@ -304,10 +304,14 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Executive Summary');
   layout.paragraph(report.executiveSummary);
   if (branding.customNotes) layout.paragraph(`Notes: ${branding.customNotes}`, 9, MUTED);
+  // Improvement is stated in POINTS for every row (reductions also annotate the
+  // relative %) — mixing "+65" points with "-75%" percent in one column read as
+  // a miscalculation to reviewers.
+  const hndlDropPct = Math.round(((ex.currentHndl - ex.targetHndl) / Math.max(1, ex.currentHndl)) * 100);
   layout.table({ title: 'Current vs Target', columns: ['Metric', 'Current', 'Target', 'Improvement'], rows: [
-    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, `+${Math.max(0, ex.targetReadiness - ex.currentReadiness)}`],
-    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, `-${ex.expectedRiskReductionPct}%`],
-    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, `-${Math.max(0, ex.currentHndl - ex.targetHndl)}`],
+    ['Quantum Readiness', `${ex.currentReadiness}/100`, `${ex.targetReadiness}/100`, ex.targetReadiness > ex.currentReadiness ? `+${ex.targetReadiness - ex.currentReadiness} pts` : '—'],
+    ['Quantum Risk', `${ex.currentRisk}/100`, `${ex.targetRisk}/100`, ex.currentRisk > ex.targetRisk ? `-${ex.currentRisk - ex.targetRisk} pts (-${ex.expectedRiskReductionPct}%)` : '—'],
+    ['HNDL Exposure', `${ex.currentHndl}/100`, `${ex.targetHndl}/100`, ex.currentHndl > ex.targetHndl ? `-${ex.currentHndl - ex.targetHndl} pts (-${hndlDropPct}%)` : '—'],
     ['Migration Timeline', '—', `${ex.estimatedDurationWeeks || 'TBD'} weeks`, ''],
     ['Migration Budget', '—', usd(ex.estimatedCostUsd), ''],
     ['Quantum Exposure Window', '—', ex.quantumExposureWindow, ''],
@@ -450,7 +454,7 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table({ title: 'Remediation', columns: ['Pri', 'Action', 'Owner', 'Cost', 'Risk-', 'Target'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, usd(r.costUsd), `${r.riskReductionPct}%`, r.targetDate]) }, [6, 40, 18, 14, 8, 14]);
 
   layout.heading('Migration Roadmap & Program Plan');
-  layout.paragraph('Sequential dates, milestones, approval gates and critical-path/slack.', 9, MUTED);
+  layout.paragraph(`Sequential dates, milestones, approval gates and critical-path/slack. Elapsed window: the "migration programme" duration counts the migration waves only; with the discovery and validation phases below, the end-to-end elapsed window is ${report.roadmap.reduce((sum, p) => sum + (Number(p.effortWeeks) || 0), 0)} weeks.`, 9, MUTED);
   layout.table({ title: 'Roadmap', columns: ['Phase', 'Start', 'Finish', 'Wks', 'Milestone / Gate', 'Crit', 'Slack'], rows: report.roadmap.map((p) => [p.phase, p.startDate, p.endDate, p.effortWeeks, `${p.milestone} | ${p.gate}`, p.criticalPath ? 'Y' : 'N', `${p.slackWeeks}w`]) }, [20, 12, 12, 6, 38, 6, 6]);
 
   layout.heading('Migration Resource Loading');

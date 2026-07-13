@@ -1,6 +1,17 @@
 // AES-256-GCM per-frame sealing for E2EE media. Nonce (12B) = contextTag(4B) | counter(8B BE).
 // Wire format: [header (headerLength, unencrypted)][ciphertext+16B tag][8B BE counter].
 
+/**
+ * Unencrypted leading bytes the RTP (de)packetizer needs — the Chrome
+ * insertable-streams convention for VP8 video (10 bytes on a keyframe, 3 on a
+ * delta) and Opus audio (1). Shared by every encoded-transform plumbing so the
+ * encrypt and decrypt sides always split the frame identically.
+ */
+export function headerLength(kind: "audio" | "video", frame: { type?: "key" | "delta" }): number {
+  if (kind === "audio") return 1;
+  return frame.type === "key" ? 10 : 3;
+}
+
 export async function importAesGcmKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }

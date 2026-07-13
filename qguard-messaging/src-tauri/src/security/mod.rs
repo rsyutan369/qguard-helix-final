@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::kdf::sha3_hex;
 
+pub mod content_uri;
+pub mod keystore;
 pub mod obf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

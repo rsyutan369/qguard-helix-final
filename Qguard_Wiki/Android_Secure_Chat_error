@@ -1,0 +1,200 @@
+Prompt: Permanently Resolve Secure Chat Navigation and Conversation Opening Bug (Android)
+
+In the Android version of QGuard Messaging, there is a critical issue in the Secure Chat module that prevents users from starting conversations.
+
+Current Issue
+
+When a user:
+
+Opens Secure Chat
+Searches for another registered user
+Selects or taps that user from the search results
+
+the application briefly displays "Opening...", but instead of navigating to the conversation screen, it immediately returns to the Search Users page.
+
+As a result:
+
+Users cannot open conversations.
+Users cannot send or receive messages.
+The Secure Chat feature is effectively unusable.
+Expected Behavior
+
+When a user taps another user from the search results:
+
+Validate that the selected user exists.
+Create a conversation if one does not already exist.
+Reuse the existing conversation if one already exists.
+Successfully navigate to the Secure Chat conversation screen.
+Load all previous encrypted messages.
+Allow sending and receiving messages immediately.
+Never redirect back to the Search Users screen unless the user explicitly presses the Back button.
+Investigation Requirements
+
+Perform a complete end-to-end investigation of the Secure Chat flow.
+
+Verify the following components:
+
+Navigation
+Android Navigation
+React Navigation / Tauri routing (whichever is used)
+Activity/Fragment navigation
+Navigation stack
+Deep links
+Route parameters
+
+Ensure the correct conversation ID and recipient ID are passed.
+
+Conversation Creation
+
+Verify that:
+
+Conversation IDs are generated correctly.
+Duplicate conversations are prevented.
+Existing conversations are reused.
+Conversation creation completes before navigation.
+User Search
+
+Verify:
+
+Search results return valid users.
+Selected user IDs are correct.
+No null or undefined values.
+Authentication state is valid.
+Current user is excluded from search.
+Database
+
+Validate all database operations:
+
+Conversation creation
+Conversation lookup
+Message retrieval
+Foreign key relationships
+Supabase queries
+Row Level Security (RLS)
+Permissions
+Indexes
+Conversation participants
+
+Ensure every query succeeds.
+
+Encryption Layer
+
+Verify:
+
+Session initialization
+Key exchange
+PreKey availability
+Identity keys
+Session storage
+Message encryption
+Message decryption
+
+Ensure encryption initialization is not blocking navigation.
+
+State Management
+
+Inspect:
+
+Zustand / Redux / Context
+Loading states
+Selected conversation
+Selected user
+Navigation state
+Async race conditions
+
+Ensure no state reset occurs after selecting a user.
+
+API Calls
+
+Check:
+
+Request payloads
+Response validation
+Error handling
+Retry logic
+Timeouts
+Promise handling
+
+No API failures should silently return the user to Search.
+
+Error Handling
+
+Replace silent failures with:
+
+Proper logging
+User-friendly error messages
+Retry mechanisms
+Crash-safe fallbacks
+
+Never fail silently.
+
+Debugging
+
+Add temporary debug logs for:
+
+User selection
+Conversation creation
+Conversation lookup
+Navigation events
+Session initialization
+Encryption setup
+Message loading
+API responses
+Database queries
+
+Identify the exact step where the navigation fails.
+
+Required Outcome
+
+After the fix:
+
+✅ Searching users always works.
+
+✅ Selecting a user always opens the conversation.
+
+✅ Existing conversations open correctly.
+
+✅ New conversations are created automatically.
+
+✅ Messages load successfully.
+
+✅ Sending messages works.
+
+✅ Receiving messages works.
+
+✅ End-to-end encryption initializes correctly.
+
+✅ Navigation is stable.
+
+✅ No unexpected redirects occur.
+
+✅ No crashes.
+
+✅ No infinite loading.
+
+✅ No race conditions.
+
+Code Quality Requirements
+Identify and fix the root cause rather than applying a workaround.
+Refactor any fragile or duplicated logic.
+Remove obsolete code that contributes to the issue.
+Ensure the solution is maintainable and production-ready.
+Follow Android and QGuard Messaging architecture best practices.
+Maintain compatibility with the existing QGuard Helix post-quantum cryptographic stack.
+Deliverables
+
+Provide:
+
+A root cause analysis explaining why the issue occurred.
+The files modified.
+A summary of all fixes implemented.
+Any database or schema changes required.
+Manual test cases covering:
+Opening an existing conversation
+Creating a new conversation
+Sending and receiving encrypted messages
+Navigation after app restart
+Offline and reconnect scenarios
+Verification that the issue has been permanently resolved without introducing regressions to other Secure Chat functionality.
+
+Objective: Deliver a production-ready Secure Chat experience where users can reliably search for other users, open conversations, and exchange end-to-end encrypted messages without navigation failures or unexpected redirects.

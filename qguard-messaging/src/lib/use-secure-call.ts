@@ -12,6 +12,7 @@ import {
   mediaConstraints,
   type CallQuality,
 } from "@/lib/call-quality";
+import { makeFrameTransform, type FrameCryptoOptions } from "@/lib/call-media-transform";
 
 interface CallSetup { hybridCiphertext: unknown; sendKeyB64: string; recvKeyB64: string; safetyNumber: string; }
 
@@ -37,8 +38,45 @@ interface CallRoute { conversationId: string; toUserId: string; toDeviceId: stri
 
 const AUDIO_CTX = [1, 0, 0, 0];
 const VIDEO_CTX = [2, 0, 0, 0];
+
+// Two encoded-transform plumbings deliver the same E2EE media encryption:
+//   - "worker": RTCRtpScriptTransform (Chromium >= 115), runs in a Worker.
+//   - "encoded-streams": createEncodedStreams (Chromium 86-114), main thread.
+// A newly-installed app on an older WebView2 (seen on a Windows 11 VM) exposes
+// ONLY the latter — without this fallback that peer couldn't start a call
+// ("Video calling requires the desktop app") and every call it accepted died
+// when `new RTCRtpScriptTransform` threw. The wire format is identical, so a
+// "worker" peer (host) and an "encoded-streams" peer (VM) interoperate.
+type TransformStrategy = "worker" | "encoded-streams" | "none";
+
+function detectTransformStrategy(): TransformStrategy {
+  if (typeof RTCRtpScriptTransform !== "undefined") return "worker";
+  if (typeof RTCRtpSender !== "undefined" && "createEncodedStreams" in RTCRtpSender.prototype) {
+    return "encoded-streams";
+  }
+  return "none";
+}
+
 const callSupported = () =>
-  typeof RTCPeerConnection !== "undefined" && typeof RTCRtpScriptTransform !== "undefined";
+  typeof RTCPeerConnection !== "undefined" && detectTransformStrategy() !== "none";
+
+// Main-thread fallback: pipe one sender/receiver's encoded frames through the
+// AES-256-GCM transform. Used when RTCRtpScriptTransform is unavailable.
+async function pipeEncodedStreams(
+  rtp: RTCRtpSender | RTCRtpReceiver,
+  opts: FrameCryptoOptions,
+): Promise<void> {
+  const create = rtp.createEncodedStreams;
+  if (!create) return;
+  try {
+    const streams = create.call(rtp);
+    const transform = await makeFrameTransform(opts);
+    void streams.readable.pipeThrough(transform).pipeTo(streams.writable);
+  } catch {
+    // createEncodedStreams throws if called twice or if the pc wasn't built with
+    // encodedInsertableStreams; non-fatal.
+  }
+}
 
 /**
  * Quantum-encrypted call engine. Runs APP-WIDE (see CallProvider): the signal
@@ -66,6 +104,14 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const pendingOfferRef = useRef<CallSignalRow | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const phaseRef = useRef(state.phase);
+  // Mirrors of call state for the signal subscription, so its handler can read
+  // the current role/call id WITHOUT those being effect dependencies. The
+  // subscription must stay mounted for the whole session: re-subscribing when a
+  // call starts (role/callId change) tore down the Supabase channel mid-setup
+  // and dropped the inbound `answer` / ICE candidates, so the call never
+  // connected and ended on both ends.
+  const callIdRef = useRef<string | null>(state.callId);
+  const roleRef = useRef(state.role);
   const timeoutRef = useRef<number | undefined>(undefined);
   // Grace window for a transient ICE `disconnected` blip before we give up. A
   // WebRTC connection frequently flips connected → disconnected → connected on a
@@ -93,17 +139,21 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   // the transceiver level (the receiver exists the moment addTrack creates the
   // transceiver) guarantees the decryptor is in place before the first frame.
   const attachMediaTransforms = useCallback((pc: RTCPeerConnection, setup: CallSetup) => {
-    const w = worker();
+    const strategy = detectTransformStrategy();
+    const w = strategy === "worker" ? worker() : null;
     for (const transceiver of pc.getTransceivers()) {
       const kind = transceiver.sender.track?.kind;
       if (kind !== "audio" && kind !== "video") continue;
       const contextTag = kind === "audio" ? AUDIO_CTX : VIDEO_CTX;
-      (transceiver.sender as RTCRtpSender).transform = new RTCRtpScriptTransform(w, {
-        operation: "encrypt", keyB64: setup.sendKeyB64, kind, contextTag,
-      });
-      (transceiver.receiver as RTCRtpReceiver).transform = new RTCRtpScriptTransform(w, {
-        operation: "decrypt", keyB64: setup.recvKeyB64, kind, contextTag,
-      });
+      const encryptOpts: FrameCryptoOptions = { operation: "encrypt", keyB64: setup.sendKeyB64, kind, contextTag };
+      const decryptOpts: FrameCryptoOptions = { operation: "decrypt", keyB64: setup.recvKeyB64, kind, contextTag };
+      if (w) {
+        (transceiver.sender as RTCRtpSender).transform = new RTCRtpScriptTransform(w, encryptOpts);
+        (transceiver.receiver as RTCRtpReceiver).transform = new RTCRtpScriptTransform(w, decryptOpts);
+      } else {
+        void pipeEncodedStreams(transceiver.sender, encryptOpts);
+        void pipeEncodedStreams(transceiver.receiver, decryptOpts);
+      }
     }
   }, [worker]);
 
@@ -154,7 +204,15 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     // Live STUN/TURN resolution (operator relay config → env → Open Relay):
     // cached + short-timeout, so it adds ~0ms in the steady state and can
     // never block a call — see call-ice.ts.
-    const pc = new RTCPeerConnection(await resolveRtcConfiguration());
+    // The legacy createEncodedStreams() plumbing requires this Chromium flag at
+    // construction; RTCRtpScriptTransform doesn't need it, so we only set it when
+    // the fallback will be used.
+    const rtcConfig = await resolveRtcConfiguration();
+    const pc = new RTCPeerConnection(
+      detectTransformStrategy() === "encoded-streams"
+        ? { ...rtcConfig, encodedInsertableStreams: true }
+        : rtcConfig,
+    );
     pc.onicecandidate = (e) => {
       if (!e.candidate) return;
       void sendCallSignal({
@@ -297,12 +355,15 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
 
   const endCall = useCallback((notify: boolean) => {
     const route = routeRef.current;
-    if (notify && state.callId && route) {
-      void sendCallSignal({ call_id: state.callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "hangup", payload: {} });
+    const callId = callIdRef.current;
+    // Stable identity (reads the call id from a ref, not state) so it is NOT a
+    // dependency that would re-subscribe the signal channel mid-call.
+    if (notify && callId && route) {
+      void sendCallSignal({ call_id: callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "hangup", payload: {} });
     }
     dispatch({ type: "ended" });
     cleanup();
-  }, [args.deviceId, args.userId, cleanup, state.callId]);
+  }, [args.deviceId, args.userId, cleanup]);
 
   const reject = useCallback(() => {
     const offer = pendingOfferRef.current;
@@ -325,6 +386,10 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         if (row.from_user_id === args.userId) return;
         switch (row.signal_type) {
           case "offer": {
+            // A re-delivered offer for the call we're already handling (realtime
+            // can deliver an insert more than once): ignore it. Replying "busy"
+            // to our own in-progress call is what tore it down on accept.
+            if (row.call_id === callIdRef.current) return;
             const busy = ["ringing", "calling", "connecting", "connected"].includes(phaseRef.current);
             if (busy) {
               void sendCallSignal({
@@ -340,7 +405,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
             break;
           }
           case "answer":
-            if (pcRef.current && state.role === "caller") {
+            if (pcRef.current && roleRef.current === "caller") {
               void pcRef.current
                 .setRemoteDescription({ type: "answer", sdp: String(row.payload.sdp) })
                 .then(() => flushPendingCandidates());
@@ -362,11 +427,14 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       },
     });
     return unsub;
-  }, [args.deviceId, args.userId, endCall, flushPendingCandidates, state.role]);
+  }, [args.deviceId, args.userId, endCall, flushPendingCandidates]);
 
-  // Keep a synchronous mirror of the current phase for ref-based decisions
-  // (busy detection, timeouts) inside callbacks that must not re-subscribe.
+  // Keep synchronous mirrors of call state for ref-based decisions (busy
+  // detection, role checks, hangup addressing) inside the signal handler, so it
+  // never has to re-subscribe when a call starts or changes phase.
   useEffect(() => { phaseRef.current = state.phase; }, [state.phase]);
+  useEffect(() => { callIdRef.current = state.callId; }, [state.callId]);
+  useEffect(() => { roleRef.current = state.role; }, [state.role]);
 
   useEffect(() => () => cleanup(), [cleanup]);
 

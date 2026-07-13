@@ -22,23 +22,6 @@ pub struct QrVerification {
 }
 
 #[tauri::command]
-pub fn devices_register_current_device(
-    state: State<'_, AppState>,
-    label: String,
-) -> Result<TrustedDevice> {
-    let user_id = state.user_id()?;
-    let bundle = state.ensure_identity(&user_id, &label)?;
-    let device =
-        TrustedDevice::new_this_device(user_id, bundle.device_id, label, bundle.fingerprint);
-    state
-        .devices
-        .lock()
-        .map_err(|_| QGuardError::Storage("device lock poisoned".to_string()))?
-        .insert(device.device_id.clone(), device.clone());
-    Ok(device)
-}
-
-#[tauri::command]
 pub fn devices_list_trust_center(state: State<'_, AppState>) -> Result<Vec<TrustedDevice>> {
     let user_id = state.user_id()?;
     let bundle = state.ensure_identity(&user_id, "Windows Desktop")?;

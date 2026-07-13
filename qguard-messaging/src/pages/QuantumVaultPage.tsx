@@ -30,7 +30,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@/lib/tauri-dialog";
-import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
+import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
 import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, overallPercent } from "@/lib/vault-progress";
 
@@ -256,6 +256,18 @@ function renderFileTypeIcon(node: VaultExplorerNode) {
 }
 
 const REGISTRY_VERSION = "v1";
+
+// Android: pickers return SAF `content://` URIs (handled natively via file
+// descriptors), there is no folder/save-location picker, and encrypted
+// containers live in the app-private vault directory so registry paths stay
+// valid across restarts.
+const IS_ANDROID = isAndroidRuntime();
+
+/** User-facing name for a picked source; resolves SAF content URIs through the
+ * provider (their raw tail is an opaque id like `msf:33`). */
+async function resolveSourceName(sourcePath: string): Promise<string> {
+  return safeInvoke<string>("vault_resolve_name", { sourcePath }, pathBasename(sourcePath));
+}
 
 export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPageProps) {
   const registryStorageKey = useMemo(() => `qguard.vault.registry.${REGISTRY_VERSION}:${userId}`, [userId]);
@@ -723,10 +735,16 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     await runLocalVault("encrypt-file", async () => {
       const source = await openDialog({ multiple: false, directory: false, title: "Select a file to encrypt" });
       if (typeof source !== "string") return;
-      const dest = await saveDialog({ title: "Save encrypted vault file", defaultPath: `${pathBasename(source)}.qvault` });
+      const sourceName = await resolveSourceName(source);
+      // Android has no save-location picker flow worth using here — the
+      // container goes into the app-private vault directory so the registry
+      // path stays durable (SAF write grants don't survive an app restart).
+      const dest = IS_ANDROID
+        ? await safeInvoke<string>("vault_default_encrypt_dest", { fileName: sourceName })
+        : await saveDialog({ title: "Save encrypted vault file", defaultPath: `${sourceName}.qvault` });
       if (!dest) return;
       appendLog("info", localSuiteLine);
-      appendLog("info", `Encrypting ${pathBasename(source)} → ${pathBasename(dest)}`);
+      appendLog("info", `Encrypting ${sourceName} → ${pathBasename(dest)}`);
       setStatus("Encrypting to a local quantum-safe vault file");
       const summary = await runVaultStream("vault_encrypt_path", { sourcePath: source, destPath: dest });
       upsertRegistryFromSummary(summary, "encrypted");
@@ -740,6 +758,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
   async function localEncryptFolder() {
     await runLocalVault("encrypt-folder", async () => {
+      if (IS_ANDROID) {
+        appendLog("error", "Folder vaults are not available on Android yet — encrypt individual files instead.");
+        return;
+      }
       const source = await openDialog({ multiple: false, directory: true, title: "Select a folder to encrypt" });
       if (typeof source !== "string") return;
       const dest = await saveDialog({ title: "Save encrypted folder archive", defaultPath: `${pathBasename(source)}.qguard-folder.qvault` });
@@ -766,10 +788,11 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
       });
       if (typeof source !== "string") return;
-      const suggested = pathBasename(source).replace(/\.qvault$/i, "") || "restored-file";
+      const sourceName = await resolveSourceName(source);
+      const suggested = sourceName.replace(/\.qvault$/i, "") || "restored-file";
       const dest = await saveDialog({ title: "Save decrypted file", defaultPath: suggested });
       if (!dest) return;
-      appendLog("info", `Decrypting ${pathBasename(source)} on this device`);
+      appendLog("info", `Decrypting ${sourceName} on this device`);
       setStatus("Decrypting local vault file");
       const summary = await runVaultStream("vault_decrypt_path", { sourcePath: source, destPath: dest });
       const line = `Decrypted ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
@@ -782,6 +805,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
   async function localDecryptFolder() {
     await runLocalVault("decrypt-folder", async () => {
+      if (IS_ANDROID) {
+        appendLog("error", "Folder restore is not available on Android yet — Android has no folder picker.");
+        return;
+      }
       const source = await openDialog({
         multiple: false,
         directory: false,
@@ -1081,7 +1108,8 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
       });
       if (typeof source !== "string") return;
-      const suggested = pathBasename(source).replace(/\.qvault$/i, "") || "recovered-file";
+      const sourceName = await resolveSourceName(source);
+      const suggested = sourceName.replace(/\.qvault$/i, "") || "recovered-file";
       const dest = await saveDialog({ title: "Save recovered file", defaultPath: suggested });
       if (!dest) return;
       setStatus("Recovering vault file");
@@ -1114,6 +1142,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
   async function recoverDecryptFolder() {
     if (recoveryBusy) return;
+    if (IS_ANDROID) {
+      setRecoveryNotice("Folder recovery is not available on Android yet — Android has no folder picker.");
+      return;
+    }
     const recoveryKey = recoveryKeyInput.trim();
     const enterpriseKey = enterpriseKeyInput.trim();
     if (!recoveryKey && !enterpriseKey) {
@@ -1165,13 +1197,25 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     setRecoveryBusy("rewrap");
     setRecoveryNotice(null);
     try {
-      const selected = await openDialog({
-        multiple: true,
-        directory: false,
-        title: "Select encrypted vault files to re-protect",
-        filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
-      });
-      const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+      let paths: string[];
+      if (IS_ANDROID) {
+        // On Android the containers live in the app-private vault directory,
+        // which the system picker cannot browse — re-protect straight from the
+        // registry instead (in-place rewrap needs a real path, not a SAF doc).
+        paths = registry.filter((entry) => entry.kind === "file").map((entry) => entry.qvaultPath);
+        if (paths.length === 0) {
+          setRecoveryNotice("No encrypted files in this device's vault to re-protect.");
+          return;
+        }
+      } else {
+        const selected = await openDialog({
+          multiple: true,
+          directory: false,
+          title: "Select encrypted vault files to re-protect",
+          filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
+        });
+        paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+      }
       if (paths.length === 0) return;
       setStatus(`Re-protecting ${paths.length} vault file${paths.length === 1 ? "" : "s"}`);
       let protectedCount = 0;
@@ -1248,7 +1292,9 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   }
 
   return (
-    <div className="grid gap-4">
+    // grid-cols-[minmax(0,1fr)] keeps the wide Explorer table scrolling inside
+    // its card instead of inflating the page past a phone viewport.
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       {/* Panel 1 — Quantum Vault Workspace */}
       <section className="shell-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1300,7 +1346,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
             className="vault-upload-dropzone mt-4 flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition focus:outline-none focus:ring-2 focus:ring-cyan-400/60"
           >
             {localVaultBusy?.startsWith("encrypt") ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={44} /> : <LockKeyhole className="vault-dropzone-icon mb-3" size={44} />}
-            <div className="vault-dropzone-title text-lg font-bold">{localVaultBusy?.startsWith("encrypt") ? "Encryption running" : "Choose a file or folder to encrypt"}</div>
+            <div className="vault-dropzone-title text-lg font-bold">{localVaultBusy?.startsWith("encrypt") ? "Encryption running" : IS_ANDROID ? "Choose a file to encrypt" : "Choose a file or folder to encrypt"}</div>
             <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Sealed on-device with the VMK envelope · X25519 + ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256 / ML-DSA-87</div>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               <button
@@ -1311,14 +1357,16 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
               >
                 {localVaultBusy === "encrypt-file" ? <Loader2 className="animate-spin" size={16} /> : <LockKeyhole size={16} />} Encrypt File
               </button>
-              <button
-                type="button"
-                disabled={localVaultBusy !== null}
-                onClick={(event) => { event.stopPropagation(); localEncryptFolder(); }}
-                className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-5 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {localVaultBusy === "encrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />} Encrypt Folder
-              </button>
+              {!IS_ANDROID && (
+                <button
+                  type="button"
+                  disabled={localVaultBusy !== null}
+                  onClick={(event) => { event.stopPropagation(); localEncryptFolder(); }}
+                  className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-5 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {localVaultBusy === "encrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />} Encrypt Folder
+                </button>
+              )}
             </div>
             <div className="vault-dropzone-note mt-3 text-xs">
               Local-only, offline, any size. Encrypted .qvault files stay exactly where you save them.
@@ -1339,7 +1387,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
             className="vault-upload-dropzone mt-4 flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center transition focus:outline-none focus:ring-2 focus:ring-violet-400/60"
           >
             {localVaultBusy?.startsWith("decrypt") ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={44} /> : <UnlockKeyhole className="vault-dropzone-icon mb-3" size={44} />}
-            <div className="vault-dropzone-title text-lg font-bold">{localVaultBusy?.startsWith("decrypt") ? "Decryption running" : "Choose a .qvault file or folder to decrypt"}</div>
+            <div className="vault-dropzone-title text-lg font-bold">{localVaultBusy?.startsWith("decrypt") ? "Decryption running" : IS_ANDROID ? "Choose a .qvault file to decrypt" : "Choose a .qvault file or folder to decrypt"}</div>
             <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Restore on this device, or use the recovery key (Recovery Key panel) on a new device.</div>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               <button
@@ -1350,14 +1398,16 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
               >
                 {localVaultBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />} Decrypt File
               </button>
-              <button
-                type="button"
-                disabled={localVaultBusy !== null}
-                onClick={(event) => { event.stopPropagation(); localDecryptFolder(); }}
-                className="flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-5 py-2 text-sm font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {localVaultBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />} Decrypt Folder
-              </button>
+              {!IS_ANDROID && (
+                <button
+                  type="button"
+                  disabled={localVaultBusy !== null}
+                  onClick={(event) => { event.stopPropagation(); localDecryptFolder(); }}
+                  className="flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-5 py-2 text-sm font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {localVaultBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />} Decrypt Folder
+                </button>
+              )}
             </div>
             <div className="vault-dropzone-note mt-3 text-xs">
               Decryption happens entirely on this device. Lost this device? Use your recovery key on a new one.
@@ -1805,6 +1855,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
                   {recoveryBusy === "decrypt-file" ? <Loader2 className="animate-spin" size={16} /> : <UnlockKeyhole size={16} />}
                   Recover file
                 </button>
+                {!IS_ANDROID && (
                 <button
                   type="button"
                   disabled={recoveryBusy !== null || (!recoveryKeyInput.trim() && !enterpriseKeyInput.trim())}
@@ -1814,6 +1865,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
                   {recoveryBusy === "decrypt-folder" ? <Loader2 className="animate-spin" size={16} /> : <FolderOpen size={16} />}
                   Recover folder
                 </button>
+                )}
                 <button
                   type="button"
                   disabled={recoveryBusy !== null || !recoveryKeyInput.trim()}

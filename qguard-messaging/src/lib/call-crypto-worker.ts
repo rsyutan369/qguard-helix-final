@@ -1,41 +1,16 @@
 /// <reference lib="webworker" />
-import { importAesGcmKey, sealFrame, openFrame } from "@/lib/call-frame-crypto";
+import { makeFrameTransform, type FrameCryptoOptions } from "@/lib/call-media-transform";
 
-// Unencrypted header bytes the RTP packetizer needs (Chrome insertable-streams convention).
-function headerLength(kind: "audio" | "video", frame: RTCEncodedVideoFrame | RTCEncodedAudioFrame): number {
-  if (kind === "audio") return 1;
-  return (frame as RTCEncodedVideoFrame).type === "key" ? 10 : 3;
-}
-
-interface XfOptions { operation: "encrypt" | "decrypt"; keyB64: string; contextTag: number[]; kind: "audio" | "video"; }
-
-async function run(transformer: any, opts: XfOptions) {
-  const raw = Uint8Array.from(atob(opts.keyB64), (c) => c.charCodeAt(0));
-  const key = await importAesGcmKey(raw);
-  const ctx = new Uint8Array(opts.contextTag);
-  let counter = 0n;
-  const transform = new TransformStream({
-    async transform(frame: RTCEncodedVideoFrame | RTCEncodedAudioFrame, controller) {
-      const data = new Uint8Array(frame.data);
-      const hl = headerLength(opts.kind, frame);
-      try {
-        frame.data = opts.operation === "encrypt"
-          ? await sealFrame(key, ctx, counter++, hl, data)
-          : await openFrame(key, ctx, hl, data);
-        controller.enqueue(frame);
-      } catch {
-        // Drop frames that fail AES-GCM auth (never forward plaintext or corrupt media).
-        // GCM provides per-frame integrity/authenticity only. Out-of-order frames are
-        // accepted as-is; there is no strict replay/sequence window in v1, so a frame
-        // could in principle be replayed within the call. This is acceptable for live
-        // RTP media and may be tightened later with a sliding receive window.
-      }
-    },
-  });
+// Standard RTCRtpScriptTransform worker entrypoint (Chromium >= 115). The same
+// per-frame AES-256-GCM transform runs on the main thread via createEncodedStreams
+// on older WebView2 builds — see makeFrameTransform / use-secure-call.ts.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function run(transformer: any, opts: FrameCryptoOptions) {
+  const transform = await makeFrameTransform(opts);
   transformer.readable.pipeThrough(transform).pipeTo(transformer.writable);
 }
 
-// Standard RTCRtpScriptTransform entrypoint.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 (self as unknown as { onrtctransform: (e: any) => void }).onrtctransform = (event: any) => {
-  void run(event.transformer, event.transformer.options as XfOptions);
+  void run(event.transformer, event.transformer.options as FrameCryptoOptions);
 };

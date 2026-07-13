@@ -4,6 +4,14 @@ export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+/**
+ * True when running inside the Android build. The updater/process plugins are
+ * not registered on mobile (updates ship as APKs), so update flows must no-op.
+ */
+export function isAndroidRuntime(): boolean {
+  return isTauriRuntime() && /android/i.test(navigator.userAgent);
+}
+
 export async function safeInvoke<T>(command: string, args?: Record<string, unknown>, fallback?: T): Promise<T> {
   if (!isTauriRuntime()) {
     if (fallback !== undefined) return fallback;

@@ -1,20 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::State;
 
 use crate::error::{QGuardError, Result};
 use crate::identity::PublicIdentityBundle;
 use crate::state::{AppState, AuthSession};
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthRequest {
-    pub email: String,
-    pub device_label: Option<String>,
-    pub user_id: String,
-    pub access_token: String,
-    pub expires_at: i64,
-    pub tier: Option<String>,
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AuthResponse {
@@ -22,46 +11,6 @@ pub struct AuthResponse {
     pub email: String,
     pub identity_bundle: PublicIdentityBundle,
     pub zero_knowledge: bool,
-}
-
-#[tauri::command]
-pub fn auth_register_user(
-    state: State<'_, AppState>,
-    request: AuthRequest,
-) -> Result<AuthResponse> {
-    validate_token_claims(&request.access_token, &request.user_id, request.expires_at)?;
-    let user_id = request.user_id.clone();
-    state.set_auth_session(AuthSession {
-        user_id: user_id.clone(),
-        email: request.email.clone(),
-        tier: request.tier.unwrap_or_else(|| "user".to_string()),
-        access_token: request.access_token,
-        expires_at: request.expires_at,
-    })?;
-    let _key_scope = state.lock_key_scope()?;
-    let identity_bundle = state.ensure_identity(
-        &user_id,
-        request.device_label.as_deref().unwrap_or("Windows Desktop"),
-    )?;
-    // Re-authenticating at the app level clears any workspace lockdown, and the
-    // protected workspaces start locked until the user unlocks them.
-    state.reset_workspace_lockouts(&user_id);
-    state.lock_all_workspaces();
-    state.audit_info(
-        "auth_register",
-        "User registered locally; server receives public bundle only",
-    );
-    Ok(AuthResponse {
-        user_id,
-        email: request.email,
-        identity_bundle,
-        zero_knowledge: true,
-    })
-}
-
-#[tauri::command]
-pub fn auth_login(state: State<'_, AppState>, request: AuthRequest) -> Result<AuthResponse> {
-    auth_register_user(state, request)
 }
 
 #[tauri::command]
@@ -86,6 +35,7 @@ pub fn auth_sync_session(
     tier: String,
     access_token: String,
     expires_at: i64,
+    fresh_login: Option<bool>,
 ) -> Result<AuthResponse> {
     validate_token_claims(&access_token, &user_id, expires_at)?;
     state.set_auth_session(AuthSession {
@@ -97,6 +47,16 @@ pub fn auth_sync_session(
     })?;
     let _key_scope = state.lock_key_scope()?;
     let identity_bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
+    // A fresh interactive sign-in (password + optional MFA, NOT a background
+    // token refresh) re-proves account ownership, which is the documented way
+    // out of a workspace brute-force lockdown ("sign out and back in to
+    // reset"). It also starts the protected workspaces locked. Token refreshes
+    // pass fresh_login=false so an active lockdown cannot be waited out and an
+    // unlocked workspace never re-locks mid-session.
+    if fresh_login.unwrap_or(false) {
+        state.reset_workspace_lockouts(&user_id);
+        state.lock_all_workspaces();
+    }
     state.audit_info(
         "auth_sync",
         &format!("Supabase session synchronized with tier {tier}"),
