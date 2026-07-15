@@ -580,6 +580,7 @@ pub async fn workspace_reset_vault(
     recovery_key: Option<String>,
     method: String,
     mut secret: String,
+    account_verifier: Option<String>,
 ) -> Result<ScopeStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
@@ -589,12 +590,21 @@ pub async fn workspace_reset_vault(
     }
 
     // Recovery-key path: prove possession of the recovery key before resetting.
+    // The expected verifier comes from the device-local recovery material when
+    // this device has it, falling back to the ACCOUNT recovery registry
+    // (fetched by the frontend) — so the one account recovery key also unlocks
+    // a vault reset on a brand-new device that never stored local material.
     if let Some(ref key) = recovery_key {
-        let material = state.load_vault_recovery(&user_id)?.ok_or_else(|| {
-            QGuardError::InvalidInput(
+        let expected_verifier = match state.load_vault_recovery(&user_id)? {
+            Some(material) => material.verifier.clone(),
+            None => account_verifier.clone().unwrap_or_default(),
+        };
+        if expected_verifier.is_empty() {
+            secret.zeroize();
+            return Err(QGuardError::InvalidInput(
                 "No recovery key is configured for this account.".to_string(),
-            )
-        })?;
+            ));
+        }
         let root = match vault_recovery::decode_recovery_key(key) {
             Ok(root) => root,
             Err(_) => {
@@ -605,7 +615,7 @@ pub async fn workspace_reset_vault(
         let mut root = root;
         let verifier = vault_recovery::derive_verifier(&root)?;
         root.zeroize();
-        if material.verifier.is_empty() || verifier != material.verifier {
+        if verifier != expected_verifier {
             secret.zeroize();
             return Err(QGuardError::Trust(
                 "That recovery key doesn't match this account.".to_string(),

@@ -6,12 +6,16 @@ import type { CallSignalRow } from "@/lib/call-types";
 import { safeInvoke } from "@/lib/tauri";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import {
+  applyContentHints,
   applySenderParams,
   applyTrackConstraints,
-  DEFAULT_CALL_QUALITY,
+  loadPersistedQuality,
   mediaConstraints,
+  persistQuality,
+  pinVideoCodec,
   type CallQuality,
 } from "@/lib/call-quality";
+import { startCallStatsMonitor, type CallStatsSample } from "@/lib/call-stats";
 import { makeFrameTransform, type FrameCryptoOptions } from "@/lib/call-media-transform";
 
 interface CallSetup { hybridCiphertext: unknown; sendKeyB64: string; recvKeyB64: string; safetyNumber: string; }
@@ -93,11 +97,17 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
-  const [quality, setQualityState] = useState<CallQuality>(DEFAULT_CALL_QUALITY);
+  // Quality survives across calls/app restarts (localStorage) so a user who
+  // picked HD (or Low) isn't silently reset to Auto on the next call.
+  const [quality, setQualityState] = useState<CallQuality>(loadPersistedQuality);
+  // Live diagnostics for the in-call overlay: route (direct/relay), encode &
+  // decode resolution/fps/bitrate, RTT, loss, qualityLimitationReason.
+  const [stats, setStats] = useState<CallStatsSample | null>(null);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const qualityRef = useRef<CallQuality>(DEFAULT_CALL_QUALITY);
+  const qualityRef = useRef<CallQuality>(loadPersistedQuality());
+  const statsStopRef = useRef<(() => void) | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const setupRef = useRef<CallSetup | null>(null);
   const routeRef = useRef<CallRoute | null>(null);
@@ -165,6 +175,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   }, []);
 
   const cleanup = useCallback(() => {
+    statsStopRef.current?.();
+    statsStopRef.current = null;
+    setStats(null);
     pcRef.current?.getSenders().forEach((s) => s.track?.stop());
     pcRef.current?.close();
     pcRef.current = null;
@@ -240,6 +253,14 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
           dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber });
           void recordCryptoTelemetry({ userId: args.userId, scope: "call", stage: "call_connected", detail: "Quantum-encrypted call connected", progress: 100, status: "complete", metadata: { call_id: callId } });
         }
+        // Encoder ceilings can be ignored when set pre-ICE; re-assert them on
+        // the established connection so the negotiated path runs at full tier.
+        void applySenderParams(pc, qualityRef.current);
+        // Live quality diagnostics for the whole connected span (idempotent
+        // across reconnect blips — only one monitor per peer connection).
+        if (!statsStopRef.current) {
+          statsStopRef.current = startCallStatsMonitor(pc, setStats);
+        }
         return;
       }
       // A hard, non-recoverable end: tear down immediately.
@@ -277,6 +298,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       stream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio ?? true });
       setCameraEnabled(false);
     }
+    // Steer encoder degradation decisions: camera = "motion", mic = "speech".
+    applyContentHints(stream);
     localStreamRef.current = stream;
     setLocalStream(stream);
     return stream;
@@ -285,6 +308,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const setQuality = useCallback(async (next: CallQuality) => {
     qualityRef.current = next;
     setQualityState(next);
+    persistQuality(next);
     if (pcRef.current) await applySenderParams(pcRef.current, next);
     await applyTrackConstraints(localStream, next);
   }, [localStream]);
@@ -313,6 +337,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const stream = await getMedia();
       const pc = await buildPeerConnection(callId, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      // Deterministic VP8: the E2EE frame crypto's unencrypted-header layout is
+      // VP8-specific, so codec negotiation must never drift (see call-quality.ts).
+      pinVideoCodec(pc);
       attachMediaTransforms(pc, setup);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -340,6 +367,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const stream = await getMedia();
       const pc = await buildPeerConnection(offer.call_id, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      // Same VP8 pinning as the caller side, before the answer is created.
+      pinVideoCodec(pc);
       attachMediaTransforms(pc, setup);
       await pc.setRemoteDescription({ type: "offer", sdp: String((offer.payload as { sdp: string }).sdp) });
       flushPendingCandidates();
@@ -438,5 +467,5 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
 
   useEffect(() => () => cleanup(), [cleanup]);
 
-  return { state, localStream, remoteStream, micEnabled, cameraEnabled, reconnecting, quality, setQuality, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
+  return { state, localStream, remoteStream, micEnabled, cameraEnabled, reconnecting, quality, setQuality, stats, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
 }

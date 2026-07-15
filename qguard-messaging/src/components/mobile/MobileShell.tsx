@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import {
   Activity,
+  CreditCard,
   Gauge,
   Grip,
   KeyRound,
@@ -29,6 +30,7 @@ const iconMap = {
   verification: QrCode,
   audit: Activity,
   quantum: Gauge,
+  subscription: CreditCard,
   settings: Settings,
 };
 

@@ -350,7 +350,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
         ))}
       </div>
 
-      <section className="shell-card grid gap-5 p-5 xl:grid-cols-[320px_1fr]">
+      <section className="shell-card grid grid-cols-[minmax(0,1fr)] gap-5 p-5 xl:grid-cols-[320px_1fr]">
         <div className="flex aspect-square items-center justify-center rounded-full p-3" style={scoreRingStyle}>
           <div className="flex h-full w-full items-center justify-center rounded-full bg-white text-center">
             <div>

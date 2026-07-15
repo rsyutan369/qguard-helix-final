@@ -1,0 +1,297 @@
+Project Directory:
+C:\Users\HP\Music\qguard-helix-final\qguard-messaging\src-tauri
+
+Issue:
+When performing a video call between two users (one running the Android application on the Android Emulator and the other running the Desktop application) on the same laptop, both the video quality and image quality become blurry. Audio quality may also degrade during the call.
+
+Reference Screenshot:
+C:\Users\HP\Music\qguard-helix-final\test_images\Video Call blurred Images2.png
+
+Objective:
+Perform a complete investigation to identify the actual root cause(s) of the degraded video and audio quality, then implement a permanent production-grade solution instead of temporary workarounds.
+
+Requirements:
+
+## 1. Root Cause Analysis
+
+Perform a comprehensive investigation of the entire media pipeline, including but not limited to:
+
+- Camera capture resolution
+- Camera initialization
+- Android camera configuration
+- Desktop webcam configuration
+- WebRTC configuration
+- Video encoding settings
+- Audio encoding settings
+- Codec negotiation
+- Bitrate adaptation
+- Frame rate negotiation
+- Resolution negotiation
+- Network quality estimation
+- Congestion control
+- Adaptive bitrate logic
+- TURN/STUN configuration
+- ICE candidate selection
+- Video rendering pipeline
+- Hardware acceleration
+- GPU rendering
+- Video scaling
+- Image compression
+- Encryption overhead
+- Packet fragmentation
+- Packet loss
+- Jitter
+- Latency
+- Synchronization between audio and video
+
+Determine exactly why the media becomes blurry even when both applications are running locally on the same machine.
+
+Do not guess.
+Provide evidence for every identified root cause.
+
+------------------------------------------------
+
+## 2. Media Quality Improvements
+
+Ensure the application supports production-quality video calls.
+
+Target capabilities:
+
+Video
+
+- Crystal-clear HD video
+- 720p minimum
+- 1080p when supported
+- Stable 30 FPS
+- Adaptive resolution only when absolutely necessary
+- Proper autofocus
+- Proper exposure
+- Proper white balance
+- No unnecessary downscaling
+- No blurry rendering
+- No pixelation
+- No stretched images
+
+Audio
+
+- Crystal-clear voice
+- Echo cancellation
+- Noise suppression
+- Automatic gain control
+- Stable synchronization
+- No robotic audio
+- No clipping
+- No dropouts
+
+------------------------------------------------
+
+## 3. Verify Camera Configuration
+
+Inspect:
+
+Android
+
+- Camera2 API configuration
+- Capture session
+- Preview resolution
+- Capture resolution
+- Frame rate
+- Surface configuration
+
+Desktop
+
+- Camera initialization
+- Resolution selection
+- Frame rate
+- Pixel format
+- Hardware acceleration
+
+Ensure the highest supported resolution is selected instead of a low-resolution fallback.
+
+------------------------------------------------
+
+## 4. Verify WebRTC Configuration
+
+Inspect and optimize:
+
+- SDP negotiation
+- Codec priorities
+- VP8
+- VP9
+- H264
+- AV1 (if supported)
+
+Verify:
+
+- maxBitrate
+- minBitrate
+- maxFramerate
+- degradationPreference
+- contentHint
+- bandwidth estimation
+- RTCP feedback
+- simulcast (if applicable)
+- scalability mode
+- encoder parameters
+
+Ensure media quality is optimized instead of aggressively compressed.
+
+------------------------------------------------
+
+## 5. Rendering Optimization
+
+Verify the rendering pipeline on both Desktop and Android.
+
+Ensure:
+
+- No unnecessary scaling
+- Correct aspect ratio
+- GPU acceleration enabled
+- Efficient rendering
+- No repeated image recompression
+- No rendering bottlenecks
+
+------------------------------------------------
+
+## 6. Network Optimization
+
+Even though both applications are running on the same laptop:
+
+Verify:
+
+- ICE negotiation
+- Local peer routing
+- TURN usage
+- STUN usage
+- Loopback optimization
+- Bandwidth estimation
+- Congestion controller
+
+Ensure the application is not unnecessarily routing traffic through remote TURN servers when a direct local connection is available.
+
+------------------------------------------------
+
+## 7. Performance Profiling
+
+Measure and optimize:
+
+CPU usage
+
+Memory usage
+
+GPU usage
+
+Video encoder latency
+
+Video decoder latency
+
+Render latency
+
+Frame drops
+
+Dropped packets
+
+Packet retransmissions
+
+Average bitrate
+
+Resolution changes
+
+Frame pacing
+
+Audio latency
+
+Video latency
+
+Synchronization delay
+
+------------------------------------------------
+
+## 8. Logging
+
+Add detailed diagnostics for:
+
+Camera initialization
+
+Selected resolution
+
+Selected FPS
+
+Encoder
+
+Decoder
+
+Negotiated codec
+
+Negotiated bitrate
+
+ICE state
+
+TURN/STUN usage
+
+Packet loss
+
+Jitter
+
+RTT
+
+Bandwidth estimation
+
+Frame drops
+
+Audio quality
+
+Video quality
+
+Connection state
+
+These logs should make future troubleshooting straightforward.
+
+------------------------------------------------
+
+## 9. Production Quality Requirements
+
+The final implementation should deliver:
+
+✔ Crystal-clear HD video
+✔ Sharp image quality
+✔ Smooth 30 FPS video
+✔ Clear voice communication
+✔ Low latency
+✔ Stable connection
+✔ No blurry frames
+✔ No excessive compression
+✔ No unnecessary quality degradation
+✔ Stable performance on both Desktop and Android
+
+------------------------------------------------
+
+## 10. Deliverables
+
+1. Identify every root cause.
+
+2. Explain why each issue occurs.
+
+3. Implement permanent fixes.
+
+4. Refactor any code that contributes to poor media quality.
+
+5. Remove obsolete or conflicting media configurations.
+
+6. Optimize the entire media pipeline for production.
+
+7. Validate the solution through end-to-end testing between:
+   - Desktop ↔ Android Emulator
+   - Desktop ↔ Desktop
+   - Android ↔ Android (when available)
+
+8. Produce a final report that includes:
+   - Root causes found
+   - Files modified
+   - Configuration changes
+   - Performance improvements
+   - Before vs. After comparison
+   - Remaining risks (if any)
+
+Goal:
+Deliver enterprise-grade video calling with crystal-clear video and audio quality comparable to modern communication platforms such as Microsoft Teams, Zoom, Google Meet, or Signal, while maintaining the security and cryptographic protections of the QGuard Messaging application.

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod billing;
 pub mod calls;
 pub mod devices;
 pub mod keys;

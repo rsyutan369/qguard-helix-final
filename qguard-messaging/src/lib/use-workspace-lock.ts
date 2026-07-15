@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadAccountRecovery } from "@/lib/account-recovery";
 import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
+import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import { isNativeDialogOpen } from "@/lib/native-dialog-guard";
 
@@ -111,17 +113,26 @@ export function useWorkspaceLock(userId: string | null) {
   // Reset the Quantum Vault lock with a fresh Vault Master Key. `recoveryKey`
   // proves possession of the recovery key; when omitted the caller must have
   // re-authenticated the account password first (destructive "start fresh").
+  // The account recovery registry verifier rides along so the ONE account
+  // recovery key also validates on a device that never stored local recovery
+  // material (fresh install / reinstalled device).
   const resetVault = useCallback(
     async (args: { recoveryKey?: string; method: UnlockMethod; secret: string }) => {
+      let accountVerifier: string | null = null;
+      if (args.recoveryKey && userId) {
+        const account = await loadAccountRecovery(supabase, userId).catch(() => null);
+        if (account && account.mode !== "enterprise") accountVerifier = account.verifier;
+      }
       const result = await safeInvoke<ScopeStatus>("workspace_reset_vault", {
         recoveryKey: args.recoveryKey ?? null,
         method: args.method,
         secret: args.secret,
+        accountVerifier,
       });
       setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), vault: result }));
       return result;
     },
-    [],
+    [userId],
   );
 
   const lock = useCallback(async (scope: WorkspaceScope) => {

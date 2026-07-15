@@ -8,6 +8,7 @@ export type Page =
   | "audit"
   | "quantum"
   | "admin"
+  | "subscription"
   | "settings";
 
 export interface DashboardSnapshot {

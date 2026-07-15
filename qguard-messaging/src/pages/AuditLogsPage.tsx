@@ -528,8 +528,11 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
         )}
 
         <div className="overflow-x-auto">
-          <div className="min-w-[1080px]">
-            <div className="grid grid-cols-[120px_190px_1fr_110px_140px_90px_96px] border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
+          {/* Below lg the 7-column table reflows to a stacked card per event
+              (labeled metadata lines) so a phone shows every field without
+              sideways scrolling; at lg+ it is the column table. */}
+          <div className="lg:min-w-[1080px]">
+            <div className="hidden border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400 lg:grid lg:grid-cols-[120px_190px_1fr_110px_140px_90px_96px]">
               <span>Source</span>
               <span>Stage</span>
               <span>Detail</span>
@@ -542,19 +545,22 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
               <div className="p-6 text-center text-sm text-ink-600">No security events are available for this user.</div>
             )}
             {pageRows.map((event) => (
-              <div key={event.id} className="grid grid-cols-[120px_190px_1fr_110px_140px_90px_96px] border-b border-line px-4 py-3 text-sm">
-                <span>
+              <div key={event.id} className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[120px_190px_1fr_110px_140px_90px_96px] lg:gap-0">
+                <span className="flex items-center justify-between gap-2 lg:block">
                   <span className={`status-pill ${sourceTone(event.source)}`}>{event.source}</span>
+                  <span className="text-xs text-ink-400 lg:hidden">{relativeTime(event.created_at)}</span>
                 </span>
-                <span className="truncate font-semibold text-ink-950">{cleanLabel(event.stage)}</span>
-                <span className="truncate text-ink-600">{event.detail}</span>
-                <span className={event.source === "Realtime" ? "text-cyan-700" : "text-violet-600"}>{event.progress}</span>
+                <span className="font-semibold text-ink-950 lg:truncate">{cleanLabel(event.stage)}</span>
+                <span className="text-ink-600 lg:truncate">{event.detail}</span>
+                <span className={event.source === "Realtime" ? "text-cyan-700" : "text-violet-600"}>
+                  <span className="font-semibold text-ink-400 lg:hidden">Progress: </span>{event.progress}
+                </span>
                 <span className={`flex items-center gap-1 ${integrityTone(event)}`}>
                   <ShieldCheck size={14} />
                   {event.integrity}
                 </span>
-                <span className="text-xs text-ink-400">{relativeTime(event.created_at)}</span>
-                <span className="flex items-center justify-end">
+                <span className="hidden text-xs text-ink-400 lg:block">{relativeTime(event.created_at)}</span>
+                <span className="flex items-center justify-start lg:justify-end">
                   {!auditDeleteTables[event.source] ? (
                     <span className="text-[11px] text-ink-300">Live</span>
                   ) : deletingId === event.id ? (

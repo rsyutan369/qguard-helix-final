@@ -5,10 +5,12 @@ import OnboardingTour from "@/components/onboarding/OnboardingTour";
 import MobileShell from "@/components/mobile/MobileShell";
 import MobileOnboarding, { isMobileOnboardingPending } from "@/components/mobile/MobileOnboarding";
 import { CallProvider } from "@/components/call/CallProvider";
+import { PaywallGate } from "@/components/PaywallGate";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { useSubscription } from "@/lib/use-subscription";
 import { useIsMobile } from "@/lib/use-mobile";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
@@ -31,6 +33,7 @@ const pageImporters = {
   vault: () => import("@/pages/QuantumVaultPage"),
   verification: () => import("@/pages/SecurityVerificationPage"),
   chat: () => import("@/pages/SecureChatPage"),
+  subscription: () => import("@/pages/SubscriptionPage"),
   settings: () => import("@/pages/SettingsPage"),
 };
 
@@ -42,6 +45,7 @@ const QuantumSecurityDashboardPage = lazy(pageImporters.quantum);
 const QuantumVaultPage = lazy(pageImporters.vault);
 const SecurityVerificationPage = lazy(pageImporters.verification);
 const SecureChatPage = lazy(pageImporters.chat);
+const SubscriptionPage = lazy(pageImporters.subscription);
 const SettingsPage = lazy(pageImporters.settings);
 
 const titles: Record<Page, [string, string]> = {
@@ -54,6 +58,7 @@ const titles: Record<Page, [string, string]> = {
   audit: ["Message Audit Logs", "Tamper-evident local events and security export."],
   quantum: ["Quantum Security", "PQC status, HNDL protection, and key rotation history."],
   admin: ["Admin Security Console", "Organization member and device security posture."],
+  subscription: ["Subscription", "Your plan, billing history, and activation across all your devices."],
   settings: ["Settings", "Security modes, alerts, retention, and advanced options."],
 };
 
@@ -76,6 +81,9 @@ function ProtectedMessagingApp() {
   const { data, loading, error, refresh, liveEvents, liveStatus } = useDashboardData(auth.user, auth.session);
   const [page, setPage] = useState<Page>("dashboard");
   const lockState = useWorkspaceLock(auth.user?.id ?? null);
+  // Account-based paywall: billing_subscriptions (realtime) decides whether the
+  // premium app shell mounts at all. Purchases on ANY platform unlock here live.
+  const subscriptionState = useSubscription(auth.user?.id ?? null);
   const [vaultRecoveryEnabled, setVaultRecoveryEnabled] = useState(false);
   const navigate = useCallback((next: Page) => setPage(next), []);
   // Total unread encrypted messages across visible conversations, surfaced as
@@ -87,12 +95,22 @@ function ProtectedMessagingApp() {
     [data.conversations],
   );
 
+  // The Subscription page is a client-side module every account has (it must
+  // stay reachable to manage/cancel/restore) — appended to the DB-driven list.
+  const navModules = useMemo(() => {
+    if (data.modules.length === 0) return data.modules;
+    return [
+      ...data.modules,
+      { module_id: "subscription" as Page, label: "Subscription", icon: "subscription", route: "subscription" as Page, enabled: true, sort_order: 98 },
+    ];
+  }, [data.modules]);
+
   useEffect(() => {
-    if (data.modules.length === 0) return;
-    if (!data.modules.some((module) => module.route === page)) {
-      setPage(data.modules[0].route);
+    if (navModules.length === 0) return;
+    if (!navModules.some((module) => module.route === page)) {
+      setPage(navModules[0].route);
     }
-  }, [data.modules, page]);
+  }, [navModules, page]);
 
   // Idle-time prefetch of route chunks so the first switch to each module is
   // instant. Only downloads/parses chunks — protected modules still don't mount
@@ -158,6 +176,46 @@ function ProtectedMessagingApp() {
         onSignUp={auth.signUp}
         onResendVerification={auth.resendVerification}
         onClearError={auth.clearError}
+      />
+    );
+  }
+
+  // ---- Subscription paywall (Qguard_Wiki/Android_Paywall_Guidelines) ----
+  // Neutral splash while the entitlement check runs, so the app never flashes
+  // unlocked-then-locked (or vice versa) at startup.
+  if (subscriptionState.loading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-canvas">
+        <div className="h-24 w-80 animate-pulse rounded-lg border border-line bg-white" />
+      </div>
+    );
+  }
+  // Without an access-granting subscription the premium shell NEVER mounts —
+  // only Subscription (pricing/purchase/restore) and Settings stay reachable.
+  // The database enforces the same rule independently (migration 030), and the
+  // realtime billing stream swaps this gate out the moment a verified payment
+  // (PayPal or Google Play, on any device) activates the account.
+  if (!subscriptionState.access) {
+    return (
+      <PaywallGate
+        expired={Boolean(subscriptionState.subscription)}
+        onSignOut={auth.signOut}
+        subscriptionPage={
+          <Suspense fallback={<ModuleFallback />}>
+            <SubscriptionPage
+              userId={auth.user.id}
+              email={auth.user.email ?? null}
+              accessToken={auth.session.access_token ?? null}
+              state={subscriptionState}
+              mode="paywall"
+            />
+          </Suspense>
+        }
+        settingsPage={
+          <Suspense fallback={<ModuleFallback />}>
+            <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} />
+          </Suspense>
+        }
       />
     );
   }
@@ -269,6 +327,9 @@ function ProtectedMessagingApp() {
       case "quantum":
         content = <QuantumSecurityDashboardPage userId={auth.user.id} data={data} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
         break;
+      case "subscription":
+        content = <SubscriptionPage userId={auth.user.id} email={auth.user.email ?? null} accessToken={auth.session.access_token ?? null} state={subscriptionState} mode="manage" />;
+        break;
       case "settings":
         content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} />;
         break;
@@ -293,7 +354,7 @@ function ProtectedMessagingApp() {
         <MobileShell
           activePage={page}
           title={title}
-          modules={data.modules}
+          modules={navModules}
           unreadMessages={unreadMessages}
           liveStatus={liveStatus}
           theme={theme}
@@ -314,7 +375,7 @@ function ProtectedMessagingApp() {
     <CallProvider userId={auth.user.id}>
       <UpdateBanner />
       <div className="flex h-screen w-screen overflow-hidden bg-canvas">
-        <Sidebar activePage={page} modules={data.modules} snapshot={data.snapshot} unreadMessages={unreadMessages} onNavigate={navigate} />
+        <Sidebar activePage={page} modules={navModules} snapshot={data.snapshot} unreadMessages={unreadMessages} onNavigate={navigate} />
         <div className="flex min-w-0 flex-1 flex-col">
           <TopBar
             title={title}

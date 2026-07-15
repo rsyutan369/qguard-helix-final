@@ -669,7 +669,7 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
                         <h3 className="truncate text-sm font-bold text-ink-950">{device.label}</h3>
                         {device.trust_state === "ThisDevice" && <span className="status-pill bg-violet-50 text-violet-600">This device</span>}
                       </div>
-                      <div className="mt-1 truncate font-mono text-[11px] text-ink-400">{device.fingerprint}</div>
+                      <div className="mt-1 break-all font-mono text-[11px] text-ink-400 lg:truncate">{device.fingerprint}</div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         <span className={`status-pill ${deviceStatusClass(statusLabel)}`}>{statusLabel}</span>
                         <span className={`status-pill ${trustClass(level)}`}>{level}</span>
@@ -813,7 +813,7 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
                   <div className="text-sm font-bold text-ink-950">{request.requested_device_label}</div>
                   <span className="status-pill bg-amber-50 text-amber-700">{timeUntil(request.expires_at)}</span>
                 </div>
-                <div className="mt-2 truncate font-mono text-[11px] text-ink-500">{request.requested_fingerprint}</div>
+                <div className="mt-2 break-all font-mono text-[11px] text-ink-500">{request.requested_fingerprint}</div>
                 <div className="mt-2 text-xs font-semibold text-ink-600">{suiteLabel(request)}</div>
               </div>
             ))}

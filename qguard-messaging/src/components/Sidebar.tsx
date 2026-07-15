@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   Activity,
+  CreditCard,
   Gauge,
   Info,
   KeyRound,
@@ -25,6 +26,7 @@ const iconMap = {
   verification: QrCode,
   audit: Activity,
   quantum: Gauge,
+  subscription: CreditCard,
   settings: Settings,
 };
 

@@ -40,18 +40,27 @@ async function fetchArrayBuffer(path: string): Promise<ArrayBuffer> {
 export async function verifyRuntimeAssetIntegrity(): Promise<RuntimeAssetIntegrity> {
   try {
     const manifestResponse = await fetch("/security-manifest.json", { cache: "no-store" });
-    if (!manifestResponse.ok) {
+    // The dev server (and some asset protocols) answer unknown paths with the
+    // SPA fallback: HTTP 200 + index.html. Parsing that as JSON used to throw
+    // `Unexpected token '<'` and mark the check FAILED — but "no manifest" is
+    // not tampering. The manifest is generated only by production builds
+    // (vite.config.ts qguardSecurityManifest), so a missing/non-JSON response
+    // is reported as an informational warning instead.
+    const manifestText = manifestResponse.ok ? await manifestResponse.text() : "";
+    if (!manifestResponse.ok || !manifestText.trim().startsWith("{")) {
       return {
         status: "warning",
         verified: false,
         checked_assets: 0,
         failed_assets: [],
         generated_at: null,
-        detail: "Security manifest is not available in this build",
+        detail: import.meta.env.DEV
+          ? "Development build — the signed SHA-256 asset manifest is generated for production builds only"
+          : "Security manifest is not available in this build",
       };
     }
 
-    const manifest = await manifestResponse.json() as SecurityManifest;
+    const manifest = JSON.parse(manifestText) as SecurityManifest;
     const failedAssets: string[] = [];
     for (const asset of manifest.assets) {
       const digest = await sha256Hex(await fetchArrayBuffer(asset.path));

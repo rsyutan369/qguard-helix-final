@@ -544,6 +544,10 @@ pub struct VaultRecoveryStatus {
     pub mode: Option<String>,
     pub recipient_key_id: Option<String>,
     pub configured_at: Option<String>,
+    /// One-way verifier of the local recovery material (see
+    /// `VaultRecoverySetup::verifier`). Lets the frontend backfill the account
+    /// recovery registry for keys configured before the registry existed.
+    pub verifier: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -556,6 +560,11 @@ pub struct VaultRecoverySetup {
     /// the admin to download and store offline).
     pub enterprise_private_key: Option<String>,
     pub enterprise_fingerprint: Option<String>,
+    /// One-way verifier of the recovery material. The frontend publishes this
+    /// to the account recovery registry (messaging_account_recovery) so every
+    /// signed-in device can validate the SAME account recovery key. It is a
+    /// non-invertible commitment — safe to store server-side.
+    pub verifier: String,
 }
 
 #[tauri::command]
@@ -568,12 +577,14 @@ pub fn vault_recovery_status(state: State<'_, AppState>) -> Result<VaultRecovery
             mode: Some(material.recovery_mode().to_string()),
             recipient_key_id: material.recipient_key_id.clone(),
             configured_at: Some(material.configured_at.to_rfc3339()),
+            verifier: Some(material.verifier.clone()),
         },
         None => VaultRecoveryStatus {
             enabled: false,
             mode: None,
             recipient_key_id: None,
             configured_at: None,
+            verifier: None,
         },
     })
 }
@@ -598,12 +609,13 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
             let wrap_key = vault_recovery::derive_wrap_key(&root)?;
             let verifier = vault_recovery::derive_verifier(&root)?;
             root.zeroize();
-            state.save_vault_recovery(&user_id, &PersistedVaultRecovery::personal(wrap_key, verifier))?;
+            state.save_vault_recovery(&user_id, &PersistedVaultRecovery::personal(wrap_key, verifier.clone()))?;
             VaultRecoverySetup {
                 mode: "personal".to_string(),
                 recovery_key: Some(recovery_key),
                 enterprise_private_key: None,
                 enterprise_fingerprint: None,
+                verifier,
             }
         }
         "enterprise" => {
@@ -629,7 +641,8 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
                 mode: "enterprise".to_string(),
                 recovery_key: None,
                 enterprise_private_key: Some(private_key),
-                enterprise_fingerprint: Some(fingerprint),
+                enterprise_fingerprint: Some(fingerprint.clone()),
+                verifier: fingerprint,
             }
         }
         "hybrid" => {
@@ -645,7 +658,7 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
                 &PersistedVaultRecovery {
                     version: 1,
                     wrap_key: [0u8; crate::crypto::symmetric::KEY_SIZE],
-                    verifier,
+                    verifier: verifier.clone(),
                     configured_at: chrono::Utc::now(),
                     mode: Some("hybrid".to_string()),
                     recovery_root: Some(root),
@@ -659,6 +672,7 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
                 recovery_key: Some(recovery_key),
                 enterprise_private_key: Some(private_key),
                 enterprise_fingerprint: Some(fingerprint),
+                verifier,
             }
         }
         other => {
@@ -675,10 +689,18 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
 }
 
 /// Enable an existing personal recovery key on this device.
+///
+/// `account_verifier` is the one-way verifier from the account recovery
+/// registry (messaging_account_recovery), fetched by the frontend over the
+/// authenticated session. When present, the typed key must re-derive it —
+/// this is what makes the recovery key ACCOUNT-scoped: a fresh device rejects
+/// any key that is not the account's registered key instead of silently
+/// accepting anything with a valid checksum.
 #[tauri::command]
 pub fn vault_enable_recovery_with_phrase(
     state: State<'_, AppState>,
     recovery_key: String,
+    account_verifier: Option<String>,
 ) -> Result<VaultRecoveryStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
@@ -686,6 +708,13 @@ pub fn vault_enable_recovery_with_phrase(
     let wrap_key = vault_recovery::derive_wrap_key(&root)?;
     let verifier = vault_recovery::derive_verifier(&root)?;
     root.zeroize();
+    if let Some(expected) = account_verifier.as_deref() {
+        if !expected.is_empty() && expected != verifier {
+            return Err(QGuardError::InvalidInput(
+                "This recovery key does not match the recovery key registered for this account.".to_string(),
+            ));
+        }
+    }
     if let Some(existing) = state.load_vault_recovery(&user_id)? {
         if existing.verifier != verifier {
             return Err(QGuardError::InvalidInput(
@@ -693,7 +722,7 @@ pub fn vault_enable_recovery_with_phrase(
             ));
         }
     }
-    state.save_vault_recovery(&user_id, &PersistedVaultRecovery::personal(wrap_key, verifier))?;
+    state.save_vault_recovery(&user_id, &PersistedVaultRecovery::personal(wrap_key, verifier.clone()))?;
     state.audit_info(
         "vault_recovery_enabled_on_device",
         "Vault recovery key enabled on this device",
@@ -705,6 +734,7 @@ pub fn vault_enable_recovery_with_phrase(
         configured_at: state
             .load_vault_recovery(&user_id)?
             .map(|material| material.configured_at.to_rfc3339()),
+        verifier: Some(verifier),
     })
 }
 

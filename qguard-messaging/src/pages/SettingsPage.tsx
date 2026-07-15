@@ -613,7 +613,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   return (
     <div className="grid max-w-7xl gap-4">
       <section className="profile-hero overflow-hidden border border-white/50 bg-white/75 p-5 shadow-tight backdrop-blur-xl">
-        <div className="grid gap-5 lg:grid-cols-[280px_1fr_300px]">
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[280px_1fr_300px]">
           <div className="flex items-center gap-4">
             <label className="avatar-vortex group relative flex h-28 w-28 shrink-0 cursor-pointer items-center justify-center rounded-full">
               {avatarUrl ? (
@@ -645,9 +645,22 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
             <div className="min-w-0">
               <div className="truncate text-lg font-bold text-ink-950">{displayName || "QGuard User"}</div>
               <div className="mt-1 truncate text-sm text-ink-600">{email}</div>
-              <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-600">
-                <ShieldCheck size={14} />
-                {accountPosture}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-600">
+                  <ShieldCheck size={14} />
+                  {accountPosture}
+                </span>
+                {/* Subscription is tied to the QGuard ACCOUNT (profiles.tier),
+                    so the same plan applies on Desktop, Android, and any
+                    future device — purchased once, unlocked everywhere. */}
+                {profile?.tier && (
+                  <span
+                    className="inline-flex items-center gap-2 rounded-full border border-violet-100 bg-violet-50 px-3 py-1 text-xs font-bold uppercase text-violet-700"
+                    title="Your subscription is account-based and applies on every device you sign in on."
+                  >
+                    {profile.tier} plan · all devices
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -740,7 +753,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
 
       <CallDeviceProtectionCard />
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[1fr_420px]">
         <section className="grid gap-4">
           <form onSubmit={updateProfile} className="shell-card p-5">
             <div className="mb-4 flex items-center gap-2 text-sm font-bold text-ink-950"><UserRound size={18} /> Account Information</div>

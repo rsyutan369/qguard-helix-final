@@ -1812,20 +1812,28 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (!activeConversation) return;
     const readAt = new Date().toISOString();
     const rows = messages
-      .filter((item) => item.status === "decrypted")
       .map((item) => {
-        // Rendering a decrypted message on screen is the read event, so every
-        // peer message is marked read here (this is what clears the unread
-        // bubbles). The one exception: view-once attachments only burn when the
-        // recipient actually opens them (markViewOnceAttachmentOpened), because
-        // first_read_at doubles as the burn trigger for ephemeral messages.
+        // Rendering a message row on screen is the read event, so every peer
+        // row is marked read here (this is what clears the unread bubbles).
+        // That includes "failed" and "sealed" rows: they render as visible
+        // stubs in the thread, and a row that can never decrypt (e.g. sealed
+        // before a device reset) must not hold the unread badge hostage
+        // forever. The one exception: DECRYPTED view-once attachments only
+        // burn when the recipient actually opens them
+        // (markViewOnceAttachmentOpened), because first_read_at doubles as
+        // the burn trigger for ephemeral messages.
         // An already-recorded first_read_at is preserved so re-renders never
         // reset or bump the original read timestamp.
         const existing = existingStates?.get(item.client_message_id);
         const existingReadAt = existing?.first_read_at ?? null;
         const markAsRead = item.sender_user_id !== userId && !(item.view_once && item.attachment);
         const nextReadAt = existingReadAt ?? (markAsRead ? readAt : null);
-        const nextVerification = item.authenticated ? "valid" : "tampered";
+        // Verification is only meaningful for rows that actually decrypted;
+        // failed/sealed stubs keep their prior state instead of being branded
+        // "tampered" by a missing-envelope condition.
+        const nextVerification = item.status === "decrypted"
+          ? (item.authenticated ? "valid" : "tampered")
+          : (existing?.verification_state ?? "pending");
         // Only rows whose persisted state actually CHANGED are written. Writing
         // unchanged rows (just bumping updated_at) fired this client's own
         // messaging_message_user_states realtime subscription, which re-ran the

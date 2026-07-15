@@ -531,8 +531,11 @@ export default function KeyManagementPage({
         )}
 
         <div className="overflow-x-auto">
-          <div className="min-w-[900px]">
-            <div className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
+          {/* Below lg the fixed 4-col table reflows to a stacked card per row
+              (Object as the title, the rest wrapping beneath) so nothing is
+              clipped on a phone; at lg+ it is the column table again. */}
+          <div className="lg:min-w-[900px]">
+            <div className="hidden border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400 lg:grid lg:grid-cols-[180px_1fr_160px_1fr]">
               <span>Object</span>
               <span>Source</span>
               <span>Status</span>
@@ -546,11 +549,11 @@ export default function KeyManagementPage({
             {displayDevices.map((device) => {
               const sendable = hasSendablePrekeys(device);
               return (
-                <div key={device.device_id} className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line px-4 py-3 text-sm">
+                <div key={device.device_id} className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[180px_1fr_160px_1fr] lg:gap-0">
                   <span className="font-semibold text-ink-950">Hybrid Identity</span>
-                  <span className="truncate font-mono text-xs text-violet-600">{device.fingerprint}</span>
+                  <span className="break-all font-mono text-xs text-violet-600 lg:truncate">{device.fingerprint}</span>
                   <span className={statusTone(sendable ? "ready" : device.trust_state)}>{sendable ? "Sendable" : device.trust_state}</span>
-                  <span className="truncate text-ink-600">
+                  <span className="text-ink-600 lg:truncate">
                     {device.pqc_status} - {relativeTime(device.last_seen_at)} - {device.signed_prekey ? "active signed prekey" : "missing signed prekey"}
                   </span>
                 </div>
@@ -563,34 +566,34 @@ export default function KeyManagementPage({
               </div>
             )}
 
-            <div className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line px-4 py-3 text-sm">
+            <div className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[180px_1fr_160px_1fr] lg:gap-0">
               <span className="font-semibold text-ink-950">Private Decryption Key</span>
-              <span className="truncate font-mono text-xs text-violet-600">OS keychain / secure storage</span>
+              <span className="break-all font-mono text-xs text-violet-600 lg:truncate">OS keychain / secure storage</span>
               <span className="text-emerald-600">local only</span>
-              <span className="truncate text-ink-600">Private keys remain device-bound</span>
+              <span className="text-ink-600 lg:truncate">Private keys remain device-bound</span>
             </div>
 
-            <div className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line px-4 py-3 text-sm">
+            <div className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[180px_1fr_160px_1fr] lg:gap-0">
               <span className="font-semibold text-ink-950">Signed Prekeys</span>
               <span className="font-mono text-xs text-violet-600">messaging_signed_prekeys</span>
               <span className={signedPrekeysReady ? "text-emerald-600" : "text-amber-600"}>{signedPrekeyLabel} active</span>
               <span className="text-ink-600">{nextRotation}</span>
             </div>
 
-            <div className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line px-4 py-3 text-sm">
+            <div className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[180px_1fr_160px_1fr] lg:gap-0">
               <span className="font-semibold text-ink-950">One-Time Prekeys</span>
               <span className="font-mono text-xs text-violet-600">messaging_one_time_prekeys</span>
               <span className={oneTimePrekeysReady ? "text-emerald-600" : "text-amber-600"}>{oneTimePrekeyLabel} available</span>
               <span className="text-ink-600">Ready pool target is 8 prekeys per active device.</span>
             </div>
 
-            <div className="grid grid-cols-[180px_1fr_160px_1fr] border-b border-line px-4 py-3 text-sm">
+            <div className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[180px_1fr_160px_1fr] lg:gap-0">
               <span className="font-semibold text-ink-950">Latest Key Event</span>
-              <span className="truncate font-mono text-xs text-violet-600">{latestKeyEvent?.event_hash ?? "No event hash"}</span>
+              <span className="break-all font-mono text-xs text-violet-600 lg:truncate">{latestKeyEvent?.event_hash ?? "No event hash"}</span>
               <span className={latestKeyEvent?.severity === "critical" ? "text-rose-500" : "text-emerald-600"}>
                 {latestKeyEvent?.severity ?? "none"}
               </span>
-              <span className="truncate text-ink-600">{latestKeyEvent?.event_type ?? "No key rotation event has been recorded"}</span>
+              <span className="text-ink-600 lg:truncate">{latestKeyEvent?.event_type ?? "No key rotation event has been recorded"}</span>
             </div>
           </div>
         </div>

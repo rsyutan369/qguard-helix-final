@@ -206,18 +206,22 @@ Testing Requirements
 Verify the following scenarios:
 
 Authentication
+
 Register once.
 Log in on Desktop.
 Log in on Android.
 Both devices authenticate successfully.
+
 Messaging
 Send Desktop → Android.
 Send Android → Desktop.
+
 Messages appear instantly.
 Attachments synchronize correctly.
 Read receipts update on both devices.
 Typing indicators synchronize.
 Offline messages synchronize upon reconnection.
+
 Subscription
 Purchase STARTER on Desktop.
 Verify Android immediately reflects the active subscription.
@@ -246,6 +250,7 @@ Recovery Key architecture.
 Device registration and trust model.
 Security review of the implementation.
 Comprehensive testing results confirming that Desktop and Android function as a single, secure, multi-device ecosystem.
+
 💡 Architecture Recommendation
 
 For QGuard Messaging, I recommend the following approach:

@@ -1,0 +1,719 @@
+Project Name
+
+QGuard Helix Revenue Intelligence Dashboard™
+
+Objective
+
+Design and implement a production-ready Enterprise Revenue Intelligence Platform that serves as the centralized financial, subscription, billing, customer, and business analytics dashboard for the entire QGuard Helix ecosystem.
+
+The dashboard must consolidate revenue, subscriptions, billing, payment providers, forecasting, customer analytics, and financial KPIs into one modern enterprise interface.
+
+This application should eliminate the need to open Stripe, PayPal, Google Play Console, RevenueCat, or other dashboards separately.
+
+===========================================================
+SUPPORTED PRODUCTS
+===========================================================
+
+The Revenue Intelligence Dashboard must support:
+
+• QGuard Helix SaaS Platform
+• QGuard Messaging Desktop
+• QGuard Messaging Android
+• QGuard Messaging iOS (Future)
+• API Marketplace (Future)
+• Enterprise Licensing
+• Managed Security Services (Future)
+
+===========================================================
+SUPPORTED PAYMENT PROVIDERS
+===========================================================
+
+Aggregate financial data from:
+
+• Stripe
+• PayPal
+• Google Play Billing
+• Apple App Store (Future)
+• Bank Transfer
+• Manual Invoice Payments
+• Enterprise Contracts
+
+Normalize all transactions into one unified financial database.
+
+===========================================================
+DASHBOARD HOME
+===========================================================
+
+Create a modern executive dashboard showing:
+
+Total Revenue
+
+Monthly Revenue (MRR)
+
+Annual Recurring Revenue (ARR)
+
+Net Revenue
+
+Gross Revenue
+
+Lifetime Revenue
+
+Today's Revenue
+
+Yesterday's Revenue
+
+This Week
+
+This Month
+
+This Year
+
+Revenue Growth %
+
+Customer Growth %
+
+Average Revenue Per User (ARPU)
+
+Lifetime Value (LTV)
+
+Customer Acquisition Cost (CAC)
+
+Burn Rate
+
+Profit Margin
+
+Cash Flow
+
+Monthly Recurring Revenue Trend
+
+Annual Revenue Trend
+
+Subscription Health Score
+
+===========================================================
+REVENUE ANALYTICS
+===========================================================
+
+Display:
+
+Revenue Timeline
+
+Revenue by Month
+
+Revenue by Quarter
+
+Revenue by Year
+
+Revenue by Product
+
+Revenue by Platform
+
+Revenue by Country
+
+Revenue by Payment Provider
+
+Revenue by Subscription Plan
+
+Revenue by Currency
+
+Revenue by Customer
+
+Revenue by Enterprise
+
+Revenue Forecast
+
+Recurring Revenue
+
+One-Time Revenue
+
+Renewal Revenue
+
+Expansion Revenue
+
+Upgrade Revenue
+
+Downgrade Revenue
+
+Lost Revenue
+
+Recovered Revenue
+
+Refunded Revenue
+
+Chargeback Revenue
+
+===========================================================
+CUSTOMER ANALYTICS
+===========================================================
+
+Display:
+
+Total Customers
+
+Active Customers
+
+Inactive Customers
+
+New Customers
+
+Returning Customers
+
+Trial Users
+
+Converted Users
+
+Cancelled Users
+
+Enterprise Customers
+
+Individual Customers
+
+Average Customer Value
+
+Customer Lifetime Value
+
+Customer Retention
+
+Customer Churn
+
+Customer Satisfaction Score (Future)
+
+===========================================================
+SUBSCRIPTION ANALYTICS
+===========================================================
+
+Track:
+
+STARTER
+
+BASIC
+
+PRO
+
+ELITE
+
+Enterprise
+
+Metrics:
+
+Active Subscribers
+
+Expired
+
+Renewing
+
+Paused
+
+Cancelled
+
+Pending
+
+Payment Failed
+
+Upgrade Rate
+
+Downgrade Rate
+
+Renewal Rate
+
+Trial Conversion Rate
+
+Subscription Growth
+
+Revenue Per Plan
+
+===========================================================
+PAYMENT ANALYTICS
+===========================================================
+
+Aggregate:
+
+Stripe
+
+PayPal
+
+Google Play
+
+Apple
+
+Display:
+
+Successful Payments
+
+Failed Payments
+
+Refunds
+
+Chargebacks
+
+Pending Payments
+
+Average Payment Value
+
+Payment Success Rate
+
+Payment Failure Reasons
+
+Fraud Attempts
+
+Duplicate Payments
+
+===========================================================
+GEOGRAPHIC ANALYTICS
+===========================================================
+
+Interactive world map showing:
+
+Revenue by Country
+
+Revenue by Region
+
+Revenue by City
+
+Subscribers by Country
+
+Growth by Country
+
+Top Paying Countries
+
+Fastest Growing Markets
+
+Currency Distribution
+
+===========================================================
+PRODUCT ANALYTICS
+===========================================================
+
+Show analytics per product:
+
+QGuard Messaging
+
+QGuard Helix SaaS
+
+Quantum Vault
+
+API Services
+
+Marketplace
+
+For each product display:
+
+Revenue
+
+Users
+
+Retention
+
+Subscriptions
+
+Growth
+
+Churn
+
+Usage
+
+===========================================================
+PLATFORM ANALYTICS
+===========================================================
+
+Display usage for:
+
+Android
+
+Desktop
+
+Web
+
+iOS
+
+Linux
+
+macOS
+
+Windows
+
+Metrics:
+
+Daily Active Users
+
+Monthly Active Users
+
+Sessions
+
+Session Duration
+
+Revenue
+
+Subscription Rate
+
+===========================================================
+EXECUTIVE KPI DASHBOARD
+===========================================================
+
+Enterprise KPI cards:
+
+MRR
+
+ARR
+
+LTV
+
+CAC
+
+ARPU
+
+Churn
+
+Net Revenue
+
+Gross Revenue
+
+Retention
+
+Conversion
+
+Profit Margin
+
+Operating Margin
+
+EBITDA Estimate
+
+===========================================================
+FORECASTING ENGINE
+===========================================================
+
+Use AI-assisted forecasting to estimate:
+
+Projected Revenue
+
+Projected MRR
+
+Projected ARR
+
+Growth Rate
+
+Subscriber Growth
+
+Revenue Forecast
+
+Cash Flow Forecast
+
+Customer Forecast
+
+Churn Prediction
+
+Renewal Prediction
+
+Risk Forecast
+
+===========================================================
+REAL-TIME DASHBOARD
+===========================================================
+
+Implement real-time updates using SSE or WebSockets.
+
+Update automatically:
+
+Revenue
+
+Subscriptions
+
+Payments
+
+Refunds
+
+Invoices
+
+Chargebacks
+
+New Customers
+
+Cancellations
+
+Forecast
+
+Alerts
+
+No manual page refresh should be required.
+
+===========================================================
+NOTIFICATION CENTER
+===========================================================
+
+Generate alerts for:
+
+Failed Payment
+
+Payment Success
+
+Subscription Expired
+
+Subscription Renewed
+
+Chargeback
+
+Refund
+
+Revenue Spike
+
+Revenue Drop
+
+High Churn
+
+Suspicious Activity
+
+Fraud Detection
+
+Enterprise Contract Expiration
+
+===========================================================
+REPORT CENTER
+===========================================================
+
+Generate downloadable reports:
+
+Revenue Report
+
+Subscription Report
+
+Executive Report
+
+Growth Report
+
+Forecast Report
+
+Customer Report
+
+Payment Report
+
+Tax Report
+
+Financial Summary
+
+Export formats:
+
+PDF
+
+Excel
+
+CSV
+
+Word
+
+JSON
+
+===========================================================
+AI BUSINESS ADVISOR
+===========================================================
+
+Implement an AI advisor capable of answering:
+
+"Why did revenue decrease?"
+
+"What caused churn this month?"
+
+"Which customers are likely to cancel?"
+
+"What is my fastest-growing subscription plan?"
+
+"What countries generate the highest revenue?"
+
+"Predict next month's revenue."
+
+"How can I increase MRR?"
+
+Generate natural language business insights.
+
+===========================================================
+DATABASE
+===========================================================
+
+Create production-ready tables:
+
+Users
+
+Customers
+
+Subscriptions
+
+Plans
+
+Invoices
+
+Payments
+
+Transactions
+
+Refunds
+
+Chargebacks
+
+Forecasts
+
+Revenue
+
+Analytics
+
+Countries
+
+Currencies
+
+Audit Logs
+
+Notification Events
+
+===========================================================
+BACKEND SERVICES
+===========================================================
+
+Develop services for:
+
+Revenue Service
+
+Billing Service
+
+Analytics Service
+
+Forecast Service
+
+Subscription Service
+
+Customer Service
+
+Payment Service
+
+Reporting Service
+
+Notification Service
+
+Webhook Service
+
+===========================================================
+API INTEGRATIONS
+===========================================================
+
+Integrate with:
+
+Stripe API
+
+PayPal API
+
+Google Play Developer API
+
+Apple App Store API (Future)
+
+Exchange Rate API
+
+Tax Calculation Service (Future)
+
+===========================================================
+SECURITY
+===========================================================
+
+Implement:
+
+RBAC
+
+MFA
+
+Audit Logs
+
+API Authentication
+
+JWT
+
+Rate Limiting
+
+Encryption
+
+Secure Webhooks
+
+Webhook Signature Validation
+
+OWASP Top 10 Compliance
+
+===========================================================
+UI/UX
+===========================================================
+
+Create a premium executive dashboard inspired by:
+
+Stripe Dashboard
+
+Vercel Analytics
+
+Datadog
+
+Grafana
+
+Linear
+
+GitHub Insights
+
+Use:
+
+Dark Mode
+
+Light Mode
+
+Responsive Design
+
+Interactive Charts
+
+Drill-down Analytics
+
+Animated KPI Cards
+
+Real-time Charts
+
+Global Search
+
+Saved Filters
+
+===========================================================
+TECHNOLOGY STACK
+===========================================================
+
+Frontend
+
+Next.js
+
+React
+
+TypeScript
+
+Tailwind CSS
+
+shadcn/ui
+
+Framer Motion
+
+Recharts or Apache ECharts
+
+TanStack Table
+
+Backend
+
+Node.js
+
+Express
+
+Supabase
+
+PostgreSQL
+
+Redis
+
+Server-Sent Events (SSE)
+
+REST API
+
+Background Jobs
+
+===========================================================
+FINAL GOAL
+===========================================================
+
+Deliver a production-ready Enterprise Revenue Intelligence Dashboard that provides a complete, real-time view of revenue, subscriptions, customers, billing, forecasting, and business health across the entire QGuard Helix ecosystem.
+
+The dashboard should be capable of replacing daily use of multiple external analytics dashboards by serving as a centralized executive command center, while remaining compatible with Stripe, PayPal, Google Play Billing, and future payment providers.

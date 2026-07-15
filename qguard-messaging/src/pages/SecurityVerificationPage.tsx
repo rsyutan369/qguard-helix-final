@@ -559,7 +559,7 @@ export default function SecurityVerificationPage({
           <div className={`mt-1 text-sm font-semibold ${textTone(selectedDeviceVerifiable ? "ready" : "missing")}`}>
             {selectedDevice ? selectedDevice.trust_state : "No device"}
           </div>
-          <div className="mt-1 truncate text-xs text-ink-500">{selectedDevice?.fingerprint ?? "No fingerprint"}</div>
+          <div className="mt-1 break-all text-xs text-ink-500">{selectedDevice?.fingerprint ?? "No fingerprint"}</div>
         </section>
         <section className="shell-card p-4">
           <Radio className={liveStatus.state === "live" ? "text-emerald-600" : "text-amber-600"} size={24} />
@@ -569,7 +569,11 @@ export default function SecurityVerificationPage({
         </section>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+      {/* Base grid-cols-[minmax(0,1fr)] caps the single mobile column at
+          container width; without it the auto track inflates to the max-content
+          width of the text-xl monospace safety box and pushes the panel off a
+          phone screen. The xl two-column layout overrides it on desktop. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
         <section className="shell-card p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -604,14 +608,14 @@ export default function SecurityVerificationPage({
             ))}
           </select>
 
-          <div className="mt-5 rounded-lg border border-line bg-canvas p-5 font-mono text-xl font-bold leading-relaxed text-ink-950">
+          <div className="mt-5 break-words rounded-lg border border-line bg-canvas p-5 font-mono text-xl font-bold leading-relaxed text-ink-950">
             {safetyDisplay}
           </div>
           {selectedDevice && (
             <div className="mt-3 grid gap-2 md:grid-cols-3">
               <div className="rounded-lg border border-line bg-canvas px-3 py-2">
                 <div className="text-[11px] font-bold uppercase text-ink-400">Fingerprint</div>
-                <div className="mt-1 truncate font-mono text-xs text-ink-700">{selectedDevice.fingerprint}</div>
+                <div className="mt-1 break-all font-mono text-xs text-ink-700">{selectedDevice.fingerprint}</div>
               </div>
               <div className="rounded-lg border border-line bg-canvas px-3 py-2">
                 <div className="text-[11px] font-bold uppercase text-ink-400">Suite</div>
@@ -773,8 +777,11 @@ export default function SecurityVerificationPage({
           )}
         </div>
         <div className="overflow-x-auto">
-          <div className="min-w-[840px]">
-            <div className="grid grid-cols-[180px_1fr_140px_180px] border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">
+          {/* Below lg each row reflows to a stacked card (device label as the
+              title, fingerprint/status/suite beneath) so phone widths never
+              clip the matrix; at lg+ it is the column table. */}
+          <div className="lg:min-w-[840px]">
+            <div className="hidden border-b border-line bg-canvas px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400 lg:grid lg:grid-cols-[180px_1fr_140px_180px]">
               <span>Device</span>
               <span>Fingerprint</span>
               <span>Status</span>
@@ -786,11 +793,11 @@ export default function SecurityVerificationPage({
             {ownDevices.slice(0, 8).map((device) => {
               const verifiable = hasVerifiableMaterial(device);
               return (
-                <div key={device.device_id} className="grid grid-cols-[180px_1fr_140px_180px] border-b border-line px-4 py-3 text-sm">
-                  <span className="truncate font-semibold text-ink-950">{device.label}</span>
-                  <span className="truncate font-mono text-xs text-violet-600">{device.fingerprint}</span>
+                <div key={device.device_id} className="flex flex-col gap-1.5 border-b border-line px-4 py-3 text-sm lg:grid lg:grid-cols-[180px_1fr_140px_180px] lg:gap-0">
+                  <span className="font-semibold text-ink-950 lg:truncate">{device.label}</span>
+                  <span className="break-all font-mono text-xs text-violet-600 lg:truncate">{device.fingerprint}</span>
                   <span className={textTone(verifiable ? "ready" : device.trust_state)}>{verifiable ? "Verifiable" : device.trust_state}</span>
-                  <span className="truncate text-ink-600">{formatSuite(device)}</span>
+                  <span className="text-ink-600 lg:truncate">{formatSuite(device)}</span>
                 </div>
               );
             })}

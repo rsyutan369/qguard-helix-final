@@ -1,0 +1,376 @@
+Project Directory:
+C:\Users\HP\Music\qguard-helix-final\qguard-messaging\src-tauri
+
+Objective
+
+Implement a complete production-ready subscription paywall for the QGuard Messaging application that works seamlessly across both Android and Desktop platforms using a single user account.
+
+The subscription system must synchronize in real time so that a user's subscription status is automatically recognized regardless of which platform they use.
+
+===========================================================
+USER FLOW
+===========================================================
+
+New User
+
+1. Install QGuard Messaging.
+2. Register a new account.
+3. Verify email (if enabled).
+4. Login.
+5. Check subscription status.
+6. If no active subscription exists:
+   - Redirect the user to the Subscription page.
+   - Prevent access to all messaging features.
+   - Allow only the Pricing, Profile, and Subscription pages.
+7. The user must purchase the STARTER Plan using either:
+   - Google Play Billing (Android)
+   - PayPal
+8. After successful payment:
+   - Verify the payment on the backend.
+   - Create or update the user's subscription.
+   - Activate the STARTER plan.
+   - Unlock the application automatically.
+9. Redirect the user to the main dashboard.
+
+===========================================================
+EXISTING USER FLOW
+===========================================================
+
+When an existing subscriber logs in:
+
+1. Authenticate user.
+2. Retrieve subscription status from the backend.
+3. If STARTER subscription is Active:
+   - Skip the paywall.
+   - Grant full access immediately.
+4. If Expired:
+   - Redirect to Subscription page.
+5. If Cancelled:
+   - Redirect to Subscription page.
+6. If Payment Failed:
+   - Redirect to Subscription page.
+7. If Trial Expired:
+   - Redirect to Subscription page.
+
+===========================================================
+CROSS-PLATFORM SUBSCRIPTION SYNCHRONIZATION
+===========================================================
+
+A subscription belongs to the user's account, NOT to the device.
+
+Example:
+
+Android Purchase
+
+↓
+
+User Account
+
+↓
+
+Backend Database
+
+↓
+
+Subscription Active
+
+↓
+
+Desktop Login
+
+↓
+
+Desktop immediately recognizes:
+
+✓ Active STARTER Plan
+✓ Remaining subscription period
+✓ Subscription expiration
+✓ Subscription ID
+✓ Customer ID
+
+The Desktop application must NOT ask the user to purchase again if their account already has an active subscription.
+
+Likewise:
+
+Desktop Purchase
+
+↓
+
+Backend
+
+↓
+
+Android Login
+
+↓
+
+Automatically unlock Android application.
+
+===========================================================
+PAYMENT PROVIDERS
+===========================================================
+
+Android
+
+• Google Play Billing
+• Verify purchases using Google Play Developer API
+
+Desktop
+
+• PayPal
+• Existing PayPal integration
+• Verify payment server-side before activating the subscription
+
+Never trust client-side payment confirmation.
+
+===========================================================
+BACKEND REQUIREMENTS
+===========================================================
+
+Implement secure backend subscription management.
+
+Create or verify:
+
+• Subscription Service
+• Payment Verification Service
+• Subscription Middleware
+• Billing API
+• Webhook Handlers
+• Purchase Validation
+• Subscription Synchronization
+
+Backend responsibilities include:
+
+• Validate payments
+• Activate subscriptions
+• Renew subscriptions
+• Cancel subscriptions
+• Expire subscriptions
+• Restore purchases
+• Track payment history
+• Record invoices
+• Update subscription status
+• Synchronize across all user devices
+
+===========================================================
+DATABASE
+===========================================================
+
+Ensure the database includes tables or collections for:
+
+Users
+
+Subscriptions
+
+Plans
+
+Payments
+
+Invoices
+
+Transactions
+
+Purchase History
+
+Subscription Events
+
+Audit Logs
+
+Each subscription should include:
+
+User ID
+
+Customer ID
+
+Subscription ID
+
+Plan
+
+Provider
+
+Status
+
+Purchase Date
+
+Renewal Date
+
+Expiration Date
+
+Last Payment
+
+Payment Provider
+
+Transaction ID
+
+Receipt
+
+Created At
+
+Updated At
+
+===========================================================
+REAL-TIME SYNCHRONIZATION
+===========================================================
+
+Ensure subscription status updates in real time.
+
+Use Server-Sent Events (SSE), WebSockets, or another reliable real-time mechanism to notify all active sessions whenever a subscription changes.
+
+Events include:
+
+Subscription Activated
+
+Subscription Renewed
+
+Subscription Cancelled
+
+Subscription Expired
+
+Payment Failed
+
+Payment Refunded
+
+Plan Upgraded
+
+Plan Downgraded
+
+When any event occurs:
+
+• Desktop updates immediately.
+• Android updates immediately.
+• No manual refresh required.
+
+===========================================================
+APPLICATION ACCESS CONTROL
+===========================================================
+
+Without STARTER subscription:
+
+Allow access only to:
+
+• Login
+• Register
+• Forgot Password
+• Pricing
+• Subscription
+• Profile
+• Settings
+
+Restrict access to:
+
+• Secure Chat
+• Quantum Vault
+• Voice Calling
+• Video Calling
+• File Sharing
+• Group Chat
+• Contacts
+• Dashboard
+• All Premium Features
+
+If the subscription expires while the user is logged in:
+
+• Lock premium modules immediately.
+• Display a clear subscription expiration message.
+• Redirect the user to the Subscription page.
+
+===========================================================
+RESTORE PURCHASES
+===========================================================
+
+Support restoring subscriptions.
+
+Android
+
+• Restore Google Play purchases.
+
+Desktop
+
+• Restore PayPal subscription.
+
+If a user reinstalls the application or changes devices:
+
+Login
+
+↓
+
+Restore Subscription
+
+↓
+
+Verify with backend
+
+↓
+
+Unlock application automatically.
+
+===========================================================
+SECURITY REQUIREMENTS
+===========================================================
+
+Implement enterprise-grade security.
+
+• Never trust client-side purchase validation.
+• Verify all purchases server-side.
+• Validate Google Play purchase tokens.
+• Validate PayPal subscription status via API.
+• Prevent subscription spoofing.
+• Prevent replay attacks.
+• Prevent duplicate purchases.
+• Prevent unauthorized unlocks.
+• Enforce JWT authentication and authorization.
+• Log all billing and subscription events.
+• Encrypt sensitive billing information.
+• Ensure multi-tenant isolation if applicable.
+
+===========================================================
+UI REQUIREMENTS
+===========================================================
+
+Design a premium subscription experience.
+
+Include:
+
+• Pricing page
+• Subscription status card
+• Current plan
+• Renewal date
+• Payment history
+• Billing history
+• Manage subscription
+• Restore purchases
+• Upgrade plan
+• Cancel subscription
+
+===========================================================
+TESTING REQUIREMENTS
+===========================================================
+
+Perform comprehensive end-to-end testing for:
+
+✓ New Android user purchase
+✓ Existing Android subscriber
+✓ Desktop login after Android purchase
+✓ Android login after Desktop purchase
+✓ Subscription renewal
+✓ Subscription expiration
+✓ Subscription cancellation
+✓ Failed payment
+✓ Payment recovery
+✓ Restore purchases
+✓ Multi-device login
+✓ Real-time synchronization
+✓ Backend payment verification
+✓ Unauthorized access attempts
+
+===========================================================
+DELIVERABLES
+===========================================================
+
+1. Complete subscription paywall implementation.
+2. Cross-platform subscription synchronization.
+3. Secure backend payment verification.
+4. Real-time subscription updates.
+5. Properly connected frontend, backend, database, APIs, hooks, and SSE/WebSocket events.
+6. Clean, maintainable, production-ready code following enterprise best practices.
+7. A summary of all modified files, database schema changes, APIs, event flows, and testing results.

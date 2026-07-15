@@ -31,6 +31,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { Channel } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@/lib/tauri-dialog";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
+import { loadAccountRecovery, publishAccountRecovery, type AccountRecoveryRecord } from "@/lib/account-recovery";
+import { supabase } from "@/lib/supabase";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
 import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, overallPercent } from "@/lib/vault-progress";
 
@@ -285,7 +287,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   const [localVaultResult, setLocalVaultResult] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
 
-  const [recoveryStatus, setRecoveryStatus] = useState<{ enabled: boolean; mode: string | null; recipientKeyId: string | null; configuredAt: string | null } | null>(null);
+  const [recoveryStatus, setRecoveryStatus] = useState<{ enabled: boolean; mode: string | null; recipientKeyId: string | null; configuredAt: string | null; verifier?: string | null } | null>(null);
+  // Account-scoped recovery registry row (one recovery key per ACCOUNT, valid
+  // on every trusted device). null = the account has no registered key yet.
+  const [accountRecovery, setAccountRecovery] = useState<AccountRecoveryRecord | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState<"setup" | "enable" | "decrypt-file" | "decrypt-folder" | "rewrap" | null>(null);
   const [recoveryMode, setRecoveryMode] = useState<"personal" | "enterprise" | "hybrid">("personal");
   const [recoveryKeyInput, setRecoveryKeyInput] = useState("");
@@ -688,13 +693,32 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   }, [allExplorerNodes, selectedExplorerNodeId]);
 
   const loadRecoveryStatus = useCallback(async () => {
-    const result = await safeInvoke<{ enabled: boolean; mode: string | null; recipientKeyId: string | null; configuredAt: string | null }>(
+    const result = await safeInvoke<{ enabled: boolean; mode: string | null; recipientKeyId: string | null; configuredAt: string | null; verifier?: string | null }>(
       "vault_recovery_status",
       undefined,
-      { enabled: false, mode: null, recipientKeyId: null, configuredAt: null },
+      { enabled: false, mode: null, recipientKeyId: null, configuredAt: null, verifier: null },
     );
     setRecoveryStatus(result);
-  }, []);
+
+    // Account-scoped registry: what the WHOLE account has configured (any
+    // device). Backfill it when this device has a key that predates the
+    // registry, so every other device can validate the same account key.
+    try {
+      let account = await loadAccountRecovery(supabase, userId);
+      if (!account && result.enabled && result.verifier && result.mode) {
+        const published = await publishAccountRecovery(supabase, userId, {
+          mode: result.mode,
+          verifier: result.verifier,
+          recipientKeyId: result.recipientKeyId,
+        });
+        if (published.ok) account = await loadAccountRecovery(supabase, userId);
+      }
+      setAccountRecovery(account);
+    } catch {
+      // Registry is additive: without it the device-local flow still works.
+      setAccountRecovery(null);
+    }
+  }, [userId]);
 
   useEffect(() => {
     void loadRecoveryStatus();
@@ -1000,7 +1024,17 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     setRecoveryBusy("setup");
     setRecoveryNotice(null);
     try {
-      const result = await safeInvoke<{ mode: string; recoveryKey: string | null; enterprisePrivateKey: string | null; enterpriseFingerprint: string | null }>(
+      // One recovery key per ACCOUNT: if any device already registered one,
+      // this device must enable that existing key, not mint a second one.
+      const existingAccount = await loadAccountRecovery(supabase, userId).catch(() => accountRecovery);
+      if (existingAccount) {
+        setAccountRecovery(existingAccount);
+        setRecoveryNotice(
+          `This account already has a ${existingAccount.mode} recovery key (configured ${new Date(existingAccount.configuredAt).toLocaleDateString()}). Enter that key below to enable it on this device — one recovery key protects the vaults on all your devices.`,
+        );
+        return;
+      }
+      const result = await safeInvoke<{ mode: string; recoveryKey: string | null; enterprisePrivateKey: string | null; enterpriseFingerprint: string | null; verifier: string }>(
         "vault_setup_recovery",
         { mode: recoveryMode },
       );
@@ -1008,6 +1042,19 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       setGeneratedEnterpriseKey(result.enterprisePrivateKey ?? null);
       setRecoverySaved(false);
       appendLog("success", `Quantum-safe vault recovery configured (${result.mode}). Save the key material offline now.`);
+      // Register the one-way verifier account-wide so every signed-in device
+      // recognizes and validates this same recovery key.
+      const published = await publishAccountRecovery(supabase, userId, {
+        mode: result.mode,
+        verifier: result.verifier,
+        recipientKeyId: result.enterpriseFingerprint,
+      });
+      if (published.notice) {
+        setRecoveryNotice(published.notice);
+        appendLog("error", published.notice);
+      } else {
+        appendLog("success", "Recovery key registered account-wide — the same key now protects every device you sign in on.");
+      }
       try {
         window.localStorage.setItem("qguard.vault.recovery.configured", "true");
       } catch {
@@ -1033,7 +1080,20 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     setRecoveryBusy("enable");
     setRecoveryNotice(null);
     try {
-      await safeInvoke("vault_enable_recovery_with_phrase", { recoveryKey: key });
+      // Validate the typed key against the ACCOUNT registry (when available):
+      // a fresh device must only accept the account's registered recovery key.
+      // Enterprise-mode registries store a KEM-key fingerprint, not a personal
+      // key verifier, so the check only applies to personal/hybrid.
+      const account = await loadAccountRecovery(supabase, userId).catch(() => accountRecovery);
+      const accountVerifier = account && account.mode !== "enterprise" ? account.verifier : null;
+      const status = await safeInvoke<{ enabled: boolean; mode: string | null; verifier?: string | null }>(
+        "vault_enable_recovery_with_phrase",
+        { recoveryKey: key, accountVerifier },
+      );
+      // A key that predates the account registry backfills it on first enable.
+      if (!account && status.verifier && status.mode) {
+        await publishAccountRecovery(supabase, userId, { mode: status.mode, verifier: status.verifier });
+      }
       setRecoveryKeyInput("");
       setRecoveryNotice("Recovery key enabled on this device. New vault files are protected by it.");
       appendLog("success", "Recovery key enabled on this device.");
@@ -1537,6 +1597,13 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
               <p className="mt-2 text-[11px] text-ink-500">
                 Mode: <span className="font-semibold capitalize text-ink-700">{recoveryStatus.mode ?? "personal"}</span>
                 {recoveryStatus.configuredAt ? ` · ${new Date(recoveryStatus.configuredAt).toLocaleDateString()}` : ""}
+              </p>
+            )}
+            {accountRecovery && (
+              <p className="mt-1 break-words text-[11px] text-ink-500">
+                <span className="font-semibold text-emerald-600">Account-wide:</span> one {accountRecovery.mode} recovery
+                key protects every device on this account
+                {!recoveryStatus?.enabled && " — enter it here to enable it on this device"}.
               </p>
             )}
             <button

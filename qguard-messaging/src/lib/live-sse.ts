@@ -50,6 +50,7 @@ const LIVE_EVENT_LABELS: Record<string, string> = {
   messaging_security_events: "Security check completed",
   messaging_crypto_telemetry: "Encryption activity recorded",
   messaging_org_members: "Organization membership updated",
+  messaging_account_recovery: "Account recovery key updated",
   qguard_profile_audit_events: "Account activity recorded",
 };
 
@@ -140,6 +141,7 @@ function tableSpecs(userId: string): LiveTableSpec[] {
     { table: "messaging_security_events", filter: `user_id=eq.${userId}` },
     { table: "messaging_crypto_telemetry", filter: `user_id=eq.${userId}` },
     { table: "messaging_org_members", filter: `user_id=eq.${userId}` },
+    { table: "messaging_account_recovery", filter: `user_id=eq.${userId}` },
     { table: "qguard_profile_audit_events", filter: `user_id=eq.${userId}` },
   ];
 }

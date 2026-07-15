@@ -21,6 +21,7 @@ import authRoutes from './auth'
 import profileRoutes from './profile'
 import billingRoutes from './billing'
 import paypalRoutes from './paypal'
+import playBillingRoutes from './play-billing'
 import adminRoutes from './admin'
 import scannerRoutes from './scanner'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
@@ -782,6 +783,7 @@ export function createApiServer() {
   app.use('/api/v1/profile', profileRoutes)
   app.use('/api/v1/billing', billingRoutes)
   app.use('/api/v1/paypal', paypalRoutes)
+  app.use('/api/v1/play-billing', playBillingRoutes)
   app.use('/api/v1/admin', adminRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)

@@ -1,15 +1,84 @@
 import { useEffect, useRef, useState } from "react";
-import { BadgeCheck, Mic, MicOff, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { Activity, BadgeCheck, Check, Copy, Mic, MicOff, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
 import type { CallState } from "@/lib/call-state";
 import { qualityLabel, type CallQuality } from "@/lib/call-quality";
+import type { CallStatsSample } from "@/lib/call-stats";
 import { UserAvatar } from "@/components/UserAvatar";
 
 const QUALITY_OPTIONS: CallQuality[] = ["low", "auto", "hd"];
+
+const fmtRes = (w: number | null, h: number | null, fps: number | null) =>
+  w && h ? `${w}×${h}${fps ? `@${Math.round(fps)}` : ""}` : "—";
+const fmtKbps = (bps: number | null) => (bps === null ? "—" : `${Math.max(1, Math.round(bps / 1000))} kbps`);
+
+/**
+ * Live connection diagnostics. The chip always shows the essentials (route +
+ * received resolution); tapping it opens the full panel — encode/decode
+ * resolution, fps, bitrates, RTT, loss and the encoder's limitation reason —
+ * so a degraded call names its own cause instead of just looking blurry.
+ */
+function CallStatsPanel({ stats }: { stats: CallStatsSample }) {
+  const [open, setOpen] = useState(false);
+  const limited = stats.qualityLimitationReason && stats.qualityLimitationReason !== "none";
+  const relayed = stats.route === "relay";
+  const attention = Boolean(limited) || relayed;
+  return (
+    <div className="absolute bottom-4 left-4 z-10 text-left">
+      {open && (
+        <div className="mb-2 w-64 rounded-xl border border-white/15 bg-ink-950/90 p-3 text-[11px] leading-relaxed text-white/85 shadow-soft backdrop-blur">
+          <div className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-white/50">
+            <span>Connection diagnostics</span>
+            <button type="button" onClick={() => setOpen(false)} className="text-white/50 hover:text-white">✕</button>
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+            <span className="text-white/50">Route</span>
+            <span className={relayed ? "font-semibold text-amber-300" : "text-emerald-300"}>
+              {stats.route === "relay" ? "Relay (TURN)" : stats.route === "direct" ? "Direct" : "Negotiating…"}
+            </span>
+            <span className="text-white/50">Receiving</span><span>{fmtRes(stats.inWidth, stats.inHeight, stats.inFps)}</span>
+            <span className="text-white/50">Sending</span><span>{fmtRes(stats.outWidth, stats.outHeight, stats.outFps)}</span>
+            <span className="text-white/50">Bitrate ↓ / ↑</span><span>{fmtKbps(stats.inBitrate)} / {fmtKbps(stats.outBitrate)}</span>
+            <span className="text-white/50">Latency (RTT)</span><span>{stats.rttMs === null ? "—" : `${stats.rttMs} ms`}</span>
+            <span className="text-white/50">Jitter</span><span>{stats.inJitterMs === null ? "—" : `${stats.inJitterMs} ms`}</span>
+            <span className="text-white/50">Packets lost</span><span>{stats.inPacketsLost ?? "—"}</span>
+            <span className="text-white/50">Codec</span><span>{stats.videoCodec?.replace("video/", "") ?? "—"}</span>
+          </div>
+          {limited && (
+            <div className="mt-2 rounded-lg bg-amber-400/10 px-2 py-1 font-semibold text-amber-300">
+              {stats.qualityLimitationReason === "cpu"
+                ? "Quality limited by CPU load on this device"
+                : stats.qualityLimitationReason === "bandwidth"
+                  ? "Quality limited by network bandwidth"
+                  : `Quality limited (${stats.qualityLimitationReason})`}
+            </div>
+          )}
+          {relayed && (
+            <div className="mt-1 rounded-lg bg-amber-400/10 px-2 py-1 text-amber-200/90">
+              Media is routed via a relay server (still end-to-end encrypted); quality may be reduced.
+            </div>
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Connection diagnostics"
+        className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold backdrop-blur transition ${attention ? "bg-amber-400/15 text-amber-300" : "bg-white/10 text-white/70 hover:text-white"}`}
+      >
+        <Activity size={11} />
+        {fmtRes(stats.inWidth, stats.inHeight, stats.inFps)}
+        {relayed && <span>· relay</span>}
+        {limited && <span>· limited</span>}
+      </button>
+    </div>
+  );
+}
 
 export function InCallOverlay(props: {
   state: CallState; localStream: MediaStream | null; remoteStream: MediaStream | null;
   micEnabled: boolean; cameraEnabled: boolean; reconnecting?: boolean; peerName: string; peerUserId: string | null;
   quality: CallQuality; onSetQuality: (quality: CallQuality) => void;
+  stats?: CallStatsSample | null;
   onHangup: () => void; onToggleMic: () => void; onToggleCamera: () => void;
 }) {
   const localRef = useRef<HTMLVideoElement>(null);
@@ -17,10 +86,25 @@ export function InCallOverlay(props: {
   const [showSas, setShowSas] = useState(false);
   const [sasAcknowledged, setSasAcknowledged] = useState(false);
   const [typedSas, setTypedSas] = useState("");
+  const [sasCopied, setSasCopied] = useState(false);
   useEffect(() => { if (localRef.current) localRef.current.srcObject = props.localStream; }, [props.localStream]);
   useEffect(() => { if (remoteRef.current) remoteRef.current.srcObject = props.remoteStream; }, [props.remoteStream]);
   // Re-prompt verification for each new call (each call derives a fresh number).
-  useEffect(() => { setSasAcknowledged(false); setTypedSas(""); }, [props.state.safetyNumber]);
+  useEffect(() => { setSasAcknowledged(false); setTypedSas(""); setSasCopied(false); }, [props.state.safetyNumber]);
+
+  // Copy the safety number so users can paste it to the peer instead of
+  // reading it aloud. The peer pastes it into their typed-confirmation field.
+  const copySas = () => {
+    const value = props.state.safetyNumber;
+    if (!value) return;
+    navigator.clipboard.writeText(value).then(
+      () => {
+        setSasCopied(true);
+        window.setTimeout(() => setSasCopied(false), 2000);
+      },
+      () => undefined,
+    );
+  };
 
   // Auto-reveal the safety number the moment media connects, and keep it up until
   // the user confirms it matches — so MITM verification isn't an easily-missed
@@ -109,7 +193,7 @@ export function InCallOverlay(props: {
             </div>
             <div className="mt-2 font-mono text-xl font-bold tracking-[0.15em] text-ink-950">{props.state.safetyNumber}</div>
             <p className="mt-2 text-[11px] leading-relaxed text-ink-600">
-              Confirm this matches {props.peerName}'s screen — read it to each other aloud, or type the number they read to you below. It must match exactly.
+              Confirm this matches {props.peerName}'s screen — read it to each other aloud, or copy yours and paste the number they send you below. It must match exactly.
             </p>
             {autoReveal ? (
               <>
@@ -132,6 +216,15 @@ export function InCallOverlay(props: {
                 <div className="mt-3 flex items-center justify-center gap-2">
                   <button
                     type="button"
+                    onClick={copySas}
+                    className="flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:bg-canvas"
+                    title="Copy the safety number to paste to your peer"
+                  >
+                    {sasCopied ? <Check className="text-emerald-600" size={13} /> : <Copy size={13} />}
+                    {sasCopied ? "Copied" : "Copy"}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => { setSasAcknowledged(true); setShowSas(false); }}
                     className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
                   >
@@ -141,6 +234,15 @@ export function InCallOverlay(props: {
               </>
             ) : (
               <div className="mt-3 flex items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={copySas}
+                  className="flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:bg-canvas"
+                  title="Copy the safety number to paste to your peer"
+                >
+                  {sasCopied ? <Check className="text-emerald-600" size={13} /> : <Copy size={13} />}
+                  {sasCopied ? "Copied" : "Copy"}
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowSas(false)}
@@ -155,6 +257,7 @@ export function InCallOverlay(props: {
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-center text-[11px] text-white/60">
           End-to-end encrypted. The server and network cannot see this call; only the person you called can see what you share.
         </div>
+        {props.stats && props.state.phase === "connected" && <CallStatsPanel stats={props.stats} />}
       </div>
       <div className="flex items-center justify-center gap-4 py-5">
         <button type="button" onClick={props.onToggleMic} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.micEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>

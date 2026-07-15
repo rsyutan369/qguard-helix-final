@@ -1,3 +1,107 @@
+# QGuard Messaging paywall — Android + Desktop, account-based (2026-07-15)
+
+Spec: Qguard_Wiki/Android_Paywall_Guidelines. STARTER (or higher) unlocks the
+messaging app; subscription belongs to the ACCOUNT (billing_subscriptions in
+Supabase = single source of truth, already realtime-published + RLS-scoped).
+
+## Discovered architecture (reuse, don't duplicate)
+- billing_subscriptions / billing_invoices / billing_notifications /
+  billing_audit_events + paypal_webhook_events already exist (supabase/*.sql).
+- PayPal backend complete at api.qguard.dev: /api/v1/paypal/subscribe (Bearer),
+  verified webhook w/ idempotency+retry, /api/v1/billing/subscription/actions
+  (upgrade/cancel/reactivate...). Messaging CSP already allows api.qguard.dev.
+- Access statuses: active|trial|pending_renewal (src/lib/subscription-access.ts).
+- Messaging app: no router — Page union + data.modules drive Sidebar/MobileShell.
+- Android JNI pattern proven in src-tauri/src/security/keystore.rs.
+
+## Plan
+- [x] DB: supabase/play-billing-migration.sql — play_webhook_events ledger,
+      provider notes. qguard-messaging migration 030 — qguard_has_messaging_access()
+      + RESTRICTIVE INSERT policies on messaging_message_envelopes /
+      messaging_conversations / messaging_call_signals (server-side anti-spoof:
+      client can't send/call without an active plan even with a hacked UI).
+- [x] Backend: src/api-server/play-billing.ts — GET /config, POST /verify
+      (Google Play Developer API subscriptionsv2, service-account JWT, account
+      binding via obfuscatedExternalAccountId, token-reuse rejection, acknowledge,
+      upsert billing_subscriptions provider=google_play + invoices + audit),
+      POST /rtdn (Pub/Sub push, secret token, RENEWED/CANCELED/EXPIRED/ON_HOLD/
+      GRACE/REVOKED handling). Mounted in index.ts.
+- [x] Messaging lib: subscription.ts (statuses, grace, plan catalog, API origin)
+      + use-subscription.ts (fetch + billing_subscriptions realtime + period-end
+      timer → instant cross-device lock/unlock) + vitest tests.
+- [x] Messaging UI: SubscriptionPage.tsx (status card, plan, renewal, provider,
+      invoice history, subscribe Starter→Elite via PayPal / Play Billing,
+      restore purchases, cancel/reactivate, upgrade) + PaywallGate in App.tsx
+      (no active sub → only Subscription + Settings + sign-out; premium pages
+      never mount) + "subscription" Page + Sidebar/MobileShell entry.
+- [x] Android: Kotlin PlayBilling.kt (BillingClient 7, purchase flow +
+      queryPurchases restore + state JSON) + gradle dep + Rust
+      commands/billing.rs (async, JNI on Android, graceful desktop stub)
+      registered in lib.rs.
+- [x] Verify: messaging vitest ALL passed (34/34), tsc+vite build clean, cargo
+      check clean (desktop host).
+- [x] Docs: qguard-messaging/docs/PAYWALL.md (setup: Play Console products,
+      service account, RTDN topic, env vars; flows; testing matrix).
+- [ ] USER: run the 2 SQL files in Supabase; set Play/PayPal env on the API
+      deployment; create Play subscription products; E2E purchase tests.
+
+---
+
+# Video Call blurred media — Desktop ↔ Android emulator (2026-07-15)
+
+Spec: Qguard_Wiki/VideoCall_Fix_Guidelines. Symptom (test_images/Video Call
+blurred Images2.png): gray macroblocked smear on desktop remote view, blocky
+thumbnails on Android — classic ultra-low encode resolution + collapsed bitrate.
+
+## Root causes (evidence in code, cited per file)
+1. Capture/encoder ceilings below HD — call-quality.ts `auto` = 960×540 max @
+   1.2 Mbps ceiling; fullscreen desktop render of 540p is always soft. Spec
+   demands 720p min / 1080p HD @ 30fps.
+2. ALL WebRTC hardware video accel disabled on Windows (lib.rs
+   `--disable-accelerated-video-decode/encode` etc. at every launch) → all
+   encode+decode on CPU. Test topology = desktop app + Android emulator +
+   emulator WebView + per-frame AES-GCM ALL on one laptop → CPU overuse →
+   Chromium quality scaler collapses encoded resolution (macroblocks).
+   The confirmed GPU-driver wedge was the CAPTURE path (comment in lib.rs:
+   "Disabling encode/decode alone was NOT enough"), so encode/decode disables
+   are moveable to the gpu-safe-mode tier without reopening the freeze.
+3. Codec left to SDP default while call-frame-crypto.ts hard-codes the VP8
+   unencrypted-header convention (10/3/1 bytes) — a codec drift to
+   VP9/H264/AV1 would corrupt the E2EE path. Must pin VP8 explicitly.
+4. Possible congested free TURN relay (openrelay.metered.ca fallback in
+   call-ice.ts) carrying same-laptop calls when srflx hairpin fails →
+   collapsed bandwidth estimate. Needs per-call route visibility to confirm.
+5. Zero diagnostics: no getStats anywhere (grep proved) — spec §7/§8 require
+   resolution/fps/bitrate/RTT/loss/route/limitation logging.
+6. No contentHint on tracks, Opus left at default ~32kbps, no audio maxBitrate.
+7. Quality tier resets to Auto every call (not persisted).
+
+## Fix plan
+- [x] call-quality.ts: tiers → auto 1280×720@30 / 2.5 Mbps, hd 1920×1080@30 /
+      4.5 Mbps, low unchanged; per-tier audio maxBitrate (24/64/96 kbps);
+      contentHint helper; localStorage persistence; sender params also tune
+      audio + networkPriority.
+- [x] call-stats.ts (new): pure `summarizeCallStats` + 2s getStats monitor —
+      route (direct/relay), codec, out/in resolution+fps+bitrate, RTT, jitter,
+      loss, qualityLimitationReason; structured console logs.
+- [x] use-secure-call.ts: pin VP8 (+rtx/red/ulpfec) via setCodecPreferences;
+      apply contentHints; persist quality; run stats monitor while connected;
+      re-apply sender params on `connected`.
+- [x] InCallOverlay.tsx + CallProvider.tsx: live stats chip + expandable
+      diagnostics panel (route, res, fps, bitrate, RTT, limitation warning).
+- [x] lib.rs: default launch keeps ONLY capture-path safety flags; move
+      encode/decode disables + --disable-gpu under gpu-safe-mode (watchdog
+      unchanged, self-heals after a mid-call crash exactly as before).
+- [x] Tests: call-quality.test.ts (tier invariants incl. 720p floor),
+      call-stats.test.ts (summarizer on synthetic reports).
+- [x] Verify: vitest 26/26 passed (9 new), tsc + vite build clean, cargo check
+      clean, cargo test commands::calls 5/5 (watchdog semantics unchanged).
+- [x] Report: qguard-messaging/docs/VIDEO_CALL_QUALITY.md.
+- [ ] USER E2E: rebuild desktop + Android, re-test Desktop ↔ emulator call,
+      confirm stats chip shows Direct route + ≥720p once CPU settles.
+
+---
+
 # Secure Chat Android — open-conversation bounce (2026-07-12)
 
 ## Root cause (verified on emulator with 2 test accounts + DB forensics)

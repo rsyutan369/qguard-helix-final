@@ -17,6 +17,7 @@ pub mod vault;
 pub mod vault_stream;
 
 use commands::auth::*;
+use commands::billing::*;
 use commands::devices::*;
 use commands::keys::*;
 use commands::messaging::*;
@@ -35,21 +36,28 @@ pub fn run() {
     #[cfg(not(mobile))]
     let data_dir = dirs_fallback().join("qguard-messaging");
 
-    // Force EVERY WebRTC media path onto software on Windows BEFORE the WebView2
-    // environment is created. Hardware media pipelines can wedge flaky/outdated
-    // GPU drivers (seen live on Intel Iris Xe 31.0.101.4502) so hard the whole
-    // machine freezes without even a TDR event — only a power cut recovers it.
-    // Disabling encode/decode alone was NOT enough: the camera-capture pipeline
-    // (hardware MJPEG decode of webcam frames, D3D11 zero-copy Media Foundation
-    // capture, GPU-memory frame buffers) and DirectComposition video overlays
-    // still exercised the driver. Call media is capped to <=360p@24fps by default
-    // (see call-quality.ts), so full software media costs little CPU; the app UI
-    // itself stays GPU-composited and smooth. Respects an existing override.
+    // WebView2 media-pipeline safety flags, set BEFORE the WebView2 environment
+    // is created. The confirmed GPU-driver wedge (Intel Iris Xe 31.0.101.4502 —
+    // whole machine froze with no TDR event; only a power cut recovered it) was
+    // the CAMERA-CAPTURE path: hardware MJPEG decode of webcam frames, D3D11
+    // zero-copy Media Foundation capture, GPU-memory frame buffers and
+    // DirectComposition video overlays. Disabling encode/decode alone was NOT
+    // enough back then, which localizes the fault to capture — so by default
+    // only the capture path runs in software, while hardware VIDEO ENCODE and
+    // DECODE stay ENABLED for production call quality (720p/1080p @ 30fps; the
+    // old blanket software-everything launch starved the encoder on busy CPUs
+    // and produced permanently blurry, macroblocked calls).
+    //
+    // Defense in depth stays layered:
+    //   1. default  = software capture path + hardware codecs (this block);
+    //   2. safe mode = the mid-call-crash watchdog (commands/calls.rs) flips the
+    //      NEXT launch to full software media + `--disable-gpu`, exactly as
+    //      before, until the user opts back in from Settings.
     //
     // `--disable-features` REPLACES (not merges with) any earlier occurrence of
     // the switch, and the loader appends these env args after wry's programmatic
     // ones — so wry's own defaults (msWebOOUI, msPdfOOUI, msSmartScreenProtection)
-    // must be repeated here to survive.
+    // must be repeated here to survive. Respects an existing override.
     #[cfg(target_os = "windows")]
     {
         // Self-healing: if the previous session died mid-call (machine froze,
@@ -58,15 +66,17 @@ pub fn run() {
         let gpu_safe_mode = commands::calls::gpu_safe_mode_boot_check(&data_dir);
         if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
             let mut args = String::from(concat!(
-                "--disable-accelerated-video-decode ",
-                "--disable-accelerated-video-encode ",
                 "--disable-accelerated-mjpeg-decode ",
                 "--disable-gpu-memory-buffer-video-frames ",
                 "--disable-direct-composition-video-overlays ",
                 "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaFoundationD3D11VideoCapture",
             ));
             if gpu_safe_mode {
-                args.push_str(" --disable-gpu");
+                args.push_str(concat!(
+                    " --disable-accelerated-video-decode",
+                    " --disable-accelerated-video-encode",
+                    " --disable-gpu",
+                ));
             }
             std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
         }
@@ -206,7 +216,12 @@ pub fn run() {
             call_watchdog_begin,
             call_watchdog_end,
             call_gpu_safe_mode_status,
-            call_gpu_safe_mode_clear
+            call_gpu_safe_mode_clear,
+            billing_platform,
+            billing_state,
+            billing_launch_purchase,
+            billing_refresh_purchases,
+            billing_open_checkout
         ])
         .run(tauri::generate_context!())
         .expect("error running QGuard Messaging");

@@ -101,6 +101,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
           peerUserId={call.state.peerUserId ?? null}
           quality={call.quality}
           onSetQuality={(q) => void call.setQuality(q)}
+          stats={call.stats}
           onHangup={() => call.hangup()}
           onToggleMic={() => call.toggleMic()}
           onToggleCamera={() => call.toggleCamera()}
