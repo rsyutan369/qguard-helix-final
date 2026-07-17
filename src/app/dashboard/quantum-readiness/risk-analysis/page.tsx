@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Download, ListChecks, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import {
   Badge,
   BarList,
@@ -27,6 +28,8 @@ import {
   ORANGE,
   RED,
 } from '../_shared';
+
+const HEATMAP_DIMENSIONS = ['Overall Risk', 'Crypto Posture', 'Internet Exposure', 'Environment'] as const;
 
 export default function RiskAnalysisPage() {
   const navigate = useNavigate();
@@ -54,6 +57,32 @@ export default function RiskAnalysisPage() {
       { label: 'Severity Pressure', value: factor('Severity') },
     ];
   }, [snapshot.riskFactors, scores.hndlRisk, scores.cryptoExposure]);
+
+  // Risk heat map — top exposure-graph assets scored across risk dimensions.
+  // Every cell traces to measured evidence (asset risk score, CBOM posture,
+  // internet exposure, environment) — nothing is fabricated.
+  const heatmapRows = useMemo(
+    () =>
+      [...snapshot.exposureGraph.nodes]
+        .sort((a, b) => b.riskScore - a.riskScore)
+        .slice(0, 12)
+        .map((node) => ({
+          asset: node.label,
+          cells: [
+            { score: node.riskScore, basis: 'Measured asset risk score (scan evidence)' },
+            {
+              score: node.posture === 'vulnerable' ? 90 : node.posture === 'hybrid' ? 50 : 10,
+              basis: `Crypto posture: ${node.posture} (CBOM / scan findings)`,
+            },
+            { score: node.internetFacing ? 100 : 20, basis: node.internetFacing ? 'Internet-facing (asset evidence)' : 'Internal-only (asset evidence)' },
+            {
+              score: /prod/i.test(node.environment) ? 70 : 30,
+              basis: `Environment: ${node.environment || 'unknown'}`,
+            },
+          ],
+        })),
+    [snapshot.exposureGraph.nodes],
+  );
 
   const kpis = [
     { label: 'Quantum Risk', value: integerFmt(scores.quantumRisk), suffix: '/100', detail: scores.quantumRiskLevel, color: riskTone(scores.quantumRisk), ring: scores.quantumRisk },
@@ -83,6 +112,8 @@ export default function RiskAnalysisPage() {
         </>
       }
     >
+      <WorkflowRail activeStage="risk" />
+
       {/* KPIs */}
       <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
         {kpis.map((kpi) => (
@@ -108,6 +139,53 @@ export default function RiskAnalysisPage() {
           <BarList rows={breakdowns} colorFor={(row) => riskTone(row.value)} max={100} />
         </Panel>
       </section>
+
+      {/* Risk heat map — per-asset × risk dimension, from exposure-graph evidence */}
+      <Panel className="p-5">
+        <SectionTitle suffix={<span className="text-[11px] text-white/40">Top assets × risk dimensions (evidence-derived)</span>}>
+          Risk Heat Map
+        </SectionTitle>
+        {heatmapRows.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] border-separate border-spacing-1 text-left text-xs">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-[0.08em] text-white/35">
+                  <th className="pb-2 font-black">Asset</th>
+                  {HEATMAP_DIMENSIONS.map((dim) => (
+                    <th key={dim} className="pb-2 text-center font-black">
+                      {dim}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {heatmapRows.map((row) => (
+                  <tr key={row.asset}>
+                    <td className="max-w-[180px] truncate pr-2 font-medium text-white/80">{row.asset}</td>
+                    {row.cells.map((cell, i) => (
+                      <td key={HEATMAP_DIMENSIONS[i]} className="text-center">
+                        <span
+                          className="block rounded px-1.5 py-1.5 font-mono text-[10px] font-bold"
+                          style={{ backgroundColor: `${riskTone(cell.score)}22`, color: riskTone(cell.score), border: `1px solid ${riskTone(cell.score)}35` }}
+                          title={cell.basis}
+                        >
+                          {integerFmt(cell.score)}
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-2 text-[10px] text-white/35">
+              Cells score 0–100 per dimension. Overall = measured asset risk; Posture = quantum-vulnerable 90 / hybrid 50 /
+              PQC-ready 10; Internet exposure and production environment from asset evidence. Hover a cell for its basis.
+            </p>
+          </div>
+        ) : (
+          <EmptyState label="No asset exposure evidence yet." hint="Run a discovery scan to populate the heat map." />
+        )}
+      </Panel>
 
       {/* Risk factors + trend */}
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">

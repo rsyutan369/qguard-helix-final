@@ -76,6 +76,7 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/dashboard/migration-planner', tier: 'basic' },
   { prefix: '/dashboard/migration-sandbox', tier: 'basic' },
   { prefix: '/dashboard/harvest-now', tier: 'basic' }, // HNDL assessment (QR engine)
+  { prefix: '/dashboard/quantum-certification', tier: 'basic' }, // Quantum Trust Certification (BASIC/PRO/ELITE)
   // BASIC also scans its own assets and reviews the inventory that feeds the
   // QR Assessment Engine / Migration Planner / Sandbox.
   { prefix: '/dashboard/scanner', tier: 'basic' },

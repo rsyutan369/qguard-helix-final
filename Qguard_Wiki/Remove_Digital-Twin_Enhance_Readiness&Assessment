@@ -1,0 +1,228 @@
+Replace Digital Twin with Harvest Now and Validate Quantum Readiness Module
+Objective
+
+Refactor the Quantum Readiness module by removing the Digital Twin feature and replacing it with the Harvest Now module. After the refactor, perform a complete end-to-end validation to ensure all Quantum Readiness functionality operates correctly.
+
+1. Replace Navigation
+
+Within:
+
+http://localhost:3000/dashboard/quantum-readiness
+
+Remove the following tab:
+
+Digital Twin
+Route:
+/dashboard/quantum-readiness/digital-twin
+
+Replace it with:
+
+Harvest Now
+Route:
+/dashboard/harvest-now
+
+Update all navigation components, breadcrumbs, sidebars, menus, cards, quick links, and any references so they point to the new Harvest Now module.
+
+2. Remove the Digital Twin Feature Completely
+
+Completely remove all Digital Twin-related implementation from the project, including but not limited to:
+
+Frontend pages
+Components
+Routes
+Navigation items
+APIs
+Backend endpoints
+Hooks
+Context providers
+Services
+SSE subscriptions
+Database queries
+Type definitions
+Interfaces
+Utilities
+Constants
+Tests
+Feature flags
+Imports
+Dead code
+Documentation
+
+After removal:
+
+No broken imports
+No TypeScript errors
+No orphan routes
+No console errors
+No build warnings
+No unused code remaining
+3. Integrate Harvest Now
+
+Ensure the Harvest Now module is fully integrated.
+
+This includes:
+
+Navigation
+Routing
+Backend API
+SSE updates
+Dashboard widgets
+Authentication
+Authorization
+RBAC
+Plan restrictions
+Loading states
+Empty states
+Error handling
+
+The Harvest Now page should behave as a first-class module within the platform.
+
+4. Validate the Entire Quantum Readiness Module
+
+Perform a complete audit of every page under:
+
+/dashboard/quantum-readiness
+
+Verify that every page is functioning correctly.
+
+Confirm:
+
+Navigation works correctly
+Routing is correct
+APIs respond successfully
+Hooks execute correctly
+Context is synchronized
+React Query/TanStack Query is functioning correctly
+State management is correct
+Data refresh works properly
+SSE connections remain active
+No stale data
+No race conditions
+No broken loading states
+5. Verify Frontend ↔ Backend Integration
+
+Validate every connection between the frontend and backend.
+
+Ensure:
+
+REST endpoints are correctly connected
+SSE streams are operational
+Live updates are received
+Authentication tokens are passed correctly
+Authorization checks succeed
+Error handling is implemented
+Retry logic works where applicable
+Timeouts are handled gracefully
+
+Every Quantum Readiness page should display live backend data rather than placeholders or mock data.
+
+6. Complete Readiness Assessment Workflow
+
+Users with the Basic Plan must be able to perform a complete Quantum Readiness Assessment from start to finish.
+
+Validate the full workflow:
+
+Start Assessment
+Discover Assets
+Scan Assets
+Detect Cryptographic Algorithms
+Identify Quantum-Vulnerable Assets
+Calculate Risk Scores
+Generate Readiness Scores
+Display Findings
+Store Assessment Results
+Generate Enterprise Reports
+
+The workflow must execute without manual intervention or errors.
+
+7. Scan Result Synchronization
+
+Ensure all discovered assets and scan results are consistently reflected across the platform.
+
+Changes made during scanning must automatically update:
+
+Assessment Dashboard
+Quantum Readiness pages
+Executive Dashboard
+Risk Score Dashboard
+Readiness Score Dashboard
+Reports
+Asset Inventory
+Cryptographic Inventory (CBOM)
+Harvest Now Dashboard
+Analytics
+Charts
+KPIs
+Metrics
+Progress indicators
+Historical assessments
+
+There must be a single, consistent source of truth with no data mismatches.
+
+8. Enterprise Reporting Validation
+
+Ensure Enterprise Reporting consumes real assessment data.
+
+Reports should accurately include:
+
+Organization Information
+Assessment Summary
+Asset Inventory
+Cryptographic Inventory
+Quantum-Vulnerable Algorithms
+Harvest Now Risk Assessment
+Readiness Score
+Risk Score
+Compliance Status
+Executive Summary
+Risk Matrix
+Migration Recommendations
+Charts
+KPIs
+Historical Trends
+Asset Breakdown
+Remediation Priorities
+
+Reports must never use placeholder, mock, or hardcoded values.
+
+9. Subscription Validation
+
+Verify that Basic Plan users have access to the complete Quantum Readiness Assessment experience, including:
+
+Asset Discovery
+Cryptographic Discovery
+Risk Analysis
+Readiness Assessment
+Harvest Now Risk Assessment
+Enterprise Reporting
+Dashboards
+Scan History
+Assessment Results
+
+Ensure unauthorized users cannot access features outside their subscription tier.
+
+10. Final Quality Assurance
+
+Before completion, perform a comprehensive validation to ensure:
+
+✅ No broken routes
+✅ No missing components
+✅ No TypeScript errors
+✅ No ESLint warnings
+✅ No runtime exceptions
+✅ No console errors
+✅ No failed API requests
+✅ No SSE connection failures
+✅ No broken navigation
+✅ No duplicate routes
+✅ No dead code
+✅ No placeholder or mock data
+✅ Responsive layouts remain intact
+✅ Loading and error states behave correctly
+✅ Authentication and RBAC function properly
+✅ All scan data flows correctly from the backend to every dashboard and report
+✅ Build completes successfully
+✅ Application is production-ready
+Expected Outcome
+
+The Digital Twin feature is completely removed and replaced with the Harvest Now module. The Quantum Readiness module is fully functional, with end-to-end connectivity between the frontend and backend, real-time updates via SSE, accurate synchronization of scan results, enterprise-grade reporting, and complete support for Basic Plan users to perform a full Quantum Readiness Assessment using live data.

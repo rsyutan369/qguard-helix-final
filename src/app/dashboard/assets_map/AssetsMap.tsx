@@ -2,6 +2,8 @@ import { Fragment, useMemo, useState } from 'react';
 import { Search, Filter, Shield, AlertTriangle, ChevronRight, ChevronDown, Globe, Server, Loader2, RefreshCw, ExternalLink, Eye, Download } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
+import { useMigrationWorkflow } from '@/hooks/use-migration-workflow';
 
 type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
 type ExportFormat = 'csv' | 'json' | 'pdf';
@@ -444,6 +446,15 @@ export default function AssetsMap() {
   const [exportOpen, setExportOpen] = useState(false);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set());
 
+  // Per-asset lifecycle position from the platform workflow engine (same
+  // source of truth the WorkflowRail renders) — merged by asset name.
+  const { workflow } = useMigrationWorkflow();
+  const lifecycleByAsset = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof workflow>['assetStates'][number]>();
+    for (const state of workflow?.assetStates || []) map.set(state.asset.toLowerCase(), state);
+    return map;
+  }, [workflow]);
+
   const filteredAssets = useMemo(() => {
     const query = searchQuery.toLowerCase().trim();
     return assets.filter((asset) => {
@@ -520,6 +531,7 @@ export default function AssetsMap() {
 
   return (
     <div className="p-6 lg:p-8 space-y-6 min-h-screen">
+      <WorkflowRail activeStage="discovery" tone="adaptive" />
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-black uppercase tracking-tight text-slate-950 dark:text-white">Asset <span className="text-gold">Inventory</span></h1>
@@ -623,6 +635,7 @@ export default function AssetsMap() {
                 <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Findings</th>
                 <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Risk Score</th>
                 <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Compliance</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Lifecycle</th>
                 <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Last Scanned</th>
                 <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Action</th>
               </tr>
@@ -630,13 +643,13 @@ export default function AssetsMap() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="p-12 text-center text-gold/50 font-black uppercase tracking-widest">
+                  <td colSpan={9} className="p-12 text-center text-gold/50 font-black uppercase tracking-widest">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Loading Asset Inventory
                   </td>
                 </tr>
               ) : assets.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-14 text-center">
+                  <td colSpan={9} className="p-14 text-center">
                     <div className="mb-4 text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">
                       No authorized assets scanned yet. Start a scan to build your cryptographic asset inventory.
                     </div>
@@ -647,7 +660,7 @@ export default function AssetsMap() {
                 </tr>
               ) : filteredAssets.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-12 text-center uppercase tracking-widest text-slate-500 dark:text-white/30">No assets match the current search or filter.</td>
+                  <td colSpan={9} className="p-12 text-center uppercase tracking-widest text-slate-500 dark:text-white/30">No assets match the current search or filter.</td>
                 </tr>
               ) : filteredAssets.map((asset) => {
                 const Icon = typeIcon(asset.type);
@@ -735,6 +748,31 @@ export default function AssetsMap() {
                           {asset.complianceStatus}
                         </span>
                       </td>
+                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                        {(() => {
+                          const lifecycle = lifecycleByAsset.get(String(asset.name || '').toLowerCase());
+                          if (!lifecycle) return <span className="text-[10px] text-slate-400 dark:text-white/25">—</span>;
+                          const stageTone =
+                            lifecycle.stageId === 'monitoring'
+                              ? 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'
+                              : lifecycle.stageId === 'execution'
+                                ? 'border-cyan-500/25 bg-cyan-500/8 text-cyan-600 dark:border-cyan-400/25 dark:text-cyan-300'
+                                : lifecycle.stageId === 'validation'
+                                  ? 'border-blue-500/25 bg-blue-500/8 text-blue-600 dark:border-blue-400/25 dark:text-blue-300'
+                                  : 'border-amber-500/25 bg-amber-500/8 text-amber-600 dark:border-amber-400/25 dark:text-amber-300';
+                          return (
+                            <div className="space-y-1">
+                              <span className={`inline-block rounded-md border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest ${stageTone}`}>
+                                {lifecycle.stageId === 'monitoring' ? 'Monitored' : lifecycle.stageId === 'execution' ? 'Migrating' : lifecycle.stageId === 'validation' ? 'Validating' : 'Remediation'}
+                              </span>
+                              <div className="text-[9px] text-slate-500 dark:text-white/35">
+                                {lifecycle.openActions > 0 ? `${lifecycle.openActions} action${lifecycle.openActions === 1 ? '' : 's'}` : lifecycle.validationStatus}
+                                {lifecycle.certificationImpactPct > 0 ? ` · +${lifecycle.certificationImpactPct}% cert` : ''}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="border-y border-slate-200/80 p-4 text-[10px] font-mono text-slate-500 dark:border-white/8 dark:text-white/42">{formatDate(asset.lastScanned)}</td>
                       <td className="rounded-r-xl border-y border-r border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-2">
@@ -749,7 +787,7 @@ export default function AssetsMap() {
 
                     {isExpanded && (
                       <motion.tr initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}>
-                        <td colSpan={8} className="p-0">
+                        <td colSpan={9} className="p-0">
                           <div className="mx-2 mb-3 rounded-xl border border-slate-200/80 bg-slate-50/95 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_20px_45px_rgba(15,23,42,0.10)] dark:border-gold/18 dark:bg-[#070b18]/92 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.32)]">
                             <div className="grid gap-5 xl:grid-cols-[0.9fr_2.1fr]">
                               <div className="rounded-lg border border-slate-200 bg-white/80 p-4 dark:border-white/8 dark:bg-white/[0.025]">

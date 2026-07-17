@@ -1,9 +1,10 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/auth-context';
 import { ThemeProvider } from './contexts/theme-context';
 import Landing from './pages/Landing';
 import SubscriptionThankYou from './pages/SubscriptionThankYou';
 import VerifyReport from './pages/VerifyReport';
+import VerifyCertificate from './pages/VerifyCertificate';
 import Checkout from './pages/Checkout';
 import PostQuantumMigrationPlatform from './pages/PostQuantumMigrationPlatform';
 import QuantumTrustGovernanceCenter from './pages/QuantumTrustGovernanceCenter';
@@ -35,6 +36,14 @@ import DriftDetection from './app/dashboard/drift_detection/page';
 import ScannerDashboard from './app/dashboard/scanner_dashboard/page';
 import ProfileSettingsPage from './app/dashboard/settings/page';
 import AdminDashboardPage from './app/dashboard/admin/page';
+
+// Revenue Intelligence™ (owner-only)
+import RevenueOverviewPage from './app/dashboard/revenue-intelligence/page';
+import RevenueAnalyticsPage from './app/dashboard/revenue-intelligence/revenue/page';
+import RevenueSubscriptionsPage from './app/dashboard/revenue-intelligence/subscriptions/page';
+import RevenueCustomersPage from './app/dashboard/revenue-intelligence/customers/page';
+import RevenuePaymentsPage from './app/dashboard/revenue-intelligence/payments/page';
+import RevenueForecastPage from './app/dashboard/revenue-intelligence/forecast/page';
 
 // Quantum Tools Modules
 import EncryptionKeysPage from './app/dashboard/keys/page';
@@ -105,10 +114,11 @@ import QuantumReadinessCommandCenterPage from './app/dashboard/quantum-readiness
 import QuantumReadinessExecutivePage from './app/dashboard/quantum-readiness/executive/page';
 import QuantumReadinessExposureGraphPage from './app/dashboard/quantum-readiness/exposure-graph/page';
 import QuantumReadinessRiskAnalysisPage from './app/dashboard/quantum-readiness/risk-analysis/page';
+import QuantumRemediationPage from './app/dashboard/quantum-readiness/remediation/page';
 import QuantumReadinessAiExecutiveAdvisorPage from './app/dashboard/quantum-readiness/ai-executive-advisor/page';
 import QuantumReadinessAiMigrationAdvisorPage from './app/dashboard/quantum-readiness/ai-migration-advisor/page';
-import QuantumReadinessDigitalTwinPage from './app/dashboard/quantum-readiness/digital-twin/page';
 import QuantumReadinessReportsPage from './app/dashboard/quantum-readiness/reports/page';
+import QuantumCertificationPage from './app/dashboard/quantum-certification/page';
 
 export default function App() {
   return (
@@ -134,6 +144,8 @@ export default function App() {
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/subscription/thank-you" element={<SubscriptionThankYou />} />
           <Route path="/verify-report" element={<VerifyReport />} />
+          <Route path="/verify-certificate" element={<VerifyCertificate />} />
+          <Route path="/verify-certificate/:certificateId" element={<VerifyCertificate />} />
           <Route path="/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/localhost/resources/pqc-checklist" element={<PqcChecklistPage />} />
           <Route path="/resources/quantum-simulation" element={<QuantumSimulationPage />} />
@@ -182,6 +194,14 @@ export default function App() {
           <Route path="settings" element={<ProfileSettingsPage />} />
           <Route path="profile" element={<ProfileSettingsPage />} />
           <Route path="admin" element={<AdminDashboardPage />} />
+
+          {/* Revenue Intelligence™ — owner-only (shell + API both enforce) */}
+          <Route path="revenue-intelligence" element={<RevenueOverviewPage />} />
+          <Route path="revenue-intelligence/revenue" element={<RevenueAnalyticsPage />} />
+          <Route path="revenue-intelligence/subscriptions" element={<RevenueSubscriptionsPage />} />
+          <Route path="revenue-intelligence/customers" element={<RevenueCustomersPage />} />
+          <Route path="revenue-intelligence/payments" element={<RevenuePaymentsPage />} />
+          <Route path="revenue-intelligence/forecast" element={<RevenueForecastPage />} />
 
           <Route path="scanner" element={<ScannerDashboard />} />
           <Route path="scanner_dashboard" element={<ScannerDashboard />} />
@@ -265,10 +285,13 @@ export default function App() {
           <Route path="quantum-readiness/executive" element={<QuantumReadinessExecutivePage />} />
           <Route path="quantum-readiness/exposure-graph" element={<QuantumReadinessExposureGraphPage />} />
           <Route path="quantum-readiness/risk-analysis" element={<QuantumReadinessRiskAnalysisPage />} />
+          <Route path="quantum-readiness/remediation" element={<QuantumRemediationPage />} />
           <Route path="quantum-readiness/ai-executive-advisor" element={<QuantumReadinessAiExecutiveAdvisorPage />} />
           <Route path="quantum-readiness/ai-migration-advisor" element={<QuantumReadinessAiMigrationAdvisorPage />} />
-          <Route path="quantum-readiness/digital-twin" element={<QuantumReadinessDigitalTwinPage />} />
+          {/* Digital Twin was retired in favor of Harvest Now — keep old bookmarks working. */}
+          <Route path="quantum-readiness/digital-twin" element={<Navigate to="/dashboard/harvest-now" replace />} />
           <Route path="quantum-readiness/reports" element={<QuantumReadinessReportsPage />} />
+          <Route path="quantum-certification" element={<QuantumCertificationPage />} />
 
           <Route path="qkms/overview" element={<QkmsOverviewPage />} />
           <Route path="qkms/inventory" element={<QkmsInventoryPage />} />

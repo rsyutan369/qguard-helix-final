@@ -1,0 +1,548 @@
+# ROLE
+
+You are acting as a Principal Enterprise Software Architect, Post-Quantum Cryptography (PQC) Architect, Cybersecurity Platform Architect, UI/UX Architect, DevSecOps Engineer, and Product Designer.
+
+Your task is to review, redesign, and enhance every module involved in the Quantum Remediation and Migration workflow within the QGuard Helix Platform.
+
+The objective is to ensure that every page works together as a single, end-to-end Post-Quantum Migration Platform that guides customers from asset discovery through remediation, migration, validation, and ultimately Quantum Trust Certification.
+
+====================================================================
+PRIMARY OBJECTIVE
+====================================================================
+
+Review all modules connected to the Quantum Remediation workflow and transform them into a fully integrated enterprise-grade migration platform.
+
+Do NOT redesign pages independently.
+
+Instead, ensure every module participates in one continuous workflow where data, recommendations, progress, and migration status automatically flow between pages.
+
+The platform should support organizations with:
+
+• Small environments (1–10 assets)
+• Medium businesses (10–500 assets)
+• Large enterprises (1,000–100,000+ assets)
+• Multi-cloud and hybrid infrastructures
+• Government and regulated environments
+
+====================================================================
+WORKFLOW REVIEW
+====================================================================
+
+Review and improve the complete workflow beginning from:
+
+Asset Discovery
+
+↓
+
+Cryptographic Discovery
+
+↓
+
+CBOM Generation
+
+↓
+
+Quantum Readiness Assessment
+
+↓
+
+Risk Analysis
+
+↓
+
+Harvest Now, Decrypt Later Exposure
+
+↓
+
+Remediation Planning
+
+↓
+
+Migration Planning
+
+↓
+
+Migration Execution
+
+↓
+
+Validation
+
+↓
+
+Rescanning
+
+↓
+
+Continuous Monitoring
+
+↓
+
+Quantum Trust Certification
+
+Every module must contribute meaningful information to the next stage.
+
+No disconnected pages.
+
+No duplicate functionality.
+
+====================================================================
+MODULES TO REVIEW AND ENHANCE
+====================================================================
+
+Review and enhance every capability within the following modules.
+
+----------------------------------------------------
+1. Quantum Remediation
+----------------------------------------------------
+
+http://localhost:3001/dashboard/quantum-readiness/remediation
+
+Transform this page into the central Quantum Remediation Command Center.
+
+It should include:
+
+• AI-generated remediation plans
+• Asset-specific recommendations
+• Business impact analysis
+• Risk prioritization
+• Estimated remediation effort
+• Estimated migration duration
+• Certification readiness impact
+• Progress tracking
+• Automation opportunities
+• One-click navigation to related modules
+
+----------------------------------------------------
+2. Enterprise Asset Inventory
+----------------------------------------------------
+
+http://localhost:3001/dashboard/assets
+
+Redesign the Assets page to function as a real-time Enterprise Asset Inventory.
+
+Enhance support for:
+
+• Servers
+• Workstations
+• Containers
+• Kubernetes
+• Virtual Machines
+• Databases
+• APIs
+• PKI
+• Network Devices
+• Firewalls
+• VPNs
+• Cloud Services
+• SaaS Platforms
+• IoT Devices
+• Mobile Devices
+• Certificates
+• HSMs
+• Load Balancers
+• Applications
+• Microservices
+
+Each asset should display:
+
+• Cryptographic posture
+• PQC readiness
+• Business owner
+• Criticality
+• Risk level
+• Dependencies
+• Migration status
+• Validation status
+• Certification impact
+
+====================================================================
+3. Enterprise CBOM Explorer
+====================================================================
+
+http://localhost:3001/dashboard/cbom
+
+Review and redesign the Cryptographic Bill of Materials (CBOM) implementation.
+
+Ensure the generated CBOM follows current industry guidance and is structured as a comprehensive cryptographic inventory rather than simply a list of algorithms.
+
+Include visibility into:
+
+• Cryptographic algorithms
+• Keys
+• Certificates
+• Protocols
+• TLS configurations
+• SSH configurations
+• VPN cryptography
+• JWT signing
+• PKI hierarchy
+• Libraries
+• SDKs
+• Dependencies
+• Cloud cryptography
+• Hardware cryptography
+• HSM usage
+• Key lengths
+• Expiration dates
+• Algorithm lifecycle
+• Migration recommendations
+
+Provide:
+
+• Dependency visualization
+• Algorithm relationship mapping
+• Risk indicators
+• Migration recommendations
+• Crypto agility status
+
+====================================================================
+4. Migration Planner
+====================================================================
+
+http://localhost:3001/dashboard/migration-planner
+
+Enhance into an enterprise migration planning platform.
+
+Include:
+
+• Migration phases
+• Prioritized roadmap
+• Timeline planning
+• Business impact
+• Cost estimation
+• Downtime estimation
+• Rollback planning
+• Validation checkpoints
+• Approval workflow
+• Team assignments
+• Dependency analysis
+• Readiness forecasting
+• Certification forecasting
+
+====================================================================
+5. Quantum Risk Analysis
+====================================================================
+
+http://localhost:3001/dashboard/quantum-readiness/risk-analysis
+
+Expand the risk engine to evaluate:
+
+• Harvest Now, Decrypt Later exposure
+• Algorithm lifecycle risk
+• Cryptographic debt
+• Internet exposure
+• Data sensitivity
+• Compliance exposure
+• Business impact
+• Third-party vendor readiness
+• Legacy technology
+• Certificate risks
+• Trust chain weaknesses
+• PKI vulnerabilities
+
+Generate:
+
+• Executive summaries
+• Technical findings
+• Business recommendations
+• Risk heat maps
+• Prioritized remediation
+
+====================================================================
+6. Harvest Now, Decrypt Later Dashboard
+====================================================================
+
+http://localhost:3001/dashboard/harvest-now
+
+Enhance into an enterprise intelligence dashboard.
+
+Visualize:
+
+• Data currently vulnerable to future decryption
+• Long-lived secrets
+• Sensitive communications
+• Vulnerable TLS sessions
+• Vulnerable VPN traffic
+• PKI exposure
+• High-value assets
+• Priority remediation targets
+
+Provide mitigation recommendations and migration priorities.
+
+====================================================================
+7. Enterprise Scanner
+====================================================================
+
+http://localhost:3001/dashboard/scanner
+
+Improve scanning capabilities.
+
+Support discovery of:
+
+• Cryptographic algorithms
+• TLS
+• SSH
+• VPN
+• Certificates
+• Source code
+• APIs
+• Containers
+• Kubernetes
+• Cloud resources
+• PKI
+• Databases
+• JWT
+• Secrets
+• HSM integrations
+• Cryptographic libraries
+
+Ensure findings automatically populate:
+
+Assets
+
+CBOM
+
+Risk Analysis
+
+Remediation
+
+Migration Planner
+
+Certification Readiness
+
+====================================================================
+8. Crypto Agility Center
+====================================================================
+
+http://localhost:3001/dashboard/crypto-agility
+
+Transform into a Crypto Agility Management Center.
+
+Support:
+
+• Policy management
+• Approved algorithm catalogs
+• Deprecation tracking
+• Algorithm lifecycle
+• Hybrid deployments
+• Automated migration policies
+• Rollback support
+• Configuration validation
+• Continuous monitoring
+
+====================================================================
+9. Live Migration Operations
+====================================================================
+
+http://localhost:3001/dashboard/live-migration
+
+This is one of the platform's most critical modules.
+
+Transform it into the operational control center for Post-Quantum migration.
+
+The Live Migration module should orchestrate the migration of discovered assets using managed automation while providing visibility, control, and rollback capabilities.
+
+Integrate with:
+
+Agent Collectors
+
+Agent Patchers
+
+Agent Connectors
+
+Remote Connectors
+
+Cloud Connectors
+
+Container Connectors
+
+Kubernetes Connectors
+
+Certificate Management
+
+Configuration Management
+
+Infrastructure Automation
+
+Capabilities should include:
+
+• Migration orchestration
+• Real-time deployment status
+• Migration progress dashboards
+• Task queues
+• Validation pipelines
+• Rollback management
+• Approval workflows
+• Parallel migrations
+• Batch migrations
+• Dependency awareness
+• Failure recovery
+• Automated health checks
+• Compliance verification
+• Continuous monitoring after migration
+
+Provide detailed operational visibility into:
+
+• Current migration phase
+• Assets in progress
+• Successful migrations
+• Failed migrations
+• Rollback status
+• Validation results
+• Performance metrics
+• Agent health
+• Connector health
+• Deployment logs
+• Cryptographic validation
+• Certification readiness progress
+
+====================================================================
+10. Agent Management
+====================================================================
+
+http://localhost:3001/dashboard/scanner?tab=agents
+
+Review and enhance the Agent ecosystem.
+
+Improve:
+
+• Agent Collectors
+• Agent Patchers
+• Agent Connectors
+• Cloud Agents
+• Container Agents
+• Remote Agents
+
+Capabilities should include:
+
+• Asset discovery
+• Cryptographic inventory collection
+• Configuration analysis
+• Policy enforcement
+• Automated remediation
+• Automated migration execution
+• Health monitoring
+• Secure communications
+• Remote updates
+• Job scheduling
+• Telemetry collection
+• Audit logging
+
+====================================================================
+INTEGRATION REQUIREMENTS
+====================================================================
+
+Every module must integrate seamlessly.
+
+For example:
+
+Scanner
+
+↓
+
+Assets
+
+↓
+
+CBOM
+
+↓
+
+Risk Analysis
+
+↓
+
+Remediation
+
+↓
+
+Migration Planner
+
+↓
+
+Live Migration
+
+↓
+
+Validation
+
+↓
+
+Rescan
+
+↓
+
+Certification
+
+Every action taken in one module should automatically update all dependent modules.
+
+Avoid duplicated data, duplicate workflows, and inconsistent status indicators.
+
+====================================================================
+USER EXPERIENCE
+====================================================================
+
+Improve every dashboard to include:
+
+• Executive View
+• Technical View
+• Operational View
+• AI Recommendations
+• Drill-down navigation
+• Interactive dependency graphs
+• Progress visualization
+• Enterprise KPIs
+• Risk heat maps
+• Migration timelines
+• Certification readiness indicators
+
+====================================================================
+EXPECTED RESULT
+====================================================================
+
+Deliver a cohesive, enterprise-grade Post-Quantum Migration Platform where every module is interconnected, scalable, and aligned with current post-quantum migration best practices.
+
+The final experience should enable organizations to:
+
+1. Discover cryptographic assets.
+2. Build a comprehensive cryptographic inventory (CBOM).
+3. Assess quantum readiness.
+4. Prioritize risks.
+5. Receive intelligent remediation guidance.
+6. Plan migrations.
+7. Execute migrations through managed agents.
+8. Validate successful deployment.
+9. Continuously monitor cryptographic posture.
+10. Achieve and maintain Quantum Trust Certification.
+
+All improvements must be production-ready, maintain backward compatibility, reuse existing functionality whenever possible, and avoid unnecessary duplication of features.
+
+
+Additional Recommendation
+
+One architectural enhancement I strongly recommend is to model the entire platform as a state-driven workflow rather than a collection of independent dashboards. For example:
+
+Discovery
+    ↓
+Cryptographic Inventory (CBOM)
+    ↓
+Quantum Readiness Assessment
+    ↓
+Risk Prioritization
+    ↓
+AI Remediation
+    ↓
+Migration Planning
+    ↓
+Approval Workflow
+    ↓
+Live Migration
+    ↓
+Validation & Verification
+    ↓
+Continuous Monitoring
+    ↓
+Quantum Trust Certification
+
+With this approach, every asset, recommendation, migration task, and certification score progresses through a consistent lifecycle, giving users a clear path from discovery to quantum-safe certification while ensuring all modules remain synchronized.

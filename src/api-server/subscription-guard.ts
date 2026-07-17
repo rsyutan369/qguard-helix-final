@@ -32,6 +32,9 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/migration-planner', tier: 'basic' },
   { prefix: '/api/v1/sandbox', tier: 'basic' },
   { prefix: '/api/v1/harvest-now', tier: 'basic' },
+  { prefix: '/api/v1/quantum-certification', tier: 'basic' }, // Quantum Trust Certification Engine (BASIC/PRO/ELITE)
+  { prefix: '/api/v1/quantum-remediation', tier: 'basic' }, // Intelligent Quantum Remediation Engine (pairs with certification)
+  { prefix: '/api/v1/migration-workflow', tier: 'basic' }, // Cross-module workflow rail (state-driven lifecycle)
   // BASIC scans its own assets (feeds QR Engine / Migration Planner / Sandbox).
   { prefix: '/api/v1/scanner', tier: 'basic' },
 

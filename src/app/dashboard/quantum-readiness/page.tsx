@@ -6,10 +6,11 @@ import { motion } from 'framer-motion';
 import {
   Activity,
   ArrowRight,
+  Award,
   Boxes,
   BrainCircuit,
+  EyeOff,
   FileText,
-  FlaskConical,
   Gauge,
   KeyRound,
   LayoutDashboard,
@@ -23,6 +24,7 @@ import {
   Sparkles,
   Target,
   TrendingUp,
+  Wrench,
 } from 'lucide-react';
 import {
   Badge,
@@ -51,6 +53,7 @@ import {
   VIOLET,
   EMERALD,
   AMBER,
+  GOLD,
 } from './_shared';
 
 const MODULES = [
@@ -58,9 +61,11 @@ const MODULES = [
   { label: 'Executive Dashboard', detail: 'Board-ready posture, business impact & forecast', path: '/dashboard/quantum-readiness/executive', icon: TrendingUp, color: EMERALD },
   { label: 'Quantum Exposure Graph™', detail: 'Dependency & blast-radius visualization', path: '/dashboard/quantum-readiness/exposure-graph', icon: Network, color: CYAN },
   { label: 'Quantum Risk Analysis', detail: 'Technical risk prioritization & evidence', path: '/dashboard/quantum-readiness/risk-analysis', icon: ShieldAlert, color: RED },
+  { label: 'Quantum Remediation Engine™', detail: 'Asset-level remediation roadmap to certification', path: '/dashboard/quantum-readiness/remediation', icon: Wrench, color: CYAN },
   { label: 'AI Executive Advisor™', detail: 'Evidence-grounded executive advisory', path: '/dashboard/quantum-readiness/ai-executive-advisor', icon: Sparkles, color: VIOLET },
   { label: 'AI Migration Advisor™', detail: 'Migration waves, sequencing & rollback', path: '/dashboard/quantum-readiness/ai-migration-advisor', icon: BrainCircuit, color: ORANGE },
-  { label: 'Quantum Readiness Digital Twin™', detail: 'Simulate PQC migration before execution', path: '/dashboard/quantum-readiness/digital-twin', icon: FlaskConical, color: AMBER },
+  { label: 'Harvest Now (HNDL)', detail: 'Harvest-now-decrypt-later threat operations & exposure', path: '/dashboard/harvest-now', icon: EyeOff, color: AMBER },
+  { label: 'Quantum Trust Certification™', detail: 'Issue signed, publicly verifiable PQC readiness certificates', path: '/dashboard/quantum-certification', icon: Award, color: GOLD },
   { label: 'Report Center', detail: 'Customer-facing reports & evidence packages', path: '/dashboard/quantum-readiness/reports', icon: FileText, color: GREEN },
 ];
 

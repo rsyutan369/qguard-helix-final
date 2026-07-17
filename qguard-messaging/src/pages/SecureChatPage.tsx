@@ -12,6 +12,7 @@ import {
   type DecryptionStatus,
 } from "@/lib/secure-decryption";
 import { chatControlCache, chatMessageCache, ensureChatCacheOwner } from "@/lib/chat-plaintext-cache";
+import { deriveReadState } from "@/lib/chat-read-state";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { supabase } from "@/lib/supabase";
@@ -1808,48 +1809,53 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return applyControlsAndSort();
   }
 
-  async function persistMessageUserStates(messages: ChatMessage[], existingStates?: Map<string, MessageUserState>) {
-    if (!activeConversation) return;
+  // Returns true when a NEW read was actually recorded, so the caller can
+  // refresh the unread badges exactly once per real change (not on every
+  // idempotent reload). Keyed to an explicit conversationId — never the live
+  // `activeConversation` — so a conversation switch mid-load can't misroute the
+  // write to the wrong thread.
+  async function persistMessageUserStates(
+    messages: ChatMessage[],
+    existingStates: Map<string, MessageUserState> | undefined,
+    conversationId: string,
+  ): Promise<boolean> {
+    if (!conversationId) return false;
     const readAt = new Date().toISOString();
-    const rows = messages
+    const entries = messages
       .map((item) => {
-        // Rendering a message row on screen is the read event, so every peer
-        // row is marked read here (this is what clears the unread bubbles).
-        // That includes "failed" and "sealed" rows: they render as visible
-        // stubs in the thread, and a row that can never decrypt (e.g. sealed
-        // before a device reset) must not hold the unread badge hostage
-        // forever. The one exception: DECRYPTED view-once attachments only
-        // burn when the recipient actually opens them
-        // (markViewOnceAttachmentOpened), because first_read_at doubles as
-        // the burn trigger for ephemeral messages.
-        // An already-recorded first_read_at is preserved so re-renders never
-        // reset or bump the original read timestamp.
+        // Read/verification semantics live in the pure `deriveReadState` helper
+        // (unit-tested in chat-read-state.test.ts): peer rows — including
+        // undecryptable "failed"/"sealed" stubs — are marked read so they can't
+        // hold the unread badge hostage; own rows and unopened view-once
+        // attachments are not; and an already-recorded read is preserved.
+        // Only rows whose persisted state actually CHANGED are written: writing
+        // unchanged rows (just bumping updated_at) re-fired this client's own
+        // messaging_message_user_states realtime subscription — a write-on-read
+        // feedback loop that kept the chat re-decrypting and starved sends. The
+        // `newRead` flag (null -> timestamp) is what tells the caller to refresh
+        // the unread badges, and only once per genuine read.
         const existing = existingStates?.get(item.client_message_id);
-        const existingReadAt = existing?.first_read_at ?? null;
-        const markAsRead = item.sender_user_id !== userId && !(item.view_once && item.attachment);
-        const nextReadAt = existingReadAt ?? (markAsRead ? readAt : null);
-        // Verification is only meaningful for rows that actually decrypted;
-        // failed/sealed stubs keep their prior state instead of being branded
-        // "tampered" by a missing-envelope condition.
-        const nextVerification = item.status === "decrypted"
-          ? (item.authenticated ? "valid" : "tampered")
-          : (existing?.verification_state ?? "pending");
-        // Only rows whose persisted state actually CHANGED are written. Writing
-        // unchanged rows (just bumping updated_at) fired this client's own
-        // messaging_message_user_states realtime subscription, which re-ran the
-        // whole conversation load — a write-on-read feedback loop that kept the
-        // chat re-decrypting forever and starved sends. Comparing against the
-        // states we just loaded makes the write a no-op once reads are recorded,
-        // so the loop terminates after a single cycle.
-        const changed =
-          nextReadAt !== existingReadAt ||
-          nextVerification !== (existing?.verification_state ?? "pending") ||
-          item.threat.score !== (existing?.threat_score ?? 0);
+        const { nextReadAt, nextVerification, changed, newRead } = deriveReadState(
+          {
+            senderUserId: item.sender_user_id,
+            viewOnce: item.view_once,
+            hasAttachment: Boolean(item.attachment),
+            status: item.status,
+            authenticated: item.authenticated,
+            threatScore: item.threat.score,
+          },
+          existing
+            ? { firstReadAt: existing.first_read_at, verificationState: existing.verification_state, threatScore: existing.threat_score }
+            : undefined,
+          userId,
+          readAt,
+        );
         return {
           changed,
+          newRead,
           row: {
             user_id: userId,
-            conversation_id: activeConversation.id,
+            conversation_id: conversationId,
             client_message_id: item.client_message_id,
             first_read_at: nextReadAt,
             verification_state: nextVerification,
@@ -1863,13 +1869,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             updated_at: readAt,
           },
         };
-      })
-      .filter((entry) => entry.changed)
-      .map((entry) => entry.row);
-    if (rows.length === 0) return;
-    await supabase
-      .from("messaging_message_user_states")
-      .upsert(rows, { onConflict: "user_id,conversation_id,client_message_id" });
+      });
+    const rows = entries.filter((entry) => entry.changed).map((entry) => entry.row);
+    const recordedNewRead = entries.some((entry) => entry.changed && entry.newRead);
+    let wroteNewRead = false;
+    if (rows.length > 0) {
+      const { error } = await supabase
+        .from("messaging_message_user_states")
+        .upsert(rows, { onConflict: "user_id,conversation_id,client_message_id" });
+      if (error) {
+        // Surface instead of swallowing: a silently-rejected read write is
+        // exactly what leaves the unread bubble stuck after a thread is read.
+        console.warn("[secure-chat] Failed to persist message read states:", error.message);
+      } else {
+        wroteNewRead = recordedNewRead;
+      }
+    }
 
     for (const item of messages) {
       if (!item.threat.suspicious || threatTelemetryRef.current.has(item.client_message_id)) continue;
@@ -1889,6 +1904,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         },
       });
     }
+    return wroteNewRead;
   }
 
   async function markViewOnceAttachmentOpened(chatMessage: ChatMessage) {
@@ -1913,6 +1929,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         updated_at: viewedAt,
       }, { onConflict: "user_id,conversation_id,client_message_id" });
     if (error) throw error;
+    // Opening a view-once attachment is its read event — refresh so the unread
+    // badges drop this message immediately.
+    onSent();
   }
 
   const loadConversationMessages = useCallback(async () => {
@@ -1922,6 +1941,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       return;
     }
 
+    // Bind read-state persistence to the conversation THIS load is for, so a
+    // fast switch to another thread can't misroute the "mark read" write.
+    const conversationForLoad = activeConversation;
     const loadSeq = ++messageLoadSeqRef.current;
     setMessagesLoading(true);
     setMessageAction(null);
@@ -1984,11 +2006,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         setChatMessages(partial);
         setMessagesLoading(false);
       });
-      // Ignore a load that has been superseded by a newer conversation switch,
-      // so a slow earlier load can never overwrite the conversation now on screen.
-      if (messageLoadSeqRef.current !== loadSeq) return;
-      setChatMessages(hydrated);
-      persistMessageUserStates(hydrated, userStates).catch(() => undefined);
+      // Only the current load may repaint the thread, so a slow earlier load
+      // can never overwrite the conversation now on screen.
+      if (messageLoadSeqRef.current === loadSeq) {
+        setChatMessages(hydrated);
+      }
+      // Read-state persistence is deliberately NOT gated on winning that repaint
+      // race. These messages were decrypted and shown for `conversationForLoad`,
+      // so they are genuinely read — recording that is what clears the unread
+      // bubbles. Because the write is keyed to the load's own conversation id, a
+      // same-conversation realtime reload can't drop the read and a switch can't
+      // misroute it. When a NEW read is recorded, refresh the dashboard so the
+      // unread badges (conversation list, sidebar, and top-bar bell) clear
+      // immediately instead of waiting for the next realtime tick or 30s poll.
+      try {
+        const recordedNewRead = await persistMessageUserStates(hydrated, userStates, conversationForLoad.id);
+        if (recordedNewRead) onSent();
+      } catch (persistError) {
+        console.warn("[secure-chat] Read-state persistence failed:", persistError);
+      }
     } catch (error) {
       // The realtime subscription reloads on every envelope change, so a transient
       // reload failure must not flash a banner over an already-rendered conversation;
@@ -2001,7 +2037,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     } finally {
       if (messageLoadSeqRef.current === loadSeq) setMessagesLoading(false);
     }
-  }, [activeConversation, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId]);
+  }, [activeConversation, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId, onSent]);
 
   // Switching conversations must instantly show a clean slate. Clearing in a
   // layout effect (keyed on the conversation id, so it only fires on a real

@@ -1,3 +1,200 @@
+# Architecture & Scalability Review (2026-07-17)
+
+Spec: Qguard_Wiki/Architechture_Review_Scalability-Validation. Full-platform
+assessment → docs/ARCHITECTURE_SCALABILITY_REVIEW.md (verdict, tier analysis,
+tenancy, asset-type coverage, real-time consistency, honest roadmap).
+
+- [x] Review: bounded-detail/exact-headline design confirmed (row caps +
+      HEAD counts + capped engine payloads); RLS tenant isolation audited;
+      asset-type coverage is generic (classifyDomain/playbooks/scanner
+      modules/agents), not qguardhelix-specific.
+- [x] FIX #1 (the fan-out bottleneck): per-tenant single-flight 15s-TTL
+      shared-computation caches for buildScannerIntelligence (bypassed during
+      active scans) + buildSnapshot → all modules derive from ONE
+      authoritative computation per window (the guide's shared-model
+      recommendation). Measured: QR 9.2s→0.5s, remediation 5.2s→1.5s,
+      scanner intel →0.7s warm.
+- [x] FIX #2: supabase/scale-indexes.sql — composite (user_id, order-col)
+      + status/partial-count indexes for all hot tables (idempotent,
+      table-guarded).
+- [x] Verify: tsc clean, remediation-check 46/46, live remediation checks
+      pass post-restructure, 6-endpoint latency probe all 200.
+- [ ] USER: run supabase/scale-indexes.sql once in the Supabase SQL Editor.
+- [ ] Roadmap (documented): org-level tenancy, Redis/queue for multi-node,
+      durable scan job queue, event-driven cache invalidation.
+
+---
+
+# Enhance Quantum Remediation & Migration Workflow (2026-07-16)
+
+Spec: Qguard_Wiki/Enhance_Quantum_Remediation_Migration_Workflow. Make all 10
+workflow modules act as ONE state-driven lifecycle (the guide's Additional
+Recommendation): Discovery → CBOM → Assessment → Risk → Remediation →
+Planning → Approval → Execution → Validation → Monitoring → Certification.
+
+## Review findings (all 10 modules inspected — mature, reuse them)
+- Remediation command center: built (Q-REMEDY). Assets 878L, CBOM 1270L,
+  CryptoAgility 789L, HarvestNow 791L, LiveMigrationOps 1321L, Scanner 4950L,
+  MigrationPlanner 745L (+migration-planner.ts 9-stage model), RiskAnalysis 246L.
+- GAPS: (1) no cross-module workflow state layer — the core ask; (2) planner
+  has an 'approve' STAGE but no approval ACTION (no endpoint/UI; migration_plans
+  has id/status/metadata → zero new tables needed); (3) risk-analysis has no
+  heat map; (4) assets page lacks migration/validation/cert-impact lifecycle
+  columns; (5) remediation page lacks an automation-opportunities rollup CTA
+  to live migration.
+
+## Plan
+- [x] Workflow engine: src/types/migration-workflow.ts +
+      src/api-server/migration-workflow.ts (GET /api/v1/migration-workflow,
+      30s per-user cache; reuses assembleEvidence+buildRemediationPlan (export
+      assembleEvidence) + migration_plans/jobs/validation_logs +
+      quantum_trust_certificates → 11 evidence-derived stages, per-asset
+      lifecycle states, overall progress, next-best-action). Mount + basic tier.
+- [x] Shared UI: src/components/workflow/WorkflowRail.tsx (compact stepper,
+      dark/adaptive tone, active-stage highlight, next-action chip,
+      click-through) + src/hooks/use-migration-workflow.ts (fetch + 60s
+      refresh, hides on error).
+- [x] Embed rail in all 10 pages: remediation, risk-analysis, migration
+      planner, live-migration, scanner, assets, cbom, crypto-agility,
+      harvest-now, quantum-certification.
+- [x] Approval workflow: GET/POST /api/v1/migration-planner/plans +
+      POST /plans/:id/approval (approve/reject w/ reason, approver stamped in
+      metadata) + ApprovalWorkflowPanel in MigrationPlanner.tsx. ROOT-CAUSE
+      FIX: migration_plans has NO name column — the old select('id, name, …')
+      silently errored in safeRows so the Approve stage never saw plans;
+      display name now lives in metadata.name.
+- [x] Risk heat map: top exposure-graph assets × 4 risk dimensions in
+      risk-analysis (every cell hover shows evidence basis).
+- [x] Assets lifecycle column: workflow assetStates merged by name (stage chip
+      + open actions/validation status + certification impact).
+- [x] Remediation automation rollup: automatable-actions banner + Live
+      Migration Ops CTA.
+- [x] Deep-link fixes: runtime-crypto-intel / vendor-pqc-readiness /
+      qkms/overview (remediation playbooks pointed at nonexistent routes).
+- [x] Verify: tsc clean, vite build clean, remediation-check 46/46,
+      workflow-live-check 12/12 (11 canonical stages, cached call <1s,
+      approval round-trip submit→approve→list, invalid decision 400); authed
+      headless-Chrome screenshots verified planner (rail + approval panel,
+      Approve stage now Complete), assets (adaptive rail + MIGRATING lifecycle
+      chip), risk-analysis (rail + live heat map).
+- [x] Docs: docs/MIGRATION_WORKFLOW.md + todo/memory updates.
+
+---
+
+# Intelligent Quantum Remediation & Certification Engine (2026-07-16)
+
+Spec: Qguard_Wiki/Intelligent_Quantum_Remediation&Certification_Engine.
+Transform "Not Quantum Ready" into "Here's exactly how to become Quantum
+Ready": per-asset AI remediation roadmap + live Certification Readiness Score
+that projects the score after each recommendation, wired into the existing
+certification eligibility engine.
+
+## Reuse map (platform analysis — DO NOT duplicate)
+- Evidence: buildSnapshot (quantum-readiness.ts) + buildScannerIntelligence
+  (scanner.ts findings carry algorithm/category/location/threat/recommendation)
+  + gatherEvidence/evaluateEligibility/DEFAULT_POLICY (quantum-certification.ts
+  — the 10 required criteria ARE the certification requirements).
+- Report model: buildReportModel (waves, assetReadiness, readinessProgression,
+  dependencyAnalysis, confidence) — advisors already reuse it.
+- Frontend: QR _shared.tsx primitives + hook patterns (header-auth SSE fetch,
+  Supabase realtime); migration handoff (_advisor.ts) for deep links.
+- Integration routes: Migration Planner / Sandbox / CBOM / Scanner /
+  Harvest Now / PKI Visibility / Crypto Agility — link, don't rebuild.
+- No new DB tables: action status derives from live evidence (finding present
+  = open; gone after rescan = resolved) + real migration_jobs rows. Honest,
+  auto-updating, zero schema for the user to apply.
+
+## Advanced algorithm — Q-REMEDY (Quantum Remediation & Eligibility
+## Marginal-gain Yield) — deterministic, evidence-driven
+1. Normalize per-asset vulnerabilities (scanner findings + CBOM + certs).
+2. Classify remediation domain (TLS/SSH/VPN/PKI/keys/app-lib/cloud/data/vendor)
+   → NIST FIPS 203/204/205 + CNSA 2.0 aligned playbook (steps, hybrid target,
+   effort & downtime model, rollback, breaking-change warnings).
+3. Multi-factor priority score: severity, internet exposure, business
+   criticality, data sensitivity, HNDL relevance, blast radius (relationship
+   degree), compliance hits, certification impact → Critical/High/Medium/Low
+   queues + quick wins (impact/effort leverage).
+4. Certification Readiness Score: continuous 0-100% progress across the 10
+   required criteria (ratio-to-threshold per criterion, equal weights,
+   documented) — 100% == eligible.
+5. Marginal-gain greedy simulation: each action carries measure deltas
+   (criticalResolved, vulnerableComponentsResolved, pqcAdded, disallowed
+   retired, certs renewed); re-run the score model per step → projection
+   ladder "62% → after #1 68% → ... → 100% Certification Eligible".
+
+## Plan
+- [x] Types: src/types/quantum-remediation.ts (plan contract).
+- [x] Backend: src/api-server/quantum-remediation.ts — pure engine
+      (buildRemediationPlan + computeCertificationReadiness + applyImpact
+      simulation, exported for tools) + Express router GET / + GET /stream
+      (header-auth SSE). Exported gatherEvidence/loadPolicy from
+      quantum-certification.ts for reuse.
+- [x] Mount /api/v1/quantum-remediation in index.ts + basic tier in
+      subscription-guard.ts (frontend /dashboard/quantum-readiness prefix
+      already covers the page).
+- [x] Hook: src/hooks/use-quantum-remediation.ts (fetch + SSE + realtime on
+      pqc_scan_results/crypto_inventory/certificates/migration_jobs/assets).
+- [x] Page: src/app/dashboard/quantum-readiness/remediation/page.tsx —
+      Quantum Remediation Center (hero score + ladder + requirements +
+      priority queues + asset drill-down + blast radius/vendor impact +
+      quick wins/blockers + progress/recently-fixed + AI Quantum Advisor Q&A
+      + integration links + methodology).
+- [x] Wire: App.tsx route, QR_PAGES subnav, hub MODULES card, DashboardLayout
+      nav, certification page CTA when not eligible.
+- [x] Verify: tools/remediation-check.ts 46/46 offline checks pass (ladder
+      monotonic, 100% == eligible, priority invariants, playbook coverage,
+      FIPS terminology guard) + tsc clean + vite build clean +
+      tools/remediation-live-check.ts live pass (real tenant 44.9% → ladder
+      to 97.2%, Starter 403 / Basic 200, SSE frame received).
+- [x] Docs: docs/QUANTUM_REMEDIATION.md + memory update.
+- [ ] USER: restart `npm run dev` (the Vite-mounted Express app only picks up
+      the new /api/v1/quantum-remediation route on server start), then open
+      /dashboard/quantum-readiness/remediation.
+
+---
+
+# Revenue Intelligence Dashboard — owner-only module (2026-07-15)
+
+Spec: Qguard_Wiki/Revenue_Intelligence_Dashboard + sample screenshot. Owner-only
+executive revenue/subscription/customer/payment analytics over the REAL billing
+tables (billing_subscriptions/invoices/notifications/audit + webhook ledgers).
+
+## Reuse map (discovered)
+- Owner gating: admin.ts requireOwner pattern (isOwnerEmail + query-token SSE).
+- SSE: admin /stream pattern (push every 10s + heartbeat 30s).
+- Frontend module pattern: quantum-readiness/_shared.tsx (snapshot contract,
+  Panel/MetricCard/Donut/BarList primitives — IMPORT the generic ones), hook w/
+  fetch+SSE+realtime, Shell w/ subnav. Charts: echarts-for-react (installed).
+- Sidebar: NAV_SECTIONS in DashboardLayout + owner-only injection (mirrors the
+  Owner Administrator injection); routes in App.tsx under /dashboard.
+- Pricing: PLAN_PRICING (paypal.ts) for MRR normalization.
+
+## Data honesty (CLAUDE.md): NO fabricated metrics
+- Geography, CAC/burn/EBITDA, DAU/sessions, Stripe: no data sources exist →
+  honest empty states with integration guidance, never simulated numbers.
+- Forecast: deterministic linear trend of ACTUAL monthly net revenue,
+  methodology stated on-page.
+
+## Plan
+- [x] Backend src/api-server/revenue.ts (mount /api/v1/revenue, owner-gated):
+      GET /snapshot (revenue math incl MRR/ARR/ARPU/LTV/churn/growth, timeline,
+      by plan/provider/cycle, payment stats, subscriber+invoice+customer lists,
+      activity feed, alerts, health score, forecast), GET /stream (SSE),
+      GET /export (csv|json per report).
+- [x] Frontend src/app/dashboard/revenue-intelligence/: _shared.tsx (types,
+      EMPTY snapshot, useRevenueIntelligence hook w/ SSE + billing realtime,
+      RevenueShell + subnav, echarts theme helpers) + 6 pages: Overview
+      (executive command center), revenue/, subscriptions/, customers/,
+      payments/, forecast/ (incl. Report Center exports + notifications).
+- [x] Sidebar: owner-only 'Revenue Intelligence' section directly below System
+      (Owner Administrator); App.tsx routes.
+- [x] Verify: tsc --noEmit 0 errors; vite build clean.
+- [x] Docs: docs update + memory.
+- [ ] USER: open /dashboard/revenue-intelligence as owner; data appears once
+      billing tables hold real rows (subscriptions/invoices from live payments).
+
+---
+
 # QGuard Messaging paywall — Android + Desktop, account-based (2026-07-15)
 
 Spec: Qguard_Wiki/Android_Paywall_Guidelines. STARTER (or higher) unlocks the
@@ -368,3 +565,69 @@ with a premium Material-3-style mobile UI per test_images/android-design_*.png.
 - [~] Release-signed APK: building (release .so LTO compile in progress) via gradlew assembleArm64Release
 - [x] Docs: ANDROID.md + docs/{ANDROID_NATIVE_ARCHITECTURE,BUILD_NATIVE,ANDROID_SECURITY}.md
 - Windows blocker solved: tauri symlinks .so into jniLibs (needs Dev Mode); no-admin fix = build .so, copy to jniLibs, gradlew assembleArm64Debug -x rustBuildArm64Debug
+
+## Remove QR Digital Twin → Replace with Harvest Now + validate QR module — 2026-07-15
+
+Guide: Qguard_Wiki/Remove_Digital-Twin_Enhance_Readiness&Assessment
+Scope decision: only the Quantum Readiness Digital Twin is removed. PQAuth's Identity
+Digital Twin is a separate module mandated by CLAUDE.md (PQAuth section) and stays.
+
+### Removal (QR Digital Twin — frontend-only feature, no dedicated backend)
+- [x] Delete src/app/dashboard/quantum-readiness/digital-twin/ (page.tsx)
+- [x] App.tsx: remove QuantumReadinessDigitalTwinPage import + route; old URL now `Navigate`-redirects to /dashboard/harvest-now (bookmark continuity)
+- [x] _shared.tsx QR_PAGES: Digital Twin tab → "Harvest Now" → /dashboard/harvest-now
+- [x] DashboardLayout: Digital Twin item removed; "HNDL Assessment" renamed "Harvest Now (HNDL)" and moved into the old Digital Twin slot
+- [x] quantum-readiness/page.tsx MODULES card: Digital Twin → Harvest Now (HNDL), icon EyeOff
+- [x] MigrationPlanner "Simulate Outcome" → "Harvest Now Risk" → /dashboard/harvest-now (STAGE_ICONS.simulate/FlaskConical kept — that's the 9-stage workflow)
+- [x] Marketing /quantum-readiness-assessment ModuleSpotlight: Digital Twin → Harvest Now spotlight (image /HarvestNow.png); section subtitle updated
+
+### Validation
+- [x] grep: zero QR digital-twin references left (6 remaining hits are all PQAuth Identity Digital Twin — intentionally kept)
+- [x] tsc --noEmit exit 0; vite build ✓ (45s; only pre-existing chunk-size warnings)
+- [x] Live server: /api/v1/quantum-readiness + /api/v1/harvest-now → 401 unauth; 403 SUBSCRIPTION_REQUIRED for Starter (cybersniper26); 200 with real data for Basic (threathunter369)
+- [x] SSE: /api/v1/harvest-now/stream → 200 text/event-stream, first hndl-intelligence event has real scan data (hasData:true); ?token= correctly rejected (header-auth by design)
+- [x] tools/hndl-check.ts: all 16 sections + empty-state (no fabricated values) PASS
+- [x] tools/report-check.ts (REPORT_CHECK_EMAIL=threathunter369@gmail.com, Basic): all I1–I5 live checks PASS incl. HNDL in top business risks
+- [x] Subscription matrix: /dashboard/quantum-readiness + /dashboard/harvest-now basic-tier (frontend lib/subscription-access.ts + backend subscription-guard.ts API_MIN_TIER)
+- [x] QR pages audit: all 8 remaining pages render from useQuantumReadiness/useAdvisorModel (live backend snapshot; no mock data)
+
+## Quantum Trust Certification Engine™ — 2026-07-16
+
+Guide: Qguard_Wiki/Quantum_Trust_Certification_Engine. Samples: public/Reports/Quantum_Trust_Certification{_Dashboard,}.png
+Placement: under Quantum Readiness Assessment Engine (sidebar section + QR_PAGES subnav). Access: BASIC/PRO/ELITE.
+Reuse: buildSnapshot (quantum-readiness.ts) + buildReportModel certification criteria (ReportEvidence) for eligibility;
+ML-DSA-65 (@noble/post-quantum, same lib as Vault) for signing; ReportQr QR helpers; harvest-now auth/SSE patterns.
+
+### Backend
+- [x] supabase/quantum-certification-schema.sql — 11 guide tables + signing-keys table, RLS (owner-only + service-role-only for keys/verify-logs), triggers, realtime publication
+- [x] src/types/quantum-certification.ts — shared FE/BE contract
+- [x] src/api-server/quantum-certification.ts — eligibility rules engine (configurable policy + platform floors so tenants can't self-certify),
+      trust score /1000 + Bronze→Diamond levels (hybrid-evidence + assessment-count gated), POST /issue (SHA3-256 canonical hash + ML-DSA-65 signature + QR URL),
+      renew/suspend/revoke/reinstate, continuous monitoring (auto-suspend on drift, lazy expiry, throttled validation writes), downloads log,
+      GET /stream SSE (header-auth), audit-package endpoint, PUBLIC verify router (rate-limited 30/min, service-role, live SHA3+ML-DSA verify, verification logs, company search)
+- [x] Mount routers in index.ts (public verify BEFORE subscription gateway); subscription-guard: /api/v1/quantum-certification = basic
+
+### Frontend
+- [x] lib/subscription-access.ts: /dashboard/quantum-certification = basic
+- [x] src/hooks/use-quantum-certification.ts — fetch + SSE + realtime + lifecycle actions
+- [x] src/components/certification/QuantumTrustCertificate.tsx — self-contained SVG cert art (faithful to sample; render-verified via sharp)
+- [x] src/services/certification/certificate-export.ts — SVG→PNG→PDF (pdf-lib, +metadata page) + JSON + audit package
+- [x] src/app/dashboard/quantum-certification/page.tsx — premium dashboard (KPIs, eligibility checklist, cert preview+issue form, trend, level distro, AI advisor, history table, activity, notifications, verification+downloads)
+- [x] src/pages/VerifyCertificate.tsx — public portal /verify-certificate(/:id) (ID + company lookup, live integrity/signature)
+- [x] App.tsx routes (dashboard + 2 public); DashboardLayout QR section + QR_PAGES subnav + QR hub MODULES card
+
+### Verification
+- [x] tools/certification-check.ts — offline: eligibility gating invariant, snapshot criteria, trust-score/level engine, SHA3-256 determinism, ML-DSA-65 sign/verify + tamper detection — ALL PASS
+- [x] tsc --noEmit clean; vite build clean (49s)
+- [x] Live probes: Starter→403, Basic→200 dashboard (hasData:true, eligibility 3/10 correctly NOT eligible from real evidence), issue→503 SCHEMA_NOT_APPLIED (correctly refused), SSE→200 event-stream, public verify→200 lookup + graceful 404
+- [x] docs/QUANTUM_TRUST_CERTIFICATION.md (architecture, DB, API, workflow, lifecycle, security, guides)
+- [ ] PENDING USER ACTION: run supabase/quantum-certification-schema.sql in Supabase SQL Editor to enable issuance/signing/public verification; optionally set CERT_VERIFICATION_ORIGIN=https://verify.qguardhelix.com
+
+### Schema collision fix (2026-07-16) — user hit `column "organization" does not exist` at line 57
+- [x] Root cause: platform ALREADY has a `certificates` table (X.509/TLS INVENTORY, cols not_before/not_after). My `CREATE TABLE IF NOT EXISTS certificates` no-op'd → index on organization hit the wrong table. Also my expired-cert query used `valid_to` (nonexistent) instead of `not_after` (silent-0 bug).
+- [x] DB probe confirmed: only `certificates` exists (4 rows); all my certificate_* child tables + qtc_certificates absent.
+- [x] Renamed issued-cert table `certificates` → `quantum_trust_certificates` (schema + indexes + RLS DO-blocks + realtime + trigger). Child tables keep certificate_* prefix (confirmed free).
+- [x] Engine: CERT_TABLE='quantum_trust_certificates' const for all issued-cert ops; INVENTORY_CERT_TABLE='certificates' read-only for expired-cert criterion with corrected `not_after` column; removed dead probe line.
+- [x] Frontend hook realtime subscribes to quantum_trust_certificates.
+- [x] Re-verified: tsc clean, vite build clean, certification-check all pass. (Live re-probe blocked by a transient Supabase network timeout; pre-rename live flow already passed.)
+- [x] Schema is idempotent/safe to re-run. User must re-run the corrected supabase/quantum-certification-schema.sql.

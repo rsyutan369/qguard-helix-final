@@ -2740,7 +2740,44 @@ function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceM
   return { mode, history }
 }
 
+/**
+ * Shared-computation cache for scanner intelligence.
+ *
+ * This aggregation is the platform's single most expensive repeated
+ * computation: it backs the Scanner/Assets/CBOM pages AND is embedded in the
+ * Quantum Readiness snapshot, the remediation evidence assembly, the
+ * certification engine and the workflow rail — each with its own request/SSE
+ * cadence. Without a cache the same tenant view is recomputed many times per
+ * 30s window (O(open dashboards × SSE ticks)), which does not scale with
+ * enterprise estates or concurrent tenants.
+ *
+ * The cache is per-tenant, short-TTL and SINGLE-FLIGHT (concurrent callers
+ * share one in-flight promise, preventing stampedes when several SSE streams
+ * tick together). It is BYPASSED while the tenant has an active scan so live
+ * scan telemetry stays real-time. Failures are never cached. A shared cached
+ * view also means every module derives from the same authoritative
+ * computation within the window — consistent state across pages by
+ * construction.
+ */
+const INTEL_CACHE_TTL_MS = 15_000
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const intelCache = new Map<string, { at: number; promise: Promise<any> }>()
+
 export async function buildScannerIntelligence(token: string, userId: string) {
+  const hasActiveScan = Array.from(activeJobs.values()).some((job) => job.userId === userId)
+  const cached = intelCache.get(userId)
+  if (!hasActiveScan && cached && Date.now() - cached.at < INTEL_CACHE_TTL_MS) return cached.promise
+  const promise = computeScannerIntelligence(token, userId)
+  intelCache.set(userId, { at: Date.now(), promise })
+  promise.catch(() => intelCache.delete(userId))
+  if (intelCache.size > 500) {
+    const now = Date.now()
+    for (const [key, value] of intelCache) if (now - value.at > INTEL_CACHE_TTL_MS) intelCache.delete(key)
+  }
+  return promise
+}
+
+async function computeScannerIntelligence(token: string, userId: string) {
   const client = getDbClient(token)
   const { assets, inventory, exposures, results, sessions, vulnerabilities, mode } = await loadScannerTables(client, userId)
   const evidenceAssets = buildEvidenceBackedAssets(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[])

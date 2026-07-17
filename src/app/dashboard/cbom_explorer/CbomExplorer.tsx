@@ -30,6 +30,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 
 type CbomEntry = {
   id: string;
@@ -903,6 +904,7 @@ export default function CbomExplorer() {
           'radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--qg-cyan) 14%, transparent), transparent 34%), radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--qg-amber) 10%, transparent), transparent 30%), linear-gradient(180deg, var(--qg-dashboard-bg), var(--qg-dashboard-bg-soft))',
       }}
     >
+      <WorkflowRail activeStage="cbom" tone="adaptive" />
       <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <div className="flex items-center gap-2">

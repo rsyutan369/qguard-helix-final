@@ -1,0 +1,784 @@
+Simplify and Redesign QGuard Helix Agent Collector Scanner
+
+Enterprise UX/UI Modernization (Production Ready)
+
+http://localhost:3001/dashboard/scanner?tab=agents
+
+You are a Senior Staff Software Architect, Principal Product Designer, Enterprise UX Designer, and Cybersecurity Platform Engineer specializing in enterprise cybersecurity products such as CrowdStrike Falcon, Microsoft Defender XDR, Wiz, Prisma Cloud, Cortex XSIAM, Microsoft Azure Arc, SentinelOne, and Google Security Command Center.
+
+Your task is to redesign the QGuard Helix Agent Collector Scanner into a modern Enterprise SaaS experience that is significantly easier for first-time users while maintaining all existing enterprise capabilities.
+
+Primary Goal
+
+The current Agent Collector Scanner is technically complete but exposes too much information simultaneously.
+
+This creates unnecessary cognitive overload.
+
+The redesigned experience must:
+
+Reduce complexity
+Improve onboarding
+Reduce learning time
+Increase usability
+Preserve all enterprise functionality
+Follow modern enterprise UX principles
+Follow progressive disclosure
+Be production-ready
+
+The goal is for a security engineer to install a collector within five minutes without reading documentation.
+
+Core Design Philosophy
+
+The interface must answer only four questions.
+
+How do I create a Collector?
+How do I install it?
+How do I verify it is connected?
+How do I start my first scan?
+
+Everything else must be hidden until needed.
+
+The UI should never overwhelm first-time users.
+
+Advanced users should still have access to every enterprise capability.
+
+New Information Architecture
+
+Replace the current page with the following sections.
+
+Dashboard Summary
+
+At the very top display only the most important operational metrics.
+
+Cards:
+
+Registered Collectors
+
+Online Collectors
+
+Offline Collectors
+
+Assets Discovered
+
+Quantum Risks
+
+Pending Remediation
+
+Last Heartbeat
+
+Recent Scan
+
+Do not display cryptographic policies here.
+
+Quick Start Wizard
+
+Replace the existing 8-step workflow with a clean 4-step wizard.
+
+Progress indicator:
+
+Create Collector
+
+↓
+
+Install Collector
+
+↓
+
+Verify Connection
+
+↓
+
+Run First Scan
+
+Each step should be visually obvious with
+
+Completed
+
+Running
+
+Waiting
+
+Failed
+
+status badges.
+
+Step 1
+Create Collector
+
+Simplify the registration form.
+
+Only request:
+
+Collector Name
+
+Environment
+
+Dropdown:
+
+Windows
+
+Linux
+
+Docker
+
+Kubernetes
+
+VM
+
+Cloud Connector
+
+Description (optional)
+
+Assigned Tags
+
+Allowed Targets
+
+Create Collector button
+
+Nothing more.
+
+Do not ask for API endpoints, TLS settings, JSON, scopes, RBAC, certificates, connector permissions, or cryptographic settings during creation.
+
+Step 2
+Generate Secure Token
+
+Immediately after creating the collector
+
+Generate a secure enrollment token.
+
+Display
+
+Copy Button
+
+Rotate Token
+
+Expiration
+
+One-time visibility warning
+
+Hide implementation details.
+
+Do not expose hashing implementation.
+
+Step 3
+Installation
+
+Replace large installation blocks with tabs.
+
+Tabs
+
+Windows
+
+Linux
+
+Docker
+
+Kubernetes
+
+Helm
+
+PowerShell
+
+Cloud Init
+
+Each tab displays
+
+Installation command
+
+Copy button
+
+Download installer
+
+Documentation link
+
+Verification command
+
+Collapsible advanced options
+
+Step 4
+Verify Connection
+
+Display only
+
+Collector Status
+
+Hostname
+
+Version
+
+Environment
+
+Heartbeat
+
+Connection Quality
+
+Last Seen
+
+Health Score
+
+Display
+
+Waiting for first heartbeat...
+
+until connected.
+
+Automatically refresh.
+
+Registered Collectors
+
+Simplify the table.
+
+Columns
+
+Collector
+
+Environment
+
+Status
+
+Version
+
+Last Seen
+
+Assets
+
+Health
+
+Actions
+
+Hide
+
+Tenant ID
+
+Internal Scope
+
+Telemetry IDs
+
+Raw Database IDs
+
+Connector IDs
+
+Internal UUIDs
+
+These belong inside Collector Details.
+
+Collector Details Drawer
+
+Clicking a collector opens a side drawer.
+
+Show
+
+Overview
+
+Heartbeat
+
+Recent Scans
+
+Installed Version
+
+Platform
+
+OS
+
+CPU
+
+Memory
+
+Last Scan
+
+Assigned Targets
+
+Discovered Assets
+
+Quantum Findings
+
+Recent Telemetry
+
+Installed Policies
+
+Buttons
+
+Run Scan
+
+Pause
+
+Resume
+
+Upgrade
+
+Restart
+
+Delete
+
+Scan Workflow
+
+Replace
+
+Run Authorized Scan
+
+with
+
+Start Scan
+
+Scan Types
+
+Quick Scan
+
+Full Scan
+
+Discovery Scan
+
+Cloud Scan
+
+TLS Assessment
+
+Certificate Discovery
+
+PKI Inventory
+
+Crypto Inventory
+
+Quantum Readiness Scan
+
+Progress
+
+Preparing
+
+Scanning
+
+Analyzing
+
+Uploading
+
+Completed
+
+Agent Health
+
+Replace technical telemetry blocks.
+
+Display
+
+Healthy
+
+Warning
+
+Offline
+
+Updating
+
+Disconnected
+
+Each with
+
+Last heartbeat
+
+CPU
+
+Memory
+
+Version
+
+Agent uptime
+
+Network latency
+
+Findings Summary
+
+Display
+
+Assets Scanned
+
+Algorithms Found
+
+Quantum Vulnerabilities
+
+Certificates
+
+TLS Servers
+
+PKI Objects
+
+SSH Keys
+
+Weak Ciphers
+
+Migration Recommendations
+
+Navigation
+
+Replace
+
+Scanner
+
+History
+
+Agent Collector Scanner
+
+Telemetry
+
+with
+
+Overview
+
+Collectors
+
+Scans
+
+Assets
+
+Findings
+
+Telemetry
+
+Operations
+
+Reports
+
+Settings
+
+Progressive Disclosure
+
+Hide every advanced feature.
+
+Create
+
+Advanced Settings
+
+collapsible panel.
+
+Inside move
+
+RBAC
+
+Snapshots
+
+Rollback
+
+Connector Credentials
+
+Cloud SDK
+
+JSON Configuration
+
+Patch Stack
+
+TLS Policies
+
+OpenSSL Provider
+
+ML-KEM Settings
+
+ML-DSA Settings
+
+HKDF Settings
+
+SHA3 Settings
+
+Advanced Telemetry
+
+Heartbeat Configuration
+
+Evidence Upload
+
+Cloud Provider APIs
+
+Dry Run
+
+Operator Permissions
+
+Approval Gates
+
+Nothing advanced should appear on the default page.
+
+Separate Operations Module
+
+Move the following into a dedicated module.
+
+Operator Patch Workflow
+
+Patch Actions
+
+Connector Access
+
+Cloud SDK
+
+Remote Remediation
+
+Rollback
+
+Approval Workflow
+
+Snapshots
+
+Evidence
+
+Automation
+
+Rename module
+
+Operations Center
+
+Separate Cryptography Module
+
+Move
+
+Mandatory Quantum Stack
+
+TLS Profiles
+
+OpenSSL
+
+OQS
+
+Hybrid TLS
+
+ML-KEM
+
+ML-DSA
+
+AES
+
+HKDF
+
+SHA3
+
+SLH-DSA
+
+into
+
+Settings
+
+↓
+
+Cryptographic Policies
+
+These should never appear on the Collector page.
+
+Help System
+
+Replace
+
+Local Collector Clarification
+
+with
+
+How Collectors Work
+
+Include
+
+Where collectors run
+
+What collectors can scan
+
+What collectors cannot scan
+
+Cloud connector explanation
+
+Security model
+
+Least privilege explanation
+
+FAQ
+
+Deployment architecture diagram
+
+UI Modernization
+
+Follow
+
+Microsoft Fluent
+
+Azure Portal
+
+CrowdStrike Falcon
+
+Wiz
+
+Prisma Cloud
+
+SentinelOne
+
+Design principles.
+
+Use
+
+More whitespace
+
+Larger typography
+
+Less borders
+
+Minimal cards
+
+Soft shadows
+
+Glassmorphism
+
+Modern spacing
+
+Rounded cards
+
+Status colors
+
+Skeleton loaders
+
+Smooth animations
+
+Sticky action bar
+
+Responsive layouts
+
+Dark and Light mode
+
+Enterprise UX Rules
+
+Never expose implementation details to first-time users.
+
+Every page should answer one task only.
+
+Avoid technical jargon where simpler wording exists.
+
+Replace
+
+Register Collector
+
+with
+
+Create Collector
+
+Replace
+
+Run Authorized Scan
+
+with
+
+Start Scan
+
+Replace
+
+Connector Access
+
+with
+
+Cloud Connections
+
+Replace
+
+Operator Patch Workflow
+
+with
+
+Automated Remediation
+
+Replace
+
+Mandatory Quantum Stack
+
+with
+
+Security Standards
+
+Replace
+
+Local Collector Clarification
+
+with
+
+How Collectors Work
+
+Preserve Existing Functionality
+
+Do NOT remove any backend capability.
+
+Do NOT remove APIs.
+
+Do NOT remove RBAC.
+
+Do NOT remove telemetry.
+
+Do NOT remove SSE.
+
+Do NOT remove audit logs.
+
+Do NOT remove connector integrations.
+
+Do NOT remove cryptographic enforcement.
+
+Do NOT remove rollback.
+
+Do NOT remove snapshots.
+
+Do NOT remove approvals.
+
+Do NOT remove evidence collection.
+
+Only redesign the user experience.
+
+Technical Requirements
+
+Maintain
+
+React
+
+Next.js
+
+TypeScript
+
+TailwindCSS
+
+shadcn/ui
+
+Framer Motion
+
+Server-Sent Events (SSE)
+
+Supabase
+
+RBAC
+
+Existing REST APIs
+
+Existing backend contracts
+
+No breaking API changes.
+
+Performance Requirements
+
+First load under 2 seconds.
+
+Lazy load advanced sections.
+
+Virtualize collector tables.
+
+Minimize re-renders.
+
+Real-time updates via SSE.
+
+Responsive on desktop and tablet.
+
+Accessibility
+
+WCAG AA compliant.
+
+Keyboard navigation.
+
+Screen reader support.
+
+Proper contrast ratios.
+
+Visible focus indicators.
+
+Accessible status colors.
+
+Success Criteria
+
+The redesigned Agent Collector Scanner should:
+
+Reduce the visible information on the main page by approximately 60–70% while keeping all capabilities accessible.
+Allow a first-time administrator to deploy and connect a collector in under five minutes.
+Separate Collector Management, Scanning, Operations, and Cryptographic Policies into clearly defined modules with intuitive navigation.
+Use progressive disclosure so advanced configuration appears only when explicitly requested.
+Maintain complete backward compatibility with existing APIs, telemetry streams, RBAC, audit logging, and remediation workflows.
+Deliver a polished, enterprise-grade experience comparable to leading cybersecurity platforms while preserving QGuard Helix's advanced post-quantum capabilities.
+
+This redesign should be suitable for enterprise production deployment and reflect the usability standards expected by government agencies, financial institutions, regulated industries, and Fortune 500 organizations.

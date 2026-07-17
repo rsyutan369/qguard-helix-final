@@ -629,9 +629,11 @@ export const QR_PAGES: Array<{ label: string; short: string; path: string }> = [
   { label: 'Executive Dashboard', short: 'Executive', path: '/dashboard/quantum-readiness/executive' },
   { label: 'Quantum Exposure Graph™', short: 'Exposure Graph', path: '/dashboard/quantum-readiness/exposure-graph' },
   { label: 'Quantum Risk Analysis', short: 'Risk Analysis', path: '/dashboard/quantum-readiness/risk-analysis' },
+  { label: 'Quantum Remediation Engine™', short: 'Remediation', path: '/dashboard/quantum-readiness/remediation' },
   { label: 'AI Executive Advisor™', short: 'AI Executive', path: '/dashboard/quantum-readiness/ai-executive-advisor' },
   { label: 'AI Migration Advisor™', short: 'AI Migration', path: '/dashboard/quantum-readiness/ai-migration-advisor' },
-  { label: 'Digital Twin™', short: 'Digital Twin', path: '/dashboard/quantum-readiness/digital-twin' },
+  { label: 'Harvest Now (HNDL)', short: 'Harvest Now', path: '/dashboard/harvest-now' },
+  { label: 'Quantum Trust Certification™', short: 'Certification', path: '/dashboard/quantum-certification' },
   { label: 'Report Center', short: 'Reports', path: '/dashboard/quantum-readiness/reports' },
 ];
 

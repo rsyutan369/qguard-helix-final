@@ -20,6 +20,7 @@ import {
   type ValidatedAsset
 } from '@/lib/scanner/asset-validator';
 import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 
 type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled';
 type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history' | 'agents' | 'settings';
@@ -2245,6 +2246,7 @@ npm run agent:watch`;
 
   return (
     <div className="p-6 lg:p-8 space-y-6 min-h-screen">
+      <WorkflowRail activeStage="discovery" />
       <header className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-black uppercase tracking-tight text-white">

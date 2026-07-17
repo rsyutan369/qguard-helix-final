@@ -1,0 +1,899 @@
+# ROLE
+
+You are a Principal Software Architect, Senior Cryptographer, Enterprise Collaboration Engineer, Mobile Engineer, Tauri Engineer, WebRTC Engineer, Backend Architect, and UX Engineer.
+
+You are working on an EXISTING production-grade application called:
+
+QGuard Messaging
+
+DO NOT rebuild the application.
+
+DO NOT replace existing functionality.
+
+Your task is to EXTEND the existing architecture by integrating Enterprise Quantum-Secure Group Chat and Group Calling while preserving all current features.
+
+====================================================
+PRIMARY GOALS
+====================================================
+
+Transform QGuard Messaging into an enterprise collaboration platform similar to Signal, Microsoft Teams, Slack, and Telegram while maintaining zero-knowledge architecture and Post-Quantum Cryptography.
+
+The implementation must support BOTH:
+
+• Desktop (Tauri)
+• Android
+
+using the existing backend APIs and cryptographic stack.
+
+====================================================
+CRITICAL REQUIREMENTS
+====================================================
+
+Maintain backward compatibility.
+
+Do not break:
+
+• Existing 1-to-1 chat
+• Existing encryption
+• Existing authentication
+• Existing Quantum Vault
+• Existing key management
+• Existing notifications
+• Existing synchronization
+• Existing UI themes
+• Existing desktop features
+• Existing Android features
+
+Reuse existing components whenever possible.
+
+Never duplicate code.
+
+Refactor shared logic into reusable modules.
+
+====================================================
+ARCHITECTURE
+====================================================
+
+Create a modular architecture.
+
+Example
+
+Messaging
+
+    Direct Chat
+
+    Group Chat
+
+Calling
+
+    Voice
+
+    Video
+
+    Group Voice
+
+    Group Video
+
+Encryption
+
+    Direct Ratchet
+
+    Group Ratchet
+
+Storage
+
+    Local Cache
+
+    Secure Storage
+
+    Attachments
+
+Networking
+
+    WebSocket
+
+    WebRTC
+
+Synchronization
+
+    Presence
+
+    Delivery
+
+    Membership
+
+====================================================
+GROUP CHAT
+====================================================
+
+Implement:
+
+✓ Create Group
+
+✓ Edit Group
+
+✓ Delete Group
+
+✓ Archive Group
+
+✓ Leave Group
+
+✓ Join Group
+
+✓ Invite Members
+
+✓ Invite Links
+
+✓ QR Invite
+
+✓ Admin Approval
+
+✓ Public Groups
+
+✓ Private Groups
+
+✓ Enterprise Organization Groups
+
+✓ Broadcast Channels
+
+✓ Announcement Groups
+
+✓ Communities
+
+====================================================
+GROUP MEMBER ROLES
+====================================================
+
+Support
+
+Owner
+
+Super Admin
+
+Admin
+
+Moderator
+
+Member
+
+Guest
+
+Read Only
+
+Each role has configurable permissions.
+
+====================================================
+GROUP PERMISSIONS
+====================================================
+
+Configurable
+
+Who can:
+
+Send Messages
+
+Send Files
+
+Send Images
+
+Send Videos
+
+Send Voice Notes
+
+Create Polls
+
+Pin Messages
+
+Delete Messages
+
+Edit Messages
+
+Invite Members
+
+Kick Members
+
+Ban Members
+
+Start Calls
+
+Record Calls
+
+Share Screen
+
+Share Files
+
+Change Group Picture
+
+Change Description
+
+Create Threads
+
+Manage Topics
+
+====================================================
+THREADS
+====================================================
+
+Implement Slack-style threaded conversations.
+
+Messages
+
+Replies
+
+Nested replies
+
+Unread thread indicators
+
+Encrypted threads.
+
+====================================================
+MESSAGE FEATURES
+====================================================
+
+Support
+
+Rich text
+
+Markdown
+
+Code blocks
+
+Emoji
+
+GIF
+
+Stickers
+
+Polls
+
+Replies
+
+Mentions
+
+Reactions
+
+Forward
+
+Copy
+
+Delete
+
+Delete for Everyone
+
+Edit Message
+
+Scheduled Messages
+
+Message Expiration
+
+Self Destruct
+
+View Once
+
+Voice Notes
+
+Video Notes
+
+====================================================
+ENTERPRISE FILE SHARING
+====================================================
+
+Support
+
+PDF
+
+Office Documents
+
+ZIP
+
+Source Code
+
+Images
+
+Videos
+
+Audio
+
+Large Files
+
+Drag & Drop
+
+Chunk Upload
+
+Resume Upload
+
+Encryption before upload.
+
+====================================================
+SEARCH
+====================================================
+
+Encrypted Search
+
+Search:
+
+Messages
+
+Files
+
+Users
+
+Dates
+
+Mentions
+
+Links
+
+Pinned Messages
+
+====================================================
+PINNED CONTENT
+====================================================
+
+Support
+
+Pinned Messages
+
+Pinned Files
+
+Pinned Links
+
+Pinned Polls
+
+Pinned Announcements
+
+====================================================
+GROUP CALLS
+====================================================
+
+Implement
+
+Voice Calls
+
+Video Calls
+
+Group Audio
+
+Group Video
+
+Screen Sharing
+
+Remote Assistance
+
+Whiteboard
+
+Meeting Rooms
+
+Conference Calls
+
+Waiting Room
+
+Raise Hand
+
+Emoji Reactions
+
+Mute
+
+Camera Toggle
+
+Background Blur
+
+Noise Suppression
+
+Live Chat
+
+Recording (optional)
+
+====================================================
+GROUP CALL LIMITS
+====================================================
+
+Design scalable architecture.
+
+Examples
+
+10 Participants
+
+25 Participants
+
+50 Participants
+
+100+
+
+Architecture must support future SFU deployment.
+
+====================================================
+WEBRTC
+====================================================
+
+Use
+
+SRTP
+
+ICE
+
+STUN
+
+TURN
+
+Adaptive bitrate
+
+Packet loss recovery
+
+Echo cancellation
+
+Noise suppression
+
+Automatic reconnect
+
+Network quality indicator
+
+====================================================
+ENTERPRISE PRESENCE
+====================================================
+
+Support
+
+Online
+
+Away
+
+Busy
+
+Offline
+
+Typing
+
+Recording
+
+Uploading
+
+Downloading
+
+On Call
+
+Do Not Disturb
+
+Invisible Mode
+
+====================================================
+NOTIFICATIONS
+====================================================
+
+Desktop
+
+Android
+
+Push Notifications
+
+Mention Alerts
+
+Call Notifications
+
+Thread Replies
+
+Group Invites
+
+Admin Announcements
+
+====================================================
+SECURITY
+====================================================
+
+ALL group messages MUST remain End-to-End Encrypted.
+
+The server MUST NOT decrypt any messages.
+
+Zero Knowledge Architecture.
+
+====================================================
+POST QUANTUM CRYPTOGRAPHY
+====================================================
+
+Use ONLY the approved QGuard Helix cryptographic stack.
+
+Key Exchange
+
+Hybrid
+
+X25519
+
++
+
+ML-KEM-768
+
+Future Ready
+
+ML-KEM Only
+
+Digital Signatures
+
+Ed25519
+
++
+
+ML-DSA-65
+
+Encryption
+
+AES-256-GCM
+
+Hash
+
+SHA3-256
+
+SHA3-512
+
+Key Derivation
+
+HKDF-SHA3-256
+
+Random
+
+OS Secure RNG
+
+====================================================
+GROUP KEY MANAGEMENT
+====================================================
+
+Implement Messaging Layer Security (MLS) with TreeKEM-style group key management (or an architecture compatible with MLS if a full implementation is phased).
+
+Requirements:
+
+• Per-member leaf keys
+• Efficient group key updates
+• Automatic key rotation when members join
+• Automatic key rotation when members leave
+• Forward Secrecy
+• Post-Compromise Security
+• Membership authentication
+• Secure welcome messages
+• Key package validation
+
+====================================================
+CALL SECURITY
+====================================================
+
+Every call creates
+
+Unique Session Key
+
+Media Keys
+
+Screen Share Keys
+
+Recording Keys
+
+All encrypted.
+
+====================================================
+GROUP SECURITY PANEL
+====================================================
+
+Create Enterprise Security Dashboard.
+
+Display
+
+Encryption
+
+Quantum Safe Status
+
+Forward Secrecy
+
+Group Key Version
+
+Cipher Suite
+
+Session Fingerprint
+
+Trust Level
+
+Packet Encryption
+
+Identity Verification
+
+Security Warnings
+
+====================================================
+IDENTITY
+====================================================
+
+Every member has
+
+Identity Key
+
+Quantum Identity
+
+Signature
+
+Verification QR
+
+Safety Number
+
+Device List
+
+====================================================
+DEVICE MANAGEMENT
+====================================================
+
+Support
+
+Multiple Devices
+
+Desktop
+
+Android
+
+Tablet
+
+Future iOS
+
+Secure Device Linking
+
+Device Revocation
+
+====================================================
+SYNC
+====================================================
+
+Synchronize
+
+Messages
+
+Calls
+
+Membership
+
+Presence
+
+Unread Count
+
+Pinned Content
+
+Threads
+
+====================================================
+OFFLINE MODE
+====================================================
+
+Offline Queue
+
+Retry
+
+Auto Sync
+
+Conflict Resolution
+
+====================================================
+PERFORMANCE
+====================================================
+
+Virtualized Message List
+
+Lazy Loading
+
+Incremental Sync
+
+Chunked Upload
+
+Memory Optimization
+
+Battery Optimization
+
+Bandwidth Optimization
+
+====================================================
+DATABASE
+====================================================
+
+Extend existing schema.
+
+Create normalized tables/collections for
+
+Groups
+
+Members
+
+Roles
+
+Permissions
+
+Threads
+
+Calls
+
+Call Participants
+
+Group Keys
+
+Attachments
+
+Audit Events
+
+Invitations
+
+====================================================
+AUDIT LOG
+====================================================
+
+Log
+
+Group Created
+
+Group Deleted
+
+Role Changed
+
+User Joined
+
+User Left
+
+Key Rotated
+
+Admin Changed
+
+Policy Updated
+
+Do NOT log message contents.
+
+====================================================
+ANDROID
+====================================================
+
+Follow Material 3.
+
+Responsive Layout.
+
+Tablet support.
+
+Adaptive Navigation.
+
+Battery optimization.
+
+Foreground Service for calls.
+
+Background notifications.
+
+====================================================
+DESKTOP
+====================================================
+
+Follow existing Tauri architecture.
+
+Support
+
+Resizable Windows
+
+Native Notifications
+
+System Tray
+
+Call Popups
+
+Multi Monitor
+
+Hardware Acceleration
+
+====================================================
+UI/UX
+====================================================
+
+Maintain existing QGuard Messaging design language.
+
+Modern Enterprise UI.
+
+Glassmorphism.
+
+Dark Mode
+
+Light Mode
+
+Smooth animations.
+
+Framer Motion.
+
+Accessible.
+
+====================================================
+TESTING
+====================================================
+
+Implement
+
+Unit Tests
+
+Integration Tests
+
+E2E Tests
+
+Encryption Validation
+
+Load Testing
+
+Concurrency Testing
+
+Offline Testing
+
+Call Quality Testing
+
+Network Failure Testing
+
+Security Regression Testing
+
+====================================================
+SECURITY REVIEW
+====================================================
+
+Verify
+
+OWASP Mobile
+
+OWASP Top 10
+
+MITRE ATT&CK
+
+Replay Protection
+
+Downgrade Attacks
+
+MITM
+
+Metadata Leakage
+
+Key Reuse
+
+Weak Randomness
+
+Memory Safety
+
+Secure Storage
+
+Certificate Validation
+
+Dependency Vulnerabilities
+
+====================================================
+DELIVERABLES
+====================================================
+
+Produce production-ready code only.
+
+Update:
+
+Database
+
+Backend
+
+Desktop
+
+Android
+
+Shared libraries
+
+API
+
+UI
+
+Documentation
+
+Architecture diagrams
+
+Sequence diagrams
+
+Migration scripts
+
+Tests
+
+No placeholder code.
+
+No TODOs.
+
+No mock implementations.
+
+No hardcoded secrets.
+
+No breaking changes.
+
+Enterprise-grade quality suitable for production deployment.
+
+

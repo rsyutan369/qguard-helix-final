@@ -7,7 +7,8 @@ import {
   Rocket, GitCompare, ChevronLeft,
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
-  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost, Workflow, Crown
+  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost, Workflow, Crown,
+  BadgeDollarSign, BarChart3, CreditCard, TrendingUp, Users, Wrench
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
@@ -49,10 +50,11 @@ const NAV_SECTIONS = [
       { name: 'Executive Dashboard', path: '/dashboard/quantum-readiness/executive', icon: Crown },
       { name: 'Quantum Exposure Graph™', path: '/dashboard/quantum-readiness/exposure-graph', icon: Network },
       { name: 'Quantum Risk Analysis', path: '/dashboard/quantum-readiness/risk-analysis', icon: Target },
-      { name: 'HNDL Assessment', path: '/dashboard/harvest-now', icon: EyeOff },
+      { name: 'Quantum Remediation Engine™', path: '/dashboard/quantum-readiness/remediation', icon: Wrench },
       { name: 'AI Executive Advisor™', path: '/dashboard/quantum-readiness/ai-executive-advisor', icon: Sparkles },
       { name: 'AI Migration Advisor™', path: '/dashboard/quantum-readiness/ai-migration-advisor', icon: Route },
-      { name: 'Quantum Readiness Digital Twin™', path: '/dashboard/quantum-readiness/digital-twin', icon: GitCompare },
+      { name: 'Harvest Now (HNDL)', path: '/dashboard/harvest-now', icon: EyeOff },
+      { name: 'Quantum Trust Certification™', path: '/dashboard/quantum-certification', icon: Award },
       { name: 'Report Center', path: '/dashboard/quantum-readiness/reports', icon: FileText },
     ],
   },
@@ -184,6 +186,22 @@ const NAV_SECTIONS = [
   },
 ];
 
+// Owner-only executive financial analytics — rendered directly below the
+// System section (Owner Administrator). Never shown to non-owner accounts;
+// the /api/v1/revenue backend enforces the same owner-email gate.
+const REVENUE_INTELLIGENCE_SECTION = {
+  label: 'Revenue Intelligence',
+  collapsible: true,
+  items: [
+    { name: 'Executive Overview', path: '/dashboard/revenue-intelligence', icon: BadgeDollarSign },
+    { name: 'Revenue Analytics', path: '/dashboard/revenue-intelligence/revenue', icon: BarChart3 },
+    { name: 'Subscription Analytics', path: '/dashboard/revenue-intelligence/subscriptions', icon: CreditCard },
+    { name: 'Customer Analytics', path: '/dashboard/revenue-intelligence/customers', icon: Users },
+    { name: 'Payment Analytics', path: '/dashboard/revenue-intelligence/payments', icon: Coins },
+    { name: 'Forecast & Reports', path: '/dashboard/revenue-intelligence/forecast', icon: TrendingUp },
+  ],
+};
+
 function DashboardShell() {
   return (
     <div className="qg-dashboard-shell grid min-h-screen place-items-center bg-[var(--qg-dashboard-bg)] text-[var(--qg-accent-cyan)]">
@@ -235,6 +253,7 @@ export default function DashboardLayout() {
     'Telemetry': false,
     'Quantum Tools': false,
     'System': false,
+    'Revenue Intelligence': false,
   });
 
   const toggleSection = (label: string) => {
@@ -254,10 +273,15 @@ export default function DashboardLayout() {
   const tierNavSections = NAV_SECTIONS
     .map(section => ({ ...section, items: section.items.filter(item => canAccessPath(effectiveTier, item.path)) }))
     .filter(section => section.items.length > 0);
+  // Owner-only injections: Owner Administrator inside System, and the Revenue
+  // Intelligence section immediately below it.
   const navSections = isOwner
-    ? tierNavSections.map(section => section.label === 'System'
-      ? { ...section, items: [{ name: 'Owner Administrator', path: '/dashboard/admin', icon: Crown }, ...section.items] }
-      : section)
+    ? tierNavSections.flatMap(section => section.label === 'System'
+      ? [
+        { ...section, items: [{ name: 'Owner Administrator', path: '/dashboard/admin', icon: Crown }, ...section.items] },
+        REVENUE_INTELLIGENCE_SECTION,
+      ]
+      : [section])
     : tierNavSections;
 
   if (loading || (user && subscription.loading)) {

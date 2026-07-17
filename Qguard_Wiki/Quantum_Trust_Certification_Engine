@@ -1,0 +1,847 @@
+You are the Lead Enterprise Software Architect, Principal Cybersecurity Engineer, Principal UI/UX Designer, Principal Post-Quantum Cryptography Engineer, Principal DevOps Engineer, and Principal AI Systems Engineer responsible for extending the QGuard Helix Platform.
+
+Your objective is to design, build, integrate, test, document, and productionize a completely automated Quantum Trust Certification Engine™ that issues enterprise-grade Post-Quantum Readiness Certificates after organizations successfully remediate quantum-vulnerable cryptography and pass all validation checks.
+
+This must be production-ready, enterprise-grade, modular, secure, scalable, and future-proof.
+
+=========================================================
+PLATFORM CONTEXT
+=========================================================
+
+Platform Name
+
+QGuard Helix™
+
+Purpose
+
+Enterprise Post-Quantum Migration Platform
+
+Existing Modules
+
+• Dashboard
+• Quantum Readiness Assessment Engine™
+• Harvest Now Decrypt Later Assessment
+• Cryptographic Discovery
+• CBOM Explorer
+• PQC Migration Planner
+• AI Executive Advisor™
+• AI Migration Advisor™
+• Runtime Cryptographic Intelligence
+• Crypto Agility Engine
+• Quantum Risk Dashboard
+• Report Center
+• Quantum Exposure Graph™
+
+The new Quantum Trust Certification Engine must integrate seamlessly with all existing modules.
+
+Never duplicate existing functionality.
+
+Reuse existing APIs, services, scanners, assessment engines, authentication, RBAC, audit logging, notification services, report engine, and telemetry whenever possible.
+
+=========================================================
+PROJECT OBJECTIVE
+=========================================================
+
+Transform QGuard Helix from a vulnerability assessment platform into a globally recognized Quantum Trust Certification Platform.
+
+Organizations should receive an official Quantum Trust Certificate only after successfully eliminating quantum-vulnerable cryptography and achieving enterprise-defined Post-Quantum Readiness thresholds.
+
+The certificate must represent measurable, evidence-based cryptographic readiness—not merely scan completion.
+
+=========================================================
+NEW MODULE
+=========================================================
+
+Create an entirely new enterprise page/module:
+
+Quantum Trust Certification™
+
+Route
+
+/dashboard/quantum-certification
+
+Navigation
+
+Trust & Compliance
+
+Icon
+
+Award / Shield / Certificate
+
+=========================================================
+CERTIFICATION WORKFLOW
+=========================================================
+
+Discovery Scan
+
+↓
+
+Quantum Readiness Assessment
+
+↓
+
+Harvest Now Decrypt Later Assessment
+
+↓
+
+Cryptographic Inventory
+
+↓
+
+CBOM Generation
+
+↓
+
+Migration Recommendations
+
+↓
+
+Customer Implements Changes
+
+↓
+
+Re-scan
+
+↓
+
+Validation Engine
+
+↓
+
+Policy Validation
+
+↓
+
+Certification Eligibility Engine
+
+↓
+
+Certificate Generator
+
+↓
+
+Digital Signature
+
+↓
+
+QR Code Generation
+
+↓
+
+Public Verification Portal
+
+↓
+
+Continuous Monitoring
+
+↓
+
+Renewal Engine
+
+=========================================================
+CERTIFICATION ELIGIBILITY ENGINE
+=========================================================
+
+Create a rules engine.
+
+The engine determines whether certification can be issued.
+
+Rules must be configurable.
+
+Example thresholds
+
+Overall Readiness
+
+>= 90%
+
+Critical Quantum Vulnerabilities
+
+0
+
+Critical HNDL Exposure
+
+0
+
+Residual Risk
+
+Low
+
+Assessment Confidence
+
+>=95%
+
+PQC Adoption
+
+>=85%
+
+Unsupported Algorithms
+
+None
+
+Legacy RSA
+
+Disallowed
+
+Legacy ECC
+
+Disallowed
+
+SHA1
+
+Disallowed
+
+TLS 1.0
+
+Disallowed
+
+TLS 1.1
+
+Disallowed
+
+3DES
+
+Disallowed
+
+Certificates Expired
+
+0
+
+Crypto Drift
+
+None
+
+Certificate Integrity
+
+Verified
+
+If any required policy fails
+
+DO NOT ISSUE CERTIFICATE.
+
+Instead generate remediation recommendations.
+
+=========================================================
+CERTIFICATION LEVELS
+=========================================================
+
+Implement multiple certification tiers.
+
+Bronze
+
+Initial Readiness
+
+Silver
+
+Hybrid PQC Implemented
+
+Gold
+
+Enterprise Quantum Secure
+
+Platinum
+
+Advanced Quantum Trust
+
+Diamond
+
+Continuous Quantum Trust Certified
+
+Automatically calculate the level using weighted scoring.
+
+=========================================================
+CERTIFICATE CONTENT
+=========================================================
+
+Every certificate must contain
+
+Company Name
+
+Organization Logo
+
+Certificate ID
+
+Issue Date
+
+Expiration Date
+
+Assessment Version
+
+Assessment ID
+
+Overall Readiness Score
+
+Residual Risk
+
+Assessment Confidence
+
+PQC Adoption %
+
+Quantum Risk Score
+
+Certification Level
+
+Assessment Scope
+
+Cryptographic Stack
+
+Certified Assets
+
+Signature
+
+Official Seal
+
+QR Code
+
+Verification URL
+
+Certificate Hash
+
+Digital Signature Status
+
+Certificate Status
+
+=========================================================
+CRYPTOGRAPHIC STACK
+=========================================================
+
+Display the verified cryptographic algorithms currently implemented.
+
+Examples
+
+Key Exchange
+
+Hybrid X25519 + ML-KEM-768
+
+ML-KEM-1024 (Vault)
+
+Digital Signatures
+
+Hybrid Ed25519 + ML-DSA-65
+
+SLH-DSA
+
+Symmetric Encryption
+
+AES-256-GCM
+
+Hashing
+
+SHA3-256
+
+SHA3-512
+
+KDF
+
+HKDF-SHA3-256
+
+Transport
+
+TLS 1.3 Hybrid
+
+Certificate
+
+Hybrid PQC Certificate
+
+Crypto Agility
+
+Enabled
+
+Perfect Forward Secrecy
+
+Enabled
+
+Display only algorithms actually verified during assessment.
+
+=========================================================
+CERTIFIED ASSETS
+=========================================================
+
+List all validated assets.
+
+Servers
+
+Endpoints
+
+Applications
+
+Containers
+
+Kubernetes
+
+Databases
+
+Cloud
+
+Identity
+
+PKI
+
+Certificates
+
+VPN
+
+Secrets
+
+Storage
+
+APIs
+
+IoT
+
+OT
+
+Network Devices
+
+Code Repositories
+
+Keys
+
+HSM
+
+=========================================================
+PUBLIC VERIFICATION PORTAL
+=========================================================
+
+Create
+
+verify.qguardhelix.com
+
+Every certificate must be publicly verifiable.
+
+Lookup by
+
+Certificate ID
+
+Company Name
+
+QR Code
+
+Verification URL
+
+Display
+
+Certificate Status
+
+Valid
+
+Suspended
+
+Expired
+
+Revoked
+
+Issued Date
+
+Expiration Date
+
+Readiness Score
+
+Certification Level
+
+Assessment Version
+
+Certificate Integrity
+
+Digital Signature
+
+Last Validation
+
+Certified Algorithms
+
+=========================================================
+DIGITAL SIGNATURE
+=========================================================
+
+Digitally sign every certificate.
+
+Embed
+
+Certificate Hash
+
+Timestamp
+
+Signature
+
+Verification Metadata
+
+Certificate Chain
+
+Tamper Detection
+
+=========================================================
+QR CODE
+=========================================================
+
+Generate QR Code automatically.
+
+QR redirects to
+
+verify.qguardhelix.com/{certificate-id}
+
+=========================================================
+CONTINUOUS MONITORING
+=========================================================
+
+Every new assessment automatically re-validates the certificate.
+
+If new quantum vulnerabilities appear
+
+Automatically
+
+Suspend Certificate
+
+Notify Customer
+
+Generate Findings
+
+Display Drift
+
+Require Reassessment
+
+=========================================================
+CERTIFICATE RENEWAL
+=========================================================
+
+Support
+
+Auto Renewal
+
+Manual Renewal
+
+Scheduled Reassessment
+
+Expiration Notifications
+
+=========================================================
+CERTIFICATE DASHBOARD
+=========================================================
+
+Create enterprise dashboard.
+
+Display
+
+Current Certification Status
+
+Readiness Trend
+
+Historical Certificates
+
+Renewal Countdown
+
+Certification Timeline
+
+Recent Changes
+
+Drift Detection
+
+Assets Covered
+
+Assessment History
+
+Downloads
+
+=========================================================
+DOWNLOADS
+=========================================================
+
+Allow export
+
+Enterprise PDF
+
+PNG
+
+SVG
+
+JSON
+
+Machine Readable Certificate
+
+Audit Package
+
+Executive Summary
+
+=========================================================
+REPORT INTEGRATION
+=========================================================
+
+Integrate into existing Report Center.
+
+Every assessment report should automatically include
+
+Certification Status
+
+Certification Level
+
+Certificate Preview
+
+Eligibility Status
+
+Recommendations
+
+=========================================================
+AUDIT LOGGING
+=========================================================
+
+Log every action.
+
+Certificate Issued
+
+Certificate Renewed
+
+Certificate Revoked
+
+Certificate Suspended
+
+Certificate Downloaded
+
+Verification Requested
+
+Policy Changed
+
+Administrator Override
+
+=========================================================
+ROLE BASED ACCESS CONTROL
+=========================================================
+
+Permissions
+
+Super Admin
+
+Issue Certificates
+
+Security Officer
+
+Approve
+
+Auditor
+
+View
+
+Customer
+
+Download
+
+Viewer
+
+Read Only
+
+=========================================================
+DATABASE
+=========================================================
+
+Create production schema.
+
+Tables
+
+certificates
+
+certificate_assets
+
+certificate_history
+
+certificate_downloads
+
+certificate_validation
+
+certificate_algorithms
+
+certificate_signatures
+
+certificate_policies
+
+certificate_audit
+
+certificate_verification_logs
+
+certificate_notifications
+
+=========================================================
+API
+=========================================================
+
+REST API
+
+GraphQL
+
+Realtime Events
+
+Endpoints
+
+Issue Certificate
+
+Renew Certificate
+
+Validate Certificate
+
+Suspend
+
+Revoke
+
+List Certificates
+
+Download PDF
+
+Generate QR
+
+Verification
+
+History
+
+=========================================================
+EVENTS
+=========================================================
+
+Publish events
+
+CertificateIssued
+
+CertificateRenewed
+
+CertificateRevoked
+
+CertificateExpired
+
+CertificateValidated
+
+CertificateDownloaded
+
+=========================================================
+AI INTEGRATION
+=========================================================
+
+Integrate AI Executive Advisor™
+
+Explain
+
+Why certification passed
+
+Why certification failed
+
+Business impact
+
+Risk reduction
+
+Compliance improvements
+
+Migration maturity
+
+Recommended next steps
+
+=========================================================
+UI/UX
+=========================================================
+
+Enterprise premium design.
+
+Glassmorphism
+
+Animated certificate preview
+
+Trust badges
+
+3D seals
+
+Animated score cards
+
+Responsive
+
+Dark Mode
+
+Light Mode
+
+Accessible
+
+WCAG compliant
+
+=========================================================
+SECURITY
+=========================================================
+
+OWASP Top 10
+
+Input validation
+
+RBAC
+
+Rate limiting
+
+Audit logging
+
+CSRF
+
+XSS
+
+SQL Injection
+
+API authentication
+
+Encryption at rest
+
+Encryption in transit
+
+Secrets management
+
+Secure downloads
+
+Signed URLs
+
+=========================================================
+TESTING
+=========================================================
+
+Create
+
+Unit Tests
+
+Integration Tests
+
+End-to-End Tests
+
+Performance Tests
+
+Security Tests
+
+Accessibility Tests
+
+Regression Tests
+
+=========================================================
+DOCUMENTATION
+=========================================================
+
+Generate complete documentation.
+
+Architecture
+
+Database
+
+API
+
+Workflow
+
+Certificate Lifecycle
+
+Renewal Process
+
+Security Model
+
+Developer Guide
+
+Administrator Guide
+
+Customer Guide
+
+=========================================================
+FINAL REQUIREMENT
+=========================================================
+
+Do not generate placeholder implementations.
+
+Do not create mock functionality.
+
+Everything must be fully integrated with the existing QGuard Helix architecture, scanners, assessment engine, telemetry, authentication, report engine, CBOM Explorer, AI modules, runtime intelligence, and Quantum Readiness Assessment Engine.
+
+Ensure all certificate data is evidence-driven, cryptographically verifiable, traceable, auditable, and continuously validated.
+
+The Quantum Trust Certification Engine™ must become a core capability of QGuard Helix, positioning it as an enterprise platform that not only discovers and remediates post-quantum cryptographic risks but also certifies and continuously attests an organization's measurable Post-Quantum Readiness through trusted, verifiable, and production-grade digital certifications.

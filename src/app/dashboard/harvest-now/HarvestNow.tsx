@@ -26,6 +26,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useHarvestNow, type CryptoClass } from '@/hooks/use-harvest-now';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 
 /* ------------------------------------------------------------------ */
 /* Formatters & tone helpers                                          */
@@ -264,6 +265,7 @@ export default function HarvestNow() {
       `}</style>
 
       <div className="mx-auto grid max-w-[1700px] gap-3">
+        <WorkflowRail activeStage="risk" tone="adaptive" />
         {/* ---------- Top bar ---------- */}
         <header className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(360px,1fr)_150px_160px_150px_48px]">
           <div className={`${PANEL} sm:col-span-2 xl:col-span-1`}>

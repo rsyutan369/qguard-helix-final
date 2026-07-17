@@ -175,6 +175,7 @@ function ProtectedMessagingApp() {
         onCancelMfa={auth.cancelMfaSignIn}
         onSignUp={auth.signUp}
         onResendVerification={auth.resendVerification}
+        onResetPassword={auth.resetPassword}
         onClearError={auth.clearError}
       />
     );

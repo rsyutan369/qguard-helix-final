@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Clock,
   Download,
+  EyeOff,
   FileText,
   FlaskConical,
   Gauge,
@@ -32,6 +33,7 @@ import {
 import { useAuth } from '@/contexts/auth-context';
 import { useMigrationPlan, type MigrationStrategy } from '@/hooks/use-migration-plan';
 import { clearMigrationHandoff, readMigrationHandoff, type MigrationHandoff } from '@/app/dashboard/quantum-readiness/_advisor';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import {
   Badge,
   BarList,
@@ -63,6 +65,159 @@ import {
 } from '@/app/dashboard/quantum-readiness/_shared';
 
 const SLATEISH = '#64748B';
+
+/* ------------------------------------------------------------------ */
+/* Approval workflow — real migration_plans rows. Submitting creates a */
+/* pending_approval plan; approve/reject records the decision. The     */
+/* 9-stage 'Approve' stage and the platform WorkflowRail read the same */
+/* rows, so every status indicator stays consistent.                   */
+/* ------------------------------------------------------------------ */
+interface ApprovalPlan {
+  id: string;
+  name: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  submittedBy: string;
+  approval: { decision: string; decidedBy: string; decidedAt: string; reason: string } | null;
+}
+
+const PLAN_STATUS_TONES: Record<string, string> = {
+  approved: EMERALD,
+  pending_approval: AMBER,
+  rejected: RED,
+};
+
+function ApprovalWorkflowPanel({ onDecision }: { onDecision: () => void }) {
+  const { session, user } = useAuth();
+  const token = session?.access_token;
+  const [plans, setPlans] = useState<ApprovalPlan[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+
+  const loadPlans = useCallback(async () => {
+    if (!token) return;
+    try {
+      const response = await fetch('/api/v1/migration-planner/plans', { headers: { Authorization: `Bearer ${token}` } });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) setPlans(payload.data || []);
+    } catch {
+      /* panel is auxiliary — keep the page alive */
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadPlans();
+  }, [loadPlans]);
+
+  const post = useCallback(
+    async (path: string, body: unknown, okText: string) => {
+      if (!token) return;
+      setBusy(true);
+      setMessage(null);
+      try {
+        const response = await fetch(`/api/v1/migration-planner${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+        setMessage(okText);
+        setRejectingId(null);
+        setReason('');
+        await loadPlans();
+        onDecision();
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : 'Action failed');
+      } finally {
+        setBusy(false);
+      }
+    },
+    [token, loadPlans, onDecision],
+  );
+
+  const pending = plans.filter((p) => /pending/i.test(p.status));
+  const approved = plans.filter((p) => /approved/i.test(p.status));
+
+  return (
+    <Panel className="p-5">
+      <SectionTitle
+        suffix={
+          <Badge color={approved.length ? EMERALD : pending.length ? AMBER : SLATEISH}>
+            {approved.length ? `${approved.length} approved` : pending.length ? `${pending.length} awaiting approval` : 'No plan submitted'}
+          </Badge>
+        }
+      >
+        Approval Workflow
+      </SectionTitle>
+      <p className="mb-3 text-xs text-white/55">
+        Executive sign-off gate before Live Migration execution. Submitting records a real migration plan; approval
+        decisions are stamped with the approver and timestamp and flow to the workflow rail on every dashboard.
+      </p>
+      {message ? <div className="mb-3 rounded border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] text-white/70">{message}</div> : null}
+      <div className="mb-3">
+        <PrimaryButton icon={ScrollText} onClick={() => void post('/plans', {}, 'Plan submitted for approval.')} disabled={busy || !user}>
+          {busy ? 'Working…' : 'Submit Plan for Approval'}
+        </PrimaryButton>
+      </div>
+      {plans.length ? (
+        <div className="space-y-2">
+          {plans.slice(0, 6).map((plan) => {
+            const tone = PLAN_STATUS_TONES[plan.status.toLowerCase()] || SLATEISH;
+            return (
+              <div key={plan.id} className="rounded-md border border-white/8 bg-white/[0.02] px-3 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-xs font-bold text-white/85">{plan.name}</span>
+                      <Badge color={tone}>{plan.status.replace(/_/g, ' ')}</Badge>
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-white/40">
+                      {plan.submittedBy ? `Submitted by ${plan.submittedBy} · ` : ''}
+                      {longDate(plan.updatedAt || plan.createdAt)}
+                      {plan.approval ? ` · ${plan.approval.decision === 'approve' ? 'Approved' : 'Rejected'} by ${plan.approval.decidedBy}${plan.approval.reason ? ` — ${plan.approval.reason}` : ''}` : ''}
+                    </div>
+                  </div>
+                  {/pending/i.test(plan.status) ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <HeaderButton icon={CheckCircle2} onClick={() => void post(`/plans/${encodeURIComponent(plan.id)}/approval`, { decision: 'approve' }, 'Plan approved — execution unlocked.')}>
+                        Approve
+                      </HeaderButton>
+                      <HeaderButton icon={ShieldAlert} onClick={() => setRejectingId(rejectingId === plan.id ? null : plan.id)}>
+                        Reject
+                      </HeaderButton>
+                    </div>
+                  ) : null}
+                </div>
+                {rejectingId === plan.id ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <input
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      placeholder="Rejection reason (required)"
+                      className="h-9 flex-1 rounded-md border border-white/10 bg-black/30 px-3 text-xs text-white outline-none placeholder:text-white/30 focus:border-red-400/50"
+                    />
+                    <PrimaryButton
+                      onClick={() => reason.trim() && void post(`/plans/${encodeURIComponent(plan.id)}/approval`, { decision: 'reject', reason: reason.trim() }, 'Plan rejected — revise and resubmit.')}
+                      disabled={busy || !reason.trim()}
+                    >
+                      Confirm Rejection
+                    </PrimaryButton>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState label="No migration plans submitted yet." hint="Submit the current roadmap for executive approval to unlock Live Migration execution." />
+      )}
+    </Panel>
+  );
+}
 
 const STAGE_ICONS: Record<string, LucideIcon> = {
   discover: Boxes,
@@ -153,6 +308,7 @@ export default function MigrationPlanner() {
   return (
     <div className="min-h-screen bg-[#030711] px-4 py-5 text-white sm:px-5 lg:px-6">
       <div className="mx-auto max-w-[1560px] space-y-4">
+        <WorkflowRail activeStage="planning" />
         {/* Header */}
         <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
@@ -262,6 +418,9 @@ export default function MigrationPlanner() {
           </div>
         </Panel>
 
+        {/* Approval workflow — executive sign-off gate */}
+        <ApprovalWorkflowPanel onDecision={() => void refresh()} />
+
         {/* Executive hero metrics */}
         <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {[
@@ -303,7 +462,7 @@ export default function MigrationPlanner() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <HeaderButton icon={Layers} onClick={() => navigate(plan.advisor.deepLink)}>Create Migration Wave</HeaderButton>
                   <HeaderButton icon={ScrollText} onClick={() => void generate('pdf', 'migration')}>Generate Playbook</HeaderButton>
-                  <HeaderButton icon={FlaskConical} onClick={() => navigate('/dashboard/quantum-readiness/digital-twin')}>Simulate Outcome</HeaderButton>
+                  <HeaderButton icon={EyeOff} onClick={() => navigate('/dashboard/harvest-now')}>Harvest Now Risk</HeaderButton>
                   <HeaderButton icon={FileText} onClick={() => void generate('pdf', 'executive')}>Executive Report</HeaderButton>
                 </div>
               </div>

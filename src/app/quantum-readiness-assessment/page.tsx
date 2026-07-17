@@ -19,8 +19,8 @@ import {
   Boxes,
   Clock,
   Cpu,
+  EyeOff,
   FileText,
-  FlaskConical,
   Gauge,
   KeyRound,
   LayoutDashboard,
@@ -304,7 +304,7 @@ export default function QuantumReadinessAssessmentPage() {
         <SectionHeading
           kicker="Inside the Engine"
           title={<>Eight modules. One <Highlight>quantum readiness</Highlight> picture.</>}
-          subtitle="Discovery, scoring, AI advisory and simulation — unified in a single assessment layer that the whole organization can read."
+          subtitle="Discovery, scoring, AI advisory and HNDL threat intelligence — unified in a single assessment layer that the whole organization can read."
         />
 
         <div className="mt-12 space-y-8">
@@ -336,17 +336,17 @@ export default function QuantumReadinessAssessmentPage() {
             reverse
           />
           <ModuleSpotlight
-            icon={FlaskConical}
-            eyebrow="Quantum Readiness Digital Twin™"
-            title="Simulate the migration before you touch production"
-            blurb="Model PQC changes against a live twin of your environment to see the readiness lift, blast radius and compatibility risk — before a single key rotates."
+            icon={EyeOff}
+            eyebrow="Harvest Now, Decrypt Later"
+            title="Find the data adversaries are already harvesting"
+            blurb="A quantum threat operations center for harvest-now-decrypt-later risk — long-lived sensitive data, exposure windows and the assets whose encrypted traffic is worth stealing today."
             bullets={[
-              'What-if simulation of PQC changes',
-              'Predicted readiness-score lift',
-              'Compatibility and blast-radius preview',
-              'Safe experimentation with zero production risk',
+              'HNDL risk scoring from real inventory evidence',
+              'Exposure-window analysis against data lifetime',
+              'Internet-facing and high-value asset targeting view',
+              'Prioritized mitigations for the riskiest flows',
             ]}
-            image="/simulator.png"
+            image="/HarvestNow.png"
           />
         </div>
 

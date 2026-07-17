@@ -7,6 +7,9 @@ import quantumReadinessRoutes from './quantum-readiness'
 import reportsRoutes from './reports'
 import migrationPlannerRoutes from './migration-planner'
 import harvestNowRoutes from './harvest-now'
+import quantumCertificationRoutes, { certificateVerificationRouter } from './quantum-certification'
+import quantumRemediationRoutes from './quantum-remediation'
+import migrationWorkflowRoutes from './migration-workflow'
 import tlsTelemetryRoutes from './tls-telemetry'
 import pkiVisibilityRoutes from './pki-visibility'
 import ecosystemSupplyChainRoutes from './ecosystem-supply-chain'
@@ -22,6 +25,7 @@ import profileRoutes from './profile'
 import billingRoutes from './billing'
 import paypalRoutes from './paypal'
 import playBillingRoutes from './play-billing'
+import revenueRoutes from './revenue'
 import adminRoutes from './admin'
 import scannerRoutes from './scanner'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
@@ -743,6 +747,11 @@ export function createApiServer() {
   // not tier-gated, so it mounts before the subscription gateway.
   app.use('/api/v1/auth', authRoutes)
 
+  // Public Quantum Trust Certificate verification portal — no auth, no tier
+  // gate (the certificate is meant to be verifiable by anyone). Mounted BEFORE
+  // the subscription gateway so unauthenticated visitors can verify a cert.
+  app.use('/api/v1/certificate-verification', certificateVerificationRouter)
+
   app.use('/api', subscriptionGateway)
 
   // Dashboard API routes
@@ -753,6 +762,9 @@ export function createApiServer() {
   app.use('/api/v1/reports', reportsRoutes)
   app.use('/api/v1/migration-planner', migrationPlannerRoutes)
   app.use('/api/v1/harvest-now', harvestNowRoutes)
+  app.use('/api/v1/quantum-certification', quantumCertificationRoutes)
+  app.use('/api/v1/quantum-remediation', quantumRemediationRoutes)
+  app.use('/api/v1/migration-workflow', migrationWorkflowRoutes)
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/tls-orchestrator', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/pki-visibility', pkiVisibilityRoutes)
@@ -784,6 +796,7 @@ export function createApiServer() {
   app.use('/api/v1/billing', billingRoutes)
   app.use('/api/v1/paypal', paypalRoutes)
   app.use('/api/v1/play-billing', playBillingRoutes)
+  app.use('/api/v1/revenue', revenueRoutes)
   app.use('/api/v1/admin', adminRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)

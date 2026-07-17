@@ -27,6 +27,7 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { WorkflowRail } from '@/components/workflow/WorkflowRail'
 
 type AgilityStatus = 'Ready' | 'Staged' | 'Blocked' | 'Not Scanned'
 
@@ -488,6 +489,7 @@ export default function CryptoAgility() {
 
   return (
     <main className="min-h-screen space-y-4 p-3 text-white lg:p-5">
+      <WorkflowRail activeStage="remediation" />
       <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h1 className="text-3xl font-black uppercase leading-none tracking-[0.02em] text-white md:text-4xl">

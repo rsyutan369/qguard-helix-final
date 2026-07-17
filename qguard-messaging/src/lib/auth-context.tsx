@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
-import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase, supabaseAuthTarget } from "@/lib/supabase";
+import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 
 interface AuthContextValue {
@@ -16,6 +16,7 @@ interface AuthContextValue {
   cancelMfaSignIn: () => Promise<void>;
   signUp: (email: string, password: string, name: string) => Promise<boolean>;
   resendVerification: (email: string) => Promise<boolean>;
+  resetPassword: (email: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   clearError: () => void;
 }
@@ -90,6 +91,7 @@ const missingProviderAuth: AuthContextValue = {
   cancelMfaSignIn: async () => undefined,
   signUp: async () => false,
   resendVerification: async () => false,
+  resetPassword: async () => false,
   signOut: async () => undefined,
   clearError: () => undefined,
 };
@@ -426,14 +428,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       );
       if (signUpError) throw signUpError;
       if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
-        setNotice(`Supabase says this email is already registered in the ${supabaseAuthTarget}. No new Auth user was created. Use sign in or resend the verification email for this same project.`);
+        setNotice("This email is already registered with QGuard Helix. Please sign in instead, or resend the verification email if you haven't confirmed your account yet.");
         return true;
       }
       if (data.session) {
         await completeAuthenticatedSession(data.session);
         return true;
       }
-      setNotice(`Account request sent to the ${supabaseAuthTarget}. If email verification is enabled, check your inbox and spam folder, then sign in.`);
+      setNotice("Account request sent to QGuard Helix. Check your inbox and spam folder to verify your account, then sign in.");
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -468,6 +470,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Password reset uses Supabase's recovery email flow. We intentionally do NOT
+  // pass a redirectTo: the app's own origin (tauri://localhost / tauri.localhost)
+  // cannot host the recovery page, so Supabase falls back to the project's
+  // configured Site URL, which owns the "set a new password" landing page.
+  // The confirmation notice is deliberately enumeration-safe — it never reveals
+  // whether the address is registered.
+  const resetPassword = useCallback(async (email: string) => {
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    const cleanEmail = email.trim().toLowerCase();
+    try {
+      if (!cleanEmail) throw new Error("Enter your email address first.");
+      const client = requireSupabase();
+      const allowed = await checkAuthRateLimit("password_reset", cleanEmail);
+      if (!allowed) {
+        setError("Too many password reset requests. Please wait a few minutes and try again.");
+        await auditAuthEvent("password_reset_rate_limited", "warning", cleanEmail);
+        return false;
+      }
+      const { error: resetError } = await withTimeout(
+        retryOnTransient(() => Promise.resolve(client.auth.resetPasswordForEmail(cleanEmail))),
+        signInRequestTimeoutMs,
+        "Password reset request",
+      );
+      if (resetError) throw resetError;
+      await auditAuthEvent("password_reset_requested", "info", cleanEmail);
+      setNotice("If that email is registered, a password reset link is on its way. Check your inbox and spam folder, then follow the link to set a new password.");
+      return true;
+    } catch (err) {
+      await auditAuthEvent("password_reset_failed", "warning", cleanEmail);
+      if (isTransientAuthError(err)) {
+        setError(AUTH_UNREACHABLE_MESSAGE);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [auditAuthEvent, checkAuthRateLimit]);
+
   const signOut = useCallback(async () => {
     const userId = user?.id;
     clearChatPlaintextCaches();
@@ -491,12 +535,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     cancelMfaSignIn,
     signUp,
     resendVerification,
+    resetPassword,
     signOut,
     clearError: () => {
       setError(null);
       setNotice(null);
     },
-  }), [cancelMfaSignIn, error, loading, notice, pendingMfa, resendVerification, session, signIn, signOut, signUp, user, verifyMfaSignIn]);
+  }), [cancelMfaSignIn, error, loading, notice, pendingMfa, resendVerification, resetPassword, session, signIn, signOut, signUp, user, verifyMfaSignIn]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

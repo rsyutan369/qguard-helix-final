@@ -31,6 +31,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { Link, useSearchParams } from 'react-router-dom'
+import { WorkflowRail } from '@/components/workflow/WorkflowRail'
 
 type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused'
 
@@ -746,6 +747,7 @@ export default function LiveMigrationOperations() {
 
   return (
     <div className="min-h-[calc(100vh-64px)] space-y-3 p-3 text-white sm:p-4 lg:p-5">
+      <WorkflowRail activeStage="execution" />
       <header className="grid gap-3 xl:grid-cols-[1fr_300px_240px] xl:items-center">
         <div className="flex min-w-0 items-start gap-3">
           <div className="mt-1 grid h-9 w-9 shrink-0 place-items-center text-[#d4af37]">

@@ -1,0 +1,405 @@
+# ROLE
+
+You are acting as a Principal Enterprise Software Architect, Cloud Architect, Cybersecurity Architect, Post-Quantum Cryptography (PQC) Architect, Distributed Systems Engineer, DevSecOps Engineer, Data Architect, and Enterprise UI/UX Architect.
+
+Your task is to perform a comprehensive architecture review and scalability assessment of the entire QGuard Helix Platform.
+
+Do not focus on a single module.
+
+Review the platform as a complete enterprise ecosystem.
+
+====================================================================
+PRIMARY OBJECTIVE
+====================================================================
+
+Determine whether the current platform architecture is capable of supporting production-scale enterprise deployments while maintaining high performance, scalability, accuracy, resilience, and security.
+
+Review every frontend module, backend service, API, database, event pipeline, telemetry system, scanning engine, AI engine, and workflow.
+
+Identify every architectural limitation, bottleneck, inconsistency, missing capability, or scalability issue.
+
+Where improvements are required, redesign the architecture using enterprise best practices.
+
+====================================================================
+SCALABILITY REQUIREMENTS
+====================================================================
+
+Validate that the platform can reliably support organizations of all sizes.
+
+Examples include:
+
+• Small organizations (1–10 assets)
+• Small and Medium Businesses (10–500 assets)
+• Large Enterprises (1,000–100,000+ assets)
+• Multi-national organizations
+• Government agencies
+• Critical infrastructure operators
+• Financial institutions
+• Healthcare organizations
+• Managed Security Service Providers (MSSPs)
+• Multi-tenant SaaS deployments
+
+The architecture must continue to perform efficiently regardless of customer size or asset volume.
+
+====================================================================
+MULTI-TENANT ARCHITECTURE
+====================================================================
+
+Ensure the platform fully supports multiple independent customers.
+
+Each tenant must have complete logical isolation while sharing the same SaaS infrastructure.
+
+Validate support for:
+
+• Multiple organizations
+• Multiple departments
+• Multiple business units
+• Multiple projects
+• Multiple environments
+• Multiple regions
+• Multiple cloud providers
+
+Each customer should only have visibility into their own assets, scans, reports, telemetry, remediation plans, migration activities, and certifications.
+
+Ensure proper tenant isolation throughout the platform.
+
+====================================================================
+SUPPORTED ENVIRONMENTS
+====================================================================
+
+The platform must support discovery, assessment, monitoring, remediation, and migration across diverse environments.
+
+Examples include:
+
+• On-premises infrastructure
+• Private Cloud
+• Public Cloud
+• Hybrid Cloud
+• Multi-Cloud
+• Kubernetes
+• Containers
+• Virtual Machines
+• Bare Metal Servers
+• Serverless Platforms
+• Mobile Devices
+• IoT Devices
+• Edge Computing
+• Enterprise Networks
+• SaaS Applications
+• APIs
+• PKI Infrastructure
+
+====================================================================
+SUPPORTED CRYPTOGRAPHIC DISCOVERY
+====================================================================
+
+The platform should not be limited to scanning QGuard Helix itself.
+
+It must discover and analyze cryptographic assets across customer environments.
+
+Examples include:
+
+Cryptographic Algorithms
+
+• RSA
+• ECC
+• ECDSA
+• Ed25519
+• X25519
+• AES
+• ChaCha20
+• SHA-2
+• SHA-3
+• ML-KEM
+• ML-DSA
+• SLH-DSA
+
+Cryptographic Assets
+
+• Certificates
+• Private Keys
+• Public Keys
+• Key Stores
+• HSMs
+• PKI Hierarchies
+• Trust Stores
+• Certificate Authorities
+
+Protocols
+
+• TLS
+• SSH
+• VPN
+• IPsec
+• HTTPS
+• QUIC
+• DNSSEC
+• S/MIME
+
+Identity
+
+• JWT
+• OAuth
+• OpenID Connect
+• SAML
+
+Applications
+
+• Web Applications
+• APIs
+• Web Servers
+• Reverse Proxies
+• Load Balancers
+• Databases
+• Message Brokers
+
+Infrastructure
+
+• Kubernetes
+• Docker
+• Cloud Services
+• Serverless
+• Identity Providers
+
+Software Components
+
+• SDKs
+• Libraries
+• Packages
+• Dependencies
+• Open Source Components
+• Third-Party Components
+
+Secrets
+
+• API Keys
+• Tokens
+• Secrets
+• Credentials
+
+====================================================================
+REAL-TIME ENTERPRISE ASSET INVENTORY
+====================================================================
+
+Validate that the Assets module functions as a real-time enterprise asset inventory.
+
+Ensure it supports:
+
+• Continuous asset discovery
+• Live synchronization
+• Automatic updates
+• Dependency mapping
+• Asset relationships
+• Ownership tracking
+• Business criticality
+• Migration status
+• Validation status
+• Certification readiness
+
+Every discovered asset should automatically update all connected modules.
+
+====================================================================
+REAL-TIME ENTERPRISE CBOM
+====================================================================
+
+Review the CBOM implementation.
+
+Ensure it behaves as a dynamic cryptographic inventory rather than a static report.
+
+The CBOM should automatically update whenever:
+
+• New assets are discovered
+• Algorithms change
+• Certificates are renewed
+• Keys rotate
+• Software is upgraded
+• Infrastructure changes
+• Migration tasks complete
+
+Every CBOM update should propagate throughout the platform in real time.
+
+====================================================================
+REAL-TIME DATA FLOW
+====================================================================
+
+Validate that data flows seamlessly between all modules.
+
+Example workflow:
+
+Scanner
+
+↓
+
+Assets
+
+↓
+
+CBOM
+
+↓
+
+Quantum Readiness
+
+↓
+
+Risk Analysis
+
+↓
+
+Harvest Now Dashboard
+
+↓
+
+Remediation
+
+↓
+
+Migration Planner
+
+↓
+
+Live Migration
+
+↓
+
+Validation
+
+↓
+
+Continuous Monitoring
+
+↓
+
+Quantum Trust Certification
+
+Data should remain synchronized across the platform with accurate telemetry and consistent state.
+
+====================================================================
+TELEMETRY & OBSERVABILITY
+====================================================================
+
+Ensure enterprise-grade telemetry.
+
+Support:
+
+• Real-time status
+• Live asset health
+• Scan progress
+• Cryptographic posture
+• Migration progress
+• Agent health
+• Connector health
+• Performance metrics
+• Audit events
+• Security events
+• Compliance events
+
+Provide dashboards with accurate, low-latency updates.
+
+====================================================================
+REMEDIATION ENGINE
+====================================================================
+
+Validate that the remediation engine scales efficiently regardless of asset volume.
+
+Whether the organization contains:
+
+10 assets
+
+500 assets
+
+5,000 assets
+
+100,000+ assets
+
+The platform should:
+
+• Prioritize vulnerabilities
+• Group similar findings
+• Recommend remediation
+• Automate remediation where possible
+• Track progress
+• Update readiness scores
+• Forecast certification readiness
+
+without degradation in performance.
+
+====================================================================
+AUTO SCALING
+====================================================================
+
+Review whether every service supports horizontal scaling.
+
+Examples:
+
+• Scanner workers
+• Agent Collectors
+• Agent Patchers
+• Connectors
+• API services
+• AI services
+• Event processors
+• Databases
+• Background workers
+
+Ensure workloads automatically scale according to demand.
+
+====================================================================
+PERFORMANCE
+====================================================================
+
+Review:
+
+• Query performance
+• API latency
+• Large dataset handling
+• Dashboard rendering
+• Graph performance
+• Asset indexing
+• Search performance
+• Report generation
+• Background processing
+• Concurrent scans
+
+Recommend architectural improvements where necessary.
+
+====================================================================
+ENTERPRISE QUALITY
+====================================================================
+
+Ensure the platform is suitable for enterprise and government deployments.
+
+Review alignment with applicable industry guidance and best practices, including:
+
+• NIST Post-Quantum Cryptography standards and migration guidance
+• NSA CNSA 2.0
+• CISA guidance
+• ETSI
+• ENISA
+• Zero Trust Architecture principles
+• OWASP
+• MITRE ATT&CK
+• Secure SDLC practices
+
+Where applicable, recommend improvements that strengthen interoperability, governance, resilience, and long-term maintainability.
+
+====================================================================
+FINAL DELIVERABLE
+====================================================================
+
+Provide a complete architecture assessment of the entire QGuard Helix Platform.
+
+For every identified issue:
+
+• Explain the problem.
+• Describe the business and technical impact.
+• Recommend the optimal enterprise-grade solution.
+• Reuse and enhance existing platform capabilities before introducing new ones.
+• Eliminate duplicated functionality.
+• Improve scalability, resilience, maintainability, and performance.
+
+The final architecture should be capable of operating as a production-ready, multi-tenant, enterprise-grade Post-Quantum Cybersecurity Platform that supports organizations of any size while providing accurate real-time asset discovery, cryptographic inventory (CBOM), telemetry, remediation, migration, validation, continuous monitoring, and Quantum Trust Certification.
+
+Additional Recommendation
+
+One important enhancement I'd add to this review is to require the platform to validate event consistency across all modules. Rather than each page maintaining its own state, every asset, CBOM entry, remediation task, migration job, and certification status should originate from a shared, authoritative data model and event stream. This helps ensure that when an asset is rescanned or migrated, every related page—from Assets and CBOM through Risk Analysis, Remediation, Live Migration, and Quantum Trust Certification—updates consistently without stale or conflicting information. This architectural approach is especially valuable when supporting large enterprises with tens of thousands of continuously changing assets.

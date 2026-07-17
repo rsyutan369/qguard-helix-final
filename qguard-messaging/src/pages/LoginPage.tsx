@@ -11,11 +11,18 @@ interface LoginPageProps {
   onCancelMfa: () => Promise<void>;
   onSignUp: (email: string, password: string, name: string) => Promise<boolean>;
   onResendVerification: (email: string) => Promise<boolean>;
+  onResetPassword: (email: string) => Promise<boolean>;
   onClearError: () => void;
 }
 
 function toVisibleError(message: string | null): string | null {
   if (!message) return null;
+
+  // The provider's shared mail service is rate-limited; surface a calm, branded
+  // message instead of the raw "email rate limit exceeded" string.
+  if (/email rate limit|rate limit exceeded|over_email_send_rate_limit|too many emails/i.test(message)) {
+    return "We've sent too many emails in a short window. Please wait a few minutes, then try again.";
+  }
 
   if (/secure sign in timed out|supabase request timed out|auth service/i.test(message)) {
     return "Supabase Auth is not responding. Your Supabase project may be resource constrained; please wait for the project to recover or upgrade/optimize it, then try again.";
@@ -54,7 +61,7 @@ const inputClass =
   "mt-2 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-3 text-[15px] text-white placeholder-white/25 outline-none transition focus:border-violet-400/70 focus:bg-white/[0.06] focus:ring-2 focus:ring-violet-500/25";
 const labelClass = "block text-[13px] font-semibold text-white/70";
 
-export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn, onVerifyMfa, onCancelMfa, onSignUp, onResendVerification, onClearError }: LoginPageProps) {
+export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn, onVerifyMfa, onCancelMfa, onSignUp, onResendVerification, onResetPassword, onClearError }: LoginPageProps) {
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [email, setEmail] = useState("");
   const [lastVerificationEmail, setLastVerificationEmail] = useState("");
@@ -209,9 +216,25 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
             )}
 
             {!pendingMfa && (
-              <label className="mt-4 block">
-                <span className={labelClass}>Password</span>
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="qg-login-password" className={labelClass}>Password</label>
+                  {mode === "sign-in" && (
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => {
+                        onClearError();
+                        void onResetPassword(verificationEmail);
+                      }}
+                      className="text-[12.5px] font-semibold text-violet-300 transition hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Forgot password?
+                    </button>
+                  )}
+                </div>
                 <input
+                  id="qg-login-password"
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
@@ -220,7 +243,7 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
                   minLength={8}
                   required
                 />
-              </label>
+              </div>
             )}
 
             <button

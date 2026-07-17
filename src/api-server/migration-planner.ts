@@ -235,7 +235,10 @@ async function buildPlan(token: string, userId: string) {
   const [jobs, plans, validations, events, certificates] = client
     ? await Promise.all([
         safeRows(client as never, 'migration_jobs', 'id, status, progress, asset_id, job_type, created_at, updated_at', userId, 300),
-        safeRows(client as never, 'migration_plans', 'id, name, status, created_at', userId, 100),
+        // NOTE: migration_plans has no `name` column (display name lives in
+        // metadata) — selecting one makes PostgREST error and safeRows silently
+        // return [], which broke the Approve stage before the approval workflow.
+        safeRows(client as never, 'migration_plans', 'id, status, created_at', userId, 100),
         safeRows(client as never, 'migration_validation_logs', 'id, status, created_at', userId, 200),
         safeRows(client as never, 'migration_events', 'id, event_type, status, created_at', userId, 200),
         safeRows(client as never, 'certificates', 'id, common_name, name, not_after, valid_to, signature_algorithm', userId, 500),
@@ -332,6 +335,114 @@ router.get('/stream', async (req: Request, res: Response) => {
   const refresh = setInterval(emit, 30000)
   const heartbeat = setInterval(() => { if (!closed) res.write(': heartbeat\n\n') }, 25000)
   req.on('close', () => { closed = true; clearInterval(refresh); clearInterval(heartbeat) })
+})
+
+/* ------------------------------------------------------------------ */
+/* Approval workflow — real migration_plans rows (no new tables).      */
+/* Submit → pending_approval; approve/reject stamps the decision into  */
+/* the plan metadata. The 9-stage 'Approve' stage and the platform     */
+/* WorkflowRail both read these same rows, so status stays consistent. */
+/* ------------------------------------------------------------------ */
+type ApprovalMeta = { name?: string; submittedBy?: string; submittedAt?: string; approval?: { decision: string; decidedBy: string; decidedAt: string; reason: string } }
+
+function mapPlanRow(row: Row) {
+  const metadata = (row.metadata && typeof row.metadata === 'object' ? row.metadata : {}) as ApprovalMeta
+  return {
+    id: str(row.id),
+    // migration_plans has no name column — the display name lives in metadata.
+    name: str(metadata.name) || 'PQC Migration Plan',
+    status: str(row.status) || 'draft',
+    createdAt: str(row.created_at),
+    updatedAt: str(row.updated_at) || str(row.created_at),
+    submittedBy: str(metadata.submittedBy),
+    approval: metadata.approval
+      ? { decision: str(metadata.approval.decision), decidedBy: str(metadata.approval.decidedBy), decidedAt: str(metadata.approval.decidedAt), reason: str(metadata.approval.reason) }
+      : null,
+  }
+}
+
+router.get('/plans', async (req: Request, res: Response) => {
+  try {
+    const { token, user } = req as AuthedRequest
+    const client = createAuthClient(token!)
+    if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
+    const { data, error } = await client
+      .from('migration_plans')
+      .select('id, status, metadata, created_at, updated_at')
+      .eq('user_id', user!.id)
+      .order('updated_at', { ascending: false })
+      .limit(50)
+    if (error) return res.status(500).json({ error: { code: 'PLANS_QUERY_FAILED', message: error.message } })
+    res.json({ data: ((data as Row[]) || []).map(mapPlanRow) })
+  } catch (error) {
+    console.error('migration plans list failed:', error)
+    res.status(500).json({ error: { code: 'PLANS_ERROR', message: 'Unable to list migration plans' } })
+  }
+})
+
+router.post('/plans', async (req: Request, res: Response) => {
+  try {
+    const { token, user } = req as AuthedRequest
+    const client = createAuthClient(token!)
+    if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
+    const name = str(req.body?.name).trim().slice(0, 160) || `PQC Migration Plan — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    const now = new Date().toISOString()
+    const row: Record<string, unknown> = {
+      id: (globalThis.crypto?.randomUUID?.() as string) || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      user_id: user!.id,
+      status: 'pending_approval',
+      selected_asset_ids: [],
+      configuration: { source: 'migration-planner-approval' },
+      risk_data: {},
+      metadata: { name, submittedBy: user!.email || 'planner', submittedAt: now, source: 'migration-planner' },
+      created_at: now,
+      updated_at: now,
+    }
+    const { error } = await client.from('migration_plans').insert(row)
+    if (error) return res.status(500).json({ error: { code: 'PLAN_SUBMIT_FAILED', message: error.message } })
+    res.status(201).json({ data: mapPlanRow(row as Row) })
+  } catch (error) {
+    console.error('migration plan submit failed:', error)
+    res.status(500).json({ error: { code: 'PLAN_SUBMIT_ERROR', message: 'Unable to submit plan for approval' } })
+  }
+})
+
+router.post('/plans/:planId/approval', async (req: Request, res: Response) => {
+  try {
+    const { token, user } = req as AuthedRequest
+    const client = createAuthClient(token!)
+    if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
+    const planId = str(req.params.planId)
+    const decision = str(req.body?.decision).toLowerCase()
+    if (!['approve', 'reject'].includes(decision)) {
+      return res.status(400).json({ error: { code: 'VALIDATION', message: 'decision must be approve or reject' } })
+    }
+    const reason = str(req.body?.reason).trim().slice(0, 1000)
+    const { data: existing, error: readError } = await client
+      .from('migration_plans')
+      .select('id, status, metadata, created_at, updated_at')
+      .eq('user_id', user!.id)
+      .eq('id', planId)
+      .limit(1)
+    if (readError) return res.status(500).json({ error: { code: 'PLAN_READ_FAILED', message: readError.message } })
+    const row = ((existing as Row[]) || [])[0]
+    if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration plan not found' } })
+    const metadata = {
+      ...(row.metadata && typeof row.metadata === 'object' ? (row.metadata as Record<string, unknown>) : {}),
+      approval: { decision, decidedBy: user!.email || 'owner', decidedAt: new Date().toISOString(), reason },
+    }
+    const status = decision === 'approve' ? 'approved' : 'rejected'
+    const { error } = await client
+      .from('migration_plans')
+      .update({ status, metadata, updated_at: new Date().toISOString() })
+      .eq('user_id', user!.id)
+      .eq('id', planId)
+    if (error) return res.status(500).json({ error: { code: 'APPROVAL_FAILED', message: error.message } })
+    res.json({ data: mapPlanRow({ ...row, status, metadata }) })
+  } catch (error) {
+    console.error('migration plan approval failed:', error)
+    res.status(500).json({ error: { code: 'APPROVAL_ERROR', message: 'Unable to record approval decision' } })
+  }
 })
 
 export default router

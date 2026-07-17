@@ -142,7 +142,34 @@ function isInternetFacing(asset: Record<string, unknown>): boolean {
   return false
 }
 
+/**
+ * Shared-computation cache for the Quantum Readiness snapshot.
+ *
+ * The snapshot backs the 9 QR pages, Migration Planner, Harvest Now, the
+ * remediation engine, the certification engine and the workflow rail — each
+ * with its own fetch/SSE cadence (≥8s). Per-tenant short-TTL single-flight
+ * caching collapses that fan-out to one computation per window and gives
+ * every module the SAME authoritative snapshot within it (consistent state
+ * across pages by construction). Scan writes surface within the TTL, which
+ * is below every consumer's own refresh cadence. Failures are never cached.
+ */
+const SNAPSHOT_CACHE_TTL_MS = 15_000
+const snapshotCache = new Map<string, { at: number; promise: ReturnType<typeof computeSnapshot> }>()
+
 export async function buildSnapshot(token: string, userId: string) {
+  const cached = snapshotCache.get(userId)
+  if (cached && Date.now() - cached.at < SNAPSHOT_CACHE_TTL_MS) return cached.promise
+  const promise = computeSnapshot(token, userId)
+  snapshotCache.set(userId, { at: Date.now(), promise })
+  promise.catch(() => snapshotCache.delete(userId))
+  if (snapshotCache.size > 500) {
+    const now = Date.now()
+    for (const [key, value] of snapshotCache) if (now - value.at > SNAPSHOT_CACHE_TTL_MS) snapshotCache.delete(key)
+  }
+  return promise
+}
+
+async function computeSnapshot(token: string, userId: string) {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
 
