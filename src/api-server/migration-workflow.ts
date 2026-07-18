@@ -325,7 +325,7 @@ function deriveNextAction(stageId: WorkflowStageId, plan: RemediationPlan, input
 /* ------------------------------------------------------------------ */
 /* Live assembly (cached)                                              */
 /* ------------------------------------------------------------------ */
-async function buildWorkflowState(token: string, userId: string): Promise<MigrationWorkflowState> {
+export async function buildWorkflowState(token: string, userId: string): Promise<MigrationWorkflowState> {
   const cached = stateCache.get(userId)
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.state
 

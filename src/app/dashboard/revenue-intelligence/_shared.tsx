@@ -388,13 +388,25 @@ export function useRevenueIntelligence() {
     };
   }, [token, applySnapshot]);
 
-  const exportReport = useCallback((report: string, format: 'csv' | 'json') => {
+  const exportReport = useCallback(async (report: string, format: 'csv' | 'json') => {
     if (!token) return;
-    const url = `/api/v1/revenue/export?report=${encodeURIComponent(report)}&format=${format}&token=${encodeURIComponent(token)}`;
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = '';
-    anchor.click();
+    // Header-authenticated fetch + blob download — the owner session JWT is
+    // never placed in a URL (no leak into history, logs or Referer).
+    try {
+      const response = await fetch(`/api/v1/revenue/export?report=${encodeURIComponent(report)}&format=${format}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = `qguard-${report}-report-${new Date().toISOString().slice(0, 10)}.${format}`;
+      anchor.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      /* export best-effort; the page remains usable */
+    }
   }, [token]);
 
   return { snapshot, state, error, sseConnected, refresh, exportReport };

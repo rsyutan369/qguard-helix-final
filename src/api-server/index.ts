@@ -4,6 +4,7 @@ import behavioralAnalyticsRoutes from './behavioral-analytics'
 import telemetryCorrelationRoutes from './telemetry-correlation'
 import quantumRiskScoringRoutes from './quantum-risk-scoring'
 import quantumReadinessRoutes from './quantum-readiness'
+import exposureGraphRoutes from './exposure-graph'
 import reportsRoutes from './reports'
 import migrationPlannerRoutes from './migration-planner'
 import harvestNowRoutes from './harvest-now'
@@ -31,7 +32,10 @@ import scannerRoutes from './scanner'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import serviceRecordRoutes from './service-records'
 import migrationRoutes from './migration'
+import migrationSnapshotRoutes from './migration-snapshots'
+import migrationOrchestratorRoutes from './migration-orchestrator'
 import sandboxRoutes, { startSandboxScheduler } from './sandbox'
+import copilotRoutes from './copilot'
 import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { subscriptionGateway } from './subscription-guard'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
@@ -759,6 +763,7 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/telemetry-correlation', telemetryCorrelationRoutes)
   app.use('/api/v1/dashboard/quantum-risk-scoring', quantumRiskScoringRoutes)
   app.use('/api/v1/quantum-readiness', quantumReadinessRoutes)
+  app.use('/api/v1/exposure-graph', exposureGraphRoutes)
   app.use('/api/v1/reports', reportsRoutes)
   app.use('/api/v1/migration-planner', migrationPlannerRoutes)
   app.use('/api/v1/harvest-now', harvestNowRoutes)
@@ -790,6 +795,8 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/qkms', qkmsRoutes)
   app.use('/api/qkms', qkmsRoutes)
   app.use('/api/v1/dashboard', dashboardRoutes)
+  app.use('/api/v1/migration-snapshots', migrationSnapshotRoutes)
+  app.use('/api/v1/migration-orchestrator', migrationOrchestratorRoutes)
   app.use('/api/v1/migration', migrationRoutes)
   app.use('/api/v1/sandbox', sandboxRoutes)
   app.use('/api/v1/profile', profileRoutes)
@@ -800,6 +807,7 @@ export function createApiServer() {
   app.use('/api/v1/admin', adminRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)
+  app.use('/api/v1/copilot', copilotRoutes)
   app.use('/api/v1', serviceRecordRoutes)
 
   startAgentScannerScheduler()

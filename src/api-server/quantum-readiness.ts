@@ -125,7 +125,7 @@ async function exactCount(client: any, table: string, userId: string, refine?: (
   }
 }
 
-function isInternetFacing(asset: Record<string, unknown>): boolean {
+export function isInternetFacing(asset: Record<string, unknown>): boolean {
   const env = str(asset.environment).toLowerCase()
   if (['public', 'internet', 'dmz', 'external', 'edge'].some((e) => env.includes(e))) return true
   const meta = recordOf(asset.metadata)

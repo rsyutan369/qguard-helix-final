@@ -119,6 +119,7 @@ import QuantumReadinessAiExecutiveAdvisorPage from './app/dashboard/quantum-read
 import QuantumReadinessAiMigrationAdvisorPage from './app/dashboard/quantum-readiness/ai-migration-advisor/page';
 import QuantumReadinessReportsPage from './app/dashboard/quantum-readiness/reports/page';
 import QuantumCertificationPage from './app/dashboard/quantum-certification/page';
+import SophiaConsolePage from './app/dashboard/sophia/page';
 
 export default function App() {
   return (
@@ -292,6 +293,9 @@ export default function App() {
           <Route path="quantum-readiness/digital-twin" element={<Navigate to="/dashboard/harvest-now" replace />} />
           <Route path="quantum-readiness/reports" element={<QuantumReadinessReportsPage />} />
           <Route path="quantum-certification" element={<QuantumCertificationPage />} />
+
+          {/* Sophia — AI Security Copilot™ full console */}
+          <Route path="sophia" element={<SophiaConsolePage />} />
 
           <Route path="qkms/overview" element={<QkmsOverviewPage />} />
           <Route path="qkms/inventory" element={<QkmsInventoryPage />} />

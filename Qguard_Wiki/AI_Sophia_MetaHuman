@@ -1,0 +1,807 @@
+Design and implement Sophia™, the next-generation AI Security Copilot for the QGuard Helix Platform.
+
+Sophia must evolve from a traditional chatbot into a high-fidelity AI Digital Human, delivering an immersive, enterprise-grade experience comparable to or exceeding leading AI assistants demonstrated by Microsoft Copilot, NVIDIA ACE, OpenAI, and Google Gemini.
+
+Sophia should function as a real-time conversational cybersecurity consultant, capable of speaking naturally, expressing emotions, reacting to user interactions, and providing evidence-based guidance using only the authenticated tenant's live data.
+
+The system must be modular, secure, scalable, performant, and production-ready.
+
+Core Vision
+
+Sophia should feel like a real cybersecurity expert sitting beside the user.
+
+She is not merely a chatbot—she is an intelligent digital consultant capable of understanding enterprise cybersecurity operations, explaining complex concepts, guiding migrations, monitoring infrastructure, and assisting executives with strategic decisions.
+
+Her behavior should communicate professionalism, confidence, trustworthiness, and technical expertise.
+
+Technology Stack:
+
+3D Rendering:
+Three.js
+React Three Fiber
+@react-three/drei
+@react-three/postprocessing
+
+Avatar Format:
+VRM 1.0
+glTF 2.0
+VRMC_vrm
+VRMC_expression
+VRMC_springBone
+
+Animation:
+React Three Fiber Animation Loop
+Three.js AnimationMixer
+VRM Expression Manager
+Spring Bone Physics
+Framer Motion (UI)
+
+Lip Sync:
+Oculus LipSync (future-ready)
+Azure Speech Visemes
+ElevenLabs Streaming TTS
+OpenAI Realtime Voice
+
+Speech:
+Azure Speech SDK
+ElevenLabs
+OpenAI Realtime API
+
+AI Backend:
+
+Reuse the existing Sophia AI Security Copilot architecture.
+
+No changes to business logic.
+
+Existing
+
+Planner
+Coordinator
+57 MCP Tools
+Multi-Agent Engine
+Tenant Isolation
+RBAC
+Evidence Engine
+
+must remain unchanged.
+
+Architecture:
+
+User
+
+↓
+
+Authentication
+
+↓
+
+Tenant Context
+
+↓
+
+RBAC
+
+↓
+
+Sophia Planner
+
+↓
+
+57 MCP Tools
+
+↓
+
+Coordinator
+
+↓
+
+Structured Answer
+
+↓
+
+SSE Stream
+
+↓
+
+Speech Generator
+
+↓
+
+Audio Stream
+
+↓
+
+Viseme Detection
+
+↓
+
+Emotion Engine
+
+↓
+
+Avatar Animation
+
+↓
+
+User
+
+Avatar Requirements:
+
+Sophia must appear as
+
+Professional
+
+Elegant
+
+Modern
+
+Executive
+
+Cybersecurity Consultant
+
+Quantum Computing Specialist
+
+Trustworthy
+
+Warm
+
+Confident
+
+Never cartoonish.
+
+Never exaggerated.
+
+Never overly expressive.
+
+Her appearance should align with premium enterprise software.
+
+Appearance:
+
+Sophia wears
+
+Minimal futuristic business attire
+
+White
+
+Silver
+
+Blue
+
+Purple accents
+
+Quantum-inspired glowing patterns
+
+Subtle holographic trim
+
+No fantasy armor
+
+No sci-fi costumes
+
+Professional executive style
+
+Facial Quality:
+
+Near-photorealistic.
+
+Realistic skin shading.
+
+Natural eye reflections.
+
+Subsurface scattering.
+
+Dynamic hair.
+
+Realistic eyelashes.
+
+Physically based rendering.
+
+HDR lighting.
+
+Animation States:
+
+Sophia continuously exists in one animation state.
+
+Idle
+
+Natural breathing
+
+Blinking
+
+Micro facial movement
+
+Hair simulation
+
+Eye movement
+
+Weight shifting
+
+Gentle posture correction
+
+Listening:
+
+Activated during microphone input.
+
+Head turns slightly
+
+Eyes focus
+
+Listening expression
+
+Subtle breathing
+
+Voice waveform
+
+Thinking:
+
+Activated during AI reasoning.
+
+Blue holographic glow
+
+Eye movement
+
+Head tilt
+
+Neural particles
+
+Floating quantum symbols
+
+Pulse animation
+
+Reading Data:
+
+When tools execute.
+
+Eyes scan
+
+Virtual holographic interface
+
+Subtle hand movement
+
+Focused facial expression
+
+Running Tools:
+
+While collectors
+
+Patchers
+
+Migration
+
+Exposure Graph
+
+Scanner
+
+Telemetry
+
+CBOM
+
+execute.
+
+Sophia shows
+
+Cyber particles
+
+Digital pulse
+
+Floating holograms
+
+Live status indicators
+
+Generating Answer:
+
+Preparing speech.
+
+Breathing
+
+Eyes maintain contact
+
+Gentle smile
+
+Head movement
+
+Speaking:
+
+Most important animation.
+
+Sophia speaks naturally.
+
+Requirements
+
+Accurate lip synchronization
+
+Eye contact
+
+Blinking
+
+Eyebrow movement
+
+Head movement
+
+Shoulder motion
+
+Breathing
+
+Natural pauses
+
+Smile transitions
+
+Emotion changes
+
+No robotic repetition.
+
+Finished:
+
+Smile
+
+Glow fades
+
+Returns to idle
+
+
+Real-Time Lip Synchronization:
+
+Sophia must not use fake mouth animation.
+
+Instead implement true audio-driven facial animation.
+
+Pipeline
+
+User Question
+
+↓
+
+Sophia AI
+
+↓
+
+Planner
+
+↓
+
+SSE Streaming
+
+↓
+
+Generated Text
+
+↓
+
+Streaming Text-to-Speech
+
+↓
+
+Audio Stream
+
+↓
+
+Viseme Detection
+
+↓
+
+Facial Expression Engine
+
+↓
+
+VRM Blend Shapes
+
+↓
+
+Real-Time Mouth Animation
+
+The avatar mouth must synchronize precisely with spoken phonemes.
+
+Azure Speech Integration:
+
+Implement
+
+microsoft-cognitiveservices-speech-sdk
+
+Use
+
+Streaming Speech
+
+Visemes
+
+Phonemes
+
+Voice Events
+
+Word Boundaries
+
+Sentence Boundaries
+
+Latency Optimization
+
+ElevenLabs Integration:
+
+Support
+
+Streaming TTS
+
+Professional Female Voices
+
+Low Latency
+
+Natural Intonation
+
+Enterprise Voices
+
+Character Profiles
+
+Voice Cloning (optional future)
+
+OpenAI Realtime:
+
+Future-ready architecture.
+
+Support
+
+Streaming Voice
+
+Interruptions
+
+Conversation
+
+Emotion Tags
+
+Realtime Tool Calls
+
+Emotion Engine:
+
+Emotion should never be random.
+
+Sophia derives emotion from
+
+AI confidence
+
+Severity
+
+Risk level
+
+Business impact
+
+Tool outputs
+
+Examples
+
+Critical vulnerability
+
+↓
+
+Concerned
+
+Migration success
+
+↓
+
+Happy
+
+Certificate achieved
+
+↓
+
+Proud
+
+Rollback
+
+↓
+
+Serious
+
+High confidence
+
+↓
+
+Confident
+
+Threat detected
+
+↓
+
+Alert
+
+Compliance complete
+
+↓
+
+Warm smile
+
+Expression System:
+
+Use VRM Expression Manager.
+
+Expressions
+
+Neutral
+
+Professional
+
+Happy
+
+Concerned
+
+Thinking
+
+Focused
+
+Serious
+
+Surprised
+
+Warning
+
+Celebration
+
+Approval
+
+Disapproval
+
+Empathetic
+
+Confident
+
+Cursor Eye Tracking:
+
+Sophia should subtly follow the user's cursor.
+
+Eyes
+
+±15°
+
+Head
+
+±8°
+
+Shoulders
+
+±3°
+
+Smooth interpolation.
+
+Never instant snapping.
+
+Idle Intelligence:
+
+Even when inactive
+
+Sophia should
+
+Blink
+
+Breathe
+
+Look around
+
+Adjust posture
+
+Hair movement
+
+Clothing simulation
+
+Micro expressions
+
+Creates the feeling she is alive.
+
+Page Awareness:
+
+Sophia automatically changes expertise depending on the current QGuard Helix module.
+
+Migration Planner
+
+Mode
+
+Migration Advisor
+
+Green holographic interface
+
+Certificates
+
+Mode
+
+PKI Expert
+
+Blue holograms
+
+Digital certificates
+
+Quantum Readiness
+
+Mode
+
+Quantum Consultant
+
+Purple quantum particles
+
+Exposure Graph
+
+Mode
+
+Risk Analyst
+
+Orange graph overlays
+
+Executive Dashboard
+
+Mode
+
+Executive Advisor
+
+Gold highlights
+
+Business metrics
+
+Scanner
+
+Mode
+
+Threat Hunter
+
+Red cyber overlays
+
+Telemetry
+
+Mode
+
+SOC Analyst
+
+Blue network telemetry
+
+Same avatar.
+
+Different interface.
+
+Different holographic effects.
+
+Voice Profiles:
+
+Allow users to select voice.
+
+Professional Female
+
+Executive Female
+
+British Consultant
+
+American Cybersecurity Expert
+
+Warm AI
+
+Neutral AI
+
+Future
+
+Custom enterprise voices.
+
+Notification Intelligence:
+
+Replace traditional popups.
+
+Sophia reacts naturally.
+
+Example
+
+She turns toward the user.
+
+Displays concern.
+
+Says
+
+"I detected four new quantum-vulnerable assets with critical risk. Would you like me to generate a remediation plan based on NIST guidance?"
+
+No intrusive dialogs.
+
+Natural interaction.
+
+Background Intelligence:
+
+Sophia proactively monitors
+
+Scanner
+
+Migration
+
+Certificates
+
+Collectors
+
+Telemetry
+
+Compliance
+
+Risk
+
+Exposure
+
+Reports
+
+If important events occur
+
+She can initiate contextual suggestions while respecting user preferences and notification settings.
+
+Performance Requirements:
+
+Target
+
+60 FPS
+
+GPU acceleration
+
+Lazy loading
+
+Texture streaming
+
+Animation caching
+
+LOD
+
+Memory optimization
+
+Suspended rendering when hidden
+
+Low CPU
+
+Suitable for enterprise laptops.
+
+Accessibility:
+
+Reduced Motion Mode
+
+Mute Voice
+
+Keyboard Navigation
+
+Screen Reader Labels
+
+Caption Support
+
+Voice Toggle
+
+High Contrast
+
+Animation Pause
+
+Multi-Tenant Security:
+
+Sophia must remain fully compliant with QGuard Helix security architecture.
+
+Every interaction must enforce:
+
+Strict tenant isolation
+Row-Level Security (RLS)
+Role-Based Access Control (RBAC)
+Least-privilege access
+Audit logging
+Prompt injection protection
+Zero cross-tenant visibility
+
+All answers must be generated exclusively from the authenticated tenant's live data and authorized permissions.
+
+Branding
+
+Maintain QGuard Helix visual identity.
+
+Primary colors
+
+Deep Blue
+
+Quantum Purple
+
+Cyan
+
+White
+
+Glassmorphism
+
+Neural networks
+
+Quantum particles
+
+Hexagonal geometry
+
+Premium lighting
+
+Minimalistic enterprise design
+
+Enterprise User Experience Goals
+
+Users should feel as though they are interacting with a senior cybersecurity consultant rather than a chatbot. Sophia should provide natural eye contact, realistic speech, subtle body language, context-aware reactions, and evidence-based guidance that reinforces trust and professionalism. Every interaction should communicate that QGuard Helix is an advanced enterprise platform for post-quantum cybersecurity, making complex remediation, migration, compliance, and risk analysis approachable through an engaging digital human interface.

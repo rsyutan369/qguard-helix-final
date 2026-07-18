@@ -28,6 +28,7 @@ const ENFORCEMENT = (process.env.SUBSCRIPTION_ENFORCEMENT || 'enforce').toLowerC
 const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // BASIC — Quantum Readiness & Assessment Engine + entry migration tools
   { prefix: '/api/v1/quantum-readiness', tier: 'basic' },
+  { prefix: '/api/v1/exposure-graph', tier: 'basic' }, // Quantum Exposure Graph™ dependency & migration intelligence (QR suite)
   { prefix: '/api/v1/reports', tier: 'basic' },
   { prefix: '/api/v1/migration-planner', tier: 'basic' },
   { prefix: '/api/v1/sandbox', tier: 'basic' },
@@ -35,12 +36,15 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/quantum-certification', tier: 'basic' }, // Quantum Trust Certification Engine (BASIC/PRO/ELITE)
   { prefix: '/api/v1/quantum-remediation', tier: 'basic' }, // Intelligent Quantum Remediation Engine (pairs with certification)
   { prefix: '/api/v1/migration-workflow', tier: 'basic' }, // Cross-module workflow rail (state-driven lifecycle)
+  { prefix: '/api/v1/copilot', tier: 'basic' }, // Sophia AI Security Copilot™ — available to every paying tenant; tools self-gate by RBAC + the caller's own module entitlements
   // BASIC scans its own assets (feeds QR Engine / Migration Planner / Sandbox).
   { prefix: '/api/v1/scanner', tier: 'basic' },
 
   // PRO — Discovery (remaining) / Operations / Ecosystem / Intelligence / PQAuth / Observability / Trust Center
   { prefix: '/api/v1/agent-scanner', tier: 'pro' }, // Agent Collector Scanners (scanner "Agents" tab) — Pro+ only
   { prefix: '/api/v1/migration', tier: 'pro' }, // timeline / phases / live-migration (NOT migration-planner: longer prefix wins)
+  { prefix: '/api/v1/migration-snapshots', tier: 'pro' }, // Snapshot Management for safe rollback (live-migration)
+  { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (live-migration)
   { prefix: '/api/v1/dashboard/pqauth', tier: 'pro' },
   { prefix: '/api/v1/dashboard/behavioral-analytics', tier: 'pro' },
   { prefix: '/api/v1/dashboard/telemetry-correlation', tier: 'pro' },

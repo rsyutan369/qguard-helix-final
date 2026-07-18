@@ -18,6 +18,7 @@ import { useSubscription } from '@/hooks/use-subscription';
 import { canAccessPath, resolveRequiredTier, type AccessTier } from '@/lib/subscription-access';
 import { StarterDashboard } from '@/app/dashboard/_components/StarterDashboard';
 import { UpgradeRequired } from '@/components/subscription/UpgradeRequired';
+import { SophiaCopilot } from '@/components/copilot/SophiaCopilot';
 
 const NAV_SECTIONS = [
   {
@@ -25,6 +26,7 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
+      { name: 'Sophia AI Security Copilot™', path: '/dashboard/sophia', icon: Sparkles },
       { name: 'Quantum Readiness Assessment Engine™', path: '/dashboard/quantum-readiness', icon: Sparkles },
       { name: 'Migration Planner', path: '/dashboard/migration-planner', icon: Route },
       { name: 'Migration Sandbox', path: '/dashboard/migration-sandbox', icon: Box },
@@ -497,6 +499,9 @@ export default function DashboardLayout() {
           )}
         </div>
       </main>
+
+      {/* Sophia — AI Security Copilot™, available on every dashboard page. */}
+      <SophiaCopilot />
     </div>
   );
 }

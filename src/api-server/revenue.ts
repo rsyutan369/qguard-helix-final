@@ -40,10 +40,17 @@ function readQueryToken(req: Request): string | null {
   return typeof raw === 'string' && raw.length > 0 ? raw : null
 }
 
+// The SSE stream is the ONLY route allowed to authenticate via a query-string
+// token, because EventSource cannot send an Authorization header. Every other
+// route (snapshot, export) must use the header so the session JWT never lands
+// in a URL, access log, browser history entry or Referer header.
+function isStreamRequest(req: Request): boolean {
+  const path = (req.originalUrl || req.url || '').split('?')[0]
+  return path.endsWith('/stream')
+}
+
 async function requireOwner(req: OwnerRequest, res: Response, next: NextFunction) {
-  // Query token allowed ONLY because EventSource cannot send headers (same
-  // trade-off as /api/v1/admin/stream); the export links share it.
-  const token = getToken(req) || readQueryToken(req)
+  const token = getToken(req) || (isStreamRequest(req) ? readQueryToken(req) : null)
   if (!token) return jsonError(res, 401, 'UNAUTHORIZED', 'Owner session token required')
   const user = await getServerUser(token)
   if (!user) return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired owner session')
@@ -657,6 +664,10 @@ router.get('/export', async (req: OwnerRequest, res: Response) => {
   if (!['revenue', 'subscriptions', 'payments', 'customers', 'summary'].includes(report)) {
     return jsonError(res, 400, 'INVALID_REPORT', 'Unknown report kind')
   }
+  // Financial exports must never be cached by a proxy/browser or leak a
+  // referrer to a downstream origin.
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Referrer-Policy', 'no-referrer')
   try {
     const snapshot = await buildRevenueSnapshot(req.ownerDb!)
     const stamp = new Date().toISOString().slice(0, 10)

@@ -879,7 +879,7 @@ function buildAdvisor(eligibility: EligibilityResult, certificate: QuantumTrustC
 /* ------------------------------------------------------------------ */
 /* Dashboard payload assembly                                          */
 /* ------------------------------------------------------------------ */
-async function buildDashboard(token: string, userId: string, actorEmail: string): Promise<CertificationDashboard> {
+export async function buildCertificationDashboard(token: string, userId: string, actorEmail: string): Promise<CertificationDashboard> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Supabase unavailable')
   const missing = { schema: false }
@@ -1129,7 +1129,7 @@ async function issueCertificate(args: {
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
-    const data = await buildDashboard(token!, user!.id, user!.email || '')
+    const data = await buildCertificationDashboard(token!, user!.id, user!.email || '')
     res.json({ data })
   } catch (error) {
     console.error('quantum-certification dashboard failed:', error)
@@ -1149,7 +1149,7 @@ router.get('/stream', async (req: Request, res: Response) => {
   const send = async () => {
     if (closed) return
     try {
-      const data = await buildDashboard(token!, user!.id, user!.email || '')
+      const data = await buildCertificationDashboard(token!, user!.id, user!.email || '')
       res.write(`event: certification-update\ndata: ${JSON.stringify(data)}\n\n`)
     } catch {
       res.write(`event: certification-error\ndata: {}\n\n`)

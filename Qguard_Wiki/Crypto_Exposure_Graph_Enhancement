@@ -1,0 +1,361 @@
+Enhance Quantum Exposure Graph™ into an Enterprise Cryptographic Dependency & Migration Intelligence Platform
+
+In http://localhost:3000/dashboard/quantum-readiness/exposure-graph, redesign and significantly enhance the Quantum Exposure Graph™ into a comprehensive Enterprise Cryptographic Dependency Graph, Migration Impact Analysis Engine, and Trust Relationship Visualization.
+
+The goal is to provide customers with complete visibility into how their assets, cryptographic systems, certificates, trust relationships, APIs, cloud services, third-party vendors, and business applications are interconnected, enabling them to safely plan and execute quantum migration with minimal operational risk.
+
+This should become one of the flagship capabilities of QGuard Helix and differentiate it from traditional vulnerability management and asset inventory platforms.
+
+Primary Objectives
+
+The Quantum Exposure Graph™ should help customers answer critical business and technical questions, including:
+
+Which assets are connected to each other?
+Which systems depend on one another?
+Which assets communicate with external or third-party services?
+Which third-party vendors or SaaS platforms still use quantum-vulnerable cryptography?
+Which assets are most critical to business operations?
+Which systems should be migrated first?
+Which systems must be migrated together?
+What services, applications, or trust relationships may break if an asset is upgraded?
+What is the blast radius if a migration fails?
+How can migrations be sequenced to minimize downtime and operational risk?
+
+The platform should transform complex cryptographic relationships into intuitive, interactive visualizations that enable informed migration planning.
+
+Enterprise Dependency Visualization
+
+Display every discovered asset as an interactive node.
+
+Examples include:
+
+Servers
+Virtual Machines
+Workstations
+Kubernetes Clusters
+Containers
+Cloud Resources
+Databases
+APIs
+Load Balancers
+VPN Gateways
+SSH Servers
+TLS Endpoints
+PKI Infrastructure
+Certificate Authorities
+Identity Providers
+Key Management Systems (KMS)
+Hardware Security Modules (HSM)
+Web Applications
+SaaS Platforms
+Email Systems
+Active Directory
+DNS Services
+Internal Services
+External Services
+Third-Party Vendors
+
+Each node should display its current cryptographic posture:
+
+🔴 Quantum Vulnerable
+🟡 Hybrid Migration
+🟢 PQC Ready
+🔵 Migration In Progress
+⚪ Unknown / Unverified
+
+Trust Relationship Mapping
+
+Visualize all cryptographic trust relationships, including:
+
+TLS trust chains
+Certificate chains
+PKI hierarchy
+Mutual TLS (mTLS)
+API trust relationships
+SSH trust relationships
+VPN trust
+Service Mesh trust
+Identity federation
+OAuth/OpenID Connect
+SAML authentication
+Cloud IAM trust
+KMS dependencies
+Certificate Authority relationships
+Hardware Security Module integrations
+
+Each connection should be selectable and display detailed metadata.
+
+Third-Party Dependency Analysis
+
+Automatically discover and visualize external dependencies, such as:
+
+SaaS platforms
+Cloud providers
+Payment gateways
+CDN providers
+Identity providers
+External APIs
+Vendor services
+Managed databases
+External PKI providers
+DNS providers
+Email services
+
+For every third-party dependency, display:
+
+Vendor name
+Connected assets
+Cryptographic algorithms in use
+TLS version
+Certificate information
+Quantum readiness status
+Risk level
+Migration compatibility
+Business criticality
+
+Migration Impact Analysis™:
+
+When a user selects an asset, simulate the effects of upgrading it to post-quantum cryptography.
+
+Display:
+
+Current State
+
+Current algorithms
+
+Current certificates
+
+Current trust relationships
+
+Current dependencies
+
+Current communication paths
+
+Proposed Migration
+
+Target PQC algorithms
+
+ML-KEM
+
+ML-DSA
+
+Hybrid TLS
+
+AES-256-GCM
+
+SHA3
+
+Updated certificates
+
+Updated trust chains
+
+Updated TLS policies
+
+Migration Impact
+
+Predict and visualize:
+
+Which applications may fail
+Which APIs may stop communicating
+Which certificates require replacement
+Which trust chains become invalid
+Which VPN tunnels require updates
+Which SSH clients require upgrades
+Which cloud services require compatibility validation
+Which Kubernetes workloads require restarting
+Which databases require TLS updates
+Which applications require certificate pinning updates
+What Will Break?
+
+Provide a dedicated Migration Impact Report.
+
+Example:
+
+Potential Service Interruptions
+
+Internal API authentication
+Legacy VPN gateway
+Third-party payment gateway
+Mutual TLS service mesh
+Certificate-pinned mobile applications
+
+Required Remediation
+
+Replace RSA certificates
+Upgrade TLS profiles
+Rotate SSH host keys
+Update KMS policies
+Upgrade OpenSSL libraries
+Deploy Hybrid TLS
+Update Certificate Authority hierarchy
+
+Estimated Risk
+
+Low
+Medium
+High
+Critical
+
+Estimated downtime
+
+Estimated compatibility score
+
+Confidence score
+
+Migration Dependency Intelligence™
+
+Automatically determine:
+
+Which assets must be migrated first
+
+Which assets must be migrated together
+
+Which assets cannot yet be migrated
+
+Which assets depend on legacy cryptography
+
+Which systems block migration
+
+Generate a recommended migration order, for example:
+
+Certificate Authority
+Key Management System
+Identity Provider
+Internal PKI
+VPN Infrastructure
+TLS Load Balancers
+Internal APIs
+Databases
+Kubernetes Clusters
+Web Applications
+Endpoints
+Blast Radius Analysis™
+
+When selecting any node, dynamically calculate and visualize:
+
+Direct dependencies
+Indirect dependencies
+Trust chain dependencies
+Communication paths
+Number of affected assets
+Number of affected users
+Business units affected
+Internet-facing exposure
+Critical infrastructure exposure
+
+Highlight impacted assets using animated overlays.
+
+AI Migration Advisor™
+
+Include an AI-powered recommendation panel.
+
+Example:
+
+AI Recommendations
+
+Migrate Internal PKI before TLS gateways.
+Delay migration of Payment Gateway until vendor PQC support is available.
+Upgrade Identity Provider before rotating certificates.
+Replace certificate-pinned mobile applications before deploying ML-DSA certificates.
+Hybrid TLS is recommended for internet-facing APIs.
+High-risk assets should be migrated during scheduled maintenance windows.
+
+Also estimate:
+
+Migration complexity
+Business impact
+Compatibility score
+Estimated migration duration
+Confidence level
+Interactive Graph Features
+
+Support:
+
+Zoom
+Pan
+Full-screen mode
+Dynamic layouts
+Search
+Filtering
+Group by environment
+Group by business unit
+Group by cloud provider
+Group by cryptographic algorithm
+Group by quantum readiness
+Group by application
+Group by region
+Risk Prioritization
+
+Automatically prioritize assets based on:
+
+Business criticality
+Quantum exposure
+Internet exposure
+Trust relationships
+Number of dependencies
+Certificate expiration
+Cryptographic strength
+Regulatory requirements
+Data sensitivity
+Business impact
+
+Assign priorities such as:
+
+Critical
+High
+Medium
+Low
+Enterprise Dashboard Metrics
+
+Display summary metrics including:
+
+Total Assets
+Quantum Vulnerable Assets
+Hybrid Assets
+PQC-Ready Assets
+Third-Party Dependencies
+Critical Trust Relationships
+Internet-Facing Assets
+High-Risk Assets
+Legacy Cryptographic Assets
+Certificate Chains
+PKI Objects
+Estimated Blast Radius
+Migration Readiness Score
+Quantum Readiness Score
+Visual Experience
+
+Use modern, premium visualizations inspired by:
+
+Microsoft Defender Exposure Graph
+Wiz Security Graph
+Palo Alto Cortex
+Datadog Service Map
+Azure Resource Graph
+Neo4j Bloom
+ServiceNow CMDB
+
+The graph should include:
+
+Animated trust connections
+Real-time telemetry updates
+Interactive dependency highlighting
+Color-coded cryptographic posture
+Smooth graph transitions
+Expandable node clusters
+Animated migration paths
+Blast radius overlays
+Risk heatmaps
+User Experience
+
+The Quantum Exposure Graph™ should provide customers with complete visibility into their cryptographic ecosystem, enabling them to understand:
+
+How every asset is connected.
+Which systems establish trust with one another.
+Which third-party vendors or services are involved.
+What dependencies exist across applications and infrastructure.
+What could be impacted by a cryptographic migration.
+Which migration sequence minimizes business disruption.
+How to prioritize remediation based on risk and business criticality.
+
+Rather than serving as a static visualization, this module should function as an intelligent Cryptographic Dependency Intelligence Platform, helping organizations confidently plan, simulate, validate, and execute enterprise-scale migrations to post-quantum cryptography while minimizing operational risk, maintaining business continuity, and providing a level of visibility expected by Fortune 500 enterprises, financial institutions, government agencies, and critical infrastructure operators.

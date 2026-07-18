@@ -1,3 +1,356 @@
+# Sophia Deep-Reasoning Upgrade — Deep Search / Deep Context / Consultant-grade (2026-07-18)
+
+Spec: Qguard_Wiki/AI_Sophia_Upgrade. Screenshots show shallow single-module
+summaries ("Migration is 68%") that answer WHAT not HOW/WHY. Upgrade the
+reasoning engine to a CISO-grade deep-investigation pipeline: intent → objective
+inference → question expansion → full cross-module search → dependency/relationship
+reasoning → evidence correlation → risk → prioritized recommendations → NL
+explanation. Every consultative question investigates the whole platform and
+returns a structured answer (exec summary, key findings, reasoning, root cause,
+business impact, technical analysis, migration strategy w/ order+rationale+
+breakages, rollback, risk before→after, compliance, dependencies, proactive
+findings, next questions). Evidence-driven only; no fabrication.
+
+- [x] Contract src/types/copilot.ts — extended CopilotAnswer with optional deep
+      fields (mode, objectiveKind, objective, keyFindings, rootCause,
+      businessImpact, technicalAnalysis, migrationStrategy{steps:
+      order+rationale+breaksIf}, dependencies, potentialBreakages,
+      rollbackStrategy, riskOutlook before→after, complianceAlignment,
+      proactiveFindings) + MigrationStep/ProactiveFinding/RiskOutlook/
+      MigrationStrategy types + new CopilotStage values (expanding/
+      investigating/correlating/analyzing).
+- [x] Knowledge src/api-server/copilot-knowledge.ts — inferObjective(question)
+      → {kind: guidance|prioritization|executive|gap_analysis|explain|status,
+      objective, investigate} + expandQuestion() (related sub-topics).
+- [x] Engine src/api-server/copilot-engine.ts — INVESTIGATION_TOOLS (20 broad
+      read-only cross-module tools); planQuery unions them in investigate mode
+      (cap 22, cheap via 15s cached builders) + carries mode/objective/expansion;
+      extractIntelligence() correlates every tool into one TenantIntelligence;
+      5 mode composers (migration guidance w/ canonical PKI-first order +
+      per-step rationale + breaksIf + rollback + effort/timeline, prioritization
+      w/ WHY via risk×exposure×blast×internet-facing, executive readiness verdict,
+      certification gap-analysis w/ root cause, explain-risk w/ Shor/Grover);
+      detectProactiveFindings (expired/expiring certs, offline collectors, failed
+      jobs, no snapshot before active migration, critical blockers); composeAnswer
+      branches investigate→deep synthesis (+agent enrichment) / direct→agent path;
+      empty-tenant honesty (no fabricated strategy); richer streamed stages.
+- [x] UI src/components/copilot/SophiaMessage.tsx — renders "Deep investigation"
+      badge, objective ("What you're asking"), key findings, risk outlook
+      before→after, root cause, business impact, technical analysis, numbered
+      migration strategy (rationale + "if out of order" breakage per step +
+      effort/timeline), dependencies, what-could-break, rollback strategy,
+      proactive findings ("While investigating I also detected"). Premium
+      enterprise styling; existing sections preserved.
+- [x] Verify tools/copilot-check.ts — 22 sections / 97 assertions all pass
+      (objective inference, deep-investigation breadth 21 tools, migration-
+      guidance structure PKI-first + breakages + rollback + risk outlook +
+      standards, prioritization WHY, executive/gap-analysis/explain modes,
+      proactive findings, direct-mode preserved, empty-tenant honesty). tsc
+      clean; vite build green (69s).
+- [x] Docs: updated docs/AI_SECURITY_COPILOT.md + memory.
+
+Rollback: additive/optional fields — old answers still render; revert the
+engine/knowledge/UI edits to restore shallow behavior.
+
+DONE 2026-07-18. Sophia now runs a full cross-module investigation and answers
+HOW/WHY with a structured consultant report instead of a single-module summary.
+
+---
+
+# Sophia — QGuard Helix AI Security Copilot™ (2026-07-18)
+
+Specs: Qguard_Wiki/AI_Security_CoPilot + Qguard_Wiki/AI_CoPilot_Multi-Tenant_Isolation.
+Enterprise AI Security Copilot ("Sophia") available on every dashboard page:
+gateway → intent detection → planner → parallel typed tools → multi-agent
+reasoning → evidence-based streamed responses. Strict tenant isolation (RLS
+client + explicit user_id scoping), RBAC capability matrix, audit logging,
+prompt-injection protection, rate limiting. No fabricated data — every answer
+derives from the tenant's live platform builders (buildSnapshot,
+buildScannerIntelligence, buildExposureIntelligence, remediation/certification
+engines, HNDL, workflow, migration/telemetry tables).
+
+Plan (agents: Architect→Builder→Auditor inline; validation via check tool + tsc/build):
+
+- [x] Contract src/types/copilot.ts (intents, agents, evidence/recommendation/
+      answer schema, stream events, conversations, context, insights).
+- [x] Knowledge base src/api-server/copilot-knowledge.ts (26-module registry
+      with deep links, 20-intent catalog + weighted detection + follow-up
+      resolution, planner map, standards catalog [NIST CSF 2.0 / SP 800-53 /
+      800-57 / 800-131A / 800-208 / 1800-38 / FIPS 203-205 / CNSA 2.0 / ISO
+      27001+19790 / PCI DSS / CIS v8 / OWASP ASVS / ETSI / IETF hybrid], RBAC
+      role-capability matrix, prompt-injection sanitizer w/ invisible-char
+      strip, page-aware suggested questions).
+- [x] Tool layer src/api-server/copilot-tools.ts — 57 MCP-style typed tools
+      (assets/scanner/CBOM/exposure/migration/remediation/certificates/PKI/
+      harvest-now/reports/telemetry/collectors/patchers/orchestrator/
+      connectors/compliance/readiness/risk/certification/snapshots/rollback/
+      logs/recommendations). Reads via cached tenant builders + tenantRows
+      helper that ALWAYS pins .eq('user_id') (proven by check); operate-class
+      tools are guarded human-in-the-loop preflights (audit + deep link into
+      owning module, never autonomous mutation). RBAC-enforced in runTool.
+- [x] Engine src/api-server/copilot-engine.ts — 8 specialist agents +
+      coordinator, parallel tool execution, evidence merge, deterministic
+      confidence scoring (coverage×freshness), conversation memory (follow-up
+      resolution), proactive insights, empty-tenant honesty guard.
+- [x] Gateway src/api-server/copilot.ts → /api/v1/copilot (basic tier):
+      requireAuth + role resolution (profiles.role, owner bypass) + entitlement
+      tier, token-bucket rate limiting (burst+window), audit_logs writes,
+      conversations CRUD + search + pin + export (Supabase copilot_* tables w/
+      graceful in-memory fallback), POST /chat (JSON + SSE stage/tool/answer),
+      GET /context /suggestions /insights /health.
+- [x] Schema supabase/sophia-copilot-schema.sql (copilot_conversations,
+      copilot_messages; RLS auth.uid() = user_id; indexes; touch trigger) —
+      user applies (works in-memory until then).
+- [x] Exports: harvest-now buildHndlIntelligence (existing re-export),
+      migration-workflow buildWorkflowState, quantum-certification
+      buildCertificationDashboard, migration-snapshots buildSnapshotDashboard.
+- [x] Mount in index.ts + subscription-guard basic entry + subscription-access
+      /dashboard/sophia basic.
+- [x] Hook src/hooks/use-copilot.ts (context/insights/suggestions/
+      conversations + POST fetch-reader SSE chat streaming + Web Speech voice).
+- [x] UI src/components/copilot/ — SophiaMessage.tsx (structured answer cards:
+      summary/evidence/reasoning/recommendations/risk/next actions/related
+      pages/confidence meter/standards), SophiaCopilot.tsx floating dock
+      mounted in DashboardLayout (all pages).
+- [x] Full console src/app/dashboard/sophia/page.tsx (history sidebar +
+      streaming chat center + context/insights right rail) + App.tsx route +
+      Core Modules nav item.
+- [x] Verify tools/copilot-check.ts 14 sections / all pass (intent detection,
+      planner, 57-tool registry completeness, STRICT tenant scoping via mock
+      client [39 queries/29 tools all user_id-pinned], RBAC denial matrix,
+      role normalization, sanitizer, confidence bounds, evidence composition,
+      empty-tenant honesty, memory follow-ups, insights ranking, rate limiter,
+      suggestions). tsc --noEmit clean; vite build green (32s). LIVE: 401 on
+      /copilot/health + /context + /suggestions + /chat (auth-first), 404 on
+      unknown path (router confirmed mounted).
+- [x] Docs docs/AI_SECURITY_COPILOT.md + memory.
+
+Rollback plan: feature is additive — removing the copilot mounts (index.ts,
+DashboardLayout widget, App.tsx route, nav item) + new files reverts cleanly;
+copilot_* tables are standalone (no FK into existing tables' behavior).
+
+DONE 2026-07-18. Both specs (AI_Security_CoPilot + AI_CoPilot_Multi-Tenant_
+Isolation) fully implemented and verified — see docs/AI_SECURITY_COPILOT.md.
+
+---
+
+# Quantum Exposure Graph™ — Enterprise Dependency & Migration Intelligence (2026-07-18)
+
+Spec: Qguard_Wiki/Crypto_Exposure_Graph_Enhancement. Transform
+/dashboard/quantum-readiness/exposure-graph into an Enterprise Cryptographic
+Dependency Graph + Migration Impact Analysis + Trust Relationship platform.
+
+Plan (agents: Architect→Builder→Auditor inline; validation via check tool + tsc/build):
+
+- [x] Shared pure intelligence src/lib/exposure-graph-intel.ts (isomorphic —
+      backend, frontend and check tool import the SAME logic): 24-category
+      classification, 12-tier migration ladder, blast-radius BFS (direct/
+      indirect/trust-chain), Migration Impact Analysis™ (NIST target mapping,
+      what-breaks per neighbor category, remediation, bounded risk/downtime/
+      compatibility/confidence estimates), explainable composite priority.
+- [x] Contract src/types/exposure-graph.ts (5-state posture incl. migrating+
+      unknown, typed trust edges, third-party, waves/clusters/blockers,
+      advisor, summary, EMPTY constant).
+- [x] Backend src/api-server/exposure-graph.ts → /api/v1/exposure-graph (basic
+      tier): reuses buildSnapshot + raw tenant rows; derives trust edges
+      (relationships + cert-issuer chains [internal issuers → internal edges] +
+      runtime communication paths), external nodes (CAs/vendor hosts/linked
+      cloud connectors) — evidence-only. Pure assembleExposureIntelligence()
+      exported. GET / + /stream (SSE 30s heartbeat 25s, header-auth only,
+      exposure-intelligence frames). Per-tenant 15s single-flight cache.
+      Mounted in index.ts + subscription-guard basic entry.
+- [x] Hook src/hooks/use-exposure-graph.ts (fetch + header-auth ReadableStream
+      SSE + Supabase realtime on the 9 evidence tables).
+- [x] UI rebuild exposure-graph/: page.tsx (6-card KPI band + secondary strip +
+      toolbar + fullscreen Esc overlay + evidence footer), _graph.tsx (memoized
+      zoom/pan canvas, 5 group-by layouts incl. tier columns, animated trust
+      flows + SMIL blast pulse + rotating migrating ring, shapes per category,
+      search centering, hover tooltip, edge selection), _panels.tsx (Overview/
+      Impact/Blast tabs, What-Will-Break report, edge trust metadata),
+      _intelligence.tsx (waves + clusters + blockers, third-party table, risk
+      prioritization table, AI advisor cards + estimates), _common.ts.
+- [x] Verify: tools/exposure-graph-check.ts 64/64 (assembly, 5-state posture,
+      external derivation, blast BFS, impact mapping, wave order PKI<Web,
+      clusters/blockers, third-party categorisation, advisor, empty-state
+      honesty). tsc clean; vite build clean. LIVE: 401 unauth / 200 owner real
+      evidence (external CA node from Google Trust Services issuer, waves,
+      vendor blocker, 3 recs) / SSE exposure-intelligence frames. Headless-
+      Chrome (raw CDP + injected session): KPI band, canvas, node click →
+      rail, Impact tab (ECDSA P-256→ML-DSA-65), honest empty state, zero
+      console errors.
+- [x] Docs docs/EXPOSURE_GRAPH.md + memory.
+
+Rollback plan: page is self-contained; restoring the previous single-file
+page.tsx and removing the new router/mount reverts cleanly (no schema changes).
+
+---
+
+# Live Migration Massive-Scale Orchestration (2026-07-17)
+
+Spec: Qguard_Wiki/Live_Migration_Massive_ScalabilityCapable. Enterprise-scale
+distributed orchestration + real-time telemetry for Live Migration.
+
+- [x] Types src/types/migration-orchestrator.ts.
+- [x] Backend src/api-server/migration-orchestrator.ts → /api/v1/migration-
+      orchestrator (Pro+): pure scheduler (toOrchJob/jobPhase/planReconciliation/
+      computeMetrics) — priority queues, dependency-aware blocking, lease-based
+      distributed locking + idempotent claim, exponential-backoff retry,
+      back-pressure/rate-limit, dead-letter isolation, node-failure recovery
+      (stale-lease reclaim). State in migration_jobs.metadata.orchestration (NO
+      schema change). Bounded reconciliation loop (≤60/cycle). Real metrics from
+      migration_jobs/validation/agents/connectors; infra CPU/mem/latency only if
+      agent reports (else null — no fabrication). GET / + GET /stream (SSE 15s).
+      Mounted + Pro tier entry.
+- [x] Hook src/hooks/use-migration-orchestrator.ts (fetch + header-auth SSE).
+- [x] UI src/app/dashboard/live_migration_ops/_orchestration.tsx —
+      OrchestrationPanel (progress bar + throughput sparkline + 10-phase
+      breakdown + 6 perf tiles + priority queue + fleet health + 10
+      capabilities + reconciliation feed). Added additively to the page.
+- [x] Verify: tsc clean, vite build clean; tools/orchestrator-check.ts 24/24
+      (phases, dependency, lease reclaim, backoff+dead-letter, back-pressure,
+      priority, real metric math, null infra); live owner (Starter 403 / Pro
+      200, 10 capabilities, honest null infra, SSE orchestrator-update frame).
+- [x] Docs docs/LIVE_MIGRATION_SCALABILITY.md + memory.
+
+---
+
+# Migration Snapshot Management (2026-07-17)
+
+Spec: Qguard_Wiki/Snapshot_Management. Pre-migration snapshots + safe rollback
+for Live Migration.
+
+- [x] Schema supabase/migration-snapshots-schema.sql (migration_snapshots +
+      migration_snapshot_audit, RLS tenant-isolated, indexes, realtime).
+- [x] Types src/types/migration-snapshot.ts.
+- [x] Backend src/api-server/migration-snapshots.ts → /api/v1/migration-snapshots
+      (Pro+): captures REAL crypto state (algorithms/TLS/PKI/certs/keys/config)
+      from crypto_inventory/certificates/generated_keys/job-meta; SHA3-256
+      integrity; auto pre-migration snapshots for active jobs; AUTO-ROLLBACK on
+      failed jobs w/ restorable snapshot; restore (integrity-gated, drives job
+      rollback) / verify / delete (retention-gated) / audit / SSE; graceful
+      schemaReady:false. Mounted + tier entry in subscription-guard.
+- [x] Hook src/hooks/use-migration-snapshots.ts (fetch + header-auth SSE +
+      realtime + create/restore/verify/delete).
+- [x] UI src/app/dashboard/live_migration_ops/_snapshots.tsx — dashboard card
+      (Total/Restorable/Auto+Manual Rollbacks/Storage/Integrity/Latest) +
+      management drawer (list/search/filter/compare/download/restore/verify/
+      delete + Audit Log tab). Snapshots button beside Rollback in toolbar;
+      Rollback opens the snapshot restore drawer focused on the job's asset.
+- [x] Verify: tsc clean, vite build clean; tier gating (Starter 403 / Pro 200
+      schemaReady:false) live; tools/snapshot-check.ts 16/16 (capture,
+      deterministic SHA3-256, tamper detection, empty state); authed render of
+      the drawer + toolbar Snapshots button + setup notice.
+- [x] Docs docs/MIGRATION_SNAPSHOTS.md + memory.
+- [ ] USER: run supabase/migration-snapshots-schema.sql in the Supabase SQL
+      Editor (idempotent); snapshots then capture automatically on migration.
+
+---
+
+# Live Migration Enhancements — additive band (2026-07-17)
+
+Spec: Qguard_Wiki/Live_Migration_Enhancements. ADD business-outcome
+enhancements (Before→After, AI Advisor, etc.) WITHOUT redesigning the page.
+
+- [x] New src/app/dashboard/live_migration_ops/_enhancements.tsx (self-contained
+      prop contracts). Page derives ALL props from real snapshot+workflow
+      (data-honest; unmeasurable = "—").
+- [x] Added band above existing operations surface (nothing removed):
+      Quantum Migration Progress hero (ring + %migrated + 6 cells), Executive
+      Outcomes (10 KPIs), Cryptographic Upgrade Before→After (real job
+      transitions else canonical PQC paths, animated), AI Migration Advisor
+      (deterministic: headline/rec/evidence/window/residual-risk/effort),
+      Migration Story strip, Certification Progress checklist, Final Success
+      celebration (100%+eligible → Download Certificate).
+- [x] Verify: tsc clean, vite build clean; authed CDP render (owner) shows all
+      sections with real values (44.8% readiness, 38 findings, 8 critical, Sat
+      Jul 18 02:00 window, ELEVATED residual, ≈1.9h effort); footer "SSE
+      connected / Realtime SUBSCRIBED" — existing real-time wiring intact.
+- [x] Docs: docs/LIVE_MIGRATION_REDESIGN.md updated + memory.
+
+---
+
+# Live Migration Operations — Premium Redesign (2026-07-17)
+
+Make /dashboard/live-migration enterprise/premium; real-time wired; aligned
+with agents/assets/cbom/QR/certification so users see remediation→cert status.
+
+- [x] Re-theme: gold #d4af37 (121 refs) → premium cyan #22d3ee glassmorphism;
+      GLASS/INNER tokens → rounded-2xl border-white/10 bg-white/[0.03]
+      backdrop-blur; header softened to clean cyan (aligned w/ agent console).
+- [x] NEW real-time Certification Readiness band (useMigrationWorkflow — same
+      engine as workflow rail/QR/cert): readiness ring + eligible status +
+      criteria detail + Quantum-Secure / In-Remediation / Tracked asset cells
+      + View Certification & Remediation Roadmap CTAs. Answers "remediated?
+      eligible for cert?" in-sync across modules.
+- [x] Preserved ALL real-time wiring: REST /migration/live + SSE
+      /migration/live/stream + Supabase realtime (9 tables) + monotonic guard
+      + job/bulk actions + export. No API/backend changes.
+- [x] Verify: tsc clean, vite build clean; authed CDP render (owner) premium
+      theme + cert band + telemetry + "SSE connected / Realtime SUBSCRIBED";
+      backend RT check migration/live 200 + migration-workflow 44.8% + SSE
+      live frame emitted.
+- [x] Docs: docs/LIVE_MIGRATION_REDESIGN.md + memory.
+
+---
+
+# Scanner Settings Tab — Aligned Redesign (2026-07-17)
+
+Redesign scanner ?tab=settings to complement the new Agent Collector Console;
+ensure aligned/wired/hooks/SSE.
+
+- [x] src/components/agent-collector/AgentSettingsConsole.tsx — SHARES the
+      useAgentCollector hook (same REST + agent-scanner-sync SSE) so state/sync
+      stay consistent with the agents console. Collector Policy editor
+      (enabled/heartbeat/threshold/16-option Scan Scope grid/targets/paths,
+      apply to selected|all active via PUT /agents/{id}/policy), Selected
+      Collector panel (+rotate/revoke/delete + one-time token), Live Sync &
+      Alerts, Security Standards (mandatory PQC stack), collapsible API refs.
+      Glassmorphism matching AgentCollectorConsole.
+- [x] Replaced ~24KB inline gold-themed settings block in ScannerDashboard.tsx
+      with <AgentSettingsConsole/> (Pro+/owner gated, else upgrade notice).
+- [x] Removed ScannerDashboard's now-redundant fetchAgents call + duplicate
+      agent-scanner SSE EventSource effect (both consoles own it via the hook
+      → exactly one collector SSE per tab).
+- [x] Verify: tsc clean, vite build clean; authed CDP render (owner) confirmed
+      (Collector Settings + policy editor + scan scope + live sync "Connected");
+      backend PUT-policy path verified E2E (enroll→PUT interval=30/threshold=
+      high/5 scanTypes/2 targets persisted→delete). No API changes.
+- [x] Docs: docs/AGENT_COLLECTOR_CONSOLE.md updated + memory.
+
+---
+
+# Agent Collector Console — Enterprise UX Redesign (2026-07-17)
+
+Spec: Qguard_Wiki/Agents_Refactor_Improvements. Redesign the Agent Collector
+Scanner (scanner ?tab=agents) into a modern progressive-disclosure enterprise
+console — 5-min collector deploy — preserving ALL backend capability.
+
+- [x] Data hook src/hooks/use-agent-collector.ts — wraps existing
+      /api/v1/agent-scanner/* REST + agent-scanner-sync SSE (ZERO backend
+      changes); create/rotate/revoke/delete/updatePolicy/createConnector/
+      createOperatorAction/setOperatorStatus/ack/resolve + evidence-derived
+      summary + health/status/connection helpers.
+- [x] Console src/components/agent-collector/AgentCollectorConsole.tsx —
+      sub-nav (Overview/Collectors/Scans/Operations/Settings/Help); 6 summary
+      cards; 4-step Quick Start wizard (Create→Install→Verify→Scan) with
+      simplified form (name/env/desc/tags/targets only), one-time token +
+      install tabs (Linux/Windows/Docker/K8s/Helm/PowerShell/Cloud-Init),
+      verify panel; simplified collectors table + details drawer (health,
+      findings, telemetry, start-scan, rotate/revoke/delete sticky bar);
+      Operations Center (+ collapsible Advanced Settings); Settings→Security
+      Standards (mandatory PQC stack moved off collector page); Help→How
+      Collectors Work (arch diagram + FAQ). Glassmorphism, skeletons, WCAG
+      (aria-current/dialog/modal, focus mgmt, ESC, focus-visible, icon+text).
+- [x] Replaced ~63KB inline agents JSX in ScannerDashboard.tsx with
+      <AgentCollectorConsole/> + removed dead install-command/workflow consts.
+- [x] Verify: tsc clean, vite build clean; authed CDP render (owner) of
+      Overview + wizard + Help confirmed; backend smoke test all 10
+      agent-scanner endpoints 200 incl enroll→rotate→revoke→delete one-time
+      token (no API changes).
+- [x] Docs: docs/AGENT_COLLECTOR_CONSOLE.md + memory.
+
+---
+
 # Architecture & Scalability Review (2026-07-17)
 
 Spec: Qguard_Wiki/Architechture_Review_Scalability-Validation. Full-platform

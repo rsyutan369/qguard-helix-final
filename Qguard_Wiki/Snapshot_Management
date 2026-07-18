@@ -1,0 +1,148 @@
+Add Snapshot Management for Safe Migration Rollback
+
+Please enhance the Live Migration Operations module by adding a dedicated Snapshots feature alongside the existing Rollback functionality.
+
+UI/UX Changes
+Add a new Snapshots button immediately beside the Rollback button in the primary action toolbar.
+The Snapshots feature should be easily accessible throughout the migration lifecycle and visually indicate whether snapshots are available for the selected migration or asset.
+Purpose
+
+Before any migration, remediation, or cryptographic upgrade is executed, QGuard Helix must automatically create a complete snapshot (backup) of the target asset's configuration and cryptographic state.
+
+This ensures customers can safely restore their assets to their original pre-migration state if they:
+
+Experience unexpected issues after migration.
+Encounter compatibility problems with applications or services.
+Need to revert during testing or validation.
+Fail post-migration validation checks.
+Decide to cancel or undo the migration.
+Require recovery for business continuity or disaster recovery purposes.
+Snapshot Workflow
+
+Implement the following workflow:
+
+Pre-Migration Snapshot
+Automatically create a snapshot before any remediation or migration begins.
+Display the snapshot status in the migration workflow.
+Snapshot Metadata
+Each snapshot should include:
+Snapshot ID
+Asset Name
+Asset Type
+Environment (On-Prem, Cloud, Kubernetes, VM, Container, etc.)
+Snapshot Timestamp
+Migration Job ID
+Current Cryptographic Algorithms
+Configuration Version
+Certificate Metadata
+TLS Configuration
+PKI Metadata
+Key Metadata
+Created By
+Snapshot Size
+Retention Period
+Integrity Verification Status
+Snapshot Management
+Allow users to:
+View all snapshots.
+Search and filter snapshots.
+Compare snapshots.
+Download snapshot metadata.
+Restore from a selected snapshot.
+Delete expired snapshots (subject to retention policy).
+View snapshot history and audit logs.
+Rollback Integration
+
+Integrate the Snapshots feature directly with the existing Rollback process.
+
+When a user selects Rollback, they should be able to:
+
+View all available snapshots for the selected asset.
+Select the specific snapshot to restore.
+Preview the snapshot details before restoring.
+Confirm the rollback operation.
+Monitor rollback progress in real time.
+Verify the asset after restoration.
+Automatic Rollback
+
+If a migration fails during validation, compatibility testing, or health checks, QGuard Helix should automatically:
+
+Detect the failure.
+Notify the administrator.
+Restore the asset using the latest valid pre-migration snapshot (if automatic rollback is enabled).
+Log the rollback event.
+Preserve all audit evidence.
+Snapshot Coverage
+
+Snapshots should capture all relevant configuration and cryptographic information depending on the asset type, including:
+
+TLS configurations
+SSL certificates
+PKI objects
+SSH configurations
+VPN configurations
+Cryptographic libraries
+OpenSSL/OQS Provider configurations
+ML-KEM / ML-DSA settings
+Web server configurations
+API Gateway configurations
+Kubernetes manifests
+Ingress configurations
+Service Mesh policies
+Cloud KMS configurations
+HSM metadata
+Load balancer settings
+CDN TLS policies
+Database TLS configurations
+Identity Provider configurations
+Application configuration files
+Secrets references (metadata only, not plaintext secrets)
+System configuration files relevant to cryptographic services
+Real-Time Dashboard
+
+Add a Snapshots dashboard card displaying:
+
+Total Snapshots
+Successful Snapshots
+Restorable Snapshots
+Automatic Rollbacks
+Manual Rollbacks
+Snapshot Storage Usage
+Latest Snapshot Time
+Snapshot Integrity Status
+Audit & Compliance
+
+Every snapshot and rollback operation must be fully auditable.
+
+Record:
+
+User performing the action
+Timestamp
+Asset affected
+Snapshot ID
+Migration Job ID
+Reason for rollback
+Approval status
+Validation results
+Restoration status
+Integrity verification
+Tenant ID
+Complete audit trail
+Security Requirements
+
+Ensure snapshots are:
+
+Encrypted at rest.
+Tenant-isolated.
+Protected by RBAC permissions.
+Integrity verified using cryptographic hashes.
+Immutable unless deleted according to retention policies.
+Included in audit logs.
+Retained according to configurable retention policies.
+User Experience
+
+The Snapshots feature should provide users with confidence that every migration is fully reversible.
+
+Users should clearly understand that before any cryptographic upgrade or remediation is applied, QGuard Helix safely captures the asset's original state. If any issue occurs—or if they simply wish to revert—they can restore the asset to its exact pre-migration configuration quickly, securely, and with minimal downtime.
+
+This feature should reinforce QGuard Helix's enterprise-grade migration capabilities by providing safe, reliable, and auditable rollback protection for all quantum migration operations while preserving business continuity and reducing operational risk.

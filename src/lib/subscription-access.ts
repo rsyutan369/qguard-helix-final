@@ -77,6 +77,9 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/dashboard/migration-sandbox', tier: 'basic' },
   { prefix: '/dashboard/harvest-now', tier: 'basic' }, // HNDL assessment (QR engine)
   { prefix: '/dashboard/quantum-certification', tier: 'basic' }, // Quantum Trust Certification (BASIC/PRO/ELITE)
+  // Sophia AI Security Copilot™ — available to every paying tenant (the copilot
+  // itself self-limits answers to the tools the caller's role + plan permit).
+  { prefix: '/dashboard/sophia', tier: 'basic' },
   // BASIC also scans its own assets and reviews the inventory that feeds the
   // QR Assessment Engine / Migration Planner / Sandbox.
   { prefix: '/dashboard/scanner', tier: 'basic' },

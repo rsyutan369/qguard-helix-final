@@ -1,0 +1,35 @@
+What Should Be Inside a CBOM?
+
+A Cryptographic Bill of Materials is not just a certificate list.
+
+A useful CBOM should answer four practical questions:
+
+1. Crypto Assets
+What exists?
+Certificates, keys, HSMs, KMSs, trust stores, signing systems.
+
+2. Crypto Usage
+How is it used?
+Algorithms, protocols, TLS/mTLS, cipher suites, PKI, APIs.
+
+3. Crypto Dependencies
+What depends on it?
+Applications, business services, vendors, devices, network functions.
+
+4. Crypto Risk & Migration
+Can it be migrated safely?
+Owner, criticality, quantum risk, vendor readiness, upgrade path, rollback plan, target PQC state.
+
+Simple mental model:
+
+Assets → Usage → Dependencies → Migration Risk
+
+A CBOM should not only tell what cryptography exists.
+
+It should tell where it is used, what depends on it, who owns it, and how it can be migrated safely.
+
+Because in PQC migration, the hardest part is often not selecting ML-KEM or ML-DSA.
+
+The harder part is discovering where RSA, ECC, certificates, keys, and trust relationships are already embedded.
+
+You cannot migrate what you cannot see
