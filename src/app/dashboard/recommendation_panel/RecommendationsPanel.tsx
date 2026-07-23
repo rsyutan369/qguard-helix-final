@@ -32,7 +32,7 @@ function recommendationHref(rec: Recommendation) {
   if (action.includes('scan') || category.includes('discover')) href = '/dashboard/scanner'
   else if (action.includes('migrat') || category.includes('migration')) href = '/dashboard/live-migration'
   else if (action.includes('cert') || category.includes('certificate')) href = '/dashboard/certificate-telemetry'
-  else if (action.includes('tls') || action.includes('protocol') || category.includes('protocol')) href = '/dashboard/api-encryption'
+  else if (action.includes('tls') || action.includes('protocol') || category.includes('protocol')) href = '/dashboard/encryption-monitoring'
   else if (category.includes('crypto') || action.includes('key') || action.includes('algorithm')) href = '/dashboard/crypto-agility'
 
   if (rec.assetId && (href === '/dashboard/quantum-risk-scoring' || href === '/dashboard/crypto-agility')) {

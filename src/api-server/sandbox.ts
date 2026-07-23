@@ -1,5 +1,17 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
+import {
+  ENGINE_PIPELINE_STAGES,
+  SIMULATION_TYPES,
+  assembleTwinIntelligence,
+  buildDependencyGraph,
+  buildDigitalTwin,
+  buildTopology,
+  pipelineStageForProgress,
+  predictFailures,
+  simulationTypeById,
+  type TwinBundle,
+} from './sandbox-twin'
 
 type AuthenticatedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -198,8 +210,16 @@ function dateMs(value: unknown) {
   return Number.isFinite(ms) ? ms : 0
 }
 
+// Jobs created through the enterprise Simulation Builder carry
+// metadata.pipelineVersion = 2 and progress through the full 14-stage
+// enterprise pipeline; older jobs keep the legacy 5-phase engine.
+function isEnterprisePipelineJob(meta: Record<string, unknown>) {
+  return Number(meta.pipelineVersion) >= 2 || typeof meta.simulationType === 'string'
+}
+
 function phaseForProgress(progress: number, status: string, meta: Record<string, unknown>) {
   const explicit = textMeta(meta, ['phase', 'enginePhase', 'currentPhase'])
+  const enterprise = isEnterprisePipelineJob(meta)
   if (status === 'rollback_requested' || status === 'rolled_back') {
     return { id: 'rollback', label: 'Rollback', detail: 'Recovery workflow is restoring the previous cryptographic posture.' }
   }
@@ -216,7 +236,15 @@ function phaseForProgress(progress: number, status: string, meta: Record<string,
     return { id: 'failed', label: 'Failed', detail: textMeta(meta, ['failureReason', 'error'], 'Workflow requires operator review.') }
   }
   if (status === 'completed') {
+    if (enterprise) {
+      const last = ENGINE_PIPELINE_STAGES[ENGINE_PIPELINE_STAGES.length - 1]
+      return { id: last.id, label: last.label, detail: last.detail }
+    }
     return ENGINE_PHASES[ENGINE_PHASES.length - 1]
+  }
+  if (enterprise) {
+    const stage = pipelineStageForProgress(progress)
+    return { id: stage.id, label: stage.label, detail: stage.detail }
   }
   const selected = [...ENGINE_PHASES].reverse().find((phase) => progress >= phase.at) || ENGINE_PHASES[0]
   if (explicit) return { ...selected, id: explicit.toLowerCase().replace(/\s+/g, '_'), label: explicit }
@@ -266,6 +294,12 @@ function estimateSandboxDurationMs(job: any) {
   const meta = asRecord(job?.metadata)
   const explicit = Number(meta.simulatedDurationMs || meta.estimatedDurationMs)
   if (Number.isFinite(explicit) && explicit >= 30000) return explicit
+  // Enterprise simulation types carry their own duration profile.
+  if (typeof meta.simulationType === 'string') {
+    const profile = simulationTypeById(meta.simulationType)
+    const scale = boolMeta(meta.dryRun) ? 0.55 : 1
+    return Math.round((profile.baseDurationMs + profile.perAssetMs) * scale)
+  }
   const base = boolMeta(meta.dryRun) ? 110_000 : 220_000
   const jobText = `${job?.job_type || ''} ${job?.name || ''} ${JSON.stringify(meta)}`.toLowerCase()
   const complexity = /hsm|database|certificate|vpn|tls/.test(jobText) ? 70_000 : 0
@@ -432,6 +466,12 @@ async function advanceSandboxJobs(client: any, userId?: string) {
           metadata: { phase: 'finalization', progress: 100 },
         }
       } else if (nextProgress > progress || phase.id !== previousPhase) {
+        // Enterprise pipeline jobs accumulate an auditable per-stage history
+        // (entered-at + progress) that powers the Migration Pipeline rail.
+        const priorHistory = Array.isArray(meta.stageHistory) ? (meta.stageHistory as any[]) : []
+        const stageHistory = phase.id !== previousPhase
+          ? [...priorHistory, { id: phase.id, label: (phase as any).label || phase.id, enteredAt: nowIso, progress: Math.round(nextProgress) }].slice(-20)
+          : priorHistory
         update = {
           status: 'running',
           progress: Math.max(progress, nextProgress),
@@ -441,13 +481,14 @@ async function advanceSandboxJobs(client: any, userId?: string) {
             phase: phase.id,
             phaseDetail: phase.detail,
             lastEnginePhase: phase.id,
+            stageHistory,
             simulatedDurationMs: duration,
           },
         }
         if (phase.id !== previousPhase) {
           event = {
             type: 'sandbox-phase-transition',
-            message: `${modeLabel(classifyJobMode(job))} entered ${phase.label}: ${job.name || job.id}.`,
+            message: `${modeLabel(classifyJobMode(job))} entered ${(phase as any).label || phase.id}: ${job.name || job.id}.`,
             metadata: { phase: phase.id, progress: nextProgress },
           }
         }
@@ -786,20 +827,21 @@ function riskScoreForSimulation(sim: any) {
 async function buildSandboxPayload(client: any, userId: string) {
   await advanceSandboxJobs(client, userId)
 
-  const [jobs, assets, inventory, exposures, events, scanSessions, certificates, vulns, scanResults, scannerAlerts, runtimeEvents, securityEvents, auditLogs] = await Promise.all([
+  const [jobs, assets, inventory, exposures, events, scanSessions, certificates, vulns, scanResults, scannerAlerts, runtimeEvents, securityEvents, auditLogs, relationships] = await Promise.all([
     safeRows(client, 'migration_jobs', (q) => q.select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(500)),
     safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(500)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
     safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(300)),
     safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, completed_at, started_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(30)),
-    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, not_after, is_quantum_safe, is_expiring_soon, status').eq('user_id', userId).limit(200)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status').eq('user_id', userId).limit(200)),
     safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status').eq('user_id', userId).not('status', 'eq', 'resolved').limit(200)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
     safeRows(client, 'scanner_alerts', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(300)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
     safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(300)),
     safeRows(client, 'audit_logs', (q) => q.select('id, action, entity_type, entity_id, details, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(200)),
+    safeRows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(2000)),
   ])
 
   const assetMap = new Map<string, any>((assets || []).map((a: any) => [a.id, a]))
@@ -1072,10 +1114,14 @@ async function buildSandboxPayload(client: any, userId: string) {
     { framework: 'NIST Migration Guidance', control: 'Inventory, prioritization, validation, and evidence', status: totalInventory > 0 && totalJobs > 0 ? 'compliant' : totalInventory > 0 ? 'partial' : 'pending', score: totalInventory > 0 ? (totalJobs > 0 ? 88 : 55) : 0 },
     { framework: 'NIST SP 800-208', control: 'PQC Algorithm Adoption', status: nistReady ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: pqcReadiness },
     { framework: 'NIST SP 800-57 Rev.5', control: 'Key Management Practices', status: expiringCerts === 0 && failedJobs === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 15 - failedJobs * 20) },
-    { framework: 'CNSA 2.0', control: 'NSS Algorithm Suite', status: criticalExposures === 0 && highExposures < 3 ? 'compliant' : 'non-compliant', score: Math.max(0, 100 - criticalExposures * 20 - highExposures * 10) },
+    { framework: 'NSA CNSA 2.0', control: 'NSS Algorithm Suite', status: criticalExposures === 0 && highExposures < 3 ? 'compliant' : 'non-compliant', score: Math.max(0, 100 - criticalExposures * 20 - highExposures * 10) },
+    { framework: 'FIPS 140-3 / 203-205', control: 'Validated module + approved PQC algorithm usage', status: pqcReadiness >= 70 && criticalExposures === 0 ? 'compliant' : vulnerableInventory > 0 ? 'partial' : 'pending', score: Math.max(0, Math.min(100, Math.round(pqcReadiness * 0.7 + (criticalExposures === 0 ? 30 : 0)))) },
     { framework: 'ISO 27001', control: 'Cryptographic controls and change management', status: auditAvailable && totalInventory > 0 ? 'compliant' : auditAvailable ? 'partial' : 'pending', score: auditAvailable ? (totalInventory > 0 ? 86 : 62) : 0 },
     { framework: 'PCI DSS', control: 'Strong cryptography, TLS, and key lifecycle evidence', status: expiringCerts === 0 && criticalExposures === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 18 - criticalExposures * 25 - highExposures * 8) },
     { framework: 'SOC 2', control: 'Change auditability and runtime monitoring', status: auditAvailable && runtimeRiskEvents === 0 ? 'compliant' : auditAvailable ? 'partial' : 'pending', score: auditAvailable ? Math.max(45, 95 - runtimeRiskEvents * 8 - failedJobs * 12) : 0 },
+    { framework: 'HIPAA', control: 'ePHI encryption strength and transmission security', status: criticalExposures === 0 && expiringCerts === 0 ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: Math.max(0, 100 - criticalExposures * 22 - highExposures * 8 - expiringCerts * 10) },
+    { framework: 'GDPR', control: 'Art. 32 state-of-the-art encryption of personal data', status: vulnerableInventory === 0 && criticalExposures === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - vulnerableInventory * 4 - criticalExposures * 18) },
+    { framework: 'CISA PQC Guidance', control: 'Quantum-readiness roadmap: inventory, prioritization, migration rehearsal', status: totalInventory > 0 && totalJobs > 0 ? 'compliant' : totalInventory > 0 ? 'partial' : 'pending', score: totalInventory > 0 ? (totalJobs > 0 ? 90 : 58) : 0 },
     { framework: 'Crypto Agility', control: 'Algorithm Replaceability', status: agileReady ? 'compliant' : 'pending', score: agileReady ? 85 : 0 },
     { framework: 'Audit Trail', control: 'Migration Evidence Collection', status: auditAvailable ? 'compliant' : 'pending', score: auditAvailable ? 100 : 0 },
     { framework: 'HNDL Posture', control: 'Harvest-Now-Decrypt-Later', status: criticalExposures === 0 ? 'compliant' : 'critical', score: Math.max(0, 100 - criticalExposures * 25) },
@@ -1290,6 +1336,22 @@ async function buildSandboxPayload(client: any, userId: string) {
     }
   })
 
+  // ── Digital Twin & Enterprise Simulation Intelligence ───────────────────────
+  // Pure derivation over the same real tenant rows loaded above (sandbox-twin.ts).
+  const twinBundle: TwinBundle = {
+    assets: assets || [],
+    inventory: inventory || [],
+    exposures: exposures || [],
+    certificates: certificates || [],
+    relationships: relationships || [],
+    runtimeEvents: runtimeEvents || [],
+    vulns: vulns || [],
+    scanResults: scanResults || [],
+    events: events || [],
+    workflows,
+  }
+  const twinIntelligence = assembleTwinIntelligence(twinBundle, { pqcReadiness, riskScore, complianceScore })
+
   return {
     generatedAt: new Date().toISOString(),
     summary,
@@ -1303,6 +1365,7 @@ async function buildSandboxPayload(client: any, userId: string) {
     workflowPhases,
     pqcStack,
     recentLogs,
+    ...twinIntelligence,
   }
 }
 
@@ -1508,12 +1571,154 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
 })
 
+// ── POST /api/v1/sandbox/jobs/:id/approval ───────────────────────────────────
+// Production Approval Gate. Records a governed human decision (approve /
+// reject / request_review) with full audit evidence. This NEVER migrates or
+// mutates production — approval is an evidence artifact consumed by the
+// operational migration workflow.
+router.post('/jobs/:id/approval', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const decision = String(req.body?.decision || '').toLowerCase()
+  const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 500) : ''
+  if (!['approve', 'reject', 'request_review'].includes(decision)) {
+    return res.status(400).json({ error: { code: 'INVALID_DECISION', message: 'Decision must be approve, reject, or request_review' } })
+  }
+
+  const { data: job, error: readError } = await client
+    .from('migration_jobs')
+    .select('id, user_id, asset_id, name, job_type, status, metadata, progress, started_at, completed_at, created_at, updated_at')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user!.id)
+    .single()
+
+  if (readError || !job) {
+    return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Simulation job not found' } })
+  }
+  if (!isSandboxSimulationJob(job)) {
+    return res.status(400).json({ error: { code: 'NOT_A_SIMULATION', message: 'Approval decisions apply to sandbox simulations only.' } })
+  }
+  const status = normalizeStatus(job.status)
+  if (decision === 'approve' && status !== 'completed') {
+    return res.status(400).json({ error: { code: 'NOT_COMPLETED', message: 'Only completed simulations can be approved for production planning.' } })
+  }
+
+  const now = new Date().toISOString()
+  const meta = asRecord(job.metadata)
+  const approval = {
+    decision,
+    decidedBy: req.user!.email || req.user!.id,
+    decidedAt: now,
+    note: note || null,
+    simulationStatusAtDecision: status,
+  }
+  const approvalHistory = [...(Array.isArray(meta.approvalHistory) ? meta.approvalHistory as any[] : []), approval].slice(-10)
+
+  const { error: updateError } = await client
+    .from('migration_jobs')
+    .update({ updated_at: now, metadata: { ...meta, approval, approvalHistory } })
+    .eq('id', job.id)
+    .eq('user_id', req.user!.id)
+
+  if (updateError) {
+    return res.status(500).json({ error: { code: 'UPDATE_FAILED', message: 'Failed to record approval decision' } })
+  }
+
+  const decisionLabel = decision === 'approve' ? 'approved for production planning' : decision === 'reject' ? 'rejected' : 'sent back for review'
+  await insertEngineEvent(client, job, `sandbox-approval-${decision}`, `Simulation "${job.name || job.id}" ${decisionLabel} by ${approval.decidedBy}.`, decision === 'reject' ? 'warning' : 'info', { decision, note: note || null })
+
+  const { error: securityError } = await client.from('security_events').insert({
+    user_id: req.user!.id,
+    event_type: `sandbox-approval-${decision}`,
+    severity: decision === 'reject' ? 'warning' : 'info',
+    message: `Production approval gate: simulation "${job.name || job.id}" ${decisionLabel}.`,
+    asset_id: job.asset_id || null,
+    resource_name: job.name || job.id,
+    resource_type: 'migration-sandbox',
+    metadata: { decision, jobId: job.id, note: note || null },
+    created_at: now,
+  })
+  if (securityError && !isMissingTable(securityError)) console.warn('[sandbox] approval security event failed:', securityError.message)
+
+  const { error: auditError } = await client.from('audit_logs').insert({
+    user_id: req.user!.id,
+    action: `sandbox_approval_${decision}`,
+    entity_type: 'migration_job',
+    entity_id: job.id,
+    details: { decision, note: note || null, simulationStatus: status, jobName: job.name || job.id },
+    ip_address: req.ip?.replace('::ffff:', '') || null,
+    user_agent: String(req.headers['user-agent'] || '').slice(0, 500),
+    created_at: now,
+  })
+  if (auditError && !isMissingTable(auditError)) console.warn('[sandbox] approval audit log failed:', auditError.message)
+
+  const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
+  return res.json({ data: { success: true, decision, jobId: job.id, approval, snapshot: payload } })
+})
+
+// ── GET /api/v1/sandbox/twin ─────────────────────────────────────────────────
+// Full digital-twin detail (bounded): twin nodes, dependency graph with
+// edges, topology heat map, and failure predictions for the twin tabs.
+router.get('/twin', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  try {
+    const userId = req.user!.id
+    const [assets, inventory, exposures, certificates, relationships, runtimeEvents, jobs] = await Promise.all([
+      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(500)),
+      safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).limit(1500)),
+      safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value, created_at').eq('user_id', userId).limit(1500)),
+      safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status').eq('user_id', userId).limit(500)),
+      safeRows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(3000)),
+      safeRows(client, 'runtime_crypto_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
+      safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, progress, metadata, completed_at').eq('user_id', userId).limit(500)),
+    ])
+
+    const workflows = (jobs || []).map((job: any) => ({
+      id: job.id,
+      assetId: job.asset_id,
+      name: job.name || job.id,
+      status: normalizeStatus(job.status),
+      progress: Number(job.progress || 0),
+      isSandbox: isSandboxSimulationJob(job),
+      completedAt: job.completed_at || null,
+      metadata: asRecord(job.metadata),
+    }))
+    const bundle: TwinBundle = {
+      assets: assets || [],
+      inventory: inventory || [],
+      exposures: exposures || [],
+      certificates: certificates || [],
+      relationships: relationships || [],
+      runtimeEvents: runtimeEvents || [],
+      vulns: [],
+      scanResults: [],
+      events: [],
+      workflows,
+    }
+    const twin = buildDigitalTwin(bundle)
+    const graph = buildDependencyGraph(bundle)
+    const topology = buildTopology(twin)
+    const failurePrediction = predictFailures(bundle, graph)
+
+    return res.json({ data: { generatedAt: twin.generatedAt, twin, graph, topology, failurePrediction } })
+  } catch (err) {
+    if (err instanceof SnapshotUnavailableError) {
+      return res.status(503).json({ error: { code: 'SNAPSHOT_UNAVAILABLE', message: err.message } })
+    }
+    console.error('[sandbox] twin error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to build digital twin' } })
+  }
+})
+
 // ── POST /api/v1/sandbox/simulate ────────────────────────────────────────────
 router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
-  const { assetId, assetIds, fromAlgo, toAlgo, migrationType, dryRun, environment } = req.body || {}
+  const { assetId, assetIds, fromAlgo, toAlgo, migrationType, dryRun, environment, simulationType } = req.body || {}
   const requestedAssetIds: string[] = Array.from(new Set(
     [...(Array.isArray(assetIds) ? assetIds : []), ...(assetId ? [assetId] : [])]
       .map((value) => String(value || '').trim())
@@ -1525,6 +1730,10 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
   if (requestedAssetIds.length > 25) {
     return res.status(400).json({ error: { code: 'TOO_MANY_ASSETS', message: 'A single simulation batch supports up to 25 assets.' } })
   }
+  if (simulationType && !SIMULATION_TYPES.some((t) => t.id === String(simulationType).toLowerCase())) {
+    return res.status(400).json({ error: { code: 'INVALID_SIMULATION_TYPE', message: `Unknown simulation type. Supported: ${SIMULATION_TYPES.map((t) => t.id).join(', ')}` } })
+  }
+  const simType = simulationTypeById(String(simulationType || (requestedAssetIds.length > 0 ? 'full_enterprise_migration' : 'custom_scenario')))
 
   const now = new Date().toISOString()
   const userId = req.user!.id
@@ -1538,6 +1747,12 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
     queuedAt: now,
     initiatedBy: req.user!.email,
     initiatedAt: now,
+    // Enterprise pipeline v2: every new simulation progresses through the
+    // 14-stage Discovery → AI Risk Analysis lifecycle inside the digital twin.
+    pipelineVersion: 2,
+    simulationType: simType.id,
+    simulationTypeLabel: simType.label,
+    stagePlan: ENGINE_PIPELINE_STAGES.map((stage) => ({ id: stage.id, label: stage.label, at: stage.at })),
   }
 
   let jobRows: any[] = []
@@ -1580,7 +1795,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
         user_id: userId,
         asset_id: id,
         name: `${dryRun ? '[DRY RUN] ' : 'Sandbox: '}${asset.name || 'Asset'} (${source} → ${target})`,
-        job_type: `sandbox_${migrationType || 'asset_migration'}`,
+        job_type: `sandbox_${simulationType ? simType.id : (migrationType || 'asset_migration')}`,
         status: 'queued',
         target_algorithm: target,
         strategy: `${source} → ${target}`,
@@ -1606,7 +1821,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
             algorithms: seed.algorithms,
             source: 'crypto_inventory + crypto_exposures',
           },
-          simulatedDurationMs: (dryRun ? 110_000 : 220_000) + complexityMs + index * 8_000,
+          simulatedDurationMs: Math.round((simType.baseDurationMs + simType.perAssetMs) * (dryRun ? 0.55 : 1)) + complexityMs + index * 8_000,
         },
       }
     })
@@ -1616,7 +1831,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
       user_id: userId,
       asset_id: null,
       name: dryRun ? `[DRY RUN] ${fromAlgo || 'Crypto'} → ${targetAlgo}` : `Sandbox: ${fromAlgo || 'Crypto'} → ${targetAlgo}`,
-      job_type: `sandbox_${migrationType || 'pqc_migration'}`,
+      job_type: `sandbox_${simulationType ? simType.id : (migrationType || 'pqc_migration')}`,
       status: 'queued',
       target_algorithm: targetAlgo,
       strategy: `${fromAlgo || 'Classical'} → ${targetAlgo}`,
@@ -1629,7 +1844,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
         sourceAlgorithm: fromAlgo || 'Classical',
         targetAlgorithm: targetAlgo,
         environment: environment || 'sandbox',
-        simulatedDurationMs: dryRun ? 110_000 : 240_000,
+        simulatedDurationMs: Math.round(simType.baseDurationMs * (dryRun ? 0.55 : 1)) + 20_000,
       },
     }]
   }
@@ -1818,6 +2033,26 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
     const snapshots = selectedSimulation && Array.isArray(selectedSimulation.metadata?.snapshots)
       ? selectedSimulation.metadata.snapshots
       : []
+    // Enterprise report catalog: targeted payload subsets for audits and
+    // change-management approvals. Default (no reportType) keeps the full
+    // snapshot export for backwards compatibility.
+    const reportType = String(req.query.reportType || '').toLowerCase()
+    const p: any = payload
+    const reportPayloads: Record<string, () => any> = {
+      executive: () => ({ reportType: 'executive-report', summary: p.summary, sophia: p.sophia, approvalGate: p.approvalGate, businessImpact: p.businessImpact, complianceScore: p.complianceScore, timeline: (p.timeline || []).slice(0, 12) }),
+      technical: () => ({ reportType: 'technical-report', summary: p.summary, simulations: p.simulations, workflows: p.workflows, digitalTwin: p.digitalTwin, dependencyGraph: p.dependencyGraph, failurePrediction: p.failurePrediction, telemetryFrame: p.telemetryFrame, pqcStack: p.pqcStack }),
+      compliance: () => ({ reportType: 'compliance-report', complianceScore: p.complianceScore, complianceItems: p.complianceItems, approvalGate: p.approvalGate, auditEvidence: (p.recentLogs || []).slice(0, 60) }),
+      migration: () => ({ reportType: 'migration-report', summary: p.summary, workflows: p.workflows, workflowPhases: p.workflowPhases, history: p.history, timeline: p.timeline }),
+      performance: () => ({ reportType: 'performance-report', performanceBenchmark: p.performanceBenchmark, telemetryFrame: p.telemetryFrame }),
+      rollback: () => ({ reportType: 'rollback-report', rollbackAnalysis: p.rollbackAnalysis, approvalGate: p.approvalGate, history: (p.history || []).filter((row: any) => row.snapshots > 0 || row.status === 'rolled_back') }),
+      risk: () => ({ reportType: 'risk-assessment-report', summary: p.summary, riskFactors: p.riskFactors, failurePrediction: p.failurePrediction, blockers: p.sophia?.detectedBlockers || [], businessImpact: p.businessImpact }),
+      twin: () => ({ reportType: 'digital-twin-summary', digitalTwin: p.digitalTwin, dependencyGraph: p.dependencyGraph, topology: p.topology }),
+      ai: () => ({ reportType: 'ai-recommendations-report', sophia: p.sophia, recommendations: p.recommendations }),
+    }
+    if (reportType && !reportPayloads[reportType]) {
+      return res.status(400).json({ error: { code: 'INVALID_REPORT_TYPE', message: `Unknown reportType. Supported: ${Object.keys(reportPayloads).join(', ')}` } })
+    }
+
     const exportPayload = selectedSimulation
       ? {
           generatedAt: payload.generatedAt,
@@ -1830,21 +2065,69 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
           pqcStack: payload.pqcStack,
           summary: payload.summary,
         }
-      : payload
+      : reportType
+        ? { generatedAt: payload.generatedAt, ...reportPayloads[reportType]() }
+        : payload
     const baseName = selectedSimulation
       ? `qguard-sandbox-${String(selectedSimulation.id).slice(0, 8)}-${new Date().toISOString().slice(0, 10)}`
-      : `qguard-sandbox-${new Date().toISOString().slice(0, 10)}`
+      : `qguard-sandbox${reportType ? `-${reportType}` : ''}-${new Date().toISOString().slice(0, 10)}`
 
     if (format === 'csv') {
       const escape = (v: unknown) => {
         const t = String(v ?? '')
         return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
       }
-      const sourceRows = selectedSimulation ? [selectedSimulation] : (payload.workflows || payload.simulations)
-      const rows = [
-        ['id', 'name', 'runMode', 'asset', 'assetType', 'status', 'fromAlgo', 'toAlgo', 'progress', 'riskLevel', 'phase', 'eta', 'owner', 'environment', 'snapshots', 'events'],
-        ...sourceRows.map((s: any) => [s.id, s.name, s.runModeLabel || s.runMode || 'workflow', s.assetName, s.assetType, s.status, s.fromAlgo, s.toAlgo, s.progress, s.riskLevel, s.phase, s.eta, s.owner, s.environment, Array.isArray(s.metadata?.snapshots) ? s.metadata.snapshots.length : 0, s.eventCount || 0]),
-      ]
+      // Report-type-specific tabular exports; default remains the workflow table.
+      let rows: unknown[][]
+      if (!selectedSimulation && reportType === 'performance') {
+        rows = [
+          ['metric', 'unit', 'before', 'after', 'deltaPct', 'improved', 'note'],
+          ...((p.performanceBenchmark?.metrics || []) as any[]).map((m) => [m.label, m.unit, m.before, m.after, m.deltaPct, m.improved, m.note]),
+        ]
+      } else if (!selectedSimulation && reportType === 'compliance') {
+        rows = [
+          ['framework', 'control', 'status', 'score'],
+          ...((p.complianceItems || []) as any[]).map((c) => [c.framework, c.control, c.status, c.score]),
+        ]
+      } else if (!selectedSimulation && reportType === 'risk') {
+        rows = [
+          ['category', 'prediction', 'probabilityPct', 'severity', 'affectedAssets', 'evidence', 'recommendation'],
+          ...((p.failurePrediction?.predictions || []) as any[]).map((f) => [f.category, f.label, f.probabilityPct, f.severity, (f.affectedAssets || []).join('; '), f.evidence, f.recommendation]),
+        ]
+      } else if (!selectedSimulation && reportType === 'rollback') {
+        rows = [
+          ['item', 'covered', 'detail'],
+          ...((p.rollbackAnalysis?.restorationChecklist || []) as any[]).map((c) => [c.label, c.covered ? 'yes' : 'no', c.detail]),
+          ['RTO (min)', p.rollbackAnalysis?.rtoMinutes ?? '', ''],
+          ['RPO (min)', p.rollbackAnalysis?.rpoMinutes ?? '', ''],
+          ['Rollback success probability (%)', p.rollbackAnalysis?.successProbabilityPct ?? '', ''],
+          ['Predicted downtime (min)', p.rollbackAnalysis?.downtimePredictionMin ?? '', ''],
+        ]
+      } else if (!selectedSimulation && reportType === 'twin') {
+        rows = [
+          ['component', 'assets', 'vulnerable', 'critical'],
+          ...((p.digitalTwin?.componentGroups || []) as any[]).map((g) => [g.label, g.assets, g.vulnerable, g.critical]),
+        ]
+      } else if (!selectedSimulation && (reportType === 'executive' || reportType === 'ai')) {
+        rows = [
+          ['field', 'value'],
+          ['Verdict', p.sophia?.verdict ?? ''],
+          ['Migration confidence (%)', p.sophia?.migrationConfidencePct ?? ''],
+          ['Compatibility score (%)', p.sophia?.compatibilityScorePct ?? ''],
+          ['Rollback confidence (%)', p.sophia?.rollbackConfidencePct ?? ''],
+          ['AI confidence (%)', p.sophia?.aiConfidencePct ?? ''],
+          ['Simulation status', p.approvalGate?.simulationStatus ?? ''],
+          ['Production ready', p.approvalGate?.productionReady ? 'yes' : 'no'],
+          ['Executive summary', p.sophia?.executiveSummary ?? ''],
+          ...((p.sophia?.priorityActions || []) as string[]).map((a, i) => [`Priority action ${i + 1}`, a]),
+        ]
+      } else {
+        const sourceRows = selectedSimulation ? [selectedSimulation] : (payload.workflows || payload.simulations)
+        rows = [
+          ['id', 'name', 'runMode', 'asset', 'assetType', 'status', 'fromAlgo', 'toAlgo', 'progress', 'riskLevel', 'phase', 'eta', 'owner', 'environment', 'snapshots', 'events'],
+          ...sourceRows.map((s: any) => [s.id, s.name, s.runModeLabel || s.runMode || 'workflow', s.assetName, s.assetType, s.status, s.fromAlgo, s.toAlgo, s.progress, s.riskLevel, s.phase, s.eta, s.owner, s.environment, Array.isArray(s.metadata?.snapshots) ? s.metadata.snapshots.length : 0, s.eventCount || 0]),
+        ]
+      }
       res.setHeader('Content-Type', 'text/csv')
       res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`)
       return res.send(rows.map((r) => r.map(escape).join(',')).join('\n'))

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
+import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
 
 /* ------------------------------------------------------------------ */
 /* Types — the migration plan contract from /api/v1/migration-planner */
@@ -162,6 +163,8 @@ export interface MigrationPlan {
   riskForecast: { currentRisk: number; targetRisk: number; reductionPct: number; residualRisk: number; month12: number; month24: number; month36: number };
   migrationJobs: Array<{ id: string; status: string; progress: number; jobType: string; updatedAt: string }>;
   evidence: { sources: string[]; note: string };
+  /** Shared Responsibility dependency-ordered 7-wave roadmap + tri-part readiness. */
+  sharedResponsibility?: SharedResponsibilityIntelligence;
 }
 
 export const EMPTY_PLAN: MigrationPlan = {

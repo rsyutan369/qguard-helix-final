@@ -140,7 +140,9 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
   const client = createAuthClient(token)
   if (!client) return jsonError(res, 500, 'CONFIG_ERROR', 'Supabase is not configured')
 
-  const user = await getServerUser(token)
+  // Full fidelity: billing handlers surface user.created_at as account/invoice
+  // dates, which are NOT present in the JWT claims.
+  const user = await getServerUser(token, { full: true })
   if (!user) return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired token')
 
   req.user = user

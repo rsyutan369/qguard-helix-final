@@ -1446,7 +1446,7 @@ export async function assembleEvidence(token: string, userId: string): Promise<R
 
   const [rawAssets, relationships, expiredCertRows, migrationJobs] = await Promise.all([
     safeRows(client, 'assets', (q) => q.select('id, name, type, environment, criticality, service_owner, metadata').eq('user_id', userId).limit(2000)),
-    safeRows(client, 'asset_relationships', (q) => q.select('source_asset_id, target_asset_id, parent_asset_id, child_asset_id, from_asset_id, to_asset_id, relationship_type').eq('user_id', userId).limit(3000)),
+    safeRows(client, 'asset_relationships', (q) => q.select('source_asset_id, target_asset_id, relationship_type').eq('user_id', userId).limit(3000)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, not_after').eq('user_id', userId).lt('not_after', new Date().toISOString()).limit(1000)),
     safeRows(client, 'migration_jobs', (q) => q.select('id, status, asset_id, job_type, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
   ])

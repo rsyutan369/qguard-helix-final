@@ -7,7 +7,7 @@ import {
   Unplug, RotateCcw, TrendingDown, Radar, Cpu,
 } from 'lucide-react';
 import { SophiaAvatar } from './SophiaAvatar';
-import type { CopilotAnswer, CopilotRiskLevel } from '@/types/copilot';
+import type { CopilotAnswer, CopilotRiskLevel, CopilotToolRun } from '@/types/copilot';
 
 /**
  * SophiaMessage — renders one structured CopilotAnswer.
@@ -34,6 +34,32 @@ const PRIORITY_STYLE: Record<string, string> = {
   high: 'bg-orange-500/15 text-orange-300 border-orange-500/40',
   medium: 'bg-amber-500/15 text-amber-200 border-amber-500/40',
   low: 'bg-slate-500/15 text-slate-300 border-slate-500/40',
+};
+
+/**
+ * Aggregate tool runs into user-facing data sources — one chip per platform
+ * module (via the backend-stamped `source` label), best status wins. Raw tool
+ * identifiers, row counts and timings are backend internals and never render.
+ */
+type SourceStatus = 'ok' | 'empty' | 'denied' | 'error';
+function aggregateSources(runs: CopilotToolRun[]): Array<{ label: string; status: SourceStatus }> {
+  const rank: Record<SourceStatus, number> = { ok: 3, denied: 2, error: 1, empty: 0 };
+  const fallbackLabel = (moduleId: string) => moduleId.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const map = new Map<string, SourceStatus>();
+  for (const run of runs) {
+    const label = run.source || fallbackLabel(run.module);
+    const status: SourceStatus = run.status in rank ? (run.status as SourceStatus) : 'empty';
+    const prev = map.get(label);
+    if (prev === undefined || rank[status] > rank[prev]) map.set(label, status);
+  }
+  return [...map.entries()].map(([label, status]) => ({ label, status }));
+}
+
+const SOURCE_STATUS_SUFFIX: Record<SourceStatus, string> = {
+  ok: '',
+  empty: ' · no data yet',
+  denied: ' · restricted',
+  error: ' · unavailable',
 };
 
 function SectionTitle({ icon: Icon, children }: { icon: typeof ShieldAlert; children: ReactNode }) {
@@ -337,7 +363,7 @@ export function SophiaMessage({ answer }: { answer: CopilotAnswer }) {
           >
             <Layers className="h-3.5 w-3.5 text-slate-500" />
             <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Reasoning &amp; sources</span>
-            <span className="ml-auto text-[10px] text-slate-500">{answer.toolRuns.length} tool run(s)</span>
+            <span className="ml-auto text-[10px] text-slate-500">{answer.toolRuns.length} data source(s)</span>
             <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${showReasoning ? 'rotate-180' : ''}`} />
           </button>
           {showReasoning && (
@@ -352,18 +378,17 @@ export function SophiaMessage({ answer }: { answer: CopilotAnswer }) {
               </ol>
               {answer.toolRuns.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 pt-1">
-                  {answer.toolRuns.map((run, i) => (
+                  {aggregateSources(answer.toolRuns).map((s, i) => (
                     <span
                       key={i}
-                      className={`rounded border px-1.5 py-0.5 text-[9px] font-mono ${
-                        run.status === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                          : run.status === 'empty' ? 'border-slate-600/40 bg-slate-800/40 text-slate-400'
-                          : run.status === 'denied' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                      className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
+                        s.status === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                          : s.status === 'empty' ? 'border-slate-600/40 bg-slate-800/40 text-slate-400'
+                          : s.status === 'denied' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
                           : 'border-red-500/30 bg-red-500/10 text-red-300'
                       }`}
-                      title={run.note || undefined}
                     >
-                      {run.tool} · {run.status}{typeof run.rows === 'number' ? ` (${run.rows})` : ''} · {run.ms}ms
+                      {s.label}{SOURCE_STATUS_SUFFIX[s.status]}
                     </span>
                   ))}
                 </div>

@@ -1100,7 +1100,7 @@ function QuantumLayout({ snapshot }: { snapshot: GovernanceSnapshot }) {
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <Panel className="p-5 xl:col-span-8">
-          <SectionTitle suffix={<a href="/dashboard/crypto-policies" className="text-[10px] font-black uppercase tracking-[0.06em] text-gold hover:text-[#FFE8A8]">Crypto Policies</a>}>Governance Control Matrix</SectionTitle>
+          <SectionTitle suffix={<a href="/dashboard/quantum-governance" className="text-[10px] font-black uppercase tracking-[0.06em] text-gold hover:text-[#FFE8A8]">Quantum Governance</a>}>Governance Control Matrix</SectionTitle>
           <PolicyMatrix rows={snapshot.policyRows} />
         </Panel>
         <Panel className="p-5 xl:col-span-4">

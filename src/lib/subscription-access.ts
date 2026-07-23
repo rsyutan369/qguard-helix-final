@@ -73,6 +73,7 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // BASIC — Quantum Readiness & Assessment Engine + entry migration tools + overview.
   { prefix: '/dashboard', tier: 'basic' }, // exact overview (see resolveRequiredTier)
   { prefix: '/dashboard/quantum-readiness', tier: 'basic' },
+  { prefix: '/dashboard/migration-intelligence', tier: 'basic' }, // Shared Responsibility Quantum Migration Intelligence Engine™
   { prefix: '/dashboard/migration-planner', tier: 'basic' },
   { prefix: '/dashboard/migration-sandbox', tier: 'basic' },
   { prefix: '/dashboard/harvest-now', tier: 'basic' }, // HNDL assessment (QR engine)
@@ -81,15 +82,16 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // itself self-limits answers to the tools the caller's role + plan permit).
   { prefix: '/dashboard/sophia', tier: 'basic' },
   // BASIC also scans its own assets and reviews the inventory that feeds the
-  // QR Assessment Engine / Migration Planner / Sandbox.
+  // QR Assessment Engine / Migration Planner / Sandbox. CBOM Explorer is part of
+  // this loop — it visualizes the same scanner CBOM inventory (/api/v1/scanner/*,
+  // already a BASIC API), so it belongs to the BASIC discovery experience.
   { prefix: '/dashboard/scanner', tier: 'basic' },
   { prefix: '/dashboard/assets', tier: 'basic' },
   { prefix: '/dashboard/assets_map', tier: 'basic' },
+  { prefix: '/dashboard/cbom', tier: 'basic' },
 
   // PRO — Discovery (remaining)
-  { prefix: '/dashboard/cbom', tier: 'pro' },
   { prefix: '/dashboard/shadow-crypto', tier: 'pro' },
-  { prefix: '/dashboard/crypto-exposure', tier: 'pro' },
   // PRO — Operations
   { prefix: '/dashboard/migration-timeline', tier: 'pro' },
   { prefix: '/dashboard/migration-phases', tier: 'pro' },
@@ -103,7 +105,6 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/dashboard/hybrid-crypto-lab', tier: 'pro' },
   // PRO — Intelligence
   { prefix: '/dashboard/runtime-crypto-intel', tier: 'pro' },
-  { prefix: '/dashboard/behavioral-analytics', tier: 'pro' },
   { prefix: '/dashboard/telemetry-correlation', tier: 'pro' },
   { prefix: '/dashboard/drift', tier: 'pro' },
   { prefix: '/dashboard/quantum-risk-scoring', tier: 'pro' },
@@ -119,25 +120,17 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // PRO — Trust Center
   { prefix: '/dashboard/trust-dashboard', tier: 'pro' },
   { prefix: '/dashboard/trust-state-discovery', tier: 'pro' },
-  { prefix: '/dashboard/identity-trust', tier: 'pro' },
-  { prefix: '/dashboard/device-trust', tier: 'pro' },
-  { prefix: '/dashboard/continuous-trust', tier: 'pro' },
-  { prefix: '/dashboard/trust-analytics', tier: 'pro' },
 
   // ELITE — QKMS
   { prefix: '/dashboard/qkms', tier: 'elite' },
   // ELITE — Governance
   { prefix: '/dashboard/compliance', tier: 'elite' },
   { prefix: '/dashboard/quantum-governance', tier: 'elite' },
-  { prefix: '/dashboard/crypto-policies', tier: 'elite' },
   { prefix: '/dashboard/audit-vault', tier: 'elite' },
   { prefix: '/dashboard/regulatory-mapping', tier: 'elite' },
-  { prefix: '/dashboard/standards-mapping', tier: 'elite' },
   // ELITE — Telemetry
   { prefix: '/dashboard/runtime-telemetry', tier: 'elite' },
   { prefix: '/dashboard/certificate-telemetry', tier: 'elite' },
-  { prefix: '/dashboard/key-analytics', tier: 'elite' },
-  { prefix: '/dashboard/api-encryption', tier: 'elite' },
   { prefix: '/dashboard/multi-cloud-telemetry', tier: 'elite' },
   // ELITE — Quantum Tools
   { prefix: '/dashboard/vault', tier: 'elite' },

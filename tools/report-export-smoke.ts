@@ -439,6 +439,51 @@ function verifyImprovements05(report: ReturnType<typeof buildReportModel>, snaps
   assert(/Critical: \d+ \(\d+\.\d%\)/.test(report.evidence.notes), `I5#6 Severity percentages: "${report.evidence.notes.match(/Critical[^,]+,/)?.[0]}"`);
 }
 
+// Improvements_06 assertions — board-level visual intelligence.
+function verifyImprovements06(report: ReturnType<typeof buildReportModel>, snapshot: QuantumReadinessSnapshot) {
+  console.log('  --- Improvements_06 assertions ---');
+
+  // §6 Board Snapshot: 60-second view copied from validated sections.
+  const b = report.boardSnapshot;
+  assert(b.hasData === snapshot.hasData && b.metrics.length === 6 && b.topDecisions.length <= 5, `I6#6 Board snapshot: ${b.metrics.length} metrics, ${b.topDecisions.length} decisions`);
+  assert(b.recommendation === report.executiveBlock.executiveRecommendation && b.currentReadiness === report.executiveBlock.currentReadiness && b.targetRisk === report.executiveBlock.targetRisk, `I6#6 Board snapshot reconciles with executive block (readiness ${b.currentReadiness}→${b.targetReadiness}, risk→${b.targetRisk})`);
+  assert(/discovered/.test(b.assetBasis) && /inventoried/.test(b.assetBasis) && /requiring migration/.test(b.assetBasis), `I6-minor#2 Asset-count basis explains discovered vs inventoried vs requiring migration: "${b.assetBasis.slice(0, 80)}…"`);
+
+  // §2 Executive Heat Map: full 5×5 grid; every finding group plotted exactly once.
+  const h = report.executiveHeatMap;
+  const plotted = h.cells.reduce((sum, c) => sum + c.count, 0);
+  assert(h.hasData === (report.findingGroups.length > 0), `I6#2 Heat map hasData=${h.hasData} (findingGroups=${report.findingGroups.length})`);
+  assert(h.cells.length === 25 && h.impactLabels.length === 5 && h.likelihoodLabels.length === 5, `I6#2 Heat map is a full 5×5 grid (${h.cells.length} cells)`);
+  assert(plotted === report.findingGroups.length && h.totalPlotted === report.findingGroups.length, `I6#2 Heat map plots every finding group once (Σcells=${plotted}, totalPlotted=${h.totalPlotted}, groups=${report.findingGroups.length})`);
+  assert(h.cells.every((c) => ['critical', 'high', 'medium', 'low', 'minimal'].includes(c.level)), `I6#2 Heat map cells carry a risk zone`);
+
+  // §3 Business Priority Matrix: 4 quadrants covering every remediation action.
+  const pm = report.businessPriorityMatrix;
+  const matrixItems = pm.quadrants.reduce((sum, q) => sum + q.items.length, 0);
+  assert(pm.quadrants.length === 4 && ['quick-wins', 'strategic', 'fill-ins', 'long-term'].every((k) => pm.quadrants.some((q) => q.key === k)), `I6#3 Priority matrix: 4 quadrants (${pm.quadrants.map((q) => q.key).join(', ')})`);
+  assert(matrixItems === report.remediationProgram.length, `I6#3 Priority matrix classifies every remediation action (${matrixItems} == ${report.remediationProgram.length})`);
+
+  // §5 Evidence Quality Score: a letter grade per evidence source.
+  const eq = report.evidenceQuality;
+  assert(eq.rows.length === report.evidenceConfidence.length && eq.rows.every((r) => ['A', 'B', 'C', 'D', 'E', 'Missing'].includes(r.grade)), `I6#5 Evidence quality: ${eq.rows.length} graded source(s), overall ${eq.overallGrade}`);
+  assert(eq.gradedSources + eq.missingSources === eq.rows.length && eq.rows.every((r) => (r.grade === 'Missing') === (r.status === 'Missing')), `I6#5 Evidence quality reconciles: ${eq.gradedSources} graded / ${eq.missingSources} missing`);
+
+  // Minor §3 Remediation Campaigns: every finding group rolled into one campaign.
+  const camp = report.remediationCampaigns;
+  const campFindings = camp.campaigns.reduce((sum, c) => sum + c.findingCount, 0);
+  assert(campFindings === report.findingGroups.length && camp.campaigns.every((c, i) => c.priority === `P${i + 1}`), `I6-minor#3 Remediation campaigns: ${camp.campaigns.length} campaign(s) cover all ${report.findingGroups.length} finding group(s)`);
+
+  // §1/§4 + minor §1 Shared Responsibility (only when the snapshot carries it).
+  if (report.sharedResponsibility.hasData) {
+    const sr = report.sharedResponsibility;
+    assert(sr.timeline.length === 3 && sr.timeline.every((t) => ['ready', 'in-progress', 'waiting', 'not-applicable'].includes(t.status)), `I6#4 SR timeline: ${sr.timeline.map((t) => `${t.domain}=${t.status}`).join(', ')}`);
+    assert(sr.reconciliationNote.length > 20 && sr.classifiedFindings >= 0 && sr.rawScannerInstances >= 0, `I6-minor#1 SR reconciliation: ${sr.classifiedFindings} classified vs ${sr.rawScannerInstances} raw`);
+    assert(b.responsibilitySplit.customer === sr.distribution.customer && b.responsibilitySplit.provider === sr.distribution.provider, `I6#1 Board responsibility split mirrors SR distribution`);
+  } else {
+    console.log('      (shared-responsibility source absent in this snapshot — SR timeline/reconciliation checks skipped)');
+  }
+}
+
 // Asset-scoped reporting — select the top-2 risk assets of the enterprise
 // snapshot, scope the snapshot, rebuild the model and assert the scoped report
 // is filtered, recomputed and still internally consistent (validation = PASS).
@@ -489,6 +534,7 @@ async function runScoped(outDir: string) {
   const scopedAssetDef = report.definitions.find((d) => d.term === 'Asset');
   assert(!!scopedAssetDef && scopedAssetDef.definition.includes('2 of 24 discovered asset(s)'), `I5#1 scoped Asset definition: "${scopedAssetDef?.definition.match(/This report's scope[^.]*\./)?.[0]}"`);
   verifyImprovements05(report, scoped);
+  verifyImprovements06(report, scoped);
 
   let ok = 0;
   for (const fmt of REPORT_FORMATS) {
@@ -515,6 +561,7 @@ async function run(name: string, snapshot: QuantumReadinessSnapshot, outDir: str
   verifyImprovements03(report, snapshot);
   verifyImprovements04(report, snapshot);
   verifyImprovements05(report, snapshot);
+  verifyImprovements06(report, snapshot);
 
   let ok = 0;
   for (const fmt of REPORT_FORMATS) {

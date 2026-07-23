@@ -31,7 +31,6 @@ export const MODULE_REGISTRY: CopilotModule[] = [
   { id: 'assets', label: 'Assets & CBOM', path: '/dashboard/assets', description: 'Asset inventory and cryptographic bill of materials' },
   { id: 'cbom', label: 'CBOM Explorer', path: '/dashboard/cbom', description: 'Cryptographic component explorer' },
   { id: 'shadow_crypto', label: 'Shadow Crypto', path: '/dashboard/shadow-crypto', description: 'Undocumented cryptography discovery' },
-  { id: 'crypto_exposure', label: 'Crypto Exposure', path: '/dashboard/crypto-exposure', description: 'Cryptographic exposure analysis' },
   { id: 'quantum_readiness', label: 'Quantum Readiness Command Center', path: '/dashboard/quantum-readiness/command-center', description: 'Quantum readiness assessment engine' },
   { id: 'executive', label: 'Executive Dashboard', path: '/dashboard/quantum-readiness/executive', description: 'Executive readiness and business risk view' },
   { id: 'exposure_graph', label: 'Quantum Exposure Graph™', path: '/dashboard/quantum-readiness/exposure-graph', description: 'Dependency graph, blast radius, trust chains' },
@@ -40,6 +39,7 @@ export const MODULE_REGISTRY: CopilotModule[] = [
   { id: 'harvest_now', label: 'Harvest Now (HNDL)', path: '/dashboard/harvest-now', description: 'Harvest-now-decrypt-later threat operations' },
   { id: 'certification', label: 'Quantum Trust Certification™', path: '/dashboard/quantum-certification', description: 'Evidence-gated PQC certification' },
   { id: 'reports', label: 'Report Center', path: '/dashboard/quantum-readiness/reports', description: 'Enterprise report generation and exports' },
+  { id: 'migration_intelligence', label: 'Migration Intelligence™', path: '/dashboard/migration-intelligence', description: 'Shared Responsibility ownership model — who owns each finding, who can fix it, and its migration dependencies' },
   { id: 'migration_planner', label: 'Migration Planner', path: '/dashboard/migration-planner', description: 'PQC migration planning workflow' },
   { id: 'migration_sandbox', label: 'Migration Sandbox', path: '/dashboard/migration-sandbox', description: 'Safe migration simulation' },
   { id: 'live_migration', label: 'Live Migration Ops', path: '/dashboard/live-migration', description: 'Live migration execution, orchestration, snapshots and rollback' },
@@ -434,12 +434,25 @@ export function inferObjective(question: string, intents: CopilotIntent[]): Obje
   const isCertContext = intents.includes('certification') || /certif/.test(q)
   const isMigrationContext = intents.includes('migration_status') || /migrat|cutover|transition/.test(q)
 
+  // Ranking — "most vulnerable / riskiest / top risk assets": the user wants a
+  // ranked, evidence-backed view of what is most at risk, never a literal
+  // text search over the question words.
+  const isRanking = /\b(most|top|highest|worst|biggest|greatest|largest)\b.{0,40}\b(vulnerable|risk|risky|critical|exposed|at risk|danger)/.test(q)
+    || /\b(riskiest|weakest|most vulnerable|most exposed|most critical)\b/.test(q)
+
   // Prioritization — "what/where should I ... first / start with / next"
   if (/\b(what|which|where)\b.{0,40}\b(first|start|begin|prioriti|next)\b/.test(q)
     || /\bprioriti[sz]/.test(q)
     || /\bwhat should i (do|migrate|fix|remediate)\b/.test(q)
-    || /\bwhere (do|should) i (start|begin)\b/.test(q)) {
-    return { kind: 'prioritization', objective: 'You want to know what to tackle first — a risk-and-dependency-based prioritization, with the reasoning behind the order.', investigate: true }
+    || /\bwhere (do|should) i (start|begin)\b/.test(q)
+    || isRanking) {
+    return {
+      kind: 'prioritization',
+      objective: isRanking
+        ? 'You want your most vulnerable assets identified and ranked — which ones are most at risk, why they rank that way, and what to do about them.'
+        : 'You want to know what to tackle first — a risk-and-dependency-based prioritization, with the reasoning behind the order.',
+      investigate: true,
+    }
   }
 
   // Gap analysis — "why can't I certify / why not certified / what's blocking"
@@ -484,6 +497,48 @@ export function inferObjective(question: string, intents: CopilotIntent[]): Obje
 }
 
 /**
+ * Extract a real entity/attribute filter from a natural-language question for
+ * asset search. Question words and generic security vocabulary are NOT filters
+ * — "Show my most vulnerable assets" must never become name ILIKE '%show my
+ * most vulnerable assets%' (that literal search returned 0 rows and produced
+ * the "0 asset(s) match" answer that contradicted the risk evidence). Only
+ * concrete terms survive: asset names ("web-01"), types ("database"),
+ * environments ("production"). Returns '' when the question carries no filter.
+ */
+const FILTER_STOPWORDS = new Set([
+  // question/verb scaffolding
+  'show', 'list', 'display', 'find', 'search', 'give', 'tell', 'get', 'see',
+  'what', 'which', 'where', 'when', 'why', 'how', 'who', 'whose',
+  'are', 'is', 'was', 'were', 'be', 'been', 'being', 'am',
+  'do', 'does', 'did', 'have', 'has', 'had', 'can', 'could', 'should', 'would', 'will', 'may', 'might', 'must',
+  'please', 'kindly', 'me', 'my', 'our', 'your', 'their', 'his', 'her', 'its',
+  'i', 'we', 'you', 'they', 'it', 'this', 'that', 'these', 'those', 'them',
+  'the', 'a', 'an', 'and', 'or', 'not', 'no', 'of', 'in', 'on', 'at', 'for', 'to', 'from', 'with', 'about', 'into', 'over', 'under', 'by',
+  'all', 'any', 'some', 'many', 'much', 'more', 'most', 'least', 'less', 'few', 'each', 'every', 'other',
+  'now', 'currently', 'today', 'here', 'there', 'out', 'up', 'down',
+  // ranking / severity vocabulary (drives objective + args, never a text filter)
+  'top', 'highest', 'lowest', 'worst', 'best', 'biggest', 'greatest', 'largest', 'riskiest', 'weakest',
+  'vulnerable', 'vulnerability', 'vulnerabilities', 'risk', 'risks', 'risky', 'critical', 'severe', 'high', 'medium', 'low',
+  'exposed', 'exposure', 'external', 'internal', 'internet-facing', 'public-facing', 'facing',
+  // platform-generic vocabulary (matches everything, filters nothing)
+  'asset', 'assets', 'inventory', 'quantum', 'crypto', 'cryptographic', 'cryptography', 'pqc',
+  'status', 'state', 'posture', 'overview', 'summary', 'report', 'data', 'info', 'information', 'details', 'detail',
+])
+
+export function extractAssetFilter(question: string): string {
+  const tokens = String(question || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._\- ]+/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.replace(/^[._-]+|[._-]+$/g, ''))
+    .filter((t) => t.length >= 2 && !FILTER_STOPWORDS.has(t))
+    // A trailing plural never hurts an ILIKE substring match — strip it so
+    // "servers" still matches type "server".
+    .map((t) => (t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t))
+  return [...new Set(tokens)].slice(0, 3).join(' ')
+}
+
+/**
  * Question expansion — the related sub-topics a thorough consultant would also
  * examine when answering this question. Surfaced in Sophia's reasoning trace so
  * the investigation is transparent. Pure/heuristic.
@@ -496,7 +551,7 @@ export function expandQuestion(question: string, intents: CopilotIntent[]): stri
   if (intents.includes('migration_status') || /migrat/.test(q)) {
     add('current migration progress & stage', 'quantum-vulnerable assets & CBOM', 'internet-facing exposure', 'certificate & PKI trust chains', 'dependency blast radius', 'pre-migration snapshots & rollback', 'failed jobs & blockers')
   }
-  if (intents.includes('prioritization' as CopilotIntent) || /first|priorit/.test(q)) {
+  if (intents.includes('prioritization' as CopilotIntent) || /first|priorit|most vulnerable|riskiest|top risk|highest risk|most at risk/.test(q)) {
     add('per-asset risk scores', 'blast radius & single points of failure', 'Harvest-Now exposure', 'internet-facing paths')
   }
   if (intents.includes('certification') || /certif/.test(q)) {

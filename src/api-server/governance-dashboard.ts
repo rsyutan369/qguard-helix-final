@@ -3,7 +3,7 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
-type GovernanceKind = 'quantum' | 'policies' | 'audit' | 'regulatory'
+type GovernanceKind = 'quantum' | 'audit' | 'regulatory'
 type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 type AuthedRequest = Request & {
@@ -36,7 +36,6 @@ type GovernanceSignal = {
 
 const ROUTE_META: Record<GovernanceKind, { eventPrefix: string; routeLabel: string }> = {
   quantum: { eventPrefix: 'quantum-governance', routeLabel: 'Quantum governance' },
-  policies: { eventPrefix: 'crypto-policies', routeLabel: 'Crypto policies' },
   audit: { eventPrefix: 'audit-vault', routeLabel: 'Audit vault' },
   regulatory: { eventPrefix: 'regulatory-mapping', routeLabel: 'Regulatory mapping' },
 }
@@ -1173,6 +1172,5 @@ async function buildGovernanceSnapshot(kind: GovernanceKind, token: string, user
 }
 
 export const quantumGovernanceRoutes = buildRouter('quantum')
-export const cryptoPoliciesRoutes = buildRouter('policies')
 export const auditVaultRoutes = buildRouter('audit')
 export const regulatoryMappingRoutes = buildRouter('regulatory')

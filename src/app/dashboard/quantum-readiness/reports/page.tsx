@@ -470,6 +470,120 @@ export default function ReportCenterPage() {
         </Panel>
       ) : null}
 
+      {/* Shared Responsibility Assessment — ownership-classified migration intelligence
+          included in every generated report (same source as /dashboard/migration-intelligence). */}
+      {snapshot.sharedResponsibility && snapshot.sharedResponsibility.hasData ? (
+        <Panel className="p-5">
+          <SectionTitle suffix={<Badge color={CYAN}>Migration Intelligence™</Badge>}>
+            Shared Responsibility Assessment — Included In Every Report
+          </SectionTitle>
+          <p className="mb-4 text-[11px] text-white/45">
+            Every finding is classified by ownership — who owns it, who can fix it, and its migration dependency — and rendered in the exported
+            PDF, Word, PowerPoint, Excel, HTML and CSV. Figures reconcile with Migration Intelligence, Assets &amp; CBOM, the Migration Planner,
+            Remediation and Certification because they all derive from the same assessment snapshot.
+          </p>
+          {(() => {
+            const sr = snapshot.sharedResponsibility!;
+            const domColor = (d: string) => (d === 'customer' ? CYAN : d === 'provider' ? BLUE : VIOLET);
+            const totalDist = Math.max(1, sr.domainDistribution.customer + sr.domainDistribution.provider + sr.domainDistribution.ecosystem);
+            return (
+              <div className="space-y-5">
+                {/* Tri-part readiness */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {([
+                    ['Overall', sr.readiness.overall.score, GREEN],
+                    ['Customer', sr.readiness.customer.score, CYAN],
+                    ['Provider', sr.readiness.provider.score, BLUE],
+                    ['Ecosystem', sr.readiness.ecosystem.score, VIOLET],
+                  ] as Array<[string, number, string]>).map(([label, score, color]) => (
+                    <div key={label} className="rounded-md border border-white/8 bg-white/[0.02] p-3 text-center">
+                      <div className="text-[9px] font-black uppercase tracking-wide text-white/40">{label} Readiness</div>
+                      <div className="mt-1 text-2xl font-semibold" style={{ color }}>{integerFmt(score)}</div>
+                      <div className="text-[9px] text-white/35">/100</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Ownership split */}
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between text-[10px] font-black uppercase tracking-wide text-white/45">
+                    <span>Ownership Split</span>
+                    <span className="font-mono normal-case text-white/40">{integerFmt(sr.totals.findings)} findings · {integerFmt(sr.widgets.actionableFindings)} actionable · {integerFmt(sr.widgets.migrationBlockers)} blockers</span>
+                  </div>
+                  <div className="flex h-2.5 overflow-hidden rounded-full bg-white/5">
+                    <div style={{ width: `${(sr.domainDistribution.customer / totalDist) * 100}%`, backgroundColor: CYAN }} />
+                    <div style={{ width: `${(sr.domainDistribution.provider / totalDist) * 100}%`, backgroundColor: BLUE }} />
+                    <div style={{ width: `${(sr.domainDistribution.ecosystem / totalDist) * 100}%`, backgroundColor: VIOLET }} />
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-bold">
+                    <span style={{ color: CYAN }}>Customer {integerFmt(sr.domainDistribution.customer)}</span>
+                    <span style={{ color: BLUE }}>Provider {integerFmt(sr.domainDistribution.provider)}</span>
+                    <span style={{ color: VIOLET }}>Ecosystem {integerFmt(sr.domainDistribution.ecosystem)}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+                  {/* Matrix preview */}
+                  <div>
+                    <div className="mb-2 text-[10px] font-black uppercase tracking-wide text-white/50">Shared Responsibility Matrix</div>
+                    <div className="overflow-x-auto rounded-md border border-white/8">
+                      <table className="w-full min-w-[420px] text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b border-white/10 text-[9px] font-black uppercase tracking-wide text-white/40">
+                            <th className="px-2 py-1.5">Finding</th><th className="px-2 py-1.5">Owner</th><th className="px-2 py-1.5">Priority</th><th className="px-2 py-1.5">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sr.matrix.slice(0, 8).map((m) => (
+                            <tr key={m.findingId} className="border-b border-white/5">
+                              <td className="max-w-[150px] truncate px-2 py-1.5 text-white/80"><span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ backgroundColor: domColor(m.domain) }} />{m.finding}</td>
+                              <td className="px-2 py-1.5" style={{ color: domColor(m.domain) }}>{m.owner}</td>
+                              <td className="px-2 py-1.5 capitalize text-white/60">{m.priority}</td>
+                              <td className="px-2 py-1.5 text-white/55">{m.status}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* 7-wave roadmap */}
+                  <div>
+                    <div className="mb-2 text-[10px] font-black uppercase tracking-wide text-white/50">Dependency-Ordered Roadmap — 7 Waves</div>
+                    <div className="space-y-1.5">
+                      {sr.waves.map((wave) => {
+                        const tone = wave.domain === 'mixed' ? ORANGE : domColor(wave.domain);
+                        const statusColor = wave.status === 'ready' ? GREEN : wave.status === 'complete' ? GREEN : wave.status === 'blocked' ? RED : AMBER;
+                        return (
+                          <div key={wave.wave} className="flex items-center gap-2.5 rounded-md border border-white/8 bg-white/[0.02] p-2">
+                            <span className="grid h-6 w-6 shrink-0 place-items-center rounded text-[10px] font-black" style={{ backgroundColor: `${tone}1a`, color: tone }}>{wave.wave}</span>
+                            <span className="min-w-0 flex-1 truncate text-[11px] font-bold text-white/80">{wave.name}<span className="ml-1.5 font-mono text-[9px] text-white/40">{integerFmt(wave.findingCount)}</span></span>
+                            <span className="rounded px-1.5 py-0.5 text-[8px] font-black uppercase" style={{ color: statusColor, backgroundColor: `${statusColor}1a` }}>{wave.status}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {sr.providerBreakdown.length ? (
+                  <div>
+                    <div className="mb-2 text-[10px] font-black uppercase tracking-wide text-white/50">Provider &amp; Ecosystem Readiness</div>
+                    <div className="flex flex-wrap gap-2">
+                      {sr.providerBreakdown.slice(0, 10).map((p) => (
+                        <span key={p.providerId} className="inline-flex items-center gap-1.5 rounded-md border border-white/8 bg-white/[0.02] px-2 py-1 text-[10px]" style={{ color: domColor(p.domain) }}>
+                          {p.name}<span className="font-mono text-white/50">×{integerFmt(p.count)}</span><span className="text-white/35">{p.pqRoadmapStatus.replace('_', ' ')}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()}
+        </Panel>
+      ) : null}
+
       {/* Asset scope — choose which discovered assets the generated reports cover */}
       <Panel className="p-5">
         <SectionTitle

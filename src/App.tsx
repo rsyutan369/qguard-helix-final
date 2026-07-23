@@ -25,9 +25,9 @@ import DashboardOverview from './app/dashboard/dashboard_overview/page';
 import AssetsMap from './app/dashboard/assets_map/page';
 import Vulnerabilities from './app/dashboard/vulnerabilities/page';
 import MigrationPlanner from './app/dashboard/migration_planner/page';
+import MigrationIntelligencePage from './app/dashboard/migration-intelligence/page';
 import PqcOnboardingPage from './app/dashboard/pqc-onboarding/page';
 import CbomExplorer from './app/dashboard/cbom_explorer/page';
-import CryptoExposureMap from './app/dashboard/crypto_exposure_map/page';
 import MigrationTimeline from './app/dashboard/migration_timeline/page';
 import MigrationPhases from './app/dashboard/migration_phases/page';
 import ComplianceDashboard from './app/dashboard/compliance_dashboard/page';
@@ -64,7 +64,6 @@ import CryptoAgilityEnginePage from './app/dashboard/crypto-agility/page';
 import PqcOrchestrationPage from './app/dashboard/pqc-orchestration/page';
 import MigrationSandboxPage from './app/dashboard/migration-sandbox/page';
 import RuntimeCryptoIntelPage from './app/dashboard/runtime-crypto-intel/page';
-import BehavioralAnalyticsPage from './app/dashboard/behavioral-analytics/page';
 import TelemetryCorrelationPage from './app/dashboard/telemetry-correlation/page';
 import QuantumRiskScoringPage from './app/dashboard/quantum-risk-scoring/page';
 import TlsTelemetryPage from './app/dashboard/tls-telemetry/page';
@@ -72,18 +71,11 @@ import TlsOrchestratorPage from './app/dashboard/tls-orchestrator/page';
 import PkiVisibilityPage from './app/dashboard/pki-visibility/page';
 import ProtocolAnalyticsPage from './app/dashboard/protocol-analytics/page';
 import EncryptionMonitoringPage from './app/dashboard/encryption-monitoring/page';
-import ContinuousTrustPage from './app/dashboard/continuous-trust/page';
-import IdentityTrustPage from './app/dashboard/identity-trust/page';
-import DeviceTrustPage from './app/dashboard/device-trust/page';
-import TrustAnalyticsPage from './app/dashboard/trust-analytics/page';
 import ZeroTrustPage from './app/dashboard/zero-trust/page';
-import CryptoPoliciesPage from './app/dashboard/crypto-policies/page';
 import AuditVaultPage from './app/dashboard/audit-vault/page';
 import RegulatoryMappingPage from './app/dashboard/regulatory-mapping/page';
 import RuntimeTelemetryPage from './app/dashboard/runtime-telemetry/page';
 import CertificateTelemetryPage from './app/dashboard/certificate-telemetry/page';
-import KeyAnalyticsPage from './app/dashboard/key-analytics/page';
-import ApiEncryptionPage from './app/dashboard/api-encryption/page';
 import MultiCloudTelemetryPage from './app/dashboard/multi-cloud-telemetry/page';
 import QkmsOverviewPage from './app/dashboard/qkms/overview/page';
 import QkmsInventoryPage from './app/dashboard/qkms/inventory/page';
@@ -164,6 +156,7 @@ export default function App() {
 
           <Route path="vulnerabilities" element={<Vulnerabilities />} />
 
+          <Route path="migration-intelligence" element={<MigrationIntelligencePage />} />
           <Route path="migration-planner" element={<MigrationPlanner />} />
           <Route path="migration_planner" element={<MigrationPlanner />} />
           <Route path="pqc-onboarding" element={<PqcOnboardingPage />} />
@@ -171,10 +164,6 @@ export default function App() {
 
           <Route path="cbom" element={<CbomExplorer />} />
           <Route path="cbom_explorer" element={<CbomExplorer />} />
-
-          <Route path="exposure-map" element={<CryptoExposureMap />} />
-          <Route path="crypto-exposure" element={<CryptoExposureMap />} />
-          <Route path="crypto_exposure_map" element={<CryptoExposureMap />} />
 
           <Route path="timeline" element={<MigrationTimeline />} />
           <Route path="migration-timeline" element={<MigrationTimeline />} />
@@ -259,7 +248,6 @@ export default function App() {
           <Route path="pqauth/compliance" element={<PQAuthCompliancePage />} />
           <Route path="pqauth/qkms" element={<PQAuthQkmsPage />} />
           <Route path="runtime-crypto-intel" element={<RuntimeCryptoIntelPage />} />
-          <Route path="behavioral-analytics" element={<BehavioralAnalyticsPage />} />
           <Route path="telemetry-correlation" element={<TelemetryCorrelationPage />} />
           <Route path="quantum-risk-scoring" element={<QuantumRiskScoringPage />} />
           <Route path="tls-telemetry" element={<TlsTelemetryPage />} />
@@ -267,18 +255,11 @@ export default function App() {
           <Route path="pki-visibility" element={<PkiVisibilityPage />} />
           <Route path="protocol-analytics" element={<ProtocolAnalyticsPage />} />
           <Route path="encryption-monitoring" element={<EncryptionMonitoringPage />} />
-          <Route path="continuous-trust" element={<ContinuousTrustPage />} />
-          <Route path="identity-trust" element={<IdentityTrustPage />} />
-          <Route path="device-trust" element={<DeviceTrustPage />} />
-          <Route path="trust-analytics" element={<TrustAnalyticsPage />} />
           <Route path="zero-trust" element={<ZeroTrustPage />} />
-          <Route path="crypto-policies" element={<CryptoPoliciesPage />} />
           <Route path="audit-vault" element={<AuditVaultPage />} />
           <Route path="regulatory-mapping" element={<RegulatoryMappingPage />} />
           <Route path="runtime-telemetry" element={<RuntimeTelemetryPage />} />
           <Route path="certificate-telemetry" element={<CertificateTelemetryPage />} />
-          <Route path="key-analytics" element={<KeyAnalyticsPage />} />
-          <Route path="api-encryption" element={<ApiEncryptionPage />} />
           <Route path="multi-cloud-telemetry" element={<MultiCloudTelemetryPage />} />
           {/* Quantum Readiness Assessment Engine™ */}
           <Route path="quantum-readiness" element={<QuantumReadinessLandingPage />} />

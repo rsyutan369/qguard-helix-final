@@ -6,6 +6,7 @@ import { requireSupabase } from "@/lib/supabase";
 import { useQGuardLiveSse } from "@/lib/live-sse";
 import { fallbackHardeningStatus, loadSecurityHardeningStatus } from "@/lib/security-hardening";
 import { buildSecurityPosture, ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
+import { countUnreadGroups, type UnreadEnvelope } from "@/lib/chat-unread";
 import type {
   ConversationSummary,
   ContactSummary,
@@ -83,10 +84,6 @@ function latestIso(...values: Array<unknown>): string {
 function recordTime(record: Record<string, unknown>, key: string): number {
   const parsed = new Date(String(record[key] ?? "")).getTime();
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function messageGroupId(row: Record<string, unknown>): string {
-  return String(row.client_message_id ?? row.id);
 }
 
 function messageKindLabel(value: unknown): string {
@@ -218,7 +215,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
       ] = await Promise.all([
         client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }),
         client.from("messaging_conversations").select("id,owner_user_id,conversation_type,encrypted_title,updated_at,created_at").order("updated_at", { ascending: false }).limit(100),
-        client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at,expires_at,lifecycle").order("created_at", { ascending: false }).limit(500),
+        client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at,expires_at,lifecycle,original_sender_user_id:sealed_sender_envelope->>original_sender_user_id,sync_original_sender_user_id:sealed_sender_envelope->>sync_original_sender_user_id").order("created_at", { ascending: false }).limit(500),
         emptyResult(),
         client.from("messaging_security_events").select("id,device_id,event_type,severity,encrypted_details,event_hash,previous_hash,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_org_members").select("org_id,user_id,role,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
@@ -366,25 +363,17 @@ export function useDashboardData(user: User | null, session: Session | null) {
         .map((conversation) => {
         const conversationEnvelopeRows = envelopeRows.filter((envelope) => String(envelope.conversation_id) === String(conversation.id) && !envelope.deleted_at);
         const latestEnvelope = conversationEnvelopeRows[0] ?? null;
-        const unreadGroups = new Set<string>();
-        conversationEnvelopeRows
-          // Own sent messages also arrive as self-device sync envelopes with
-          // recipient_user_id = me; they must never count as unread.
-          .filter((envelope) => String(envelope.recipient_user_id) === user.id && String(envelope.sender_user_id) !== user.id)
-          // Reaction/edit control envelopes and already-expired disappearing
-          // messages are never rendered as readable messages, so they must not
-          // keep the unread bubble alive.
-          .filter((envelope) => {
-            const lifecycle = (envelope.lifecycle ?? {}) as Record<string, unknown>;
-            if (lifecycle.control_type) return false;
-            const expiresAtMs = envelope.expires_at ? new Date(String(envelope.expires_at)).getTime() : Number.NaN;
-            if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return false;
-            return true;
-          })
-          .forEach((envelope) => {
-            const state = messageStatesByClientId.get(messageGroupId(envelope));
-            if (!state?.first_read_at && !state?.hidden_at) unreadGroups.add(messageGroupId(envelope));
-          });
+        // Distinct unread inbound message groups. The pure helper resolves the
+        // ORIGINAL author (sealed-sender metadata), not the raw sender_user_id
+        // column, so a user's own messages — including ones a peer rewrapped
+        // for the user's other devices via trusted-device sync — never count as
+        // unread. Using the column would leave those bubbles stuck forever,
+        // because read-marking correctly never marks a user's own message read.
+        const unreadGroups = countUnreadGroups(
+          conversationEnvelopeRows as unknown as UnreadEnvelope[],
+          user.id,
+          (groupId) => messageStatesByClientId.get(groupId),
+        );
         const memberUserIds = Array.from(new Set(memberRows
           .filter((member) => String(member.conversation_id) === String(conversation.id))
           .map((member) => String(member.user_id))));

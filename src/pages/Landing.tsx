@@ -65,21 +65,6 @@ const ASSETS = {
   roadmap: roadmapImage
 };
 
-/**
- * Local, deterministic initials avatar as an inline SVG data URI. Replaces the
- * former third-party placeholder-face URLs (randomuser.me / loremfaces.net),
- * which leaked visitor IPs to those services and are blocked by the app's
- * Content-Security-Policy (img-src 'self' blob: data:). No network request.
- */
-function initialsAvatar(name: string): string {
-  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? '').join('');
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  const hue = hash % 360;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="88" height="88" viewBox="0 0 88 88"><rect width="88" height="88" rx="44" fill="hsl(${hue} 45% 22%)"/><text x="50%" y="50%" dy=".35em" text-anchor="middle" font-family="system-ui,sans-serif" font-size="34" font-weight="600" fill="hsl(${hue} 70% 76%)">${initials}</text></svg>`;
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-}
-
 const HERO_ACCESSIBLE_TITLE = 'The Quantum Clock is Ticking';
 const HERO_LINE_ONE = 'The Quantum';
 const HERO_LINE_TWO_PREFIX = 'Clock is ';
@@ -535,63 +520,6 @@ const TRUSTED_LEADERS = [
   "Supabase",
   "OpenAI",
   "Turso"
-];
-
-const TESTIMONIALS = [
-  {
-    text: "QGuard detected three RSA-2048 vulnerabilities in our cloud infrastructure within minutes. The PQC migration wizard replaced them with ML-KEM in under 20 minutes with zero downtime. Incredible.",
-    image: "https://randomuser.me/api/portraits/men/32.jpg",
-    name: "Daniel Olsen",
-    role: "CEO, FinTech Startup"
-  },
-  {
-    text: "As a security researcher, I was skeptical. But QGuard's Q-Score dashboard gave us the clearest picture of our cryptographic risk posture I've ever seen. The entropy quality reports are genuinely impressive.",
-    image: "https://randomuser.me/api/portraits/women/44.jpg",
-    name: "Dr. Josephine Hazelwood",
-    role: "Cybersecurity Researcher, University of Technology"
-  },
-  {
-    text: "We migrated our entire authentication stack to ML-DSA using the QGuard wizard. The hybrid mode let us keep backward compatibility while transitioning, exactly what we needed.",
-    image: "https://randomuser.me/api/portraits/men/17.jpg",
-    name: "Lucas Davencork",
-    role: "Senior Engineer"
-  },
-  {
-    text: "The Quantum Vault is phenomenal. My team stores sensitive client documents with confidence knowing ML-KEM-1024 encryption means even a quantum computer can't touch them.",
-    image: "https://randomuser.me/api/portraits/women/63.jpg",
-    name: "Amira Jones",
-    role: "VP of Compliance, GlobalTech"
-  },
-  {
-    text: "Running the threat simulator showed our exec team exactly how Shor's algorithm would crack our legacy RSA keys. That demo alone got our quantum migration budget approved instantly.",
-    image: "https://www.loremfaces.net/96/id/4.jpg",
-    name: "Carlos Santorini",
-    role: "CISO, Enterprise Finance"
-  },
-  {
-    text: "The QRNG key generator produces keys with a 99.7% entropy score. We've integrated it directly into our CI/CD pipeline. Our cryptographic hygiene has never been better.",
-    image: "https://www.loremfaces.net/96/id/1.jpg",
-    name: "Sofia Curtis",
-    role: "Security Lead"
-  },
-  {
-    text: "QGuard flagged SHA-1 usage buried deep in a third-party library we hadn't even audited in two years. The continuous monitoring saved us from a serious vulnerability before it became a problem.",
-    image: "https://randomuser.me/api/portraits/men/81.jpg",
-    name: "Cyze Joe",
-    role: "IT Security, AI Corp"
-  },
-  {
-    text: "I set up vault. My parents' devices are now PQC-protected and they didn't have to do a single thing. QGuard handled everything quietly in the background.",
-    image: "https://www.loremfaces.net/96/id/2.jpg",
-    name: "Randy Smith",
-    role: "Software Engineer"
-  },
-  {
-    text: "The compliance reports QGuard generates for NIST FIPS 203/204 alignment are audit-ready out of the box. Cut our compliance prep time from weeks to hours.",
-    image: "https://www.loremfaces.net/96/id/3.jpg",
-    name: "Joseph Saintclaire",
-    role: "Chief Officer Banking and Finance, SecureBank"
-  }
 ];
 
 type PricingPlan = {
@@ -1597,103 +1525,6 @@ function TrustedLeadersSection() {
         </motion.div>
       </div>
     </section>
-  );
-}
-
-function TestimonialsColumn({
-  testimonials,
-  duration = 20,
-  className = ""
-}: {
-  testimonials: typeof TESTIMONIALS;
-  duration?: number;
-  className?: string;
-}) {
-  return (
-    <div className={`overflow-hidden ${className}`}>
-      <motion.div
-        animate={{ y: "-50%" }}
-        transition={{
-          duration,
-          repeat: Infinity,
-          ease: "linear",
-          repeatType: "loop"
-        }}
-        className="flex flex-col gap-5 pb-5"
-      >
-        {[...testimonials, ...testimonials].map((testimonial, index) => (
-          <div
-            key={`${testimonial.name}-${index}`}
-            className="group w-full max-w-[330px] rounded-xl border border-gold/14 bg-white/[0.045] p-6 shadow-[0_18px_70px_rgba(0,0,0,0.32)] backdrop-blur-xl transition-all duration-500 hover:border-gold/55 hover:bg-gold/[0.07] hover:shadow-[0_0_34px_rgba(212,175,55,0.22),0_22px_80px_rgba(0,0,0,0.44)]"
-          >
-            <div className="mb-3 font-serif text-5xl leading-none text-gold/55 transition-colors group-hover:text-gold">
-              &ldquo;
-            </div>
-            <p className="text-sm leading-7 text-muted-foreground transition-colors group-hover:text-white/78">
-              {testimonial.text}
-            </p>
-            <div className="mt-6 flex items-center gap-3 border-t border-gold/10 pt-4">
-              <img
-                src={initialsAvatar(testimonial.name)}
-                alt={testimonial.name}
-                className="h-11 w-11 shrink-0 rounded-full border border-gold/25 object-cover shadow-[0_0_18px_rgba(212,175,55,0.14)]"
-                loading="lazy"
-              />
-              <div className="min-w-0">
-                <div className="font-bold text-white">
-                  {testimonial.name}
-                </div>
-                <div className="mt-1 font-mono text-[11px] leading-5 text-muted-foreground">
-                  {testimonial.role}
-                </div>
-              </div>
-            </div>
-          </div>
-        ))}
-      </motion.div>
-    </div>
-  );
-}
-
-function TestimonialsSection() {
-  const firstColumn = TESTIMONIALS.slice(0, 3);
-  const secondColumn = TESTIMONIALS.slice(3, 6);
-  const thirdColumn = TESTIMONIALS.slice(6, 9);
-
-  return (
-    <motion.section
-      id="testimonials"
-      initial={{ opacity: 0, y: 36 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.75 }}
-      viewport={{ once: true, amount: 0.15 }}
-      className="relative mt-24 scroll-mt-24 overflow-hidden rounded-2xl border border-gold/15 bg-cyber-navy/20 px-6 py-24 shadow-[0_30px_120px_rgba(0,0,0,0.42)] backdrop-blur-2xl sm:px-10"
-    >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_52%_at_50%_45%,rgba(212,175,55,0.13),transparent_70%)]" />
-      <div className="pointer-events-none absolute inset-0 opacity-35 [background-image:radial-gradient(circle,rgba(212,175,55,0.2)_1px,transparent_1px)] [background-size:34px_34px]" />
-
-      <div className="relative z-10 mx-auto max-w-6xl">
-        <header className="mx-auto mb-14 max-w-2xl text-center">
-          <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-gold/25 bg-gold/10 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-gold">
-            <span className="h-1.5 w-1.5 rounded-full bg-gold shadow-[0_0_12px_rgba(212,175,55,0.85)]" />
-            Testimonials
-          </span>
-          <h3 className="text-4xl font-black leading-tight tracking-[0.04em] text-white md:text-5xl">
-            Trusted by Security
-            <span className="block text-gold gold-glow">Professionals</span>
-          </h3>
-          <p className="mx-auto mt-6 max-w-xl text-sm leading-7 text-muted-foreground md:text-base">
-            See what CTOs, CISOs, and engineers say about protecting their systems with QGuard.
-          </p>
-        </header>
-
-        <div className="mx-auto flex max-h-[760px] justify-center gap-5 overflow-hidden [mask-image:linear-gradient(to_bottom,transparent,black_12%,black_88%,transparent)]">
-          <TestimonialsColumn testimonials={firstColumn} duration={18} />
-          <TestimonialsColumn testimonials={secondColumn} duration={22} className="hidden md:block" />
-          <TestimonialsColumn testimonials={thirdColumn} duration={20} className="hidden lg:block" />
-        </div>
-      </div>
-    </motion.section>
   );
 }
 
@@ -2852,7 +2683,7 @@ export default function App() {
                 { label: 'Solutions', href: '#nist-strategy', dropdown: true },
                 { label: 'Resources', href: '/docs', dropdown: true },
                 { label: 'Pricing', href: '#pricing' },
-                { label: 'Company', href: '#testimonials' }
+                { label: 'Company', href: '#faq' }
               ].map((item) => {
                 if (item.label === 'Platform') {
                   return (
@@ -3693,7 +3524,6 @@ export default function App() {
             <Hero195 />
             <div className="h-32 w-full" />
             <QuantumSecurityUseCasesSection />
-            <TestimonialsSection />
             <PricingSection onRequestDemo={() => setIsDemoModalOpen(true)} />
             <FaqAndCtaSection />
           </div>
@@ -3776,9 +3606,9 @@ export default function App() {
                 {
                   title: "Company",
                   links: [
-                    { label: "About Us", href: "#testimonials" },
-                    { label: "Careers", href: "#testimonials" },
-                    { label: "Partners", href: "#testimonials" },
+                    { label: "About Us", href: "#faq" },
+                    { label: "Careers", href: "#faq" },
+                    { label: "Partners", href: "#faq" },
                     { label: "Contact", href: "/login" }
                   ]
                 }

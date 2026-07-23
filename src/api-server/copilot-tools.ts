@@ -28,7 +28,7 @@ import { buildHndlIntelligence } from './harvest-now'
 import { buildWorkflowState } from './migration-workflow'
 import { buildSnapshotDashboard } from './migration-snapshots'
 import { buildAdjacency, computeBlastRadius } from '@/lib/exposure-graph-intel'
-import { ROLE_CAPABILITIES, STANDARDS, modulePath } from './copilot-knowledge'
+import { ROLE_CAPABILITIES, STANDARDS, modulePath, moduleLabel } from './copilot-knowledge'
 import type { CopilotEvidence, CopilotRole, CopilotToolRun, CopilotToolStatus } from '@/types/copilot'
 import type { ExposureIntelligence } from '@/types/exposure-graph'
 
@@ -267,18 +267,25 @@ register({
   description: 'Search assets by name/type/environment; supports internet-facing filter',
   capability: 'read',
   async execute(ctx, args) {
-    const q = str(args.query).replace(/[,%()]/g, '').slice(0, 80)
+    // args.query is a pre-extracted entity filter (extractAssetFilter) — never
+    // the raw question. Tokens are OR-matched across name/type/environment so
+    // "production server" finds environment=production OR type=server.
+    const tokens = str(args.query).replace(/[,%()]/g, '').slice(0, 80).split(/\s+/).filter(Boolean).slice(0, 3)
     const rows = await tenantRows(ctx, 'assets', ASSET_SELECT, (query) => {
       let built = query.order('updated_at', { ascending: false })
-      if (q) built = built.or(`name.ilike.%${q}%,type.ilike.%${q}%,environment.ilike.%${q}%`)
+      if (tokens.length) {
+        built = built.or(tokens.flatMap((t) => [`name.ilike.%${t}%`, `type.ilike.%${t}%`, `environment.ilike.%${t}%`]).join(','))
+      }
       return built
     }, 200)
     let assets = rows.map(mapAsset)
     if (args.internetFacing === true) assets = assets.filter((a) => a.internetFacing)
     if (str(args.criticality)) assets = assets.filter((a) => a.criticality === str(args.criticality))
+    const q = tokens.join(' ')
+    const filtered = Boolean(tokens.length || args.internetFacing === true || str(args.criticality))
     return ok(
-      { matches: assets.slice(0, 50), matched: assets.length },
-      [ev('Assets & CBOM', 'Matching assets', String(assets.length), { detail: q ? `query "${q}"` : 'full inventory scan', deepLink: modulePath('assets') })],
+      { matches: assets.slice(0, 50), matched: assets.length, query: q, filtered },
+      [ev('Assets & CBOM', 'Matching assets', String(assets.length), { detail: filtered ? `filter "${[q, args.internetFacing === true ? 'internet-facing' : '', str(args.criticality)].filter(Boolean).join(' + ')}"` : 'full inventory scan', deepLink: modulePath('assets') })],
       assets.length,
     )
   },
@@ -342,6 +349,90 @@ register({
         ev('Scanner', 'Findings', String(total), { detail: `critical ${num(severity.critical)} · high ${num(severity.high)} · medium ${num(severity.medium)}`, deepLink: modulePath('scanner') }),
       ],
       total,
+    )
+  },
+})
+
+register({
+  name: 'explainFindingOwnership',
+  module: 'migration_intelligence',
+  description: 'Explain Shared Responsibility ownership for findings — who owns them, whether the customer can fix them, the migration dependency, and the recommended action. Answers "why can\'t I fix this?" style questions.',
+  capability: 'read',
+  async execute(ctx, args, deps) {
+    const snapshot = await deps.snapshot(ctx.token, ctx.userId)
+    const sr = rec(snapshot.sharedResponsibility)
+    const totals = rec(sr.totals)
+    const readiness = rec(sr.readiness)
+    const widgets = rec(sr.widgets)
+    const matrix = arr(sr.matrix)
+    const findings = arr(sr.findings)
+    const providerBreakdown = arr(sr.providerBreakdown)
+
+    const readinessScore = (domain: string) => num(rec(readiness[domain]).score)
+
+    // Optional targeted match against the caller's entity filter.
+    const query = str(args.query || args.assetId || args.name).toLowerCase()
+    const tokens = query.replace(/[,%()]/g, '').split(/\s+/).filter((t) => t.length > 2).slice(0, 4)
+    const matchRow = (haystack: string) => (tokens.length ? tokens.some((t) => haystack.toLowerCase().includes(t)) : false)
+
+    const matchedFindings = tokens.length
+      ? findings.filter((f) => {
+          const rc = rec(f)
+          return matchRow(`${str(rc.title)} ${str(rc.asset)} ${str(rc.algorithm)} ${str(rc.ownerType)} ${str(rc.responsibleParty)}`)
+        })
+      : []
+
+    const explain = matchedFindings.slice(0, 10).map((f) => {
+      const rc = rec(f)
+      const attribution = rec(rc.attribution)
+      const chain = rec(rc.dependencyChain)
+      return {
+        title: str(rc.title),
+        asset: str(rc.asset),
+        domain: str(rc.domain),
+        owner: str(rc.ownerType),
+        responsibleParty: str(rc.responsibleParty),
+        customerActionable: str(rc.customerActionable),
+        migrationDependency: str(rc.migrationDependencyStatus),
+        recommendedAction: str(rc.recommendedAction),
+        estimatedCustomerEffort: str(rc.estimatedEffort),
+        provider: str(attribution.providerName),
+        providerPqRoadmap: str(attribution.pqRoadmapStatus),
+        dependencySummary: str(chain.summary),
+      }
+    })
+
+    const ownershipBreakdown = {
+      customer: num(totals.customer),
+      provider: num(totals.provider),
+      ecosystem: num(totals.ecosystem),
+      actionableNow: num(totals.actionable),
+      waitingOnDependency: num(totals.waiting),
+      migrationBlockers: num(widgets.migrationBlockers),
+    }
+
+    const triPartReadiness = {
+      overall: readinessScore('overall'),
+      customer: readinessScore('customer'),
+      provider: readinessScore('provider'),
+      ecosystem: readinessScore('ecosystem'),
+    }
+
+    const providers = providerBreakdown.slice(0, 8).map((p) => {
+      const rc = rec(p)
+      return { name: str(rc.name), domain: str(rc.domain), findings: num(rc.count), pqRoadmap: str(rc.pqRoadmapStatus), customerInfluence: str(rc.customerInfluence) }
+    })
+
+    const detail = tokens.length
+      ? `${explain.length} finding(s) matched "${tokens.join(' ')}"`
+      : `${ownershipBreakdown.customer} customer · ${ownershipBreakdown.provider} provider · ${ownershipBreakdown.ecosystem} ecosystem`
+
+    return ok(
+      { ownershipBreakdown, triPartReadiness, matchedFindings: explain, providers, query: tokens.join(' '), filtered: tokens.length > 0 },
+      [
+        ev('Migration Intelligence™', 'Ownership classification', String(num(totals.findings)), { detail, deepLink: modulePath('migration_intelligence') }),
+      ],
+      num(totals.findings),
     )
   },
 })
@@ -1470,24 +1561,27 @@ export async function runTool(
   const started = Date.now()
   const def = TOOL_REGISTRY[name]
   if (!def) {
-    return { run: { tool: name, module: 'unknown', status: 'error', ms: 0, note: 'Unknown tool' }, result: null }
+    return { run: { tool: name, module: 'unknown', source: 'Platform', status: 'error', ms: 0, note: 'Unknown tool' }, result: null }
   }
+  // `source` is the user-facing platform-module label — the only name the UI
+  // renders; raw tool identifiers stay backend-internal.
+  const source = moduleLabel(def.module)
   if (!toolAllowedForRole(def, ctx.role)) {
     audit(ctx, 'copilot.tool.denied', { tool: name, role: ctx.role })
     return {
-      run: { tool: name, module: def.module, status: 'denied', ms: Date.now() - started, note: `Role "${ctx.role}" is not permitted to use ${name}` },
+      run: { tool: name, module: def.module, source, status: 'denied', ms: Date.now() - started, note: `Role "${ctx.role}" is not permitted to use ${name}` },
       result: null,
     }
   }
   try {
     const result = await def.execute(ctx, args, deps)
     return {
-      run: { tool: name, module: def.module, status: result.status, ms: Date.now() - started, rows: result.rows, note: result.note },
+      run: { tool: name, module: def.module, source, status: result.status, ms: Date.now() - started, rows: result.rows, note: result.note },
       result,
     }
   } catch (error) {
     return {
-      run: { tool: name, module: def.module, status: 'error', ms: Date.now() - started, note: (error as Error)?.message?.slice(0, 140) || 'Tool failed' },
+      run: { tool: name, module: def.module, source, status: 'error', ms: Date.now() - started, note: (error as Error)?.message?.slice(0, 140) || 'Tool failed' },
       result: null,
     }
   }

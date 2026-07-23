@@ -917,7 +917,7 @@ function KeyLifecyclePanel({ lifecycle }: { lifecycle: KeyLifecycle }) {
   ]
   return (
     <GlassPanel className="p-4">
-      <SectionTitle icon={KeyRound} suffix={<a href="/dashboard/key-analytics" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View Key Intelligence <ChevronRight className="inline h-3 w-3" /></a>}>
+      <SectionTitle icon={KeyRound} suffix={<a href="/dashboard/qkms/inventory" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View Key Intelligence <ChevronRight className="inline h-3 w-3" /></a>}>
         Key Lifecycle Intelligence
       </SectionTitle>
       <div className="space-y-3">
@@ -1158,7 +1158,7 @@ function DependencyGraph({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdg
 
   return (
     <GlassPanel className="p-4">
-      <SectionTitle icon={Network} suffix={<a href="/dashboard/crypto-exposure" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View Full Graph <ChevronRight className="inline h-3 w-3" /></a>}>
+      <SectionTitle icon={Network} suffix={<a href="/dashboard/quantum-readiness/exposure-graph" className="text-[10px] font-black text-sky-300 hover:text-sky-200">View Full Graph <ChevronRight className="inline h-3 w-3" /></a>}>
         Crypto Dependency Map
       </SectionTitle>
       {nodes.length === 0 ? (

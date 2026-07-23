@@ -1,6 +1,5 @@
 import express from 'express'
 import dashboardRoutes from './dashboard'
-import behavioralAnalyticsRoutes from './behavioral-analytics'
 import telemetryCorrelationRoutes from './telemetry-correlation'
 import quantumRiskScoringRoutes from './quantum-risk-scoring'
 import quantumReadinessRoutes from './quantum-readiness'
@@ -11,14 +10,15 @@ import harvestNowRoutes from './harvest-now'
 import quantumCertificationRoutes, { certificateVerificationRouter } from './quantum-certification'
 import quantumRemediationRoutes from './quantum-remediation'
 import migrationWorkflowRoutes from './migration-workflow'
+import migrationIntelligenceRoutes from './migration-intelligence'
 import tlsTelemetryRoutes from './tls-telemetry'
 import pkiVisibilityRoutes from './pki-visibility'
 import ecosystemSupplyChainRoutes from './ecosystem-supply-chain'
 import trustStateDiscoveryRoutes from './trust-state-discovery'
 import { protocolAnalyticsRoutes, encryptionMonitoringRoutes } from './crypto-operations-dashboard'
-import { continuousTrustRoutes, identityTrustRoutes, deviceTrustRoutes, trustAnalyticsRoutes, zeroTrustRoutes } from './trust-center-dashboard'
-import { quantumGovernanceRoutes, cryptoPoliciesRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
-import { runtimeTelemetryRoutes, certificateTelemetryRoutes, keyAnalyticsRoutes, apiEncryptionRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
+import { zeroTrustRoutes } from './trust-center-dashboard'
+import { quantumGovernanceRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
+import { runtimeTelemetryRoutes, certificateTelemetryRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
 import qkmsRoutes from './qkms-dashboard'
 import pqauthRoutes from './pqauth-dashboard'
 import authRoutes from './auth'
@@ -759,7 +759,6 @@ export function createApiServer() {
   app.use('/api', subscriptionGateway)
 
   // Dashboard API routes
-  app.use('/api/v1/dashboard/behavioral-analytics', behavioralAnalyticsRoutes)
   app.use('/api/v1/dashboard/telemetry-correlation', telemetryCorrelationRoutes)
   app.use('/api/v1/dashboard/quantum-risk-scoring', quantumRiskScoringRoutes)
   app.use('/api/v1/quantum-readiness', quantumReadinessRoutes)
@@ -770,6 +769,7 @@ export function createApiServer() {
   app.use('/api/v1/quantum-certification', quantumCertificationRoutes)
   app.use('/api/v1/quantum-remediation', quantumRemediationRoutes)
   app.use('/api/v1/migration-workflow', migrationWorkflowRoutes)
+  app.use('/api/v1/migration-intelligence', migrationIntelligenceRoutes)
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/tls-orchestrator', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/pki-visibility', pkiVisibilityRoutes)
@@ -777,19 +777,12 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/trust-state-discovery', trustStateDiscoveryRoutes)
   app.use('/api/v1/dashboard/protocol-analytics', protocolAnalyticsRoutes)
   app.use('/api/v1/dashboard/encryption-monitoring', encryptionMonitoringRoutes)
-  app.use('/api/v1/dashboard/continuous-trust', continuousTrustRoutes)
-  app.use('/api/v1/dashboard/identity-trust', identityTrustRoutes)
-  app.use('/api/v1/dashboard/device-trust', deviceTrustRoutes)
-  app.use('/api/v1/dashboard/trust-analytics', trustAnalyticsRoutes)
   app.use('/api/v1/dashboard/zero-trust', zeroTrustRoutes)
   app.use('/api/v1/dashboard/quantum-governance', quantumGovernanceRoutes)
-  app.use('/api/v1/dashboard/crypto-policies', cryptoPoliciesRoutes)
   app.use('/api/v1/dashboard/audit-vault', auditVaultRoutes)
   app.use('/api/v1/dashboard/regulatory-mapping', regulatoryMappingRoutes)
   app.use('/api/v1/dashboard/runtime-telemetry', runtimeTelemetryRoutes)
   app.use('/api/v1/dashboard/certificate-telemetry', certificateTelemetryRoutes)
-  app.use('/api/v1/dashboard/key-analytics', keyAnalyticsRoutes)
-  app.use('/api/v1/dashboard/api-encryption', apiEncryptionRoutes)
   app.use('/api/v1/dashboard/multi-cloud-telemetry', multiCloudTelemetryRoutes)
   app.use('/api/v1/dashboard/pqauth', pqauthRoutes)
   app.use('/api/v1/dashboard/qkms', qkmsRoutes)

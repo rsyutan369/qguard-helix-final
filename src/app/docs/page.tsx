@@ -151,7 +151,7 @@ const DEFENSE_ACTIONS = [
     when: 'Use when keys, tokens, certificates, or sessions are exposed, weak, or suspected compromised.',
     impact: 'Users or services relying on credentials may need reauthentication or new key material.',
     workflow: ['Identify credential scope', 'Rotate or revoke material', 'Update dependent services', 'Confirm no failed handshakes', 'Record compliance evidence'],
-    href: '/dashboard/identity-trust',
+    href: '/dashboard/pqauth',
   },
   {
     title: 'Patch & Harden',
@@ -293,7 +293,7 @@ const SECTIONS: DocSection[] = [
     quickLinks: [
       { label: 'Run Scanner', href: '/dashboard/scanner', icon: ScanSearch },
       { label: 'CBOM Explorer', href: '/dashboard/cbom', icon: Layers },
-      { label: 'Crypto Exposure', href: '/dashboard/crypto-exposure', icon: Globe },
+      { label: 'Exposure Graph', href: '/dashboard/quantum-readiness/exposure-graph', icon: Globe },
     ],
     topics: [
       {
@@ -521,9 +521,9 @@ const SECTIONS: DocSection[] = [
       },
       {
         id: 'step-vulnerability-cbom',
-        title: '3. Confirm the evidence in Vulnerabilities, CBOM, and Exposure Map',
-        body: 'Use /dashboard/vulnerabilities for the work queue, /dashboard/cbom for technical evidence, and /dashboard/crypto-exposure for blast radius.',
-        bullets: ['Vulnerabilities shows what must be remediated first', 'CBOM explains algorithm, protocol, key size, source asset, detection method, and recommendation', 'Crypto Exposure shows which asset creates the most risk to the environment', 'Prioritize critical and high findings before medium and low hardening work'],
+        title: '3. Confirm the evidence in Vulnerabilities, CBOM, and Exposure Graph',
+        body: 'Use /dashboard/vulnerabilities for the work queue, /dashboard/cbom for technical evidence, and /dashboard/quantum-readiness/exposure-graph for blast radius.',
+        bullets: ['Vulnerabilities shows what must be remediated first', 'CBOM explains algorithm, protocol, key size, source asset, detection method, and recommendation', 'The Exposure Graph shows which asset creates the most risk to the environment', 'Prioritize critical and high findings before medium and low hardening work'],
       },
       {
         id: 'step-select-targets',
@@ -685,7 +685,7 @@ const SECTIONS: DocSection[] = [
     image: '/Secure_communication.png',
     tags: ['api', 'sdk', 'webhooks', 'siem', 'cloud integrations', 'ci/cd', 'agent api', 'sse', 'websocket'],
     quickLinks: [
-      { label: 'API Encryption', href: '/dashboard/api-encryption', icon: Webhook },
+      { label: 'Encryption Monitoring', href: '/dashboard/encryption-monitoring', icon: Webhook },
       { label: 'Cloud Security', href: '/dashboard/cloud', icon: Cloud },
       { label: 'Agent Scanner', href: '/dashboard/scanner', icon: Server },
     ],

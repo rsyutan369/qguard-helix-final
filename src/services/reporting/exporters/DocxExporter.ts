@@ -73,6 +73,38 @@ function docTable(table: ReportTable): Table {
   });
 }
 
+// Improvements_06 — risk-zone shading for the Executive Heat Map cells.
+const ZONE_FILL: Record<string, string> = { critical: 'B91C1C', high: 'EA580C', medium: 'D97706', low: '65A30D', minimal: '16A34A' };
+
+/** 5×5 Executive Heat Map as a shaded Word table (Improvements_06 §2). */
+function heatMapTable(heat: EnterpriseAssessmentReport['executiveHeatMap']): Table {
+  const border = { style: BorderStyle.SINGLE, size: 1, color: 'FFFFFF' } as const;
+  const header = new TableRow({
+    tableHeader: true,
+    children: [
+      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'Impact / Likelihood', bold: true, size: 14, color: MUTED })] })] }),
+      ...heat.likelihoodLabels.map((l) => new TableCell({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: l, bold: true, size: 14, color: MUTED })] })] })),
+    ],
+  });
+  const rows = heat.impactLabels.map((imp) => {
+    const cells = heat.cells.filter((c) => c.impact === imp).sort((a, b) => a.likelihoodRank - b.likelihoodRank);
+    return new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: imp, bold: true, size: 16, color: '334155' })] })] }),
+        ...cells.map((c) => new TableCell({
+          shading: { fill: c.count ? (ZONE_FILL[c.level] || '94A3B8') : 'F1F5F9' },
+          children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: c.count ? String(c.count) : '', bold: true, color: 'FFFFFF', size: 20 })] })],
+        })),
+      ],
+    });
+  });
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border },
+    rows: [header, ...rows],
+  });
+}
+
 function chartParagraphs(report: EnterpriseAssessmentReport): Paragraph[] {
   const out: Paragraph[] = [];
   for (const chart of report.charts) {
@@ -145,6 +177,16 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const advisorTable: ReportTable = { title: 'AI Migration Advisor', columns: ['Risk Reduction', 'Est. Cost', 'Timeline', 'Complexity', 'Confidence'], rows: [[`${report.migrationAdvisor.riskReductionPct}%`, usd(report.migrationAdvisor.costUsd), `${report.migrationAdvisor.timelineWeeks}w`, report.migrationAdvisor.complexity, `${report.migrationAdvisor.confidencePct}%`]] };
   const readinessTable: ReportTable = { title: 'Migration Readiness', columns: ['Category', 'Score', 'Recommendation'], rows: report.migrationReadiness.map((m) => [m.category, `${m.score}/100`, m.recommendation]) };
   const wavesTable: ReportTable = { title: 'Migration Waves', columns: ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk Reduction', 'Status'], rows: report.migrationWaves.map((w) => [`Wave ${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]) };
+  const sr = report.sharedResponsibility;
+  const srReadinessTable: ReportTable = { title: 'Ownership Readiness', columns: ['Ownership Domain', 'Readiness', 'Findings'], rows: [
+    ['Overall', `${sr.readiness.overall}/100`, `${sr.customerControlled + sr.providerControlled + sr.ecosystemDependent}`],
+    ['Customer-Controlled', `${sr.readiness.customer}/100`, `${sr.customerControlled}`],
+    ['Provider-Controlled', `${sr.readiness.provider}/100`, `${sr.providerControlled}`],
+    ['Ecosystem-Dependent', `${sr.readiness.ecosystem}/100`, `${sr.ecosystemDependent}`],
+  ] };
+  const srMatrixTable: ReportTable = { title: 'Shared Responsibility Matrix', columns: ['Finding', 'Owner', 'Action', 'Priority', 'Status'], rows: sr.matrix.map((m) => [m.finding, m.owner, m.action, m.priority, m.status]) };
+  const srWavesTable: ReportTable = { title: 'Dependency-Ordered Roadmap (7 Waves)', columns: ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], rows: sr.waves.map((w) => [`Wave ${w.wave}`, w.name, w.domain, `${w.findingCount}`, w.status, w.timeline]) };
+  const srProvidersTable: ReportTable = { title: 'Provider & Ecosystem Readiness', columns: ['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Customer Influence'], rows: sr.providers.map((p) => [p.name, p.domain, `${p.count}`, p.pqRoadmap, p.customerInfluence]) };
   const depTable: ReportTable = { title: 'Dependencies', columns: ['Dependency Chain', 'Blast Radius', 'Complexity'], rows: report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]) };
   const riskCatTable: ReportTable = { title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, `${r.currentScore}/100`, `${r.targetScore}/100`, `${r.reductionPotentialPct}%`]) };
   const hndlCatTable: ReportTable = { title: 'HNDL Categories', columns: ['Data Category', 'Retention', 'Current Protection', 'Risk', 'Recommended'], rows: report.hndl.categories.map((h) => [h.category, h.retention, h.currentProtection, h.hndlRisk, h.recommendedProtection]) };
@@ -219,6 +261,41 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
     docTable({ title: x.metric, columns: ['Question', 'Answer'], rows: [['What was calculated?', x.what], ['How was it calculated?', x.how], ['Which evidence was used?', x.evidence], ['Why does it matter?', x.why], ['What action should be taken?', x.action]] }),
   ]);
 
+  // Improvements_06 — board-level visual intelligence
+  const bs = report.boardSnapshot;
+  const srDistTotal = Math.max(1, sr.customerControlled + sr.providerControlled + sr.ecosystemDependent);
+  const boardChildren: Array<Paragraph | Table> = bs.hasData ? [
+    heading('Board Snapshot — 60-Second Executive View'),
+    para(bs.headline, INK),
+    docTable({ title: 'Board Metrics', columns: ['Metric', 'Value', 'Context'], rows: bs.metrics.map((m) => [m.label, m.value, m.context]) }),
+    ...(bs.topDecisions.length ? [para('Top Decisions for the Board:', INK), ...bs.topDecisions.map((d, i) => para(`${i + 1}. ${d}`, MUTED))] : []),
+    para('Customer vs Provider Responsibility:', INK),
+    docTable({ title: 'Responsibility Split', columns: ['Ownership', 'Findings', 'Distribution'], rows: [
+      ['Customer', bs.responsibilitySplit.customer, docBar((bs.responsibilitySplit.customer / srDistTotal) * 100)],
+      ['Provider', bs.responsibilitySplit.provider, docBar((bs.responsibilitySplit.provider / srDistTotal) * 100)],
+      ['Ecosystem', bs.responsibilitySplit.ecosystem, docBar((bs.responsibilitySplit.ecosystem / srDistTotal) * 100)],
+    ] }),
+    para(bs.responsibilityNote, MUTED),
+    ...(bs.assetBasis ? [para(bs.assetBasis, MUTED)] : []),
+    para(`Executive Recommendation: ${bs.recommendation}`, INK),
+  ] : [];
+  const srSummaryTable: ReportTable = { title: 'Shared Responsibility Summary', columns: ['Ownership Domain', 'Findings', 'Distribution'], rows: [
+    ['Customer', sr.customerControlled, docBar((sr.customerControlled / srDistTotal) * 100)],
+    ['Provider', sr.providerControlled, docBar((sr.providerControlled / srDistTotal) * 100)],
+    ['Ecosystem', sr.ecosystemDependent, docBar((sr.ecosystemDependent / srDistTotal) * 100)],
+  ] };
+  const srTimelineTable: ReportTable = { title: 'Shared Responsibility Timeline', columns: ['Domain', 'Status', 'Readiness'], rows: sr.timeline.map((t) => [t.domain, t.label, docBar(t.readiness)]) };
+  const evidenceQualityTable: ReportTable = { title: 'Evidence Quality Score', columns: ['Evidence Source', 'Grade', 'Confidence', 'Status', 'Note'], rows: report.evidenceQuality.rows.map((r) => [r.source, r.grade, `${r.confidencePct}%`, r.status, r.note]) };
+  const campaignsTable: ReportTable = { title: 'Remediation Campaigns', columns: ['Priority', 'Campaign', 'Target', 'Findings', 'Occurrences', 'Assets', 'Recommended Action'], rows: report.remediationCampaigns.campaigns.map((c) => [c.priority, c.campaign, c.target, c.findingCount, c.occurrences, c.affectedAssets, c.action]) };
+  const priorityMatrixChildren: Array<Paragraph | Table> = report.businessPriorityMatrix.hasData ? [
+    heading('Business Priority Matrix'),
+    para(report.businessPriorityMatrix.note, MUTED),
+    ...report.businessPriorityMatrix.quadrants.flatMap((q) => [
+      para(`${q.title} (${q.subtitle}) — ${q.guidance}`, INK),
+      docTable({ title: q.title, columns: ['Action', 'Business Value', 'Effort', 'Risk Reduction'], rows: q.items.length ? q.items.slice(0, 8).map((it) => [it.name, it.businessValue, it.effort, `${it.riskReductionPct}%`]) : [['No items in this quadrant', '-', '-', '-']] }),
+    ]),
+  ] : [];
+
   // I4#9 — Executive Certification Summary (closing section with QR + signature)
   const cert = report.certification;
   const verifyUrl = reportVerificationUrl(report);
@@ -270,6 +347,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
         },
         children: [
           ...coverChildren,
+          ...boardChildren,
           heading('Executive Summary'),
           para(report.executiveSummary),
           ...(branding.customNotes ? [para(`Notes: ${branding.customNotes}`, MUTED)] : []),
@@ -321,11 +399,28 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(readinessTable),
           heading('Migration Wave Planning'),
           docTable(wavesTable),
+          ...(sr.hasData ? [
+            heading('Shared Responsibility Assessment'),
+            para(sr.summary, MUTED),
+            docTable(srSummaryTable),
+            docTable(srTimelineTable),
+            docTable(srReadinessTable),
+            ...(sr.reconciliationNote ? [para(`Finding-count reconciliation: ${sr.reconciliationNote}`, MUTED)] : []),
+            docTable(srMatrixTable),
+            docTable(srWavesTable),
+            ...(sr.providers.length ? [docTable(srProvidersTable)] : []),
+          ] : []),
           heading('Migration Dependency Analysis'),
           para(report.dependencyAnalysis.summary, MUTED),
           docTable(depTable),
           heading('Quantum Risk Analysis'),
           docTable(riskCatTable),
+          ...(report.executiveHeatMap.hasData ? [
+            heading('Executive Risk Heat Map'),
+            para(report.executiveHeatMap.methodology, MUTED),
+            heatMapTable(report.executiveHeatMap),
+            para(`Rows = Business Impact (Critical → Minimal); Columns = Quantum Exploitation Likelihood (Rare → Almost Certain). Cell number = consolidated finding groups in that zone; ${report.executiveHeatMap.totalPlotted} plotted.`, MUTED),
+          ] : []),
           heading('Risk Scoring Methodology'),
           para(`Formula: ${report.riskMethodology.formula}`, INK),
           para(report.riskMethodology.explanation, MUTED),
@@ -355,8 +450,14 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           heading('Crypto-Policy Profiles (Target Algorithm Selection)'),
           para(report.cryptoPolicy.note, MUTED),
           docTable(cryptoPolicyTable),
+          ...(report.remediationCampaigns.campaigns.length ? [
+            heading('Remediation Campaigns'),
+            para(report.remediationCampaigns.note, MUTED),
+            docTable(campaignsTable),
+          ] : []),
           heading('Remediation Program'),
           docTable(remediationTable),
+          ...priorityMatrixChildren,
           heading('Enterprise Remediation Playbook'),
           ...playbookChildren,
           heading('Migration Roadmap & Program Plan'),
@@ -400,6 +501,12 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           heading('Program Governance'),
           docTable(governanceTable),
           docTable(gateTable),
+          ...(report.evidenceQuality.rows.length ? [
+            heading('Evidence Quality Score'),
+            para(report.evidenceQuality.note, MUTED),
+            docTable(evidenceQualityTable),
+            para(`Overall Evidence Grade: ${report.evidenceQuality.overallGrade} (${report.evidenceQuality.gradedSources} contributing source(s), ${report.evidenceQuality.missingSources} missing).`, INK),
+          ] : []),
           heading('Evidence Confidence Dashboard'),
           docTable(evidenceConfTable),
           heading('Report Explainability'),

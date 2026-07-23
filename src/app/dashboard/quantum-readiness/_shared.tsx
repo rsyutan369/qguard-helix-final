@@ -7,6 +7,7 @@ import { ChevronRight, type LucideIcon } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
 
 /* ------------------------------------------------------------------ */
 /* Palette                                                            */
@@ -65,6 +66,8 @@ export interface QuantumReadinessSnapshot {
     pqcReadyComponents: number;
   };
   riskDistribution: { critical: number; high: number; medium: number; low: number };
+  /** Shared Responsibility ownership intelligence (tri-part readiness, matrix, 7-wave roadmap). */
+  sharedResponsibility?: SharedResponsibilityIntelligence;
   readinessFactors: Array<{ label: string; score: number }>;
   riskFactors: Array<{ label: string; score: number; severity: string }>;
   criticalFindings: Array<{

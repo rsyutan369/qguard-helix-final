@@ -155,7 +155,11 @@ const mockBuilders: CopilotBuilders = {
     inventory: { assetsAssessed: 12, certificatesAnalyzed: 6, keysDiscovered: 4, trustRelationships: 9, cryptoComponents: 40, vulnerableComponents: 18, pqcReadyComponents: 12, quantumVulnerableAssets: 7 },
     riskDistribution: { critical: 2, high: 3, medium: 4, low: 3 },
     riskTrend: [{ label: 'W1', value: 40 }, { label: 'W2', value: 45 }],
-    topRiskAssets: [{ id: 'web-01', name: 'web-01' }],
+    // Same row shape as the real buildSnapshot topRiskAssets (key is `asset`, not `name`).
+    topRiskAssets: [
+      { asset: 'web-01', assetType: 'web', environment: 'public', owner: 'Ops', riskScore: 88, status: 'Quantum-Vulnerable' },
+      { asset: 'db-01', assetType: 'database', environment: 'internal', owner: 'Data', riskScore: 60, status: 'Quantum-Vulnerable' },
+    ],
     riskFactors: [{ label: 'Legacy RSA' }], criticalFindings: [{ label: 'RSA on edge' }],
     recommendedActions: [{ title: 'Migrate edge TLS' }], estimates: { migrationTimelineWeeks: 14, migrationCostUsd: 220000, parallelWorkstreams: 3 },
   }),
@@ -408,6 +412,38 @@ async function main() {
   assert(emptyDeep.mode === 'investigate', 'empty deep answer still runs an investigation')
   assert(!emptyDeep.migrationStrategy, 'no fabricated migration strategy without evidence')
   assert(/scan|evidence|connect|data/i.test(emptyDeep.summary), 'honestly states what evidence is missing', emptyDeep.summary.slice(0, 60))
+
+  console.log('\n[23] Ranked vulnerable-asset questions (Vulnerable_Assets_Inconsistency regression)')
+  const vulnPlan = planQuery('Show my most vulnerable assets.', { ...EMPTY_MEMORY })
+  assert(vulnPlan.mode === 'investigate' && vulnPlan.objectiveKind === 'prioritization', '"show my most vulnerable assets" → investigate/prioritization', `${vulnPlan.mode}/${vulnPlan.objectiveKind}`)
+  assert(String(vulnPlan.args.query || '') === '', 'natural-language words are never used as a literal asset filter', `query="${String(vulnPlan.args.query || '')}"`)
+  const vulnAns = (await runCopilotQuery(ctxFor('owner'), 'Show my most vulnerable assets.', { ...EMPTY_MEMORY }, () => {}, mockBuilders)).answer
+  assert(!/0 asset\(s\) match/i.test(vulnAns.summary), 'summary never claims "0 assets match" when risk data exists', vulnAns.summary.slice(0, 80))
+  assert(/web-01/.test(vulnAns.summary) || (vulnAns.technicalAnalysis || []).some((t) => /web-01/.test(t)), 'answer names the top-risk asset by name', vulnAns.summary.slice(0, 80))
+  assert(/88\/100|risk score/i.test([vulnAns.summary, ...(vulnAns.technicalAnalysis || [])].join(' ')), 'ranked answer carries live per-asset risk scores')
+  const vulnText = JSON.stringify([vulnAns.summary, vulnAns.keyFindings, vulnAns.risk.drivers])
+  assert(!/critical \/ \d+ high[- ]risk asset|critical-risk asset/i.test(vulnText), 'finding-level severity distribution is not mislabeled as assets', vulnText.slice(0, 100))
+
+  console.log('\n[24] Literal asset search still works when a real filter is given')
+  const findPlan = planQuery('find asset web-01', { ...EMPTY_MEMORY })
+  assert(/web-01/.test(String(findPlan.args.query || '')), 'entity term survives filter extraction', `query="${String(findPlan.args.query || '')}"`)
+  const findAns = (await runCopilotQuery(ctxFor('owner'), 'find asset web-01', { ...EMPTY_MEMORY }, () => {}, mockBuilders)).answer
+  assert(/match/i.test(findAns.summary), 'filtered search reports its match count', findAns.summary.slice(0, 80))
+
+  console.log('\n[25] Insight unit labels (findings vs assets)')
+  const insightText = JSON.stringify(await buildInsights(ctxFor('owner'), mockBuilders))
+  assert(!/critical-risk asset/i.test(insightText), 'proactive insights label the severity distribution as findings, not assets')
+
+  console.log('\n[26] User-visible strings never leak backend tool identifiers (Remove_Data-Assets)')
+  const RAW_TOOL = /\bget[A-Z][A-Za-z]*\b|\bsearchAssets\b|\bsearchLogs\b|\bsimulateMigration\b|\brollback(Asset|Migration)\b|\b(create|restore)Snapshot\b|\b(approve|reject)Remediation\b|\bgenerate(Recommendations|ExecutiveReport)\b/
+  const stageLabels: string[] = []
+  const leakOutcome = await runCopilotQuery(ctxFor('owner'), 'Show my most vulnerable assets.', { ...EMPTY_MEMORY }, (e) => { if (e.type === 'stage') stageLabels.push(e.label) }, mockBuilders)
+  assert(stageLabels.length > 0 && stageLabels.every((l) => !RAW_TOOL.test(l)), 'stage labels use module names, never tool ids', stageLabels.find((l) => RAW_TOOL.test(l)) || '')
+  assert(leakOutcome.answer.toolRuns.every((r) => typeof r.source === 'string' && r.source.length > 0 && !RAW_TOOL.test(r.source)), 'every tool run carries a user-facing source label')
+  const reasoningAll = [...leakOutcome.answer.reasoning, ...findAns.reasoning]
+  assert(reasoningAll.every((l) => !RAW_TOOL.test(l)), 'reasoning trace never names backend tools', reasoningAll.find((l) => RAW_TOOL.test(l)) || '')
+  const deniedLeak = await runTool('approveRemediation', ctxFor('security_analyst'), {}, mockBuilders)
+  assert(deniedLeak.run.source === 'Quantum Remediation Engine™', 'denied runs still labeled by module', deniedLeak.run.source || '')
 
   console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} CHECK(S) FAILED`}\n`)
   process.exit(failures === 0 ? 0 : 1)

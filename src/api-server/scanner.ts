@@ -18,6 +18,7 @@ import { CRYPTO_FINGERPRINTS } from '@/lib/scanner/scanner_2/fingerprints'
 import { matchFingerprints } from '@/lib/scanner/scanner_2/engine/fingerprint-matcher'
 import { calculateQuantumRiskScore } from '@/lib/scanner/scanner_2/engine/risk-scoring'
 import { evaluateFindings } from '@/lib/scanner/scanner_2/rules/detection-rules'
+import { quickOwnershipTag, type OwnershipFindingInput } from '@/lib/shared-responsibility'
 import { analyzeHNDLRisks } from '@/lib/scanner/scanner_2/hndl-analyzer'
 import { buildQuantumRiskAssessment } from '@/lib/scanner/scanner_2/correlation-engine'
 import { calculateQuantumReadiness, getMigrationRecommendation } from '@/lib/scanner/scanner_2/pqc-migration-engine'
@@ -2604,8 +2605,16 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
       complianceStatus: vulnerabilities.length > 0 ? 'Action required' : crypto.length > 0 ? 'PQC ready / monitored' : 'Manual review',
       lastScanned: asset.metadata?.last_scanned_at || asset.updated_at || asset.created_at,
       status: asset.status,
+      // findingsCount is finding-level (each rule/cipher detection) — QR's
+      // exposure-graph and Report Center render it as "scan findings".
       findingsCount: Math.max(crypto.length, vulnerabilities.length),
-      vulnerableCount: vulnerabilities.length,
+      // vulnerableCount is COMPONENT-level (is_vulnerable && !is_quantum_safe on
+      // the grouped crypto inventory) — the same unit the CBOM Explorer and the
+      // Quantum Readiness Engine count. Keeping this component-level (not the raw
+      // finding count) keeps the Assets page, Migration Timeline and Migration
+      // Phases reconciled with the platform snapshot instead of inflating totals.
+      findingSignalCount: vulnerabilities.length,
+      vulnerableCount: crypto.filter((item: any) => item.is_vulnerable && !item.is_quantum_safe).length,
       vulnerabilities,
       metadata: asset.metadata || {},
     }
@@ -2816,6 +2825,42 @@ async function computeScannerIntelligence(token: string, userId: string) {
     .sort((a: any, b: any) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || ''))
     .slice(0, 500)
 
+  // ---- Shared Responsibility ownership tags ----------------------------
+  // Tag every finding with its detected provider + ownership domain so the
+  // scanner surface carries the same normalized ownership model the Migration
+  // Intelligence Engine, dashboards, reports and certification consume. Uses the
+  // cheap tag path (no dependency chain / edge-origin detail) to stay fast.
+  const scannerAssetIndex = new Map<string, any>()
+  for (const asset of assetPayload.assets) {
+    const name = String(asset.name || '').toLowerCase()
+    if (name) scannerAssetIndex.set(name, asset)
+  }
+  const toOwnershipInput = (f: DefensiveFinding): OwnershipFindingInput => {
+    const location = String(f.location || '')
+    const asset = scannerAssetIndex.get(location.toLowerCase().replace(/:\d+$/, '')) || scannerAssetIndex.get(location.toLowerCase())
+    const meta = (asset?.metadata || {}) as Record<string, unknown>
+    return {
+      id: f.id,
+      algorithm: f.algorithm,
+      category: f.category,
+      location,
+      assetName: location,
+      assetType: asset?.type ? String(asset.type) : undefined,
+      environment: typeof meta.environment === 'string' ? meta.environment : undefined,
+      provider: typeof meta.provider === 'string' ? meta.provider : typeof meta.cloud_provider === 'string' ? meta.cloud_provider : undefined,
+      host: (asset?.url as string) || (asset?.domain as string) || location || undefined,
+      severity: f.threatLevel,
+      description: f.description,
+    }
+  }
+  const enrichedFindings = findings.map((f: DefensiveFinding) => ({ ...f, ownership: quickOwnershipTag(toOwnershipInput(f)) }))
+  const ownershipSummary = {
+    customer: enrichedFindings.filter((f) => f.ownership.domain === 'customer').length,
+    provider: enrichedFindings.filter((f) => f.ownership.domain === 'provider').length,
+    ecosystem: enrichedFindings.filter((f) => f.ownership.domain === 'ecosystem').length,
+    customerActionable: enrichedFindings.filter((f) => f.ownership.domain === 'customer' && f.ownership.customerActionable !== 'no').length,
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     mode,
@@ -2838,7 +2883,8 @@ async function computeScannerIntelligence(token: string, userId: string) {
     assets: assetPayload,
     exposure,
     history: historyPayload,
-    findings,
+    findings: enrichedFindings,
+    ownershipSummary,
     telemetry: operationsTelemetry,
     runtime: {
       operations: operationsTelemetry.length,

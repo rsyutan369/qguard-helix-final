@@ -32,5 +32,26 @@ export function exportCsv(report: EnterpriseAssessmentReport): Blob {
     : Papa.unparse([{ id: 'Evidence Not Available' }]);
 
   const header = `# ${report.meta.title} — ${report.branding.companyName}\n# Generated ${report.meta.generatedAt} | Version ${report.meta.version} | ${report.branding.classification}\n`;
-  return new Blob([header, csv], { type: 'text/csv;charset=utf-8' });
+
+  // Shared Responsibility Assessment™ — ownership-classified matrix (aligned with
+  // the Migration Intelligence Engine) appended as a second CSV block for GRC ingestion.
+  const sr = report.sharedResponsibility;
+  let srBlock = '';
+  if (sr.hasData) {
+    const ownershipRows = sr.matrix.map((m) => ({
+      finding: m.finding,
+      owner: m.owner,
+      ownership_domain: m.domain,
+      recommended_action: m.action,
+      priority: m.priority,
+      status: m.status,
+    }));
+    srBlock =
+      `\n\n# Shared Responsibility Assessment — Ownership Matrix\n` +
+      `# Customer readiness ${sr.readiness.customer}/100 | Provider ${sr.readiness.provider}/100 | Ecosystem ${sr.readiness.ecosystem}/100 | Overall ${sr.readiness.overall}/100\n` +
+      `# Customer-controlled ${sr.customerControlled} | Provider-controlled ${sr.providerControlled} | Ecosystem-dependent ${sr.ecosystemDependent} | Actionable now ${sr.actionableNow} | Blockers ${sr.migrationBlockers}\n` +
+      (ownershipRows.length ? Papa.unparse(ownershipRows) : '');
+  }
+
+  return new Blob([header, csv, srBlock], { type: 'text/csv;charset=utf-8' });
 }

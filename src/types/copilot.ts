@@ -102,6 +102,12 @@ export type CopilotToolStatus = 'ok' | 'empty' | 'error' | 'denied'
 export interface CopilotToolRun {
   tool: string
   module: string
+  /**
+   * User-facing platform-module label ("Assets & CBOM", "Risk Analysis").
+   * The ONLY name the UI may render — raw tool identifiers and notes are
+   * backend internals and must never appear in the user's visual.
+   */
+  source?: string
   status: CopilotToolStatus
   ms: number
   /** Row/record count the tool observed (when meaningful). */

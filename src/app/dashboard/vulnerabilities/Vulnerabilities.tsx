@@ -248,7 +248,7 @@ function remediationRouteFor(row: VulnerabilityRow) {
   if (/tls|ssl|cipher|protocol|handshake/.test(text)) return '/dashboard/tls-orchestrator'
   if (/library|dependency|component|package|cve|repo|github|source/.test(text)) return '/dashboard/migration-planner'
   if (/random|rng|entropy/.test(text)) return '/dashboard/qrng'
-  if (/api|gateway/.test(text)) return '/dashboard/api-encryption'
+  if (/api|gateway/.test(text)) return '/dashboard/encryption-monitoring'
   if (/cloud|kms|bucket|storage/.test(text)) return '/dashboard/cloud'
   return '/dashboard/pqc-orchestration'
 }
@@ -869,7 +869,7 @@ export default function Vulnerabilities() {
                     {pagedRows.map((row) => {
                       const detected = dateTime(row.detectedAt)
                       const rowRemediationHref = remediationHref(row)
-                      const rowInspectHref = row.inspectHref || `/dashboard/crypto-exposure?${new URLSearchParams({ source: 'vulnerabilities', findingId: row.sourceId || row.id }).toString()}`
+                      const rowInspectHref = row.inspectHref || `/dashboard/quantum-readiness/exposure-graph?${new URLSearchParams({ source: 'vulnerabilities', findingId: row.sourceId || row.id }).toString()}`
                       return (
                         <tr key={row.id} className="transition hover:bg-gold/[0.04]">
                           <td className="px-4 py-4">
@@ -1042,7 +1042,7 @@ export default function Vulnerabilities() {
                 { label: 'Run Quantum Scan', detail: 'Start a new vulnerability scan', href: '/dashboard/scanner', icon: Target },
                 { label: 'Add Asset', detail: 'Add new asset for scanning', href: '/dashboard/assets_map', icon: Plus },
                 { label: 'View Reports', detail: 'View scan and compliance reports', href: '/dashboard/audit-vault', icon: FileText },
-                { label: 'Manage Policies', detail: 'Configure detection policies', href: '/dashboard/crypto-policies', icon: Settings },
+                { label: 'Manage Policies', detail: 'Configure detection policies', href: '/dashboard/quantum-governance', icon: Settings },
               ].map((action) => {
                 const Icon = action.icon
                 return (

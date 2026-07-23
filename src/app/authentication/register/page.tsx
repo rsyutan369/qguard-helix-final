@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import "../auth.css";
 import {
   Activity,
@@ -41,7 +41,10 @@ export default function RegisterPage() {
 
   // Present the registration experience in light mode by default while
   // preserving whatever global theme the user had set for the rest of the app.
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so the switch to light is committed
+  // *before* the browser paints the first frame — otherwise the page paints
+  // once in the global (dark) theme and the user sees a dark→light flash.
+  useLayoutEffect(() => {
     setMode("light");
     return () => setMode(restoreModeRef.current);
   }, [setMode]);

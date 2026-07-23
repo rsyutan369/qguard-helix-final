@@ -19,6 +19,7 @@ import {
   planForIntents,
   inferObjective,
   expandQuestion,
+  extractAssetFilter,
   sanitizePrompt,
   modulePath,
   moduleLabel,
@@ -27,6 +28,7 @@ import {
 import {
   liveBuilders,
   runTool,
+  TOOL_REGISTRY,
   type CopilotBuilders,
   type ToolContext,
   type ToolExecution,
@@ -75,15 +77,41 @@ function nextId(): string {
   return `sophia-${Date.now().toString(36)}-${idCounter.toString(36)}`
 }
 
+/**
+ * User-facing name for a data source. Everything shown to the user speaks in
+ * platform-module labels ("Assets & CBOM", "Risk Analysis") — raw tool
+ * identifiers (getAssets, searchAssets…) are backend internals and never
+ * appear in stage labels or reasoning.
+ */
+function sourceLabel(tool: string): string {
+  const moduleId = TOOL_REGISTRY[tool]?.module
+  return moduleId ? moduleLabel(moduleId) : 'the platform'
+}
+
+const STATUS_PHRASE: Record<string, string> = {
+  ok: 'returned data',
+  empty: 'has no data yet',
+  error: 'was unavailable',
+  denied: 'is outside your role permissions',
+}
+
+/** Deduplicated, user-facing notes for non-ok sources (no tool names). */
+function sourceNotes(toolRuns: CopilotToolRun[], statuses: string[], max: number): string[] {
+  const notes = toolRuns
+    .filter((r) => statuses.includes(r.status))
+    .map((r) => `Note: ${r.source || sourceLabel(r.tool)} ${STATUS_PHRASE[r.status] || 'did not respond'}.`)
+  return [...new Set(notes)].slice(0, max)
+}
+
 /* ------------------------------------------------------------------ */
 /* Intent → tool plan                                                  */
 /* ------------------------------------------------------------------ */
 
 const INTENT_TOOLS: Record<CopilotIntent, string[]> = {
-  asset_status: ['getAssets', 'searchAssets', 'getRiskAnalysis'],
-  migration_status: ['getMigrationStatus', 'getMigrationJobs', 'getSnapshots'],
-  remediation: ['getPendingRemediation', 'generateRecommendations'],
-  risk_analysis: ['getRiskScore', 'getRiskAnalysis', 'getBlastRadius'],
+  asset_status: ['getAssets', 'searchAssets', 'getRiskAnalysis', 'getCryptoInventory'],
+  migration_status: ['getMigrationStatus', 'getMigrationJobs', 'getSnapshots', 'explainFindingOwnership'],
+  remediation: ['getPendingRemediation', 'generateRecommendations', 'explainFindingOwnership'],
+  risk_analysis: ['getRiskScore', 'getRiskAnalysis', 'getBlastRadius', 'explainFindingOwnership'],
   certification: ['getCertificationStatus', 'getCertificationEligibility', 'getPendingRemediation'],
   reports: ['getReports', 'generateExecutiveReport'],
   compliance: ['getComplianceStatus', 'getNISTScore', 'getCNSACompliance'],
@@ -95,7 +123,7 @@ const INTENT_TOOLS: Record<CopilotIntent, string[]> = {
   exposure_graph: ['getExposureGraph', 'getTrustChains', 'getDependencies', 'getBlastRadius'],
   telemetry: ['getLiveTelemetry', 'getCollectorsStatus', 'getAgentHealth', 'getHeartbeat', 'getConnectorStatus'],
   threat_intelligence: ['getHarvestNowExposure', 'getRiskScore', 'getFindings'],
-  executive_dashboard: ['getQuantumReadiness', 'generateExecutiveReport', 'getMigrationStatus'],
+  executive_dashboard: ['getQuantumReadiness', 'generateExecutiveReport', 'getMigrationStatus', 'explainFindingOwnership'],
   harvest_now: ['getHarvestNowExposure', 'getLiveTelemetry'],
   quantum_readiness: ['getQuantumReadiness', 'getCertificationEligibility', 'getReadinessHistory'],
   snapshots_rollback: ['getSnapshots', 'getMigrationJobs'],
@@ -130,6 +158,7 @@ const INVESTIGATION_TOOLS: string[] = [
   'getMigrationStatus', 'getMigrationJobs', 'getSnapshots',
   'getCertificates', 'getPendingRemediation', 'getCertificationEligibility',
   'getComplianceStatus', 'getLiveTelemetry', 'getCollectorsStatus', 'getAssets',
+  'explainFindingOwnership',
 ]
 
 export interface ExecutionPlan {
@@ -175,8 +204,18 @@ export function planQuery(question: string, memory: CopilotMemoryState): Executi
     if (trigger.pattern.test(question) && !tools.includes(trigger.tool)) tools.push(trigger.tool)
   }
 
+  // Shared Responsibility ownership questions ("who owns this?", "why can't I
+  // fix this?", "is this provider-managed?") always consult the ownership model.
+  if (/who owns|ownership|shared responsibility|responsible party|provider[- ]managed|provider[- ]controlled|customer[- ]controlled|ecosystem[- ]dependent|whose responsib|why can'?t (i|we) (fix|remediate|migrate)|can (i|we|the customer) (fix|remediate|migrate)|out of my control|not my fault/i.test(question)) {
+    if (!tools.includes('explainFindingOwnership')) tools.unshift('explainFindingOwnership')
+  }
+
   // Argument extraction — simple, transparent filters carried to the tools.
-  const args: Record<string, unknown> = { query: question.slice(0, 160) }
+  // Only real entity/attribute terms become a search filter; question words
+  // ("show my most vulnerable assets") never do — asking a question is not a
+  // name filter, and treating it as one produced contradictory "0 match"
+  // answers over live risk data.
+  const args: Record<string, unknown> = { query: extractAssetFilter(question) }
   if (/internet[- ]facing|public[- ]facing|externally exposed/i.test(question)) args.internetFacing = true
   if (/\bcritical\b/i.test(question)) args.criticality = 'critical'
   if (detection.followUp && memory.focusEntity) args.asset = memory.focusEntity
@@ -235,8 +274,14 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
     const scans = b.tool('getLatestScans')
     const findingsTool = b.tool('getFindings')
 
-    if (search && num(search.data.matched) >= 0 && /which|search|find|show/i.test(b.question)) {
-      findings.push(`${num(search.data.matched)} asset(s) match the requested filter.`)
+    // Only report a match count when a REAL filter was applied. A question
+    // with no extractable filter ("show my most vulnerable assets") is a
+    // status/ranking request — answer from the inventory, never "0 match".
+    if (search && search.data.filtered === true && /which|search|find|show|list/i.test(b.question)) {
+      const matched = num(search.data.matched)
+      findings.push(matched > 0
+        ? `${matched} asset(s) match the requested filter.`
+        : `No assets match that filter${assets && num(assets.data.total) > 0 ? ` — the inventory holds ${num(assets.data.total)} asset(s) overall` : ''}.`)
     } else if (assets) {
       findings.push(`The inventory holds ${num(assets.data.total)} asset(s); ${num(assets.data.internetFacing)} are internet-facing.`)
     }
@@ -377,13 +422,16 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
       risk = { level: riskFromScore(quantumRisk), score: quantumRisk, drivers: [] }
     }
     if (analysis) {
+      // The distribution counts scanner FINDINGS (per-instance severity), not
+      // assets — labeling it "assets" contradicted the inventory count.
       const dist = rec(analysis.data.distribution)
       if (num(dist.critical) + num(dist.high) > 0) {
-        risk = { ...risk, level: maxRisk(risk.level, num(dist.critical) > 0 ? 'critical' : 'high'), drivers: [...risk.drivers, `${num(dist.critical)} critical / ${num(dist.high)} high risk asset(s)`] }
-        findings.push(`Risk distribution: ${num(dist.critical)} critical, ${num(dist.high)} high, ${num(dist.medium)} medium, ${num(dist.low)} low.`)
+        risk = { ...risk, level: maxRisk(risk.level, num(dist.critical) > 0 ? 'critical' : 'high'), drivers: [...risk.drivers, `${num(dist.critical)} critical / ${num(dist.high)} high-severity finding(s)`] }
+        findings.push(`Scan findings by severity: ${num(dist.critical)} critical, ${num(dist.high)} high, ${num(dist.medium)} medium, ${num(dist.low)} low.`)
       }
       const top = arr(analysis.data.topRiskAssets) as Array<Record<string, unknown>>
-      if (top.length) findings.push(`Highest-risk asset: ${str(top[0].name) || str(top[0].id)}.`)
+      const topName = top.length ? str(top[0].asset) || str(top[0].name) || str(top[0].id) : ''
+      if (topName) findings.push(`Highest-risk asset: ${topName}${num(top[0]?.riskScore) ? ` (risk score ${num(top[0].riskScore)}/100)` : ''}.`)
     }
     if (blast && blast.status === 'ok') {
       const blastData = rec(blast.data.blast)
@@ -619,7 +667,7 @@ interface TenantIntelligence {
   cryptoComponents: number | null
   vulnerableComponents: number | null
   pqcReadyComponents: number | null
-  topRiskAssets: string[]
+  topRiskAssets: Array<{ name: string; riskScore: number; status: string }>
   blast: { asset: string; totalAffected: number; internetFacing: number; direct: number; trustChain: number } | null
   exposure: { quantumVulnerable: number; trustRelationships: number; criticalTrust: number; thirdParty: number; blockers: number; certificateChains: number; internetFacing: number } | null
   hndl: { level: string; headline: string } | null
@@ -707,7 +755,12 @@ function extractIntelligence(toolData: Map<string, ToolResult>): TenantIntellige
     cryptoComponents: cbom ? numOrNull(cbom.cryptoComponents ?? cbom.total) : numOrNull(inventory.cryptoComponents),
     vulnerableComponents: cbom ? numOrNull(cbom.vulnerableComponents ?? cbom.vulnerable) : numOrNull(inventory.vulnerableComponents),
     pqcReadyComponents: cbom ? numOrNull(cbom.pqcReadyComponents) : numOrNull(inventory.pqcReadyComponents),
-    topRiskAssets: (arr(riskAnalysis?.topRiskAssets) as Array<Record<string, unknown>>).map((a) => str(a.name) || str(a.id)).filter(Boolean).slice(0, 6),
+    // buildSnapshot emits the asset name under `asset` (not `name`) — reading
+    // the wrong key silently erased every ranked asset name from answers.
+    topRiskAssets: (arr(riskAnalysis?.topRiskAssets) as Array<Record<string, unknown>>)
+      .map((a) => ({ name: str(a.asset) || str(a.name) || str(a.id), riskScore: num(a.riskScore), status: str(a.status) }))
+      .filter((a) => Boolean(a.name))
+      .slice(0, 6),
     blast: blast && Object.keys(blast).length ? {
       asset: str(blastData?.asset), totalAffected: num(blast.totalAffected), internetFacing: num(blast.internetFacing),
       direct: arr(blast.direct).length, trustChain: arr(blast.trustChain).length,
@@ -961,22 +1014,28 @@ function composePrioritization(intel: TenantIntelligence, objective: string): De
   if (intel.blast && intel.blast.totalAffected > 0) {
     priorities.push({ title: intel.blast.asset || 'Highest-blast-radius asset', why: `largest blast radius — ${intel.blast.totalAffected} dependent asset(s)${intel.blast.internetFacing ? `, ${intel.blast.internetFacing} internet-facing` : ''}; a failure or compromise here propagates widely.` })
   }
-  for (const name of intel.topRiskAssets) {
-    if (!priorities.some((p) => p.title === name)) priorities.push({ title: name, why: 'ranked among your highest quantum-risk assets by the risk engine.' })
+  for (const asset of intel.topRiskAssets) {
+    if (!priorities.some((p) => p.title === asset.name)) {
+      priorities.push({ title: asset.name, why: `risk score ${asset.riskScore}/100${asset.status ? ` (${asset.status})` : ''} — ranked by the risk engine from live scan, CBOM and exposure evidence.` })
+    }
     if (priorities.length >= 5) break
   }
   // Always anchor on the crypto-domain order even without per-asset detail.
   const strategy = buildMigrationStrategy(intel)
 
   const keyFindings: string[] = []
-  if (intel.riskDist.critical + intel.riskDist.high > 0) keyFindings.push(`Risk distribution: ${intel.riskDist.critical} critical, ${intel.riskDist.high} high, ${intel.riskDist.medium} medium, ${intel.riskDist.low} low.`)
+  if (intel.assetsTotal != null) keyFindings.push(`${intel.assetsTotal} asset(s) in inventory${intel.topRiskAssets.length ? `; ${intel.topRiskAssets.filter((a) => /vulnerable/i.test(a.status)).length || intel.topRiskAssets.length} ranked at elevated risk` : ''}.`)
+  if (intel.riskDist.critical + intel.riskDist.high > 0) keyFindings.push(`Scan findings by severity: ${intel.riskDist.critical} critical, ${intel.riskDist.high} high, ${intel.riskDist.medium} medium, ${intel.riskDist.low} low.`)
   if (intel.internetFacing != null) keyFindings.push(`${intel.internetFacing} internet-facing asset(s) — first in line for Harvest-Now exposure.`)
   if (intel.hndl) keyFindings.push(`HNDL exposure: ${intel.hndl.level}.`)
   if (intel.vulnerableComponents != null) keyFindings.push(`${intel.vulnerableComponents} quantum-vulnerable component(s) to replace.`)
 
+  const rankedLine = intel.topRiskAssets.length
+    ? ` Ranked by live risk score: ${intel.topRiskAssets.slice(0, 5).map((a) => `${a.name} (${a.riskScore}/100${a.status ? ` · ${a.status}` : ''})`).join(', ')}.`
+    : ''
   const topName = priorities[0]?.title
   const summary = topName
-    ? `Migrate ${topName} first — ${priorities[0].why} After that, work down the risk-and-dependency order below: internet-facing TLS and the PKI beneath it, then internal services, SSH, VPN and clients. The order is driven by exposure (internet-facing + Harvest-Now), blast radius, and trust dependencies — not by asset name.`
+    ? `Your highest-priority asset is ${topName} — ${priorities[0].why}${rankedLine} Work down the risk-and-dependency order below: internet-facing TLS and the PKI beneath it, then internal services, SSH, VPN and clients. The order is driven by exposure (internet-facing + Harvest-Now), blast radius, and trust dependencies — not by asset name.`
     : `Prioritize by exposure and dependency, not inventory order: migrate internet-facing TLS and its PKI first (highest Harvest-Now exposure and trust anchor), then internal services, SSH, VPN and clients.`
 
   return {
@@ -1005,7 +1064,7 @@ function composePrioritization(intel: TenantIntelligence, objective: string): De
       { label: 'Open Risk Analysis', path: modulePath('risk_analysis'), reason: 'See the per-asset risk drivers behind this ranking.' },
       { label: 'Open the Exposure Graph', path: modulePath('exposure_graph'), reason: 'Inspect blast radius and single points of failure.' },
     ],
-    risk: { level: intel.riskLevel, score: intel.quantumRisk ?? undefined, drivers: [`${intel.riskDist.critical} critical / ${intel.riskDist.high} high-risk asset(s)`] },
+    risk: { level: intel.riskLevel, score: intel.quantumRisk ?? undefined, drivers: [`${intel.riskDist.critical} critical / ${intel.riskDist.high} high-severity finding(s)`] },
   }
 }
 
@@ -1111,7 +1170,7 @@ function composeExplain(intel: TenantIntelligence, objective: string): DeepSynth
     summary, objective,
     keyFindings: [
       intel.quantumRisk != null ? `Quantum risk ${intel.quantumRisk}/100 (${riskLabel(intel.riskLevel)}).` : '',
-      intel.riskDist.critical + intel.riskDist.high > 0 ? `${intel.riskDist.critical} critical / ${intel.riskDist.high} high-risk asset(s).` : '',
+      intel.riskDist.critical + intel.riskDist.high > 0 ? `${intel.riskDist.critical} critical / ${intel.riskDist.high} high-severity finding(s).` : '',
       intel.hndl ? `HNDL exposure: ${intel.hndl.level}.` : '',
     ].filter(Boolean),
     reasoning: [
@@ -1310,7 +1369,7 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
       `Deep investigation across ${okRuns} live module(s): ${plan.modules.map((m) => moduleLabel(m)).slice(0, 8).join(', ')}.`,
       `Also examined: ${plan.expansion.slice(0, 6).join('; ')}.`,
       ...deep.reasoning,
-      ...toolRuns.filter((r) => r.status === 'error').slice(0, 2).map((r) => `Note: ${r.tool} → error${r.note ? ` (${r.note})` : ''}.`),
+      ...sourceNotes(toolRuns, ['error'], 2),
     ]
 
     return {
@@ -1364,8 +1423,8 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
 
   const reasoning = [
     `Detected intent(s): ${plan.intents.join(', ')}${plan.followUp ? ' (follow-up to the previous question)' : ''}.`,
-    `Consulted ${attempted} platform tool(s) across ${plan.modules.length} module(s): ${plan.modules.map((m) => moduleLabel(m)).join(', ') || '—'}.`,
-    ...toolRuns.filter((r) => r.status !== 'ok').slice(0, 3).map((r) => `Note: ${r.tool} → ${r.status}${r.note ? ` (${r.note})` : ''}.`),
+    `Consulted ${attempted} data source(s) across ${plan.modules.length} module(s): ${plan.modules.map((m) => moduleLabel(m)).join(', ') || '—'}.`,
+    ...sourceNotes(toolRuns, ['empty', 'error', 'denied'], 3),
   ]
 
   const standards = [...new Set(agentRecommendations.flatMap((r) => r.standards))].slice(0, 8)
@@ -1445,12 +1504,12 @@ export async function runCopilotQuery(
     emit({ type: 'stage', stage: 'expanding', label: `Expanding the question — also examining: ${plan.expansion.slice(0, 4).join(', ')}` })
     emit({ type: 'stage', stage: 'investigating', label: `Running a full cross-module investigation (${plan.tools.length} sources across ${plan.modules.length} modules)…` })
   } else {
-    emit({ type: 'stage', stage: 'planning', label: `Consulting ${plan.tools.length} tool(s) across ${plan.modules.map((m) => moduleLabel(m)).join(', ') || 'the platform'}` })
+    emit({ type: 'stage', stage: 'planning', label: `Searching ${plan.modules.map((m) => moduleLabel(m)).join(', ') || 'the platform'}…` })
   }
 
   const executions: ToolExecution[] = []
   await Promise.all(plan.tools.map(async (tool) => {
-    emit({ type: 'stage', stage: 'reading', label: `Reading ${tool}…` })
+    emit({ type: 'stage', stage: 'reading', label: `Searching ${sourceLabel(tool)}…` })
     const execution = await runTool(tool, ctx, plan.args, deps)
     executions.push(execution)
     emit({ type: 'tool', run: execution.run })
@@ -1520,7 +1579,7 @@ export async function buildInsights(ctx: ToolContext, deps: CopilotBuilders = li
     if (!snapshot.hasData) {
       push('info', 'No assessment data yet', 'Run a discovery scan so readiness, risk and remediation intelligence can be computed from real evidence.', 'scanner', 'Quantum Readiness snapshot: hasData=false')
     } else {
-      if (num(dist.critical) > 0) push('critical', `${num(dist.critical)} critical-risk asset(s)`, 'These assets combine quantum-vulnerable crypto with high exposure — review them first.', 'risk_analysis', `Risk distribution: ${num(dist.critical)} critical`)
+      if (num(dist.critical) > 0) push('critical', `${num(dist.critical)} critical finding(s)`, 'These scan findings combine quantum-vulnerable crypto with high exposure — review the affected assets first.', 'risk_analysis', `Finding severity distribution: ${num(dist.critical)} critical`)
       if (num(scores.hndlRisk) >= 55) push('high', `HNDL risk is ${num(scores.hndlRisk)}/100`, 'Long-lived data under legacy key establishment is exposed to Harvest-Now-Decrypt-Later capture.', 'harvest_now', `HNDL risk score ${num(scores.hndlRisk)}`)
       if (num(inventory.vulnerableComponents) > 0) push('high', `${num(inventory.vulnerableComponents)} quantum-vulnerable component(s)`, 'Replace RSA/ECC with ML-KEM / ML-DSA per FIPS 203/204; use hybrid where peers lag.', 'cbom', `CBOM vulnerable=${num(inventory.vulnerableComponents)}`)
     }

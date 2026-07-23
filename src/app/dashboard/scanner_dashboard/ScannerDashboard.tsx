@@ -19,6 +19,7 @@ import {
   deduplicateAssets,
   type ValidatedAsset
 } from '@/lib/scanner/asset-validator';
+import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import AgentCollectorConsole from '@/components/agent-collector/AgentCollectorConsole';
@@ -808,6 +809,14 @@ export default function ScannerDashboard() {
   const subscription = useSubscription();
   const canUseAgents = isOwnerEmail(user?.email) || (subscription.isActive && tierMeets(subscription.tier, 'pro'));
 
+  // Central Scanner Intelligence — the platform-wide, tenant-scoped snapshot
+  // (shared-table truth + SSE + poll fallback) that also powers the Assets,
+  // CBOM, Exposure and Quantum-Readiness views. Wiring the scanner headline to
+  // this SAME source keeps every KPI card consistent across the platform and
+  // makes previously scanned assets visible regardless of when they were
+  // scanned (the local /scanner/history fetch alone was time-window fragile).
+  const scannerIntel = useScannerIntelligence();
+
   // Floating notifications
   const [toast, setToast] = useState<string | null>(null);
   const showToast = useCallback((msg: string) => {
@@ -855,7 +864,7 @@ export default function ScannerDashboard() {
   const [expandedHistoryFinding, setExpandedHistoryFinding] = useState<string | null>(null);
   const [historyFindingSearch, setHistoryFindingSearch] = useState('');
   const [historySeverityFilter, setHistorySeverityFilter] = useState<string | null>(null);
-  const [historyTimeframe, setHistoryTimeframe] = useState<HistoryTimeframe>('last7');
+  const [historyTimeframe, setHistoryTimeframe] = useState<HistoryTimeframe>('all');
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleDate, setScheduleDate] = useState(dateInputFor(1));
   const [scheduleTime, setScheduleTime] = useState('02:00');
@@ -976,6 +985,25 @@ export default function ScannerDashboard() {
       setHistoryLoading(false);
     }
   }, [addLog, authHeaders]);
+
+  // Merge the central Scanner Intelligence history into the local scan history so
+  // every persisted scan session shows up in the History tab — even ones that
+  // predate the local fetch or arrive via the intelligence SSE stream. Fresher
+  // local/live entries always win (dedupe by scanId); never clobbers them.
+  useEffect(() => {
+    const intelHistory = scannerIntel.data?.history?.history;
+    if (!Array.isArray(intelHistory) || intelHistory.length === 0) return;
+    setHistory((prev) => {
+      const seen = new Set(prev.map((entry) => entry.scanId));
+      const additions = intelHistory.filter((entry: HistoryEntry) => entry?.scanId && !seen.has(entry.scanId));
+      if (additions.length === 0) return prev;
+      return [...prev, ...additions].sort(
+        (a, b) => Date.parse(b.startedAt || b.completedAt || '') - Date.parse(a.startedAt || a.completedAt || ''),
+      );
+    });
+    // Keyed on the snapshot timestamp to avoid array-identity churn on every poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scannerIntel.data?.generatedAt]);
 
   const fetchAgents = useCallback(async () => {
     const headers = authHeaders();
@@ -1299,11 +1327,14 @@ export default function ScannerDashboard() {
     showToast(`Scan scheduled for ${scheduledAt.toLocaleString()}.`);
   }, [history, scheduleDate, scheduleTime, showToast, targets, user?.id]);
 
-  const handleShowLast7Days = useCallback(async () => {
-    setHistoryTimeframe('last7');
+  const handleToggleTimeframe = useCallback(async () => {
     setActiveTab('history');
+    setHistoryTimeframe((prev) => {
+      const next = prev === 'all' ? 'last7' : 'all';
+      showToast(next === 'all' ? 'Showing all recorded scans.' : 'Showing scans from the last 7 days.');
+      return next;
+    });
     await fetchHistory();
-    showToast('Showing scans from the last 7 days.');
   }, [fetchHistory, showToast]);
 
   const handleExportScannerReport = useCallback(() => {
@@ -1816,6 +1847,23 @@ export default function ScannerDashboard() {
   const currentScanReadiness = summary?.totalFindings
     ? Math.round(((summary.pqcReady ?? 0) / Math.max(1, summary.totalFindings)) * 100)
     : 0;
+  // Central-intelligence KPIs — computed from the shared cryptographic tables
+  // (assets / inventory / exposures / results / vulnerabilities), never a
+  // time-window subset. This is the authoritative headline for the tenant's
+  // scanned estate and stays in lock-step with CBOM, Exposure and Readiness.
+  const intelSummary = scannerIntel.data.summary;
+  const intelHasData =
+    intelSummary.totalAssets > 0 || intelSummary.totalFindings > 0 || intelSummary.totalComponents > 0;
+  const intelMetrics = {
+    totalAssetsScanned: intelSummary.totalAssets,
+    vulnerableAssets: intelSummary.vulnerableAssets,
+    riskScore: intelSummary.riskScore,
+    criticalFindings: intelSummary.criticalFindings,
+    pqcReadiness: intelSummary.pqcReadiness,
+    totalFindings: intelSummary.totalFindings,
+    vulnerableFindings: intelSummary.vulnerableComponents,
+    pqcReady: intelSummary.pqcReadyComponents,
+  };
   const dashboardMetrics = status !== 'idle' && summary
     ? {
         totalAssetsScanned: summary.targetsScanned,
@@ -1827,7 +1875,9 @@ export default function ScannerDashboard() {
         vulnerableFindings: summary.vulnerable,
         pqcReady: summary.pqcReady,
       }
-    : historyMetrics;
+    : intelHasData
+      ? intelMetrics
+      : historyMetrics;
   const dashboardRiskLabel = dashboardMetrics.riskScore >= 80
     ? 'Critical Risk'
     : dashboardMetrics.riskScore >= 60
@@ -1883,10 +1933,10 @@ export default function ScannerDashboard() {
     .filter((scan) => Date.parse(scan.scheduledFor) > Date.now())
     .sort((a, b) => Date.parse(a.scheduledFor) - Date.parse(b.scheduledFor))[0] || null;
   const historyEmptyText = history.length === 0
-    ? 'No authorized scan history available'
+    ? 'No scans recorded yet — run an authorized scan to build your audit-ready history.'
     : historyTimeframe === 'last7'
-      ? 'No scans recorded in the last 7 days'
-      : 'No authorized scan history available';
+      ? 'No scans in the last 7 days. Switch to All Time to see earlier scans.'
+      : 'No authorized scan history available.';
 
   const failedModules = modules.filter((module) => module.status === 'Failed');
   const selectedHistoryEntry = displayedHistory.find((entry) => entry.scanId === selectedHistoryId) || displayedHistory[0] || null;
@@ -2038,7 +2088,10 @@ export default function ScannerDashboard() {
     }
   }, [authHeaders, fetchAgents, openAgentAlerts, showToast]);
 
-  const filteredFindings = findings.filter((finding) => {
+  // Findings tab reads from dashboardFindings (live scan results when scanning,
+  // otherwise the persisted findings for previously scanned assets) so the tab
+  // is never empty when the tenant has recorded scans.
+  const filteredFindings = dashboardFindings.filter((finding) => {
     const severity = finding.threatLevel.toLowerCase();
     if (sevFilter && severity !== sevFilter) return false;
     if (!searchQ.trim()) return true;
@@ -2280,7 +2333,7 @@ export default function ScannerDashboard() {
           { id: 'agents' as TabId, label: 'Agent Collector Scanners' },
           { id: 'settings' as TabId, label: 'Settings' },
           { id: 'overview' as TabId, label: 'Live Dashboard' },
-          { id: 'findings' as TabId, label: `Findings (${findings.length})` },
+          { id: 'findings' as TabId, label: `Findings (${dashboardFindings.length})` },
           { id: 'logs' as TabId, label: 'Telemetry' },
         ].filter((tab) => tab.id !== 'agents' || canUseAgents).map((tab) => (
           <button
@@ -2379,16 +2432,17 @@ export default function ScannerDashboard() {
                 </div>
               </button>
 
-              {/* Timeframe Dropdown */}
+              {/* Timeframe toggle — All Time ⇄ Last 7 Days */}
               <div className="relative group/dropdown shrink-0">
                 <button
-                  onClick={() => void handleShowLast7Days()}
+                  onClick={() => void handleToggleTimeframe()}
+                  title={historyTimeframe === 'all' ? 'Showing all recorded scans — click to filter to the last 7 days' : 'Showing the last 7 days — click to show all recorded scans'}
                   className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-white hover:border-gold/30 transition-all flex items-center gap-3 text-left"
                 >
                   <Calendar className="w-4 h-4 text-gold shrink-0" />
                   <div className="leading-none">
-                    <div className="text-[10px] font-black uppercase tracking-wider text-white">Last 7 Days</div>
-                    <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">{displayedHistory.length} Scans</div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-white">{historyTimeframe === 'all' ? 'All Time' : 'Last 7 Days'}</div>
+                    <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">{displayedHistory.length} {displayedHistory.length === 1 ? 'Scan' : 'Scans'}</div>
                   </div>
                   <ChevronDown className="w-3.5 h-3.5 text-white/40 group-hover/dropdown:text-gold transition-colors ml-1 shrink-0" />
                 </button>
@@ -3098,7 +3152,7 @@ export default function ScannerDashboard() {
             </div>
             {['critical', 'high', 'medium', 'low', 'safe'].map((severity) => (
               <button key={severity} onClick={() => setSevFilter(sevFilter === severity ? null : severity)} className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all ${sevFilter === severity ? `${sevColor(severity).br} ${sevColor(severity).b} ${sevColor(severity).t}` : 'text-white/35 hover:'} glass-panel`}>
-                {severity} ({findings.filter((finding) => finding.threatLevel.toLowerCase() === severity).length})
+                {severity} ({dashboardFindings.filter((finding) => finding.threatLevel.toLowerCase() === severity).length})
               </button>
             ))}
             {showMitigationNextStep && (
@@ -3116,7 +3170,7 @@ export default function ScannerDashboard() {
           <div className="space-y-2 max-h-[650px] overflow-y-auto pr-1">
             {filteredFindings.length === 0 ? (
               <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold">
-                {findings.length === 0 ? 'Run an authorized scan to discover cryptographic findings' : 'No findings match filters'}
+                {dashboardFindings.length === 0 ? 'Run an authorized scan to discover cryptographic findings' : 'No findings match filters'}
               </div>
             ) : filteredFindings.map((finding, index) => {
               const severity = finding.threatLevel.toLowerCase();

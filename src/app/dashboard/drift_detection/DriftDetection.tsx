@@ -611,7 +611,7 @@ export default function DriftDetection() {
               <div className="text-white/35">{generatedAt.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}</div>
             </div>
           </div>
-          <a href="/dashboard/crypto-policies" className="flex h-10 w-10 items-center justify-center rounded-md border border-gold/20 bg-black/20 text-gold transition hover:border-gold/60 hover:bg-gold/10" aria-label="Open drift policy settings">
+          <a href="/dashboard/quantum-governance" className="flex h-10 w-10 items-center justify-center rounded-md border border-gold/20 bg-black/20 text-gold transition hover:border-gold/60 hover:bg-gold/10" aria-label="Open drift policy settings">
             <Settings className="h-4 w-4" />
           </a>
         </div>
@@ -767,7 +767,7 @@ export default function DriftDetection() {
             <div className="grid gap-3 sm:grid-cols-2">
               {[
                 { label: 'Run Drift Scan', detail: 'Scan environments', href: '/dashboard/scanner', icon: Radio },
-                { label: 'View Policies', detail: 'Manage drift policies', href: '/dashboard/crypto-policies', icon: FileText },
+                { label: 'View Policies', detail: 'Manage drift policies', href: '/dashboard/quantum-governance', icon: FileText },
                 { label: 'Auto-Remediation', detail: 'Configure actions', href: '/dashboard/pqc-orchestration', icon: RefreshCw },
                 { label: 'Generate Report', detail: 'Export drift report', onClick: () => exportJson('drift-detection-report', snapshot), icon: FileText },
               ].map((action) => {

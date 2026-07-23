@@ -358,7 +358,7 @@ export async function gatherEvidence(client: any, token: string, userId: string)
   // Verified cryptographic stack — only algorithms observed in the tenant's
   // crypto inventory (is_quantum_safe / hybrid markers), grouped by category.
   const inventory = await rows(client, 'crypto_inventory', (q) =>
-    q.select('algorithm, key_size, protocol, is_quantum_safe, is_vulnerable, component, source').eq('user_id', userId).limit(1000),
+    q.select('algorithm, key_size, protocol, item_type, name, is_quantum_safe, is_vulnerable').eq('user_id', userId).limit(1000),
   )
   const cryptoStack = deriveCryptoStack(inventory)
   const disallowedHits = deriveDisallowedHits(inventory, snapshot)
@@ -464,26 +464,41 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
   const hybridImplemented = num(snapshot.inventory?.hybridAssets) > 0 || evidence.cryptoStack.some((a) => /hybrid|\+/i.test(a.algorithm))
   const cryptoAgility = Boolean(report.cryptoPolicy?.activeProfile)
 
+  // ---- Shared Responsibility adjustment --------------------------------
+  // Certification must reward what the customer CAN control and never penalize
+  // an organization because a provider or the wider ecosystem (Cloudflare, AWS,
+  // browsers…) has not finished its own migration. We gate on customer-controlled
+  // readiness and customer-attributable critical findings. Provider/ecosystem
+  // critical counts from the ownership model are a LOWER bound (bounded sample),
+  // so subtracting them yields a CONSERVATIVE (never under-penalizing) customer
+  // critical count — certification integrity is preserved.
+  const sr = snapshot.sharedResponsibility
+  const customerReadiness = sr ? num(sr.readiness?.customer?.score) : s.quantumReadiness
+  const provEcoCritical = sr ? num(sr.severityByDomain?.provider?.critical) + num(sr.severityByDomain?.ecosystem?.critical) : 0
+  const customerCritical = Math.max(0, critical - provEcoCritical)
+  const providerDependencyCount = sr ? num(sr.totals?.provider) + num(sr.totals?.ecosystem) : 0
+  const waitingDependencyCount = sr ? num(sr.totals?.waiting) : 0
+
   const checks: EligibilityCheck[] = [
     {
       id: 'readiness',
-      criterion: 'Overall Quantum Readiness',
+      criterion: 'Customer-Controlled Quantum Readiness',
       required: `≥ ${policy.minReadiness}/100`,
-      actual: `${s.quantumReadiness}/100 (${s.quantumReadinessLevel})`,
-      met: s.quantumReadiness >= policy.minReadiness,
+      actual: `${customerReadiness}/100 (customer-controlled) · ${s.quantumReadiness}/100 overall`,
+      met: customerReadiness >= policy.minReadiness,
       severity: 'required',
-      evidence: 'Quantum Readiness Assessment Engine™ snapshot',
-      remediation: 'Execute the AI Migration Advisor™ wave plan to raise readiness across TLS, PKI, key management and application domains.',
+      evidence: 'Shared Responsibility model — customer-controlled readiness (provider/ecosystem lag excluded)',
+      remediation: 'Complete the customer-controlled migration waves (origin TLS, internal PKI, key management, applications). Provider/ecosystem dependencies do not block certification.',
     },
     {
       id: 'critical-vulns',
-      criterion: 'Critical Quantum Vulnerabilities',
+      criterion: 'Critical Customer-Controlled Vulnerabilities',
       required: `≤ ${policy.maxCriticalFindings}`,
-      actual: `${critical} critical finding(s)`,
-      met: critical <= policy.maxCriticalFindings,
+      actual: `${customerCritical} customer-controlled critical finding(s)${provEcoCritical > 0 ? ` (${provEcoCritical} provider/ecosystem critical(s) excluded)` : ''}`,
+      met: customerCritical <= policy.maxCriticalFindings,
       severity: 'required',
-      evidence: 'PQC scan findings (severity distribution)',
-      remediation: 'Remediate every critical finding in Quantum Risk Analysis, then re-scan to verify closure.',
+      evidence: 'PQC scan findings + Shared Responsibility ownership classification',
+      remediation: 'Remediate every customer-controlled critical finding in Quantum Risk Analysis, then re-scan. Provider/ecosystem criticals are tracked but not penalized.',
     },
     {
       id: 'hndl',
@@ -575,6 +590,16 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
       evidence: 'Crypto policy engine (active profile)',
       remediation: 'Activate a crypto policy profile so algorithms are swappable without per-system code changes.',
     },
+    {
+      id: 'shared-responsibility',
+      criterion: 'Provider / Ecosystem Dependencies (non-blocking)',
+      required: 'Tracked — does not block certification',
+      actual: `${providerDependencyCount} provider/ecosystem finding(s), ${waitingDependencyCount} waiting on an upstream roadmap`,
+      met: true,
+      severity: 'advisory',
+      evidence: 'Shared Responsibility Migration Intelligence™ ownership model',
+      remediation: 'Monitor provider and ecosystem post-quantum roadmaps in Migration Intelligence™. These are recorded for transparency but never penalize your certification.',
+    },
   ]
 
   const required = checks.filter((c) => c.severity === 'required')
@@ -582,7 +607,9 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
   const eligible = snapshot.hasData && requiredMet === required.length
 
   const trustScore = computeTrustScore({
-    readiness: s.quantumReadiness,
+    // Customer-controlled readiness drives the trust score so provider/ecosystem
+    // lag never suppresses an organization's certification standing.
+    readiness: customerReadiness,
     pqcAdoption: s.pqcAdoption,
     quantumRisk: s.quantumRisk,
     hndlRisk: s.hndlRisk,

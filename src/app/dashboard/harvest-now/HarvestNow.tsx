@@ -25,8 +25,9 @@ import {
   Target,
   TrendingUp,
 } from 'lucide-react';
-import { useHarvestNow, type CryptoClass } from '@/hooks/use-harvest-now';
+import { useHarvestNow, EMPTY_THEATER_MAP, type CryptoClass } from '@/hooks/use-harvest-now';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
+import { TheaterMap, type TheaterSelection } from './TheaterMap';
 
 /* ------------------------------------------------------------------ */
 /* Formatters & tone helpers                                          */
@@ -189,12 +190,16 @@ export default function HarvestNow() {
   const { data, state, error, sseConnected, refresh } = useHarvestNow();
   const countdown = useEscalationCountdown();
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [theaterSelection, setTheaterSelection] = useState<TheaterSelection>(null);
 
   const banner = data.banner;
   const bannerTone = levelTone(banner.threatLevel);
   const alert = data.hasData && (banner.threatLevel === 'Critical' || banner.threatLevel === 'High');
 
   const selected = useMemo(() => data.exposureGraph.nodes.find((n) => n.id === selectedNode) || null, [data.exposureGraph.nodes, selectedNode]);
+  const theaterMap = data.theater.map ?? EMPTY_THEATER_MAP;
+  const theaterSelectedSite = theaterSelection?.kind === 'site' ? theaterMap.sites.find((s) => s.key === theaterSelection.key) ?? null : null;
+  const theaterSelectedAnchor = theaterSelection?.kind === 'anchor' ? theaterMap.anchors.find((a) => a.id === theaterSelection.key) ?? null : null;
 
   const loading = state === 'loading' && !data.hasData;
 
@@ -266,44 +271,6 @@ export default function HarvestNow() {
 
       <div className="mx-auto grid max-w-[1700px] gap-3">
         <WorkflowRail activeStage="risk" tone="adaptive" />
-        {/* ---------- Top bar ---------- */}
-        <header className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(360px,1fr)_150px_160px_150px_48px]">
-          <div className={`${PANEL} sm:col-span-2 xl:col-span-1`}>
-            <div className="relative z-10 flex min-h-[54px] items-center gap-3 px-3.5 py-2">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-red-400/40 bg-red-500/12 text-red-300">
-                <Radar className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-base font-black uppercase leading-none tracking-[0.08em] text-white md:text-lg">Harvest Now, Decrypt Later</h1>
-                <p className="mt-1 text-[9px] font-black uppercase tracking-[0.18em] text-cyan-300/70">Quantum Threat Operations Center</p>
-              </div>
-            </div>
-          </div>
-          <div className={PANEL}>
-            <div className="relative z-10 flex min-h-[54px] flex-col justify-center px-3 py-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">System Time</p>
-              <p className="mt-1 font-mono text-xs font-black text-cyan-300">{utcClock(data.generatedAt)}</p>
-            </div>
-          </div>
-          <div className={PANEL}>
-            <div className="relative z-10 flex min-h-[54px] items-center gap-2 px-3 py-2">
-              <span className={`h-2 w-2 rounded-full ${sseConnected ? TONE_DOT.green : TONE_DOT.amber}`} />
-              <div>
-                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">Telemetry Link</p>
-                <p className={`mt-0.5 text-xs font-black uppercase ${sseConnected ? 'text-emerald-300' : 'text-amber-300'}`}>{sseConnected ? 'Live SSE' : state === 'error' ? 'Reconnecting' : 'Syncing'}</p>
-              </div>
-            </div>
-          </div>
-          <div className={PANEL}>
-            <div className="relative z-10 flex min-h-[54px] flex-col justify-center px-3 py-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/40">Migration Deadline</p>
-              <p className="mt-0.5 text-xs font-black uppercase text-amber-300">{banner.migrationDeadlineYear} · {banner.yearsToDeadline}y left</p>
-            </div>
-          </div>
-          <button type="button" onClick={refresh} className={`${PANEL} relative z-10 grid min-h-[54px] place-items-center text-white/60 hover:text-cyan-300`} aria-label="Refresh">
-            <RefreshCw className={`h-4 w-4 ${state === 'loading' ? 'animate-spin' : ''}`} />
-          </button>
-        </header>
 
         {error && (
           <div className="rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-200">{error}</div>
@@ -333,6 +300,15 @@ export default function HarvestNow() {
             </div>
 
             <div className="flex flex-col items-stretch gap-2">
+              <div className="flex items-center justify-end gap-2">
+                <span className="flex items-center gap-1.5 rounded border border-white/10 bg-black/30 px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/50">
+                  <span className={`h-1.5 w-1.5 rounded-full ${sseConnected ? TONE_DOT.green : TONE_DOT.amber}`} />
+                  {sseConnected ? 'Live SSE' : state === 'error' ? 'Reconnecting' : 'Syncing'}
+                </span>
+                <button type="button" onClick={refresh} aria-label="Refresh telemetry" className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-black/30 text-white/55 transition hover:border-cyan-400/40 hover:text-cyan-300">
+                  <RefreshCw className={`h-3.5 w-3.5 ${state === 'loading' ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
               <div className={`rounded-lg border px-3 py-2 text-center ${alert ? 'border-red-500/35 bg-red-500/8' : 'border-cyan-400/30 bg-cyan-500/8'}`}>
                 <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/45">Next Escalation Cycle</p>
                 <p className={`font-mono text-2xl font-black tracking-[0.08em] ${alert ? 'text-red-300' : 'text-cyan-300'}`}>{countdown}</p>
@@ -364,9 +340,9 @@ export default function HarvestNow() {
         ) : (
           <>
             {/* ===== Row 1: Quantum Exposure Graph | Global Quantum Exposure Theater ===== */}
-            <div className="grid gap-3 xl:grid-cols-2">
+            <div className="grid gap-3 xl:grid-cols-5">
               {/* SECTION 2 — Quantum Exposure Graph */}
-              <section className={`${PANEL} min-h-[320px]`}>
+              <section className={`${PANEL} min-h-[320px] xl:col-span-2`}>
                 <div className="relative z-10 p-3">
                   <SectionHeader icon={Network} action={`${data.exposureGraph.nodes.length} nodes`}>Quantum Exposure Graph™</SectionHeader>
                   <div className="space-y-1.5">
@@ -418,38 +394,73 @@ export default function HarvestNow() {
                 </div>
               </section>
 
-              {/* SECTION 3 — Global Quantum Exposure Theater */}
-              <section className={`${PANEL} min-h-[320px]`}>
+              {/* SECTION 3 — Global Quantum Exposure Theater (real 3D map) */}
+              <section className={`${PANEL} min-h-[320px] xl:col-span-3`}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={Globe2} action={`${data.theater.totalRegions} regions`}>Global Quantum Exposure Theater™</SectionHeader>
-                  <div className="hndl-radar relative min-h-[240px] overflow-hidden rounded-lg border border-cyan-400/20 bg-black/40">
-                    <svg className="absolute inset-0 h-full w-full opacity-50" viewBox="0 0 100 60" preserveAspectRatio="none" aria-hidden="true">
-                      <path className="hndl-flow" d="M22 24 C40 14, 60 16, 84 26" fill="none" stroke="rgba(34,211,238,0.5)" strokeWidth="0.4" />
-                      <path className="hndl-flow" d="M16 32 C38 44, 60 40, 85 30" fill="none" stroke="rgba(239,68,68,0.4)" strokeWidth="0.4" />
-                      <path className="hndl-flow" d="M27 22 C45 30, 65 50, 85 56" fill="none" stroke="rgba(251,191,36,0.35)" strokeWidth="0.35" />
-                    </svg>
-                    {data.theater.regions.length === 0 ? (
-                      <div className="absolute inset-0 grid place-items-center"><EmptyState>No regional telemetry</EmptyState></div>
-                    ) : data.theater.regions.map((r) => {
-                      const tone = levelTone(r.severity);
-                      return (
-                        <div key={r.key} className="group/region absolute z-10 -translate-x-1/2 -translate-y-1/2" style={{ left: `${r.x}%`, top: `${r.y}%` }}>
-                          <span className={`block h-3 w-3 rounded-full ${TONE_DOT[tone]} ring-2 ring-black/40`} />
-                          <span className={`absolute left-1/2 top-1/2 -z-10 -translate-x-1/2 -translate-y-1/2 rounded-full ${TONE_BAR[tone]} opacity-25`} style={{ width: 10 + r.vulnerableAssets * 6, height: 10 + r.vulnerableAssets * 6 }} />
-                          <div className="pointer-events-none absolute left-4 top-0 hidden w-40 rounded border border-cyan-400/30 bg-black/85 p-1.5 text-[9px] font-bold text-white/70 shadow-lg group-hover/region:block">
-                            <p className="truncate text-cyan-200">{r.region}</p>
-                            <p className="text-white/50">{r.assets} assets · {r.vulnerableAssets} vulnerable</p>
-                            <p className={TONE_TEXT[tone]}>Avg risk {r.avgRisk} · {r.severity}</p>
-                            {r.cloudProviders.length > 0 && <p className="text-white/40">{r.cloudProviders.join(', ')}</p>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-2 grid grid-cols-3 gap-2">
-                    <Stat label="Regions" value={fmt(data.theater.totalRegions)} tone="cyan" />
+                  <SectionHeader icon={Globe2} action={`${theaterMap.sites.length} sites · ${theaterMap.anchors.length} trust anchors`}>Global Quantum Exposure Theater™</SectionHeader>
+                  <TheaterMap map={theaterMap} selected={theaterSelection} onSelect={setTheaterSelection} />
+
+                  {/* Unlocated assets tray — honest: never pinned to a guessed location */}
+                  {theaterMap.unlocated.length > 0 && (
+                    <div className="mt-2 rounded-md border border-white/8 bg-black/30 px-2.5 py-1.5">
+                      <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/40">
+                        {fmt(theaterMap.unlocatedTotal)} asset(s) without location telemetry — trust arcs rise from this tray; add region metadata to plot them
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {theaterMap.unlocated.map((u) => {
+                          const tone = classTone((u.posture === 'pqc' ? 'safe' : u.posture) as CryptoClass);
+                          return (
+                            <span key={u.name} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-bold ${TONE_BADGE[tone]}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${TONE_DOT[tone]}`} />
+                              <span className="max-w-[140px] truncate">{u.name}</span>
+                              <span className="text-white/40">{u.riskScore}</span>
+                              {u.internetFacing && <Crosshair className="h-2.5 w-2.5 text-red-300" />}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Selection detail — site or certificate trust anchor */}
+                  {theaterSelectedSite && (
+                    <div className="mt-2 rounded-md border border-cyan-400/30 bg-cyan-500/8 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-[11px] font-black text-cyan-200">{theaterSelectedSite.label}</p>
+                        <Badge tone={levelTone(theaterSelectedSite.severity)}>{theaterSelectedSite.severity}</Badge>
+                      </div>
+                      <p className="mt-0.5 text-[9px] font-bold text-white/50">
+                        {fmt(theaterSelectedSite.assets)} asset(s) · {fmt(theaterSelectedSite.vulnerableAssets)} vulnerable · avg risk {theaterSelectedSite.avgRisk}
+                        {theaterSelectedSite.cloudProviders.length > 0 && ` · ${theaterSelectedSite.cloudProviders.join(', ')}`}
+                      </p>
+                      {(theaterSelectedSite.topAssets ?? []).map((a) => (
+                        <p key={a.name} className="mt-0.5 truncate text-[9px] font-semibold text-white/60">
+                          • {a.name} — risk {a.riskScore} · {a.posture}{a.internetFacing ? ' · internet-facing' : ''}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  {theaterSelectedAnchor && (
+                    <div className="mt-2 rounded-md border border-violet-400/30 bg-violet-500/8 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-[11px] font-black text-violet-200">⬡ {theaterSelectedAnchor.name}</p>
+                        <Badge tone={theaterSelectedAnchor.quantumSafe ? 'green' : 'red'}>{theaterSelectedAnchor.quantumSafe ? 'Quantum-Safe' : 'Vulnerable Chain'}</Badge>
+                      </div>
+                      <p className="mt-0.5 text-[9px] font-bold text-white/50">
+                        Certificate authority{theaterSelectedAnchor.countryLabel ? ` · ${theaterSelectedAnchor.countryLabel}` : ' · registry country not in issuer DN'} · anchors {fmt(theaterSelectedAnchor.certificates)} asset(s)
+                      </p>
+                      {theaterSelectedAnchor.algorithms.length > 0 && (
+                        <p className="mt-0.5 text-[9px] font-semibold text-amber-300/80">Chain algorithms: {theaterSelectedAnchor.algorithms.join(', ')}</p>
+                      )}
+                      <p className="mt-0.5 truncate text-[9px] font-semibold text-white/60">Trusted by: {theaterSelectedAnchor.assets.join(', ')}</p>
+                    </div>
+                  )}
+
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <Stat label="Located Sites" value={fmt(theaterMap.sites.length)} tone="cyan" />
+                    <Stat label="Trust Anchors" value={fmt(theaterMap.anchors.length)} tone="cyan" sub="from real cert chains" />
                     <Stat label="High-Value Targets" value={fmt(data.theater.highValueTargets)} tone="red" />
-                    <Stat label="Vulnerable Regions" value={fmt(data.theater.regions.filter((r) => r.vulnerableAssets > 0).length)} tone="amber" />
+                    <Stat label="Internet-Facing" value={fmt(theaterMap.internetFacing)} tone="amber" sub="harvest-exposed" />
                   </div>
                 </div>
               </section>

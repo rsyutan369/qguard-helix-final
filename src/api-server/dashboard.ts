@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { getToken, getServerUser, getServiceClient, createAuthClient } from '@/lib/supabase-server'
+import { buildExecutiveSnapshot } from './dashboard-executive'
 
 const router = Router()
 
@@ -151,7 +152,7 @@ async function buildDashboardSummaryFallback(client: any, userId: string) {
     jobs,
   ] = await Promise.all([
     safeRows(client, 'assets', (q) => q.select('id, name, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(3000)),
-    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at, created_at, updated_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(4000)),
+    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(4000)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(3000)),
     safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, severity, status, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2500)),
     safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, findings_count, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(500)),
@@ -453,6 +454,35 @@ router.get('/summary', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Dashboard summary error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch dashboard summary' } })
+  }
+})
+
+/**
+ * GET /api/v1/dashboard/executive
+ * Enterprise Command Center snapshot — narrative, 12 KPIs, migration pipeline,
+ * compliance rollup, modelled business impact, asset inventory, threat
+ * intelligence, and live platform runtime telemetry. Built on the canonical
+ * (cached) Quantum Readiness snapshot so every number matches the platform.
+ */
+router.get('/executive', async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user
+    const token = (req as any).token
+    // Inject the canonical Compliance snapshot builder (lives in this module) so
+    // the executive Compliance Score + frameworks MATCH the Compliance dashboard.
+    // Called only on the executive cache-miss path (dependency injection avoids a
+    // circular import into dashboard-executive.ts).
+    const snapshot = await buildExecutiveSnapshot(token, user.id, {
+      loadCompliance: async () => {
+        const client = createAuthClient(token)
+        if (!client) return null
+        return buildComplianceDashboardSnapshot(client, user)
+      },
+    })
+    return res.json({ data: snapshot })
+  } catch (err) {
+    console.error('Dashboard executive error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to build executive command center' } })
   }
 })
 
@@ -1349,7 +1379,7 @@ function resourceForStep(step: number) {
     ],
     [
       { title: 'Audit Vault', type: 'Final migration evidence', href: '/dashboard/audit-vault' },
-      { title: 'Continuous Trust Validation', type: 'Steady-state control checks', href: '/dashboard/continuous-trust' },
+      { title: 'Zero Trust Validation', type: 'Steady-state control checks', href: '/dashboard/zero-trust' },
       { title: 'Regulatory Mapping', type: 'Compliance evidence mapping', href: '/dashboard/regulatory-mapping' },
       { title: 'Runtime Telemetry', type: 'Continuous event monitoring', href: '/dashboard/runtime-telemetry' },
     ],
@@ -1372,7 +1402,7 @@ async function buildPqcOnboardingSnapshot(client: any, user: any) {
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, package_name, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(2400)),
     safeRows(client, 'scanner_agents', (q) => q.select('id, name, status, hostname, platform, capabilities, last_seen_at, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
     safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(900)),
-    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, label, purpose, status, entropy_source, quality_score, created_at, expires_at, rotated_from').eq('user_id', user.id).order('created_at', { ascending: false }).limit(800)),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, label, status, entropy_source, quality_score, created_at, expires_at, rotated_from').eq('user_id', user.id).order('created_at', { ascending: false }).limit(800)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, status, algorithm, not_after, is_quantum_safe, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(700)),
   ])
 
@@ -1441,7 +1471,7 @@ async function buildPqcOnboardingSnapshot(client: any, user: any) {
       { label: 'Migrate Infrastructure Components', detail: 'Migration jobs are running across tenant assets.', href: '/dashboard/live-migration', status: onboardingTaskStatus(averageJobProgress >= 80 && jobs.length > 0, runningJobs.length > 0 || pendingJobs.length > 0, failedJobs.length > 0), count: jobs.length, source: 'migration_jobs' },
       { label: 'Update Applications and Services', detail: 'Application and service assets are being moved to PQC targets.', href: '/dashboard/live-migration', status: onboardingTaskStatus(completedJobs.length >= Math.max(1, Math.ceil(jobs.length * 0.6)) && jobs.length > 0, jobs.length > 0), count: completedJobs.length, source: 'migration_jobs' },
       { label: 'Data Migration and Encryption', detail: 'Keys, certificates, and encryption services are being updated.', href: '/dashboard/keys', status: onboardingTaskStatus((generatedKeys || []).length > 0 && readinessScore >= 60, (generatedKeys || []).length > 0 || runningJobs.length > 0), count: (generatedKeys || []).length, source: 'generated_keys' },
-      { label: 'Configure Security Controls', detail: 'Compliance evidence and security policies are being recorded.', href: '/dashboard/crypto-policies', status: onboardingTaskStatus((complianceEvidence || []).length > 0, jobs.length > 0), count: (complianceEvidence || []).length, source: 'compliance_evidence' },
+      { label: 'Configure Security Controls', detail: 'Compliance evidence and security policies are being recorded.', href: '/dashboard/quantum-governance', status: onboardingTaskStatus((complianceEvidence || []).length > 0, jobs.length > 0), count: (complianceEvidence || []).length, source: 'compliance_evidence' },
       { label: 'Validate Migration Integrity', detail: 'Failed jobs, alerts, and runtime risks are reconciled.', href: '/dashboard/migration-sandbox', status: onboardingTaskStatus(completedJobs.length > 0 && failedJobs.length === 0 && criticalExposures === 0, completedJobs.length > 0, failedJobs.length > 0), count: failedJobs.length, source: 'migration_jobs + crypto_exposures' },
     ],
     5: [
@@ -1805,7 +1835,7 @@ async function buildComplianceDashboardSnapshot(client: any, user: any) {
     safeRows(client, 'compliance_evidence', (q) => q.select('id, asset_id, framework, control_id, status, evidence_type, description, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, package_name, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(2800)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, status, algorithm, key_size, issuer, subject, not_after, is_quantum_safe, is_expiring_soon, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
-    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, label, purpose, status, entropy_source, quality_score, bit_length, expires_at, revoked_at, rotated_from, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, label, status, entropy_source, quality_score, bit_length, expires_at, revoked_at, rotated_from, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
     safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, description, severity, status, source, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
     safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
     safeRows(client, 'scanner_agents', (q) => q.select('id, name, status, hostname, platform, capabilities, last_seen_at, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
@@ -2473,7 +2503,7 @@ const HNDL_DEFENSE_ACTIONS: Record<string, {
     eventType: 'hndl-defense-revoke-credentials',
     assetClass: 'identity_access',
     optionLabel: 'Revoke exposed credentials',
-    redirectPath: '/dashboard/identity-trust',
+    redirectPath: '/dashboard/pqauth',
     severity: 'critical',
     playbook: ['Locate exposed identity or key material', 'Rotate or revoke through connector-approved controls', 'Validate new credential evidence'],
   },
@@ -3745,7 +3775,7 @@ function vulnerabilityRemediationBase(input: { title: string; description: strin
   if (/tls|ssl|cipher|protocol|handshake/.test(text)) return '/dashboard/tls-orchestrator'
   if (/library|dependency|component|package|cve|repo|github|source/.test(text)) return '/dashboard/migration-planner'
   if (/random|rng|entropy/.test(text)) return '/dashboard/qrng'
-  if (/api|gateway/.test(text)) return '/dashboard/api-encryption'
+  if (/api|gateway/.test(text)) return '/dashboard/encryption-monitoring'
   if (/cloud|kms|bucket|storage/.test(text)) return '/dashboard/cloud'
   return '/dashboard/pqc-orchestration'
 }
@@ -4005,7 +4035,7 @@ function canonicalVulnerabilityRows(rawRows: any[]) {
       evidenceCount: evidence.length,
       algorithm: algorithms.slice(0, 12).join(', '),
       remediationHref,
-      inspectHref: `/dashboard/crypto-exposure?${new URLSearchParams({
+      inspectHref: `/dashboard/quantum-readiness/exposure-graph?${new URLSearchParams({
         source: 'vulnerabilities',
         findingId: primarySourceId,
         rootCause: group.rootCause,
@@ -4117,7 +4147,7 @@ router.get('/vulnerabilities', async (req: Request, res: Response) => {
           source: input.source,
           remediation,
         }),
-        inspectHref: `/dashboard/crypto-exposure?${new URLSearchParams({
+        inspectHref: `/dashboard/quantum-readiness/exposure-graph?${new URLSearchParams({
           source: 'vulnerabilities',
           findingId: input.sourceId,
           ...(input.assetId ? { assetId: input.assetId } : {}),

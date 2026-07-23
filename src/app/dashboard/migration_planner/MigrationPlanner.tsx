@@ -594,6 +594,58 @@ export default function MigrationPlanner() {
           </Panel>
         </section>
 
+        {/* Shared Responsibility dependency-ordered roadmap */}
+        {plan.sharedResponsibility && plan.sharedResponsibility.hasData ? (
+          <Panel className="p-5">
+            <SectionTitle
+              suffix={
+                <HeaderButton icon={ChevronRight} onClick={() => navigate('/dashboard/migration-intelligence')}>
+                  Open Migration Intelligence™
+                </HeaderButton>
+              }
+            >
+              Shared Responsibility Roadmap — Dependency-Ordered
+            </SectionTitle>
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {([
+                ['Overall', plan.sharedResponsibility.readiness.overall.score, GOLD],
+                ['Customer', plan.sharedResponsibility.readiness.customer.score, CYAN],
+                ['Provider', plan.sharedResponsibility.readiness.provider.score, BLUE],
+                ['Ecosystem', plan.sharedResponsibility.readiness.ecosystem.score, VIOLET],
+              ] as Array<[string, number, string]>).map(([label, score, color]) => (
+                <div key={label} className="rounded-md border border-white/8 bg-white/[0.02] p-3 text-center">
+                  <div className="text-[9px] font-black uppercase tracking-wide text-white/40">{label}</div>
+                  <div className="mt-1 text-xl font-semibold" style={{ color }}>{integerFmt(score)}</div>
+                  <div className="text-[9px] text-white/35">/100</div>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              {plan.sharedResponsibility.waves.map((wave) => {
+                const tone = wave.domain === 'customer' ? CYAN : wave.domain === 'provider' ? BLUE : wave.domain === 'ecosystem' ? VIOLET : SLATEISH;
+                const statusColor = wave.status === 'ready' ? EMERALD : wave.status === 'complete' ? GREEN : wave.status === 'blocked' ? RED : AMBER;
+                return (
+                  <div key={wave.wave} className="flex items-center gap-3 rounded-md border border-white/8 bg-white/[0.02] p-2.5">
+                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[11px] font-black" style={{ backgroundColor: `${tone}1a`, color: tone }}>{wave.wave}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-xs font-bold text-white/85">
+                        <span className="truncate">{wave.name}</span>
+                        <span className="font-mono text-[10px] text-white/40">{integerFmt(wave.findingCount)}</span>
+                      </div>
+                      <div className="truncate text-[10px] text-white/40">{wave.description}</div>
+                    </div>
+                    <span className="rounded px-1.5 py-0.5 text-[9px] font-black uppercase" style={{ color: statusColor, backgroundColor: `${statusColor}1a` }}>{wave.status}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-[11px] text-white/40">
+              Waves are ordered by dependency: customer-controlled work (1–4) proceeds now; provider and ecosystem waves (5–7)
+              track upstream roadmaps and never block the customer-controlled path. Full ownership detail lives in Migration Intelligence™.
+            </p>
+          </Panel>
+        ) : null}
+
         {/* Readiness Breakdown + Business Impact */}
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
           <Panel className="p-5 xl:col-span-7">

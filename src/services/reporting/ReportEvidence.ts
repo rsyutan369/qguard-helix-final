@@ -28,6 +28,17 @@ import {
   type CostBreakdown,
   type CostForecast,
   type EnterpriseAssessmentReport,
+  sharedResponsibilityReportSchema,
+  type SharedResponsibilityReport,
+  type BoardSnapshot,
+  type ExecutiveHeatMap,
+  type HeatMapCell,
+  type BusinessPriorityMatrix,
+  type PriorityQuadrant,
+  type PriorityMatrixItem,
+  type EvidenceQuality,
+  type RemediationCampaigns,
+  type RemediationCampaign,
   type EvidenceConfidence,
   type ExecutiveBlock,
   type ExecutiveDecision,
@@ -2259,6 +2270,355 @@ export function buildReportValidation(args: {
 /* ------------------------------------------------------------------ */
 /* Assemble the full board-level report model                         */
 /* ------------------------------------------------------------------ */
+/**
+ * Shared Responsibility Assessment™ — ownership-classified migration section.
+ * Derived from the snapshot's evidence-based ownership model so the report,
+ * dashboards, certification and Sophia all agree. Honest empty state when the
+ * ownership model has no data.
+ */
+export function buildSharedResponsibilityReport(snapshot: QuantumReadinessSnapshot): SharedResponsibilityReport {
+  const sr = snapshot.sharedResponsibility;
+  if (!sr || !sr.hasData) return sharedResponsibilityReportSchema.parse({});
+  const r = sr.readiness;
+  const depLabel = (status: string) => status.replace(/_/g, ' ');
+  const nextActions: string[] = [];
+  if (sr.widgets.actionableFindings > 0) nextActions.push(`Execute ${sr.widgets.actionableFindings} customer-controlled remediation(s) now (waves 1–4).`);
+  if (sr.widgets.migrationBlockers > 0) nextActions.push(`Track ${sr.widgets.migrationBlockers} migration blocker(s) gated on an upstream dependency.`);
+  if (sr.totals.provider > 0) nextActions.push(`Monitor ${sr.totals.provider} provider-controlled finding(s) against provider post-quantum roadmaps.`);
+  if (sr.totals.ecosystem > 0) nextActions.push(`Watch ${sr.totals.ecosystem} ecosystem-dependent finding(s) for browser / OS / hardware / standards adoption.`);
+
+  // §4 — per-domain readiness timeline. Customer work is executable today;
+  // provider / ecosystem items wait on upstream roadmaps (never counted against
+  // the organization). Status drives the "Ready / Waiting" bar in every export.
+  const timeline = [
+    {
+      domain: 'Customer-Controlled',
+      label: sr.widgets.actionableFindings > 0 ? 'Ready to Execute' : (sr.totals.customer > 0 ? 'In Progress' : 'No Customer Findings'),
+      status: sr.totals.customer === 0 ? 'not-applicable' : (sr.widgets.actionableFindings > 0 ? 'ready' : 'in-progress'),
+      readiness: r.customer.score,
+      note: sr.totals.customer > 0 ? `${sr.totals.customer} finding(s) you own · ${sr.widgets.actionableFindings} actionable now` : 'No customer-controlled findings classified.',
+    },
+    {
+      domain: 'Provider-Controlled',
+      label: sr.totals.provider === 0 ? 'Not Applicable' : (r.provider.score >= 70 ? 'On Provider Roadmap' : 'Awaiting Provider Roadmap'),
+      status: sr.totals.provider === 0 ? 'not-applicable' : (r.provider.score >= 70 ? 'in-progress' : 'waiting'),
+      readiness: r.provider.score,
+      note: sr.totals.provider > 0 ? `${sr.totals.provider} finding(s) managed by a provider — track against published PQ roadmaps.` : 'No provider-controlled findings classified.',
+    },
+    {
+      domain: 'Ecosystem-Dependent',
+      label: sr.totals.ecosystem === 0 ? 'Not Applicable' : 'Awaiting Ecosystem Adoption',
+      status: sr.totals.ecosystem === 0 ? 'not-applicable' : 'waiting',
+      readiness: r.ecosystem.score,
+      note: sr.totals.ecosystem > 0 ? `${sr.totals.ecosystem} finding(s) depend on browser / OS / hardware / standards adoption.` : 'No ecosystem-dependent findings classified.',
+    },
+  ];
+
+  // Minor §1 — reconcile the classified finding count with the raw scanner
+  // instance count so an auditor is never left wondering why they differ.
+  const classifiedFindings = sr.totals.findings;
+  const d = snapshot.riskDistribution;
+  const rawScannerInstances = d.critical + d.high + d.medium + d.low;
+  const reconciliationNote = classifiedFindings === rawScannerInstances
+    ? `All ${classifiedFindings} classified finding(s) reconcile 1:1 with the raw scanner finding instances.`
+    : `This section classifies ${classifiedFindings} finding(s) by ownership. The Evidence Sources section reports ${rawScannerInstances} raw scanner finding instance(s) (the pre-consolidation severity distribution). The counts differ because ownership classification operates on findings enriched by the assessment engine (which may add derived recommendations and de-duplicate identical scanner detections), whereas the raw instance count tallies every individual scanner detection. ${classifiedFindings > rawScannerInstances ? `The ${classifiedFindings - rawScannerInstances} additional classified item(s) originate from the assessment engine rather than a raw scanner detection.` : `The classified count is lower because identical scanner detections are consolidated before ownership classification.`} Neither figure is an error.`;
+
+  return sharedResponsibilityReportSchema.parse({
+    hasData: true,
+    summary: `Of ${sr.totals.findings} classified finding(s), ${sr.totals.customer} are customer-controlled (directly actionable), ${sr.totals.provider} provider-controlled and ${sr.totals.ecosystem} ecosystem-dependent. Customer-controlled readiness is ${r.customer.score}/100 versus ${r.overall.score}/100 overall — progress is driven by the customer-controlled path while provider and ecosystem dependencies track upstream roadmaps and are never counted against the organization.`,
+    readiness: { overall: r.overall.score, customer: r.customer.score, provider: r.provider.score, ecosystem: r.ecosystem.score },
+    distribution: sr.domainDistribution,
+    customerControlled: sr.totals.customer,
+    providerControlled: sr.totals.provider,
+    ecosystemDependent: sr.totals.ecosystem,
+    actionableNow: sr.widgets.actionableFindings,
+    waitingDependencies: sr.widgets.waitingDependencies,
+    migrationBlockers: sr.widgets.migrationBlockers,
+    matrix: sr.matrix.slice(0, 40).map((m) => ({ finding: m.finding, owner: m.owner, action: m.action, priority: m.priority, status: m.status, domain: m.domain })),
+    blockers: sr.blockers.slice(0, 12).map((b) => ({ title: b.title, owner: b.ownerType, dependency: depLabel(b.migrationDependencyStatus) })),
+    waves: sr.waves.map((w) => ({ wave: w.wave, name: w.name, domain: String(w.domain), findingCount: w.findingCount, status: w.status, timeline: w.estimatedTimeline })),
+    providers: sr.providerBreakdown.slice(0, 12).map((p) => ({ name: p.name, domain: p.domain, count: p.count, pqRoadmap: p.pqRoadmapStatus, customerInfluence: p.customerInfluence })),
+    timeline,
+    classifiedFindings,
+    rawScannerInstances,
+    reconciliationNote,
+    nextActions,
+    note: 'Ownership is evidence-derived; unattributed findings default to the customer and are labelled as such, never guessed.',
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Reports_Generation_Improvements_06 — board-level visual intelligence */
+/* ------------------------------------------------------------------ */
+
+/**
+ * §5 — Evidence Quality Score. Converts each evidence source's confidence into
+ * a letter grade (A–E) or "Missing" when the source produced no telemetry, so
+ * executives can digest coverage at a glance instead of parsing percentages.
+ */
+export function buildEvidenceQuality(evidenceConfidence: EvidenceConfidence[]): EvidenceQuality {
+  const gradeFor = (pct: number): string => {
+    if (pct <= 0) return 'Missing';
+    if (pct >= 90) return 'A';
+    if (pct >= 75) return 'B';
+    if (pct >= 60) return 'C';
+    if (pct >= 40) return 'D';
+    return 'E';
+  };
+  const rows = evidenceConfidence.map((e) => ({
+    source: e.source,
+    grade: gradeFor(e.confidencePct),
+    confidencePct: e.confidencePct,
+    status: e.confidencePct > 0 ? 'Available' : 'Missing',
+    note: e.confidencePct > 0 ? (e.note || `${e.coveragePct}% coverage · ${e.completenessPct}% complete · ${e.freshness}`) : 'No telemetry recorded — contributed no evidence.',
+  }));
+  const graded = rows.filter((r) => r.grade !== 'Missing');
+  const missing = rows.filter((r) => r.grade === 'Missing');
+  const avg = graded.length ? Math.round(graded.reduce((sum, r) => sum + r.confidencePct, 0) / graded.length) : 0;
+  const overallGrade = graded.length ? gradeFor(avg) : 'Missing';
+  return {
+    rows,
+    overallGrade,
+    gradedSources: graded.length,
+    missingSources: missing.length,
+    note: `Overall evidence grade ${overallGrade} across ${graded.length} contributing source(s)${missing.length ? `; ${missing.length} source(s) not yet available (deploy the relevant connector/agent to raise the grade)` : ''}. Grades: A ≥90%, B ≥75%, C ≥60%, D ≥40%, E <40%, Missing = no telemetry.`,
+  };
+}
+
+/**
+ * §2 — 5×5 Executive Heat Map. Plots each consolidated (root-cause) finding
+ * group by Business Impact (severity, rows) × Quantum Exploitation Likelihood
+ * (columns). Likelihood is floored at "Possible" because every quantum-
+ * vulnerable finding is Possible-to-Almost-Certain to be broken by a CRQC, then
+ * scaled by exposure (assets affected) — an honest PQC-specific model, not an
+ * arbitrary placement. Cell counts + zone colour drive the board heat map.
+ */
+export function buildExecutiveHeatMap(findingGroups: FindingGroup[]): ExecutiveHeatMap {
+  const impactLabels = ['Critical', 'High', 'Medium', 'Low', 'Minimal']; // rank 5..1 (rows, top→bottom)
+  const likelihoodLabels = ['Rare', 'Unlikely', 'Possible', 'Likely', 'Almost Certain']; // rank 1..5 (cols, left→right)
+  const zoneLevel = (product: number): string => {
+    if (product >= 20) return 'critical';
+    if (product >= 12) return 'high';
+    if (product >= 6) return 'medium';
+    if (product >= 3) return 'low';
+    return 'minimal';
+  };
+  if (!findingGroups.length) {
+    return { hasData: false, impactLabels, likelihoodLabels, cells: [], totalPlotted: 0, methodology: '', note: EVIDENCE_UNAVAILABLE };
+  }
+  const impactRankOf = (impact: string): number => ({ critical: 5, high: 4, medium: 3, low: 2, info: 1 }[impact] ?? 1);
+  const affectedValues = findingGroups.map((g) => g.affectedAssets);
+  const sorted = [...affectedValues].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] || 0;
+  const maxAffected = Math.max(...affectedValues, 1);
+  const likelihoodRankOf = (group: FindingGroup): number => {
+    let rank = 3; // Possible — quantum-vulnerable crypto is never "rare"
+    if (group.affectedAssets >= Math.max(median, 1)) rank += 1;
+    if (group.affectedAssets >= Math.ceil(maxAffected * 0.75)) rank += 1;
+    if (group.impact === 'critical' || group.impact === 'high') rank = Math.max(rank, 4);
+    return Math.min(5, Math.max(1, rank));
+  };
+
+  // Aggregate finding groups into cells keyed by (impactRank, likelihoodRank).
+  const buckets = new Map<string, { impactRank: number; likelihoodRank: number; count: number; items: string[] }>();
+  for (const group of findingGroups) {
+    const impactRank = impactRankOf(group.impact);
+    const likelihoodRank = likelihoodRankOf(group);
+    const key = `${impactRank}:${likelihoodRank}`;
+    const bucket = buckets.get(key) || { impactRank, likelihoodRank, count: 0, items: [] };
+    bucket.count += 1;
+    if (bucket.items.length < 4) bucket.items.push(group.title);
+    buckets.set(key, bucket);
+  }
+
+  // Emit a full 5×5 grid (row-major, impact 5→1, likelihood 1→5) so exporters
+  // can render a complete matrix; empty cells carry count 0.
+  const cells: HeatMapCell[] = [];
+  for (let impactRank = 5; impactRank >= 1; impactRank -= 1) {
+    for (let likelihoodRank = 1; likelihoodRank <= 5; likelihoodRank += 1) {
+      const bucket = buckets.get(`${impactRank}:${likelihoodRank}`);
+      cells.push({
+        impact: impactLabels[5 - impactRank],
+        likelihood: likelihoodLabels[likelihoodRank - 1],
+        impactRank,
+        likelihoodRank,
+        count: bucket?.count || 0,
+        level: zoneLevel(impactRank * likelihoodRank),
+        items: bucket?.items || [],
+      });
+    }
+  }
+  return {
+    hasData: true,
+    impactLabels,
+    likelihoodLabels,
+    cells,
+    totalPlotted: findingGroups.length,
+    methodology: 'Business Impact = consolidated finding severity. Quantum Exploitation Likelihood is floored at "Possible" (all quantum-vulnerable cryptography is Possible-to-Almost-Certain to be broken by a cryptographically-relevant quantum computer) and scaled up by exposure — the number of assets affected by each finding. Cell colour is the Impact × Likelihood risk zone.',
+    note: `${findingGroups.length} consolidated finding group(s) plotted across the 5×5 Impact × Likelihood grid.`,
+  };
+}
+
+/**
+ * §3 — Business Priority Matrix. Classifies remediation items into four
+ * investment quadrants by Business Value (risk reduction achieved) × Effort
+ * (implementation cost/complexity): Quick Wins, Strategic Projects, Fill-Ins
+ * and Long-Term — the view CIOs use to sequence investment.
+ */
+export function buildBusinessPriorityMatrix(remediation: RemediationItem[]): BusinessPriorityMatrix {
+  const quadrantDefs: Array<{ key: string; title: string; subtitle: string; guidance: string }> = [
+    { key: 'quick-wins', title: 'Quick Wins', subtitle: 'High Value · Low Effort', guidance: 'Execute immediately — high risk reduction for modest effort.' },
+    { key: 'strategic', title: 'Strategic Projects', subtitle: 'High Value · High Effort', guidance: 'Fund and plan — high risk reduction requiring dedicated programme investment.' },
+    { key: 'fill-ins', title: 'Fill-Ins', subtitle: 'Lower Value · Low Effort', guidance: 'Batch opportunistically alongside larger work.' },
+    { key: 'long-term', title: 'Long-Term', subtitle: 'Lower Value · High Effort', guidance: 'Defer or re-scope — limited near-term return for significant effort.' },
+  ];
+  const quadrants: PriorityQuadrant[] = quadrantDefs.map((q) => ({ ...q, items: [] as PriorityMatrixItem[] }));
+  if (!remediation.length) {
+    return { hasData: false, quadrants, note: EVIDENCE_UNAVAILABLE };
+  }
+  const reductions = remediation.map((r) => r.riskReductionPct).sort((a, b) => a - b);
+  const medianReduction = reductions[Math.floor(reductions.length / 2)] || 0;
+  const valueThreshold = Math.max(10, medianReduction); // high value = meaningful risk reduction
+  const effortIsHigh = (item: RemediationItem): boolean =>
+    /high|large|complex|major|significant/i.test(item.effort) || item.dependencies.length >= 3;
+  for (const item of remediation) {
+    const highValue = item.riskReductionPct >= valueThreshold;
+    const highEffort = effortIsHigh(item);
+    const key = highValue ? (highEffort ? 'strategic' : 'quick-wins') : (highEffort ? 'long-term' : 'fill-ins');
+    const quadrant = quadrants.find((q) => q.key === key)!;
+    quadrant.items.push({
+      name: item.action,
+      riskReductionPct: item.riskReductionPct,
+      effort: item.effort || 'Evidence Not Available',
+      businessValue: highValue ? 'High' : 'Moderate',
+      rationale: `${item.riskReductionPct}% risk reduction · ${item.effort || 'effort n/a'} · ${item.affectedAssets.length || 0} asset(s)${item.dependencies.length ? ` · ${item.dependencies.length} dependency(ies)` : ''}`,
+    });
+  }
+  for (const q of quadrants) q.items.sort((a, b) => b.riskReductionPct - a.riskReductionPct);
+  return {
+    hasData: true,
+    quadrants,
+    note: `${remediation.length} remediation action(s) classified by business value (risk reduction ≥ ${valueThreshold}% = high) and effort. Quick Wins deliver the fastest return; Strategic Projects need programme funding.`,
+  };
+}
+
+/**
+ * Minor §3 — Remediation Campaigns. Consolidates remediation actions that share
+ * the same cryptographic target under one campaign theme so the same "migrate
+ * to the NIST-approved PQC replacement" guidance is not repeated dozens of
+ * times — shorter and executive-friendly without losing traceability.
+ */
+export function buildRemediationCampaigns(findingGroups: FindingGroup[], remediation: RemediationItem[]): RemediationCampaigns {
+  const themeOf = (text: string): { campaign: string; target: string; action: string } => {
+    const t = text.toLowerCase();
+    if (/ml-kem|key exchange|key establishment|rsa|ecdh|diffie|kem/.test(t))
+      return { campaign: 'Key Establishment Modernization', target: 'X25519 + ML-KEM-768 (hybrid, FIPS 203)', action: 'Replace RSA/ECC key exchange with an ML-KEM hybrid across affected endpoints.' };
+    if (/ml-dsa|slh-dsa|signature|ecdsa|sign|rsa-pss/.test(t))
+      return { campaign: 'Digital Signature Modernization', target: 'ML-DSA-65 (FIPS 204)', action: 'Migrate quantum-vulnerable signatures to ML-DSA (hybrid where interop requires).' };
+    if (/tls|ssl|cipher|protocol|handshake|forward secrecy/.test(t))
+      return { campaign: 'TLS / Transport Hardening', target: 'TLS 1.3 + hybrid PQC key exchange', action: 'Upgrade transport to TLS 1.3 and negotiate a hybrid PQC key exchange.' };
+    if (/cert|pki|x\.509|chain|ca\b/.test(t))
+      return { campaign: 'PKI / Certificate Modernization', target: 'PQC-capable certificate chain (ML-DSA)', action: 'Re-issue certificates from a PQC-capable chain and shorten certificate lifetimes.' };
+    if (/aes|symmetric|3des|cbc|gcm/.test(t))
+      return { campaign: 'Symmetric Strengthening', target: 'AES-256-GCM', action: 'Standardise on AES-256-GCM for data-in-transit and at-rest.' };
+    return { campaign: 'Other Cryptographic Remediation', target: 'NIST-approved PQC replacement', action: 'Migrate to the NIST-approved PQC replacement for the affected primitive.' };
+  };
+  const reductionFor = (title: string): number => {
+    const match = remediation.find((r) => normalizeAssetKey(r.action).includes(normalizeAssetKey(title).slice(0, 8)));
+    return match?.riskReductionPct || 0;
+  };
+  const byCampaign = new Map<string, RemediationCampaign>();
+  for (const group of findingGroups) {
+    const theme = themeOf(group.title);
+    const existing = byCampaign.get(theme.campaign) || {
+      campaign: theme.campaign,
+      target: theme.target,
+      action: theme.action,
+      findings: [] as string[],
+      findingCount: 0,
+      affectedAssets: 0,
+      occurrences: 0,
+      riskReductionPct: 0,
+      priority: '',
+    };
+    existing.findings.push(group.title);
+    existing.findingCount += 1;
+    existing.affectedAssets = Math.max(existing.affectedAssets, group.affectedAssets);
+    existing.occurrences += group.occurrences;
+    existing.riskReductionPct = Math.min(100, existing.riskReductionPct + reductionFor(group.title));
+    byCampaign.set(theme.campaign, existing);
+  }
+  const campaigns = Array.from(byCampaign.values()).sort((a, b) => b.occurrences - a.occurrences);
+  // Priority by occurrence rank (P1 = most pervasive campaign).
+  campaigns.forEach((c, i) => { c.priority = `P${i + 1}`; });
+  return {
+    campaigns,
+    note: campaigns.length
+      ? `${findingGroups.length} consolidated finding group(s) rolled up into ${campaigns.length} remediation campaign(s). Each campaign groups findings that share a single cryptographic target so guidance appears once, with full traceability to its member findings.`
+      : EVIDENCE_UNAVAILABLE,
+  };
+}
+
+/**
+ * §6 — Executive One-Page Board Snapshot. The 60-second summary placed at the
+ * very front of the report. Every value is copied from an already-validated
+ * section so it can never disagree with the body.
+ */
+export function buildBoardSnapshot(args: {
+  snapshot: QuantumReadinessSnapshot;
+  executiveBlock: ExecutiveBlock;
+  roiAnalysis: RoiAnalysis;
+  executiveDecisions: ExecutiveDecision[];
+  certification: CertificationSummary;
+  sharedResponsibility: SharedResponsibilityReport;
+  discoveredAssets: number;
+}): BoardSnapshot {
+  const { snapshot, executiveBlock: ex, roiAnalysis: roi, executiveDecisions, certification: cert, sharedResponsibility: sr, discoveredAssets } = args;
+  if (!snapshot.hasData) {
+    return {
+      hasData: false, headline: EVIDENCE_UNAVAILABLE, certificationStatus: '', certified: false,
+      currentReadiness: 0, targetReadiness: 0, currentRisk: 0, targetRisk: 0, investmentUsd: 0, timelineWeeks: 0,
+      roiSummary: EVIDENCE_UNAVAILABLE, riskReductionPct: 0, metrics: [], topDecisions: [],
+      responsibilitySplit: { customer: 0, provider: 0, ecosystem: 0 }, responsibilityNote: '', assetBasis: '', recommendation: '',
+    };
+  }
+  const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
+  const inv = snapshot.inventory;
+  const metrics = [
+    { label: 'Quantum Readiness', value: `${ex.currentReadiness}/100`, context: `Target ${ex.targetReadiness}/100 (${snapshot.scores.quantumReadinessLevel})` },
+    { label: 'Quantum Risk', value: `${ex.currentRisk}/100`, context: `Target ${ex.targetRisk}/100 · −${ex.expectedRiskReductionPct}%` },
+    { label: 'Investment', value: usd(ex.estimatedCostUsd), context: `${ex.estimatedDurationWeeks || 'TBD'}-week programme` },
+    { label: 'Return on Investment', value: roi.roiMultiple ? `${roi.roiMultiple}×` : 'Evidence Not Available', context: `${usd(roi.riskAvoidanceUsd)} risk avoidance` },
+    { label: 'HNDL Exposure', value: `${ex.currentHndl}/100`, context: `Window ${ex.quantumExposureWindow}` },
+    { label: 'Certification', value: cert.certified ? 'Certified' : 'Not Yet Certified', context: cert.certificationStatus },
+  ];
+  const topDecisions = executiveDecisions.slice(0, 5).map((d) => d.decision);
+  const dist = sr.hasData ? sr.distribution : { customer: 0, provider: 0, ecosystem: 0 };
+  const responsibilityNote = sr.hasData
+    ? `${dist.customer} customer-controlled (directly actionable) · ${dist.provider} provider-controlled · ${dist.ecosystem} ecosystem-dependent. Provider/ecosystem items track upstream roadmaps and are never counted against the organization.`
+    : 'Shared responsibility classification not available for this scope.';
+  return {
+    hasData: true,
+    headline: `Readiness ${ex.currentReadiness}/100 today → ${ex.targetReadiness}/100 target · Risk ${ex.currentRisk}/100 → ${ex.targetRisk}/100 · ${usd(ex.estimatedCostUsd)} over ${ex.estimatedDurationWeeks || 'TBD'} weeks · ${cert.certificationStatus}.`,
+    certificationStatus: cert.certificationStatus,
+    certified: cert.certified,
+    currentReadiness: ex.currentReadiness,
+    targetReadiness: ex.targetReadiness,
+    currentRisk: ex.currentRisk,
+    targetRisk: ex.targetRisk,
+    investmentUsd: ex.estimatedCostUsd,
+    timelineWeeks: ex.estimatedDurationWeeks,
+    roiSummary: roi.paybackNarrative,
+    riskReductionPct: ex.expectedRiskReductionPct,
+    metrics,
+    topDecisions,
+    responsibilitySplit: dist,
+    responsibilityNote,
+    assetBasis: `Asset counts in this report: ${discoveredAssets} discovered (scanned or attributed from evidence), ${inv.assetsAssessed} inventoried (formal asset records), ${inv.quantumVulnerableAssets} requiring migration (quantum-vulnerable). "Discovered" is the widest set; "inventoried" is the formal asset table; "requiring migration" is the vulnerable subset.`,
+    recommendation: ex.executiveRecommendation,
+  };
+}
+
 export function buildReportModel(
   snapshot: QuantumReadinessSnapshot,
   branding: ReportBranding,
@@ -2375,6 +2735,24 @@ export function buildReportModel(
   const discoveredAssets = reportScope.type === 'custom'
     ? reportScope.selectedAssetCount
     : (reportScope.totalAssetCount || inv.assetsAssessed);
+
+  // Improvements_06 — board-level visual intelligence. All derive from sections
+  // built above (no new evidence sources), so they reconcile by construction.
+  const sharedResponsibility = buildSharedResponsibilityReport(snapshot);
+  const remediationProgram = buildRemediationProgram(snapshot, findings, waves);
+  const executiveHeatMap = buildExecutiveHeatMap(findingGroups);
+  const businessPriorityMatrix = buildBusinessPriorityMatrix(remediationProgram);
+  const evidenceQuality = buildEvidenceQuality(evidenceConfidence);
+  const remediationCampaigns = buildRemediationCampaigns(findingGroups, remediationProgram);
+  const boardSnapshot = buildBoardSnapshot({
+    snapshot,
+    executiveBlock,
+    roiAnalysis,
+    executiveDecisions,
+    certification,
+    sharedResponsibility,
+    discoveredAssets,
+  });
   // I5#2 — evidence sources that produced data vs telemetry not yet available.
   const availableSources = evidenceConfidence.filter((e) => e.confidencePct > 0).map((e) => e.source);
   const unavailableSources = evidenceConfidence.filter((e) => e.confidencePct <= 0).map((e) => e.source);
@@ -2417,6 +2795,12 @@ export function buildReportModel(
     migrationConfidence,
     evidenceConfidence,
     executiveDecisions,
+    sharedResponsibility,
+    boardSnapshot,
+    executiveHeatMap,
+    businessPriorityMatrix,
+    evidenceQuality,
+    remediationCampaigns,
     playbookDetail,
     waveSimulation,
     governanceGates,
@@ -2488,14 +2872,14 @@ export function buildReportModel(
       })),
     },
     compliance,
-    remediationProgram: buildRemediationProgram(snapshot, findings, waves),
+    remediationProgram,
     roadmap,
     playbook: buildPlaybook(waves),
     costForecast,
     riskForecast,
     governance: buildGovernance(snapshot),
     remediation: safeTable('Remediation Plan', ['Priority', 'Action', 'Owner', 'Risk Reduction', 'Target Date'],
-      buildRemediationProgram(snapshot, findings, waves).map((item) => [item.priority, item.action, item.owner, `${item.riskReductionPct}%`, item.targetDate])),
+      remediationProgram.map((item) => [item.priority, item.action, item.owner, `${item.riskReductionPct}%`, item.targetDate])),
     evidence: {
       // I5#2 — only sources that actually produced evidence are listed as
       // sources; unavailable telemetry is disclosed separately so it is never

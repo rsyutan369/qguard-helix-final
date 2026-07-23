@@ -175,10 +175,52 @@ function mergeVulnerabilityItems(items: CryptoInventoryItem[]) {
   });
 }
 
-function vulnerableItems(asset: AssetRecord) {
+// Vulnerable CRYPTO COMPONENTS for an asset — counted the same way the CBOM
+// Explorer and the Quantum Readiness & Assessment Engine count them
+// (is_vulnerable && !is_quantum_safe on the grouped crypto inventory). This is
+// the single, platform-consistent unit of "vulnerability". The raw finding rows
+// (per-rule / per-cipher detections that previously inflated the headline to
+// numbers like 113) are preserved as "detection signals" and folded into their
+// parent component via signalsForComponent — evidence without double-counting.
+function vulnerableComponents(asset: AssetRecord) {
+  const inventory = Array.isArray(asset.cryptoInventory)
+    ? asset.cryptoInventory.filter((item) => Boolean(item.is_vulnerable && !item.is_quantum_safe))
+    : [];
+  if (inventory.length > 0) return mergeVulnerabilityItems(inventory);
+  // Tenants whose scans produced only finding-level rows (no grouped inventory)
+  // still get a real, component-granular count by merging those raw findings.
   const explicit = Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : [];
-  const inventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory.filter((item) => Boolean(item.is_vulnerable && !item.is_quantum_safe)) : [];
-  return mergeVulnerabilityItems([...explicit, ...inventory]);
+  return mergeVulnerabilityItems(explicit);
+}
+
+// Raw detection signals (rule / cipher-suite level findings) that back the
+// vulnerable components — surfaced as premium context ("N detection signals
+// across M components"), never as the headline vulnerability count.
+function detectionSignals(asset: AssetRecord) {
+  return Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : [];
+}
+
+// Detection signals that map to a specific vulnerable component (same dedupe key
+// the backend groups by) — used to show the underlying evidence in the detail
+// card without re-expanding the count.
+function signalsForComponent(asset: AssetRecord, component: CryptoInventoryItem) {
+  const key = vulnerabilityKey(component);
+  return detectionSignals(asset).filter((signal) => vulnerabilityKey(signal) === key);
+}
+
+// Per-asset severity distribution over the vulnerable COMPONENTS (drives the
+// premium severity chips and matches the exposure taxonomy the QR Engine uses).
+function componentSeverityCounts(components: CryptoInventoryItem[]) {
+  const counts: Record<RiskLevel, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const item of components) {
+    const level =
+      normalizeRiskLevel(item.exposure_level) ||
+      normalizeRiskLevel(item.metadata?.severity) ||
+      normalizeRiskLevel(item.metadata?.threatLevel) ||
+      'medium';
+    counts[level] += 1;
+  }
+  return counts;
 }
 
 function remediationRouteFor(item: CryptoInventoryItem) {
@@ -194,9 +236,9 @@ function remediationRouteFor(item: CryptoInventoryItem) {
 
   if (/hndl|harvest|runtime|shadow|downgrade/.test(text)) return '/dashboard/live-migration';
   if (/certificate|pki|x509|issuer|subject/.test(text)) return '/dashboard/certificate-telemetry';
-  if (/tls|ssl|protocol|cipher|handshake|dhe|ecdhe/.test(text)) return '/dashboard/tls-orchestrator';
+  if (/tls|ssl|protocol|cipher|handshake|dhe|ecdhe/.test(text)) return '/dashboard/quantum-readiness/remediation';
   if (/library|dependency|package|source|repo|github|client crypto/.test(text)) return '/dashboard/migration-planner';
-  if (/policy|compliance|regulatory|nist/.test(text)) return '/dashboard/crypto-policies';
+  if (/policy|compliance|regulatory|nist/.test(text)) return '/dashboard/quantum-governance';
   return '/dashboard/pqc-orchestration';
 }
 
@@ -216,10 +258,11 @@ function remediationHref(asset: AssetRecord, item: CryptoInventoryItem) {
 
 function assetRiskLevel(asset: AssetRecord): RiskLevel {
   const inventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory : [];
+  const hasVulnerableComponent = inventory.some((item) => Boolean(item.is_vulnerable && !item.is_quantum_safe));
   const levels = [
     riskLevelFromScore(Number(asset.riskScore || 0)),
     normalizeRiskLevel(asset.riskLevel),
-    Number(asset.vulnerableCount || 0) > 0 ? 'medium' as RiskLevel : null,
+    hasVulnerableComponent ? 'medium' as RiskLevel : null,
     ...inventory.map((item) => (
       normalizeRiskLevel(item.exposure_level) ||
       normalizeRiskLevel(item.metadata?.severity) ||
@@ -317,7 +360,8 @@ function exportJson(selectedAssets: AssetRecord[]) {
       ...asset,
       computedRiskLevel: assetRiskLevel(asset),
       target: assetTarget(asset),
-      vulnerabilities: vulnerableItems(asset),
+      vulnerableComponents: vulnerableComponents(asset),
+      detectionSignals: detectionSignals(asset),
     })),
   };
   downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }), exportFileName('json'));
@@ -355,17 +399,20 @@ function buildPdf(selectedAssets: AssetRecord[]) {
     '',
   ];
   for (const asset of selectedAssets) {
-    const vulnerabilities = vulnerableItems(asset);
+    const components = vulnerableComponents(asset);
+    const signals = detectionSignals(asset);
+    const totalComponents = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory.length : 0;
     lines.push(`${asset.name} | ${assetRiskLevel(asset).toUpperCase()} | Risk ${asset.riskScore}/100 | ${assetTarget(asset)}`);
-    lines.push(`Compliance: ${asset.complianceStatus} | Findings: ${asset.findingsCount} | Vulnerable: ${vulnerabilities.length}`);
-    if (vulnerabilities.length === 0) {
+    lines.push(`Compliance: ${asset.complianceStatus} | Components: ${totalComponents} | Vulnerable components: ${components.length} | Detection signals: ${signals.length}`);
+    if (components.length === 0) {
       lines.push('No vulnerable cryptographic components currently detected.');
     } else {
-      for (const item of vulnerabilities.slice(0, 8)) {
-        lines.push(`- ${cryptoLabel(item)} | ${labelize(item.exposure_level || 'vulnerable')}`);
+      for (const item of components.slice(0, 8)) {
+        const evidenceCount = signalsForComponent(asset, item).length;
+        lines.push(`- ${cryptoLabel(item)} | ${labelize(item.exposure_level || 'vulnerable')}${evidenceCount > 0 ? ` | ${evidenceCount} detection signal(s)` : ''}`);
         lines.push(`  Recommendation: ${metadataText(item, 'recommendation', 'Review against NIST PQC migration policy.')}`);
       }
-      if (vulnerabilities.length > 8) lines.push(`  +${vulnerabilities.length - 8} additional vulnerable finding(s).`);
+      if (components.length > 8) lines.push(`  +${components.length - 8} additional vulnerable component(s).`);
     }
     lines.push('');
   }
@@ -437,8 +484,14 @@ function typeIcon(type: string) {
 }
 
 export default function AssetsMap() {
-  const { data, loading, error, refresh } = useScannerIntelligence();
+  const { data, loading, error, connected, refresh } = useScannerIntelligence();
   const assets = (data.assets.assets || []) as AssetRecord[];
+  // Canonical tenant-wide figures straight from the shared scanner-intelligence
+  // snapshot — the SAME numbers the CBOM Explorer and the Quantum Readiness &
+  // Assessment Engine render. The Assets page reconciles against these so its
+  // headline never disagrees with the rest of the platform.
+  const summary = data.summary;
+  const severityCounts = data.severityCounts;
   const [searchQuery, setSearchQuery] = useState('');
   const [riskFilter, setRiskFilter] = useState<RiskLevel | null>(null);
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
@@ -536,6 +589,15 @@ export default function AssetsMap() {
         <div>
           <h1 className="text-3xl font-black uppercase tracking-tight text-slate-950 dark:text-white">Asset <span className="text-gold">Inventory</span></h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-white/50">Authorized cryptographic assets discovered from real scanner results.</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest">
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${connected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-300' : 'border-slate-300/60 bg-slate-100/60 text-slate-500 dark:border-white/12 dark:bg-white/[0.03] dark:text-white/40'}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
+              {connected ? 'Live Telemetry' : 'Cached'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/25 bg-cyan-500/8 px-2 py-0.5 text-cyan-600 dark:border-cyan-400/25 dark:text-cyan-300">
+              <Shield className="h-3 w-3" /> Reconciled with Quantum Readiness Engine
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           <div className="relative">
@@ -597,10 +659,34 @@ export default function AssetsMap() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Authorized Assets', value: assets.length, color: 'text-slate-950 dark:text-white', icon: Server },
-          { label: 'Vulnerable Assets', value: assets.filter((asset) => vulnerableItems(asset).length > 0).length, color: 'text-red-600 dark:text-red-400', icon: AlertTriangle },
-          { label: 'Crypto Components', value: assets.reduce((sum, asset) => sum + asset.findingsCount, 0), color: 'text-gold', icon: Shield },
-          { label: 'PQC Ready', value: assets.filter((asset) => asset.findingsCount > 0 && vulnerableItems(asset).length === 0).length, color: 'text-emerald-600 dark:text-green-400', icon: Shield },
+          {
+            label: 'Authorized Assets',
+            value: summary.totalAssets || assets.length,
+            sub: `${summary.vulnerableAssets} with vulnerable crypto`,
+            color: 'text-slate-950 dark:text-white',
+            icon: Server,
+          },
+          {
+            label: 'Quantum-Vulnerable Components',
+            value: summary.vulnerableComponents,
+            sub: 'Matches QR Engine & CBOM',
+            color: 'text-red-600 dark:text-red-400',
+            icon: AlertTriangle,
+          },
+          {
+            label: 'Cryptographic Components',
+            value: summary.totalComponents,
+            sub: `${summary.pqcReadyComponents} PQC-ready`,
+            color: 'text-gold',
+            icon: Shield,
+          },
+          {
+            label: 'PQC Readiness',
+            value: `${summary.pqcReadiness}%`,
+            sub: `Q-Score ${summary.qScore}/100`,
+            color: 'text-emerald-600 dark:text-green-400',
+            icon: Shield,
+          },
         ].map((item) => (
           <div key={item.label} className={GLASS_PANEL_CLASSES + " p-4"}>
             <div className="flex items-center gap-2 mb-2 relative z-10">
@@ -608,8 +694,76 @@ export default function AssetsMap() {
               <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500 dark:text-white/40">{item.label}</span>
             </div>
             <div className={`text-2xl font-black relative z-10 ${item.color}`}>{item.value}</div>
+            <div className="mt-1 text-[10px] font-mono text-slate-500 dark:text-white/32 relative z-10">{item.sub}</div>
           </div>
         ))}
+      </div>
+
+      {/* Platform Posture — canonical tenant-wide crypto posture straight from the
+          shared scanner-intelligence snapshot. These are the exact figures the
+          Quantum Readiness & Assessment Engine renders, so the Assets page can be
+          reconciled against QR at a glance. */}
+      <div className={GLASS_PANEL_CLASSES + ' p-5'}>
+        <div className="relative z-10 grid gap-6 lg:grid-cols-[1.1fr_1.3fr_1.3fr]">
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Quantum Readiness</div>
+            <div className="mt-2 flex items-end gap-2">
+              <span className="text-4xl font-black text-emerald-600 dark:text-green-400">{summary.pqcReadiness}%</span>
+              <span className="mb-1 text-[10px] font-mono text-slate-500 dark:text-white/35">of {summary.totalComponents} components</span>
+            </div>
+            <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+              <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-green-400" style={{ width: `${Math.min(100, summary.pqcReadiness)}%` }} />
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-white/32">
+              <span>{summary.pqcReadyComponents} PQC-ready</span>
+              <span className="text-red-600 dark:text-red-400">{summary.vulnerableComponents} vulnerable</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Risk Posture</div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              {[
+                { label: 'Risk Score', value: `${summary.riskScore}/100`, color: riskColor(summary.riskScore) },
+                { label: 'Q-Score', value: `${summary.qScore}/100`, color: 'text-cyan-600 dark:text-cyan-300' },
+                { label: 'Vulnerable Assets', value: `${summary.vulnerableAssets}/${summary.totalAssets || assets.length}`, color: 'text-red-600 dark:text-red-400' },
+                { label: 'Critical Findings', value: summary.criticalFindings, color: 'text-orange-600 dark:text-orange-400' },
+              ].map((metric) => (
+                <div key={metric.label} className="rounded-lg border border-slate-200/80 bg-white/70 p-3 dark:border-white/8 dark:bg-white/[0.02]">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-white/35">{metric.label}</div>
+                  <div className={`mt-1 text-lg font-black ${metric.color}`}>{metric.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Detection Severity</div>
+              <span className="text-[10px] font-mono text-slate-500 dark:text-white/32">{summary.totalFindings} signals</span>
+            </div>
+            <div className="mt-3 space-y-2">
+              {([
+                ['critical', 'Critical', 'bg-red-500', 'text-red-600 dark:text-red-400'],
+                ['high', 'High', 'bg-orange-500', 'text-orange-600 dark:text-orange-400'],
+                ['medium', 'Medium', 'bg-amber-500', 'text-amber-600 dark:text-yellow-400'],
+                ['low', 'Low', 'bg-emerald-500', 'text-emerald-600 dark:text-green-400'],
+              ] as const).map(([key, label, bar, text]) => {
+                const count = severityCounts[key] || 0;
+                const max = Math.max(1, severityCounts.critical + severityCounts.high + severityCounts.medium + severityCounts.low);
+                return (
+                  <div key={key} className="flex items-center gap-3">
+                    <span className="w-14 shrink-0 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-white/40">{label}</span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                      <div className={`h-full rounded-full ${bar}`} style={{ width: `${(count / max) * 100}%` }} />
+                    </div>
+                    <span className={`w-7 shrink-0 text-right text-[11px] font-black ${text}`}>{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className={GLASS_PANEL_CLASSES}>
@@ -665,7 +819,12 @@ export default function AssetsMap() {
               ) : filteredAssets.map((asset) => {
                 const Icon = typeIcon(asset.type);
                 const cryptoInventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory : [];
-                const vulnerabilities = vulnerableItems(asset);
+                // Component-level count (aligned with QR/CBOM); the raw finding
+                // rows become supporting "detection signals".
+                const vulnerable = vulnerableComponents(asset);
+                const signalCount = detectionSignals(asset).length;
+                const severity = componentSeverityCounts(vulnerable);
+                const pqcReadyCount = cryptoInventory.filter((item) => Boolean(item.is_quantum_safe)).length;
                 const isExpanded = expandedAssetId === asset.id;
                 const cryptoListExpanded = expandedCryptoAssetIds.has(asset.id);
                 const visibleCryptoInventory = cryptoListExpanded ? cryptoInventory : cryptoInventory.slice(0, 18);
@@ -721,16 +880,32 @@ export default function AssetsMap() {
                       </td>
                       <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-3">
-                          <span className={`inline-flex min-w-10 justify-center rounded-md border px-2 py-1 text-[10px] font-black ${vulnerabilities.length ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:border-red-400/35 dark:text-red-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-300'}`}>
-                            {vulnerabilities.length}
+                          <span className={`inline-flex min-w-10 justify-center rounded-md border px-2 py-1 text-[10px] font-black ${vulnerable.length ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:border-red-400/35 dark:text-red-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-300'}`}>
+                            {vulnerable.length}
                           </span>
                           <div className="min-w-0">
                             <div className="text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-white/58">
-                              {vulnerabilities.length === 1 ? 'Vulnerability' : 'Vulnerabilities'}
+                              vulnerable of {cryptoInventory.length}
                             </div>
                             <div className="mt-1 truncate text-[10px] font-mono text-slate-500 dark:text-white/32">
-                              {cryptoInventory.length} observed crypto component{cryptoInventory.length === 1 ? '' : 's'}
+                              {signalCount > 0
+                                ? `${signalCount} detection signal${signalCount === 1 ? '' : 's'}`
+                                : `${cryptoInventory.length} observed component${cryptoInventory.length === 1 ? '' : 's'}`}
                             </div>
+                            {vulnerable.length > 0 && (
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {([
+                                  ['critical', 'C', 'bg-red-500/15 text-red-600 dark:text-red-300 border-red-500/25'],
+                                  ['high', 'H', 'bg-orange-500/15 text-orange-600 dark:text-orange-300 border-orange-500/25'],
+                                  ['medium', 'M', 'bg-amber-500/15 text-amber-600 dark:text-yellow-200 border-amber-500/25'],
+                                  ['low', 'L', 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/25'],
+                                ] as const).filter(([key]) => severity[key] > 0).map(([key, glyph, cls]) => (
+                                  <span key={key} className={`rounded border px-1.5 py-0.5 text-[9px] font-black ${cls}`} title={`${severity[key]} ${key}`}>
+                                    {glyph} {severity[key]}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -744,7 +919,7 @@ export default function AssetsMap() {
                         <div className="mt-1 text-[9px] text-slate-400 dark:text-white/25">Q-Score {asset.qScore}/100</div>
                       </td>
                       <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
-                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${vulnerabilities.length > 0 ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
+                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${vulnerable.length > 0 ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                           {asset.complianceStatus}
                         </span>
                       </td>
@@ -796,7 +971,7 @@ export default function AssetsMap() {
                                     <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">Asset Profile</div>
                                     <div className="mt-1 text-lg font-black text-slate-950 dark:text-white">{asset.name}</div>
                                   </div>
-                                  <span className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase ${severityClasses(assetRiskLevel(asset), vulnerabilities.length > 0)}`}>
+                                  <span className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase ${severityClasses(assetRiskLevel(asset), vulnerable.length > 0)}`}>
                                     {labelize(assetRiskLevel(asset))}
                                   </span>
                                 </div>
@@ -818,22 +993,33 @@ export default function AssetsMap() {
                               <div>
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                   <div>
-                                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-950 dark:text-white">Detected Vulnerabilities</h3>
-                                    <p className="mt-1 text-xs text-slate-500 dark:text-white/45">Expanded from tenant scanner CBOM records for this asset.</p>
+                                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-950 dark:text-white">Vulnerable Cryptographic Components</h3>
+                                    <p className="mt-1 text-xs text-slate-500 dark:text-white/45">
+                                      Counted at the component level — the same unit the CBOM Explorer and Quantum Readiness Engine use.
+                                      {signalCount > 0 ? ` Backed by ${signalCount} raw detection signal${signalCount === 1 ? '' : 's'}.` : ''}
+                                    </p>
                                   </div>
-                                  <div className="flex gap-2">
-                                    <span className="rounded-md border border-red-500/25 bg-red-500/8 px-2 py-1 text-[10px] font-black uppercase text-red-600 dark:border-red-400/25 dark:text-red-300">{vulnerabilities.length} vulnerable</span>
+                                  <div className="flex flex-wrap gap-2">
+                                    <span className="rounded-md border border-red-500/25 bg-red-500/8 px-2 py-1 text-[10px] font-black uppercase text-red-600 dark:border-red-400/25 dark:text-red-300">{vulnerable.length} vulnerable</span>
                                     <span className="rounded-md border border-slate-200 bg-white/70 px-2 py-1 text-[10px] font-black uppercase text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/42">{cryptoInventory.length} total</span>
+                                    {pqcReadyCount > 0 && (
+                                      <span className="rounded-md border border-emerald-500/25 bg-emerald-500/8 px-2 py-1 text-[10px] font-black uppercase text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300">{pqcReadyCount} PQC-ready</span>
+                                    )}
+                                    {signalCount > 0 && (
+                                      <span className="rounded-md border border-cyan-500/25 bg-cyan-500/8 px-2 py-1 text-[10px] font-black uppercase text-cyan-600 dark:border-cyan-400/25 dark:text-cyan-300">{signalCount} signals</span>
+                                    )}
                                   </div>
                                 </div>
 
-                                {vulnerabilities.length === 0 ? (
+                                {vulnerable.length === 0 ? (
                                   <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/8 p-4 text-sm font-semibold text-emerald-700 dark:border-emerald-400/25 dark:text-emerald-200">
                                     No vulnerable cryptographic components are currently detected for this asset. Continue monitoring and rescan after configuration changes.
                                   </div>
                                 ) : (
                                   <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
-                                    {vulnerabilities.slice(0, 12).map((item, index) => (
+                                    {vulnerable.slice(0, 12).map((item, index) => {
+                                      const componentSignals = signalsForComponent(asset, item);
+                                      return (
                                       <div key={item.id || `${asset.id}-vuln-${index}`} className="rounded-lg border border-red-300/50 bg-red-50/80 p-4 dark:border-red-400/18 dark:bg-red-500/[0.055]">
                                         <div className="mb-3 flex items-start justify-between gap-3">
                                           <div className="min-w-0">
@@ -862,14 +1048,21 @@ export default function AssetsMap() {
                                             {metadataText(item, 'recommendation', 'Review against the NIST PQC migration policy and assign remediation ownership.')}
                                           </div>
                                         </div>
+                                        {componentSignals.length > 0 && (
+                                          <div className="mt-2 flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30">
+                                            <AlertTriangle className="h-2.5 w-2.5" />
+                                            {componentSignals.length} detection signal{componentSignals.length === 1 ? '' : 's'} across scanner, exposures & CBOM
+                                          </div>
+                                        )}
                                       </div>
-                                    ))}
+                                      );
+                                    })}
                                   </div>
                                 )}
 
-                                {vulnerabilities.length > 12 && (
+                                {vulnerable.length > 12 && (
                                   <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-white/35">
-                                    +{vulnerabilities.length - 12} additional vulnerable component{vulnerabilities.length - 12 === 1 ? '' : 's'} available in CBOM.
+                                    +{vulnerable.length - 12} additional vulnerable component{vulnerable.length - 12 === 1 ? '' : 's'} available in CBOM.
                                   </div>
                                 )}
                               </div>

@@ -290,15 +290,12 @@ export default function SophiaConsolePage() {
             {streaming.active && (
               <div className="max-w-3xl space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/40 p-4">
                 <div className="flex items-center gap-2 text-[13px] text-cyan-200">
-                  <Loader2 className="h-4 w-4 animate-spin" /><span>{streaming.stageLabel || 'Working…'}</span>
+                  <Loader2 className="h-4 w-4 animate-spin" /><span>{streaming.stageLabel || 'Sophia is thinking…'}</span>
                 </div>
                 {streaming.toolRuns.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {streaming.toolRuns.map((run, i) => (
-                      <span key={i} className={`rounded border px-1.5 py-0.5 text-[9px] font-mono ${run.status === 'ok' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : run.status === 'denied' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-slate-600/40 bg-slate-800/40 text-slate-400'}`}>
-                        <Cpu className="mr-1 inline h-2.5 w-2.5" />{run.tool}
-                      </span>
-                    ))}
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                    <Cpu className="h-3 w-3 text-slate-600" />
+                    <span>{streaming.toolRuns.length} evidence source{streaming.toolRuns.length === 1 ? '' : 's'} consulted · tenant-isolated</span>
                   </div>
                 )}
               </div>

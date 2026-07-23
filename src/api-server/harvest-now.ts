@@ -212,53 +212,230 @@ function buildExposureGraph(snapshot: Snapshot, cryptoInventory: Row[], certific
 }
 
 /* ================================================================== */
-/* SECTION 3 — Global Quantum Exposure Theater™                       */
+/* SECTION 3 — Global Quantum Exposure Theater™ (3D map model)        */
+/*                                                                    */
+/* Every plotted element is evidence-based:                           */
+/*  • sites       — assets whose region/cloud-region metadata maps to */
+/*                  a known geographic location (never guessed);      */
+/*  • anchors     — certificate-authority trust origins parsed from   */
+/*                  REAL issuer DNs (O= / C=) in certificate chains;  */
+/*  • assetLinks  — real asset_relationships edges between sites;     */
+/*  • trustLinks  — asset → issuing-CA connections from cert chains;  */
+/*  • unlocated   — assets with NO location telemetry are listed      */
+/*                  honestly instead of being pinned to a fake region.*/
 /* ================================================================== */
-const REGION_COORDS: Record<string, { x: number; y: number }> = {
-  'us-east': { x: 27, y: 38 }, 'us-west': { x: 16, y: 40 }, 'us': { x: 22, y: 39 }, 'na': { x: 22, y: 36 },
-  'eu-west': { x: 47, y: 32 }, 'eu-central': { x: 50, y: 31 }, 'eu': { x: 49, y: 32 }, 'europe': { x: 49, y: 32 },
-  'uk': { x: 46, y: 30 }, 'ap-south': { x: 68, y: 50 }, 'asia': { x: 72, y: 42 }, 'ap-southeast': { x: 78, y: 55 },
-  'ap-northeast': { x: 84, y: 40 }, 'apac': { x: 78, y: 48 }, 'sa': { x: 32, y: 66 }, 'south-america': { x: 32, y: 66 },
-  'af': { x: 51, y: 56 }, 'africa': { x: 51, y: 56 }, 'me': { x: 58, y: 44 }, 'middle-east': { x: 58, y: 44 }, 'au': { x: 85, y: 70 }, 'oceania': { x: 85, y: 70 },
+
+const REGION_GEO: Array<{ key: string; label: string; lat: number; lon: number; match: RegExp }> = [
+  { key: 'au', label: 'Australia (Sydney)', lat: -33.9, lon: 151.2, match: /ap-?southeast-?2|australia|sydney|melbourne|oceania|\bau\b/i },
+  { key: 'us-east', label: 'US East (N. Virginia)', lat: 38.9, lon: -77.4, match: /us-?east|eastus|virginia|\bus\b$|\bna\b$/i },
+  { key: 'us-west', label: 'US West (Oregon)', lat: 44.1, lon: -120.5, match: /us-?west|westus|oregon|california/i },
+  { key: 'us-central', label: 'US Central (Iowa)', lat: 41.9, lon: -93.6, match: /us-?central|centralus|iowa|chicago|texas/i },
+  { key: 'ca-central', label: 'Canada (Montreal)', lat: 45.5, lon: -73.6, match: /ca-?central|canada|montreal|toronto/i },
+  { key: 'sa-east', label: 'South America (Sao Paulo)', lat: -23.5, lon: -46.6, match: /sa-?east|brazil|sao ?paulo|south ?america|\bsa\b$/i },
+  { key: 'eu-west', label: 'EU West (Ireland)', lat: 53.3, lon: -6.3, match: /eu-?west|ireland|dublin/i },
+  { key: 'uk', label: 'UK (London)', lat: 51.5, lon: -0.1, match: /\buk\b|united ?kingdom|london|britain/i },
+  { key: 'eu-north', label: 'EU North (Stockholm)', lat: 59.3, lon: 18.1, match: /eu-?north|stockholm|sweden|norway|finland/i },
+  { key: 'eu-central', label: 'EU Central (Frankfurt)', lat: 50.1, lon: 8.7, match: /eu-?central|frankfurt|germany|westeurope|europe|\beu\b$/i },
+  { key: 'me-south', label: 'Middle East (Bahrain)', lat: 26.2, lon: 50.6, match: /me-?south|middle ?east|bahrain|uae|dubai|\bme\b$/i },
+  { key: 'af-south', label: 'Africa (Cape Town)', lat: -33.9, lon: 18.4, match: /af-?south|africa|cape ?town|johannesburg|\baf\b$/i },
+  { key: 'ap-south', label: 'Asia Pacific (Mumbai)', lat: 19.1, lon: 72.9, match: /ap-?south(?!east)|india|mumbai/i },
+  { key: 'ap-northeast', label: 'Asia Pacific (Tokyo)', lat: 35.7, lon: 139.7, match: /ap-?northeast|tokyo|japan|osaka|seoul|korea/i },
+  { key: 'ap-east', label: 'Asia Pacific (Hong Kong)', lat: 22.3, lon: 114.2, match: /ap-?east|hong ?kong|shanghai|china/i },
+  { key: 'ap-southeast', label: 'Asia Pacific (Singapore)', lat: 1.35, lon: 103.8, match: /ap-?southeast|singapore|apac|asia/i },
+]
+
+/** ISO country → centroid, for certificate-authority trust anchors. */
+const COUNTRY_GEO: Record<string, { label: string; lat: number; lon: number }> = {
+  US: { label: 'United States', lat: 39, lon: -98 }, CA: { label: 'Canada', lat: 56, lon: -106 },
+  GB: { label: 'United Kingdom', lat: 54, lon: -2 }, IE: { label: 'Ireland', lat: 53.2, lon: -7.7 },
+  BE: { label: 'Belgium', lat: 50.6, lon: 4.5 }, NL: { label: 'Netherlands', lat: 52.2, lon: 5.5 },
+  DE: { label: 'Germany', lat: 51, lon: 10 }, FR: { label: 'France', lat: 46.5, lon: 2.4 },
+  CH: { label: 'Switzerland', lat: 46.8, lon: 8.2 }, AT: { label: 'Austria', lat: 47.5, lon: 14 },
+  SE: { label: 'Sweden', lat: 62, lon: 15 }, PL: { label: 'Poland', lat: 52, lon: 19 },
+  ES: { label: 'Spain', lat: 40.2, lon: -3.9 }, IT: { label: 'Italy', lat: 42.5, lon: 12.5 },
+  IL: { label: 'Israel', lat: 31.3, lon: 35 }, AE: { label: 'UAE', lat: 24.2, lon: 54 },
+  IN: { label: 'India', lat: 21, lon: 78 }, SG: { label: 'Singapore', lat: 1.35, lon: 103.8 },
+  JP: { label: 'Japan', lat: 36.2, lon: 138 }, KR: { label: 'South Korea', lat: 36.5, lon: 127.8 },
+  CN: { label: 'China', lat: 35, lon: 104 }, AU: { label: 'Australia', lat: -25.3, lon: 134 },
+  BR: { label: 'Brazil', lat: -10.8, lon: -52.9 }, ZA: { label: 'South Africa', lat: -29, lon: 24 },
 }
-function regionKey(raw: string): string {
-  const r = raw.toLowerCase()
-  for (const key of Object.keys(REGION_COORDS)) if (r.includes(key)) return key
-  return 'us-east'
+
+/** Map crop used by the theater map (matches world-land-grid.ts). */
+const MAP_LAT_MAX = 78
+const MAP_LAT_MIN = -56
+function mapXY(lat: number, lon: number): { x: number; y: number } {
+  return {
+    x: Math.round(((lon + 180) / 360) * 1000) / 10,
+    y: Math.round(((MAP_LAT_MAX - lat) / (MAP_LAT_MAX - MAP_LAT_MIN)) * 1000) / 10,
+  }
 }
-function buildTheater(snapshot: Snapshot, assets: Row[]) {
-  const byRegion = new Map<string, { region: string; assets: number; vulnerable: number; riskTotal: number; cloud: Set<string> }>()
+
+/** Resolve a raw region/environment string to a geo site — null when unknown. */
+function resolveRegion(raw: string): (typeof REGION_GEO)[number] | null {
+  const r = raw.trim()
+  if (!r) return null
+  for (const geo of REGION_GEO) if (geo.match.test(r)) return geo
+  return null
+}
+
+interface IssuerInfo { org: string; country: string; algorithms: string[] }
+
+/** Parse issuer organisations (+ country + signing algorithms) from an asset's
+ *  scanned certificate chain and from certificate-table issuer strings. */
+function issuersForAsset(asset: Row, certificates: Row[]): IssuerInfo[] {
+  const found = new Map<string, IssuerInfo>()
+  const add = (dn: string, algorithm: string) => {
+    if (!dn) return
+    const org = (/O=([^,]+)/.exec(dn)?.[1] || /CN=([^,]+)/.exec(dn)?.[1] || '').trim()
+    if (!org) return
+    const country = (/\bC=([A-Z]{2})\b/.exec(dn)?.[1] || '').trim()
+    const entry = found.get(org) || { org, country, algorithms: [] }
+    if (!entry.country && country) entry.country = country
+    if (algorithm && !entry.algorithms.includes(algorithm)) entry.algorithms.push(algorithm)
+    found.set(org, entry)
+  }
+  const chain = ((asset.metadata as Row)?.certificate as Row | undefined)?.chain
+  if (Array.isArray(chain)) {
+    for (const link of chain as Row[]) add(str(link.issuer), str(link.publicKeyAlgorithm) || str(link.signatureAlgorithm))
+  }
+  const assetId = str(asset.id)
+  for (const c of certificates) {
+    if (assetId && str(c.asset_id) === assetId) add(str(c.issuer), str(c.algorithm))
+  }
+  return Array.from(found.values())
+}
+
+function buildTheater(snapshot: Snapshot, assets: Row[], certificates: Row[]) {
   const nodeByLabel = new Map(snapshot.exposureGraph.nodes.map((n) => [n.label, n]))
+  const nodeById = new Map(snapshot.exposureGraph.nodes.map((n) => [n.id, n]))
+
+  interface SiteAgg {
+    key: string; label: string; lat: number; lon: number
+    region: string; assets: number; vulnerable: number; riskTotal: number
+    cloud: Set<string>; internetFacing: number
+    topAssets: Array<{ name: string; posture: string; riskScore: number; internetFacing: boolean }>
+  }
+  const byRegion = new Map<string, SiteAgg>()
+  const unlocated: Array<{ name: string; posture: string; riskScore: number; internetFacing: boolean; type: string }> = []
+  const siteOfAsset = new Map<string, string>() // asset id AND name → site key
+  const assetKey = (a: Row) => str(a.id) || str(a.name)
+
   for (const a of assets) {
-    const rawRegion = str(a.region) || str((a.metadata as Row)?.region) || str(a.environment) || 'us-east'
-    const key = regionKey(rawRegion)
-    const entry = byRegion.get(key) || { region: rawRegion || key, assets: 0, vulnerable: 0, riskTotal: 0, cloud: new Set<string>() }
-    entry.assets += 1
     const node = nodeByLabel.get(str(a.name))
+    const posture = node?.posture || 'unknown'
     const risk = node ? node.riskScore : num(a.criticality)
+    const internetFacing = node?.internetFacing === true
+    const rawRegion = str(a.region) || str((a.metadata as Row)?.region) || str((a.metadata as Row)?.cloud_region) || str(a.environment)
+    const geo = resolveRegion(rawRegion)
+    if (!geo) {
+      // No location telemetry — never pin to a fabricated region.
+      unlocated.push({ name: str(a.name) || 'Unnamed asset', posture, riskScore: Math.round(risk), internetFacing, type: str(a.type) })
+      continue
+    }
+    siteOfAsset.set(assetKey(a), geo.key)
+    if (str(a.name)) siteOfAsset.set(str(a.name), geo.key)
+    const entry = byRegion.get(geo.key) || {
+      key: geo.key, label: geo.label, lat: geo.lat, lon: geo.lon,
+      region: rawRegion || geo.label, assets: 0, vulnerable: 0, riskTotal: 0,
+      cloud: new Set<string>(), internetFacing: 0, topAssets: [],
+    }
+    entry.assets += 1
     entry.riskTotal += risk
-    if (node?.posture === 'vulnerable' || risk >= 60) entry.vulnerable += 1
+    if (posture === 'vulnerable' || risk >= 60) entry.vulnerable += 1
+    if (internetFacing) entry.internetFacing += 1
     const cloud = str((a.metadata as Row)?.cloud_provider || (a.metadata as Row)?.provider)
     if (cloud) entry.cloud.add(cloud)
-    byRegion.set(key, entry)
+    entry.topAssets.push({ name: str(a.name) || 'Unnamed asset', posture, riskScore: Math.round(risk), internetFacing })
+    byRegion.set(geo.key, entry)
   }
-  const regions = Array.from(byRegion.entries()).map(([key, e]) => {
-    const coord = REGION_COORDS[key] || REGION_COORDS['us-east']
+
+  const severityOf = (avgRisk: number, vulnerable: number) =>
+    avgRisk >= 70 || vulnerable >= 3 ? 'Critical' : avgRisk >= 45 || vulnerable > 0 ? 'High' : avgRisk >= 25 ? 'Medium' : 'Low'
+
+  const sites = Array.from(byRegion.values()).map((e) => {
     const avgRisk = e.assets ? Math.round(e.riskTotal / e.assets) : 0
+    const { x, y } = mapXY(e.lat, e.lon)
     return {
-      key, region: e.region, x: coord.x, y: coord.y,
+      key: e.key, region: e.region, label: e.label, lat: e.lat, lon: e.lon, x, y,
       assets: e.assets, vulnerableAssets: e.vulnerable, avgRisk,
+      internetFacing: e.internetFacing,
       cloudProviders: Array.from(e.cloud),
-      severity: avgRisk >= 70 || e.vulnerable >= 3 ? 'Critical' : avgRisk >= 45 || e.vulnerable > 0 ? 'High' : avgRisk >= 25 ? 'Medium' : 'Low',
+      topAssets: e.topAssets.sort((a, b) => b.riskScore - a.riskScore).slice(0, 5),
+      severity: severityOf(avgRisk, e.vulnerable),
     }
   }).sort((a, b) => b.vulnerableAssets - a.vulnerableAssets || b.avgRisk - a.avgRisk)
+
+  // ---- Certificate-authority trust anchors (real issuer DNs) ----------
+  interface AnchorAgg { id: string; name: string; country: string; lat: number | null; lon: number | null; assets: Set<string>; algorithms: Set<string> }
+  const anchors = new Map<string, AnchorAgg>()
+  const trustLinks: Array<{ asset: string; siteKey: string | null; anchorId: string; vulnerable: boolean }> = []
+  for (const a of assets) {
+    const assetName = str(a.name) || 'Unnamed asset'
+    for (const issuer of issuersForAsset(a, certificates)) {
+      const id = issuer.org.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      const geo = issuer.country ? COUNTRY_GEO[issuer.country] : undefined
+      const anchor = anchors.get(id) || { id, name: issuer.org, country: issuer.country, lat: geo?.lat ?? null, lon: geo?.lon ?? null, assets: new Set<string>(), algorithms: new Set<string>() }
+      anchor.assets.add(assetName)
+      for (const alg of issuer.algorithms) anchor.algorithms.add(alg)
+      anchors.set(id, anchor)
+      const vulnerable = issuer.algorithms.some((alg) => classifyAlgorithm(alg) === 'vulnerable')
+      if (!trustLinks.some((t) => t.asset === assetName && t.anchorId === id)) {
+        trustLinks.push({ asset: assetName, siteKey: siteOfAsset.get(assetKey(a)) || null, anchorId: id, vulnerable })
+      }
+    }
+  }
+  const anchorRows = Array.from(anchors.values()).map((an) => ({
+    id: an.id,
+    name: an.name,
+    country: an.country || null,
+    countryLabel: an.country ? COUNTRY_GEO[an.country]?.label ?? an.country : null,
+    lat: an.lat, lon: an.lon,
+    ...(an.lat != null && an.lon != null ? mapXY(an.lat, an.lon) : { x: null, y: null }),
+    certificates: an.assets.size,
+    assets: Array.from(an.assets).slice(0, 6),
+    quantumSafe: Array.from(an.algorithms).length > 0 && Array.from(an.algorithms).every((alg) => classifyAlgorithm(alg) === 'safe'),
+    algorithms: Array.from(an.algorithms).slice(0, 4),
+  })).sort((a, b) => b.certificates - a.certificates).slice(0, 12)
+  const anchorIds = new Set(anchorRows.map((an) => an.id))
+
+  // ---- Site-to-site links from REAL asset relationships ---------------
+  const linkAgg = new Map<string, { from: string; to: string; kind: string; count: number; vulnerable: boolean }>()
+  const siteForNode = (nodeId: string) => siteOfAsset.get(nodeId) ?? (nodeById.get(nodeId) ? siteOfAsset.get(nodeById.get(nodeId)!.label) : undefined)
+  for (const edge of snapshot.exposureGraph.edges) {
+    const fromNode = nodeById.get(edge.source)
+    const toNode = nodeById.get(edge.target)
+    if (!fromNode || !toNode) continue
+    const fromSite = siteForNode(edge.source)
+    const toSite = siteForNode(edge.target)
+    if (!fromSite || !toSite || fromSite === toSite) continue
+    const key = [fromSite, toSite].sort().join('→') + edge.type
+    const entry = linkAgg.get(key) || { from: fromSite, to: toSite, kind: edge.type || 'depends-on', count: 0, vulnerable: false }
+    entry.count += 1
+    if (fromNode.posture === 'vulnerable' || toNode.posture === 'vulnerable') entry.vulnerable = true
+    linkAgg.set(key, entry)
+  }
+
+  const regions = sites.map(({ key, region, x, y, assets: a, vulnerableAssets, avgRisk, cloudProviders, severity, label, lat, lon, topAssets }) => ({
+    key, region, label, lat, lon, x, y, assets: a, vulnerableAssets, avgRisk, cloudProviders, severity, topAssets,
+  }))
+
   return {
     regions,
     totalRegions: regions.length,
     highValueTargets: regions.filter((r) => r.severity === 'Critical' || r.severity === 'High').length,
-    summary: regions.length
-      ? `${regions.length} region(s) in scope; ${regions.filter((r) => r.vulnerableAssets > 0).length} carry quantum-vulnerable cryptography.`
+    summary: regions.length || unlocated.length
+      ? `${regions.length} located region(s); ${unlocated.length} asset(s) without location telemetry; ${anchorRows.length} certificate trust anchor(s).`
       : EVIDENCE_UNAVAILABLE,
+    map: {
+      sites,
+      anchors: anchorRows,
+      assetLinks: Array.from(linkAgg.values()),
+      trustLinks: trustLinks.filter((t) => anchorIds.has(t.anchorId)).slice(0, 40),
+      unlocated: unlocated.sort((a, b) => b.riskScore - a.riskScore).slice(0, 12),
+      unlocatedTotal: unlocated.length,
+      internetFacing: snapshot.exposureGraph.nodes.filter((n) => n.internetFacing).length,
+      latRange: { max: MAP_LAT_MAX, min: MAP_LAT_MIN },
+    },
   }
 }
 
@@ -724,7 +901,7 @@ function assembleHndlIntelligence(snapshot: Snapshot, rows: HndlRawRows) {
     connected: true,
     banner: buildBanner(snapshot, futureDecryptable.projectedDecryptableTb, criticalFindings),
     exposureGraph: buildExposureGraph(snapshot, cryptoInventory, certificates),
-    theater: buildTheater(snapshot, assets),
+    theater: buildTheater(snapshot, assets, certificates),
     harvestValue: buildHarvestValue(snapshot, assets),
     shelfLife: buildShelfLife(snapshot, assets),
     breakTimeline: buildBreakTimeline(snapshot),

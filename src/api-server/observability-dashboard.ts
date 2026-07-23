@@ -3,7 +3,7 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
-type ObservabilityKind = 'runtime' | 'certificate' | 'keys' | 'api' | 'cloud'
+type ObservabilityKind = 'runtime' | 'certificate' | 'cloud'
 type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 type AuthedRequest = Request & {
@@ -43,8 +43,6 @@ type Signal = {
 const ROUTE_META: Record<ObservabilityKind, { eventPrefix: string; routeLabel: string }> = {
   runtime: { eventPrefix: 'runtime-telemetry', routeLabel: 'Runtime telemetry' },
   certificate: { eventPrefix: 'certificate-telemetry', routeLabel: 'Certificate telemetry' },
-  keys: { eventPrefix: 'key-analytics', routeLabel: 'Key analytics' },
-  api: { eventPrefix: 'api-encryption', routeLabel: 'API encryption' },
   cloud: { eventPrefix: 'multi-cloud-telemetry', routeLabel: 'Multi-cloud telemetry' },
 }
 
@@ -1205,7 +1203,7 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
       detail: `${weakKeys.length} key lifecycle signal${weakKeys.length === 1 ? '' : 's'} require rotation or PQC migration.`,
       impact: 'high',
       count: weakKeys.length,
-      actionHref: '/dashboard/key-analytics',
+      actionHref: '/dashboard/qkms/rotation',
     },
     apiSignals.filter((signal) => signal.weak || !signal.encrypted).length > 0 && {
       id: 'enforce-api-encryption',
@@ -1213,7 +1211,7 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
       detail: `${apiSignals.filter((signal) => signal.weak || !signal.encrypted).length} API encryption signal${apiSignals.filter((signal) => signal.weak || !signal.encrypted).length === 1 ? '' : 's'} show weak transport posture.`,
       impact: 'medium',
       count: apiSignals.filter((signal) => signal.weak || !signal.encrypted).length,
-      actionHref: '/dashboard/api-encryption',
+      actionHref: '/dashboard/encryption-monitoring',
     },
     stale.length > 0 && {
       id: 'refresh-stale-observability',
@@ -1320,6 +1318,4 @@ async function buildObservabilitySnapshot(kind: ObservabilityKind, token: string
 
 export const runtimeTelemetryRoutes = buildRouter('runtime')
 export const certificateTelemetryRoutes = buildRouter('certificate')
-export const keyAnalyticsRoutes = buildRouter('keys')
-export const apiEncryptionRoutes = buildRouter('api')
 export const multiCloudTelemetryRoutes = buildRouter('cloud')

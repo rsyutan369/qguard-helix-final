@@ -89,6 +89,15 @@ const ENTERPRISE_ROWS: HndlRawRows = {
     { name: 'repo.acme.com', type: 'source code repo', environment: 'production', region: 'eu-west', criticality: 60, metadata: { data_type: 'source code' } },
     { name: 'mail.acme.com', type: 'mail exchange', environment: 'production', region: 'ap-southeast', criticality: 55, metadata: {} },
     { name: 'vault.acme.com', type: 'database store', environment: 'production', region: 'us-east', criticality: 50, metadata: {} },
+    // No region telemetry — must land in the honest "unlocated" tray, with a
+    // trust link to its certificate authority parsed from the real chain DN.
+    {
+      name: 'edge-fn.acme.com', type: 'edge function', environment: null, region: null, criticality: 45,
+      metadata: { certificate: { chain: [
+        { issuer: "CN=R13, O=Let's Encrypt, C=US", publicKeyAlgorithm: 'RSA-2048' },
+        { issuer: 'CN=ISRG Root X1, O=Internet Security Research Group, C=US', publicKeyAlgorithm: 'RSA-4096' },
+      ] } },
+    },
   ],
   migrationJobs: [
     { status: 'running', progress: 40, job_type: 'tls-migration' },
@@ -120,8 +129,16 @@ function verifyEnterprise() {
   assert(r.banner.threatLevel === 'Critical' && r.banner.hndlExposureScore === 68, `S1 Banner: ${r.banner.threatLevel}, HNDL ${r.banner.hndlExposureScore}, future ${r.banner.estimatedFutureDecryptableTb} TB`)
   // S2 Exposure graph
   assert(r.exposureGraph.tiers.length >= 5 && r.exposureGraph.nodes.length === 4, `S2 Exposure Graph: ${r.exposureGraph.tiers.length} tiers, ${r.exposureGraph.nodes.length} nodes`)
-  // S3 Theater
+  // S3 Theater (3D map model)
   assert(r.theater.regions.length >= 3 && r.theater.totalRegions === r.theater.regions.length, `S3 Theater: ${r.theater.regions.length} regions, ${r.theater.highValueTargets} high-value`)
+  const m = r.theater.map
+  assert(m.sites.length === 3 && m.sites.every((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon) && s.x >= 0 && s.x <= 100 && s.y >= 0 && s.y <= 100), `S3 map: ${m.sites.length} located sites w/ real geo (${m.sites.map((s) => s.key).join(', ')})`)
+  assert(m.sites.every((s) => (s.topAssets ?? []).length > 0), 'S3 map: every site lists its real assets')
+  assert(m.unlocated.length === 1 && m.unlocated[0].name === 'edge-fn.acme.com' && m.unlocatedTotal === 1, `S3 map: unlocated tray honest (${m.unlocated.map((u) => u.name).join(', ')})`)
+  const le = m.anchors.find((a) => /encrypt/i.test(a.name))
+  assert(!!le && le.country === 'US' && le.x != null && le.quantumSafe === false, `S3 map: CA trust anchor from real issuer DN (${m.anchors.map((a) => `${a.name}@${a.country}`).join('; ')})`)
+  assert(m.assetLinks.length === 1 && m.assetLinks[0].from !== m.assetLinks[0].to && m.assetLinks[0].vulnerable === true, `S3 map: cross-region link from real asset_relationships (${m.assetLinks.map((l) => `${l.from}→${l.to}`).join('; ')})`)
+  assert(m.trustLinks.some((t) => t.asset === 'edge-fn.acme.com' && t.siteKey === null), 'S3 map: unlocated asset trust-links to its CA without a fabricated location')
   // S4 Harvest value
   assert(r.harvestValue.length === 8 && r.harvestValue.some((h) => h.inScope), `S4 Harvest Value: ${r.harvestValue.length} categories, ${r.harvestValue.filter((h) => h.inScope).length} in scope`)
   // S5 Shelf-life
@@ -165,6 +182,7 @@ function verifyEmpty() {
   assert(r.capturedData.hasEvidence === false && r.capturedData.totalTb === 0, `Captured Data: 0 TB, hasEvidence=${r.capturedData.hasEvidence}`)
   assert(r.futureDecryptable.projectedDecryptableTb === 0, `Future Decryptable: 0 TB`)
   assert(r.exposureMatrix.length === 0, `Exposure Matrix empty (${r.exposureMatrix.length})`)
+  assert(r.theater.map.sites.length === 0 && r.theater.map.anchors.length === 0 && r.theater.map.unlocated.length === 0, 'Theater map empty — no fabricated sites/anchors')
   assert(r.evidence.note.includes('Evidence Not Available'), 'Evidence note flags unavailable')
 }
 

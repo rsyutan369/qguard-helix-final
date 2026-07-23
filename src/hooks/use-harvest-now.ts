@@ -45,17 +45,78 @@ export interface ExposureNode {
   migrationPlan: string;
 }
 
+export interface TheaterAssetRef {
+  name: string;
+  posture: string;
+  riskScore: number;
+  internetFacing: boolean;
+}
+
 export interface TheaterRegion {
   key: string;
   region: string;
+  label: string;
+  lat: number;
+  lon: number;
   x: number;
   y: number;
   assets: number;
   vulnerableAssets: number;
   avgRisk: number;
+  internetFacing?: number;
   cloudProviders: string[];
+  topAssets?: TheaterAssetRef[];
   severity: string;
 }
+
+export interface TheaterAnchor {
+  id: string;
+  name: string;
+  country: string | null;
+  countryLabel: string | null;
+  lat: number | null;
+  lon: number | null;
+  x: number | null;
+  y: number | null;
+  certificates: number;
+  assets: string[];
+  quantumSafe: boolean;
+  algorithms: string[];
+}
+
+export interface TheaterAssetLink {
+  from: string;
+  to: string;
+  kind: string;
+  count: number;
+  vulnerable: boolean;
+}
+
+export interface TheaterTrustLink {
+  asset: string;
+  siteKey: string | null;
+  anchorId: string;
+  vulnerable: boolean;
+}
+
+export interface TheaterUnlocatedAsset extends TheaterAssetRef {
+  type: string;
+}
+
+export interface TheaterMapModel {
+  sites: TheaterRegion[];
+  anchors: TheaterAnchor[];
+  assetLinks: TheaterAssetLink[];
+  trustLinks: TheaterTrustLink[];
+  unlocated: TheaterUnlocatedAsset[];
+  unlocatedTotal: number;
+  internetFacing: number;
+  latRange: { max: number; min: number };
+}
+
+export const EMPTY_THEATER_MAP: TheaterMapModel = {
+  sites: [], anchors: [], assetLinks: [], trustLinks: [], unlocated: [], unlocatedTotal: 0, internetFacing: 0, latRange: { max: 78, min: -56 },
+};
 
 export interface HarvestValueRow {
   key: string;
@@ -193,7 +254,7 @@ export interface HndlIntelligence {
   connected: boolean;
   banner: HndlBanner;
   exposureGraph: { tiers: ExposureTier[]; nodes: ExposureNode[]; edges: Array<{ source: string; target: string; type: string }>; legend: { safe: string; hybrid: string; vulnerable: string } };
-  theater: { regions: TheaterRegion[]; totalRegions: number; highValueTargets: number; summary: string };
+  theater: { regions: TheaterRegion[]; totalRegions: number; highValueTargets: number; summary: string; map?: TheaterMapModel };
   harvestValue: HarvestValueRow[];
   shelfLife: ShelfLifeRow[];
   breakTimeline: {

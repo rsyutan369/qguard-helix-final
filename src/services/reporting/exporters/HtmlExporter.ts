@@ -14,6 +14,12 @@ function esc(value: unknown): string {
 const SEV_COLOR: Record<string, string> = { critical: '#DC2626', high: '#EA580C', medium: '#D97706', low: '#16A34A', info: '#2563EB' };
 const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
 
+// Improvements_06 palettes — risk-zone (heat map), evidence grade, ownership domain.
+const ZONE_COLOR: Record<string, string> = { critical: '#B91C1C', high: '#EA580C', medium: '#D97706', low: '#65A30D', minimal: '#16A34A' };
+const GRADE_COLOR: Record<string, string> = { A: '#16A34A', B: '#65A30D', C: '#D97706', D: '#EA580C', E: '#DC2626', Missing: '#94A3B8' };
+const DOMAIN_COLOR: Record<string, string> = { customer: '#0891B2', provider: '#2563EB', ecosystem: '#7C3AED' };
+const STATUS_COLOR: Record<string, string> = { ready: '#16A34A', 'in-progress': '#2563EB', waiting: '#D97706', 'not-applicable': '#94A3B8' };
+
 /** Inline HTML progress bar (I3#6) — filled proportional to pct, 0-100. */
 function progressBar(pct: number): string {
   const p = Math.max(0, Math.min(100, Math.round(pct)));
@@ -126,6 +132,44 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   .cert-sign .sig { flex:1; min-width:280px; font-size:12px; color:#334155; }
   .cert-sign .sig .hash { font-family: ui-monospace, Consolas, monospace; font-size:10.5px; word-break:break-all; background:#F1F5F9; border-radius:6px; padding:8px 10px; margin-top:6px; }
   .foot { margin-top: 40px; border-top:1px solid var(--line); padding-top: 12px; font-size: 11px; color: var(--muted); display:flex; justify-content:space-between; }
+  /* Improvements_06 — board-level visual intelligence */
+  .board { border:2px solid var(--brand); border-radius:12px; padding:22px 24px; background:linear-gradient(160deg,#EFF6FF,#fff); margin:18px 0 8px; page-break-inside:avoid; }
+  .board-head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .board-badge { font-size:11px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--brand); }
+  .board-cert { font-size:11px; font-weight:800; padding:4px 12px; border-radius:6px; color:#fff; }
+  .board-headline { font-size:15px; font-weight:600; color:#0F172A; margin:10px 0 16px; }
+  .board-metrics { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; }
+  .bm { border:1px solid var(--line); border-radius:8px; padding:12px 14px; background:#fff; }
+  .bm-v { font-size:20px; font-weight:800; color:#0F172A; } .bm-l { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-top:3px; } .bm-x { font-size:11px; color:var(--brand); margin-top:2px; }
+  .board-two { display:grid; grid-template-columns: 1fr 1fr; gap:18px 28px; margin-top:16px; }
+  .board-two h4 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:#334155; margin:0 0 8px; }
+  .board-asset { margin-top:14px; font-size:11.5px; }
+  .resp-bar { display:flex; height:14px; border-radius:7px; overflow:hidden; background:#E2E8F0; }
+  .resp-legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:8px; font-size:11px; font-weight:700; }
+  .sr-bars { margin:10px 0 6px; }
+  .srb-row { display:grid; grid-template-columns: 120px 1fr 90px; align-items:center; gap:10px; margin-bottom:8px; font-size:12px; }
+  .srb-track { height:16px; border-radius:8px; background:#E2E8F0; overflow:hidden; }
+  .srb-fill { height:100%; border-radius:8px; }
+  .srb-count { text-align:right; font-variant-numeric:tabular-nums; color:#334155; font-weight:700; }
+  .sr-timeline { margin:8px 0; }
+  .srt-row { display:grid; grid-template-columns: 150px 1fr 150px; align-items:center; gap:12px; margin-bottom:8px; }
+  .srt-dom { font-size:12px; font-weight:700; color:#0F172A; }
+  .srt-track { height:16px; border-radius:8px; background:#E2E8F0; overflow:hidden; }
+  .srt-fill { height:100%; border-radius:8px; }
+  .srt-status { font-size:11px; font-weight:700; text-align:right; }
+  .heat { border-collapse:separate; border-spacing:3px; width:100%; margin:8px 0 6px; }
+  .heat td, .heat th { text-align:center; font-size:11px; padding:0; }
+  .heat .axis { color:var(--muted); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; background:none; border:none; }
+  .heat .rowlbl { color:#334155; font-weight:700; font-size:10.5px; text-align:right; padding-right:8px; white-space:nowrap; }
+  .heat .cell { color:#fff; font-weight:800; border-radius:6px; height:42px; width:60px; vertical-align:middle; }
+  .heat .cell small { display:block; font-size:8.5px; font-weight:600; opacity:.85; }
+  .pmatrix { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:8px 0; }
+  .quad { border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:#fff; }
+  .quad-title { font-size:13px; font-weight:800; color:#0F172A; }
+  .quad-sub { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--brand); margin:2px 0 6px; }
+  .quad-guide { font-size:11px; color:var(--muted); margin-bottom:8px; }
+  .quad ul { margin:0; padding-left:16px; } .quad li { font-size:11.5px; margin-bottom:4px; color:#334155; }
+  .grade { display:inline-block; min-width:22px; text-align:center; font-weight:800; font-size:12px; padding:1px 7px; border-radius:5px; color:#fff; }
 </style></head><body>
 <div class="page">
   <section class="cover">
@@ -140,6 +184,40 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
       <div><b>Assessment Scope:</b> ${scope.type === 'custom' ? `${esc(scope.selectedAssetCount)} of ${esc(scope.totalAssetCount)} assets (custom selection)` : `Full assessment (${esc(scope.totalAssetCount || 'all')} asset${scope.totalAssetCount === 1 ? '' : 's'})`}</div>
     </div>
   </section>
+
+  ${report.boardSnapshot.hasData ? (() => {
+    const b = report.boardSnapshot;
+    const total = Math.max(1, b.responsibilitySplit.customer + b.responsibilitySplit.provider + b.responsibilitySplit.ecosystem);
+    return `
+  <section class="board">
+    <div class="board-head">
+      <span class="board-badge">Board Snapshot — 60-Second Executive View</span>
+      <span class="board-cert" style="background:${b.certified ? '#16A34A' : '#334155'}">${esc(b.certificationStatus)}</span>
+    </div>
+    <p class="board-headline">${esc(b.headline)}</p>
+    <div class="board-metrics">
+      ${b.metrics.map((m) => `<div class="bm"><div class="bm-v">${esc(m.value)}</div><div class="bm-l">${esc(m.label)}</div><div class="bm-x">${esc(m.context)}</div></div>`).join('')}
+    </div>
+    <div class="board-two">
+      <div><h4>Top Decisions for the Board</h4><ol>${b.topDecisions.map((d) => `<li>${esc(d)}</li>`).join('') || '<li class="muted">Evidence Not Available</li>'}</ol></div>
+      <div><h4>Customer vs Provider Responsibility</h4>
+        <div class="resp-bar">
+          <div style="width:${(b.responsibilitySplit.customer / total) * 100}%;background:${DOMAIN_COLOR.customer}"></div>
+          <div style="width:${(b.responsibilitySplit.provider / total) * 100}%;background:${DOMAIN_COLOR.provider}"></div>
+          <div style="width:${(b.responsibilitySplit.ecosystem / total) * 100}%;background:${DOMAIN_COLOR.ecosystem}"></div>
+        </div>
+        <div class="resp-legend">
+          <span style="color:${DOMAIN_COLOR.customer}">Customer ${esc(b.responsibilitySplit.customer)}</span>
+          <span style="color:${DOMAIN_COLOR.provider}">Provider ${esc(b.responsibilitySplit.provider)}</span>
+          <span style="color:${DOMAIN_COLOR.ecosystem}">Ecosystem ${esc(b.responsibilitySplit.ecosystem)}</span>
+        </div>
+        <p class="muted" style="margin-top:8px;font-size:11px">${esc(b.responsibilityNote)}</p>
+      </div>
+    </div>
+    ${b.assetBasis ? `<p class="muted board-asset">${esc(b.assetBasis)}</p>` : ''}
+    <div class="callout"><b>Executive Recommendation:</b> ${esc(b.recommendation)}</div>
+  </section>` ;
+  })() : ''}
 
   <h2>Executive Summary</h2>
   <p>${esc(report.executiveSummary)}</p>
@@ -254,6 +332,45 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
     `Wave ${w.wave}`, w.name, w.priority, w.assets.join(', '), w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status,
   ]))}
 
+  ${report.sharedResponsibility.hasData ? `
+  <h2>Shared Responsibility Assessment&trade;</h2>
+  <p>${esc(report.sharedResponsibility.summary)}</p>
+  ${(() => {
+    const sr = report.sharedResponsibility;
+    const totalFindings = Math.max(1, sr.customerControlled + sr.providerControlled + sr.ecosystemDependent);
+    const bar = (label: string, count: number, domain: string) =>
+      `<div class="srb-row"><span style="color:${DOMAIN_COLOR[domain]};font-weight:700">${esc(label)}</span><div class="srb-track"><div class="srb-fill" style="width:${(count / totalFindings) * 100}%;background:${DOMAIN_COLOR[domain]}"></div></div><span class="srb-count">${esc(count)} (${Math.round((count / totalFindings) * 100)}%)</span></div>`;
+    return `
+  <h3>Shared Responsibility Summary</h3>
+  <div class="sr-bars">
+    ${bar('Customer', sr.customerControlled, 'customer')}
+    ${bar('Provider', sr.providerControlled, 'provider')}
+    ${bar('Ecosystem', sr.ecosystemDependent, 'ecosystem')}
+  </div>
+  <h3>Shared Responsibility Timeline</h3>
+  <div class="sr-timeline">
+    ${sr.timeline.map((t) => `<div class="srt-row"><span class="srt-dom">${esc(t.domain)}</span><div class="srt-track"><div class="srt-fill" style="width:${Math.max(3, Math.min(100, t.readiness))}%;background:${STATUS_COLOR[t.status] || '#94A3B8'}"></div></div><span class="srt-status" style="color:${STATUS_COLOR[t.status] || '#94A3B8'}">${esc(t.label)} · ${esc(t.readiness)}/100</span></div>`).join('')}
+  </div>
+  <p class="muted">${esc(sr.timeline.map((t) => t.note).filter(Boolean).join(' ')) }</p>`;
+  })()}
+  ${gridTable(['Ownership Domain', 'Readiness', 'Findings'], [
+    ['Overall', `${report.sharedResponsibility.readiness.overall}/100`, String(report.sharedResponsibility.customerControlled + report.sharedResponsibility.providerControlled + report.sharedResponsibility.ecosystemDependent)],
+    ['Customer-Controlled', `${report.sharedResponsibility.readiness.customer}/100`, String(report.sharedResponsibility.customerControlled)],
+    ['Provider-Controlled', `${report.sharedResponsibility.readiness.provider}/100`, String(report.sharedResponsibility.providerControlled)],
+    ['Ecosystem-Dependent', `${report.sharedResponsibility.readiness.ecosystem}/100`, String(report.sharedResponsibility.ecosystemDependent)],
+  ])}
+  <p class="muted"><b>${report.sharedResponsibility.actionableNow}</b> customer-actionable now &middot; <b>${report.sharedResponsibility.waitingDependencies}</b> waiting on a provider/ecosystem dependency &middot; <b>${report.sharedResponsibility.migrationBlockers}</b> migration blocker(s).</p>
+  ${report.sharedResponsibility.reconciliationNote ? `<p class="muted"><b>Finding-count reconciliation:</b> ${esc(report.sharedResponsibility.reconciliationNote)}</p>` : ''}
+  <h3>Shared Responsibility Matrix (Ownership)</h3>
+  ${gridTable(['Finding', 'Owner', 'Recommended Action', 'Priority', 'Status'], report.sharedResponsibility.matrix.map((m) => [m.finding, m.owner, m.action, m.priority, m.status]))}
+  ${report.sharedResponsibility.blockers.length ? `<h3>Migration Blockers</h3>${gridTable(['Finding', 'Owner', 'Dependency'], report.sharedResponsibility.blockers.map((b) => [b.title, b.owner, b.dependency]))}` : ''}
+  <h3>Dependency-Ordered Roadmap &mdash; 7 Waves</h3>
+  ${gridTable(['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], report.sharedResponsibility.waves.map((w) => [`Wave ${w.wave}`, w.name, w.domain, String(w.findingCount), w.status, w.timeline]))}
+  ${report.sharedResponsibility.providers.length ? `<h3>Provider &amp; Ecosystem Readiness</h3>${gridTable(['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Customer Influence'], report.sharedResponsibility.providers.map((p) => [p.name, p.domain, String(p.count), p.pqRoadmap, p.customerInfluence]))}` : ''}
+  ${report.sharedResponsibility.nextActions.length ? `<h3>Next Actions</h3><ul>${report.sharedResponsibility.nextActions.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>` : ''}
+  <p class="muted">${esc(report.sharedResponsibility.note)}</p>
+  ` : ''}
+
   <h2>Migration Dependency Analysis</h2>
   <p class="muted">${esc(report.dependencyAnalysis.summary)}</p>
   ${gridTable(['Dependency Chain', 'Blast Radius', 'Complexity'], report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]))}
@@ -262,6 +379,21 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Quantum Risk Analysis</h2>
   <p class="muted">Per-domain current and target risk. Domain values are the calibrated risk-domain model (see Risk Scoring Methodology), and the targets use the same reduction engine as the executive summary — the weighted blend of the targets below reproduces the programme target risk of ${esc(report.executiveBlock.targetRisk)}/100 (verified in Report Validation).</p>
   ${gridTable(['Risk Category', 'Current', 'Target', 'Reduction Potential'], report.riskCategories.map((r) => [r.category, `${r.currentScore}/100`, `${r.targetScore}/100`, `${r.reductionPotentialPct}%`]))}
+
+  ${report.executiveHeatMap.hasData ? (() => {
+    const h = report.executiveHeatMap;
+    return `
+  <h2>Executive Risk Heat Map&trade;</h2>
+  <p class="muted">${esc(h.methodology)}</p>
+  <table class="heat">
+    <tr><td class="axis" style="text-align:right">Impact &darr; / Likelihood &rarr;</td>${h.likelihoodLabels.map((l) => `<th class="axis">${esc(l)}</th>`).join('')}</tr>
+    ${h.impactLabels.map((imp) => {
+      const row = h.cells.filter((c) => c.impact === imp).sort((a, b) => a.likelihoodRank - b.likelihoodRank);
+      return `<tr><td class="rowlbl">${esc(imp)}</td>${row.map((c) => `<td class="cell" style="background:${ZONE_COLOR[c.level] || '#94A3B8'};opacity:${c.count ? 1 : 0.28}" title="${esc(c.items.join(', '))}">${c.count || ''}${c.count ? `<small>${esc(c.level)}</small>` : ''}</td>`).join('')}</tr>`;
+    }).join('')}
+  </table>
+  <p class="muted">Rows = Business Impact (Critical &rarr; Minimal) &middot; Columns = Quantum Exploitation Likelihood (Rare &rarr; Almost Certain). Cell number = consolidated finding groups in that zone; ${esc(h.totalPlotted)} plotted.</p>` ;
+  })() : ''}
 
   <h2>Risk Scoring Methodology&trade;</h2>
   <p><b>Formula:</b> <code>${esc(report.riskMethodology.formula)}</code></p>
@@ -306,10 +438,22 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <p class="muted">${esc(report.cryptoPolicy.note)}</p>
   ${gridTable(['Profile', 'Key Establishment', 'Digital Signature', 'Certificate Chain', 'Symmetric', 'Hash', 'Guidance'], report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, p.certificateChain, p.symmetric, p.hash, p.guidance]))}
 
+  ${report.remediationCampaigns.campaigns.length ? `
+  <h2>Remediation Campaigns&trade;</h2>
+  <p class="muted">${esc(report.remediationCampaigns.note)}</p>
+  ${gridTable(['Priority', 'Campaign', 'Target', 'Findings', 'Occurrences', 'Assets', 'Recommended Action'], report.remediationCampaigns.campaigns.map((c) => [c.priority, c.campaign, c.target, c.findingCount, c.occurrences, c.affectedAssets, c.action]))}` : ''}
+
   <h2>Remediation Program&trade;</h2>
   ${gridTable(['Priority', 'Action', 'Owner', 'Affected Assets', 'Cost', 'Effort', 'Risk Reduction', 'Target Date', 'Status'], report.remediationProgram.map((r) => [
     r.priority, r.action, r.owner, r.affectedAssets.join(', '), usd(r.costUsd), r.effort, `${r.riskReductionPct}%`, r.targetDate, r.status,
   ]))}
+
+  ${report.businessPriorityMatrix.hasData ? `
+  <h2>Business Priority Matrix&trade;</h2>
+  <p class="muted">${esc(report.businessPriorityMatrix.note)}</p>
+  <div class="pmatrix">
+    ${report.businessPriorityMatrix.quadrants.map((q) => `<div class="quad"><div class="quad-title">${esc(q.title)}</div><div class="quad-sub">${esc(q.subtitle)}</div><div class="quad-guide">${esc(q.guidance)}</div><ul>${q.items.slice(0, 6).map((it) => `<li><b>${esc(it.name)}</b> — ${esc(it.rationale)}</li>`).join('') || '<li class="muted">No items in this quadrant.</li>'}</ul></div>`).join('')}
+  </div>` : ''}
 
   <h2>Migration Roadmap &amp; Program Plan</h2>
   <p class="muted">Sequential dates, milestones, approval gates and critical-path/slack — a true program-management plan. Elapsed window: the "migration programme" duration cited in the executive summary counts the migration waves only; the schedule below adds the discovery and validation phases, so the end-to-end elapsed window is ${esc(report.roadmap.reduce((sum, p) => sum + (Number(p.effortWeeks) || 0), 0))} weeks.</p>
@@ -401,6 +545,14 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${gridTable(['Role', 'Owner', 'Responsibility'], report.governance.map((g) => [g.role, g.owner, g.responsibility]))}
   <h3>Approval Gates</h3>
   ${gridTable(['Gate', 'Owner', 'Success Criteria'], report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]))}
+
+  ${report.evidenceQuality.rows.length ? `
+  <h2>Evidence Quality Score&trade;</h2>
+  <p class="muted">${esc(report.evidenceQuality.note)}</p>
+  <table><thead><tr>${['Evidence Source', 'Grade', 'Confidence', 'Status', 'Note'].map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${report.evidenceQuality.rows
+    .map((r) => `<tr><td>${esc(r.source)}</td><td><span class="grade" style="background:${GRADE_COLOR[r.grade] || '#94A3B8'}">${esc(r.grade)}</span></td><td>${esc(r.confidencePct)}%</td><td>${esc(r.status)}</td><td>${esc(r.note)}</td></tr>`)
+    .join('')}</tbody></table>
+  <p><b>Overall Evidence Grade:</b> <span class="grade" style="background:${GRADE_COLOR[report.evidenceQuality.overallGrade] || '#94A3B8'}">${esc(report.evidenceQuality.overallGrade)}</span> &middot; ${esc(report.evidenceQuality.gradedSources)} contributing source(s), ${esc(report.evidenceQuality.missingSources)} missing.</p>` : ''}
 
   <h2>Evidence Confidence Dashboard&trade;</h2>
   ${gridTable(['Evidence Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence', 'Note'], report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`, e.note || '—']))}

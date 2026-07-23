@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js'
+import { createClient, SupabaseClient, User } from '@supabase/supabase-js'
 import type { Request } from 'express'
 
 type SupabaseSource = 'primary' | 'fallback'
@@ -144,12 +144,101 @@ export function getToken(req: Request): string | null {
   return null
 }
 
-/**
- * Validate a Supabase JWT token and return the user.
- */
-export async function getServerUser(token: string) {
+// --- Token verification (fast path) --------------------------------------
+//
+// PERFORMANCE: the previous implementation called `auth.getUser(token)` — a
+// network round-trip to Supabase's GoTrue auth server — on EVERY authenticated
+// API request, and created a throwaway client each time. A single dashboard
+// load fires 12+ concurrent authenticated requests (fetches + SSE streams);
+// gated ones validate twice (gateway + route). That burst of GoTrue calls was
+// both the page-load latency AND the source of intermittent 401s (GoTrue
+// rate-limits/transient-fails the burst → getServerUser returned null → 401).
+//
+// Supabase now signs access tokens with an ASYMMETRIC key (ES256), so a token
+// can be verified LOCALLY against the project's published JWKS — no network
+// round-trip. `auth.getClaims(token)` does exactly this (verifies the ES256
+// signature with WebCrypto after a one-time, per-client-instance JWKS fetch;
+// it transparently falls back to a network getUser only for legacy symmetric
+// tokens or when WebCrypto is unavailable). To keep the JWKS cache warm, the
+// verifying clients are REUSED across requests (module singletons) instead of
+// recreated per call. A short-TTL positive cache + single-flight dedup then
+// collapse the concurrent burst into a single verification per token.
+
+// Reused verifying clients (no per-request Authorization header — the token is
+// passed explicitly to getClaims/getUser). Keyed by config identity so the
+// getClaims JWKS cache persists across requests.
+const verifyClients = new Map<string, SupabaseClient>()
+
+function verifyClientFor(config: ServerSupabaseConfig): SupabaseClient | null {
+  if (!hasAuthConfig(config)) return null
+  const key = `${config.url}::${config.anonKey.slice(0, 16)}`
+  let client = verifyClients.get(key)
+  if (!client) {
+    client = createClient(config.url, config.anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+    verifyClients.set(key, client)
+  }
+  return client
+}
+
+// Build a User-shaped object from verified JWT claims. Covers every field the
+// API routes read off the auth user (id, email, role, phone, app/user
+// metadata). Fields NOT present in the JWT (created_at, last_sign_in_at) are
+// only consumed by low-traffic profile/billing routes, which opt into the
+// full-fidelity network path via getServerUser(token, { full: true }).
+function claimsToUser(claims: Record<string, unknown>): User {
+  const obj = (k: string) =>
+    (claims[k] && typeof claims[k] === 'object' ? claims[k] : {}) as Record<string, unknown>
+  return {
+    id: String(claims.sub ?? ''),
+    aud: (claims.aud as string) ?? 'authenticated',
+    role: (claims.role as string) ?? 'authenticated',
+    email: typeof claims.email === 'string' ? claims.email : undefined,
+    phone: typeof claims.phone === 'string' ? claims.phone : undefined,
+    app_metadata: obj('app_metadata'),
+    user_metadata: obj('user_metadata'),
+    created_at: '',
+  } as unknown as User
+}
+
+async function verifyWithClient(client: SupabaseClient, token: string): Promise<User | null> {
+  try {
+    const { data, error } = await client.auth.getClaims(token)
+    const claims = data?.claims as Record<string, unknown> | undefined
+    if (!error && claims?.sub) return claimsToUser(claims)
+  } catch {
+    // Invalid signature / JWKS lookup miss (e.g. token belongs to the other
+    // project) → let the caller try the fallback config, then 401.
+  }
+  return null
+}
+
+async function verifyTokenLocal(token: string): Promise<User | null> {
+  const primary = resolveAuthConfig(token)
+  const primaryClient = verifyClientFor(primary)
+  if (primaryClient) {
+    const user = await verifyWithClient(primaryClient, token)
+    if (user) return user
+  }
+  // Dual-project fallback: the token may have been issued by the fallback
+  // Supabase project (verify against its JWKS).
+  const fallback = fallbackConfig()
+  if (primary.source !== 'fallback' && hasAuthConfig(fallback)) {
+    const fallbackClient = verifyClientFor(fallback)
+    if (fallbackClient) {
+      const user = await verifyWithClient(fallbackClient, token)
+      if (user) return user
+    }
+  }
+  return null
+}
+
+// Full-fidelity path: fetch the complete user record from the auth server.
+// Used only where JWT claims are insufficient (created_at / last_sign_in_at).
+async function fetchServerUserFromNetwork(token: string): Promise<User | null> {
   const config = resolveAuthConfig(token)
-  const client = hasAuthConfig(config) ? createAuthClientForConfig(token, config) : null
+  const client = verifyClientFor(config)
   if (!client) return null
 
   const { data: { user }, error } = await client.auth.getUser(token)
@@ -157,10 +246,78 @@ export async function getServerUser(token: string) {
 
   const fallback = fallbackConfig()
   if (config.source !== 'fallback' && hasAuthConfig(fallback)) {
-    const fallbackClient = createAuthClientForConfig(token, fallback)
-    const fallbackResult = await fallbackClient.auth.getUser(token)
-    return fallbackResult.error ? null : fallbackResult.data.user
+    const fallbackClient = verifyClientFor(fallback)
+    if (fallbackClient) {
+      const fallbackResult = await fallbackClient.auth.getUser(token)
+      return fallbackResult.error ? null : fallbackResult.data.user
+    }
+  }
+  return null
+}
+
+interface CachedVerification {
+  user: User
+  verifiedAt: number
+  expMs: number
+}
+
+// Re-verify at most every VERIFICATION_TTL_MS per token, and never serve past
+// the token's own exp. Bounds staleness after a sign-out/revocation to <=TTL
+// (the same trade-off any local JWT verification makes for short-lived tokens).
+const VERIFICATION_TTL_MS = 60_000
+const verificationCache = new Map<string, CachedVerification>()
+const inflightVerifications = new Map<string, Promise<User | null>>()
+
+function pruneVerificationCache(now: number) {
+  if (verificationCache.size <= 1000) return
+  for (const [token, entry] of verificationCache) {
+    if (now >= entry.expMs || now - entry.verifiedAt >= VERIFICATION_TTL_MS) {
+      verificationCache.delete(token)
+    }
+  }
+}
+
+/**
+ * Validate a Supabase JWT token and return the user.
+ *
+ * Fast path (default): verifies the token's ES256 signature LOCALLY against the
+ * cached project JWKS — no network round-trip — with a short-TTL result cache
+ * and single-flight dedup so a burst of concurrent requests validates once.
+ *
+ * @param options.full  Skip the cache/local path and fetch the complete user
+ *   record from the auth server (needed only for created_at / last_sign_in_at).
+ */
+export async function getServerUser(token: string, options?: { full?: boolean }): Promise<User | null> {
+  if (!token) return null
+
+  if (options?.full) {
+    return fetchServerUserFromNetwork(token)
   }
 
-  return null
+  const now = Date.now()
+  const cached = verificationCache.get(token)
+  if (cached && now < cached.expMs && now - cached.verifiedAt < VERIFICATION_TTL_MS) {
+    return cached.user
+  }
+
+  const existing = inflightVerifications.get(token)
+  if (existing) return existing
+
+  const promise = (async () => {
+    try {
+      const user = await verifyTokenLocal(token)
+      if (user) {
+        const payload = jwtPayload(token)
+        const expSec = typeof payload?.exp === 'number' ? payload.exp : 0
+        const expMs = expSec ? expSec * 1000 : now + VERIFICATION_TTL_MS
+        verificationCache.set(token, { user, verifiedAt: now, expMs })
+        pruneVerificationCache(now)
+      }
+      return user
+    } finally {
+      inflightVerifications.delete(token)
+    }
+  })()
+  inflightVerifications.set(token, promise)
+  return promise
 }

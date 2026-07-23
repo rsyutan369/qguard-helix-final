@@ -61,6 +61,19 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   summary.getColumn(2).width = 20;
   summary.getColumn(3).width = 24;
 
+  // Board Snapshot — 60-second executive view (Improvements_06 §6)
+  if (report.boardSnapshot.hasData) {
+    const b = report.boardSnapshot;
+    addTableSheet(workbook, { title: 'Board Snapshot', columns: ['Item', 'Value', 'Context / Detail'], rows: [
+      ...b.metrics.map((m) => [m.label, m.value, m.context] as Array<string | number>),
+      ['Headline', b.headline, ''],
+      ['Customer / Provider / Ecosystem', `${b.responsibilitySplit.customer} / ${b.responsibilitySplit.provider} / ${b.responsibilitySplit.ecosystem}`, b.responsibilityNote],
+      ['Asset Basis', b.assetBasis, ''],
+      ...b.topDecisions.map((d, i) => [`Top Decision ${i + 1}`, d, ''] as Array<string | number>),
+      ['Executive Recommendation', b.recommendation, ''],
+    ] }, 'Board Snapshot');
+  }
+
   const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : 'Evidence Not Available');
 
   // Actionable findings sheet with severity colouring
@@ -107,8 +120,49 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   ] }, 'Business Impact');
   addTableSheet(workbook, { title: 'Readiness Domains', columns: ['Domain', 'Current', 'Target', 'Risk Level', 'Owner', 'Target Rationale'], rows: report.readinessDomains.map((d) => [d.domain, d.score, d.targetScore, d.riskLevel, d.owner, d.targetRationale]) }, 'Readiness Domains');
   addTableSheet(workbook, { title: 'Migration Waves', columns: ['Wave', 'Focus', 'Priority', 'Owner', 'Duration (wks)', 'Cost', 'Risk Reduction', 'Status', 'Assets'], rows: report.migrationWaves.map((w) => [w.wave, w.name, w.priority, w.owner, w.durationWeeks, usd(w.costUsd), `${w.riskReductionPct}%`, w.status, w.assets.join('; ')]) }, 'Migration Waves');
+
+  // Shared Responsibility Assessment™ — ownership-classified migration intelligence.
+  if (report.sharedResponsibility.hasData) {
+    const sr = report.sharedResponsibility;
+    addTableSheet(workbook, { title: 'Ownership Readiness', columns: ['Ownership Domain', 'Readiness /100', 'Findings'], rows: [
+      ['Overall', sr.readiness.overall, sr.customerControlled + sr.providerControlled + sr.ecosystemDependent],
+      ['Customer-Controlled', sr.readiness.customer, sr.customerControlled],
+      ['Provider-Controlled', sr.readiness.provider, sr.providerControlled],
+      ['Ecosystem-Dependent', sr.readiness.ecosystem, sr.ecosystemDependent],
+      ['Actionable Now', '', sr.actionableNow],
+      ['Waiting on Dependency', '', sr.waitingDependencies],
+      ['Migration Blockers', '', sr.migrationBlockers],
+    ] }, 'Ownership Readiness');
+    addTableSheet(workbook, { title: 'Shared Responsibility Matrix', columns: ['Finding', 'Owner', 'Recommended Action', 'Priority', 'Status', 'Ownership'], rows: sr.matrix.map((m) => [m.finding, m.owner, m.action, m.priority, m.status, m.domain]) }, 'SR Matrix');
+    addTableSheet(workbook, { title: 'Dependency-Ordered Roadmap', columns: ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], rows: sr.waves.map((w) => [w.wave, w.name, w.domain, w.findingCount, w.status, w.timeline]) }, 'SR Roadmap');
+    if (sr.providers.length) addTableSheet(workbook, { title: 'Provider & Ecosystem Readiness', columns: ['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Customer Influence'], rows: sr.providers.map((p) => [p.name, p.domain, p.count, p.pqRoadmap, p.customerInfluence]) }, 'SR Providers');
+    // §1 summary + §4 timeline + reconciliation
+    addTableSheet(workbook, { title: 'SR Summary & Timeline', columns: ['Ownership Domain', 'Findings', 'Timeline Status', 'Readiness /100', 'Note'], rows: [
+      ...sr.timeline.map((t) => {
+        const count = t.domain.startsWith('Customer') ? sr.customerControlled : t.domain.startsWith('Provider') ? sr.providerControlled : sr.ecosystemDependent;
+        return [t.domain, count, t.label, t.readiness, t.note] as Array<string | number>;
+      }),
+      ['Finding-count reconciliation', sr.classifiedFindings, `raw scanner: ${sr.rawScannerInstances}`, '', sr.reconciliationNote],
+    ] }, 'SR Timeline');
+  }
   addTableSheet(workbook, { title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, r.currentScore, r.targetScore, `${r.reductionPotentialPct}%`]) }, 'Risk Analysis');
+  // Executive Heat Map (Improvements_06 §2) — 5×5 matrix of finding-group counts
+  if (report.executiveHeatMap.hasData) {
+    const h = report.executiveHeatMap;
+    addTableSheet(workbook, { title: 'Executive Heat Map', columns: ['Impact \\ Likelihood', ...h.likelihoodLabels], rows: h.impactLabels.map((imp) => {
+      const row = h.cells.filter((c) => c.impact === imp).sort((a, b) => a.likelihoodRank - b.likelihoodRank);
+      return [imp, ...row.map((c) => c.count)] as Array<string | number>;
+    }) }, 'Heat Map');
+  }
+  // Remediation Campaigns (Improvements_06 minor §3)
+  if (report.remediationCampaigns.campaigns.length) {
+    addTableSheet(workbook, { title: 'Remediation Campaigns', columns: ['Priority', 'Campaign', 'Target', 'Findings', 'Occurrences', 'Affected Assets', 'Recommended Action', 'Member Findings'], rows: report.remediationCampaigns.campaigns.map((c) => [c.priority, c.campaign, c.target, c.findingCount, c.occurrences, c.affectedAssets, c.action, c.findings.join('; ')]) }, 'Remediation Campaigns');
+  }
   addTableSheet(workbook, { title: 'Remediation Program', columns: ['Priority', 'Action', 'Owner', 'Affected Assets', 'Cost', 'Effort', 'Risk Reduction', 'Target Date', 'Status'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, r.affectedAssets.join('; '), usd(r.costUsd), r.effort, `${r.riskReductionPct}%`, r.targetDate, r.status]) }, 'Remediation Program');
+  // Business Priority Matrix (Improvements_06 §3)
+  if (report.businessPriorityMatrix.hasData) {
+    addTableSheet(workbook, { title: 'Business Priority Matrix', columns: ['Quadrant', 'Guidance', 'Action', 'Business Value', 'Effort', 'Risk Reduction %'], rows: report.businessPriorityMatrix.quadrants.flatMap((q) => q.items.length ? q.items.map((it) => [`${q.title} (${q.subtitle})`, q.guidance, it.name, it.businessValue, it.effort, it.riskReductionPct] as Array<string | number>) : [[`${q.title} (${q.subtitle})`, q.guidance, 'No items in this quadrant', '-', '-', '-'] as Array<string | number>]) }, 'Priority Matrix');
+  }
   addTableSheet(workbook, { title: 'Cost Forecast', columns: ['Category', 'Estimated Cost'], rows: [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)], ['Projected Risk-Reduction Value', usd(report.costForecast.projectedRiskReductionValueUsd)]] }, 'Cost Forecast');
   addTableSheet(workbook, { title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, 'Governance');
 
@@ -126,6 +180,11 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   ] }, 'Confidence Overview');
   addTableSheet(workbook, { title: 'Assessment Confidence', columns: ['Coverage Factor', 'Coverage %'], rows: [['OVERALL (Assessment Confidence)', report.confidenceSummary.assessmentConfidencePct], ...report.migrationConfidence.factors.map((f) => [f.label, f.coveragePct])] }, 'Assessment Confidence');
   addTableSheet(workbook, { title: 'Evidence Confidence', columns: ['Source', 'Coverage %', 'Completeness %', 'Freshness', 'Confidence %', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, e.coveragePct, e.completenessPct, e.freshness, e.confidencePct, e.note]) }, 'Evidence Confidence');
+  // Evidence Quality Score (Improvements_06 §5)
+  addTableSheet(workbook, { title: 'Evidence Quality Score', columns: ['Evidence Source', 'Grade', 'Confidence %', 'Status', 'Note'], rows: [
+    ...report.evidenceQuality.rows.map((r) => [r.source, r.grade, r.confidencePct, r.status, r.note] as Array<string | number>),
+    ['OVERALL', report.evidenceQuality.overallGrade, '', `${report.evidenceQuality.gradedSources} graded / ${report.evidenceQuality.missingSources} missing`, report.evidenceQuality.note],
+  ] }, 'Evidence Quality');
   addTableSheet(workbook, { title: 'Executive Decisions', columns: ['Decision Required', 'Type', 'Rationale', 'Owner'], rows: report.executiveDecisions.map((d) => [d.decision, d.type, d.rationale, d.owner]) }, 'Executive Decisions');
   addTableSheet(workbook, { title: 'Migration Simulation', columns: ['Scenario', 'Readiness From', 'Readiness To', 'Risk From', 'Risk To', 'Cost', 'Timeline (wks)', 'Confidence %'], rows: report.waveSimulation.map((w) => [w.label, w.readinessFrom, w.readinessTo, w.riskFrom, w.riskTo, usd(w.costUsd), w.timelineWeeks, w.confidencePct]) }, 'Migration Simulation');
   addTableSheet(workbook, { title: 'Advisor Validation', columns: ['Attribute', 'Value'], rows: [

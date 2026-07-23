@@ -289,6 +289,152 @@ export type MigrationConfidence = z.infer<typeof migrationConfidenceSchema>;
 export const evidenceConfidenceSchema = z.object({ source: z.string(), coveragePct: z.number(), completenessPct: z.number(), freshness: z.string(), confidencePct: z.number(), note: z.string() });
 export type EvidenceConfidence = z.infer<typeof evidenceConfidenceSchema>;
 
+// Shared Responsibility Quantum Migration Intelligence™ — ownership assessment
+export const sharedResponsibilityReportSchema = z.object({
+  hasData: z.boolean().default(false),
+  summary: z.string().default(EVIDENCE_UNAVAILABLE),
+  readiness: z.object({ overall: z.number(), customer: z.number(), provider: z.number(), ecosystem: z.number() }).default({ overall: 0, customer: 0, provider: 0, ecosystem: 0 }),
+  distribution: z.object({ customer: z.number(), provider: z.number(), ecosystem: z.number() }).default({ customer: 0, provider: 0, ecosystem: 0 }),
+  customerControlled: z.number().default(0),
+  providerControlled: z.number().default(0),
+  ecosystemDependent: z.number().default(0),
+  actionableNow: z.number().default(0),
+  waitingDependencies: z.number().default(0),
+  migrationBlockers: z.number().default(0),
+  matrix: z.array(z.object({ finding: z.string(), owner: z.string(), action: z.string(), priority: z.string(), status: z.string(), domain: z.string() })).default([]),
+  blockers: z.array(z.object({ title: z.string(), owner: z.string(), dependency: z.string() })).default([]),
+  waves: z.array(z.object({ wave: z.number(), name: z.string(), domain: z.string(), findingCount: z.number(), status: z.string(), timeline: z.string() })).default([]),
+  providers: z.array(z.object({ name: z.string(), domain: z.string(), count: z.number(), pqRoadmap: z.string(), customerInfluence: z.string() })).default([]),
+  // Reports_Generation_Improvements_06 §4 — per-domain readiness timeline
+  // ("Customer Ready · Provider Waiting · Ecosystem Waiting") for an at-a-glance
+  // executive view of where progress can actually be made today.
+  timeline: z.array(z.object({ domain: z.string(), label: z.string(), status: z.string(), readiness: z.number(), note: z.string() })).default([]),
+  // Improvements_06 minor §1 — finding-count reconciliation (classified vs raw).
+  classifiedFindings: z.number().default(0),
+  rawScannerInstances: z.number().default(0),
+  reconciliationNote: z.string().default(''),
+  nextActions: z.array(z.string()).default([]),
+  note: z.string().default(''),
+});
+export type SharedResponsibilityReport = z.infer<typeof sharedResponsibilityReportSchema>;
+
+/* ---- Reports_Generation_Improvements_06 — board-level visual intelligence ---- */
+
+// §6 — Executive One-Page Board Snapshot. Every value is copied from an
+// already-validated section (executive block, ROI, decisions, shared
+// responsibility, certification) so the 60-second summary can never disagree
+// with the report body.
+export const boardSnapshotMetricSchema = z.object({ label: z.string(), value: z.string(), context: z.string().default('') });
+export type BoardSnapshotMetric = z.infer<typeof boardSnapshotMetricSchema>;
+export const boardSnapshotSchema = z.object({
+  hasData: z.boolean().default(false),
+  headline: z.string().default(EVIDENCE_UNAVAILABLE),
+  certificationStatus: z.string().default(''),
+  certified: z.boolean().default(false),
+  currentReadiness: z.number().default(0),
+  targetReadiness: z.number().default(0),
+  currentRisk: z.number().default(0),
+  targetRisk: z.number().default(0),
+  investmentUsd: z.number().default(0),
+  timelineWeeks: z.number().default(0),
+  roiSummary: z.string().default(EVIDENCE_UNAVAILABLE),
+  riskReductionPct: z.number().default(0),
+  metrics: z.array(boardSnapshotMetricSchema).default([]),
+  topDecisions: z.array(z.string()).default([]),
+  responsibilitySplit: z.object({ customer: z.number(), provider: z.number(), ecosystem: z.number() }).default({ customer: 0, provider: 0, ecosystem: 0 }),
+  responsibilityNote: z.string().default(''),
+  assetBasis: z.string().default(''),
+  recommendation: z.string().default(''),
+});
+export type BoardSnapshot = z.infer<typeof boardSnapshotSchema>;
+
+// §2 — 5×5 Executive Heat Map (Business Impact × Quantum Exploitation Likelihood).
+export const heatMapCellSchema = z.object({
+  impact: z.string(),
+  likelihood: z.string(),
+  impactRank: z.number(),
+  likelihoodRank: z.number(),
+  count: z.number(),
+  level: z.string(),
+  items: z.array(z.string()).default([]),
+});
+export type HeatMapCell = z.infer<typeof heatMapCellSchema>;
+export const executiveHeatMapSchema = z.object({
+  hasData: z.boolean().default(false),
+  impactLabels: z.array(z.string()).default([]),
+  likelihoodLabels: z.array(z.string()).default([]),
+  cells: z.array(heatMapCellSchema).default([]),
+  totalPlotted: z.number().default(0),
+  methodology: z.string().default(''),
+  note: z.string().default(''),
+});
+export type ExecutiveHeatMap = z.infer<typeof executiveHeatMapSchema>;
+
+// §3 — Business Priority Matrix (Business Value × Effort → Quick Wins /
+// Strategic Projects / Fill-Ins / Long-Term) to guide CIO investment.
+export const priorityMatrixItemSchema = z.object({
+  name: z.string(),
+  riskReductionPct: z.number(),
+  effort: z.string(),
+  businessValue: z.string(),
+  rationale: z.string(),
+});
+export type PriorityMatrixItem = z.infer<typeof priorityMatrixItemSchema>;
+export const priorityQuadrantSchema = z.object({
+  key: z.string(),
+  title: z.string(),
+  subtitle: z.string(),
+  guidance: z.string(),
+  items: z.array(priorityMatrixItemSchema).default([]),
+});
+export type PriorityQuadrant = z.infer<typeof priorityQuadrantSchema>;
+export const businessPriorityMatrixSchema = z.object({
+  hasData: z.boolean().default(false),
+  quadrants: z.array(priorityQuadrantSchema).default([]),
+  note: z.string().default(''),
+});
+export type BusinessPriorityMatrix = z.infer<typeof businessPriorityMatrixSchema>;
+
+// §5 — Evidence Quality Score (letter grade per evidence source; "Missing" when
+// a source has produced no telemetry) — easier to digest than a raw %.
+export const evidenceQualityRowSchema = z.object({
+  source: z.string(),
+  grade: z.string(),
+  confidencePct: z.number(),
+  status: z.string(),
+  note: z.string().default(''),
+});
+export type EvidenceQualityRow = z.infer<typeof evidenceQualityRowSchema>;
+export const evidenceQualitySchema = z.object({
+  rows: z.array(evidenceQualityRowSchema).default([]),
+  overallGrade: z.string().default('-'),
+  gradedSources: z.number().default(0),
+  missingSources: z.number().default(0),
+  note: z.string().default(''),
+});
+export type EvidenceQuality = z.infer<typeof evidenceQualitySchema>;
+
+// Minor §3 — Remediation Campaigns: consolidate repeated recommendations under a
+// single campaign theme so the report is shorter and executive-friendly without
+// losing traceability.
+export const remediationCampaignSchema = z.object({
+  campaign: z.string(),
+  target: z.string(),
+  action: z.string(),
+  findings: z.array(z.string()).default([]),
+  findingCount: z.number().default(0),
+  affectedAssets: z.number().default(0),
+  occurrences: z.number().default(0),
+  riskReductionPct: z.number().default(0),
+  priority: z.string().default(''),
+});
+export type RemediationCampaign = z.infer<typeof remediationCampaignSchema>;
+export const remediationCampaignsSchema = z.object({
+  campaigns: z.array(remediationCampaignSchema).default([]),
+  note: z.string().default(''),
+});
+export type RemediationCampaigns = z.infer<typeof remediationCampaignsSchema>;
+
 // Phase 10 — Executive Decision Center™
 export const executiveDecisionSchema = z.object({ decision: z.string(), type: z.string(), rationale: z.string(), owner: z.string() });
 export type ExecutiveDecision = z.infer<typeof executiveDecisionSchema>;
@@ -760,6 +906,29 @@ export const enterpriseAssessmentReportSchema = z.object({
   migrationConfidence: migrationConfidenceSchema,
   evidenceConfidence: z.array(evidenceConfidenceSchema),
   executiveDecisions: z.array(executiveDecisionSchema),
+  // Shared Responsibility Assessment™ (default keeps older report JSON parseable)
+  sharedResponsibility: sharedResponsibilityReportSchema.default({
+    hasData: false,
+    summary: EVIDENCE_UNAVAILABLE,
+    readiness: { overall: 0, customer: 0, provider: 0, ecosystem: 0 },
+    distribution: { customer: 0, provider: 0, ecosystem: 0 },
+    customerControlled: 0,
+    providerControlled: 0,
+    ecosystemDependent: 0,
+    actionableNow: 0,
+    waitingDependencies: 0,
+    migrationBlockers: 0,
+    matrix: [],
+    blockers: [],
+    waves: [],
+    providers: [],
+    timeline: [],
+    classifiedFindings: 0,
+    rawScannerInstances: 0,
+    reconciliationNote: '',
+    nextActions: [],
+    note: '',
+  }),
   playbookDetail: z.array(playbookDetailSchema),
   waveSimulation: z.array(waveSimulationSchema),
   governanceGates: z.array(governanceGateSchema),
@@ -787,6 +956,31 @@ export const enterpriseAssessmentReportSchema = z.object({
   certification: certificationSummarySchema.default(DEFAULT_CERTIFICATION),
   // Improvements_05 — refinements (defaults keep older report JSON parseable)
   decisionPackage: z.array(decisionPackageLineSchema).default([]),
+  // Improvements_06 — board-level visual intelligence (defaults keep older JSON parseable)
+  boardSnapshot: boardSnapshotSchema.default({
+    hasData: false,
+    headline: EVIDENCE_UNAVAILABLE,
+    certificationStatus: '',
+    certified: false,
+    currentReadiness: 0,
+    targetReadiness: 0,
+    currentRisk: 0,
+    targetRisk: 0,
+    investmentUsd: 0,
+    timelineWeeks: 0,
+    roiSummary: EVIDENCE_UNAVAILABLE,
+    riskReductionPct: 0,
+    metrics: [],
+    topDecisions: [],
+    responsibilitySplit: { customer: 0, provider: 0, ecosystem: 0 },
+    responsibilityNote: '',
+    assetBasis: '',
+    recommendation: '',
+  }),
+  executiveHeatMap: executiveHeatMapSchema.default({ hasData: false, impactLabels: [], likelihoodLabels: [], cells: [], totalPlotted: 0, methodology: '', note: '' }),
+  businessPriorityMatrix: businessPriorityMatrixSchema.default({ hasData: false, quadrants: [], note: '' }),
+  evidenceQuality: evidenceQualitySchema.default({ rows: [], overallGrade: '-', gradedSources: 0, missingSources: 0, note: '' }),
+  remediationCampaigns: remediationCampaignsSchema.default({ campaigns: [], note: '' }),
   findings: z.array(findingSchema),
   assets: tableSchema,
   certificates: tableSchema,

@@ -24,6 +24,26 @@ const SEV: Record<string, RGB> = {
   low: rgb(0.09, 0.64, 0.29),
   info: rgb(0.15, 0.4, 1),
 };
+// Improvements_06 — risk-zone (heat map), ownership-domain and timeline-status palettes.
+const TRACK = rgb(0.886, 0.91, 0.941);
+const ZONE: Record<string, RGB> = {
+  critical: rgb(0.725, 0.11, 0.11),
+  high: rgb(0.918, 0.345, 0.047),
+  medium: rgb(0.851, 0.467, 0.024),
+  low: rgb(0.396, 0.639, 0.051),
+  minimal: rgb(0.086, 0.639, 0.29),
+};
+const DOMAIN_RGB: Record<string, RGB> = {
+  customer: rgb(0.033, 0.569, 0.698),
+  provider: rgb(0.149, 0.388, 0.922),
+  ecosystem: rgb(0.486, 0.227, 0.929),
+};
+const STATUS_RGB: Record<string, RGB> = {
+  ready: rgb(0.086, 0.639, 0.29),
+  'in-progress': rgb(0.149, 0.388, 0.922),
+  waiting: rgb(0.851, 0.467, 0.024),
+  'not-applicable': rgb(0.58, 0.639, 0.722),
+};
 
 /**
  * pdf-lib StandardFonts use WinAnsi (CP1252) and cannot encode arbitrary
@@ -204,6 +224,55 @@ class PdfLayout {
     this.y -= sizePt + 10;
   }
 
+  /** Labelled proportional horizontal bar (Improvements_06 §1/§4). */
+  hbar(label: string, pct: number, color: RGB, valueText: string) {
+    const rowH = 17;
+    this.ensure(rowH + 2);
+    const labelW = 122;
+    const valueW = 150;
+    const trackX = MARGIN + labelW;
+    const trackW = Math.max(40, this.contentW - labelW - valueW - 8);
+    const yTop = this.y;
+    this.page.drawText(this.wrap(label, 8.5, this.bold, labelW - 4)[0], { x: MARGIN, y: yTop - 12, size: 8.5, font: this.bold, color: INK });
+    this.page.drawRectangle({ x: trackX, y: yTop - 15, width: trackW, height: 10, color: TRACK });
+    const p = Math.max(0, Math.min(100, pct));
+    if (p > 0) this.page.drawRectangle({ x: trackX, y: yTop - 15, width: (trackW * p) / 100, height: 10, color });
+    this.page.drawText(this.wrap(valueText, 8, this.font, valueW - 4)[0], { x: trackX + trackW + 6, y: yTop - 12, size: 8, font: this.font, color: rgb(0.2, 0.25, 0.33) });
+    this.y -= rowH;
+  }
+
+  /** 5×5 Executive Heat Map grid (Improvements_06 §2). */
+  heatMap(heat: EnterpriseAssessmentReport['executiveHeatMap']) {
+    const labelW = 58;
+    const cols = heat.likelihoodLabels.length || 5;
+    const cellW = (this.contentW - labelW) / cols;
+    const cellH = 30;
+    // Column header (likelihood).
+    this.ensure(cellH * (heat.impactLabels.length + 1) + 20);
+    let hx = MARGIN + labelW;
+    for (const l of heat.likelihoodLabels) {
+      this.page.drawText(this.wrap(l, 6.5, this.font, cellW - 2)[0], { x: hx + 2, y: this.y - 8, size: 6.5, font: this.font, color: MUTED });
+      hx += cellW;
+    }
+    this.y -= 12;
+    // Rows (impact, Critical→Minimal).
+    for (const imp of heat.impactLabels) {
+      const row = heat.cells.filter((c) => c.impact === imp).sort((a, b) => a.likelihoodRank - b.likelihoodRank);
+      const top = this.y;
+      this.page.drawText(imp, { x: MARGIN, y: top - cellH / 2 - 3, size: 7, font: this.bold, color: rgb(0.2, 0.25, 0.33) });
+      let cx = MARGIN + labelW;
+      for (const cell of row) {
+        const zone = ZONE[cell.level] || rgb(0.58, 0.639, 0.722);
+        const faded = cell.count === 0;
+        this.page.drawRectangle({ x: cx + 1, y: top - cellH, width: cellW - 2, height: cellH - 2, color: zone, opacity: faded ? 0.25 : 1 });
+        if (cell.count > 0) this.page.drawText(String(cell.count), { x: cx + cellW / 2 - 3, y: top - cellH / 2 - 3, size: 11, font: this.bold, color: WHITE });
+        cx += cellW;
+      }
+      this.y -= cellH;
+    }
+    this.y -= 8;
+  }
+
   findings(report: EnterpriseAssessmentReport) {
     if (!report.findings.length) {
       this.paragraph('Evidence Not Available — no findings recorded.', 9.5, MUTED);
@@ -300,6 +369,27 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
     return `[${'#'.repeat(filled)}${'-'.repeat(10 - filled)}] ${p}%`;
   };
   const layout = new PdfLayout(doc, font, bold);
+
+  // ---- Board Snapshot — 60-second executive view (Improvements_06 §6) ----
+  if (report.boardSnapshot.hasData) {
+    const b = report.boardSnapshot;
+    layout.heading('Board Snapshot — 60-Second Executive View');
+    layout.paragraph(b.headline, 10, INK);
+    layout.table({ title: 'Board Metrics', columns: ['Metric', 'Value', 'Context'], rows: b.metrics.map((m) => [m.label, m.value, m.context]) }, [26, 24, 50]);
+    if (b.topDecisions.length) {
+      layout.paragraph('Top Decisions for the Board:', 9.5, INK);
+      b.topDecisions.forEach((d, i) => layout.paragraph(`${i + 1}. ${d}`, 9, MUTED));
+    }
+    const dist = b.responsibilitySplit;
+    const distTotal = Math.max(1, dist.customer + dist.provider + dist.ecosystem);
+    layout.paragraph('Customer vs Provider Responsibility:', 9.5, INK);
+    layout.hbar('Customer', (dist.customer / distTotal) * 100, DOMAIN_RGB.customer, `${dist.customer} (${Math.round((dist.customer / distTotal) * 100)}%)`);
+    layout.hbar('Provider', (dist.provider / distTotal) * 100, DOMAIN_RGB.provider, `${dist.provider} (${Math.round((dist.provider / distTotal) * 100)}%)`);
+    layout.hbar('Ecosystem', (dist.ecosystem / distTotal) * 100, DOMAIN_RGB.ecosystem, `${dist.ecosystem} (${Math.round((dist.ecosystem / distTotal) * 100)}%)`);
+    if (b.responsibilityNote) layout.paragraph(b.responsibilityNote, 8.5, MUTED);
+    if (b.assetBasis) layout.paragraph(b.assetBasis, 8.5, MUTED);
+    layout.paragraph(`Executive Recommendation: ${b.recommendation}`, 9.5, INK);
+  }
 
   layout.heading('Executive Summary');
   layout.paragraph(report.executiveSummary);
@@ -399,12 +489,49 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Migration Wave Planning');
   layout.table({ title: 'Waves', columns: ['Wave', 'Focus', 'Pri', 'Owner', 'Dur', 'Cost', 'Risk-', 'Status'], rows: report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]) }, [7, 22, 11, 20, 8, 14, 8, 10]);
 
+  if (report.sharedResponsibility.hasData) {
+    const sr = report.sharedResponsibility;
+    layout.heading('Shared Responsibility Assessment');
+    layout.paragraph(sr.summary, 9, MUTED);
+    // §1 — ownership summary bars
+    const srTotal = Math.max(1, sr.customerControlled + sr.providerControlled + sr.ecosystemDependent);
+    layout.paragraph('Shared Responsibility Summary:', 9.5, INK);
+    layout.hbar('Customer', (sr.customerControlled / srTotal) * 100, DOMAIN_RGB.customer, `${sr.customerControlled} (${Math.round((sr.customerControlled / srTotal) * 100)}%)`);
+    layout.hbar('Provider', (sr.providerControlled / srTotal) * 100, DOMAIN_RGB.provider, `${sr.providerControlled} (${Math.round((sr.providerControlled / srTotal) * 100)}%)`);
+    layout.hbar('Ecosystem', (sr.ecosystemDependent / srTotal) * 100, DOMAIN_RGB.ecosystem, `${sr.ecosystemDependent} (${Math.round((sr.ecosystemDependent / srTotal) * 100)}%)`);
+    // §4 — per-domain readiness timeline
+    if (sr.timeline.length) {
+      layout.paragraph('Shared Responsibility Timeline (Ready / Waiting):', 9.5, INK);
+      sr.timeline.forEach((t) => layout.hbar(t.domain, t.readiness, STATUS_RGB[t.status] || STATUS_RGB['not-applicable'], `${t.label} - ${t.readiness}/100`));
+    }
+    layout.table({ title: 'Ownership Readiness', columns: ['Ownership Domain', 'Readiness', 'Findings'], rows: [
+      ['Overall', `${sr.readiness.overall}/100`, `${sr.customerControlled + sr.providerControlled + sr.ecosystemDependent}`],
+      ['Customer-Controlled', `${sr.readiness.customer}/100`, `${sr.customerControlled}`],
+      ['Provider-Controlled', `${sr.readiness.provider}/100`, `${sr.providerControlled}`],
+      ['Ecosystem-Dependent', `${sr.readiness.ecosystem}/100`, `${sr.ecosystemDependent}`],
+    ] }, [50, 25, 25]);
+    if (sr.reconciliationNote) layout.paragraph(`Finding-count reconciliation: ${sr.reconciliationNote}`, 8.5, MUTED);
+    layout.table({ title: 'Shared Responsibility Matrix', columns: ['Finding', 'Owner', 'Action', 'Pri', 'Status'], rows: sr.matrix.slice(0, 24).map((m) => [m.finding, m.owner, m.action, m.priority, m.status]) }, [26, 16, 30, 10, 18]);
+    layout.table({ title: 'Dependency-Ordered Roadmap (7 Waves)', columns: ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], rows: sr.waves.map((w) => [`W${w.wave}`, w.name, w.domain, `${w.findingCount}`, w.status, w.timeline]) }, [8, 26, 20, 12, 14, 20]);
+    if (sr.providers.length) {
+      layout.table({ title: 'Provider & Ecosystem Readiness', columns: ['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Cust. Influence'], rows: sr.providers.map((p) => [p.name, p.domain, `${p.count}`, p.pqRoadmap, p.customerInfluence]) }, [28, 20, 14, 20, 18]);
+    }
+    if (sr.nextActions.length) sr.nextActions.forEach((a) => layout.paragraph(`• ${a}`, 9, MUTED));
+  }
+
   layout.heading('Migration Dependency Analysis');
   layout.paragraph(report.dependencyAnalysis.summary, 9, MUTED);
   layout.table({ title: 'Dependencies', columns: ['Dependency Chain', 'Blast Radius', 'Complexity'], rows: report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]) }, [64, 18, 18]);
 
   layout.heading('Quantum Risk Analysis');
   layout.table({ title: 'Risk Categories', columns: ['Category', 'Current', 'Target', 'Reduction Potential'], rows: report.riskCategories.map((r) => [r.category, `${r.currentScore}`, `${r.targetScore}`, `${r.reductionPotentialPct}%`]) }, [40, 18, 18, 24]);
+
+  if (report.executiveHeatMap.hasData) {
+    layout.heading('Executive Risk Heat Map');
+    layout.paragraph(report.executiveHeatMap.methodology, 8.5, MUTED);
+    layout.heatMap(report.executiveHeatMap);
+    layout.paragraph(`Rows = Business Impact (Critical -> Minimal); Columns = Quantum Exploitation Likelihood (Rare -> Almost Certain). Cell number = consolidated finding groups in that zone; ${report.executiveHeatMap.totalPlotted} plotted.`, 8.5, MUTED);
+  }
 
   layout.heading('Risk Scoring Methodology');
   layout.paragraph(`Formula: ${report.riskMethodology.formula}`, 9, INK);
@@ -450,8 +577,24 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.paragraph(report.cryptoPolicy.note, 9, MUTED);
   layout.table({ title: 'Crypto Policy', columns: ['Profile', 'Key Establishment', 'Digital Signature', 'Symmetric / Hash', 'Guidance'], rows: report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, `${p.symmetric} / ${p.hash}`, p.guidance]) }, [16, 20, 22, 16, 26]);
 
+  if (report.remediationCampaigns.campaigns.length) {
+    layout.heading('Remediation Campaigns');
+    layout.paragraph(report.remediationCampaigns.note, 8.5, MUTED);
+    layout.table({ title: 'Campaigns', columns: ['Pri', 'Campaign', 'Target', 'Find.', 'Occ.', 'Assets', 'Recommended Action'], rows: report.remediationCampaigns.campaigns.map((c) => [c.priority, c.campaign, c.target, `${c.findingCount}`, `${c.occurrences}`, `${c.affectedAssets}`, c.action]) }, [6, 20, 20, 7, 7, 8, 32]);
+  }
+
   layout.heading('Remediation Program');
   layout.table({ title: 'Remediation', columns: ['Pri', 'Action', 'Owner', 'Cost', 'Risk-', 'Target'], rows: report.remediationProgram.map((r) => [r.priority, r.action, r.owner, usd(r.costUsd), `${r.riskReductionPct}%`, r.targetDate]) }, [6, 40, 18, 14, 8, 14]);
+
+  if (report.businessPriorityMatrix.hasData) {
+    layout.heading('Business Priority Matrix');
+    layout.paragraph(report.businessPriorityMatrix.note, 8.5, MUTED);
+    for (const q of report.businessPriorityMatrix.quadrants) {
+      layout.paragraph(`${q.title} (${q.subtitle}) — ${q.guidance}`, 9.5, INK);
+      if (q.items.length) q.items.slice(0, 6).forEach((it) => layout.paragraph(`- ${it.name}: ${it.rationale}`, 8.5, MUTED));
+      else layout.paragraph('- No items in this quadrant.', 8.5, MUTED);
+    }
+  }
 
   layout.heading('Migration Roadmap & Program Plan');
   layout.paragraph(`Sequential dates, milestones, approval gates and critical-path/slack. Elapsed window: the "migration programme" duration counts the migration waves only; with the discovery and validation phases below, the end-to-end elapsed window is ${report.roadmap.reduce((sum, p) => sum + (Number(p.effortWeeks) || 0), 0)} weeks.`, 9, MUTED);
@@ -533,6 +676,13 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.heading('Program Governance');
   layout.table({ title: 'Governance', columns: ['Role', 'Owner', 'Responsibility'], rows: report.governance.map((g) => [g.role, g.owner, g.responsibility]) }, [22, 24, 54]);
   layout.table({ title: 'Approval Gates', columns: ['Gate', 'Owner', 'Success Criteria'], rows: report.governanceGates.map((g) => [g.gate, g.owner, g.criteria]) }, [24, 18, 58]);
+
+  if (report.evidenceQuality.rows.length) {
+    layout.heading('Evidence Quality Score');
+    layout.paragraph(report.evidenceQuality.note, 8.5, MUTED);
+    layout.table({ title: 'Evidence Quality', columns: ['Evidence Source', 'Grade', 'Confidence', 'Status', 'Note'], rows: report.evidenceQuality.rows.map((r) => [r.source, r.grade, `${r.confidencePct}%`, r.status, r.note]) }, [22, 8, 12, 12, 46]);
+    layout.paragraph(`Overall Evidence Grade: ${report.evidenceQuality.overallGrade} (${report.evidenceQuality.gradedSources} contributing source(s), ${report.evidenceQuality.missingSources} missing).`, 9, INK);
+  }
 
   layout.heading('Evidence Confidence Dashboard');
   layout.table({ title: 'Evidence Confidence', columns: ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence', 'Note'], rows: report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`, e.note || '-']) }, [22, 14, 16, 16, 14, 18]);

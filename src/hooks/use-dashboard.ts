@@ -89,17 +89,149 @@ export interface HealthStatus {
   version: string
 }
 
+// ---- Executive Command Center snapshot (/api/v1/dashboard/executive) ----
+
+export interface ExecutiveKpi {
+  id: string
+  label: string
+  value: number
+  unit: string
+  format: 'score' | 'count' | 'percent' | 'currency'
+  direction: 'lower-better' | 'higher-better'
+  target: number
+  targetLabel: string
+  deltaPercent: number
+  trend: 'up' | 'down' | 'flat'
+  level?: string
+  sparkline: number[]
+  lastUpdated: string
+  route: string
+  hint: string
+  modeled?: boolean
+  unmeasured?: boolean
+}
+
+export interface ExecutiveNarrativeFact {
+  id: string
+  label: string
+  value: string | number
+  tone: 'critical' | 'warning' | 'good' | 'neutral'
+}
+
+export interface PipelineStage {
+  key: string
+  label: string
+  completion: number
+  remaining: number
+}
+
+export interface ComplianceFramework {
+  id: string
+  name: string
+  progress: number
+  evidenceCount: number
+  missingControls: number
+  modeled: boolean
+}
+
+export interface AssetCategory {
+  key: string
+  label: string
+  count: number
+  atRisk: number
+}
+
+export interface ExecutiveSnapshot {
+  generatedAt: string
+  hasData: boolean
+  lastAssessmentAt: string | null
+  narrative: {
+    posture: string
+    readinessScore: number
+    riskScore: number
+    riskLevel: string
+    hasData: boolean
+    facts: ExecutiveNarrativeFact[]
+    priority: { title: string; detail: string; severity: string; route: string }
+    confidence: number
+    summary: string
+  }
+  kpis: ExecutiveKpi[]
+  pipeline: {
+    stages: PipelineStage[]
+    overallCompletion: number
+    remainingAssets: number
+    estimatedFinishWeeks: number
+    bottleneck: string
+    certificationReadiness: number
+  }
+  compliance: { overall: number; frameworks: ComplianceFramework[] }
+  businessImpact: {
+    modeled: boolean
+    financialExposure: number
+    revenueProtected: number
+    missionCriticalAssets: number
+    taggedCriticalAssets: number
+    applicationsAtRisk: number
+    applications: number
+    operationalImpact: number
+    estimatedDowntimeHours: number
+    riskTrendDelta: number
+    projectedRoiPct: number
+    migrationCostUsd: number
+    assumptions: string
+  }
+  assetInventory: { total: number; categories: AssetCategory[] }
+  threatIntel: {
+    hndl: number
+    legacyCrypto: number
+    downgrade: number
+    shadowCrypto: number
+    kev: number
+    cves: number
+    epssMax: number
+    shorAtRisk: number
+    groverWeakened: number
+    quantumVulnerable: number
+    feeds: Array<{ id: string; title: string; severity: string; source: string; at: string }>
+    hasThreatFeed: boolean
+  }
+  runtime: {
+    events24h: number
+    totalEvents: number
+    queueDepth: number
+    activeWorkers: number
+    totalWorkers: number
+    freshHeartbeats: number
+    activeScans: number
+    scanThroughput: number
+    sseHealth: string
+    process: { cpuMs: number; heapUsedMb: number; rssMb: number; aggregationLatencyMs: number }
+  }
+  exposureGraph: {
+    nodes: Array<{ id: string; label: string; type: string; environment: string; riskScore: number; posture: string; internetFacing: boolean }>
+    edges: Array<{ source: string; target: string; type: string }>
+  }
+  riskTrend: Array<{ label: string; readiness: number; risk: number }>
+  topRiskAssets: Array<{ asset: string; assetType: string; environment: string; owner: string; riskScore: number; status: string }>
+  scores: Record<string, number | string>
+  inventory: Record<string, number>
+  recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }>
+}
+
 export type LoadingState = 'loading' | 'success' | 'error' | 'offline'
 
 export function useDashboard() {
   const { session, user } = useAuth()
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
+  const [executive, setExecutive] = useState<ExecutiveSnapshot | null>(null)
   const [events, setEvents] = useState<SecurityEvent[]>([])
   const [exposureMap, setExposureMap] = useState<ExposureMap>({ nodes: [], edges: [] })
   const [activities, setActivities] = useState<ActivityItem[]>([])
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [summaryState, setSummaryState] = useState<LoadingState>('loading')
+  const [executiveState, setExecutiveState] = useState<LoadingState>('loading')
   const [eventsState, setEventsState] = useState<LoadingState>('loading')
   const [mapState, setMapState] = useState<LoadingState>('loading')
   const [activityState, setActivityState] = useState<LoadingState>('loading')
@@ -107,8 +239,16 @@ export function useDashboard() {
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
   const [sseConnected, setSseConnected] = useState(false)
   const eventSourcesRef = useRef<EventSource[]>([])
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sseReconnectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  // Coalesced, single-flight refresh control. Automatic triggers (30s poll,
+  // Supabase realtime, SSE signals) all funnel through a throttle so bursts
+  // collapse to at most one full refresh per MIN_AUTO_REFRESH_MS, and a refresh
+  // never overlaps itself — this removes the reload storm that kept flipping the
+  // dashboard back into its loading state.
+  const refreshInFlightRef = useRef(false)
+  const refreshPendingRef = useRef(false)
+  const lastRefreshAtRef = useRef(0)
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const token = session?.access_token
 
@@ -130,6 +270,21 @@ export function useDashboard() {
     } catch (err) {
       console.error('Failed to fetch dashboard summary:', err)
       setSummaryState(prev => prev === 'success' ? 'offline' : 'error')
+    }
+  }, [token])
+
+  const fetchExecutive = useCallback(async () => {
+    if (!token) return
+    setExecutiveState('loading')
+    try {
+      const res = await fetch('/api/v1/dashboard/executive', { headers: apiHeaders })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setExecutive(json.data)
+      setExecutiveState('success')
+    } catch (err) {
+      console.error('Failed to fetch executive snapshot:', err)
+      setExecutiveState(prev => prev === 'success' ? 'offline' : 'error')
     }
   }, [token])
 
@@ -206,22 +361,42 @@ export function useDashboard() {
     }
   }, [token])
 
-  const refreshAll = useCallback(() => {
-    fetchSummary()
-    fetchEvents()
-    fetchExposureMap()
-    fetchActivity()
-    fetchRecommendations()
-    fetchHealth()
-  }, [fetchSummary, fetchEvents, fetchExposureMap, fetchActivity, fetchRecommendations, fetchHealth])
+  // Single-flight core: runs one full refresh at a time. If triggers arrive
+  // while a refresh is in flight, exactly one trailing refresh is queued (so a
+  // burst of realtime events never fans out into overlapping heavy refetches).
+  const runRefresh = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      refreshPendingRef.current = true
+      return
+    }
+    refreshInFlightRef.current = true
+    lastRefreshAtRef.current = Date.now()
+    try {
+      await Promise.all([
+        fetchSummary(), fetchExecutive(), fetchEvents(), fetchExposureMap(),
+        fetchActivity(), fetchRecommendations(), fetchHealth(),
+      ])
+    } finally {
+      refreshInFlightRef.current = false
+      if (refreshPendingRef.current) {
+        refreshPendingRef.current = false
+        void runRefresh()
+      }
+    }
+  }, [fetchSummary, fetchExecutive, fetchEvents, fetchExposureMap, fetchActivity, fetchRecommendations, fetchHealth])
 
+  // User-initiated (header refresh button / error reconnect): refresh now.
+  const refreshAll = useCallback(() => { void runRefresh() }, [runRefresh])
+
+  // Automatic triggers: coalesce + throttle to at most one refresh every 5s.
   const queueRefreshAll = useCallback(() => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-    refreshTimerRef.current = setTimeout(() => {
-      refreshTimerRef.current = null
-      refreshAll()
-    }, 250)
-  }, [refreshAll])
+    if (throttleTimerRef.current) return
+    const wait = Math.max(0, 5000 - (Date.now() - lastRefreshAtRef.current))
+    throttleTimerRef.current = setTimeout(() => {
+      throttleTimerRef.current = null
+      void runRefresh()
+    }, wait)
+  }, [runRefresh])
 
   // Initial data load
   useEffect(() => {
@@ -229,16 +404,12 @@ export function useDashboard() {
     refreshAll()
   }, [token, user, refreshAll])
 
-  // Auto-refresh every 30 seconds
+  // Auto-refresh every 30 seconds (through the single-flight throttle).
   useEffect(() => {
     if (!token) return
-    const interval = setInterval(() => {
-      fetchSummary()
-      fetchHealth()
-      fetchEvents()
-    }, 30000)
+    const interval = setInterval(() => { queueRefreshAll() }, 30000)
     return () => clearInterval(interval)
-  }, [token, fetchSummary, fetchHealth, fetchEvents])
+  }, [token, queueRefreshAll])
 
   // Supabase Realtime subscriptions for live updates
   useEffect(() => {
@@ -283,7 +454,11 @@ export function useDashboard() {
           { event: '*', schema: 'public', table: tableName, filter: `user_id=eq.${user.id}` },
           queueRefreshAll,
         )
-        .subscribe()
+        .subscribe((status) => {
+          // The realtime websocket is the dashboard's true "live" channel — drive
+          // the monitoring indicator from it (one websocket, no HTTP-connection cost).
+          if (status === 'SUBSCRIBED') setSseConnected(true)
+        })
       channels.push(channel)
     }
 
@@ -294,78 +469,71 @@ export function useDashboard() {
     }
   }, [user, queueRefreshAll])
 
-  // SSE connection for real-time metric pushes (fallback for complex updates)
+  // SSE for change-driven signals. The dashboard-/metrics- streams were REMOVED:
+  // they emitted an unconditional "*-update" every 8s (a hidden fast poll) that
+  // forced a full 7-endpoint refetch, and — together with the other persistent
+  // EventSources — saturated the browser's per-origin HTTP/1.1 connection limit
+  // (~6), starving the real data fetches and keeping the page stuck loading.
+  // Periodic freshness now comes from the 30s poll; change-driven freshness from
+  // the Supabase realtime websocket above. Each remaining stream reconnects on
+  // its OWN exponential backoff, so a stream the tenant isn't entitled to backs
+  // off alone instead of tearing down the healthy streams every 10s.
   useEffect(() => {
     if (!token) return
+    const tokenParam = encodeURIComponent(token)
+    const specs: Array<{ url: string; events: string[] }> = [
+      { url: `/api/v1/scanner/intelligence/stream?token=${tokenParam}`, events: ['scanner-intelligence'] },
+      { url: `/api/v1/agent-scanner/stream?token=${tokenParam}`, events: ['agent-scanner-sync'] },
+      { url: `/api/v1/vault/share/events?token=${tokenParam}`, events: ['failed_attempt', 'link_destroyed'] },
+    ]
 
-    const closeStreams = () => {
+    let cancelled = false
+    eventSourcesRef.current = []
+    sseReconnectTimersRef.current = []
+
+    const connect = (spec: { url: string; events: string[] }, attempt: number) => {
+      if (cancelled) return
+      const es = new EventSource(spec.url)
+      eventSourcesRef.current.push(es)
+      es.onopen = () => setSseConnected(true)
+      for (const ev of spec.events) es.addEventListener(ev, queueRefreshAll)
+      es.onerror = () => {
+        es.close()
+        eventSourcesRef.current = eventSourcesRef.current.filter((s) => s !== es)
+        if (cancelled) return
+        const delay = Math.min(60000, 5000 * 2 ** Math.min(attempt, 4))
+        const timer = setTimeout(() => connect(spec, attempt + 1), delay)
+        sseReconnectTimersRef.current.push(timer)
+      }
+    }
+
+    for (const spec of specs) connect(spec, 0)
+
+    return () => {
+      cancelled = true
       for (const stream of eventSourcesRef.current) stream.close()
       eventSourcesRef.current = []
-      setSseConnected(false)
-    }
-
-    const connectSSE = () => {
-      closeStreams()
-      const dashboardStream = new EventSource(`/api/v1/dashboard/stream?token=${encodeURIComponent(token)}`)
-      const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
-      const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`)
-      const agentScannerStream = new EventSource(`/api/v1/agent-scanner/stream?token=${encodeURIComponent(token)}`)
-      const vaultStream = new EventSource(`/api/v1/vault/share/events?token=${encodeURIComponent(token)}`)
-      eventSourcesRef.current = [dashboardStream, metricsStream, scannerStream, agentScannerStream, vaultStream]
-
-      const markOpen = () => setSseConnected(true)
-      const reconnect = () => {
-        setSseConnected(false)
-        closeStreams()
-        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
-        reconnectTimerRef.current = setTimeout(connectSSE, 10000)
-      }
-
-      dashboardStream.onopen = markOpen
-      metricsStream.onopen = markOpen
-      scannerStream.onopen = markOpen
-      agentScannerStream.onopen = markOpen
-      vaultStream.onopen = markOpen
-      dashboardStream.onerror = reconnect
-      metricsStream.onerror = reconnect
-      scannerStream.onerror = reconnect
-      agentScannerStream.onerror = reconnect
-      vaultStream.onerror = reconnect
-
-      dashboardStream.addEventListener('dashboard-connected', queueRefreshAll)
-      dashboardStream.addEventListener('dashboard-update', queueRefreshAll)
-      metricsStream.addEventListener('metrics-update', queueRefreshAll)
-      metricsStream.addEventListener('runtime-crypto-update', queueRefreshAll)
-      metricsStream.addEventListener('scan-complete', queueRefreshAll)
-      scannerStream.addEventListener('scanner-intelligence', queueRefreshAll)
-      scannerStream.addEventListener('scanner-error', queueRefreshAll)
-      agentScannerStream.addEventListener('agent-scanner-sync', queueRefreshAll)
-      agentScannerStream.addEventListener('agent-scanner-error', queueRefreshAll)
-      vaultStream.addEventListener('failed_attempt', queueRefreshAll)
-      vaultStream.addEventListener('link_destroyed', queueRefreshAll)
-    }
-
-    connectSSE()
-    return () => {
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
-      closeStreams()
+      for (const timer of sseReconnectTimersRef.current) clearTimeout(timer)
+      sseReconnectTimersRef.current = []
     }
   }, [token, queueRefreshAll])
 
   useEffect(() => () => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+    if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current)
+    for (const timer of sseReconnectTimersRef.current) clearTimeout(timer)
     for (const stream of eventSourcesRef.current) stream.close()
   }, [])
 
   return {
     summary,
+    executive,
     events,
     exposureMap,
     activities,
     recommendations,
     health,
     summaryState,
+    executiveState,
     eventsState,
     mapState,
     activityState,
@@ -374,6 +542,7 @@ export function useDashboard() {
     sseConnected,
     refreshAll,
     fetchSummary,
+    fetchExecutive,
     fetchEvents,
   }
 }

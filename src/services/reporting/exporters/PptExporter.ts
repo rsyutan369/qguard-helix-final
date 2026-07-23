@@ -45,6 +45,35 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   cover.addText(`Assessment Scope: ${report.scope.type === 'custom' ? `${report.scope.selectedAssetCount} of ${report.scope.totalAssetCount} assets (custom selection)` : `Full assessment (${report.scope.totalAssetCount} asset${report.scope.totalAssetCount === 1 ? '' : 's'})`}`, { x: 0.6, y: 4.9, w: 12, h: 0.4, fontSize: 12, color: MUTED });
   footer(cover);
 
+  // Board Snapshot — 60-second executive view (Improvements_06 §6)
+  if (report.boardSnapshot.hasData) {
+    const b = report.boardSnapshot;
+    const bslide = pptx.addSlide();
+    bslide.background = { color: 'F8FAFC' };
+    bslide.addText('Board Snapshot — 60-Second Executive View', { x: 0.5, y: 0.3, w: 9.5, h: 0.6, fontSize: 24, bold: true, color: INK });
+    bslide.addText(b.certificationStatus, { x: 9.9, y: 0.35, w: 3.4, h: 0.5, fontSize: 12, bold: true, color: 'FFFFFF', fill: { color: b.certified ? '16A34A' : '334155' }, align: 'center' });
+    bslide.addText(b.headline, { x: 0.5, y: 0.95, w: 12.3, h: 0.6, fontSize: 13, color: '334155' });
+    b.metrics.slice(0, 6).forEach((m, i) => {
+      const col = i % 3;
+      const row = Math.floor(i / 3);
+      const x = 0.5 + col * 4.15;
+      const y = 1.7 + row * 1.5;
+      bslide.addShape(pptx.ShapeType.roundRect, { x, y, w: 3.95, h: 1.35, fill: { color: 'FFFFFF' }, line: { color: 'E2E8F0', width: 1 }, rectRadius: 0.06 });
+      bslide.addText(m.value, { x: x + 0.15, y: y + 0.12, w: 3.7, h: 0.5, fontSize: 20, bold: true, color: INK });
+      bslide.addText(m.label, { x: x + 0.15, y: y + 0.62, w: 3.7, h: 0.3, fontSize: 10, color: MUTED });
+      bslide.addText(m.context, { x: x + 0.15, y: y + 0.92, w: 3.7, h: 0.35, fontSize: 9.5, color: BRAND });
+    });
+    bslide.addText([
+      { text: 'Top Decisions for the Board\n', options: { bold: true, color: INK, fontSize: 12 } },
+      ...(b.topDecisions.length ? b.topDecisions.map((d, i) => ({ text: `${i + 1}. ${d}\n`, options: { color: '334155', fontSize: 11 } })) : [{ text: 'Evidence Not Available', options: { color: MUTED, fontSize: 11 } }]),
+    ], { x: 0.5, y: 4.85, w: 7.6, h: 1.9, valign: 'top' });
+    bslide.addText([
+      { text: 'Executive Recommendation\n', options: { bold: true, color: INK, fontSize: 12 } },
+      { text: b.recommendation, options: { color: '334155', fontSize: 11 } },
+    ], { x: 8.3, y: 4.85, w: 4.6, h: 1.9, valign: 'top' });
+    footer(bslide);
+  }
+
   // KPI summary
   const kpiSlide = pptx.addSlide();
   kpiSlide.addText('Key Performance Indicators', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
@@ -131,6 +160,28 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
     ['HNDL Exposure', report.businessImpact.hndlExposure], ['Quantum Exposure Window', report.businessImpact.quantumExposureWindow],
   ], [6.1, 6.2]);
   tableSlide('Migration Wave Planning', ['Wave', 'Focus', 'Priority', 'Owner', 'Duration', 'Cost', 'Risk-', 'Status'], report.migrationWaves.map((w) => [`W${w.wave}`, w.name, w.priority, w.owner, `${w.durationWeeks}w`, usd(w.costUsd), `${w.riskReductionPct}%`, w.status]), [1, 2.6, 1.4, 2.3, 1.2, 1.6, 1, 1.2]);
+
+  // Shared Responsibility Assessment™ — ownership-classified migration intelligence.
+  if (report.sharedResponsibility.hasData) {
+    const sr = report.sharedResponsibility;
+    const srDistTotal = Math.max(1, sr.customerControlled + sr.providerControlled + sr.ecosystemDependent);
+    const srPct = (n: number) => `${n} (${Math.round((n / srDistTotal) * 100)}%)`;
+    tableSlide('Shared Responsibility — Ownership Readiness', ['Ownership Domain', 'Readiness', 'Findings'], [
+      ['Overall', `${sr.readiness.overall}/100`, `${sr.customerControlled + sr.providerControlled + sr.ecosystemDependent}`],
+      ['Customer-Controlled', `${sr.readiness.customer}/100`, `${sr.customerControlled}`],
+      ['Provider-Controlled', `${sr.readiness.provider}/100`, `${sr.providerControlled}`],
+      ['Ecosystem-Dependent', `${sr.readiness.ecosystem}/100`, `${sr.ecosystemDependent}`],
+    ], [4, 2.5, 2.5]);
+    // §1 summary + §4 timeline
+    const srSummarySlide = tableSlide('Shared Responsibility Summary & Timeline', ['Ownership Domain', 'Findings (share)', 'Timeline Status', 'Readiness'],
+      sr.timeline.map((t) => {
+        const count = t.domain.startsWith('Customer') ? sr.customerControlled : t.domain.startsWith('Provider') ? sr.providerControlled : sr.ecosystemDependent;
+        return [t.domain, srPct(count), t.label, `${t.readiness}/100`];
+      }), [3.4, 2.6, 3.5, 2.8]);
+    if (sr.reconciliationNote) srSummarySlide.addText(`Finding-count reconciliation: ${sr.reconciliationNote}`, { x: 0.5, y: 6.1, w: 12.3, h: 0.8, fontSize: 9.5, color: MUTED, valign: 'top' });
+    tableSlide('Shared Responsibility Matrix', ['Finding', 'Owner', 'Action', 'Pri', 'Status'], sr.matrix.slice(0, 12).map((m) => [m.finding, m.owner, m.action, m.priority, m.status]), [2.6, 1.8, 2.8, 1, 1.6]);
+    tableSlide('Dependency-Ordered Roadmap (7 Waves)', ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], sr.waves.map((w) => [`W${w.wave}`, w.name, w.domain, `${w.findingCount}`, w.status, w.timeline]), [0.9, 2.6, 1.8, 1.2, 1.4, 2]);
+  }
   tableSlide('Cost Forecast', ['Category', 'Estimated Cost'], [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)]], [8, 4.3]);
 
   // Confidence Overview™ (I3#1 / I4#1) — five distinct confidence measures
@@ -156,6 +207,57 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
 
   // Report Intelligence (Reports_Enhancements_3) board slides
   tableSlide('Risk Scoring Methodology™', ['Risk Domain', 'Domain Risk', 'Weight', 'Contribution', 'Share'], [...report.riskMethodology.weights.map((w) => [w.domain, `${w.score}/100`, `${w.weightPct}%`, w.contribution.toFixed(1), `${w.contributionPct}%`]), ['OVERALL = Σ Contribution', `${report.riskMethodology.overall}/100`, '100%', report.riskMethodology.overall.toFixed(1), '100%']], [4.3, 2.3, 2, 2.2, 1.5]);
+
+  // Executive Risk Heat Map (Improvements_06 §2) — 5×5 colored grid
+  if (report.executiveHeatMap.hasData) {
+    const h = report.executiveHeatMap;
+    const hs = pptx.addSlide();
+    hs.addText('Executive Risk Heat Map', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
+    const ZONE: Record<string, string> = { critical: 'B91C1C', high: 'EA580C', medium: 'D97706', low: '65A30D', minimal: '16A34A' };
+    const gridX = 2.6;
+    const gridY = 1.6;
+    const cellW = 1.95;
+    const cellH = 0.92;
+    hs.addText('Business Impact ↓', { x: 0.4, y: gridY + 2, w: 2, h: 0.4, fontSize: 10, bold: true, color: MUTED });
+    h.likelihoodLabels.forEach((l, ci) => hs.addText(l, { x: gridX + ci * cellW, y: gridY - 0.45, w: cellW, h: 0.4, fontSize: 9, color: MUTED, align: 'center' }));
+    h.impactLabels.forEach((imp, ri) => {
+      hs.addText(imp, { x: 0.5, y: gridY + ri * cellH, w: 2, h: cellH, fontSize: 10, bold: true, color: '334155', align: 'right', valign: 'middle' });
+      const row = h.cells.filter((c) => c.impact === imp).sort((a, b) => a.likelihoodRank - b.likelihoodRank);
+      row.forEach((c, ci) => {
+        const x = gridX + ci * cellW;
+        const y = gridY + ri * cellH;
+        hs.addShape(pptx.ShapeType.rect, { x, y, w: cellW - 0.08, h: cellH - 0.08, fill: { color: c.count ? (ZONE[c.level] || '94A3B8') : 'F1F5F9' }, line: { color: 'FFFFFF', width: 1 } });
+        if (c.count) hs.addText(String(c.count), { x, y, w: cellW - 0.08, h: cellH - 0.08, fontSize: 16, bold: true, color: 'FFFFFF', align: 'center', valign: 'middle' });
+      });
+    });
+    hs.addText('Quantum Exploitation Likelihood →', { x: gridX, y: gridY + 5 * cellH + 0.1, w: 9, h: 0.4, fontSize: 10, bold: true, color: MUTED });
+    hs.addText(h.methodology, { x: 0.5, y: 6.4, w: 12.3, h: 0.5, fontSize: 8.5, color: MUTED });
+    footer(hs);
+  }
+
+  // Business Priority Matrix (Improvements_06 §3) — 2×2 quadrants
+  if (report.businessPriorityMatrix.hasData) {
+    const pm = report.businessPriorityMatrix;
+    const ps = pptx.addSlide();
+    ps.addText('Business Priority Matrix', { x: 0.5, y: 0.3, w: 12, h: 0.6, fontSize: 24, bold: true, color: INK });
+    ps.addText(pm.note, { x: 0.5, y: 0.95, w: 12.3, h: 0.5, fontSize: 11, color: MUTED });
+    const QCOL: Record<string, string> = { 'quick-wins': '16A34A', strategic: '2563EB', 'fill-ins': 'D97706', 'long-term': '94A3B8' };
+    pm.quadrants.forEach((q, i) => {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const x = 0.5 + col * 6.25;
+      const y = 1.6 + row * 2.6;
+      ps.addShape(pptx.ShapeType.roundRect, { x, y, w: 6, h: 2.4, fill: { color: 'FFFFFF' }, line: { color: QCOL[q.key] || 'E2E8F0', width: 1.5 }, rectRadius: 0.06 });
+      ps.addText([{ text: `${q.title}   `, options: { bold: true, fontSize: 14, color: INK } }, { text: q.subtitle, options: { fontSize: 10, color: QCOL[q.key] || MUTED } }], { x: x + 0.2, y: y + 0.15, w: 5.6, h: 0.4 });
+      ps.addText(q.items.length ? q.items.slice(0, 5).map((it) => ({ text: `• ${it.name} (${it.riskReductionPct}% risk↓)\n`, options: { fontSize: 10, color: '334155' } })) : [{ text: 'No items in this quadrant.', options: { fontSize: 10, color: MUTED } }], { x: x + 0.2, y: y + 0.65, w: 5.6, h: 1.65, valign: 'top' });
+    });
+    footer(ps);
+  }
+
+  // Remediation Campaigns (Improvements_06 minor §3)
+  if (report.remediationCampaigns.campaigns.length) {
+    tableSlide('Remediation Campaigns™', ['Pri', 'Campaign', 'Target', 'Findings', 'Occ.', 'Assets', 'Recommended Action'], report.remediationCampaigns.campaigns.map((c) => [c.priority, c.campaign, c.target, c.findingCount, c.occurrences, c.affectedAssets, c.action]), [0.8, 2.4, 2.4, 1, 0.8, 0.9, 4]);
+  }
   const costSlide = tableSlide('Cost Forecast Intelligence™', ['Category', 'Hours', '≈ Wks', '≈ FTE', 'Eng.', 'Cost', 'Formula'], report.costBreakdown.lines.map((l) => [l.category, l.hours, l.engineerWeeks, l.fte, l.engineers, usd(l.costUsd), l.formula]), [2.5, 1, 1, 1, 0.8, 1.6, 4.4]);
   costSlide.addText(report.costBreakdown.effortNote, { x: 0.5, y: 6.5, w: 12.3, h: 0.6, fontSize: 10, color: MUTED });
   tableSlide('Executive Decision Center™', ['Decision Required', 'Type', 'Owner'], report.executiveDecisions.map((d) => [d.decision, d.type, d.owner]), [6.6, 3.2, 2.5]);
@@ -164,6 +266,10 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
 
   // Readiness Progression (I4#2) — executive wording for the simulation
   tableSlide('Readiness Progression', ['Stage', 'Readiness', 'Risk', 'Detail'], report.readinessProgression.length ? report.readinessProgression.map((st) => [st.stage, `${st.readiness}/100`, `${st.risk}/100`, st.detail]) : [['Evidence Not Available', '-', '-', '-']], [4.2, 1.4, 1.3, 5.4]);
+  if (report.evidenceQuality.rows.length) {
+    const eq = tableSlide('Evidence Quality Score™', ['Evidence Source', 'Grade', 'Confidence', 'Status', 'Note'], report.evidenceQuality.rows.map((r) => [r.source, r.grade, `${r.confidencePct}%`, r.status, r.note]), [3, 1.2, 1.6, 1.6, 5]);
+    eq.addText(`Overall Evidence Grade: ${report.evidenceQuality.overallGrade} · ${report.evidenceQuality.gradedSources} contributing, ${report.evidenceQuality.missingSources} missing.`, { x: 0.5, y: 6.4, w: 12.3, h: 0.4, fontSize: 10, color: INK });
+  }
   tableSlide('Evidence Confidence Dashboard™', ['Source', 'Coverage', 'Completeness', 'Freshness', 'Confidence'], report.evidenceConfidence.map((e) => [e.source, `${e.coveragePct}%`, `${e.completenessPct}%`, e.freshness, `${e.confidencePct}%`]), [3.5, 2.2, 2.5, 2.3, 1.8]);
 
   // AI Recommendation Validation™ — narrative + evidence

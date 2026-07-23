@@ -276,6 +276,12 @@ async function buildPlan(token: string, userId: string) {
       deepLink: '/dashboard/quantum-readiness/ai-migration-advisor',
     },
     waves: report.migrationWaves,
+    // Shared Responsibility dependency-ordered 7-wave roadmap (Customer Assets →
+    // Internal PKI → Origin TLS → Applications → Cloud Providers → Partner
+    // Integrations → Industry Adoption) plus tri-part readiness and ownership
+    // distribution — the same normalized ownership model the Migration
+    // Intelligence Engine, dashboards, reports and certification consume.
+    sharedResponsibility: snapshot.sharedResponsibility,
     dependencyGraph: snapshot.exposureGraph,
     dependencyAnalysis: report.dependencyAnalysis,
     businessImpact: report.businessImpact,

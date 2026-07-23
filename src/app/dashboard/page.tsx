@@ -1,42 +1,50 @@
 'use client'
 
 import { useState } from 'react'
-import { 
-  Shield, AlertTriangle, Zap, Search, Activity, 
-  RefreshCw, Radio, Database, ShieldCheck, Globe, Bell, Eye
+import {
+  Shield, AlertTriangle, Activity, RefreshCw, Globe, Eye, GitBranch,
+  ScrollText, Briefcase, Boxes, Radar, Bell, History, Sparkles, FileDown, Scale,
 } from 'lucide-react'
 import { useDashboard, type ExposureNode } from '@/hooks/use-dashboard'
-import MetricCard from './metric_card/MetricCard'
+import { useAuth } from '@/contexts/auth-context'
 import QuantumExposureMap, { NodeInspector } from './crypto_exposure_map/QuantumExposureMap'
 import SecurityEventsPanel from './security_events_panel/SecurityEventsPanel'
-import RecommendationsPanel from './recommendation_panel/RecommendationsPanel'
-import TelemetryFeatures from './TelemetryFeatures'
+import ExecutiveSummary from './_components/executive/ExecutiveSummary'
+import KpiGrid from './_components/executive/KpiGrid'
+import MigrationPipeline from './_components/executive/MigrationPipeline'
+import ComplianceStrip from './_components/executive/ComplianceStrip'
+import BusinessImpact from './_components/executive/BusinessImpact'
+import AssetInventory from './_components/executive/AssetInventory'
+import ThreatTimeline from './_components/executive/ThreatTimeline'
+import RuntimeTelemetry from './_components/executive/RuntimeTelemetry'
+import ThreatIntel from './_components/executive/ThreatIntel'
+import AiRecommendations from './_components/executive/AiRecommendations'
+import SharedResponsibilityStrip from './_components/executive/SharedResponsibilityStrip'
+import { SectionLabel, relativeTime } from './_components/executive/primitives'
 
-const GLASS_PANEL_CLASSES = 'qg-executive-panel group relative overflow-hidden rounded-lg text-white';
+function firstName(user: ReturnType<typeof useAuth>['user']): string | null {
+  const meta = (user?.user_metadata || {}) as Record<string, unknown>
+  const full = (meta.full_name || meta.name || '') as string
+  if (full) return full.trim().split(/\s+/)[0]
+  if (user?.email) return user.email.split('@')[0]
+  return null
+}
 
 export default function Dashboard() {
   const [selectedNode, setSelectedNode] = useState<ExposureNode | null>(null)
+  const { user } = useAuth()
   const {
-    summary,
-    events,
-    exposureMap,
-    activities,
-    recommendations,
-    health,
-    summaryState,
-    eventsState,
-    mapState,
-    recommendationsState,
-    lastSyncAt,
-    sseConnected,
-    refreshAll,
+    summary, executive, events, exposureMap, recommendations, health,
+    summaryState, executiveState, eventsState, mapState, recommendationsState,
+    lastSyncAt, sseConnected, refreshAll,
   } = useDashboard()
 
-  const loading = summaryState === 'loading' && !summary
+  const execLoading = executiveState === 'loading' && !executive
   const mapLoading = mapState === 'loading' && exposureMap.nodes.length === 0
   const eventsLoading = eventsState === 'loading' && events.length === 0
-  const telemetryLoading = loading || eventsLoading || mapLoading
-  const error = summaryState === 'error' && !summary ? 'Connection failure' : null
+  const recsLoading = recommendationsState === 'loading' && recommendations.length === 0
+  const summaryLoading = summaryState === 'loading' && !summary
+  const error = summaryState === 'error' && !summary && executiveState === 'error' && !executive
 
   const monitoringStatus = health?.services?.migration === 'migrating'
     ? 'migrating'
@@ -50,21 +58,17 @@ export default function Dashboard() {
             ? 'active'
             : summary?.monitoringStatus || 'active'
 
-  const riskTrendText = summary?.riskTrend
-    ? `${Math.abs(summary.riskTrend)} finding${Math.abs(summary.riskTrend) === 1 ? '' : 's'} ${summary.riskTrend > 0 ? 'reduced' : 'added'} since previous scan`
-    : summary?.riskBand || 'Awaiting scan baseline'
-
-  if (error && !summary) {
+  if (error) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-8">
         <div className="w-20 h-20 bg-red-500/10 border border-red-500/20 rounded-full flex items-center justify-center mb-6">
           <AlertTriangle className="w-10 h-10 text-red-500" />
         </div>
-        <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Security Nexus Disconnected</h2>
-        <p className="text-white/40 max-w-md mb-8">Unable to establish a secure handshake with the backend telemetry services. Please check your connection or session status.</p>
-        <button 
+        <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Command Center Disconnected</h2>
+        <p className="text-white/40 max-w-md mb-8">Unable to establish a secure handshake with the backend telemetry services. Check your connection or session status.</p>
+        <button
           onClick={refreshAll}
-          className="px-8 py-3 bg-gold border border-gold text-black text-xs font-black uppercase tracking-widest rounded-lg hover:bg-gold/90 transition-all flex items-center gap-2"
+          className="px-8 py-3 bg-cyan-500/15 border border-cyan-400/40 text-cyan-200 text-xs font-black uppercase tracking-widest rounded-lg hover:bg-cyan-500/25 transition-all flex items-center gap-2"
         >
           <RefreshCw className="w-4 h-4" /> Reconnect Now
         </button>
@@ -72,225 +76,161 @@ export default function Dashboard() {
     )
   }
 
-  const riskScoreColor = summary?.riskBand === 'Quantum Ready' ? 'text-green-500' : 
-                         summary?.riskBand === 'Low Risk' ? 'text-gold' : 
-                         summary?.riskBand === 'High Risk' ? 'text-orange-500' : 'text-red-500'
-
   return (
-    <div className="p-4 lg:p-8 space-y-8 animate-in fade-in duration-700">
-      {/* Header */}
-      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+    <div className="p-4 lg:p-7 space-y-6 animate-in fade-in duration-500">
+      {/* Global header */}
+      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 rounded bg-gold/10 border border-gold/20">
-                <Shield className="w-6 h-6 text-gold" />
+          <div className="mb-1.5 flex items-center gap-3">
+            <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/10 p-2">
+              <Shield className="h-5 w-5 text-cyan-300" />
             </div>
-            <h1 className="text-3xl font-black uppercase tracking-tight text-white leading-none">
-              Quantum Risk <span className="text-gold">Intelligence</span>
+            <h1 className="text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]">
+              Quantum Security <span className="text-cyan-300">Command Center</span>
             </h1>
           </div>
-          <p className="text-white/50 text-sm font-medium">Enterprise Command Center • Post-Quantum Cryptographic Posture</p>
+          <p className="text-[13px] font-medium text-white/45">Enterprise Post-Quantum Cryptographic Posture · Discover → Migrate → Govern</p>
         </div>
-        
-        <div className="flex flex-wrap items-center gap-4">
-          <div className={`px-4 py-2 border rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all duration-500 ${
-            monitoringStatus === 'active' ? 'bg-green-500/10 border-green-500/20 text-green-500' :
-            monitoringStatus === 'degraded' ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-500' :
-            monitoringStatus === 'offline' ? 'bg-red-500/10 border-red-500/20 text-red-500' :
-            'bg-gold/10 border-gold/20 text-gold'
+
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-mono text-[10px] uppercase tracking-widest text-white/30">Synced {relativeTime(lastSyncAt)}</span>
+          <div className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${
+            monitoringStatus === 'active' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400'
+              : monitoringStatus === 'scanning' || monitoringStatus === 'migrating' ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300'
+              : monitoringStatus === 'degraded' ? 'border-amber-500/25 bg-amber-500/10 text-amber-400'
+              : monitoringStatus === 'offline' ? 'border-red-500/25 bg-red-500/10 text-red-400'
+              : 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300'
           }`}>
             <Activity className={`h-3 w-3 ${monitoringStatus === 'active' || monitoringStatus === 'scanning' ? 'animate-pulse' : ''}`} />
-            Live Monitoring {monitoringStatus}
+            {monitoringStatus === 'active' ? 'Live monitoring' : monitoringStatus}
           </div>
-          
-          <button 
-            onClick={refreshAll}
-            className="p-2 bg-white/5 border border-white/10 rounded-lg text-white/40 hover:text-gold hover:border-gold/30 transition-all"
-            title="Refresh Dashboard"
+          <a
+            href="/dashboard/quantum-readiness/reports"
+            className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-white/55 no-underline transition-all hover:border-cyan-400/30 hover:text-cyan-300"
+            title="Export executive / technical / compliance / board report (PDF, Word, Excel, JSON)"
           >
-            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+            <FileDown className="h-4 w-4" /> Export Report
+          </a>
+          <button
+            onClick={refreshAll}
+            className="rounded-lg border border-white/10 bg-white/5 p-2 text-white/40 transition-all hover:border-cyan-400/30 hover:text-cyan-300"
+            title="Refresh command center"
+          >
+            <RefreshCw className={`h-5 w-5 ${execLoading || summaryLoading ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </header>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <MetricCard 
-          label="Quantum Risk Score"
-          value={summary?.quantumRiskScore || 0}
-          icon={ShieldCheck}
-          color={riskScoreColor}
-          trend={riskTrendText}
-          loading={loading && !summary}
-          delay={0.1}
-          href="/dashboard/quantum-risk-scoring"
-        />
-        <MetricCard 
-          label="Vulnerable Assets"
-          value={summary?.vulnerableAssetsCount || 0}
-          icon={AlertTriangle}
-          color="text-red-500"
-          trend={`${summary?.newVulnerableAssets || 0} discovered since last scan`}
-          loading={loading && !summary}
-          delay={0.2}
-          href="/dashboard/vulnerabilities"
-        />
-        <MetricCard 
-          label="Total CBOM Items"
-          value={summary?.totalCbomItems || 0}
-          icon={Search}
-          color="text-blue-400"
-          trend={`${summary?.totalAssets || 0} assets in authenticated scope`}
-          loading={loading && !summary}
-          delay={0.3}
-          href="/dashboard/cbom"
-        />
-        <MetricCard 
-          label="Active Migrations"
-          value={summary?.activeMigrations || 0}
-          icon={Zap}
-          color="text-gold"
-          trend={`${summary?.completedMigrations || 0} completed, ${summary?.failedMigrations || 0} need attention`}
-          loading={loading && !summary}
-          delay={0.4}
-          href="/dashboard/live-migration"
-        />
+      {/* Executive AI Summary */}
+      <ExecutiveSummary narrative={executive?.narrative} userName={firstName(user)} loading={execLoading} />
+
+      {/* Enterprise KPI Cards */}
+      <KpiGrid kpis={executive?.kpis} loading={execLoading} />
+
+      {/* Shared Responsibility Overview — ownership-classified migration intelligence */}
+      <div>
+        <SectionLabel href="/dashboard/migration-intelligence">
+          <Scale className="h-4 w-4 text-cyan-300" /> Shared Responsibility Migration Intelligence™
+        </SectionLabel>
+        <div className="mt-2"><SharedResponsibilityStrip /></div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
-        {/* Row 1 Headers */}
+      {/* Enterprise Quantum Exposure Graph + Node Inspector */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <div className="flex justify-between items-center px-1">
-            <a href="/dashboard/crypto-exposure" className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2 no-underline hover:text-gold transition-colors">
-              <Globe className="h-4 w-4 text-gold" />
-              Quantum Exposure Map
-            </a>
-            {summary?.lastScanAt && (
-              <div className="text-[10px] font-mono text-white/30 uppercase">
-                Last Global Scan: {new Date(summary.lastScanAt).toLocaleString()}
-              </div>
-            )}
+          <SectionLabel href="/dashboard/quantum-readiness/exposure-graph" meta={summary?.lastScanAt ? `Last scan ${relativeTime(summary.lastScanAt)}` : undefined}>
+            <Globe className="h-4 w-4 text-cyan-300" /> Enterprise Quantum Exposure Graph™
+          </SectionLabel>
+          <div className="mt-2">
+            <QuantumExposureMap
+              data={exposureMap}
+              loading={mapLoading}
+              onRefresh={refreshAll}
+              selectedNode={selectedNode}
+              onSelectNode={setSelectedNode}
+            />
           </div>
         </div>
         <div className="lg:col-span-1">
-          <div className="flex justify-between items-center px-1">
-            <a href={selectedNode?.id ? `/dashboard/assets?asset=${encodeURIComponent(selectedNode.id)}` : '/dashboard/assets'} className="text-sm font-black uppercase tracking-[0.2em] text-white/80 flex items-center gap-2 no-underline hover:text-gold transition-colors">
-              <Eye className="h-4 w-4 text-gold" />
-              Node Inspector
-            </a>
-            <div className="text-[10px] font-mono text-white/30 uppercase">
-              Telemetry Analysis
-            </div>
+          <SectionLabel href={selectedNode?.id ? `/dashboard/assets?asset=${encodeURIComponent(selectedNode.id)}` : '/dashboard/assets'} meta="Telemetry analysis">
+            <Eye className="h-4 w-4 text-cyan-300" /> Node Inspector
+          </SectionLabel>
+          <div className="mt-2 h-[520px]">
+            <NodeInspector selectedNode={selectedNode} exposureMap={exposureMap} />
           </div>
         </div>
+      </div>
 
-        {/* Row 1 Cards */}
-        <div className="lg:col-span-2">
-          <QuantumExposureMap
-            data={exposureMap}
-            loading={mapLoading}
-            onRefresh={refreshAll}
-            selectedNode={selectedNode}
-            onSelectNode={setSelectedNode}
-          />
-        </div>
-        <div className="lg:col-span-1">
-          <div className="h-[500px]">
-            <NodeInspector selectedNode={selectedNode} onAgentDeployed={refreshAll} />
+      {/* AI Recommendations + Threat Timeline */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div>
+          <SectionLabel href="/dashboard/quantum-risk-scoring"><Sparkles className="h-4 w-4 text-violet-300" /> AI Recommendations</SectionLabel>
+          <div className="mt-2 h-[460px]">
+            <AiRecommendations recommendations={recommendations} loading={recsLoading} />
           </div>
         </div>
-
-        {/* Row 2 Cards */}
-        <div className="lg:col-span-3">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-full">
-            <RecommendationsPanel recommendations={recommendations} loading={recommendationsState === 'loading' && recommendations.length === 0} />
-
-            {/* Quick Actions / Status */}
-            <div className={`p-6 ${GLASS_PANEL_CLASSES} h-full`}>
-              <div className="absolute -right-4 -bottom-4 opacity-5">
-                <Shield className="w-32 h-32 text-gold" />
-              </div>
-              <h2 className="text-sm font-black uppercase tracking-[0.2em] text-white/80 mb-4">System Integrity</h2>
-              <div className="space-y-4 relative z-10">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-white/40 uppercase">Database</span>
-                  <span className="text-[10px] font-black text-green-500 uppercase flex items-center gap-1.5">
-                    <div className={`w-1.5 h-1.5 rounded-full ${health?.services?.supabase === 'healthy' ? 'bg-green-500' : 'bg-yellow-500'}`} /> {health?.services?.supabase || 'unknown'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-white/40 uppercase">Scanner</span>
-                  <span className="text-[10px] font-black text-green-500 uppercase flex items-center gap-1.5">
-                    <div className={`w-1.5 h-1.5 rounded-full ${health?.services?.scanner === 'scanning' ? 'bg-gold animate-pulse' : 'bg-green-500'}`} /> {health?.services?.scanner || 'unknown'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-white/40 uppercase">Migration</span>
-                  <span className="text-[10px] font-black text-gold uppercase flex items-center gap-1.5">
-                    {health?.services?.migration || 'unknown'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-white/40 uppercase">Realtime Stream</span>
-                  <span className="text-[10px] font-black text-gold uppercase flex items-center gap-1.5">
-                    {sseConnected ? 'SSE Connected' : health?.services?.realtime || 'syncing'}
-                  </span>
-                </div>
-                <div className="pt-4 mt-4 border-t border-white/5">
-                  <div className="grid grid-cols-2 gap-2">
-                    <a href="/dashboard/compliance" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
-                      <ShieldCheck className="h-3 w-3" /> Compliance
-                    </a>
-                    <a href="/dashboard/scanner" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
-                      <Radio className="h-3 w-3" /> Scanner
-                    </a>
-                    <a href="/dashboard/runtime-telemetry" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
-                      <Bell className="h-3 w-3" /> Telemetry
-                    </a>
-                    <a href="/dashboard/audit-vault" className="inline-flex items-center justify-center gap-1.5 rounded border border-white/10 bg-white/5 px-2 py-2 text-[9px] font-black uppercase tracking-widest text-white/60 no-underline transition-colors hover:border-gold/35 hover:bg-gold/10 hover:text-gold">
-                      <Database className="h-3 w-3" /> Audit
-                    </a>
-                  </div>
-                  <div className="mt-2 text-center text-[9px] font-mono text-white/25">
-                    Last sync: {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString() : 'waiting for telemetry'}
-                  </div>
-                </div>
-              </div>
-            </div>
+        <div>
+          <SectionLabel href="/dashboard/audit-vault"><History className="h-4 w-4 text-cyan-300" /> Threat Timeline</SectionLabel>
+          <div className="mt-2 h-[460px]">
+            <ThreatTimeline events={events} loading={eventsLoading} />
           </div>
         </div>
+      </div>
 
-        <div className="lg:col-span-3">
-          <div className="h-[460px]">
+      {/* Migration Pipeline + Compliance */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div>
+          <SectionLabel href="/dashboard/migration-planner"><GitBranch className="h-4 w-4 text-cyan-300" /> Migration Pipeline</SectionLabel>
+          <div className="mt-2"><MigrationPipeline pipeline={executive?.pipeline} loading={execLoading} /></div>
+        </div>
+        <div>
+          <SectionLabel href="/dashboard/compliance"><ScrollText className="h-4 w-4 text-cyan-300" /> Compliance</SectionLabel>
+          <div className="mt-2"><ComplianceStrip compliance={executive?.compliance} loading={execLoading} /></div>
+        </div>
+      </div>
+
+      {/* Business Impact + Asset Inventory */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div>
+          <SectionLabel href="/dashboard/revenue-intelligence"><Briefcase className="h-4 w-4 text-cyan-300" /> Business Impact</SectionLabel>
+          <div className="mt-2"><BusinessImpact data={executive?.businessImpact} loading={execLoading} /></div>
+        </div>
+        <div>
+          <SectionLabel href="/dashboard/assets"><Boxes className="h-4 w-4 text-cyan-300" /> Asset Inventory</SectionLabel>
+          <div className="mt-2"><AssetInventory inventory={executive?.assetInventory} loading={execLoading} /></div>
+        </div>
+      </div>
+
+      {/* Live Runtime Telemetry */}
+      <div>
+        <SectionLabel href="/dashboard/runtime-telemetry"><Activity className="h-4 w-4 text-cyan-300" /> Live Runtime Telemetry</SectionLabel>
+        <div className="mt-2"><RuntimeTelemetry runtime={executive?.runtime} sseConnected={sseConnected} loading={execLoading} /></div>
+      </div>
+
+      {/* Threat Intelligence + Security Events */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div>
+          <SectionLabel href="/dashboard/vulnerabilities"><Radar className="h-4 w-4 text-cyan-300" /> Threat Intelligence</SectionLabel>
+          <div className="mt-2"><ThreatIntel intel={executive?.threatIntel} loading={execLoading} /></div>
+        </div>
+        <div>
+          <SectionLabel href="/dashboard/audit-vault"><Bell className="h-4 w-4 text-cyan-300" /> Security Events</SectionLabel>
+          <div className="mt-2 h-[440px]">
             <SecurityEventsPanel events={events} loading={eventsLoading} />
           </div>
         </div>
       </div>
-      
-      {/* New Telemetry Features */}
-      <section className="mt-8 animate-in fade-in duration-700 delay-500">
-        <TelemetryFeatures
-          summary={summary}
-          events={events}
-          exposureMap={exposureMap}
-          activities={activities}
-          recommendations={recommendations}
-          health={health}
-          lastSyncAt={lastSyncAt}
-          sseConnected={sseConnected}
-          loading={telemetryLoading}
-        />
-      </section>
 
-      {/* Footer Branding */}
-      <footer className="pt-8 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-4">
+      {/* Footer */}
+      <footer className="flex flex-col items-center justify-between gap-4 border-t border-white/5 pt-6 md:flex-row">
         <div className="flex items-center gap-2 opacity-30">
-            <img src="/NEW_LOGO.png" alt="Logo" className="w-5 h-5 grayscale" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-white">QGuard Helix Protocol v2.4</span>
+          <img src="/NEW_LOGO.png" alt="Logo" className="h-5 w-5 grayscale" />
+          <span className="text-[10px] font-black uppercase tracking-widest text-white">QGuard Helix Protocol v2.4</span>
         </div>
-        <div className="flex gap-6 text-[9px] font-bold text-white/20 uppercase tracking-widest">
-            <span>End-to-End PQC Encrypted</span>
-            <span>GDPR / NIST / FIPS 140-3 Aligned</span>
+        <div className="flex gap-6 text-[9px] font-bold uppercase tracking-widest text-white/20">
+          <span>End-to-End PQC Encrypted</span>
+          <span>GDPR / NIST / FIPS 140-3 Aligned</span>
+          <span>Tenant-Isolated</span>
         </div>
       </footer>
     </div>

@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildScannerIntelligence } from './scanner'
+import { buildSharedResponsibility } from '@/lib/shared-responsibility'
+import { buildOwnershipInputs } from './shared-responsibility-inputs'
 
 /**
  * Quantum Readiness Assessment Engine™ — aggregation router.
@@ -697,6 +699,29 @@ async function computeSnapshot(token: string, userId: string) {
     ? allTimestamps.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
     : null
 
+  // ---- Shared Responsibility (ownership) intelligence -------------------
+  // Classify findings into customer / provider / ecosystem ownership domains so
+  // every consumer of the snapshot (QR pages, Executive, Reporting, Certification,
+  // Migration Planner) inherits the SAME tri-part readiness by construction. The
+  // full findings/matrix detail is served by /api/v1/migration-intelligence; the
+  // snapshot carries a bounded summary. Evidence-derived attribution only — no
+  // provider is guessed without matching tenant evidence.
+  // Build ownership inputs via the SHARED adapter — the identical logic the
+  // /api/v1/migration-intelligence router uses — so the snapshot's tri-part
+  // readiness and ownership distribution (consumed by the Report Center,
+  // Executive strip, certification and migration planner) match the flagship
+  // Migration Intelligence dashboard exactly. `intel` carries the scanner
+  // findings + assets used for evidence-derived attribution.
+  const connectorProviders = connectorAccounts.map((a) => str(a.provider)).filter(Boolean)
+  const srInputs = buildOwnershipInputs(intel, { criticalFindings })
+  const sharedResponsibility = buildSharedResponsibility(srInputs, {
+    context: { connectorProviders },
+    baselineOverall: quantumReadiness,
+    maxFindings: 12,
+    maxMatrix: 24,
+    maxBlockers: 8,
+  })
+
   return {
     generatedAt: new Date().toISOString(),
     lastAssessmentAt,
@@ -734,6 +759,7 @@ async function computeSnapshot(token: string, userId: string) {
       pqcReadyComponents,
     },
     riskDistribution: { critical, high, medium, low },
+    sharedResponsibility,
     readinessFactors,
     riskFactors,
     criticalFindings,

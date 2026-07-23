@@ -87,7 +87,7 @@ async function rows(client: any, table: string, build: (q: any) => any, onMissin
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function captureCryptoState(client: any, userId: string, assetId: string | null, jobMeta: Record<string, unknown>): Promise<SnapshotCryptoState> {
   const inventory = assetId
-    ? await rows(client, 'crypto_inventory', (q) => q.select('algorithm, key_size, protocol, item_type, is_quantum_safe, component, exposure_level').eq('user_id', userId).eq('asset_id', assetId).limit(300))
+    ? await rows(client, 'crypto_inventory', (q) => q.select('algorithm, key_size, protocol, item_type, name, is_quantum_safe, exposure_level').eq('user_id', userId).eq('asset_id', assetId).limit(300))
     : []
   const certs = assetId
     ? await rows(client, CERT_TABLE, (q) => q.select('name, algorithm, key_size, issuer, not_after').eq('user_id', userId).eq('asset_id', assetId).limit(200))

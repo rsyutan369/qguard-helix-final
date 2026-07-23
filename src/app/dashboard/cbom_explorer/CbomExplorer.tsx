@@ -25,11 +25,15 @@ import {
   Search,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Target,
+  CheckCircle2,
+  GitCompareArrows,
   type LucideIcon,
   Zap,
 } from 'lucide-react';
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
+import { useQuantumReadiness, readinessTone } from '@/app/dashboard/quantum-readiness/_shared';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 
 type CbomEntry = {
@@ -755,6 +759,12 @@ function FocusedTabDashboard({
 export default function CbomExplorer() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const { data, loading, error, connected, refresh } = useScannerIntelligence({ live: autoRefresh });
+  // Quantum Readiness & Assessment Engine snapshot — the platform's canonical
+  // readiness/risk authority. CBOM's component inventory comes from the scanner
+  // snapshot; the headline Quantum Readiness score, risk and PQC adoption are
+  // read from THIS so the page reconciles with the QR Engine instead of showing
+  // a divergent local number.
+  const qr = useQuantumReadiness();
   const [activeTab, setActiveTab] = useState<CbomTab>('Overview');
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState('all');
@@ -777,8 +787,32 @@ export default function CbomExplorer() {
   const inProgress = entries.filter((entry) => !entry.isQuantumSafe && !entry.isVulnerable).length;
   const notPqcReady = Math.max(0, totalComponents - pqcReady - inProgress);
   const atRisk = entries.filter((entry) => entry.isVulnerable && riskRank(entry.riskSeverity) >= 2).length + Number(data.summary.criticalFindings || 0);
-  const readinessScore = Number(data.summary.qScore || (totalComponents ? percent(pqcReady, totalComponents) : 0));
   const readinessPercent = percent(pqcReady, totalComponents);
+
+  // --- Quantum Readiness Engine reconciliation ---------------------------------
+  const qrHasData = qr.snapshot.hasData;
+  const qrScores = qr.snapshot.scores;
+  const qrInventory = qr.snapshot.inventory;
+  // Headline readiness = QR Engine's composite quantumReadiness (falls back to the
+  // component PQC-ready share before the QR snapshot arrives). This is the number
+  // the QR command-center, executive dashboard and reports all show.
+  const readinessScore = qrHasData ? qrScores.quantumReadiness : readinessPercent;
+  const readinessLevel = qrHasData ? qrScores.quantumReadinessLevel : readinessPercent >= 50 ? 'Emerging' : 'Not Started';
+  const quantumRisk = qrHasData ? qrScores.quantumRisk : 0;
+  const pqcAdoption = qrHasData ? Math.round(qrScores.pqcAdoption) : readinessPercent;
+  const qrLive = qr.sseConnected;
+  // Do CBOM's component counts agree with the QR Engine's inventory? (Both derive
+  // from the same scanner snapshot, so this should hold — surfaced as an explicit
+  // integrity check rather than an assumption.)
+  // Tolerance absorbs benign grouped-vs-raw component differences (±1 or 2%);
+  // a real divergence (e.g. the old finding-level 113 vs 39 components) still flags.
+  const withinTolerance = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, Math.round(Math.max(a, b) * 0.02));
+  const reconciliation = [
+    { label: 'Crypto Components', cbom: totalComponents, qr: Number(qrInventory.cryptoComponents || 0) },
+    { label: 'Vulnerable', cbom: vulnerableComponents, qr: Number(qrInventory.vulnerableComponents || 0) },
+    { label: 'PQC-Ready', cbom: pqcReady, qr: Number(qrInventory.pqcReadyComponents || 0) },
+  ].map((row) => ({ ...row, match: !qrHasData || withinTolerance(row.cbom, row.qr) }));
+  const reconciled = reconciliation.every((row) => row.match);
   const riskyAlgorithms = useMemo(() => buildRiskyAlgorithms(entries, findings), [entries, findings]);
   const algorithmDistribution = useMemo(() => buildAlgorithmDistribution(entries), [entries]);
   const distributionTotal = algorithmDistribution.reduce((sum, item) => sum + item.count, 0);
@@ -916,6 +950,15 @@ export default function CbomExplorer() {
           <p className="mt-1 text-sm text-[var(--qg-dashboard-text-soft)]">
             Cryptography Bill of Materials - real authorized scan inventory with PQC readiness analysis.
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest">
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${connected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]'}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-[var(--qg-text-muted)]'}`} />
+              {connected ? 'Live Telemetry' : 'Cached'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--qg-cyan)]/25 bg-[var(--qg-cyan)]/10 px-2 py-0.5 text-[var(--qg-cyan)]">
+              <Sparkles className="h-3 w-3" /> Reconciled with Quantum Readiness Engine
+            </span>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -1028,11 +1071,78 @@ export default function CbomExplorer() {
         })}
       </section>
 
+      {/* Quantum Readiness Engine reconciliation — the headline readiness/risk are
+          read from the QR Engine snapshot and the component counts are checked
+          against it, so this page can never silently diverge from QR. */}
+      <section className={`${panelClass} p-4 md:p-5`}>
+        <div className="grid gap-5 lg:grid-cols-[1.1fr_1.5fr_1.05fr]">
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.22em] text-[var(--qg-cyan)]">
+              <Sparkles className="h-3.5 w-3.5" /> Quantum Readiness Engine
+            </div>
+            <div className="mt-2 flex items-end gap-2">
+              <span className="text-4xl font-black" style={{ color: readinessTone(readinessScore) }}>{Math.round(readinessScore)}</span>
+              <span className="mb-1 text-xs text-[var(--qg-text-muted)]">/100 · {readinessLevel}</span>
+            </div>
+            <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[var(--qg-muted-panel)]">
+              <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(0, Math.min(100, readinessScore))}%`, background: readinessTone(readinessScore) }} />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]">Quantum Risk {quantumRisk}/100</span>
+              <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]">PQC Adoption {pqcAdoption}%</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">
+                <GitCompareArrows className="h-3.5 w-3.5" /> Inventory Reconciliation
+              </span>
+              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase ${reconciled ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-[var(--qg-amber)]/30 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)]'}`}>
+                <CheckCircle2 className="h-3 w-3" /> {reconciled ? 'In sync with QR' : 'Reconciling'}
+              </span>
+            </div>
+            <div className="overflow-hidden rounded-lg border border-[var(--qg-card-border)]">
+              <div className="grid grid-cols-[1.4fr_1fr_1fr_auto] bg-[var(--qg-muted-panel)] px-3 py-1.5 text-[9px] font-black uppercase tracking-wider text-[var(--qg-text-muted)]">
+                <span>Metric</span><span className="text-right">CBOM</span><span className="text-right">QR Engine</span><span className="pl-3" />
+              </div>
+              {reconciliation.map((row) => (
+                <div key={row.label} className="grid grid-cols-[1.4fr_1fr_1fr_auto] items-center border-t border-[var(--qg-card-border)] px-3 py-2 text-xs">
+                  <span className="font-bold text-[var(--qg-dashboard-text)]">{row.label}</span>
+                  <span className="text-right font-black text-[var(--qg-dashboard-text)]">{numberFmt(row.cbom)}</span>
+                  <span className="text-right font-mono text-[var(--qg-dashboard-text-soft)]">{qrHasData ? numberFmt(row.qr) : '—'}</span>
+                  <span className="pl-3">{row.match ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : <AlertTriangle className="h-3.5 w-3.5 text-[var(--qg-amber)]" />}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-between gap-3">
+            <div className="space-y-2">
+              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">Live Telemetry</div>
+              <div className="flex items-center gap-2 rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-3 py-2 text-xs">
+                <span className={`h-2 w-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-[var(--qg-text-muted)]'}`} />
+                <span className="font-bold text-[var(--qg-dashboard-text-soft)]">Scanner CBOM stream</span>
+                <span className={`ml-auto text-[10px] font-black uppercase ${connected ? 'text-emerald-300' : 'text-[var(--qg-text-muted)]'}`}>{connected ? 'Live' : 'Idle'}</span>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-3 py-2 text-xs">
+                <span className={`h-2 w-2 rounded-full ${qrLive ? 'bg-emerald-400 animate-pulse' : 'bg-[var(--qg-text-muted)]'}`} />
+                <span className="font-bold text-[var(--qg-dashboard-text-soft)]">QR assessment stream</span>
+                <span className={`ml-auto text-[10px] font-black uppercase ${qrLive ? 'text-emerald-300' : 'text-[var(--qg-text-muted)]'}`}>{qrLive ? 'Live' : 'Idle'}</span>
+              </div>
+            </div>
+            <Link to="/dashboard/quantum-readiness/command-center" className="inline-flex items-center justify-center gap-2 rounded-md border border-[var(--qg-cyan)]/35 bg-[var(--qg-cyan)]/10 px-3 py-2 text-[11px] font-black uppercase tracking-wider text-[var(--qg-cyan)] transition hover:border-[var(--qg-cyan)]/70">
+              <ExternalLink className="h-3.5 w-3.5" /> Open QR Command Center
+            </Link>
+          </div>
+        </div>
+      </section>
+
       {activeTab === 'Overview' ? (
       <section className="grid gap-3 xl:grid-cols-12">
         <div className={`${panelClass} p-4 xl:col-span-6`}>
           <div className="mb-3 flex items-center gap-2 text-sm font-bold">
-            PQC Readiness Score <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
+            Quantum Readiness Score <span className="text-[10px] font-black uppercase text-[var(--qg-text-muted)]">· {readinessLevel}</span> <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
           </div>
           <ReadinessGauge score={readinessScore} />
           <div className="mt-4 space-y-2">

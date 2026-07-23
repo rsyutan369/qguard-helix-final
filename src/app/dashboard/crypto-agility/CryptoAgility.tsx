@@ -720,10 +720,10 @@ export default function CryptoAgility() {
           <div className="space-y-2">
             {[
               { label: 'Scan Cryptographic Inventory', href: '/dashboard/scanner', icon: Layers },
-              { label: 'Analyze Switch Readiness', href: '/dashboard/crypto-exposure', icon: GitCompare },
+              { label: 'Analyze Switch Readiness', href: '/dashboard/quantum-readiness/exposure-graph', icon: GitCompare },
               { label: 'Simulate Algorithm Migration', href: '/dashboard/migration-sandbox', icon: Sparkles },
               { label: 'View Abstraction Layers', href: '/dashboard/runtime-crypto-intel', icon: Shuffle },
-              { label: 'Manage Policy Packs', href: '/dashboard/crypto-policies', icon: PackageCheck },
+              { label: 'Manage Policy Packs', href: '/dashboard/quantum-governance', icon: PackageCheck },
               { label: 'Configure Rollback Strategy', href: '/dashboard/live-migration', icon: RefreshCw },
             ].map((action) => {
               const Icon = action.icon
@@ -772,7 +772,7 @@ export default function CryptoAgility() {
                     <div className="mt-1 font-mono text-sm font-black text-white">{pack.successRate}%</div>
                   </div>
                 </div>
-                <a href="/dashboard/crypto-policies" className="mt-4 flex h-8 items-center justify-center rounded border border-gold/25 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">
+                <a href="/dashboard/quantum-governance" className="mt-4 flex h-8 items-center justify-center rounded border border-gold/25 text-[10px] font-black uppercase tracking-widest text-gold hover:bg-gold/10">
                   View Details
                 </a>
               </article>

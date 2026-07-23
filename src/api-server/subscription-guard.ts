@@ -36,6 +36,7 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/quantum-certification', tier: 'basic' }, // Quantum Trust Certification Engine (BASIC/PRO/ELITE)
   { prefix: '/api/v1/quantum-remediation', tier: 'basic' }, // Intelligent Quantum Remediation Engine (pairs with certification)
   { prefix: '/api/v1/migration-workflow', tier: 'basic' }, // Cross-module workflow rail (state-driven lifecycle)
+  { prefix: '/api/v1/migration-intelligence', tier: 'basic' }, // Shared Responsibility Quantum Migration Intelligence Engine™ (ownership model)
   { prefix: '/api/v1/copilot', tier: 'basic' }, // Sophia AI Security Copilot™ — available to every paying tenant; tools self-gate by RBAC + the caller's own module entitlements
   // BASIC scans its own assets (feeds QR Engine / Migration Planner / Sandbox).
   { prefix: '/api/v1/scanner', tier: 'basic' },
@@ -46,7 +47,6 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/migration-snapshots', tier: 'pro' }, // Snapshot Management for safe rollback (live-migration)
   { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (live-migration)
   { prefix: '/api/v1/dashboard/pqauth', tier: 'pro' },
-  { prefix: '/api/v1/dashboard/behavioral-analytics', tier: 'pro' },
   { prefix: '/api/v1/dashboard/telemetry-correlation', tier: 'pro' },
   { prefix: '/api/v1/dashboard/quantum-risk-scoring', tier: 'pro' },
   { prefix: '/api/v1/dashboard/tls-telemetry', tier: 'pro' },
@@ -56,21 +56,14 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/dashboard/encryption-monitoring', tier: 'pro' },
   { prefix: '/api/v1/dashboard/ecosystem-supply-chain', tier: 'pro' },
   { prefix: '/api/v1/dashboard/trust-state-discovery', tier: 'pro' },
-  { prefix: '/api/v1/dashboard/continuous-trust', tier: 'pro' },
-  { prefix: '/api/v1/dashboard/identity-trust', tier: 'pro' },
-  { prefix: '/api/v1/dashboard/device-trust', tier: 'pro' },
-  { prefix: '/api/v1/dashboard/trust-analytics', tier: 'pro' },
   { prefix: '/api/v1/dashboard/zero-trust', tier: 'pro' },
 
   // ELITE — Governance / Telemetry / QKMS
   { prefix: '/api/v1/dashboard/quantum-governance', tier: 'elite' },
-  { prefix: '/api/v1/dashboard/crypto-policies', tier: 'elite' },
   { prefix: '/api/v1/dashboard/audit-vault', tier: 'elite' },
   { prefix: '/api/v1/dashboard/regulatory-mapping', tier: 'elite' },
   { prefix: '/api/v1/dashboard/runtime-telemetry', tier: 'elite' },
   { prefix: '/api/v1/dashboard/certificate-telemetry', tier: 'elite' },
-  { prefix: '/api/v1/dashboard/key-analytics', tier: 'elite' },
-  { prefix: '/api/v1/dashboard/api-encryption', tier: 'elite' },
   { prefix: '/api/v1/dashboard/multi-cloud-telemetry', tier: 'elite' },
   { prefix: '/api/v1/dashboard/qkms', tier: 'elite' },
   { prefix: '/api/qkms', tier: 'elite' }, // legacy alias mount

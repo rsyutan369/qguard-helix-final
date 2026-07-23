@@ -234,7 +234,9 @@ async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction
   const client = createAuthClient(token)
   if (!client) return jsonError(res, 500, 'CONFIG_ERROR', 'Supabase is not configured')
 
-  const user = await getServerUser(token)
+  // Full fidelity: normalizeProfile reads created_at / last_sign_in_at /
+  // email_confirmed_at / new_email, which are NOT present in the JWT claims.
+  const user = await getServerUser(token, { full: true })
   if (!user) return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired token')
 
   req.user = user

@@ -7,7 +7,7 @@ import {
   Rocket, GitCompare, ChevronLeft,
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
-  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, UserCheck, MonitorCheck, PieChart, ShieldCheck, Scale, FileText, Key, Webhook, FileWarning, Ghost, Workflow, Crown,
+  Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, PieChart, ShieldCheck, Scale, FileText, Key, FileWarning, Ghost, Workflow, Crown,
   BadgeDollarSign, BarChart3, CreditCard, TrendingUp, Users, Wrench
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -28,6 +28,7 @@ const NAV_SECTIONS = [
       { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },
       { name: 'Sophia AI Security Copilot™', path: '/dashboard/sophia', icon: Sparkles },
       { name: 'Quantum Readiness Assessment Engine™', path: '/dashboard/quantum-readiness', icon: Sparkles },
+      { name: 'Migration Intelligence™', path: '/dashboard/migration-intelligence', icon: Scale },
       { name: 'Migration Planner', path: '/dashboard/migration-planner', icon: Route },
       { name: 'Migration Sandbox', path: '/dashboard/migration-sandbox', icon: Box },
       { name: 'Live Migration Ops', path: '/dashboard/live-migration', icon: Rocket },
@@ -41,7 +42,6 @@ const NAV_SECTIONS = [
       { name: 'Assets & CBOM', path: '/dashboard/assets', icon: MapIcon },
       { name: 'CBOM Explorer', path: '/dashboard/cbom', icon: Layers },
       { name: 'Shadow Crypto', path: '/dashboard/shadow-crypto', icon: Ghost },
-      { name: 'Crypto Exposure', path: '/dashboard/crypto-exposure', icon: Globe },
     ],
   },
   {
@@ -85,7 +85,6 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'Runtime Cryptographic Intelligence', path: '/dashboard/runtime-crypto-intel', icon: Microscope },
-      { name: 'Behavioral Analytics', path: '/dashboard/behavioral-analytics', icon: Activity },
       { name: 'Telemetry Correlation', path: '/dashboard/telemetry-correlation', icon: LineChart },
       { name: 'Drift Detection', path: '/dashboard/drift', icon: GitCompare },
       { name: 'Quantum Risk Scoring', path: '/dashboard/quantum-risk-scoring', icon: Target },
@@ -136,10 +135,6 @@ const NAV_SECTIONS = [
     items: [
       { name: 'Trust Dashboard', path: '/dashboard/trust-dashboard', icon: PieChart },
       { name: 'Trust-State Discovery', path: '/dashboard/trust-state-discovery', icon: Workflow },
-      { name: 'Identity Trust', path: '/dashboard/identity-trust', icon: UserCheck },
-      { name: 'Device Trust', path: '/dashboard/device-trust', icon: MonitorCheck },
-      { name: 'Continuous Trust Validation', path: '/dashboard/continuous-trust', icon: CheckCircle },
-      { name: 'Trust Analytics', path: '/dashboard/trust-analytics', icon: PieChart },
     ],
   },
   {
@@ -148,10 +143,8 @@ const NAV_SECTIONS = [
     items: [
       { name: 'Compliance Center', path: '/dashboard/compliance', icon: ClipboardCheck },
       { name: 'Quantum Governance', path: '/dashboard/quantum-governance', icon: Scale },
-      { name: 'Crypto Policies', path: '/dashboard/crypto-policies', icon: FileText },
       { name: 'Audit Vault', path: '/dashboard/audit-vault', icon: Database },
       { name: 'Regulatory Mapping', path: '/dashboard/regulatory-mapping', icon: MapIcon },
-      { name: 'Standards Mapping', path: '/dashboard/standards-mapping', icon: CheckCircle },
     ],
   },
   {
@@ -160,8 +153,6 @@ const NAV_SECTIONS = [
     items: [
       { name: 'Runtime Telemetry', path: '/dashboard/runtime-telemetry', icon: Activity },
       { name: 'Certificate Telemetry', path: '/dashboard/certificate-telemetry', icon: FileWarning },
-      { name: 'Key Analytics', path: '/dashboard/key-analytics', icon: Key },
-      { name: 'API Encryption Monitoring', path: '/dashboard/api-encryption', icon: Webhook },
       { name: 'Multi-Cloud Telemetry', path: '/dashboard/multi-cloud-telemetry', icon: Cloud },
     ],
   },

@@ -1,49 +1,58 @@
+/**
+ * Enterprise Migration Sandbox & Digital Twin — real-time post-quantum
+ * migration simulation platform.
+ *
+ * 15 enterprise tabs: Overview · Digital Twin · Simulation Builder ·
+ * Migration Pipeline · Dependency Graph · Topology · Telemetry · Performance ·
+ * Validation · Rollback · Compliance · AI Insights · Execution Logs ·
+ * Reports · History.
+ *
+ * Data: /api/v1/sandbox (snapshot + SSE + Supabase realtime). Simulations
+ * execute exclusively against the metadata-only digital twin — production is
+ * never modified. The Production Approval Gate records governed decisions.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
   BarChart3,
   BookOpen,
   Bot,
+  Boxes,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock3,
-  Copy,
+  Cpu,
   Download,
   Eye,
   FileText,
   FlaskConical,
+  Gauge,
+  GitBranch,
   Globe2,
   History,
   Key,
   Layers,
-  Lightbulb,
   Lock,
-  Maximize2,
-  Minimize2,
-  MoreHorizontal,
+  Map as MapIcon,
+  Network,
   Pause,
   Play,
   Plus,
-  Radio,
   RefreshCw,
   RotateCcw,
   Save,
-  Server,
   Shield,
   ShieldAlert,
   ShieldCheck,
+  ShieldQuestion,
   Square,
   Target,
   Terminal,
-  TestTube2,
-  TrendingDown,
-  TrendingUp,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   Upload,
   X,
@@ -53,195 +62,61 @@ import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { clearMigrationHandoff, readMigrationHandoff, type MigrationHandoff } from '@/app/dashboard/quantum-readiness/_advisor'
+import {
+  ActionBtn,
+  BLUE,
+  CYAN,
+  EmptyBlock,
+  GOLD,
+  GREEN,
+  MetricTile,
+  ORANGE,
+  Panel,
+  Pill,
+  ProgressBar,
+  PURPLE,
+  RED,
+  ScoreGauge,
+  SectionHead,
+  canDeleteSimulationStatus,
+  downloadJson,
+  fmt,
+  heatColor,
+  historyDateMatches,
+  modeBadge,
+  objectRecord,
+  pct,
+  progressBarColor,
+  relTime,
+  riskBadge,
+  severityIcon,
+  simModeLabel,
+  statusColor,
+  timeStr,
+  type ApprovalGatePayload,
+  type LogEntry,
+  type OperatorNotice,
+  type PipelineStage,
+  type SandboxActionHandler,
+  type SandboxSnapshot,
+  type Simulation,
+  type SimulationHistoryRow,
+  type SophiaPayload,
+  type TimelineEntry,
+  type WorkflowPhase,
+} from './_shared'
+import { DependencyGraphTab, DigitalTwinTab, TopologyTab, useTwinDetail } from './TwinPanels'
+import { PerformanceTab, ReportsTab, SimulationBuilderTab, TelemetryTab, ValidationTab } from './OpsPanels'
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   TYPES
+   TYPES + EMPTY STATE
    ═══════════════════════════════════════════════════════════════════════════ */
 
-type SimulationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused' | 'rollback_requested' | 'rolled_back' | 'stopped'
+type ActiveTab =
+  | 'overview' | 'twin' | 'builder' | 'pipeline' | 'dependencies' | 'topology'
+  | 'telemetry' | 'performance' | 'validation' | 'rollback' | 'compliance'
+  | 'ai' | 'logs' | 'reports' | 'history'
 
-type SimEvent = {
-  id: string
-  type: string
-  message: string
-  severity: string
-  timestamp: string
-}
-
-type Simulation = {
-  id: string
-  name: string
-  assetId: string | null
-  assetName: string
-  assetType: string
-  environment: string
-  owner: string
-  criticality: string
-  fromAlgo: string
-  toAlgo: string
-  migrationType: string
-  runMode: string
-  runModeLabel: string
-  isSandbox: boolean
-  isActualMigration: boolean
-  executionScope: string
-  engineStatus: string
-  queuedReason: string | null
-  eta: string
-  status: SimulationStatus
-  progress: number
-  riskLevel: string
-  phase: string
-  phaseId: string
-  phaseDetail: string
-  startedAt: string | null
-  completedAt: string | null
-  updatedAt: string
-  createdAt: string
-  eventCount: number
-  recentEvents: SimEvent[]
-  metadata: Record<string, unknown>
-}
-
-type RiskFactor = {
-  label: string
-  count: number
-  severity: string
-  impact: string
-}
-
-type Recommendation = {
-  id: string
-  priority: number
-  type: string
-  title: string
-  description: string
-  algorithm: string
-  asset: string
-  effort: string
-  timeEstimate: string
-  compliance: string[]
-}
-
-type ComplianceItem = {
-  framework: string
-  control: string
-  status: string
-  score: number
-}
-
-type WorkflowPhase = {
-  id: string
-  label: string
-  description: string
-  complete: boolean
-  active: boolean
-  progress: number
-  count?: number
-  running?: number
-  queued?: number
-  blocked?: number
-  source?: string
-  updatedAt?: string | null
-}
-
-type PqcStackItem = {
-  name: string
-  standard: string
-  status: string
-  usage: number
-}
-
-type SimulationHistoryRow = {
-  id: string
-  name: string
-  sourceAlgorithm: string
-  targetAlgorithm: string
-  assetName: string
-  assetType: string
-  assets: number
-  riskScore: number
-  complianceScore: number
-  status: SimulationStatus
-  durationMs: number
-  duration: string
-  createdAt: string
-  startedAt: string | null
-  completedAt: string | null
-  updatedAt: string
-  riskLevel: string
-  runMode: string
-  runModeLabel: string
-  owner: string
-  environment: string
-  snapshots: number
-  eventCount: number
-}
-
-type LogEntry = {
-  id: string
-  jobId: string
-  type: string
-  message: string
-  severity: string
-  timestamp: string
-}
-
-type SandboxSummary = {
-  totalSimulations: number
-  running: number
-  completed: number
-  failed: number
-  queued: number
-  paused: number
-  totalWorkflows: number
-  actualMigrations: number
-  remediationWorkflows: number
-  runningWorkflows: number
-  completedWorkflows: number
-  failedWorkflows: number
-  queuedWorkflows: number
-  pausedWorkflows: number
-  blockedWorkflows: number
-  averageWorkflowProgress: number
-  backgroundEngine: string
-  lastMigrationEventAt: string | null
-  totalAssets: number
-  vulnerableAssets: number
-  criticalExposures: number
-  highExposures: number
-  openVulnerabilities: number
-  pqcReadiness: number
-  riskScore: number
-  complianceScore: number
-  expiringCerts: number
-  lastScanAt: string | null
-  completionRate: number
-  workflowCompletionRate: number
-}
-
-type SandboxSnapshot = {
-  generatedAt: string
-  summary: SandboxSummary
-  simulations: Simulation[]
-  history: SimulationHistoryRow[]
-  workflows: Simulation[]
-  riskFactors: RiskFactor[]
-  recommendations: Recommendation[]
-  complianceItems: ComplianceItem[]
-  complianceScore: number
-  workflowPhases: WorkflowPhase[]
-  pqcStack: PqcStackItem[]
-  recentLogs: LogEntry[]
-}
-
-type OperatorNotice = {
-  kind: 'success' | 'error' | 'info'
-  message: string
-}
-
-type ActiveTab = 'overview' | 'simulations' | 'history' | 'risk' | 'rollback' | 'compliance' | 'logs' | 'recommendations' | 'pqc-stack'
-type SandboxActionHandler = (id: string, action: string, options?: Record<string, unknown>) => void | Promise<void>
 type TerminalLineLevel = 'command' | 'telemetry' | 'event' | 'nist' | 'success' | 'warning' | 'error'
 type TerminalLine = {
   id: string
@@ -251,6 +126,27 @@ type TerminalLine = {
   command: string
   detail?: string
 }
+
+type ApprovalHandler = (jobId: string, decision: 'approve' | 'reject' | 'request_review', note?: string) => void | Promise<void>
+
+// Fallback pipeline definition until the first snapshot arrives.
+const DEFAULT_PIPELINE: PipelineStage[] = [
+  { id: 'discovery', label: 'Discovery', detail: '', at: 0 },
+  { id: 'crypto_inventory', label: 'Crypto Inventory', detail: '', at: 5 },
+  { id: 'dependency_mapping', label: 'Dependency Mapping', detail: '', at: 11 },
+  { id: 'business_impact', label: 'Business Impact Analysis', detail: '', at: 17 },
+  { id: 'migration_planning', label: 'Migration Planning', detail: '', at: 23 },
+  { id: 'digital_twin', label: 'Digital Twin Generation', detail: '', at: 29 },
+  { id: 'pqc_simulation', label: 'PQC Migration Simulation', detail: '', at: 36 },
+  { id: 'compatibility_validation', label: 'Compatibility Validation', detail: '', at: 50 },
+  { id: 'performance_benchmark', label: 'Performance Benchmark', detail: '', at: 60 },
+  { id: 'security_validation', label: 'Security Validation', detail: '', at: 69 },
+  { id: 'rollback_validation', label: 'Rollback Validation', detail: '', at: 78 },
+  { id: 'compliance_validation', label: 'Compliance Validation', detail: '', at: 86 },
+  { id: 'ai_risk_analysis', label: 'AI Risk Analysis', detail: '', at: 93 },
+  { id: 'executive_approval', label: 'Executive Approval', detail: '', at: 100, gate: true },
+  { id: 'production_ready', label: 'Production Ready', detail: '', at: 100, gate: true },
+]
 
 const EMPTY: SandboxSnapshot = {
   generatedAt: new Date().toISOString(),
@@ -268,104 +164,8 @@ const EMPTY: SandboxSnapshot = {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   STYLE TOKENS
+   LOCAL UTILS (history derivation + planner-handoff terminal)
    ═══════════════════════════════════════════════════════════════════════════ */
-
-const GOLD = '#FBBF24'
-const GREEN = '#22C55E'
-const RED = '#EF4444'
-const BLUE = '#38BDF8'
-const PURPLE = '#A78BFA'
-const CYAN = '#22D3EE'
-const ORANGE = '#F97316'
-
-const GLASS =
-  'migration-sandbox-panel group relative overflow-hidden rounded-xl border border-gold/15 bg-[#060F1C]/80 backdrop-blur-2xl shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_30px_rgba(0,0,0,0.3)] transition-all duration-500 hover:border-gold/40 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_8px_32px_rgba(0,0,0,0.4),0_0_48px_rgba(251,191,36,0.08)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/50 before:to-transparent'
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   UTILS
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-function fmt(v: number) { return new Intl.NumberFormat('en-US').format(Math.max(0, Math.round(v || 0))) }
-function pct(v: number) { return `${Math.max(0, Math.min(100, Math.round(v || 0)))}%` }
-
-function relTime(v: string | null) {
-  if (!v) return '--'
-  const ms = Date.now() - new Date(v).getTime()
-  if (!Number.isFinite(ms) || ms < 0) return '--'
-  const m = Math.round(ms / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
-
-function timeStr(v: string | null) {
-  if (!v) return '--'
-  const d = new Date(v)
-  return Number.isFinite(d.getTime()) ? d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--'
-}
-
-function statusColor(s: string) {
-  if (s === 'running') return { bg: 'bg-emerald-500/12', border: 'border-emerald-500/30', text: 'text-emerald-300', dot: 'bg-emerald-400' }
-  if (s === 'completed') return { bg: 'bg-emerald-500/12', border: 'border-emerald-500/30', text: 'text-emerald-300', dot: 'bg-emerald-400' }
-  if (s === 'failed') return { bg: 'bg-red-500/12', border: 'border-red-500/30', text: 'text-red-300', dot: 'bg-red-400' }
-  if (s === 'rollback_requested') return { bg: 'bg-orange-500/12', border: 'border-orange-500/30', text: 'text-orange-300', dot: 'bg-orange-400' }
-  if (s === 'rolled_back') return { bg: 'bg-purple-500/12', border: 'border-purple-500/30', text: 'text-purple-300', dot: 'bg-purple-400' }
-  if (s === 'stopped') return { bg: 'bg-slate-500/12', border: 'border-slate-500/30', text: 'text-slate-300', dot: 'bg-slate-400' }
-  if (s === 'paused') return { bg: 'bg-amber-500/12', border: 'border-amber-500/30', text: 'text-amber-300', dot: 'bg-amber-400' }
-  return { bg: 'bg-sky-500/10', border: 'border-sky-500/25', text: 'text-sky-300', dot: 'bg-sky-400' }
-}
-
-function modeBadge(mode: string) {
-  if (mode === 'dry_run') return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
-  if (mode === 'simulation') return 'border-purple-500/30 bg-purple-500/10 text-purple-300'
-  if (mode === 'remediation') return 'border-red-500/25 bg-red-500/10 text-red-300'
-  if (mode === 'actual_migration') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-  return 'border-white/10 bg-white/5 text-white/45'
-}
-
-function modeLabel(sim: Simulation) {
-  return sim.runModeLabel || sim.runMode?.replace(/_/g, ' ') || 'Workflow'
-}
-
-function riskBadge(level: string) {
-  if (level === 'critical') return 'bg-red-500/15 border-red-500/30 text-red-300'
-  if (level === 'high') return 'bg-orange-500/15 border-orange-500/30 text-orange-300'
-  if (level === 'medium') return 'bg-amber-500/15 border-amber-500/30 text-amber-300'
-  return 'bg-emerald-500/12 border-emerald-500/30 text-emerald-300'
-}
-
-function complianceColor(status: string) {
-  if (status === 'compliant') return 'text-emerald-300'
-  if (status === 'partial') return 'text-amber-300'
-  if (status === 'pending') return 'text-sky-300'
-  return 'text-red-300'
-}
-
-function severityIcon(s: string) {
-  if (s === 'critical' || s === 'error') return <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
-  if (s === 'warning' || s === 'high') return <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-  if (s === 'info') return <CheckCircle2 className="h-3.5 w-3.5 text-sky-400" />
-  return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-}
-
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
-
-function progressBarColor(v: number, status: string) {
-  if (status === 'failed') return RED
-  if (status === 'completed') return GREEN
-  if (v >= 70) return GREEN
-  if (v >= 40) return GOLD
-  return ORANGE
-}
-
-function canDeleteSimulationStatus(status: string) {
-  return ['completed', 'failed', 'stopped', 'rolled_back'].includes(status)
-}
 
 function historyDuration(start: string | null, end: string | null, fallback: string | null) {
   const started = start ? new Date(start).getTime() : 0
@@ -412,28 +212,10 @@ function deriveHistory(simulations: Simulation[], complianceScore = 0): Simulati
       runModeLabel: sim.runModeLabel,
       owner: sim.owner,
       environment: sim.environment,
-      snapshots: Array.isArray(sim.metadata?.snapshots) ? sim.metadata.snapshots.length : 0,
+      snapshots: Array.isArray(sim.metadata?.snapshots) ? (sim.metadata.snapshots as unknown[]).length : 0,
       eventCount: sim.eventCount,
     }
   })
-}
-
-function downloadJson(filename: string, value: unknown) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-function historyDateMatches(value: string, range: string) {
-  if (range === 'all') return true
-  const ms = new Date(value).getTime()
-  if (!Number.isFinite(ms)) return false
-  const days = range === '24h' ? 1 : range === '7d' ? 7 : range === '30d' ? 30 : 90
-  return Date.now() - ms <= days * 24 * 60 * 60 * 1000
 }
 
 function quoteArg(value: unknown) {
@@ -472,19 +254,19 @@ function phaseCommandForSimulation(sim: Simulation, planId: string) {
   if (sim.status === 'rollback_requested' || sim.status === 'rolled_back' || phase.includes('rollback')) {
     return `qguard-sandbox rollback verify --plan ${quoteArg(planId)} --job ${quoteArg(sim.id)} --checkpoint "latest"`
   }
-  if (phase.includes('preparation')) {
+  if (phase.includes('preparation') || phase.includes('discovery') || phase.includes('inventory')) {
     return `qguard-sandbox snapshot create --job ${quoteArg(sim.id)} --asset ${quoteArg(sim.assetName)} --rollback-checkpoint`
   }
-  if (phase.includes('assessment')) {
+  if (phase.includes('assessment') || phase.includes('impact') || phase.includes('planning')) {
     return `qguard-pqc assess --job ${quoteArg(sim.id)} --source ${quoteArg(sim.fromAlgo)} --target ${quoteArg(sim.toAlgo)} --nist "FIPS-203,FIPS-204,FIPS-205"`
   }
-  if (phase.includes('verification')) {
+  if (phase.includes('verification') || phase.includes('validation') || phase.includes('benchmark')) {
     return `qguard-pqc verify --job ${quoteArg(sim.id)} --handshake --certificate-chain --target ${quoteArg(sim.toAlgo)}`
   }
-  if (phase.includes('finalization') || sim.status === 'completed') {
+  if (phase.includes('finalization') || phase.includes('ai_risk') || sim.status === 'completed') {
     return `qguard-evidence collect --plan ${quoteArg(planId)} --job ${quoteArg(sim.id)} --format "nist-pqc-readiness"`
   }
-  return `qguard-pqc simulate --job ${quoteArg(sim.id)} --mode "sandbox" --source ${quoteArg(sim.fromAlgo)} --target ${quoteArg(sim.toAlgo)}`
+  return `qguard-pqc simulate --job ${quoteArg(sim.id)} --mode "digital-twin" --source ${quoteArg(sim.fromAlgo)} --target ${quoteArg(sim.toAlgo)}`
 }
 
 function terminalLevelClass(level: TerminalLineLevel) {
@@ -523,9 +305,7 @@ function buildHandoffTerminalLines(planId: string, simulations: Simulation[], re
   simulations.forEach((sim) => {
     const standards = nistStandardsForAlgorithm(sim.toAlgo)
     const snapshots = Array.isArray(sim.metadata?.snapshots) ? sim.metadata.snapshots as Array<Record<string, unknown>> : []
-    const jobLogs = recentLogs
-      .filter((log) => log.jobId === sim.id)
-      .slice(-4)
+    const jobLogs = recentLogs.filter((log) => log.jobId === sim.id).slice(-4)
 
     lines.push(
       {
@@ -597,7 +377,7 @@ function buildHandoffTerminalLines(planId: string, simulations: Simulation[], re
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   DATA HOOK — Connects to /api/v1/sandbox + SSE + Supabase Realtime
+   DATA HOOK — /api/v1/sandbox + SSE + Supabase Realtime
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function useSandbox() {
@@ -772,7 +552,7 @@ function useSandbox() {
     }
   }, [token, fetchSnapshot, applySnapshot, showNotice])
 
-  const startSimulation = useCallback(async (params: { fromAlgo?: string; toAlgo?: string; migrationType?: string; dryRun?: boolean; assetId?: string; assetIds?: string[] }) => {
+  const startSimulation = useCallback(async (params: Record<string, unknown>) => {
     if (!token) return null
     setPendingAction('simulate')
     try {
@@ -795,6 +575,35 @@ function useSandbox() {
       setError(message)
       showNotice('error', message)
       return null
+    } finally {
+      setPendingAction(null)
+    }
+  }, [token, fetchSnapshot, applySnapshot, showNotice])
+
+  // Production Approval Gate decision — records the governed decision with
+  // audit evidence server-side. Never mutates production systems.
+  const approveSimulation = useCallback(async (jobId: string, decision: 'approve' | 'reject' | 'request_review', note?: string) => {
+    if (!token) return
+    const key = `${jobId}:approval:${decision}`
+    setPendingAction(key)
+    try {
+      const response = await fetch(`/api/v1/sandbox/jobs/${jobId}/approval`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ decision, note }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload?.error?.message || 'Failed to record approval decision')
+      applySnapshot(payload?.data?.snapshot)
+      showNotice(decision === 'reject' ? 'info' : 'success',
+        decision === 'approve' ? 'Simulation approved for production planning — decision recorded with audit evidence.'
+        : decision === 'reject' ? 'Simulation rejected — decision recorded with audit evidence.'
+        : 'Review requested — decision recorded with audit evidence.')
+      await fetchSnapshot()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to record approval decision'
+      setError(message)
+      showNotice('error', message)
     } finally {
       setPendingAction(null)
     }
@@ -853,65 +662,12 @@ function useSandbox() {
     }
   }, [token, showNotice])
 
-  return { data, loading, error, notice, pendingAction, sseActive, refresh: fetchSnapshot, doAction, doBulkAction, startSimulation, exportReport, exportSimulation }
+  return { data, loading, error, notice, pendingAction, sseActive, refresh: fetchSnapshot, doAction, doBulkAction, startSimulation, approveSimulation, exportReport, exportSimulation, notify: showNotice }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SUB-COMPONENTS
+   HANDOFF TERMINAL CONSOLE
    ═══════════════════════════════════════════════════════════════════════════ */
-
-function Panel({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={cn(GLASS, className)}><div className="relative z-10 h-full">{children}</div></section>
-}
-
-function SectionHead({ icon: Icon, children, suffix }: { icon: LucideIcon; children: ReactNode; suffix?: ReactNode }) {
-  return (
-    <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="flex items-center gap-2.5 text-sm font-extrabold text-white/90">
-        <Icon className="h-4.5 w-4.5 text-gold" />
-        {children}
-      </h2>
-      {suffix}
-    </div>
-  )
-}
-
-function Pill({ children, className }: { children: ReactNode; className?: string }) {
-  return <span className={cn('inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-bold tracking-wide', className)}>{children}</span>
-}
-
-function ProgressBar({ value, color = GOLD, height = 'h-1.5' }: { value: number; color?: string; height?: string }) {
-  const w = Math.max(0, Math.min(100, value))
-  return (
-    <div className={cn('overflow-hidden rounded-full bg-white/8', height)}>
-      <div className="h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${w}%`, background: `linear-gradient(90deg, ${color}aa, ${color})`, boxShadow: `0 0 12px ${color}55` }} />
-    </div>
-  )
-}
-
-function EmptyBlock({ label }: { label: string }) {
-  return <div className="rounded-lg border border-white/5 bg-white/[0.02] p-8 text-center text-xs font-semibold text-white/35">{label}</div>
-}
-
-function ActionBtn({ icon: Icon, label, onClick, variant = 'default', small, disabled }: { icon: LucideIcon; label: string; onClick?: () => void; variant?: 'default' | 'gold' | 'danger' | 'success'; small?: boolean; disabled?: boolean }) {
-  const styles = {
-    default: 'border-white/12 bg-white/[0.03] text-white/70 hover:border-gold/40 hover:bg-gold/8 hover:text-gold',
-    gold: 'border-gold/40 bg-gold/10 text-gold hover:bg-gold/20',
-    danger: 'border-red-500/30 bg-red-500/8 text-red-300 hover:bg-red-500/15',
-    success: 'border-emerald-500/30 bg-emerald-500/8 text-emerald-300 hover:bg-emerald-500/15',
-  }
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cn('inline-flex items-center gap-1.5 rounded-lg border font-bold transition-all', styles[variant], small ? 'px-2.5 py-1.5 text-[10px]' : 'px-3.5 py-2 text-xs', disabled && 'pointer-events-none opacity-40')}
-    >
-      <Icon className={small ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
-      {label}
-    </button>
-  )
-}
 
 function HandoffTerminalConsole({
   planId,
@@ -995,331 +751,373 @@ function HandoffTerminalConsole({
   )
 }
 
-function MetricTile({ label, value, detail, icon: Icon, color, trend }: { label: string; value: string; detail?: string; icon: LucideIcon; color: string; trend?: number }) {
+/* ═══════════════════════════════════════════════════════════════════════════
+   ENTERPRISE PIPELINE STAGE RAIL (per-simulation)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function StageRail({ sim, pipeline }: { sim: Simulation; pipeline: PipelineStage[] }) {
+  const meta = objectRecord(sim.metadata)
+  const isEnterprise = Number(meta.pipelineVersion) >= 2 || typeof meta.simulationType === 'string'
+  const stages = isEnterprise
+    ? pipeline.filter((stage) => !stage.gate)
+    : [
+        { id: 'preparation', label: 'Preparation', at: 0 },
+        { id: 'assessment', label: 'Risk Assessment', at: 22 },
+        { id: 'execution', label: 'Sandbox Execution', at: 48 },
+        { id: 'verification', label: 'Verification', at: 74 },
+        { id: 'finalization', label: 'Finalization', at: 94 },
+      ] as PipelineStage[]
+  const stageHistory = Array.isArray(meta.stageHistory) ? meta.stageHistory as Array<Record<string, unknown>> : []
+  const enteredAt = new Map(stageHistory.map((entry) => [String(entry.id || ''), String(entry.enteredAt || '')]))
+  const terminal = ['failed', 'stopped', 'rolled_back', 'rollback_requested'].includes(sim.status)
+
   return (
-    <Panel className="p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-white/40">{label}</div>
-          <div className="mt-2 font-mono text-2xl font-black leading-none text-white">{value}</div>
-          {detail && <div className="mt-1.5 text-[10px] font-semibold" style={{ color }}>{detail}</div>}
-        </div>
-        <div className="flex flex-col items-center gap-1.5">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border bg-black/30" style={{ borderColor: `${color}44`, color, boxShadow: `0 0 20px ${color}18` }}>
-            <Icon className="h-5 w-5" />
-          </div>
-          {trend !== undefined && trend !== 0 && (
-            <div className={cn('flex items-center gap-0.5 text-[9px] font-bold', trend > 0 ? 'text-emerald-400' : 'text-red-400')}>
-              {trend > 0 ? <ArrowUpRight className="h-2.5 w-2.5" /> : <ArrowDownRight className="h-2.5 w-2.5" />}
-              {Math.abs(trend)}%
+    <div className="overflow-x-auto pb-1">
+      <div className="flex min-w-max items-start gap-0">
+        {stages.map((stage, index) => {
+          const done = sim.status === 'completed' || (sim.progress > stage.at && sim.phaseId !== stage.id)
+          const current = !terminal && sim.status !== 'completed' && sim.phaseId === stage.id
+          const at = enteredAt.get(stage.id)
+          return (
+            <div key={stage.id} className="flex items-start">
+              <div className="flex w-[92px] flex-col items-center text-center">
+                <div className={cn('flex h-7 w-7 items-center justify-center rounded-full border text-[10px] font-black transition',
+                  done ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-300'
+                  : current ? 'border-gold/60 bg-gold/15 text-gold shadow-[0_0_12px_rgba(251,191,36,0.4)]'
+                  : terminal ? 'border-red-500/25 bg-red-500/[0.06] text-red-300/60'
+                  : 'border-white/12 bg-white/[0.03] text-white/30')}>
+                  {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
+                </div>
+                <div className={cn('mt-1.5 text-[8px] font-bold uppercase leading-tight tracking-wide',
+                  done ? 'text-emerald-300/80' : current ? 'text-gold' : 'text-white/30')}>
+                  {stage.label}
+                </div>
+                {at && <div className="mt-0.5 font-mono text-[7px] text-white/25">{timeStr(at)}</div>}
+                {current && <div className="mt-0.5 font-mono text-[8px] font-black text-gold">{sim.progress}%</div>}
+              </div>
+              {index < stages.length - 1 && (
+                <div className={cn('mt-3.5 h-px w-4', done ? 'bg-emerald-500/40' : 'bg-white/10')} />
+              )}
             </div>
-          )}
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PRODUCTION APPROVAL GATE BANNER
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function ApprovalGateBanner({ gate, pendingAction, onDecision, onExport, exportPending }: {
+  gate: ApprovalGatePayload
+  pendingAction: string | null
+  onDecision: ApprovalHandler
+  onExport: () => void
+  exportPending: boolean
+}) {
+  const statusStyles = gate.simulationStatus === 'PASS'
+    ? { border: 'border-emerald-500/30', bg: 'bg-emerald-500/[0.04]', text: 'text-emerald-300', icon: ShieldCheck }
+    : gate.simulationStatus === 'FAILED'
+      ? { border: 'border-red-500/30', bg: 'bg-red-500/[0.04]', text: 'text-red-300', icon: ShieldAlert }
+      : { border: 'border-sky-500/25', bg: 'bg-sky-500/[0.03]', text: 'text-sky-300', icon: ShieldQuestion }
+  const StatusIcon = statusStyles.icon
+  const undecided = gate.eligibleSimulations.filter((sim) => !sim.approval)
+  const primary = undecided[0] || null
+
+  return (
+    <Panel className={cn('p-5', statusStyles.border, statusStyles.bg)}>
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="flex min-w-0 items-start gap-4">
+          <div className={cn('flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border', statusStyles.border, statusStyles.bg)}>
+            <StatusIcon className={cn('h-7 w-7', statusStyles.text)} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-black uppercase tracking-wider text-white/85">Production Approval Gate</h2>
+              <Pill className={cn('text-[11px]', statusStyles.border, statusStyles.bg, statusStyles.text)}>
+                Simulation {gate.simulationStatus}
+              </Pill>
+              {gate.productionReady && <Pill className="border-emerald-500/30 bg-emerald-500/10 text-emerald-300">PRODUCTION READY</Pill>}
+            </div>
+            <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-white/55">{gate.aiRecommendation}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {gate.gates.map((g) => (
+                <span key={g.id}>
+                  <Pill className={cn(
+                    g.status === 'pass' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                    : g.status === 'warn' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                    : 'border-red-500/25 bg-red-500/10 text-red-300'
+                  )}>
+                    {g.label}: {g.value}
+                  </Pill>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-col items-stretch gap-2">
+          <div className="flex flex-wrap gap-2">
+            <ActionBtn
+              icon={ThumbsUp}
+              label={primary && pendingAction === `${primary.id}:approval:approve` ? 'Approving…' : 'Approve for Production'}
+              variant="success"
+              disabled={!primary || gate.simulationStatus !== 'PASS' || pendingAction !== null}
+              onClick={() => {
+                if (!primary) return
+                if (window.confirm(`Approve "${primary.name}" for production planning?\n\nThis records a governed decision with audit evidence. No production system is modified — execution happens through the operational migration workflow.`)) {
+                  void onDecision(primary.id, 'approve')
+                }
+              }}
+            />
+            <ActionBtn
+              icon={ThumbsDown}
+              label={primary && pendingAction === `${primary.id}:approval:reject` ? 'Rejecting…' : 'Reject'}
+              variant="danger"
+              disabled={!primary || pendingAction !== null}
+              onClick={() => {
+                if (!primary) return
+                if (window.confirm(`Reject "${primary.name}"?\n\nThe rejection is recorded with audit evidence and the simulation stays available for re-runs.`)) {
+                  void onDecision(primary.id, 'reject')
+                }
+              }}
+            />
+            <ActionBtn
+              icon={Eye}
+              label={primary && pendingAction === `${primary.id}:approval:request_review` ? 'Requesting…' : 'Request Review'}
+              disabled={!primary || pendingAction !== null}
+              onClick={() => primary && void onDecision(primary.id, 'request_review')}
+            />
+            <ActionBtn icon={Download} label={exportPending ? 'Exporting…' : 'Export Report'} onClick={onExport} disabled={exportPending} variant="gold" />
+          </div>
+          <div className="text-right text-[9px] font-semibold text-white/30">
+            {primary ? `Next decision: ${primary.name}` : gate.counts.completed > 0 ? 'All completed simulations have decisions recorded.' : 'Complete a simulation to unlock approval decisions.'}
+          </div>
         </div>
       </div>
+
+      {gate.decisions.length > 0 && (
+        <div className="mt-4 border-t border-white/8 pt-3">
+          <div className="mb-2 text-[9px] font-bold uppercase tracking-wider text-white/30">Decision Log ({gate.counts.approved} approved · {gate.counts.rejected} rejected · {gate.counts.reviewRequested} review)</div>
+          <div className="flex flex-wrap gap-2">
+            {gate.decisions.slice(0, 6).map((decision) => (
+              <div key={`${decision.jobId}-${decision.decidedAt}`} className="rounded-lg border border-white/8 bg-black/20 px-3 py-1.5 text-[10px] font-semibold text-white/50">
+                <span className={cn('font-black uppercase', decision.decision === 'approve' ? 'text-emerald-300' : decision.decision === 'reject' ? 'text-red-300' : 'text-sky-300')}>{decision.decision.replace(/_/g, ' ')}</span>
+                <span className="mx-1.5 text-white/20">·</span>
+                <span className="truncate">{decision.jobName}</span>
+                <span className="mx-1.5 text-white/20">·</span>
+                <span>{decision.decidedBy || 'operator'}</span>
+                <span className="mx-1.5 text-white/20">·</span>
+                <span>{relTime(decision.decidedAt)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <p className="mt-3 text-[9px] leading-relaxed text-white/25">{gate.guarantee}</p>
     </Panel>
   )
 }
 
-function ScoreGauge({ value, size = 120, label }: { value: number; size?: number; label: string }) {
-  const r = (size - 16) / 2
-  const circ = 2 * Math.PI * r
-  const offset = circ - (Math.max(0, Math.min(100, value)) / 100) * circ
-  const color = value >= 80 ? GREEN : value >= 60 ? GOLD : value >= 40 ? ORANGE : RED
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIVE MIGRATION TIMELINE PANEL
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function TimelinePanel({ timeline, limit = 14 }: { timeline: TimelineEntry[]; limit?: number }) {
+  if (timeline.length === 0) return <EmptyBlock label="No migration events yet — the live timeline populates as simulations execute." />
   return (
-    <div className="flex flex-col items-center gap-2">
-      <svg width={size} height={size} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.06)" strokeWidth={8} fill="none" />
-        <circle cx={size / 2} cy={size / 2} r={r} stroke={color} strokeWidth={8} fill="none" strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" className="transition-all duration-1000 ease-out" style={{ filter: `drop-shadow(0 0 8px ${color}66)` }} />
-      </svg>
-      <div className="absolute flex flex-col items-center justify-center" style={{ width: size, height: size }}>
-        <span className="font-mono text-2xl font-black text-white">{Math.round(value)}</span>
-        <span className="text-[9px] font-bold uppercase tracking-wider text-white/40">/ 100</span>
-      </div>
-      <span className="text-[10px] font-bold text-white/50">{label}</span>
+    <div className="space-y-0">
+      {timeline.slice(0, limit).map((entry, index) => (
+        <div key={entry.id} className="grid grid-cols-[64px_20px_1fr] gap-2">
+          <div className="pt-0.5 text-right font-mono text-[10px] font-bold text-white/40">{timeStr(entry.at)}</div>
+          <div className="flex flex-col items-center">
+            <span className={cn('mt-1 h-2.5 w-2.5 rounded-full border-2',
+              entry.severity === 'error' || entry.severity === 'critical' ? 'border-red-400 bg-red-500/30'
+              : entry.severity === 'warning' ? 'border-amber-400 bg-amber-500/30'
+              : entry.severity === 'success' ? 'border-emerald-400 bg-emerald-500/30'
+              : 'border-sky-400 bg-sky-500/30')} />
+            {index < Math.min(timeline.length, limit) - 1 && <span className="w-px flex-1 bg-white/8" />}
+          </div>
+          <div className="pb-3">
+            <div className="text-[11px] font-semibold leading-relaxed text-white/65">{entry.label}</div>
+            <div className="mt-0.5 flex flex-wrap gap-x-2 text-[9px] font-bold uppercase tracking-wider text-white/25">
+              <span>{entry.type}</span>
+              {entry.jobName && <span className="text-gold/60">{entry.jobName}</span>}
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   NEW SIMULATION MODAL
+   SOPHIA AI PANEL (AI Insights tab)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-type SimulationAsset = {
-  id: string
-  name: string
-  type: string
-  environment: string
-  owner: string
-  criticality: string
-  sourceAlgorithm: string
-  targetAlgorithm: string
-  riskLevel: string
-  inventoryItems: number
-  vulnerableItems: number
-  exposures: number
-  criticalExposures: number
-  algorithms: string[]
-  activeSimulations: number
-  hasEvidence: boolean
-  lastSeen: string | null
-}
-
-function NewSimulationModal({ open, onClose, onStart }: { open: boolean; onClose: () => void; onStart: (p: any) => void }) {
-  const { session } = useAuth()
-  const token = session?.access_token
-  const [mode, setMode] = useState<'assets' | 'custom'>('assets')
-  const [assets, setAssets] = useState<SimulationAsset[]>([])
-  const [assetsLoading, setAssetsLoading] = useState(false)
-  const [assetsError, setAssetsError] = useState<string | null>(null)
-  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set())
-  const [assetSearch, setAssetSearch] = useState('')
-  const [fromAlgo, setFromAlgo] = useState('RSA-2048')
-  const [toAlgo, setToAlgo] = useState('ML-KEM-768')
-  const [migType, setMigType] = useState('key_exchange')
-  const [dryRun, setDryRun] = useState(true)
-
-  // Load the tenant's real scanned assets (with crypto evidence) each time
-  // the modal opens, so simulations always target current inventory.
-  useEffect(() => {
-    if (!open || !token) return
-    let cancelled = false
-    setSelectedAssets(new Set())
-    setAssetSearch('')
-    setAssetsLoading(true)
-    setAssetsError(null)
-    fetch('/api/v1/sandbox/assets', { headers: { Authorization: `Bearer ${token}` } })
-      .then(async (r) => {
-        const j = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`)
-        return j?.data
-      })
-      .then((d) => {
-        if (cancelled) return
-        const rows: SimulationAsset[] = Array.isArray(d?.assets) ? d.assets : []
-        setAssets(rows)
-        setMode(rows.length > 0 ? 'assets' : 'custom')
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setAssetsError(err instanceof Error ? err.message : 'Failed to load scanned assets')
-        setMode('custom')
-      })
-      .finally(() => { if (!cancelled) setAssetsLoading(false) })
-    return () => { cancelled = true }
-  }, [open, token])
-
-  const filteredAssets = useMemo(() => {
-    if (!assetSearch.trim()) return assets
-    const q = assetSearch.trim().toLowerCase()
-    return assets.filter((a) =>
-      a.name.toLowerCase().includes(q)
-      || a.type.toLowerCase().includes(q)
-      || a.environment.toLowerCase().includes(q)
-      || a.sourceAlgorithm.toLowerCase().includes(q)
-      || a.algorithms.some((algo) => algo.toLowerCase().includes(q))
-    )
-  }, [assets, assetSearch])
-
-  if (!open) return null
-
-  const presets = [
-    { label: 'RSA → ML-KEM', from: 'RSA-2048', to: 'ML-KEM-768', type: 'key_exchange' },
-    { label: 'ECDSA → ML-DSA', from: 'ECDSA P-256', to: 'ML-DSA-65', type: 'digital_signature' },
-    { label: 'TLS Certificate', from: 'RSA-2048 (TLS)', to: 'ML-DSA-65 (Hybrid)', type: 'tls_certificate' },
-    { label: 'VPN Tunnel', from: 'IKEv2 + ECDH', to: 'ML-KEM Hybrid KEX', type: 'vpn_tunnel' },
-    { label: 'API Encryption', from: 'AES-128-CBC', to: 'AES-256-GCM', type: 'api_encryption' },
-    { label: 'Database Re-key', from: 'AES-128', to: 'AES-256-GCM', type: 'database_rekey' },
-    { label: 'HSM Migration', from: 'RSA-3072', to: 'ML-KEM-1024', type: 'hsm_migration' },
-    { label: 'Key Rotation', from: 'ECDSA P-384', to: 'ML-DSA-87', type: 'key_rotation' },
-  ]
-
-  const vulnerableAssetIds = assets.filter((a) => a.vulnerableItems > 0 || a.criticalExposures > 0).map((a) => a.id)
-  const toggleAsset = (id: string) => {
-    setSelectedAssets((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else if (next.size < 25) next.add(id)
-      return next
-    })
-  }
-
-  const startDisabled = mode === 'assets' ? selectedAssets.size === 0 : !fromAlgo.trim()
-  const handleStart = () => {
-    if (mode === 'assets') {
-      onStart({ assetIds: Array.from(selectedAssets), dryRun, migrationType: 'asset_migration' })
-    } else {
-      onStart({ fromAlgo, toAlgo, migrationType: migType, dryRun })
-    }
-    onClose()
-  }
-
+function SophiaPanel({ sophia, pendingAction }: { sophia: SophiaPayload; pendingAction: string | null }) {
+  void pendingAction
+  const verdictStyle = sophia.verdict === 'ready'
+    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+    : sophia.verdict === 'at_risk'
+      ? 'border-red-500/30 bg-red-500/10 text-red-300'
+      : sophia.verdict === 'progressing'
+        ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+        : 'border-sky-500/25 bg-sky-500/10 text-sky-300'
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-gold/25 bg-[#0A1525]/95 p-6 shadow-2xl backdrop-blur-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="flex items-center gap-2 text-lg font-black text-white"><FlaskConical className="h-5 w-5 text-gold" /> New Migration Simulation</h3>
-          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-white/40 hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>
-        </div>
+    <>
+      <Panel className="border-violet-400/20 bg-violet-500/[0.02] p-5">
+        <SectionHead icon={Bot} suffix={<Pill className={verdictStyle}>{sophia.verdict.replace(/_/g, ' ').toUpperCase()}</Pill>}>
+          Sophia AI Migration Advisor — Executive Analysis
+        </SectionHead>
+        <p className="text-xs leading-relaxed text-white/65">{sophia.executiveSummary}</p>
 
-        <div className="mb-4 flex gap-2">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           {[
-            { key: 'assets' as const, label: `Scanned Assets (${assets.length})`, icon: Server },
-            { key: 'custom' as const, label: 'Custom Algorithms', icon: Key },
-          ].map((m) => {
-            const Icon = m.icon
-            return (
-              <button key={m.key} type="button" onClick={() => setMode(m.key)}
-                className={cn('flex items-center gap-1.5 rounded-lg border px-3 py-2 text-[11px] font-bold transition',
-                  mode === m.key ? 'border-gold/50 bg-gold/12 text-gold' : 'border-white/10 bg-white/[0.02] text-white/50 hover:border-gold/25 hover:text-white')}>
-                <Icon className="h-3.5 w-3.5" />
-                {m.label}
-              </button>
-            )
-          })}
+            { label: 'Migration Confidence', value: sophia.migrationConfidencePct, color: sophia.migrationConfidencePct >= 70 ? GREEN : sophia.migrationConfidencePct >= 45 ? GOLD : RED },
+            { label: 'Compatibility Score', value: sophia.compatibilityScorePct, color: sophia.compatibilityScorePct >= 70 ? GREEN : GOLD },
+            { label: 'Risk Score', value: sophia.riskScorePct, color: sophia.riskScorePct >= 70 ? GREEN : sophia.riskScorePct >= 40 ? GOLD : RED },
+            { label: 'Rollback Confidence', value: sophia.rollbackConfidencePct, color: sophia.rollbackConfidencePct >= 70 ? GREEN : GOLD },
+            { label: 'AI Confidence', value: sophia.aiConfidencePct, color: sophia.aiConfidencePct >= 70 ? GREEN : BLUE },
+          ].map((score) => (
+            <div key={score.label} className="rounded-xl border border-white/8 bg-white/[0.02] p-3">
+              <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">{score.label}</div>
+              <div className="mt-1 font-mono text-2xl font-black" style={{ color: score.color }}>{score.value}%</div>
+              <div className="mt-1.5"><ProgressBar value={score.value} color={score.color} /></div>
+            </div>
+          ))}
         </div>
 
-        {mode === 'assets' && (
-          <>
-            <p className="mb-3 text-[11px] leading-relaxed text-white/40">
-              Select assets from your scanned inventory. Each simulation loads the asset's real cryptographic
-              evidence (inventory + exposures) and validates the recommended PQC migration against it in the sandbox.
-            </p>
-
-            {assetsLoading ? (
-              <div className="flex items-center justify-center gap-3 rounded-lg border border-white/8 bg-white/[0.02] py-10">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-gold/20 border-t-gold" />
-                <span className="text-xs font-bold text-white/45">Loading scanned assets…</span>
+        {sophia.narrative.length > 0 && (
+          <div className="mt-4 space-y-1.5">
+            {sophia.narrative.map((line) => (
+              <div key={line} className="flex items-start gap-2 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-white/55">
+                <Bot className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-300" />
+                {line}
               </div>
-            ) : assetsError ? (
-              <EmptyBlock label={`Could not load scanned assets: ${assetsError}`} />
-            ) : assets.length === 0 ? (
-              <EmptyBlock label="No scanned assets found. Run a discovery scan in the PQC Scanner first, then simulate migrations against the discovered assets." />
-            ) : (
-              <>
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <input
-                    value={assetSearch}
-                    onChange={(e) => setAssetSearch(e.target.value)}
-                    placeholder="Search assets, algorithms, environments…"
-                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white outline-none placeholder:text-white/25 focus:border-gold/40"
-                  />
-                  <button type="button" onClick={() => setSelectedAssets(new Set(vulnerableAssetIds.slice(0, 25)))}
-                    className="rounded-lg border border-red-500/25 bg-red-500/8 px-2.5 py-2 text-[10px] font-bold text-red-300 transition hover:bg-red-500/15">
-                    Select Vulnerable ({vulnerableAssetIds.length})
-                  </button>
-                  <button type="button" onClick={() => setSelectedAssets(new Set())}
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-[10px] font-bold text-white/50 transition hover:bg-white/8">
-                    Clear
-                  </button>
-                </div>
-
-                <div className="mb-4 max-h-[300px] space-y-1.5 overflow-y-auto pr-1">
-                  {filteredAssets.length === 0 ? (
-                    <EmptyBlock label="No assets match this search." />
-                  ) : filteredAssets.map((asset) => {
-                    const checked = selectedAssets.has(asset.id)
-                    return (
-                      <label key={asset.id} className={cn('flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 transition',
-                        checked ? 'border-gold/40 bg-gold/[0.06]' : 'border-white/8 bg-white/[0.015] hover:border-gold/20')}>
-                        <input type="checkbox" checked={checked} onChange={() => toggleAsset(asset.id)} className="h-4 w-4 shrink-0 rounded border-white/20 bg-white/5 accent-gold" />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate text-xs font-bold text-white/85">{asset.name}</span>
-                            <Pill className={riskBadge(asset.riskLevel)}>{asset.riskLevel}</Pill>
-                            {asset.activeSimulations > 0 && <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{asset.activeSimulations} active</Pill>}
-                          </div>
-                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-white/40">
-                            <span className="font-mono">{asset.sourceAlgorithm}</span>
-                            <span className="text-gold">→</span>
-                            <span className="font-mono text-emerald-300">{asset.targetAlgorithm}</span>
-                            <span className="text-white/20">|</span>
-                            <span>{asset.type} · {asset.environment}</span>
-                          </div>
-                          <div className="mt-0.5 text-[9px] font-semibold text-white/30">
-                            {asset.hasEvidence
-                              ? `${fmt(asset.vulnerableItems)} vulnerable item(s) · ${fmt(asset.exposures)} exposure(s) · ${fmt(asset.inventoryItems)} inventory record(s)`
-                              : 'No crypto evidence yet — simulation will validate the recommended baseline migration'}
-                          </div>
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              </>
-            )}
-          </>
+            ))}
+          </div>
         )}
 
-        {mode === 'custom' && (
-          <>
-            <div className="mb-5">
-              <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-white/40">Quick Presets</div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {presets.map((p) => (
-                  <button key={p.label} type="button" onClick={() => { setFromAlgo(p.from); setToAlgo(p.to); setMigType(p.type) }}
-                    className={cn('rounded-lg border px-3 py-2.5 text-left text-[11px] font-bold transition-all',
-                      fromAlgo === p.from && toAlgo === p.to ? 'border-gold/50 bg-gold/12 text-gold' : 'border-white/10 bg-white/[0.02] text-white/60 hover:border-gold/30 hover:text-white'
-                    )}>
-                    {p.label}
-                  </button>
+        <div className="mt-3 flex flex-wrap gap-2 text-[9px] font-bold uppercase tracking-wider text-white/25">
+          <span>Evidence basis:</span>
+          <span>{fmt(sophia.evidenceBasis.assets)} assets</span>
+          <span>· {fmt(sophia.evidenceBasis.inventoryRecords)} inventory</span>
+          <span>· {fmt(sophia.evidenceBasis.certificates)} certificates</span>
+          <span>· {fmt(sophia.evidenceBasis.relationships)} relationships</span>
+          <span>· {fmt(sophia.evidenceBasis.runtimeEvents)} runtime events</span>
+          <span>· {fmt(sophia.evidenceBasis.simulations)} simulations</span>
+        </div>
+      </Panel>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel className="p-5">
+          <SectionHead icon={GitBranch}>Recommended Migration Sequence</SectionHead>
+          {sophia.recommendedSequence.length === 0 ? (
+            <EmptyBlock label="Sequence recommendations appear once assets are discovered and classified." />
+          ) : (
+            <div className="space-y-2">
+              {sophia.recommendedSequence.map((step) => (
+                <div key={step.component} className="flex items-start gap-3 rounded-lg border border-white/6 bg-white/[0.015] p-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gold/40 bg-gold/10 text-xs font-black text-gold">{step.order}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold text-white/85">{step.label}</span>
+                      <Pill className="border-white/10 bg-white/5 text-white/40">{fmt(step.assets)} asset(s)</Pill>
+                      {step.vulnerableAssets > 0 && <Pill className="border-amber-500/25 bg-amber-500/10 text-amber-300">{fmt(step.vulnerableAssets)} vulnerable</Pill>}
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-white/45">{step.rationale}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel className="p-5">
+          <SectionHead icon={ShieldAlert} suffix={<Pill className="border-red-500/25 bg-red-500/10 text-red-300">{fmt(sophia.detectedBlockers.length)} blockers</Pill>}>
+            Detected Blockers & Root Causes
+          </SectionHead>
+          {sophia.detectedBlockers.length === 0 ? (
+            <EmptyBlock label="No critical blockers detected in current evidence." />
+          ) : (
+            <div className="space-y-2">
+              {sophia.detectedBlockers.map((blocker) => (
+                <div key={blocker.id} className="rounded-lg border border-red-500/15 bg-red-500/[0.03] p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-xs font-bold text-white/85">{blocker.label}</span>
+                    <span className="font-mono text-sm font-black text-red-300">{blocker.probabilityPct}%</span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-white/45">{blocker.recommendation}</p>
+                </div>
+              ))}
+            </div>
+          )}
+          {sophia.rootCauses.length > 0 && (
+            <div className="mt-4">
+              <div className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-white/30">Root Cause Analysis</div>
+              <div className="space-y-1.5">
+                {sophia.rootCauses.map((cause) => (
+                  <div key={cause} className="flex items-start gap-2 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-white/55">
+                    <Target className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gold" />
+                    {cause}
+                  </div>
                 ))}
               </div>
             </div>
-
-            <div className="mb-5 grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-white/40">Source Algorithm</label>
-                <input value={fromAlgo} onChange={(e) => setFromAlgo(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-gold/50" />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-white/40">Target Algorithm (PQC)</label>
-                <input value={toAlgo} onChange={(e) => setToAlgo(e.target.value)} className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-gold/50" />
-              </div>
-            </div>
-          </>
-        )}
-
-        <div className="mb-5 flex items-center gap-4">
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-white/60">
-            <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} className="h-4 w-4 rounded border-white/20 bg-white/5 accent-gold" />
-            <span className="font-bold">Dry Run Mode</span>
-            <span className="text-[10px] text-white/35">(Simulate without commit)</span>
-          </label>
-        </div>
-
-        <div className="flex items-center justify-end gap-3">
-          <button type="button" onClick={onClose} className="rounded-lg border border-white/10 px-4 py-2 text-xs font-bold text-white/50 hover:bg-white/5">Cancel</button>
-          <button type="button" onClick={handleStart} disabled={startDisabled}
-            className={cn('rounded-lg border border-gold bg-gold px-5 py-2 text-xs font-black text-black shadow-[0_0_20px_rgba(251,191,36,0.3)] transition hover:bg-[#FFE08A]', startDisabled && 'pointer-events-none opacity-40')}>
-            <Play className="mr-1.5 inline h-3.5 w-3.5" />
-            {mode === 'assets' ? `Simulate ${selectedAssets.size} Asset${selectedAssets.size === 1 ? '' : 's'}` : 'Start Simulation'}
-          </button>
-        </div>
+          )}
+        </Panel>
       </div>
-    </div>
+
+      {sophia.priorityActions.length > 0 && (
+        <Panel className="p-5">
+          <SectionHead icon={Zap}>Priority Actions</SectionHead>
+          <div className="grid gap-2 md:grid-cols-2">
+            {sophia.priorityActions.map((action, index) => (
+              <div key={action} className="flex items-start gap-3 rounded-lg border border-white/6 bg-white/[0.015] p-3">
+                <div className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border text-[10px] font-black',
+                  index === 0 ? 'border-red-500/40 bg-red-500/15 text-red-300' : index === 1 ? 'border-amber-500/40 bg-amber-500/15 text-amber-300' : 'border-sky-500/40 bg-sky-500/15 text-sky-300')}>
+                  {index + 1}
+                </div>
+                <p className="text-[11px] leading-relaxed text-white/60">{action}</p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </>
   )
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SIMULATION ROW (Expandable)
+   SIMULATION DETAILS MODAL
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function SimulationDetailsModal({
   simulation,
   onClose,
   onAction,
+  onApproval,
   pendingAction,
+  pipeline,
 }: {
   simulation: Simulation | null
   onClose: () => void
   onAction: SandboxActionHandler
+  onApproval: ApprovalHandler
   pendingAction: string | null
+  pipeline: PipelineStage[]
 }) {
   if (!simulation) return null
   const sc = statusColor(simulation.status)
   const snapshots = Array.isArray(simulation.metadata?.snapshots) ? simulation.metadata.snapshots as Array<Record<string, unknown>> : []
   const busy = (action: string) => pendingAction === `${simulation.id}:${action}`
   const deleteAllowed = simulation.isSandbox && canDeleteSimulationStatus(simulation.status)
+  const approval = objectRecord(simulation.metadata?.approval)
+  const approvalDecision = String(approval.decision || '')
+  const canDecide = simulation.isSandbox && simulation.status === 'completed'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
@@ -1329,8 +1127,13 @@ function SimulationDetailsModal({
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-lg font-black text-white">{simulation.name}</h3>
               <Pill className={cn(sc.bg, sc.border, sc.text)}>{simulation.status.replace(/_/g, ' ')}</Pill>
-              <Pill className={modeBadge(simulation.runMode)}>{modeLabel(simulation)}</Pill>
+              <Pill className={modeBadge(simulation.runMode)}>{simModeLabel(simulation)}</Pill>
               <Pill className={riskBadge(simulation.riskLevel)}>{simulation.riskLevel}</Pill>
+              {approvalDecision && (
+                <Pill className={approvalDecision === 'approve' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : approvalDecision === 'reject' ? 'border-red-500/30 bg-red-500/10 text-red-300' : 'border-sky-500/25 bg-sky-500/10 text-sky-300'}>
+                  {approvalDecision === 'approve' ? 'approved' : approvalDecision === 'reject' ? 'rejected' : 'review requested'}
+                </Pill>
+              )}
             </div>
             <p className="mt-1 text-xs text-white/45">{simulation.assetName} | {simulation.environment} | {simulation.owner}</p>
           </div>
@@ -1340,16 +1143,22 @@ function SimulationDetailsModal({
         </div>
 
         <div className="max-h-[calc(88vh-82px)] overflow-y-auto p-5">
+          <div className="mb-5 rounded-xl border border-white/8 bg-white/[0.02] p-4">
+            <div className="mb-3 text-xs font-black uppercase tracking-wider text-white/55">Enterprise Migration Pipeline</div>
+            <StageRail sim={simulation} pipeline={pipeline} />
+          </div>
+
           <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {[
               ['Source', simulation.fromAlgo],
               ['Target', simulation.toAlgo],
               ['Phase', simulation.phase],
               ['ETA', simulation.eta || '--'],
-              ['Mode', modeLabel(simulation)],
+              ['Mode', simModeLabel(simulation)],
               ['Engine', simulation.engineStatus || '--'],
               ['Progress', `${simulation.progress}%`],
               ['Asset Type', simulation.assetType],
+              ['Scenario', String(objectRecord(simulation.metadata).simulationTypeLabel || simulation.migrationType || '--')],
               ['Criticality', simulation.criticality],
               ['Started', simulation.startedAt ? timeStr(simulation.startedAt) : '--'],
               ['Updated', relTime(simulation.updatedAt)],
@@ -1371,6 +1180,32 @@ function SimulationDetailsModal({
               {simulation.phaseDetail || simulation.queuedReason || 'Workflow metadata is synchronized from migration telemetry.'}
             </div>
           </div>
+
+          {canDecide && (
+            <div className="mb-5 rounded-xl border border-gold/20 bg-gold/[0.03] p-4">
+              <div className="mb-2 text-xs font-black uppercase tracking-wider text-gold">Production Approval Gate</div>
+              <p className="mb-3 text-[11px] leading-relaxed text-white/45">
+                Record a governed decision for this completed simulation. Approval never modifies production — it produces
+                audit evidence consumed by the operational migration workflow.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <ActionBtn icon={ThumbsUp} label={busy('approval:approve') ? 'Approving…' : 'Approve for Production'} variant="success"
+                  onClick={() => { if (window.confirm(`Approve "${simulation.name}" for production planning?`)) void onApproval(simulation.id, 'approve') }}
+                  disabled={pendingAction !== null} />
+                <ActionBtn icon={ThumbsDown} label={busy('approval:reject') ? 'Rejecting…' : 'Reject'} variant="danger"
+                  onClick={() => { if (window.confirm(`Reject "${simulation.name}"?`)) void onApproval(simulation.id, 'reject') }}
+                  disabled={pendingAction !== null} />
+                <ActionBtn icon={Eye} label={busy('approval:request_review') ? 'Requesting…' : 'Request Review'}
+                  onClick={() => void onApproval(simulation.id, 'request_review')}
+                  disabled={pendingAction !== null} />
+              </div>
+              {approvalDecision && (
+                <div className="mt-2 text-[10px] font-semibold text-white/40">
+                  Last decision: <span className="font-black text-white/70">{approvalDecision.replace(/_/g, ' ')}</span> by {String(approval.decidedBy || 'operator')} · {relTime(String(approval.decidedAt || '') || null)}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
@@ -1451,16 +1286,22 @@ function SimulationDetailsModal({
   )
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   SIMULATION ROW (Expandable) + WORKFLOW ROWS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 function SimulationRow({
   sim,
   onAction,
   onDetails,
   pendingAction,
+  pipeline,
 }: {
   sim: Simulation
   onAction: SandboxActionHandler
   onDetails: (sim: Simulation) => void
   pendingAction: string | null
+  pipeline: PipelineStage[]
 }) {
   const [expanded, setExpanded] = useState(false)
   const sc = statusColor(sim.status)
@@ -1480,7 +1321,7 @@ function SimulationRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-bold text-white/90">{sim.name}</span>
-            <Pill className={modeBadge(sim.runMode)}>{modeLabel(sim)}</Pill>
+            <Pill className={modeBadge(sim.runMode)}>{simModeLabel(sim)}</Pill>
             <Pill className={riskBadge(sim.riskLevel)}>{sim.riskLevel}</Pill>
           </div>
           <div className="mt-0.5 text-[10px] text-white/40">
@@ -1509,6 +1350,10 @@ function SimulationRow({
 
       {expanded && (
         <div className="border-t border-white/5 px-4 py-3">
+          <div className="mb-3 rounded-lg border border-white/6 bg-black/20 px-3 py-2.5">
+            <StageRail sim={sim} pipeline={pipeline} />
+          </div>
+
           <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
             <div><div className="text-[9px] font-bold uppercase text-white/30">Asset</div><div className="mt-0.5 text-xs text-white/70">{sim.assetName}</div></div>
             <div><div className="text-[9px] font-bold uppercase text-white/30">Type</div><div className="mt-0.5 text-xs text-white/70">{sim.assetType}</div></div>
@@ -1554,10 +1399,6 @@ function SimulationRow({
   )
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   WORKFLOW TIMELINE
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 function WorkflowQueueRow({
   workflow,
   onAction,
@@ -1578,7 +1419,7 @@ function WorkflowQueueRow({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-bold text-white/85">{workflow.name}</span>
-          <Pill className={modeBadge(workflow.runMode)}>{modeLabel(workflow)}</Pill>
+          <Pill className={modeBadge(workflow.runMode)}>{simModeLabel(workflow)}</Pill>
         </div>
         <div className="mt-1 truncate text-[11px] text-white/40">{workflow.phaseDetail || workflow.queuedReason || workflow.engineStatus}</div>
       </div>
@@ -1655,15 +1496,14 @@ function WorkflowTimeline({ phases }: { phases: WorkflowPhase[] }) {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function MigrationSandbox() {
-  const { data, loading, error, notice, pendingAction, sseActive, refresh, doAction, doBulkAction, startSimulation, exportReport, exportSimulation } = useSandbox()
+  const { data, loading, error, notice, pendingAction, sseActive, refresh, doAction, doBulkAction, startSimulation, approveSimulation, exportReport, exportSimulation, notify } = useSandbox()
   const plannerHandoffPlanId = useMemo(() => {
     if (typeof window === 'undefined') return ''
     return new URLSearchParams(window.location.search).get('planId') || ''
   }, [])
-  const [tab, setTab] = useState<ActiveTab>(() => plannerHandoffPlanId ? 'simulations' : 'overview')
+  const [tab, setTab] = useState<ActiveTab>(() => plannerHandoffPlanId ? 'pipeline' : 'overview')
   // Roadmap handed off from the AI Migration Advisor™ (localStorage payload).
   const [advisorHandoff, setAdvisorHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff())
-  const [showNewSim, setShowNewSim] = useState(false)
   const [selectedSimulation, setSelectedSimulation] = useState<Simulation | null>(null)
   const [logFilter, setLogFilter] = useState('')
   const [historyStatus, setHistoryStatus] = useState('all')
@@ -1672,7 +1512,13 @@ export default function MigrationSandbox() {
   const [historyAssetType, setHistoryAssetType] = useState('all')
   const [historyRisk, setHistoryRisk] = useState('all')
 
+  // Twin detail loads lazily the first time a twin-powered tab opens.
+  const twinTabsActive = tab === 'twin' || tab === 'dependencies' || tab === 'topology'
+  const { detail: twinDetail, loading: twinLoading, error: twinError, reload: twinReload } = useTwinDetail(twinTabsActive)
+
   const s = data.summary
+  const pipeline = data.pipeline && data.pipeline.length > 0 ? data.pipeline : DEFAULT_PIPELINE
+  const simulationTypes = data.simulationTypes || []
   const generated = useMemo(() => new Date(data.generatedAt), [data.generatedAt])
   const plannerHandoffSimulations = useMemo(() => {
     if (!plannerHandoffPlanId) return []
@@ -1702,14 +1548,20 @@ export default function MigrationSandbox() {
 
   const tabs: { key: ActiveTab; label: string; icon: LucideIcon }[] = [
     { key: 'overview', label: 'Overview', icon: Layers },
-    { key: 'simulations', label: `Simulations (${s.totalSimulations})`, icon: FlaskConical },
-    { key: 'history', label: `History (${data.history.length})`, icon: History },
-    { key: 'risk', label: 'Risk Analysis', icon: ShieldAlert },
-    { key: 'rollback', label: 'Rollback Center', icon: RotateCcw },
+    { key: 'twin', label: 'Digital Twin', icon: Boxes },
+    { key: 'builder', label: 'Simulation Builder', icon: Plus },
+    { key: 'pipeline', label: `Migration Pipeline (${s.totalSimulations})`, icon: FlaskConical },
+    { key: 'dependencies', label: 'Dependency Graph', icon: Network },
+    { key: 'topology', label: 'Topology', icon: MapIcon },
+    { key: 'telemetry', label: 'Telemetry', icon: Activity },
+    { key: 'performance', label: 'Performance', icon: Gauge },
+    { key: 'validation', label: 'Validation', icon: ShieldAlert },
+    { key: 'rollback', label: 'Rollback', icon: RotateCcw },
     { key: 'compliance', label: 'Compliance', icon: ShieldCheck },
-    { key: 'recommendations', label: 'AI Insights', icon: Bot },
+    { key: 'ai', label: 'AI Insights', icon: Bot },
     { key: 'logs', label: 'Execution Logs', icon: Terminal },
-    { key: 'pqc-stack', label: 'PQC Stack', icon: Key },
+    { key: 'reports', label: 'Reports', icon: FileText },
+    { key: 'history', label: `History (${data.history.length})`, icon: History },
   ]
 
   const filteredLogs = useMemo(() => {
@@ -1751,6 +1603,19 @@ export default function MigrationSandbox() {
     if (refreshed) setSelectedSimulation(refreshed)
     else setSelectedSimulation(null)
   }, [data.simulations, selectedSimulation])
+
+  const handleBuilderStart = useCallback(async (params: Record<string, unknown>) => {
+    const result = await startSimulation(params)
+    if (result) setTab('pipeline')
+    return result
+  }, [startSimulation])
+
+  const benchmarkHandshake = data.performanceBenchmark?.available
+    ? data.performanceBenchmark.metrics.find((m) => m.id === 'tls_handshake')
+    : undefined
+  const benchmarkDuration = data.performanceBenchmark?.available
+    ? data.performanceBenchmark.metrics.find((m) => m.id === 'migration_duration')
+    : undefined
 
   /* ─── Loading State ──────────────────────────────────────────────────── */
   if (loading && s.totalSimulations === 0) {
@@ -1886,8 +1751,7 @@ export default function MigrationSandbox() {
           fill: var(--qg-dashboard-text-soft) !important;
         }
       `}</style>
-      <NewSimulationModal open={showNewSim} onClose={() => setShowNewSim(false)} onStart={startSimulation} />
-      <SimulationDetailsModal simulation={selectedSimulation} onClose={() => setSelectedSimulation(null)} onAction={doAction} pendingAction={pendingAction} />
+      <SimulationDetailsModal simulation={selectedSimulation} onClose={() => setSelectedSimulation(null)} onAction={doAction} onApproval={approveSimulation} pendingAction={pendingAction} pipeline={pipeline} />
       {notice && (
         <div className={cn(
           'fixed right-4 top-4 z-[60] max-w-sm rounded-xl border px-4 py-3 text-sm font-bold shadow-2xl backdrop-blur-xl',
@@ -1909,7 +1773,7 @@ export default function MigrationSandbox() {
               </div>
               <div>
                 <h1 className="text-xl font-black tracking-tight text-white lg:text-2xl">Migration Sandbox</h1>
-                <p className="text-[11px] font-medium text-white/40">Post-Quantum Cryptographic Migration Operations Center</p>
+                <p className="text-[11px] font-medium text-white/40">Enterprise Digital Twin · Post-Quantum Migration Simulation Platform</p>
               </div>
             </div>
           </div>
@@ -1921,8 +1785,8 @@ export default function MigrationSandbox() {
               {sseActive ? 'Live' : 'Offline'}
             </button>
             <ActionBtn icon={Download} label={pendingAction === 'export:json' ? 'Exporting' : 'Export'} onClick={() => exportReport('json')} disabled={pendingAction === 'export:json'} />
-            <ActionBtn icon={Upload} label={pendingAction === 'export:csv' ? 'Exporting' : 'CSV'} onClick={() => exportReport('csv')} disabled={pendingAction === 'export:csv'} />
-            <ActionBtn icon={Plus} label={pendingAction === 'simulate' ? 'Starting' : 'New Simulation'} onClick={() => setShowNewSim(true)} disabled={pendingAction === 'simulate'} variant="gold" />
+            <ActionBtn icon={FileText} label="Reports" onClick={() => setTab('reports')} />
+            <ActionBtn icon={Plus} label="New Simulation" onClick={() => setTab('builder')} variant="gold" />
 
             <div className="hidden items-center gap-2 pl-2 xl:flex">
               <Clock3 className="h-4 w-4 text-gold/60" />
@@ -1980,7 +1844,7 @@ export default function MigrationSandbox() {
               ))}
             </div>
             <p className="mt-2 text-[10px] leading-snug text-white/35">
-              Use the roadmap's waves to scope simulations below — target algorithms resolve through the {advisorHandoff.cryptoPolicyProfile?.profile || 'active'} crypto-policy profile. Acknowledging clears the handoff.
+              Use the roadmap's waves to scope simulations in the Simulation Builder — target algorithms resolve through the {advisorHandoff.cryptoPolicyProfile?.profile || 'active'} crypto-policy profile. Acknowledging clears the handoff.
             </p>
           </Panel>
         )}
@@ -2049,7 +1913,7 @@ export default function MigrationSandbox() {
                   })
                 )}
                 {plannerHandoffSimulations.length > 5 && (
-                  <button type="button" onClick={() => setTab('simulations')} className="w-full rounded-lg border border-gold/20 bg-gold/[0.04] py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/[0.08]">
+                  <button type="button" onClick={() => setTab('pipeline')} className="w-full rounded-lg border border-gold/20 bg-gold/[0.04] py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/[0.08]">
                     View all {plannerHandoffSimulations.length} handoff simulations
                   </button>
                 )}
@@ -2067,19 +1931,43 @@ export default function MigrationSandbox() {
         )}
 
         {/* ═══════════════════════════════════════════════════════════════════
-           TAB: OVERVIEW
+           TAB: OVERVIEW — Executive Dashboard + Approval Gate
            ═══════════════════════════════════════════════════════════════════ */}
         {tab === 'overview' && (
           <>
-            {/* ─── Hero Metrics ────────────────────────────────────────────── */}
+            {data.approvalGate && (
+              <ApprovalGateBanner
+                gate={data.approvalGate}
+                pendingAction={pendingAction}
+                onDecision={approveSimulation}
+                onExport={() => setTab('reports')}
+                exportPending={false}
+              />
+            )}
+
+            {/* ─── Executive Command Metrics ────────────────────────────────── */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+              <MetricTile label="Migration Confidence" value={pct(data.sophia?.migrationConfidencePct ?? 0)} detail={data.sophia?.verdict === 'ready' ? 'Evidence-backed' : data.sophia?.verdict === 'at_risk' ? 'Blockers present' : 'Building evidence'} icon={Target} color={(data.sophia?.migrationConfidencePct ?? 0) >= 70 ? GREEN : (data.sophia?.migrationConfidencePct ?? 0) >= 45 ? GOLD : RED} />
+              <MetricTile label="Production Readiness" value={data.approvalGate?.simulationStatus ?? 'PENDING'} detail={data.approvalGate?.productionReady ? 'Approved + gates pass' : `${data.approvalGate?.counts.approved ?? 0} approval(s)`} icon={ShieldCheck} color={data.approvalGate?.simulationStatus === 'PASS' ? GREEN : data.approvalGate?.simulationStatus === 'FAILED' ? RED : BLUE} />
+              <MetricTile label="Compatibility Score" value={pct(data.sophia?.compatibilityScorePct ?? 0)} detail="Protocol + library fit" icon={Cpu} color={(data.sophia?.compatibilityScorePct ?? 0) >= 70 ? GREEN : GOLD} />
+              <MetricTile label="Rollback Confidence" value={pct(data.rollbackAnalysis?.successProbabilityPct ?? 0)} detail={`RTO ${data.rollbackAnalysis?.rtoMinutes ?? 0}m · RPO ${data.rollbackAnalysis?.rpoMinutes ?? 0}m`} icon={RotateCcw} color={(data.rollbackAnalysis?.successProbabilityPct ?? 0) >= 70 ? GREEN : GOLD} />
+              <MetricTile label="AI Confidence" value={pct(data.sophia?.aiConfidencePct ?? 0)} detail="Evidence depth" icon={Bot} color={(data.sophia?.aiConfidencePct ?? 0) >= 70 ? GREEN : PURPLE} />
+              <MetricTile label="Performance Impact" value={benchmarkHandshake ? `${benchmarkHandshake.deltaPct > 0 ? '+' : ''}${benchmarkHandshake.deltaPct}%` : '--'} detail="TLS handshake (modeled)" icon={Gauge} color={benchmarkHandshake?.improved ? GREEN : GOLD} />
+              <MetricTile label="Downtime Prediction" value={`${data.rollbackAnalysis?.downtimePredictionMin ?? 0}m`} detail={`${data.failurePrediction?.overallFailureProbabilityPct ?? 0}% failure probability`} icon={Clock3} color={(data.rollbackAnalysis?.downtimePredictionMin ?? 0) > 20 ? RED : (data.rollbackAnalysis?.downtimePredictionMin ?? 0) > 5 ? GOLD : GREEN} />
+              <MetricTile label="Migration Duration" value={benchmarkDuration ? `${Math.round(benchmarkDuration.after)}m` : '--'} detail="Per asset (modeled)" icon={Zap} color={CYAN} />
+              <MetricTile label="Affected Assets" value={fmt(s.vulnerableAssets)} detail={`${fmt(s.totalAssets)} total in twin`} icon={Boxes} color={s.vulnerableAssets > 0 ? ORANGE : GREEN} />
+              <MetricTile label="Critical Risks" value={fmt(s.criticalExposures)} detail={s.criticalExposures > 0 ? 'Blocking approval' : 'None open'} icon={ShieldAlert} color={s.criticalExposures > 0 ? RED : GREEN} />
+            </div>
+
+            {/* ─── Heat strip + ops row ─────────────────────────────────────── */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-8">
+              {data.topology && (['ready', 'attention', 'high_risk', 'blocked'] as const).map((status) => {
+                const h = heatColor(status)
+                return <div key={status}><MetricTile label={h.label} value={fmt(data.topology!.totals[status])} detail="Topology heat" icon={status === 'ready' ? ShieldCheck : status === 'blocked' ? Lock : Shield} color={h.color} /></div>
+              })}
               <MetricTile label="Sandbox Runs" value={fmt(s.totalSimulations)} detail={`${s.running} running / ${s.queued} queued`} icon={FlaskConical} color={GOLD} />
-              <MetricTile label="Migration Queue" value={fmt(s.totalWorkflows)} detail={`${s.queuedWorkflows} queued`} icon={Layers} color={BLUE} />
               <MetricTile label="Live Workflows" value={fmt(s.runningWorkflows)} detail={s.backgroundEngine === 'active' ? 'Engine active' : 'Engine idle'} icon={Activity} color={GREEN} />
-              <MetricTile label="Completed" value={fmt(s.completedWorkflows)} detail={`${s.workflowCompletionRate}% rate`} icon={CheckCircle2} color={GREEN} />
-              <MetricTile label="Blocked" value={fmt(s.blockedWorkflows + s.failedWorkflows)} icon={X} color={RED} detail={s.failedWorkflows > 0 ? 'Needs attention' : 'Queue review'} />
               <MetricTile label="PQC Readiness" value={pct(s.pqcReadiness)} icon={Shield} color={s.pqcReadiness >= 70 ? GREEN : GOLD} detail={s.pqcReadiness >= 80 ? 'Strong' : 'In Progress'} />
-              <MetricTile label="Risk Score" value={`${s.riskScore}`} icon={Target} color={s.riskScore >= 70 ? GREEN : s.riskScore >= 40 ? GOLD : RED} detail={s.riskScore >= 70 ? 'Healthy' : 'At Risk'} />
               <MetricTile label="Compliance" value={pct(data.complianceScore)} icon={ShieldCheck} color={data.complianceScore >= 70 ? GREEN : GOLD} detail={data.complianceScore >= 80 ? 'Compliant' : 'Review Needed'} />
             </div>
 
@@ -2090,38 +1978,47 @@ export default function MigrationSandbox() {
                 <WorkflowTimeline phases={data.workflowPhases} />
               </Panel>
 
-              <Panel className="p-5">
-                <SectionHead icon={BarChart3}>Readiness Scores</SectionHead>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="relative flex justify-center py-2">
-                    <ScoreGauge value={s.pqcReadiness} size={100} label="PQC Ready" />
-                  </div>
-                  <div className="relative flex justify-center py-2">
-                    <ScoreGauge value={s.riskScore} size={100} label="Risk Score" />
-                  </div>
-                  <div className="relative flex justify-center py-2">
-                    <ScoreGauge value={data.complianceScore} size={100} label="Compliance" />
-                  </div>
-                </div>
-
-                <div className="mt-4 space-y-2">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">Quick Risk Summary</div>
-                  {[
-                    { label: 'Critical Exposures', value: s.criticalExposures, color: RED },
-                    { label: 'High Exposures', value: s.highExposures, color: ORANGE },
-                    { label: 'Expiring Certificates', value: s.expiringCerts, color: GOLD },
-                    { label: 'Open Vulnerabilities', value: s.openVulnerabilities, color: ORANGE },
-                  ].map((r) => (
-                    <div key={r.label} className="flex items-center justify-between text-xs">
-                      <span className="text-white/50">{r.label}</span>
-                      <span className="font-mono font-bold" style={{ color: r.value > 0 ? r.color : GREEN }}>{fmt(r.value)}</span>
+              <div className="space-y-4">
+                <Panel className="p-5">
+                  <SectionHead icon={BarChart3}>Readiness Scores</SectionHead>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="relative flex justify-center py-2">
+                      <ScoreGauge value={s.pqcReadiness} size={100} label="PQC Ready" />
                     </div>
-                  ))}
-                </div>
-              </Panel>
+                    <div className="relative flex justify-center py-2">
+                      <ScoreGauge value={s.riskScore} size={100} label="Risk Score" />
+                    </div>
+                    <div className="relative flex justify-center py-2">
+                      <ScoreGauge value={data.complianceScore} size={100} label="Compliance" />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">Quick Risk Summary</div>
+                    {[
+                      { label: 'Critical Exposures', value: s.criticalExposures, color: RED },
+                      { label: 'High Exposures', value: s.highExposures, color: ORANGE },
+                      { label: 'Expiring Certificates', value: s.expiringCerts, color: GOLD },
+                      { label: 'Open Vulnerabilities', value: s.openVulnerabilities, color: ORANGE },
+                    ].map((r) => (
+                      <div key={r.label} className="flex items-center justify-between text-xs">
+                        <span className="text-white/50">{r.label}</span>
+                        <span className="font-mono font-bold" style={{ color: r.value > 0 ? r.color : GREEN }}>{fmt(r.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </Panel>
+
+                <Panel className="p-5">
+                  <SectionHead icon={Clock3} suffix={<button type="button" onClick={() => setTab('pipeline')} className="text-[10px] font-bold text-gold hover:text-amber-300">Full Timeline</button>}>
+                    Live Migration Timeline
+                  </SectionHead>
+                  <TimelinePanel timeline={data.timeline || []} limit={6} />
+                </Panel>
+              </div>
             </div>
 
-            {/* ─── Active Sims Quick View + Recommendations ────────────────── */}
+            {/* ─── Active Sims Quick View + Sophia summary ─────────────────── */}
             <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
               <Panel className="p-5">
                 <SectionHead icon={FlaskConical} suffix={
@@ -2131,16 +2028,16 @@ export default function MigrationSandbox() {
                   </div>
                 }>Active Sandbox Simulations</SectionHead>
                 {data.simulations.length === 0 ? (
-                  <EmptyBlock label={operationalWorkflows.length > 0 ? `${fmt(operationalWorkflows.length)} operational migration workflow(s) are queued outside sandbox simulation.` : "No simulations yet. Click 'New Simulation' to start your first PQC migration test."} />
+                  <EmptyBlock label={operationalWorkflows.length > 0 ? `${fmt(operationalWorkflows.length)} operational migration workflow(s) are queued outside sandbox simulation.` : "No simulations yet. Open the Simulation Builder to launch your first PQC migration rehearsal."} />
                 ) : (
                   <div className="space-y-2">
                     {data.simulations.slice(0, 5).map((sim) => (
                       <div key={sim.id}>
-                        <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
+                        <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} pipeline={pipeline} />
                       </div>
                     ))}
                     {data.simulations.length > 5 && (
-                      <button type="button" onClick={() => setTab('simulations')} className="w-full rounded-lg border border-white/8 py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/5">
+                      <button type="button" onClick={() => setTab('pipeline')} className="w-full rounded-lg border border-white/8 py-2 text-center text-[11px] font-bold text-gold hover:bg-gold/5">
                         View all {data.simulations.length} sandbox runs →
                       </button>
                     )}
@@ -2149,41 +2046,33 @@ export default function MigrationSandbox() {
               </Panel>
 
               <Panel className="p-5">
-                <SectionHead icon={Bot}>AI Migration Insights</SectionHead>
-                {data.recommendations.length === 0 ? (
-                  <EmptyBlock label="No recommendations available. Run scans and simulations to generate AI-powered insights." />
-                ) : (
-                  <div className="space-y-3">
-                    {data.recommendations.slice(0, 4).map((rec) => (
-                      <div key={rec.id} className="rounded-lg border border-white/6 bg-white/[0.015] p-3">
-                        <div className="flex items-start gap-2">
-                          <div className={cn('mt-0.5 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-black',
-                            rec.priority === 1 ? 'bg-red-500/20 text-red-300' : rec.priority === 2 ? 'bg-amber-500/20 text-amber-300' : 'bg-sky-500/20 text-sky-300')}>
-                            {rec.priority}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-bold text-white/85">{rec.title}</div>
-                            <div className="mt-1 text-[11px] leading-relaxed text-white/40">{rec.description}</div>
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              <Pill className="border-purple-500/25 bg-purple-500/10 text-purple-300">{rec.algorithm}</Pill>
-                              <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{rec.effort} effort</Pill>
-                              <Pill className="border-white/10 bg-white/5 text-white/40">{rec.timeEstimate}</Pill>
+                <SectionHead icon={Bot} suffix={<button type="button" onClick={() => setTab('ai')} className="text-[10px] font-bold text-gold hover:text-amber-300">Full Analysis</button>}>
+                  Sophia AI Migration Insights
+                </SectionHead>
+                {data.sophia ? (
+                  <>
+                    <p className="mb-3 text-[11px] leading-relaxed text-white/55">{data.sophia.executiveSummary}</p>
+                    {data.sophia.priorityActions.length > 0 && (
+                      <div className="space-y-2">
+                        {data.sophia.priorityActions.slice(0, 4).map((action, index) => (
+                          <div key={action} className="flex items-start gap-2 rounded-lg border border-white/6 bg-white/[0.015] p-2.5">
+                            <div className={cn('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-black',
+                              index === 0 ? 'bg-red-500/20 text-red-300' : index === 1 ? 'bg-amber-500/20 text-amber-300' : 'bg-sky-500/20 text-sky-300')}>
+                              {index + 1}
                             </div>
+                            <span className="text-[11px] leading-relaxed text-white/55">{action}</span>
                           </div>
-                        </div>
+                        ))}
                       </div>
-                    ))}
-                    {data.recommendations.length > 4 && (
-                      <button type="button" onClick={() => setTab('recommendations')} className="w-full rounded-lg border border-white/5 py-2 text-[11px] font-bold text-gold hover:bg-gold/5">
-                        View all recommendations →
-                      </button>
                     )}
-                  </div>
+                  </>
+                ) : (
+                  <EmptyBlock label="Sophia analysis arrives with the next snapshot." />
                 )}
               </Panel>
             </div>
 
-            {/* ─── Recent Logs ─────────────────────────────────────────────── */}
+            {/* ─── Operational queue + logs preview ────────────────────────── */}
             {operationalWorkflows.length > 0 && (
               <Panel className="p-5">
                 <SectionHead icon={Layers} suffix={
@@ -2233,14 +2122,22 @@ export default function MigrationSandbox() {
           </>
         )}
 
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: SIMULATIONS
-           ═══════════════════════════════════════════════════════════════════ */}
-        {tab === 'simulations' && (
+        {/* ═══ TAB: DIGITAL TWIN ═══ */}
+        {tab === 'twin' && (
+          <DigitalTwinTab detail={twinDetail} loading={twinLoading} error={twinError} reload={twinReload} pqcStack={data.pqcStack} simulationTypes={simulationTypes} />
+        )}
+
+        {/* ═══ TAB: SIMULATION BUILDER ═══ */}
+        {tab === 'builder' && (
+          <SimulationBuilderTab simulationTypes={simulationTypes.length > 0 ? simulationTypes : []} pipeline={pipeline} pendingAction={pendingAction} onStart={handleBuilderStart} />
+        )}
+
+        {/* ═══ TAB: MIGRATION PIPELINE ═══ */}
+        {tab === 'pipeline' && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-black text-white">{plannerHandoffPlanId ? 'Migration Plan Simulations' : 'Sandbox Simulations'}</h2>
+                <h2 className="text-lg font-black text-white">{plannerHandoffPlanId ? 'Migration Plan Simulations' : 'Migration Pipeline'}</h2>
                 <Pill className="border-gold/25 bg-gold/10 text-gold">{fmt(visibleSimulations.length)} total</Pill>
                 {plannerHandoffPlanId && <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">Plan handoff</Pill>}
               </div>
@@ -2249,31 +2146,322 @@ export default function MigrationSandbox() {
                 {s.paused > 0 && <ActionBtn icon={Play} label={pendingAction === 'bulk:resume' ? 'Resuming' : 'Resume All'} onClick={() => doBulkAction('resume')} disabled={pendingAction === 'bulk:resume'} variant="success" small />}
                 {s.failed > 0 && <ActionBtn icon={RefreshCw} label={pendingAction === 'bulk:retry' ? 'Retrying' : 'Retry Failed'} onClick={() => doBulkAction('retry')} disabled={pendingAction === 'bulk:retry'} variant="gold" small />}
                 <ActionBtn icon={Save} label={pendingAction === 'bulk:snapshot' ? 'Capturing' : 'Snapshot All'} onClick={() => doBulkAction('snapshot')} disabled={pendingAction === 'bulk:snapshot'} small />
-                <ActionBtn icon={Plus} label={pendingAction === 'simulate' ? 'Starting' : 'New Simulation'} onClick={() => setShowNewSim(true)} disabled={pendingAction === 'simulate'} variant="gold" />
+                <ActionBtn icon={Plus} label="New Simulation" onClick={() => setTab('builder')} variant="gold" />
               </div>
             </div>
 
+            <Panel className="p-5">
+              <SectionHead icon={GitBranch}>Enterprise Pipeline Stages</SectionHead>
+              <div className="flex flex-wrap gap-1.5">
+                {pipeline.map((stage, index) => (
+                  <span key={stage.id}>
+                    <Pill className={cn(stage.gate ? 'border-purple-500/25 bg-purple-500/10 text-purple-300' : 'border-white/10 bg-white/[0.03] text-white/50')}>
+                      {index + 1}. {stage.label}
+                    </Pill>
+                  </span>
+                ))}
+              </div>
+              <p className="mt-2 text-[10px] leading-relaxed text-white/30">
+                Every simulation executes stages 1–13 automatically inside the digital twin. Executive Approval and Production
+                Ready are human gates resolved through the Production Approval Gate — the engine never auto-approves production.
+              </p>
+            </Panel>
+
             {visibleSimulations.length === 0 ? (
               <Panel className="p-8">
-                <EmptyBlock label={plannerHandoffPlanId ? "No simulations are linked to this migration plan yet. The sandbox stream will update this view when jobs are queued." : "No migration simulations found. Start a new simulation to safely test PQC migration workflows."} />
+                <EmptyBlock label={plannerHandoffPlanId ? "No simulations are linked to this migration plan yet. The sandbox stream will update this view when jobs are queued." : "No migration simulations found. Open the Simulation Builder to safely rehearse PQC migration workflows."} />
               </Panel>
             ) : (
               <Panel className="p-5">
                 <div className="space-y-2">
                   {visibleSimulations.map((sim) => (
                     <div key={sim.id}>
-                      <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
+                      <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} pipeline={pipeline} />
                     </div>
                   ))}
                 </div>
               </Panel>
             )}
+
+            <Panel className="p-5">
+              <SectionHead icon={Clock3}>Live Migration Timeline</SectionHead>
+              <TimelinePanel timeline={data.timeline || []} limit={20} />
+            </Panel>
           </>
         )}
 
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: RISK ANALYSIS
-           ═══════════════════════════════════════════════════════════════════ */}
+        {/* ═══ TAB: DEPENDENCY GRAPH ═══ */}
+        {tab === 'dependencies' && (
+          <DependencyGraphTab detail={twinDetail} loading={twinLoading} error={twinError} reload={twinReload} />
+        )}
+
+        {/* ═══ TAB: TOPOLOGY ═══ */}
+        {tab === 'topology' && (
+          <TopologyTab detail={twinDetail} loading={twinLoading} error={twinError} reload={twinReload} />
+        )}
+
+        {/* ═══ TAB: TELEMETRY ═══ */}
+        {tab === 'telemetry' && (
+          <TelemetryTab frame={data.telemetryFrame} sseActive={sseActive} />
+        )}
+
+        {/* ═══ TAB: PERFORMANCE ═══ */}
+        {tab === 'performance' && (
+          <PerformanceTab benchmark={data.performanceBenchmark} />
+        )}
+
+        {/* ═══ TAB: VALIDATION ═══ */}
+        {tab === 'validation' && (
+          <ValidationTab summary={s} riskFactors={data.riskFactors} failurePrediction={data.failurePrediction} sophia={data.sophia} />
+        )}
+
+        {/* ═══ TAB: ROLLBACK ═══ */}
+        {tab === 'rollback' && (
+          <>
+            {data.rollbackAnalysis && (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-6">
+                <MetricTile label="Rollback Success" value={pct(data.rollbackAnalysis.successProbabilityPct)} detail={`${data.rollbackAnalysis.simulationsWithSnapshots}/${data.rollbackAnalysis.totalSandboxSimulations} sims with snapshots`} icon={RotateCcw} color={data.rollbackAnalysis.successProbabilityPct >= 70 ? GREEN : GOLD} />
+                <MetricTile label="RTO" value={`${data.rollbackAnalysis.rtoMinutes}m`} detail="Recovery Time Objective" icon={Clock3} color={data.rollbackAnalysis.rtoMinutes <= 15 ? GREEN : GOLD} />
+                <MetricTile label="RPO" value={`${data.rollbackAnalysis.rpoMinutes}m`} detail="Recovery Point Objective" icon={Save} color={data.rollbackAnalysis.rpoMinutes <= 5 ? GREEN : GOLD} />
+                <MetricTile label="Downtime Prediction" value={`${data.rollbackAnalysis.downtimePredictionMin}m`} detail="If rollback triggers" icon={AlertTriangle} color={data.rollbackAnalysis.downtimePredictionMin > 20 ? RED : data.rollbackAnalysis.downtimePredictionMin > 5 ? GOLD : GREEN} />
+                <MetricTile label="Snapshot Coverage" value={pct(data.rollbackAnalysis.snapshotCoveragePct)} detail="Simulations protected" icon={Shield} color={data.rollbackAnalysis.snapshotCoveragePct >= 50 ? GREEN : ORANGE} />
+                <MetricTile label="Auto-Rollback" value={data.rollbackAnalysis.automaticRollbackReady ? 'READY' : 'NOT READY'} detail={data.rollbackAnalysis.automaticRollbackReady ? 'Coverage + clean history' : 'Raise snapshot coverage'} icon={Zap} color={data.rollbackAnalysis.automaticRollbackReady ? GREEN : ORANGE} />
+              </div>
+            )}
+
+            {data.rollbackAnalysis && (
+              <Panel className="p-5">
+                <SectionHead icon={ShieldCheck}>Restoration Checklist</SectionHead>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {data.rollbackAnalysis.restorationChecklist.map((item) => (
+                    <div key={item.id} className={cn('rounded-lg border p-3', item.covered ? 'border-emerald-500/20 bg-emerald-500/[0.03]' : 'border-amber-500/20 bg-amber-500/[0.03]')}>
+                      <div className="flex items-center gap-2">
+                        {item.covered ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" /> : <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />}
+                        <span className="text-xs font-bold text-white/80">{item.label}</span>
+                      </div>
+                      <p className="mt-1.5 text-[10px] leading-relaxed text-white/40">{item.detail}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-[10px] leading-relaxed text-white/30">{data.rollbackAnalysis.note}</p>
+              </Panel>
+            )}
+
+            <Panel className="p-5">
+              <SectionHead icon={RotateCcw}>Rollback & Recovery Control Center</SectionHead>
+              <p className="mb-4 text-xs text-white/40">Safely revert cryptographic migrations, restore snapshots, and execute emergency recovery procedures.</p>
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {[
+                  { label: 'Restore Previous Keys', icon: Key, desc: 'Revert to classical key pairs', action: 'rollback' },
+                  { label: 'Revert Certificates', icon: Lock, desc: 'Restore original certificate chain', action: 'rollback' },
+                  { label: 'Restore TLS Config', icon: Globe2, desc: 'Reset TLS to pre-migration state', action: 'rollback' },
+                  { label: 'Emergency Recovery', icon: ShieldAlert, desc: 'Full environment restore', action: 'rollback' },
+                  { label: 'Create Snapshot', icon: Save, desc: 'Capture all eligible recovery points', action: 'snapshot' },
+                ].map((item) => {
+                  const Icon = item.icon
+                  const isSnapshot = item.action === 'snapshot'
+                  const confirmBulk = () => {
+                    if (isSnapshot || window.confirm(`${item.label}: request rollback for ALL eligible workflows?\n\nSandbox simulations roll back immediately. Operational migrations are marked rollback-requested and wait for an approved executor.`)) {
+                      doBulkAction(item.action, 'all')
+                    }
+                  }
+                  return (
+                    <button key={item.label} type="button" onClick={confirmBulk} disabled={pendingAction === `bulk:all:${item.action}`}
+                      className={cn('flex flex-col items-center gap-3 rounded-xl border p-5 text-center transition disabled:pointer-events-none disabled:opacity-45',
+                        isSnapshot ? 'border-gold/20 bg-gold/[0.04] hover:border-gold/35 hover:bg-gold/[0.07]' : 'border-red-500/15 bg-red-500/[0.03] hover:border-red-500/30 hover:bg-red-500/[0.06]')}>
+                      <div className={cn('flex h-12 w-12 items-center justify-center rounded-full border', isSnapshot ? 'border-gold/30 bg-gold/10' : 'border-red-500/25 bg-red-500/10')}>
+                        <Icon className={cn('h-6 w-6', isSnapshot ? 'text-gold' : 'text-red-300')} />
+                      </div>
+                      <div className="text-sm font-bold text-white/80">{pendingAction === `bulk:all:${item.action}` ? 'Processing...' : item.label}</div>
+                      <div className="text-[11px] text-white/35">{item.desc}</div>
+                    </button>
+                  )
+                })}
+              </div>
+            </Panel>
+
+            <Panel className="p-5">
+              <SectionHead icon={History}>Rollback-Eligible Workflows</SectionHead>
+              {rollbackEligibleWorkflows.length === 0 ? (
+                <EmptyBlock label="No workflows are currently eligible for rollback." />
+              ) : (
+                <div className="space-y-2">
+                  {rollbackEligibleWorkflows.map((sim) => (
+                    <div key={sim.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-white/[0.015] px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-sm font-bold text-white/80">{sim.name}</div>
+                          <Pill className={modeBadge(sim.runMode)}>{simModeLabel(sim)}</Pill>
+                        </div>
+                        <div className="text-[11px] text-white/35">{sim.fromAlgo} → {sim.toAlgo} · {sim.environment}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Pill className={cn(statusColor(sim.status).bg, statusColor(sim.status).border, statusColor(sim.status).text)}>{sim.status}</Pill>
+                        <ActionBtn icon={RotateCcw} label={pendingAction === `${sim.id}:rollback` ? 'Rolling Back' : 'Rollback'} onClick={() => doAction(sim.id, 'rollback')} disabled={pendingAction === `${sim.id}:rollback`} variant="danger" small />
+                        <ActionBtn icon={Save} label={pendingAction === `${sim.id}:snapshot` ? 'Capturing' : 'Snapshot'} onClick={() => doAction(sim.id, 'snapshot')} disabled={pendingAction === `${sim.id}:snapshot`} small />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Panel>
+          </>
+        )}
+
+        {/* ═══ TAB: COMPLIANCE ═══ */}
+        {tab === 'compliance' && (
+          <>
+            <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
+              <Panel className="p-5">
+                <SectionHead icon={ShieldCheck}>Compliance Score</SectionHead>
+                <div className="relative flex justify-center py-4">
+                  <ScoreGauge value={data.complianceScore} size={160} label="Overall Compliance" />
+                </div>
+                <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center text-[11px] leading-relaxed text-white/45">
+                  Validated continuously against NIST PQC, NSA CNSA 2.0, FIPS 140-3/203-205, ISO 27001, PCI DSS, SOC 2, HIPAA,
+                  GDPR, and CISA quantum-readiness guidance — every status traces to live tenant evidence.
+                </div>
+              </Panel>
+
+              <Panel className="p-5">
+                <SectionHead icon={BookOpen} suffix={<Pill className="border-white/10 bg-white/5 text-white/40">{fmt(data.complianceItems.length)} frameworks</Pill>}>
+                  Governance Validation
+                </SectionHead>
+                <div className="space-y-2">
+                  {data.complianceItems.map((ci) => (
+                    <div key={ci.framework + ci.control} className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-white/[0.015] px-4 py-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white/80">{ci.framework}</span>
+                          <Pill className={cn(
+                            ci.status === 'compliant' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' :
+                            ci.status === 'partial' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' :
+                            ci.status === 'pending' ? 'border-sky-500/25 bg-sky-500/10 text-sky-300' :
+                            'border-red-500/30 bg-red-500/10 text-red-300'
+                          )}>{ci.status}</Pill>
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-white/35">{ci.control}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono text-lg font-black" style={{ color: ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED }}>{ci.score}</div>
+                        <div className="text-[9px] font-bold text-white/25">SCORE</div>
+                      </div>
+                      <div className="w-20">
+                        <ProgressBar value={ci.score} color={ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            </div>
+
+            <Panel className="p-5">
+              <SectionHead icon={FileText}>Compliance Evidence & Reports</SectionHead>
+              <p className="mb-3 text-xs text-white/40">
+                Generate audit-ready compliance evidence packages — including the framework validation table above, approval-gate
+                decisions, and execution audit trails — from the Enterprise Report Center.
+              </p>
+              <ActionBtn icon={FileText} label="Open Report Center" onClick={() => setTab('reports')} variant="gold" />
+            </Panel>
+          </>
+        )}
+
+        {/* ═══ TAB: AI INSIGHTS ═══ */}
+        {tab === 'ai' && (
+          <>
+            {data.sophia ? (
+              <SophiaPanel sophia={data.sophia} pendingAction={pendingAction} />
+            ) : (
+              <Panel className="p-8"><EmptyBlock label="Sophia analysis arrives with the next snapshot." /></Panel>
+            )}
+
+            <Panel className="p-5">
+              <SectionHead icon={Bot}>AI-Assisted Migration Recommendations</SectionHead>
+              <p className="mb-4 text-xs text-white/40">Intelligent recommendations based on your asset inventory, scan findings, migration history, and compliance posture.</p>
+              {data.recommendations.length === 0 ? (
+                <EmptyBlock label="No recommendations available. Run scans and simulations to generate AI-powered migration insights." />
+              ) : (
+                <div className="space-y-3">
+                  {data.recommendations.map((rec) => (
+                    <div key={rec.id} className={cn('rounded-xl border p-4',
+                      rec.priority === 1 ? 'border-red-500/20 bg-red-500/[0.025]' :
+                      rec.priority === 2 ? 'border-amber-500/20 bg-amber-500/[0.025]' :
+                      'border-white/8 bg-white/[0.015]')}>
+                      <div className="flex items-start gap-3">
+                        <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-sm font-black',
+                          rec.priority === 1 ? 'border-red-500/40 bg-red-500/15 text-red-300' :
+                          rec.priority === 2 ? 'border-amber-500/40 bg-amber-500/15 text-amber-300' :
+                          'border-sky-500/40 bg-sky-500/15 text-sky-300')}>
+                          P{rec.priority}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-bold text-white/90">{rec.title}</div>
+                          <div className="mt-1.5 text-xs leading-relaxed text-white/45">{rec.description}</div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Pill className="border-purple-500/25 bg-purple-500/10 text-purple-300"><Key className="mr-1 h-3 w-3 inline" />{rec.algorithm}</Pill>
+                            <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{rec.effort} effort</Pill>
+                            <Pill className="border-emerald-500/25 bg-emerald-500/10 text-emerald-300"><Clock3 className="mr-1 h-3 w-3 inline" />{rec.timeEstimate}</Pill>
+                            {rec.compliance.map((c) => (
+                              <span key={c}>
+                                <Pill className="border-white/10 bg-white/5 text-white/40">{c}</Pill>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Panel>
+          </>
+        )}
+
+        {/* ═══ TAB: EXECUTION LOGS ═══ */}
+        {tab === 'logs' && (
+          <Panel className="p-5">
+            <SectionHead icon={Terminal} suffix={
+              <div className="flex items-center gap-2">
+                <input
+                  value={logFilter}
+                  onChange={(e) => setLogFilter(e.target.value)}
+                  placeholder="Filter logs…"
+                  className="w-48 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-white outline-none placeholder:text-white/25 focus:border-gold/40"
+                />
+                <span className="font-mono text-[10px] text-white/25">{filteredLogs.length} entries</span>
+              </div>
+            }>Real-Time Execution Logs</SectionHead>
+
+            {filteredLogs.length === 0 ? (
+              <EmptyBlock label="No execution logs available. Logs populate in real-time as simulations execute." />
+            ) : (
+              <div className="space-y-0.5 max-h-[600px] overflow-y-auto scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10">
+                {filteredLogs.map((log) => (
+                  <div key={log.id} className="flex items-center gap-2.5 rounded px-3 py-2 text-[11px] hover:bg-white/[0.03] transition">
+                    {severityIcon(log.severity)}
+                    <span className="font-mono text-[9px] text-white/20 w-16 shrink-0">{timeStr(log.timestamp)}</span>
+                    <Pill className={cn('shrink-0 min-w-[70px] text-center',
+                      log.severity === 'critical' || log.severity === 'error' ? 'border-red-500/25 bg-red-500/10 text-red-300' :
+                      log.severity === 'warning' || log.severity === 'high' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300' :
+                      'border-white/10 bg-white/5 text-white/40'
+                    )}>{log.severity}</Pill>
+                    <Pill className="shrink-0 border-white/8 bg-white/[0.03] text-white/30">{log.type}</Pill>
+                    <span className="flex-1 text-white/55 truncate">{log.message}</span>
+                    <span className="hidden font-mono text-[9px] text-white/15 lg:block">{log.jobId?.slice(0, 8)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+        )}
+
+        {/* ═══ TAB: REPORTS ═══ */}
+        {tab === 'reports' && (
+          <ReportsTab snapshot={data} onNotice={notify} />
+        )}
+
+        {/* ═══ TAB: HISTORY ═══ */}
         {tab === 'history' && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2396,357 +2584,12 @@ export default function MigrationSandbox() {
             </Panel>
           </>
         )}
-
-        {tab === 'risk' && (
-          <>
-            <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-              <Panel className="p-5">
-                <SectionHead icon={Target}>Risk Overview</SectionHead>
-                <div className="relative flex justify-center py-4">
-                  <ScoreGauge value={s.riskScore} size={160} label="Migration Risk Score" />
-                </div>
-                <div className="mt-4 rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center">
-                  <span className={cn('text-sm font-black',
-                    s.riskScore >= 80 ? 'text-emerald-300' : s.riskScore >= 50 ? 'text-amber-300' : 'text-red-300')}>
-                    {s.riskScore >= 80 ? 'Low Risk — Ready for Production' : s.riskScore >= 50 ? 'Moderate Risk — Continue Mitigation' : 'High Risk — Critical Action Needed'}
-                  </span>
-                </div>
-              </Panel>
-
-              <Panel className="p-5">
-                <SectionHead icon={BarChart3}>Risk Factors & Impact Analysis</SectionHead>
-                {data.riskFactors.length === 0 ? (
-                  <EmptyBlock label="No risk factors detected. Run discovery scans to identify quantum-vulnerable assets." />
-                ) : (
-                  <div className="space-y-3">
-                    {data.riskFactors.map((rf) => (
-                      <div key={rf.label} className="flex items-center gap-3 rounded-lg border border-white/6 bg-white/[0.015] p-3">
-                        <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg border',
-                          rf.severity === 'critical' ? 'border-red-500/30 bg-red-500/10' : rf.severity === 'high' ? 'border-orange-500/30 bg-orange-500/10' : 'border-amber-500/30 bg-amber-500/10')}>
-                          <AlertTriangle className={cn('h-4 w-4', rf.severity === 'critical' ? 'text-red-400' : rf.severity === 'high' ? 'text-orange-400' : 'text-amber-400')} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-bold text-white/80">{rf.label}</div>
-                          <div className="mt-0.5 flex items-center gap-2">
-                            <Pill className={riskBadge(rf.severity)}>{rf.severity}</Pill>
-                            <span className="text-[10px] text-white/35">Impact: {rf.impact}</span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="font-mono text-2xl font-black" style={{ color: rf.severity === 'critical' ? RED : rf.severity === 'high' ? ORANGE : GOLD }}>{fmt(rf.count)}</div>
-                          <div className="text-[9px] font-bold text-white/30">DETECTED</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center">
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">Downtime Probability</div>
-                    <div className="mt-1 font-mono text-xl font-black" style={{ color: s.failed > 2 ? RED : s.failed > 0 ? GOLD : GREEN }}>
-                      {s.failed > 2 ? 'High' : s.failed > 0 ? 'Medium' : 'Low'}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center">
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">Crypto Agility</div>
-                    <div className="mt-1 font-mono text-xl font-black" style={{ color: s.pqcReadiness >= 70 ? GREEN : GOLD }}>
-                      {pct(s.pqcReadiness)}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center">
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">HNDL Exposure</div>
-                    <div className="mt-1 font-mono text-xl font-black" style={{ color: s.criticalExposures > 0 ? RED : GREEN }}>
-                      {s.criticalExposures > 0 ? 'Active' : 'Mitigated'}
-                    </div>
-                  </div>
-                </div>
-              </Panel>
-            </div>
-          </>
-        )}
-
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: ROLLBACK CENTER
-           ═══════════════════════════════════════════════════════════════════ */}
-        {tab === 'rollback' && (
-          <>
-            <Panel className="p-5">
-              <SectionHead icon={RotateCcw}>Rollback & Recovery Control Center</SectionHead>
-              <p className="mb-4 text-xs text-white/40">Safely revert cryptographic migrations, restore snapshots, and execute emergency recovery procedures.</p>
-
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                {[
-                  { label: 'Restore Previous Keys', icon: Key, desc: 'Revert to classical key pairs', action: 'rollback' },
-                  { label: 'Revert Certificates', icon: Lock, desc: 'Restore original certificate chain', action: 'rollback' },
-                  { label: 'Restore TLS Config', icon: Globe2, desc: 'Reset TLS to pre-migration state', action: 'rollback' },
-                  { label: 'Emergency Recovery', icon: ShieldAlert, desc: 'Full environment restore', action: 'rollback' },
-                  { label: 'Create Snapshot', icon: Save, desc: 'Capture all eligible recovery points', action: 'snapshot' },
-                ].map((item) => {
-                  const Icon = item.icon
-                  const isSnapshot = item.action === 'snapshot'
-                  const confirmBulk = () => {
-                    if (isSnapshot || window.confirm(`${item.label}: request rollback for ALL eligible workflows?\n\nSandbox simulations roll back immediately. Operational migrations are marked rollback-requested and wait for an approved executor.`)) {
-                      doBulkAction(item.action, 'all')
-                    }
-                  }
-                  return (
-                    <button key={item.label} type="button" onClick={confirmBulk} disabled={pendingAction === `bulk:all:${item.action}`}
-                      className={cn('flex flex-col items-center gap-3 rounded-xl border p-5 text-center transition disabled:pointer-events-none disabled:opacity-45',
-                        isSnapshot ? 'border-gold/20 bg-gold/[0.04] hover:border-gold/35 hover:bg-gold/[0.07]' : 'border-red-500/15 bg-red-500/[0.03] hover:border-red-500/30 hover:bg-red-500/[0.06]')}>
-                      <div className={cn('flex h-12 w-12 items-center justify-center rounded-full border', isSnapshot ? 'border-gold/30 bg-gold/10' : 'border-red-500/25 bg-red-500/10')}>
-                        <Icon className={cn('h-6 w-6', isSnapshot ? 'text-gold' : 'text-red-300')} />
-                      </div>
-                      <div className="text-sm font-bold text-white/80">{pendingAction === `bulk:all:${item.action}` ? 'Processing...' : item.label}</div>
-                      <div className="text-[11px] text-white/35">{item.desc}</div>
-                    </button>
-                  )
-                })}
-              </div>
-            </Panel>
-
-            <Panel className="p-5">
-              <SectionHead icon={History}>Rollback-Eligible Workflows</SectionHead>
-              {rollbackEligibleWorkflows.length === 0 ? (
-                <EmptyBlock label="No workflows are currently eligible for rollback." />
-              ) : (
-                <div className="space-y-2">
-                  {rollbackEligibleWorkflows.map((sim) => (
-                    <div key={sim.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-white/[0.015] px-4 py-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="truncate text-sm font-bold text-white/80">{sim.name}</div>
-                          <Pill className={modeBadge(sim.runMode)}>{modeLabel(sim)}</Pill>
-                        </div>
-                        <div className="text-[11px] text-white/35">{sim.fromAlgo} → {sim.toAlgo} · {sim.environment}</div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Pill className={cn(statusColor(sim.status).bg, statusColor(sim.status).border, statusColor(sim.status).text)}>{sim.status}</Pill>
-                        <ActionBtn icon={RotateCcw} label={pendingAction === `${sim.id}:rollback` ? 'Rolling Back' : 'Rollback'} onClick={() => doAction(sim.id, 'rollback')} disabled={pendingAction === `${sim.id}:rollback`} variant="danger" small />
-                        <ActionBtn icon={Save} label={pendingAction === `${sim.id}:snapshot` ? 'Capturing' : 'Snapshot'} onClick={() => doAction(sim.id, 'snapshot')} disabled={pendingAction === `${sim.id}:snapshot`} small />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Panel>
-          </>
-        )}
-
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: COMPLIANCE
-           ═══════════════════════════════════════════════════════════════════ */}
-        {tab === 'compliance' && (
-          <>
-            <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-              <Panel className="p-5">
-                <SectionHead icon={ShieldCheck}>Compliance Score</SectionHead>
-                <div className="relative flex justify-center py-4">
-                  <ScoreGauge value={data.complianceScore} size={160} label="Overall Compliance" />
-                </div>
-              </Panel>
-
-              <Panel className="p-5">
-                <SectionHead icon={BookOpen}>Governance Validation</SectionHead>
-                <div className="space-y-2">
-                  {data.complianceItems.map((ci) => (
-                    <div key={ci.framework + ci.control} className="flex items-center justify-between gap-3 rounded-lg border border-white/6 bg-white/[0.015] px-4 py-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-white/80">{ci.framework}</span>
-                          <Pill className={cn(
-                            ci.status === 'compliant' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' :
-                            ci.status === 'partial' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' :
-                            ci.status === 'pending' ? 'border-sky-500/25 bg-sky-500/10 text-sky-300' :
-                            'border-red-500/30 bg-red-500/10 text-red-300'
-                          )}>{ci.status}</Pill>
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-white/35">{ci.control}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-mono text-lg font-black" style={{ color: ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED }}>{ci.score}</div>
-                        <div className="text-[9px] font-bold text-white/25">SCORE</div>
-                      </div>
-                      <div className="w-20">
-                        <ProgressBar value={ci.score} color={ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
-            </div>
-
-            <Panel className="p-5">
-              <SectionHead icon={FileText}>Available Reports</SectionHead>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {[
-                  { label: 'Audit Report', desc: 'Full migration audit trail', format: 'json' as const },
-                  { label: 'Risk Assessment', desc: 'Quantum vulnerability report', format: 'json' as const },
-                  { label: 'Executive Summary', desc: 'Leadership readiness brief', format: 'json' as const },
-                  { label: 'Compliance Evidence', desc: 'Evidence package export', format: 'csv' as const },
-                ].map((report) => (
-                  <button key={report.label} type="button" onClick={() => exportReport(report.format)}
-                    className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.02] p-4 text-left transition hover:border-gold/25 hover:bg-gold/[0.03]">
-                    <FileText className="h-8 w-8 text-gold/60 shrink-0" />
-                    <div>
-                      <div className="text-sm font-bold text-white/80">{report.label}</div>
-                      <div className="text-[11px] text-white/35">{report.desc}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </Panel>
-          </>
-        )}
-
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: AI RECOMMENDATIONS
-           ═══════════════════════════════════════════════════════════════════ */}
-        {tab === 'recommendations' && (
-          <Panel className="p-5">
-            <SectionHead icon={Bot}>AI-Assisted Migration Recommendations</SectionHead>
-            <p className="mb-4 text-xs text-white/40">Intelligent recommendations based on your asset inventory, scan findings, migration history, and compliance posture.</p>
-            {data.recommendations.length === 0 ? (
-              <EmptyBlock label="No recommendations available. Run scans and simulations to generate AI-powered migration insights." />
-            ) : (
-              <div className="space-y-3">
-                {data.recommendations.map((rec) => (
-                  <div key={rec.id} className={cn('rounded-xl border p-4',
-                    rec.priority === 1 ? 'border-red-500/20 bg-red-500/[0.025]' :
-                    rec.priority === 2 ? 'border-amber-500/20 bg-amber-500/[0.025]' :
-                    'border-white/8 bg-white/[0.015]')}>
-                    <div className="flex items-start gap-3">
-                      <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-sm font-black',
-                        rec.priority === 1 ? 'border-red-500/40 bg-red-500/15 text-red-300' :
-                        rec.priority === 2 ? 'border-amber-500/40 bg-amber-500/15 text-amber-300' :
-                        'border-sky-500/40 bg-sky-500/15 text-sky-300')}>
-                        P{rec.priority}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold text-white/90">{rec.title}</div>
-                        <div className="mt-1.5 text-xs leading-relaxed text-white/45">{rec.description}</div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <Pill className="border-purple-500/25 bg-purple-500/10 text-purple-300"><Key className="mr-1 h-3 w-3 inline" />{rec.algorithm}</Pill>
-                          <Pill className="border-sky-500/25 bg-sky-500/10 text-sky-300">{rec.effort} effort</Pill>
-                          <Pill className="border-emerald-500/25 bg-emerald-500/10 text-emerald-300"><Clock3 className="mr-1 h-3 w-3 inline" />{rec.timeEstimate}</Pill>
-                          {rec.compliance.map((c) => (
-                            <span key={c}>
-                              <Pill className="border-white/10 bg-white/5 text-white/40">{c}</Pill>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Panel>
-        )}
-
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: EXECUTION LOGS
-           ═══════════════════════════════════════════════════════════════════ */}
-        {tab === 'logs' && (
-          <Panel className="p-5">
-            <SectionHead icon={Terminal} suffix={
-              <div className="flex items-center gap-2">
-                <input
-                  value={logFilter}
-                  onChange={(e) => setLogFilter(e.target.value)}
-                  placeholder="Filter logs…"
-                  className="w-48 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-white outline-none placeholder:text-white/25 focus:border-gold/40"
-                />
-                <span className="font-mono text-[10px] text-white/25">{filteredLogs.length} entries</span>
-              </div>
-            }>Real-Time Execution Logs</SectionHead>
-
-            {filteredLogs.length === 0 ? (
-              <EmptyBlock label="No execution logs available. Logs populate in real-time as simulations execute." />
-            ) : (
-              <div className="space-y-0.5 max-h-[600px] overflow-y-auto scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10">
-                {filteredLogs.map((log) => (
-                  <div key={log.id} className="flex items-center gap-2.5 rounded px-3 py-2 text-[11px] hover:bg-white/[0.03] transition">
-                    {severityIcon(log.severity)}
-                    <span className="font-mono text-[9px] text-white/20 w-16 shrink-0">{timeStr(log.timestamp)}</span>
-                    <Pill className={cn('shrink-0 min-w-[70px] text-center',
-                      log.severity === 'critical' || log.severity === 'error' ? 'border-red-500/25 bg-red-500/10 text-red-300' :
-                      log.severity === 'warning' || log.severity === 'high' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300' :
-                      'border-white/10 bg-white/5 text-white/40'
-                    )}>{log.severity}</Pill>
-                    <Pill className="shrink-0 border-white/8 bg-white/[0.03] text-white/30">{log.type}</Pill>
-                    <span className="flex-1 text-white/55 truncate">{log.message}</span>
-                    <span className="hidden font-mono text-[9px] text-white/15 lg:block">{log.jobId?.slice(0, 8)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Panel>
-        )}
-
-        {/* ═══════════════════════════════════════════════════════════════════
-           TAB: PQC STACK
-           ═══════════════════════════════════════════════════════════════════ */}
-        {tab === 'pqc-stack' && (
-          <>
-            <Panel className="p-5">
-              <SectionHead icon={Key}>Recommended PQC Algorithm Stack</SectionHead>
-              <p className="mb-4 text-xs text-white/40">Production-grade NIST-approved post-quantum cryptographic standards supported in this sandbox environment.</p>
-
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {data.pqcStack.map((item) => (
-                  <div key={item.name} className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="text-sm font-bold text-white/90">{item.name}</div>
-                        <div className="mt-0.5 text-[11px] text-white/35">{item.standard}</div>
-                      </div>
-                      <Pill className={cn(
-                        item.status === 'active' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' :
-                        'border-sky-500/25 bg-sky-500/10 text-sky-300'
-                      )}>{item.status}</Pill>
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-xs">
-                      <span className="text-white/40">Active Deployments</span>
-                      <span className="font-mono font-bold text-white/70">{fmt(item.usage)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-
-            <Panel className="p-5">
-              <SectionHead icon={Zap}>Supported Migration Types</SectionHead>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {[
-                  'RSA → ML-KEM migration',
-                  'ECC → ML-DSA transition',
-                  'Hybrid cryptography deployment',
-                  'TLS certificate replacement',
-                  'VPN tunnel migration',
-                  'API encryption migration',
-                  'Secure messaging validation',
-                  'Database encryption re-keying',
-                  'Key rotation simulation',
-                  'HSM migration validation',
-                  'Certificate chain replacement',
-                  'Crypto agility workflows',
-                ].map((item) => (
-                  <div key={item} className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.015] px-3 py-2.5">
-                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-                    <span className="text-xs font-semibold text-white/60">{item}</span>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          </>
-        )}
       </div>
 
       {/* ─── Footer ────────────────────────────────────────────────────── */}
       <footer className="border-t border-white/5 px-4 py-3">
         <div className="flex flex-col gap-2 text-[10px] font-mono uppercase tracking-wider text-white/25 md:flex-row md:items-center md:justify-between">
-          <span>{error ? `⚠ ${error}` : 'Sandbox telemetry synchronized'}</span>
+          <span>{error ? `⚠ ${error}` : 'Digital twin telemetry synchronized · Production isolated'}</span>
           <span>
             SSE: {sseActive ? <span className="text-emerald-400">connected</span> : <span className="text-red-400">standby</span>}
             {' · '}

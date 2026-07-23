@@ -347,7 +347,7 @@ const MODE_COPY: Record<TrustMode, {
     title: 'Zero Trust Validation',
     subtitle: 'Control-plane validation for identity, device, crypto, telemetry, vault, and compliance trust gates.',
     Icon: ShieldCheck,
-    primaryHref: '/dashboard/crypto-policies',
+    primaryHref: '/dashboard/quantum-governance',
     primaryLabel: 'Policies',
   },
 };

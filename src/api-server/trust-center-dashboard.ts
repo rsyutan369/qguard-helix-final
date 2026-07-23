@@ -4,7 +4,7 @@ import { buildTenantTelemetrySync } from './tenant-telemetry-sync'
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
-type TrustDashboardKind = 'continuous' | 'identity' | 'device' | 'analytics' | 'zero'
+type TrustDashboardKind = 'zero'
 type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 type AuthedRequest = Request & {
@@ -32,10 +32,6 @@ type TrustSignal = {
 }
 
 const ROUTE_META: Record<TrustDashboardKind, { eventPrefix: string; routeLabel: string }> = {
-  continuous: { eventPrefix: 'continuous-trust', routeLabel: 'Continuous trust validation' },
-  identity: { eventPrefix: 'identity-trust', routeLabel: 'Identity trust' },
-  device: { eventPrefix: 'device-trust', routeLabel: 'Device trust' },
-  analytics: { eventPrefix: 'trust-analytics', routeLabel: 'Trust analytics' },
   zero: { eventPrefix: 'zero-trust', routeLabel: 'Zero trust validation' },
 }
 
@@ -1150,8 +1146,4 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
   }
 }
 
-export const continuousTrustRoutes = buildRouter('continuous')
-export const identityTrustRoutes = buildRouter('identity')
-export const deviceTrustRoutes = buildRouter('device')
-export const trustAnalyticsRoutes = buildRouter('analytics')
 export const zeroTrustRoutes = buildRouter('zero')
