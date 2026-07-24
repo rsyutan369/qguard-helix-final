@@ -1,0 +1,959 @@
+Enterprise Migration Timeline Refactor
+QGuard Helix Enterprise Migration Operations Center
+Objective
+
+Completely refactor the existing Migration Timeline page into an Enterprise Migration Operations Center.
+
+This must NOT be a cosmetic redesign.
+
+Instead, transform it into a real enterprise-grade migration orchestration dashboard that aligns with:
+
+NIST SP 800-208
+NIST PQC Migration Guidance
+NIST SP 1800-38
+ETSI PQC Migration Recommendations
+CNSA 2.0 Transition
+Enterprise Change Management workflows
+Digital Twin simulations
+Zero Downtime Migration
+Real-Time Telemetry
+Live Operations Center
+
+The page must feel like an actual Security Operations Center (SOC) or Migration Command Center rather than a reporting dashboard.
+
+Preserve Existing Design Language
+
+DO NOT redesign the platform.
+
+Maintain the existing:
+
+Dark theme
+Neon cyan accent
+Glassmorphism
+Rounded cards
+Typography
+Existing animations
+Existing spacing
+Existing design system
+Existing Framer Motion animations
+Existing React architecture
+
+The Migration Timeline must visually match:
+
+Quantum Readiness Dashboard
+Executive Dashboard
+Migration Sandbox
+CBOM
+Assets
+Sophia AI
+Operations Center
+
+Everything should look like one unified enterprise platform.
+
+Refactor the Page Layout
+
+Replace the current layout with the following hierarchy.
+
+Executive Summary Banner
+
+↓
+
+Mission Control KPI Header
+
+↓
+
+Migration Wave Overview
+
+↓
+
+Interactive NIST Phase Gates
+
+↓
+
+Migration Timeline
+
+↓
+
+Digital Twin Status
+
+↓
+
+Real-Time Migration Telemetry
+
+↓
+
+AI Recommendations
+
+↓
+
+Migration Health
+
+↓
+
+Risk Burn-down
+
+↓
+
+Migration Asset Table
+
+↓
+
+Dependency Graph
+
+↓
+
+Activity Feed
+
+↓
+
+Audit Trail
+1. Executive Summary Banner
+
+Create a premium executive summary banner at the top.
+
+Display:
+
+Overall Migration Progress
+Quantum Readiness Score
+Estimated Completion
+Active Migration Wave
+Overall Risk Reduction
+Downtime Prediction
+Rollback Readiness
+Compliance Readiness
+Migration Confidence
+
+Example
+
+Migration Progress
+
+29%
+
+Risk Reduction
+
+61%
+
+Migration Confidence
+
+97%
+
+Rollback Ready
+
+100%
+
+Expected Downtime
+
+0 seconds
+
+Compliance
+
+87%
+
+Projected Completion
+
+Apr 30 2027
+
+Current Wave
+
+Wave 2
+
+The banner should immediately tell a CIO or CISO everything they need.
+
+2. Mission Control KPI Cards
+
+Replace the existing KPI cards with operational metrics.
+
+Include:
+
+Migration Coverage
+
+Assets Migrated
+
+Assets Remaining
+
+Migration Velocity
+
+Current Wave
+
+Affected Users
+
+Downtime Risk
+
+Rollback Ready
+
+Hybrid TLS Adoption
+
+Certificate Rotation
+
+Legacy Crypto Remaining
+
+Critical Dependencies
+
+Business Impact
+
+Migration Confidence
+
+Average Validation Success
+
+All cards must contain:
+
+mini trend graph
+live indicator
+animated counters
+hover expansion
+evidence tooltip
+3. Migration Waves
+
+Instead of one long migration sequence.
+
+Organize migrations into waves.
+
+Example
+
+Wave 1
+
+Completed
+
+Applications
+
+Certificates
+
+VPN
+
+---------------
+
+Wave 2
+
+Running
+
+Web APIs
+
+TLS
+
+PKI
+
+---------------
+
+Wave 3
+
+Scheduled
+
+Cloud
+
+Containers
+
+IoT
+
+HSM
+
+Each wave should expand.
+
+4. Interactive NIST Phase Gates
+
+Replace the left phase list.
+
+Create enterprise phase gates.
+
+Discovery
+
+Assessment
+
+Planning
+
+Digital Twin Simulation
+
+CAB Approval
+
+Pilot Migration
+
+Production Rollout
+
+Validation
+
+Certificate Rotation
+
+Continuous Monitoring
+
+Each stage expands into:
+
+Deliverables
+
+Dependencies
+
+Approvals
+
+Evidence
+
+Owners
+
+Policies
+
+Rollback Plans
+
+Validation Results
+
+Telemetry
+
+Estimated Duration
+
+Completion %
+
+5. Enterprise Timeline Cards
+
+Every timeline card should contain:
+
+Status
+
+Priority
+
+Migration Wave
+
+Owner
+
+Affected Assets
+
+Dependencies
+
+Business Impact
+
+Risk Level
+
+Downtime Prediction
+
+Rollback Available
+
+Evidence Source
+
+Policy Mapping
+
+Scanner Evidence
+
+Sophia Recommendation
+
+Digital Twin Result
+
+Validation Status
+
+Progress
+
+Confidence Score
+
+Example
+
+TLS Hybrid Migration
+
+Running
+
+Wave 2
+
+15 Assets
+
+Owner
+
+Infrastructure Team
+
+Downtime
+
+0 sec
+
+Rollback
+
+Ready
+
+Validation
+
+Pending
+
+Confidence
+
+98%
+
+Mapped to
+
+NIST SP 1800-38
+
+Digital Twin
+
+PASS
+
+Scanner Evidence
+
+41 Components
+6. Right Side Details Drawer
+
+Clicking any migration opens an enterprise side panel.
+
+Display
+
+Overview
+
+Affected Assets
+
+Affected Users
+
+Business Services
+
+Dependency Graph
+
+Certificates
+
+Algorithms
+
+Timeline
+
+Migration Script
+
+Rollback Script
+
+Validation Results
+
+Compliance
+
+Audit Logs
+
+AI Recommendations
+
+Telemetry
+
+Evidence
+
+Comments
+
+Approvals
+
+Nothing should require leaving the page.
+
+7. Digital Twin Integration
+
+Add a dedicated Digital Twin panel.
+
+Display
+
+Clone Fidelity
+
+Simulation Accuracy
+
+Predicted Failures
+
+Dependencies Modeled
+
+Rollback Snapshots
+
+Isolation Verification
+
+Confidence Score
+
+Simulation Status
+
+Buttons
+
+Run Simulation
+
+View Results
+
+Compare Scenarios
+
+Recalculate
+
+8. Live Migration Telemetry
+
+Improve the telemetry table.
+
+Include
+
+Job ID
+
+Asset
+
+Business Unit
+
+Migration Type
+
+Current Algorithm
+
+Target Algorithm
+
+Migration %
+
+Validation %
+
+Current State
+
+Latency
+
+Downtime
+
+Started
+
+Duration
+
+Operator
+
+Health
+
+Retry Count
+
+Live Logs
+
+Each row updates through SSE.
+
+9. AI Recommendations
+
+Sophia AI should continuously analyze migration.
+
+Display
+
+Current Recommendation
+
+Risk
+
+Priority
+
+Estimated Risk Reduction
+
+Estimated Time Saved
+
+Affected Assets
+
+Recommended Actions
+
+One-click:
+
+Apply Recommendation
+
+Schedule
+
+Ignore
+
+Explain
+
+10. Migration Health Dashboard
+
+Replace current donut.
+
+Create enterprise operational metrics.
+
+Show
+
+Migration Success Rate
+
+Rollback Success
+
+Validation Success
+
+Downtime
+
+Policy Compliance
+
+Completed Waves
+
+Pending Waves
+
+Critical Issues
+
+Average Migration Time
+
+Change Success Rate
+
+11. Risk Burn-down Dashboard
+
+Replace simple graph.
+
+Create:
+
+Critical
+
+High
+
+Medium
+
+Low
+
+Resolved
+
+New
+
+Trend
+
+Include
+
+Quantum Exposure
+
+Legacy Algorithms
+
+Hybrid Adoption
+
+Certificate Rotation
+
+Validation
+
+Timeline
+
+12. Enterprise Asset Migration Table
+
+Expand the table.
+
+Columns
+
+Asset
+
+Environment
+
+Business Unit
+
+Criticality
+
+Owner
+
+Application
+
+Current Crypto
+
+Target Crypto
+
+Certificate
+
+TLS
+
+Dependencies
+
+Risk
+
+Priority
+
+Migration Window
+
+CAB Approval
+
+Rollback
+
+Validation
+
+Evidence
+
+Policy
+
+Status
+
+Progress
+
+Actions
+
+Support
+
+Filtering
+
+Grouping
+
+Search
+
+Bulk Actions
+
+Saved Views
+
+CSV Export
+
+13. Dependency Graph
+
+Enhance graph.
+
+Nodes
+
+Applications
+
+APIs
+
+Services
+
+PKI
+
+Certificates
+
+VPN
+
+Load Balancers
+
+Cloud
+
+Databases
+
+Kubernetes
+
+HSM
+
+Clicking a node reveals
+
+Affected Systems
+
+Blast Radius
+
+Risk
+
+Migration Order
+
+Dependencies
+
+Certificates
+
+Algorithms
+
+Estimated Downtime
+
+14. Live Activity Feed
+
+Create a scrolling event stream.
+
+Examples
+
+09:43
+
+TLS migration completed
+
+09:44
+
+Certificate rotated
+
+09:45
+
+Validation successful
+
+09:46
+
+Rollback snapshot saved
+
+09:47
+
+Compliance increased
+
+09:48
+
+Hybrid TLS enabled
+
+09:49
+
+Digital Twin updated
+
+Should auto-scroll.
+
+15. Enterprise Change Management
+
+Every migration should include
+
+CAB Approval
+
+Maintenance Window
+
+Approver
+
+Owner
+
+Ticket
+
+Rollback Tested
+
+Validation Status
+
+Post Review
+
+RFC
+
+Emergency Change
+
+ServiceNow Integration
+
+Jira Ticket
+
+16. Compliance Mapping
+
+Each migration displays
+
+Mapped Standards
+
+NIST SP 800-208
+
+NIST SP 1800-38
+
+NIST CSF
+
+CNSA 2.0
+
+ETSI PQC
+
+ISO 27001
+
+PCI DSS
+
+SOC 2
+
+Clicking opens compliance evidence.
+
+17. Evidence-Based Everything
+
+No synthetic metrics.
+
+Every widget must consume authenticated scanner evidence.
+
+Evidence sources
+
+Discovery Engine
+
+Crypto Inventory
+
+CBOM
+
+Certificates
+
+TLS Scanner
+
+Runtime Telemetry
+
+Cloud Inventory
+
+Digital Twin
+
+Migration Sandbox
+
+Risk Engine
+
+Assessment Engine
+
+Live Migration
+
+Everything should automatically update.
+
+18. Real-Time Synchronization
+
+Everything should update live.
+
+Use
+
+Server-Sent Events (SSE)
+
+or
+
+WebSockets
+
+Update
+
+Progress
+
+Graphs
+
+Timeline
+
+Tables
+
+Digital Twin
+
+Dependency Graph
+
+Health
+
+Activity Feed
+
+Risk
+
+KPIs
+
+without refreshing.
+
+19. Enterprise UX
+
+Implement
+
+Animated counters
+
+Smooth transitions
+
+Skeleton loading
+
+Optimistic updates
+
+Virtualized tables
+
+Resizable panels
+
+Keyboard shortcuts
+
+Command palette
+
+Multi-select
+
+Persistent filters
+
+Saved layouts
+
+Full screen mode
+
+Timeline zoom
+
+Dark mode consistency
+
+Accessibility
+
+Responsive layout
+
+20. Performance Requirements
+
+Support
+
+Small
+
+10 assets
+
+Medium
+
+500 assets
+
+Enterprise
+
+100,000+ assets
+
+Millions of crypto findings
+
+Real-time streaming
+
+No UI lag
+
+Graph virtualization
+
+Lazy loading
+
+Pagination
+
+Caching
+
+Worker threads
+
+Memoization
+
+Incremental rendering
+
+21. Architecture Requirements
+
+The page must integrate with
+
+Quantum Readiness Assessment Engine
+Discovery Engine
+CBOM
+Assets Inventory
+Migration Sandbox
+Digital Twin
+Risk Engine
+Sophia AI Security Copilot
+Live Migration Operations
+Compliance Center
+Executive Dashboard
+Telemetry Engine
+Audit Logs
+Certificate Manager
+PKI Inventory
+Quantum Exposure Graph™
+
+Do NOT duplicate data. All widgets must consume shared services, APIs, hooks, and state management already used across QGuard Helix.
+
+22. Final Goal
+
+The final result should resemble an Enterprise Migration Command Center rather than a reporting dashboard. Every component should be interactive, evidence-driven, and interconnected, enabling executives, security architects, PKI administrators, DevOps engineers, and compliance teams to manage the full lifecycle of post-quantum cryptography migration from a single, real-time operational interface.
+
+The experience should feel comparable to premium enterprise platforms such as Microsoft Defender XDR, Palo Alto Cortex, CrowdStrike Falcon, ServiceNow CMDB, Wiz, Splunk Mission Control, Cisco XDR, and IBM QRadar—while preserving QGuard Helix's unique quantum-first identity through its neon-cyan design language, Digital Twin capabilities, Quantum Exposure Graph™, and Sophia AI Security Copilot. This page should serve as the definitive operational hub for planning, executing, validating, monitoring, and auditing enterprise-scale PQC migrations.

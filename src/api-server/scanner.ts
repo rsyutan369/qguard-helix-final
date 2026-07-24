@@ -336,7 +336,7 @@ function moduleIdForFinding(finding: DefensiveFinding) {
   if (category.includes('key exchange') || category.includes('hndl')) return 'key-exchange-scanner'
   if (category.includes('hash') || algorithm.includes('sha') || algorithm.includes('md5')) return 'hash-algorithm-scanner'
   if (category.includes('api') || algorithm.includes('jwt')) return 'jwt-signing-scanner'
-  if (category.includes('source') || category.includes('web crypto') || method.includes('repo') || method.includes('deep')) return 'dependency-crypto-scanner'
+  if (category.includes('source') || category.includes('web crypto') || category.includes('repository') || category.includes('dependency') || method.includes('repo') || method.includes('deep')) return 'dependency-crypto-scanner'
   if (category.includes('protocol')) return 'tls-protocol-scanner'
   return 'risk-scoring-engine'
 }
@@ -1380,7 +1380,7 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
       is_quantum_safe: false,
       is_expiring_soon: Date.parse(result.certificateInfo.validTo) < Date.now() + 30 * 86400000,
       status: result.certificateInfo.isExpired ? 'expired' : 'active',
-      metadata: { scanId: result.scanId, target: target.normalized, fingerprint: result.certificateInfo.fingerprint },
+      metadata: { scanId: result.scanId, scanSessionId: sessionId, target: target.normalized, fingerprint: result.certificateInfo.fingerprint },
     })
   }
 
@@ -2129,6 +2129,148 @@ async function loadScannerTables(client: any, userId: string) {
       mode: 'memory' as PersistenceMode,
     }
   }
+}
+
+/**
+ * Run a Supabase delete and return how many rows it removed. Appends
+ * `.select('id')` so the deleted rows are returned; swallows errors (a missing
+ * optional table or an RLS no-op must never abort the wider cascade).
+ */
+async function deleteReturning(query: any): Promise<number> {
+  try {
+    const { data, error } = await query.select('id')
+    if (error) return 0
+    return Array.isArray(data) ? data.length : 0
+  } catch {
+    return 0
+  }
+}
+
+export type ScanDeletionSummary = {
+  scanSessions: number
+  scanResults: number
+  cryptoInventory: number
+  cryptoExposures: number
+  certificates: number
+  securityEvents: number
+  vulnerabilities: number
+  assets: number
+  orphanAssetsRemoved: number
+}
+
+/**
+ * Fully remove one persisted scan (history entry) and everything it produced,
+ * tenant-scoped by user_id. The history `scanId` is the `pqc_scan_sessions.id`,
+ * which is stamped onto every child row as `metadata.scanSessionId`; the
+ * session metadata also carries the exact `linkedCbomIds` / `linkedExposureIds`
+ * created by the scan, so we delete by BOTH the precise id list and a metadata
+ * sweep (belt-and-braces). An asset is only removed when NO other scan still
+ * references it (no remaining inventory or results) — so deleting one scan of a
+ * multi-scanned target never breaks the others. Also purges the in-memory
+ * fallback store and writes an audit_logs tombstone recording the deletion.
+ */
+export async function deleteScanHistory(client: any, userId: string, scanId: string): Promise<ScanDeletionSummary> {
+  const removed: ScanDeletionSummary = {
+    scanSessions: 0, scanResults: 0, cryptoInventory: 0, cryptoExposures: 0,
+    certificates: 0, securityEvents: 0, vulnerabilities: 0, assets: 0, orphanAssetsRemoved: 0,
+  }
+  const assetIds = new Set<string>()
+
+  // ── In-memory fallback store (PersistenceMode 'memory') ──────────────────
+  memoryStore.results
+    .filter((r) => r.user_id === userId && r.scan_session_id === scanId)
+    .forEach((r) => { if (r.asset_id) assetIds.add(r.asset_id) })
+  const isScanMeta = (row: { metadata?: any }) => row.metadata?.scanSessionId === scanId || row.metadata?.scanId === scanId
+
+  const memSessionsBefore = memoryStore.sessions.length
+  const memResultsBefore = memoryStore.results.length
+  const memInvBefore = memoryStore.inventory.length
+  const memExpBefore = memoryStore.exposures.length
+  memoryStore.sessions = memoryStore.sessions.filter((s) => !(s.id === scanId && s.user_id === userId))
+  memoryStore.results = memoryStore.results.filter((r) => !(r.user_id === userId && r.scan_session_id === scanId))
+  memoryStore.inventory = memoryStore.inventory.filter((i) => !(i.user_id === userId && isScanMeta(i)))
+  memoryStore.exposures = memoryStore.exposures.filter((e) => !(e.user_id === userId && isScanMeta(e)))
+  removed.scanSessions += memSessionsBefore - memoryStore.sessions.length
+  removed.scanResults += memResultsBefore - memoryStore.results.length
+  removed.cryptoInventory += memInvBefore - memoryStore.inventory.length
+  removed.cryptoExposures += memExpBefore - memoryStore.exposures.length
+
+  // ── Database (PersistenceMode 'database') ────────────────────────────────
+  if (client) {
+    // Read the session to recover the exact linked record ids it created.
+    let cbomIds: string[] = []
+    let exposureIds: string[] = []
+    try {
+      const { data: sessionRow } = await client
+        .from('pqc_scan_sessions').select('id, metadata').eq('id', scanId).eq('user_id', userId).maybeSingle()
+      const meta = sessionRow?.metadata || {}
+      cbomIds = Array.isArray(meta.linkedCbomIds) ? meta.linkedCbomIds.filter((v: any) => typeof v === 'string') : []
+      exposureIds = Array.isArray(meta.linkedExposureIds) ? meta.linkedExposureIds.filter((v: any) => typeof v === 'string') : []
+      if (Array.isArray(meta.linkedAssetIds)) meta.linkedAssetIds.forEach((v: any) => { if (typeof v === 'string') assetIds.add(v) })
+    } catch { /* session unreadable — proceed with metadata sweeps */ }
+
+    // Authoritative asset ids from this scan's result rows.
+    try {
+      const { data: resultRows } = await client
+        .from('pqc_scan_results').select('asset_id').eq('user_id', userId).eq('scan_session_id', scanId)
+      ;(resultRows || []).forEach((r: any) => { if (r.asset_id) assetIds.add(r.asset_id) })
+    } catch { /* ignore */ }
+
+    // Child rows produced by this scan.
+    removed.scanResults += await deleteReturning(client.from('pqc_scan_results').delete().eq('user_id', userId).eq('scan_session_id', scanId))
+    if (cbomIds.length) removed.cryptoInventory += await deleteReturning(client.from('crypto_inventory').delete().eq('user_id', userId).in('id', cbomIds))
+    removed.cryptoInventory += await deleteReturning(client.from('crypto_inventory').delete().eq('user_id', userId).filter('metadata->>scanSessionId', 'eq', scanId))
+    if (exposureIds.length) removed.cryptoExposures += await deleteReturning(client.from('crypto_exposures').delete().eq('user_id', userId).in('id', exposureIds))
+    removed.cryptoExposures += await deleteReturning(client.from('crypto_exposures').delete().eq('user_id', userId).filter('metadata->>scanSessionId', 'eq', scanId))
+    removed.certificates += await deleteReturning(client.from('certificates').delete().eq('user_id', userId).filter('metadata->>scanSessionId', 'eq', scanId))
+    removed.securityEvents += await deleteReturning(client.from('security_events').delete().eq('user_id', userId).filter('metadata->>scanSessionId', 'eq', scanId))
+    // Remove this scan's own audit entries (a deletion tombstone is written below).
+    try { await client.from('audit_logs').delete().eq('user_id', userId).eq('entity_type', 'pqc_scan_session').eq('entity_id', scanId) } catch { /* audit table optional */ }
+
+    // Orphan asset cleanup — only when NO scan data references the asset anymore.
+    for (const assetId of assetIds) {
+      let stillReferenced = true
+      try {
+        const [inv, res] = await Promise.all([
+          client.from('crypto_inventory').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('asset_id', assetId),
+          client.from('pqc_scan_results').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('asset_id', assetId),
+        ])
+        stillReferenced = (inv.count || 0) > 0 || (res.count || 0) > 0
+      } catch { stillReferenced = true }
+      if (!stillReferenced) {
+        removed.cryptoExposures += await deleteReturning(client.from('crypto_exposures').delete().eq('user_id', userId).eq('asset_id', assetId))
+        removed.certificates += await deleteReturning(client.from('certificates').delete().eq('user_id', userId).eq('asset_id', assetId))
+        removed.vulnerabilities += await deleteReturning(client.from('vulnerabilities').delete().eq('user_id', userId).eq('asset_id', assetId))
+        removed.securityEvents += await deleteReturning(client.from('security_events').delete().eq('user_id', userId).eq('asset_id', assetId))
+        const assetDeleted = await deleteReturning(client.from('assets').delete().eq('user_id', userId).eq('id', assetId))
+        removed.assets += assetDeleted
+        removed.orphanAssetsRemoved += assetDeleted
+        memoryStore.assets = memoryStore.assets.filter((a) => a.id !== assetId)
+      }
+    }
+
+    // Finally the session row itself.
+    removed.scanSessions += await deleteReturning(client.from('pqc_scan_sessions').delete().eq('user_id', userId).eq('id', scanId))
+
+    // Audit the deletion (best-effort; never fails the operation).
+    try {
+      await client.from('audit_logs').insert({
+        user_id: userId,
+        action: 'authorized_scan_deleted',
+        entity_type: 'pqc_scan_session',
+        entity_id: scanId,
+        details: { removed, deletedAt: new Date().toISOString() },
+      })
+    } catch { /* audit table optional */ }
+  }
+
+  // Orphan cleanup for the memory store (no DB counts available there).
+  for (const assetId of assetIds) {
+    const stillUsed = memoryStore.inventory.some((i) => i.asset_id === assetId) || memoryStore.results.some((r) => r.asset_id === assetId)
+    if (!stillUsed) memoryStore.assets = memoryStore.assets.filter((a) => a.id !== assetId)
+  }
+
+  return removed
 }
 
 function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode) {
@@ -3009,6 +3151,40 @@ router.get('/history', async (req, res) => {
   const { history } = buildHistoryPayload(sessions, results, mode)
 
   res.json({ data: { mode, history } })
+})
+
+/**
+ * Delete a single persisted scan (history entry) and all data it produced,
+ * tenant-scoped. Refuses to delete a scan that is still running (cancel first).
+ */
+router.delete('/history/:scanId', async (req, res) => {
+  const user = (req as any).user
+  const token = (req as any).token as string
+  const scanId = String(req.params.scanId || '').trim()
+  if (!scanId) {
+    res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'A scan id is required.' } })
+    return
+  }
+
+  // A live/running scan must be cancelled before it can be deleted.
+  const isRunning = Array.from(activeJobs.values()).some(
+    (job) => job.userId === user.id && (job.sessionId === scanId || job.jobId === scanId),
+  )
+  if (isRunning) {
+    res.status(409).json({ error: { code: 'SCAN_RUNNING', message: 'This scan is still running. Cancel it before deleting.' } })
+    return
+  }
+
+  try {
+    const client = getDbClient(token)
+    const removed = await deleteScanHistory(client, user.id, scanId)
+    // Invalidate the per-user Scanner Intelligence cache so every dashboard
+    // (CBOM, assets, exposure map, quantum readiness) recomputes without it.
+    intelCache.delete(user.id)
+    res.json({ data: { scanId, removed } })
+  } catch (err) {
+    res.status(500).json({ error: { code: 'DELETE_FAILED', message: err instanceof Error ? err.message : 'Failed to delete scan history.' } })
+  }
 })
 
 router.get('/cbom', async (req, res) => {

@@ -872,6 +872,9 @@ export default function ScannerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // Scan-history deletion: the entry pending a confirm, and the in-flight id.
+  const [pendingDeleteEntry, setPendingDeleteEntry] = useState<HistoryEntry | null>(null);
+  const [deletingScanId, setDeletingScanId] = useState<string | null>(null);
   const [terminalPaused, setTerminalPaused] = useState(false);
   const [terminalPinned, setTerminalPinned] = useState(false);
   const [copiedLogs, setCopiedLogs] = useState(false);
@@ -985,6 +988,44 @@ export default function ScannerDashboard() {
       setHistoryLoading(false);
     }
   }, [addLog, authHeaders]);
+
+  // Permanently delete one scan (history entry) and every record it produced —
+  // backend cascade + optimistic frontend removal + intelligence refresh.
+  const deleteHistoryEntry = useCallback(async (scanId: string) => {
+    const headers = authHeaders();
+    if (!headers) {
+      showToast('Your session expired — sign in again to delete scans.');
+      return;
+    }
+    setDeletingScanId(scanId);
+    try {
+      const res = await fetch(`/api/v1/scanner/history/${encodeURIComponent(scanId)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error?.message || 'Failed to delete scan.');
+
+      // Frontend removal — drop the entry and clear selection if it was active.
+      setHistory((prev) => prev.filter((entry) => entry.scanId !== scanId));
+      setSelectedHistoryId((prev) => (prev === scanId ? null : prev));
+      setPendingDeleteEntry(null);
+
+      const removed = (json?.data?.removed || {}) as Record<string, number>;
+      const totalRemoved = Object.values(removed).reduce((sum, value) => sum + (typeof value === 'number' ? value : 0), 0);
+      addLog({ level: 'INFO', message: `Deleted scan ${scanId} and ${totalRemoved} associated record(s) across the platform.` });
+      showToast('Scan and all its data were permanently deleted.');
+
+      // Recompute every intelligence-derived view (CBOM, assets, exposure map).
+      void scannerIntel.refresh?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Delete failed';
+      addLog({ level: 'ERROR', message });
+      showToast(message);
+    } finally {
+      setDeletingScanId(null);
+    }
+  }, [addLog, authHeaders, scannerIntel, showToast]);
 
   // Merge the central Scanner Intelligence history into the local scan history so
   // every persisted scan session shows up in the History tab — even ones that
@@ -3336,6 +3377,22 @@ export default function ScannerDashboard() {
                   >
                     <Download className="h-3 w-3" /> Audit JSON
                   </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPendingDeleteEntry(entry);
+                    }}
+                    disabled={deletingScanId === entry.scanId}
+                    title="Delete this scan and all of its data"
+                    className="ml-auto px-3 py-1.5 rounded border border-red-500/25 text-[9px] font-black uppercase tracking-wider text-red-300/90 hover:text-red-200 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                  >
+                    {deletingScanId === entry.scanId ? (
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3 w-3" />
+                    )}
+                    {deletingScanId === entry.scanId ? 'Deleting' : 'Delete'}
+                  </button>
                 </div>
                 <div className="text-[10px] text-white/40 border-t border-gold/5 pt-3 grid md:grid-cols-2 gap-2">
                   <span><span className="font-bold text-white/60 mr-2">Target:</span>{entry.target}</span>
@@ -3584,6 +3641,80 @@ export default function ScannerDashboard() {
           >
             <Sparkles className="w-5 h-5 text-gold animate-pulse" />
             <span>{toast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete-scan confirmation — enterprise safeguard against accidental removal. */}
+      <AnimatePresence>
+        {pendingDeleteEntry && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+            onClick={() => { if (!deletingScanId) setPendingDeleteEntry(null); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 16, scale: 0.97 }}
+              transition={{ duration: 0.2 }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-lg rounded-2xl border border-red-500/25 bg-[#0b0f1e]/95 backdrop-blur-2xl shadow-[0_0_60px_rgba(239,68,68,0.18)] p-6"
+              role="dialog"
+              aria-modal="true"
+            >
+              <div className="flex items-start gap-4">
+                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border border-red-500/30 bg-red-500/10 text-red-300">
+                  <Trash2 className="h-6 w-6" />
+                </span>
+                <div className="min-w-0">
+                  <h3 className="text-base font-black text-white">Delete this scan?</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-white/50">
+                    This permanently removes the scan and everything it produced — findings, CBOM components, exposures,
+                    certificates and events — from every dashboard and report. This cannot be undone.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-white/8 bg-white/[0.02] p-4 text-[11px]">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="font-mono font-bold text-white/80 truncate">{pendingDeleteEntry.scanId}</span>
+                  <span className="shrink-0 rounded px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-white/45 border border-white/10">{pendingDeleteEntry.status}</span>
+                </div>
+                <div className="mb-3 truncate text-white/45"><span className="font-bold text-white/60">Target:</span> {pendingDeleteEntry.target}</div>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-white/45 sm:grid-cols-4">
+                  <span><span className="font-bold text-white/70">{pendingDeleteEntry.detectedComponents}</span> Components</span>
+                  <span><span className="font-bold text-red-300">{pendingDeleteEntry.vulnerableFindings}</span> Vulnerable</span>
+                  <span><span className="font-bold text-white/70">{pendingDeleteEntry.linkedCbomRecords?.length || 0}</span> CBOM</span>
+                  <span><span className="font-bold text-white/70">{pendingDeleteEntry.linkedExposureNodes?.length || 0}</span> Exposures</span>
+                </div>
+                <p className="mt-3 border-t border-white/8 pt-2.5 text-[10px] text-white/35">
+                  Assets scanned by other retained scans are preserved — only records unique to this scan are removed.
+                </p>
+              </div>
+
+              <div className="mt-5 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteEntry(null)}
+                  disabled={!!deletingScanId}
+                  className="px-4 py-2 rounded-lg border border-white/10 text-xs font-bold text-white/60 hover:text-white hover:bg-white/5 disabled:opacity-40 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteHistoryEntry(pendingDeleteEntry.scanId)}
+                  disabled={!!deletingScanId}
+                  className="px-4 py-2 rounded-lg border border-red-500/40 bg-red-500/15 text-xs font-black uppercase tracking-wider text-red-200 hover:bg-red-500/25 hover:border-red-500/60 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                >
+                  {deletingScanId ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  {deletingScanId ? 'Deleting…' : 'Delete Permanently'}
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

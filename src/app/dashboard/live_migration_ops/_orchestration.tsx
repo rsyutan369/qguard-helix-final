@@ -6,7 +6,6 @@ import {
   Gauge,
   Layers,
   Network,
-  RotateCcw,
   Server,
   ShieldCheck,
   Timer,
@@ -193,43 +192,6 @@ export default function OrchestrationPanel({ enabled }: { enabled: boolean }) {
         </div>
       </div>
 
-      {/* Capabilities + reconciliation notes */}
-      <div className="mt-3 grid gap-3 xl:grid-cols-2">
-        <div className={`${INNER} p-4`}>
-          <h4 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-white/60"><ShieldCheck className="h-3.5 w-3.5 text-cyan-300" /> Scheduling &amp; Fault-Tolerance</h4>
-          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-            {data.capabilities.map((c) => (
-              <div key={c.name} className="flex items-start gap-2 rounded-lg border border-white/8 bg-white/[0.02] px-2.5 py-1.5">
-                <span className={`mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full ${c.enabled ? 'bg-emerald-400' : 'bg-white/25'}`} />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-bold text-white/75">{c.name}</div>
-                  <div className="text-[9px] leading-snug text-white/35">{c.detail}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className={`${INNER} p-4`}>
-          <h4 className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-white/60"><RotateCcw className="h-3.5 w-3.5 text-amber-300" /> Reconciliation Activity</h4>
-          {data.notes.length ? (
-            <ul className="space-y-1.5">
-              {data.notes.map((n, i) => (
-                <li key={i} className="flex items-start gap-2 text-[11px] text-white/60"><span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" /> {n}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="py-4 text-[11px] text-white/40">Scheduler steady-state — no lease reclaims, retries, or dead-letters this cycle. Every asset is isolated: a failure in one never blocks another.</p>
-          )}
-          <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
-            {[['Retries', m.retriesScheduled], ['Dead-letter', m.deadLetter], ['Paused', m.paused]].map(([k, v]) => (
-              <div key={String(k)} className="rounded-lg border border-white/8 bg-white/[0.02] px-2 py-1.5">
-                <div className="text-sm font-black tabular-nums text-white/80">{fmt(v as number)}</div>
-                <div className="text-[9px] font-bold uppercase tracking-wide text-white/40">{k}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
     </section>
   )
 }

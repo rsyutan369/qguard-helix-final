@@ -1,0 +1,1009 @@
+Refactor PQC Orchestration into an Enterprise Automation & Orchestration Command Center
+Objective
+
+Completely redesign and refactor the existing PQC Orchestration module into an Enterprise Automation & Orchestration Command Center.
+
+This is NOT a cosmetic redesign.
+
+The goal is to transform the page into the central automation engine responsible for planning, coordinating, approving, executing, validating, monitoring, auditing, and continuously optimizing enterprise-scale Post-Quantum Cryptography (PQC) migrations.
+
+The final experience should feel comparable to enterprise automation platforms such as:
+
+Microsoft Defender XDR Automated Investigation & Response
+Palo Alto Cortex XSOAR
+CrowdStrike Falcon Fusion
+Splunk SOAR
+IBM Resilient
+Tines
+ServiceNow Flow Designer
+Azure DevOps Pipelines
+Kubernetes Argo Workflows
+Temporal.io
+Apache Airflow
+GitHub Actions Enterprise
+
+while preserving the unique identity of QGuard Helix as a quantum-first cybersecurity platform.
+
+Preserve Existing Platform
+
+DO NOT redesign the application.
+
+Preserve:
+
+Existing QGuard Helix Design System
+Existing Dark Theme
+Existing Neon Cyan accents
+Existing Typography
+Existing Glassmorphism
+Existing Framer Motion animations
+Existing Card Components
+Existing Layout System
+Existing Theme Tokens
+Existing React Architecture
+Existing APIs
+Existing Authentication
+Existing Multi-Tenant Support
+
+The new page must visually match:
+
+Executive Dashboard
+Quantum Readiness Assessment Engine
+Migration Timeline
+Migration Planner
+Migration Sandbox
+CBOM
+Assets
+Compliance Center
+Sophia AI
+Live Migration Operations
+
+It should feel like a natural extension of the platform.
+
+Redesign the Information Hierarchy
+
+Replace the current layout with the following enterprise hierarchy:
+
+Executive Automation Summary
+
+↓
+
+Automation Command Center
+
+↓
+
+Global Orchestration Pipeline
+
+↓
+
+Running Workflow Command Console
+
+↓
+
+Digital Twin Validation
+
+↓
+
+CAB Approval Center
+
+↓
+
+Workflow Queue
+
+↓
+
+Execution Graph (DAG)
+
+↓
+
+Workflow Details Drawer
+
+↓
+
+Live Telemetry
+
+↓
+
+Automation Analytics
+
+↓
+
+Task Board (Kanban)
+
+↓
+
+Event Stream
+
+↓
+
+Automation Marketplace
+
+↓
+
+Scheduler
+
+↓
+
+Compliance Mapping
+
+↓
+
+Audit Trail
+
+↓
+
+AI Recommendations
+1. Executive Automation Summary
+
+Replace the current KPI cards with executive operational metrics.
+
+Display:
+
+Automation Coverage
+Active Workflows
+Running Workflows
+Waiting Approval
+Blocked Workflows
+Failed Executions
+Rollback Ready
+Workflow Success Rate
+Downtime Risk
+Validation Success
+Business Impact
+Change Window
+Automation Confidence
+Quantum Readiness
+
+Every KPI card should include:
+
+Live indicator
+Trend graph
+Historical comparison
+Evidence tooltip
+Animated counter
+Click-through drill-down
+2. Automation Command Center
+
+Create a premium command center ribbon.
+
+Display:
+
+Current Automation Status
+
+Current Execution Phase
+
+Running Wave
+
+Automation Health
+
+Maintenance Window
+
+Business Impact
+
+Predicted Downtime
+
+Rollback Readiness
+
+Current Operator
+
+Current Automation Agent
+
+Current Digital Twin Status
+
+Current CAB Status
+
+Current Validation Status
+
+Current Compliance Score
+
+Current AI Confidence
+
+3. Global Orchestration Pipeline
+
+Replace the simple progress bar with a complete enterprise lifecycle.
+
+Discovery
+
+↓
+
+Inventory
+
+↓
+
+Assessment
+
+↓
+
+Migration Planning
+
+↓
+
+Digital Twin Simulation
+
+↓
+
+Risk Analysis
+
+↓
+
+CAB Approval
+
+↓
+
+Pilot Deployment
+
+↓
+
+Production Deployment
+
+↓
+
+Validation
+
+↓
+
+Certificate Rotation
+
+↓
+
+Compliance Verification
+
+↓
+
+Continuous Monitoring
+
+Every stage should:
+
+Expand
+
+Display dependencies
+
+Display evidence
+
+Display owners
+
+Display duration
+
+Display validation
+
+Display policy mappings
+
+Display rollback points
+
+Display logs
+
+Display AI recommendations
+
+4. Workflow Execution DAG
+
+Replace the linear workflow visualization with a Directed Acyclic Graph (DAG).
+
+The graph must support branching, parallel execution, conditional nodes, retries, dependencies, checkpoints, and rollback branches.
+
+Example:
+
+Discovery
+      │
+      ▼
+Crypto Inventory
+      │
+      ▼
+Policy Validation
+      │
+      ▼
+Digital Twin
+      │
+ ┌────┴────┐
+ ▼         ▼
+Certificates  TLS
+ ▼         ▼
+Validation
+      │
+      ▼
+Production
+      │
+      ▼
+Compliance
+      │
+      ▼
+Continuous Monitoring
+
+Features:
+
+Zoom
+Pan
+Collapse
+Expand
+Drag
+Live node updates
+Status animations
+Dependency highlighting
+Critical path analysis
+5. Enterprise Workflow Command Console
+
+Replace the existing execution card with a true operations console.
+
+Display:
+
+Workflow
+
+Current Node
+
+Current Phase
+
+Execution Progress
+
+Elapsed Time
+
+ETA
+
+Retry Count
+
+Checkpoint
+
+Rollback Point
+
+Execution Health
+
+Automation Agent
+
+Operator
+
+Validation %
+
+Memory
+
+CPU
+
+Network
+
+Current API Calls
+
+Current Evidence
+
+Current Policy
+
+Current Scanner Findings
+
+Current Risk
+
+Business Impact
+
+Dependencies
+
+Live Logs
+
+6. Digital Twin Validation Center
+
+Before any deployment, integrate Digital Twin validation.
+
+Display:
+
+Clone Fidelity
+
+Simulation Accuracy
+
+Predicted Failures
+
+Predicted Downtime
+
+Dependency Coverage
+
+Rollback Snapshot
+
+Simulation Confidence
+
+Isolation Verification
+
+Business Impact
+
+Risk Score
+
+Buttons:
+
+Run Simulation
+
+Compare Simulations
+
+Recalculate
+
+Export Report
+
+View Differences
+
+7. Enterprise CAB Approval Center
+
+Instead of a simple Approve button, implement a complete change management workflow.
+
+Display:
+
+RFC Number
+
+Change Request
+
+Approver
+
+Approver Team
+
+Maintenance Window
+
+Risk Rating
+
+Business Owner
+
+Technical Owner
+
+Security Approval
+
+Compliance Approval
+
+Rollback Tested
+
+Validation Complete
+
+Emergency Change
+
+ServiceNow Ticket
+
+Jira Ticket
+
+Audit Trail
+
+Approval Timeline
+
+Digital Signatures
+
+8. Workflow Queue
+
+Replace the simple table with an enterprise workflow queue.
+
+Columns:
+
+Workflow
+
+Wave
+
+Environment
+
+Business Unit
+
+Owner
+
+Automation Agent
+
+Priority
+
+Risk
+
+Dependencies
+
+Assets
+
+Progress
+
+Validation
+
+Rollback
+
+Simulation
+
+Compliance
+
+ETA
+
+Approvals
+
+AI Confidence
+
+Actions
+
+Support:
+
+Grouping
+
+Sorting
+
+Filtering
+
+Bulk Operations
+
+Saved Views
+
+Column Customization
+
+CSV Export
+
+JSON Export
+
+9. Workflow Details Drawer
+
+Selecting any workflow opens a side drawer containing:
+
+Overview
+
+Execution Graph
+
+Dependency Graph
+
+Affected Assets
+
+Affected Applications
+
+Business Services
+
+Certificates
+
+TLS Configuration
+
+SSH Keys
+
+Algorithms
+
+Policies
+
+Validation
+
+Simulation
+
+Telemetry
+
+Logs
+
+Evidence
+
+Approvals
+
+Compliance
+
+Audit
+
+Rollback Plan
+
+Sophia AI Analysis
+
+Timeline
+
+Comments
+
+Attachments
+
+10. Automation Marketplace
+
+Create a reusable workflow library.
+
+Examples:
+
+TLS Hybrid Migration
+
+Certificate Rotation
+
+SSH Migration
+
+OpenSSL Upgrade
+
+Java Upgrade
+
+Kubernetes Migration
+
+PKI Migration
+
+Cloud Migration
+
+VPN Migration
+
+HSM Migration
+
+Database Migration
+
+Container Migration
+
+IoT Migration
+
+Windows Migration
+
+Linux Migration
+
+API Gateway Migration
+
+Each template should include:
+
+Description
+
+Estimated Duration
+
+Dependencies
+
+Required Approvals
+
+Rollback Strategy
+
+Validation Steps
+
+Compliance Mapping
+
+Supported Platforms
+
+11. Enterprise Scheduler
+
+Create a dedicated scheduling module.
+
+Support:
+
+Maintenance Windows
+
+Recurring Jobs
+
+Business Hours
+
+Time Zones
+
+Blackout Periods
+
+Freeze Windows
+
+Automatic Retry
+
+Automatic Rollback
+
+Conditional Scheduling
+
+Wave Scheduling
+
+Calendar View
+
+Timeline View
+
+12. Automation Policies
+
+Allow policy-driven automation.
+
+Examples:
+
+IF TLS uses RSA
+
+THEN
+
+Create Migration Workflow
+
+Run Digital Twin
+
+Request CAB Approval
+
+Execute Migration
+
+Validate
+
+Rotate Certificates
+
+Update CBOM
+
+Update Compliance
+
+Generate Executive Report
+
+Notify Teams
+
+Archive Evidence
+
+No manual intervention should be required.
+
+13. AI Automation Advisor
+
+Sophia AI continuously analyzes every workflow.
+
+Display:
+
+Current Recommendation
+
+Reasoning
+
+Affected Assets
+
+Affected Business Units
+
+Risk Reduction
+
+Time Saved
+
+Confidence Score
+
+Alternative Plans
+
+Buttons:
+
+Apply
+
+Schedule
+
+Explain
+
+Ignore
+
+Compare
+
+14. Enterprise Analytics
+
+Add operational dashboards.
+
+Charts:
+
+Workflow Throughput
+
+Execution Time
+
+Automation Success
+
+Rollback Frequency
+
+Validation Success
+
+Certificate Rotation
+
+Quantum Exposure
+
+Risk Reduction
+
+Downtime Avoided
+
+Policy Compliance
+
+AI Efficiency
+
+Resource Utilization
+
+15. Kanban Task Board
+
+Replace static task lists with Kanban.
+
+Columns:
+
+Queued
+
+Scheduled
+
+Running
+
+Waiting Approval
+
+Validation
+
+Completed
+
+Failed
+
+Rollback
+
+Support:
+
+Drag-and-drop
+
+Bulk Assignment
+
+Swimlanes
+
+Priority Colors
+
+Filters
+
+Search
+
+16. Live Event Stream
+
+Replace plain logs.
+
+Support event categories:
+
+INFO
+
+SUCCESS
+
+WARNING
+
+ERROR
+
+ROLLBACK
+
+VALIDATION
+
+CERTIFICATE
+
+TLS
+
+SSH
+
+POLICY
+
+AI
+
+DIGITAL TWIN
+
+COMPLIANCE
+
+Include:
+
+Timestamp
+
+Workflow
+
+Asset
+
+Severity
+
+Operator
+
+Correlation ID
+
+17. Compliance Integration
+
+Every workflow should automatically map to:
+
+NIST SP 800-208
+
+NIST SP 1800-38
+
+NIST CSF
+
+CNSA 2.0
+
+ETSI PQC
+
+ISO 27001
+
+PCI DSS
+
+SOC 2
+
+HIPAA
+
+CIS Controls
+
+Display compliance status in real time.
+
+18. Evidence-Based Architecture
+
+Every widget must consume authenticated evidence.
+
+Evidence sources include:
+
+Discovery Engine
+
+Quantum Readiness Assessment Engine
+
+CBOM
+
+Crypto Inventory
+
+Certificate Manager
+
+PKI Inventory
+
+TLS Scanner
+
+SSH Scanner
+
+Runtime Telemetry
+
+Digital Twin
+
+Migration Sandbox
+
+Compliance Center
+
+Risk Engine
+
+Executive Dashboard
+
+Audit Logs
+
+No placeholder metrics.
+
+No duplicated state.
+
+Everything must use shared APIs, hooks, stores, and evidence already implemented in QGuard Helix.
+
+19. Real-Time Synchronization
+
+Implement Server-Sent Events (SSE) or WebSockets for live updates.
+
+Synchronize in real time:
+
+Workflow Status
+
+Execution Progress
+
+DAG Nodes
+
+Telemetry
+
+Digital Twin
+
+Approvals
+
+Validation
+
+Compliance
+
+Logs
+
+Analytics
+
+Kanban
+
+Task Queue
+
+Executive KPIs
+
+No page refreshes.
+
+20. Performance & Scalability
+
+The orchestration engine must support:
+
+Small environments (10 assets)
+Mid-sized enterprises (500 assets)
+Large enterprises (100,000+ assets)
+Millions of cryptographic findings
+Thousands of concurrent workflows
+Multi-cloud and hybrid infrastructures
+Multi-tenant SaaS deployments
+High-frequency telemetry streams
+
+Implement:
+
+Virtualized tables
+Lazy loading
+Incremental rendering
+Memoization
+Background workers
+Efficient graph rendering
+Optimistic UI updates
+Pagination
+Intelligent caching
+21. Full Platform Integration
+
+PQC Orchestration must become the automation layer for the entire QGuard Helix ecosystem.
+
+It must orchestrate and synchronize with:
+
+Discovery Engine
+Quantum Readiness Assessment Engine™
+Quantum Exposure Graph™
+CBOM
+Crypto Asset Inventory
+Assets Management
+Migration Planner
+Migration Timeline
+Digital Twin Engine
+Migration Sandbox
+Live Migration Operations
+Certificate Manager
+PKI Inventory
+Risk Engine
+Compliance Center
+Executive Dashboard
+Reporting Engine
+Audit Logs
+Notification Center
+Sophia AI Security Copilot™
+
+No module should operate in isolation. PQC Orchestration is the central automation and execution layer that coordinates evidence-driven workflows across the platform.
+
+22. Final Goal
+
+The completed page should no longer resemble a workflow dashboard. It should function as the Enterprise PQC Automation Command Center—the operational brain of QGuard Helix.
+
+From a single interface, security architects, PKI administrators, DevOps engineers, platform teams, compliance officers, SOC analysts, and executives should be able to:
+
+Design and execute automation workflows.
+Simulate migrations using the Digital Twin Engine.
+Manage approvals through enterprise change management.
+Coordinate phased PQC migration waves.
+Monitor live execution with streaming telemetry.
+Validate outcomes against policies and compliance frameworks.
+Analyze dependency graphs and blast radius.
+Review AI-generated recommendations from Sophia.
+Track evidence-backed progress across the entire migration lifecycle.
+Audit every action through immutable logs.
+Generate executive and technical reports.
+Scale orchestration seamlessly from small environments to global enterprises with hundreds of thousands of assets.
+
+The end result should deliver the polish, operational maturity, scalability, and user experience expected from the world's leading enterprise automation and security orchestration platforms while remaining unmistakably QGuard Helix in its quantum-first vision, premium design language, and deeply integrated post-quantum migration capabilities.

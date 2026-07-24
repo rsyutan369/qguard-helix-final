@@ -26,11 +26,9 @@ export const EMPTY_ORCHESTRATOR: OrchestratorSnapshot = {
     agentCpuPct: null, agentMemoryPct: null, networkLatencyMs: null,
   },
   throughput: [],
-  capabilities: [],
   priorityQueue: [],
   agents: [],
   scaleTier: '1–10',
-  notes: [],
 };
 
 export function useMigrationOrchestrator(enabled: boolean) {

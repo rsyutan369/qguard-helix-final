@@ -71,12 +71,6 @@ export interface OrchestratorMetrics {
   networkLatencyMs: number | null;
 }
 
-export interface OrchestratorCapability {
-  name: string;
-  enabled: boolean;
-  detail: string;
-}
-
 export interface OrchestratorThroughputPoint {
   label: string;
   completed: number;
@@ -88,9 +82,7 @@ export interface OrchestratorSnapshot {
   config: SchedulerConfig;
   metrics: OrchestratorMetrics;
   throughput: OrchestratorThroughputPoint[];
-  capabilities: OrchestratorCapability[];
   priorityQueue: Array<{ id: string; asset: string; priority: number; phase: OrchestratorJobPhase; retryCount: number; leaseWorker: string | null; blockedBy: number }>;
   agents: Array<{ id: string; name: string; status: string; lastSeenAt: string | null; leasedJobs: number }>;
   scaleTier: string;                    // "1–10", "10–100", … "100,000+"
-  notes: string[];
 }

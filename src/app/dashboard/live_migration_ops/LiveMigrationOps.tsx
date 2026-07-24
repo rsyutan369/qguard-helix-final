@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   ArrowDownToLine,
   ArrowRight,
-  Award,
   BadgeCheck,
   CheckCircle2,
   Clock3,
@@ -119,8 +118,6 @@ type LiveMigrationSnapshot = {
   }
   jobs: LiveMigrationJob[]
   timeline: TimelinePoint[]
-  health: Array<{ key: string; label: string; count: number; percent: number; color: string }>
-  algorithmSummary: Array<{ label: string; count: number; percent: number; color: string }>
   telemetry: {
     tlsHandshakeEvents: number
     certificateReplacements: number
@@ -163,13 +160,6 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
   },
   jobs: [],
   timeline: [],
-  health: [
-    { key: 'onTrack', label: 'On Track', count: 0, percent: 0, color: '#34d399' },
-    { key: 'atRisk', label: 'At Risk', count: 0, percent: 0, color: '#f6d365' },
-    { key: 'delayed', label: 'Delayed', count: 0, percent: 0, color: '#f59e0b' },
-    { key: 'failed', label: 'Failed', count: 0, percent: 0, color: '#f87171' },
-  ],
-  algorithmSummary: [],
   telemetry: {
     tlsHandshakeEvents: 0,
     certificateReplacements: 0,
@@ -326,103 +316,6 @@ function Sparkline({ values, color = GOLD }: { values: number[]; color?: string 
       <polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <polyline points={`0,42 ${points} 100,42`} fill={`${color}18`} stroke="none" />
     </svg>
-  )
-}
-
-function LineChart({ data }: { data: TimelinePoint[] }) {
-  const points = data.length ? data : EMPTY_SNAPSHOT.timeline
-  const max = Math.max(3, ...points.flatMap((point) => [point.running, point.completed, point.failed]))
-  const width = 520
-  const height = 170
-  const left = 32
-  const right = 14
-  const top = 14
-  const bottom = 28
-
-  const makePoints = (key: keyof Pick<TimelinePoint, 'running' | 'completed' | 'failed'>) => {
-    if (!points.length) return ''
-    return points.map((point, index) => {
-      const x = left + (index / Math.max(points.length - 1, 1)) * (width - left - right)
-      const y = top + (1 - point[key] / max) * (height - top - bottom)
-      return `${x},${y}`
-    }).join(' ')
-  }
-
-  return (
-    <div className="relative h-[178px]">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Migration jobs over time chart">
-        {[0, 1, 2, 3].map((line) => {
-          const y = top + (line / 3) * (height - top - bottom)
-          return (
-            <g key={line}>
-              <line x1={left} x2={width - right} y1={y} y2={y} stroke="rgba(255,255,255,0.07)" />
-              <text x="4" y={y + 4} fill="rgba(255,255,255,0.55)" fontSize="11">{Math.round(max - (line / 3) * max)}</text>
-            </g>
-          )
-        })}
-        {points.map((point, index) => {
-          const x = left + (index / Math.max(points.length - 1, 1)) * (width - left - right)
-          return <text key={point.key} x={x - 16} y={height - 6} fill="rgba(255,255,255,0.54)" fontSize="11">{point.label}</text>
-        })}
-        <polyline points={makePoints('running')} fill="none" stroke={GOLD} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        <polyline points={makePoints('completed')} fill="none" stroke={GREEN} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        <polyline points={makePoints('failed')} fill="none" stroke={RED} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        {(['running', 'completed', 'failed'] as const).map((key) =>
-          points.map((point, index) => {
-            const color = key === 'running' ? GOLD : key === 'completed' ? GREEN : RED
-            const x = left + (index / Math.max(points.length - 1, 1)) * (width - left - right)
-            const y = top + (1 - point[key] / max) * (height - top - bottom)
-            return <circle key={`${key}-${point.key}`} cx={x} cy={y} r="3" fill={color} />
-          }),
-        )}
-      </svg>
-    </div>
-  )
-}
-
-function Donut({
-  segments,
-  center,
-  label,
-  size = 116,
-}: {
-  segments: Array<{ color: string; percent: number }>
-  center: string
-  label: string
-  size?: number
-}) {
-  let offset = 0
-  const visible = segments.filter((segment) => segment.percent > 0)
-
-  return (
-    <div className="relative grid place-items-center" style={{ width: size, height: size }}>
-      <svg viewBox="0 0 120 120" className="absolute inset-0 h-full w-full -rotate-90">
-        <circle cx="60" cy="60" r="42" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="14" />
-        {visible.map((segment, index) => {
-          const currentOffset = offset
-          offset += segment.percent
-          return (
-            <circle
-              key={`${segment.color}-${index}`}
-              cx="60"
-              cy="60"
-              r="42"
-              fill="none"
-              pathLength="100"
-              stroke={segment.color}
-              strokeWidth="14"
-              strokeDasharray={`${segment.percent} ${100 - segment.percent}`}
-              strokeDashoffset={-currentOffset}
-              strokeLinecap="butt"
-            />
-          )
-        })}
-      </svg>
-      <div className="relative text-center">
-        <div className="text-3xl font-black text-white">{center}</div>
-        <div className="text-[10px] uppercase tracking-wider text-white/45">{label}</div>
-      </div>
-    </div>
   )
 }
 
@@ -761,14 +654,8 @@ export default function LiveMigrationOperations() {
     },
   ] as const
 
-  // Real-time remediation → certification posture, derived from the shared
-  // workflow engine (in-sync with Assets, CBOM, Quantum Readiness and the
-  // Certification page). "Quantum-secure" = assets whose migration is validated
-  // or under continuous monitoring; "In remediation" = still being upgraded.
-  const lifecycleCount = (id: string) => workflow?.assetLifecycle.find((s) => s.stageId === id)?.count || 0
-  const quantumSecureAssets = lifecycleCount('validation') + lifecycleCount('monitoring')
-  const inRemediationAssets = lifecycleCount('remediation') + lifecycleCount('execution')
-  const trackedAssets = quantumSecureAssets + inRemediationAssets
+  // Real-time certification posture, derived from the shared workflow engine
+  // (in-sync with Assets, CBOM, Quantum Readiness and the Certification page).
   const certReadiness = workflow?.certificationReadinessPct ?? 0
   const certEligible = workflow?.certificationEligible ?? false
   const certColor = certEligible ? GREEN : certReadiness >= 60 ? '#f59e0b' : certReadiness >= 30 ? '#fb923c' : RED
@@ -865,15 +752,6 @@ export default function LiveMigrationOperations() {
       { label: 'Active Migrations', value: numberFmt(s.running), hint: 'In progress now', tone: CYAN },
     ]
 
-    const story: LiveMigrationEnhancementsProps['story'] = [
-      { label: 'Assets Found', value: numberFmt(s.totalAssets), active: false, done: s.totalAssets > 0 },
-      { label: 'Quantum Risks', value: numberFmt(s.findings), active: false, done: s.findings > 0 || s.completed > 0 },
-      { label: 'Migrating', value: numberFmt(s.running), active: s.running > 0, done: s.completed > 0 },
-      { label: 'Upgraded', value: numberFmt(s.completed), active: false, done: s.completed > 0 },
-      { label: 'Validated', value: numberFmt(s.verified), active: false, done: s.verified > 0 },
-      { label: 'Certified', value: certEligible ? 'Yes' : `${certReadiness}%`, active: certEligible, done: certEligible },
-    ]
-
     const success: LiveMigrationEnhancementsProps['success'] = {
       show: pct >= 100 && s.total > 0 && certEligible,
       assetsProtected: s.verified || s.completed,
@@ -887,7 +765,6 @@ export default function LiveMigrationOperations() {
       transitions,
       advisor,
       certification,
-      story,
       success,
     }
   }, [snapshot, workflow, certReadiness, certEligible, certColor, now])
@@ -895,56 +772,6 @@ export default function LiveMigrationOperations() {
   return (
     <div className="min-h-[calc(100vh-64px)] space-y-3 p-3 text-white sm:p-4 lg:p-5">
       <WorkflowRail activeStage="execution" />
-
-      {/* Real-time Remediation → Quantum Trust Certification band */}
-      {workflow ? (
-        <section className={cn(GLASS, 'grid gap-4 p-4 lg:grid-cols-[minmax(0,320px)_1fr_minmax(0,220px)] lg:items-center')}>
-          <div className="flex items-center gap-4">
-            <div className="relative grid h-[76px] w-[76px] shrink-0 place-items-center">
-              <svg viewBox="0 0 76 76" className="h-[76px] w-[76px] -rotate-90">
-                <circle cx="38" cy="38" r="32" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" />
-                <circle cx="38" cy="38" r="32" fill="none" stroke={certColor} strokeWidth="8" strokeLinecap="round" strokeDasharray={2 * Math.PI * 32} strokeDashoffset={2 * Math.PI * 32 * (1 - Math.min(100, certReadiness) / 100)} style={{ transition: 'stroke-dashoffset 0.8s ease' }} />
-              </svg>
-              <div className="absolute inset-0 grid place-items-center">
-                <span className="text-lg font-black tabular-nums text-white">{certReadiness}%</span>
-              </div>
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-white/45">
-                <Award className="h-3.5 w-3.5" style={{ color: certColor }} /> Certification Readiness
-              </div>
-              <div className="mt-1 flex items-center gap-2">
-                {certEligible ? <BadgeCheck className="h-4 w-4 text-emerald-300" /> : <ShieldCheck className="h-4 w-4 text-amber-300" />}
-                <span className="text-sm font-bold" style={{ color: certColor }}>{certEligible ? 'Eligible for Quantum Trust Certification' : 'Not Yet Eligible'}</span>
-              </div>
-              <div className="mt-0.5 text-[11px] text-white/45">{workflow.stages.find((s) => s.id === 'certification')?.detail || 'Updates live as migrations complete and assets are rescanned.'}</div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              { label: 'Quantum-Secure Assets', value: quantumSecureAssets, tone: GREEN, hint: 'Validated / monitored' },
-              { label: 'In Remediation', value: inRemediationAssets, tone: CYAN, hint: 'Being upgraded now' },
-              { label: 'Tracked Assets', value: trackedAssets, tone: '#a78bfa', hint: 'In the lifecycle' },
-            ].map((cell) => (
-              <div key={cell.label} className={cn(INNER, 'p-3')}>
-                <div className="text-2xl font-black tabular-nums" style={{ color: cell.tone }}>{numberFmt(cell.value)}</div>
-                <div className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-white/45">{cell.label}</div>
-                <div className="text-[10px] text-white/30">{cell.hint}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex flex-col gap-2 lg:items-end">
-            <Link to="/dashboard/quantum-certification" className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 py-2.5 text-sm font-black text-cyan-200 no-underline transition hover:bg-cyan-400/20 lg:w-auto">
-              <Award className="h-4 w-4" /> View Certification <ArrowRight className="h-4 w-4" />
-            </Link>
-            <Link to="/dashboard/quantum-readiness/remediation" className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/12 bg-white/[0.04] px-4 py-2 text-xs font-bold text-white/70 no-underline transition hover:border-cyan-400/40 hover:text-cyan-200 lg:w-auto">
-              Remediation Roadmap
-            </Link>
-          </div>
-        </section>
-      ) : null}
 
       {/* Enterprise enhancement band — business-outcome hero, exec KPIs,
           Before → After, AI Migration Advisor, story & certification progress
@@ -1411,70 +1238,6 @@ export default function LiveMigrationOperations() {
                     <div className="mt-1 text-[11px]">Awaiting authenticated agent telemetry.</div>
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_284px_minmax(360px,1fr)]">
-        <div className={cn(GLASS, 'p-4')}>
-          <div className="relative z-10 mb-2 flex items-center justify-between">
-            <h3 className="text-[11px] font-black uppercase tracking-[0.18em] text-[#22d3ee]">Migration Jobs Over Time</h3>
-            <div className="flex gap-4 text-[10px] text-white/55">
-              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#22d3ee]" />Running</span>
-              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#34d399]" />Completed</span>
-              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#f87171]" />Failed</span>
-            </div>
-          </div>
-          <div className="relative z-10">
-            <LineChart data={snapshot.timeline} />
-          </div>
-        </div>
-
-        <div className={cn(GLASS, 'p-4')}>
-          <h3 className="relative z-10 mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-[#22d3ee]">Migration Health</h3>
-          <div className="relative z-10 grid grid-cols-[112px_minmax(0,1fr)] items-center gap-3">
-            <Donut
-              segments={snapshot.health.map((item) => ({ color: item.color, percent: item.percent }))}
-              center={String(Math.round(snapshot.health.find((item) => item.key === 'onTrack')?.percent || 0))}
-              label="Good"
-              size={112}
-            />
-            <div className="space-y-2">
-              {snapshot.health.map((item) => (
-                <div key={item.key} className="flex items-center justify-between gap-3 text-xs">
-                  <span className="flex min-w-0 items-center gap-2 text-white/70">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: item.color }} />
-                    <span className="truncate">{item.label}</span>
-                  </span>
-                  <span className="font-mono font-bold text-white">{numberFmt(item.count)} ({item.percent}%)</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className={cn(GLASS, 'p-4')}>
-          <h3 className="relative z-10 mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-[#22d3ee]">Algorithm Transition Summary</h3>
-          <div className="relative z-10 grid gap-4 md:grid-cols-[132px_minmax(0,1fr)] md:items-center">
-            <Donut
-              segments={snapshot.algorithmSummary.map((item) => ({ color: item.color, percent: item.percent }))}
-              center={String(snapshot.summary.total)}
-              label="Total Jobs"
-              size={132}
-            />
-            <div className="space-y-2">
-              {snapshot.algorithmSummary.length ? snapshot.algorithmSummary.map((item) => (
-                <div key={item.label} className={cn(INNER, 'flex items-center justify-between gap-3 px-3 py-2 text-xs')}>
-                  <span className="flex min-w-0 items-center gap-2 text-white/74">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: item.color }} />
-                    <span className="truncate">{item.label}</span>
-                  </span>
-                  <span className="font-mono font-bold text-white">{numberFmt(item.count)} ({item.percent}%)</span>
-                </div>
-              )) : (
-                <div className={cn(INNER, 'px-3 py-6 text-center text-xs text-white/42')}>No algorithm transitions recorded yet.</div>
               )}
             </div>
           </div>

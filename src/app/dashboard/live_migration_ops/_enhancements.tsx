@@ -80,12 +80,6 @@ export interface CertProgress {
   eligible: boolean
   domains: Array<{ label: string; status: 'done' | 'running' | 'pending' }>
 }
-export interface StoryStep {
-  label: string
-  value: string
-  active: boolean
-  done: boolean
-}
 export interface SuccessState {
   show: boolean
   assetsProtected: number
@@ -99,7 +93,6 @@ export interface LiveMigrationEnhancementsProps {
   transitions: CryptoTransition[]
   advisor: MigrationAdvisor
   certification: CertProgress
-  story: StoryStep[]
   success: SuccessState
 }
 
@@ -129,7 +122,7 @@ function Ring({ pct, size = 132, stroke = 12, color, label, sublabel }: { pct: n
 /* Main band                                                           */
 /* ------------------------------------------------------------------ */
 export default function LiveMigrationEnhancements(props: LiveMigrationEnhancementsProps) {
-  const { progress, readinessPct, kpis, transitions, advisor, certification, story, success } = props
+  const { progress, readinessPct, kpis, transitions, advisor, certification, success } = props
   const progressColor = progress.pct >= 100 ? EMERALD : progress.pct >= 60 ? '#38bdf8' : progress.pct >= 25 ? '#f59e0b' : '#fb923c'
 
   return (
@@ -278,28 +271,7 @@ export default function LiveMigrationEnhancements(props: LiveMigrationEnhancemen
         </section>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)]">
-        {/* Story strip */}
-        <section className={`${PANEL} p-5`}>
-          <div className="mb-3 flex items-center gap-2">
-            <Award className="h-4 w-4 text-cyan-300" />
-            <h3 className="text-sm font-black uppercase tracking-wide text-white/80">The Migration Story</h3>
-          </div>
-          <div className="flex flex-wrap items-stretch gap-1.5">
-            {story.map((s, i) => (
-              <div key={s.label} className="flex items-center gap-1.5">
-                <div className={`min-w-[92px] rounded-xl border px-2.5 py-2 ${s.active ? 'border-cyan-400/50 bg-cyan-400/10' : s.done ? 'border-emerald-400/30 bg-emerald-400/[0.06]' : 'border-white/8 bg-white/[0.02]'}`}>
-                  <div className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wide" style={{ color: s.active ? CYAN : s.done ? EMERALD : 'rgba(255,255,255,0.4)' }}>
-                    {s.done ? <CheckCircle2 className="h-3 w-3" /> : <span>{i + 1}</span>} {s.label}
-                  </div>
-                  <div className="mt-0.5 text-sm font-black text-white">{s.value}</div>
-                </div>
-                {i < story.length - 1 ? <ArrowRight className="h-3.5 w-3.5 shrink-0 text-white/25" /> : null}
-              </div>
-            ))}
-          </div>
-        </section>
-
+      <div className="grid gap-3">
         {/* Quantum Certification progress */}
         <section className={`${PANEL} p-5`}>
           <div className="mb-3 flex items-center justify-between">

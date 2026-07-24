@@ -363,33 +363,6 @@ function deriveEta(row: any, status: LiveMigrationStatus, progress: number, meta
   return minutes >= 60 ? `~${Math.round(minutes / 60)}h` : `~${minutes}m`
 }
 
-function deriveAlgorithmBucket(job: LiveMigrationJob) {
-  const haystack = `${job.toAlgo} ${job.fromAlgo} ${job.migrationType} ${pickString(job.metadata, ['strategy'])}`.toUpperCase()
-  const isHybrid = haystack.includes('HYBRID') || haystack.includes('+') || haystack.includes('DUAL')
-  if (isHybrid && haystack.includes('ML-KEM')) return 'Hybrid (ML-KEM + classical)'
-  if (isHybrid && haystack.includes('ML-DSA')) return 'Hybrid (ML-DSA + classical)'
-  if (haystack.includes('ML-KEM')) return 'ML-KEM'
-  if (haystack.includes('ML-DSA')) return 'ML-DSA'
-  if (haystack.includes('SLH-DSA') || haystack.includes('SPHINCS')) return 'SLH-DSA'
-  if (haystack.includes('AES')) return 'Symmetric hardening'
-  return 'Other PQC transition'
-}
-
-function classifyHealth(job: LiveMigrationJob) {
-  const explicit = pickString(job.metadata, ['health', 'migrationHealth', 'migration_health']).toLowerCase()
-  if (['on_track', 'on track', 'healthy'].includes(explicit)) return 'onTrack'
-  if (['at_risk', 'at risk', 'risk'].includes(explicit)) return 'atRisk'
-  if (['delayed', 'blocked'].includes(explicit)) return 'delayed'
-  if (job.status === 'failed') return 'failed'
-  if (job.status === 'paused' || job.status === 'queued') return 'delayed'
-  if (job.status === 'running' && job.startedAt) {
-    const hours = (Date.now() - new Date(job.startedAt).getTime()) / 3600000
-    if (hours > 6 && job.progress < 90) return 'delayed'
-    if (hours > 2 && job.progress < 40) return 'atRisk'
-  }
-  return 'onTrack'
-}
-
 function buildTimeline(jobs: LiveMigrationJob[]) {
   const days = Array.from({ length: 7 }, (_, index) => {
     const date = new Date()
@@ -417,36 +390,6 @@ function buildTimeline(jobs: LiveMigrationJob[]) {
   }
 
   return days
-}
-
-function buildHealth(jobs: LiveMigrationJob[]) {
-  const counts = { onTrack: 0, atRisk: 0, delayed: 0, failed: 0 }
-  for (const job of jobs) counts[classifyHealth(job) as keyof typeof counts] += 1
-  const total = Math.max(jobs.length, 1)
-  return [
-    { key: 'onTrack', label: 'On Track', count: counts.onTrack, percent: Math.round((counts.onTrack / total) * 100), color: '#30d158' },
-    { key: 'atRisk', label: 'At Risk', count: counts.atRisk, percent: Math.round((counts.atRisk / total) * 100), color: '#f6d365' },
-    { key: 'delayed', label: 'Delayed', count: counts.delayed, percent: Math.round((counts.delayed / total) * 100), color: '#f59e0b' },
-    { key: 'failed', label: 'Failed', count: counts.failed, percent: Math.round((counts.failed / total) * 100), color: '#ff3b30' },
-  ]
-}
-
-function buildAlgorithmSummary(jobs: LiveMigrationJob[]) {
-  const counts = new Map<string, number>()
-  for (const job of jobs) {
-    const bucket = deriveAlgorithmBucket(job)
-    counts.set(bucket, (counts.get(bucket) || 0) + 1)
-  }
-  const total = Math.max(jobs.length, 1)
-  const colors = ['#f6d365', '#30d158', '#00d9ff', '#8b5cf6', '#ff7a3d']
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([label, count], index) => ({
-      label,
-      count,
-      percent: Math.round((count / total) * 100),
-      color: colors[index % colors.length],
-    }))
 }
 
 function buildCsv(snapshot: Awaited<ReturnType<typeof buildLiveMigrationSnapshot>>) {
@@ -964,8 +907,6 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     summary,
     jobs,
     timeline: buildTimeline(jobs),
-    health: buildHealth(jobs),
-    algorithmSummary: buildAlgorithmSummary(jobs),
     telemetry: buildLiveTelemetry(jobs, telemetryRows, validationRows, auditRows),
   }
 }

@@ -632,6 +632,27 @@ export async function executeWebScan(
               lineNumber: pattern.line,
             })
           }
+
+          // Graceful access limitation (private repo without a token, not
+          // found, rate-limited or empty) — surface it as an actionable notice,
+          // NOT a module failure. The scan still completes for every other
+          // target and module.
+          if (repoResult.accessible === false && repoResult.notice) {
+            addFinding({
+              phase: 'repo-scan',
+              algorithm: 'Repository Access Notice',
+              location: repoResult.repoUrl || target,
+              threatLevel: 'LOW',
+              category: 'Repository Access',
+              description: repoResult.notice,
+              recommendation: repoResult.recommendation || 'Verify the repository URL, or provide a GitHub token (GITHUB_TOKEN) to scan private repositories.',
+              quantumBreakTime: 'N/A',
+              classicalBreakTime: 'N/A',
+            })
+          }
+
+          // repoAttempt.error is null for graceful outcomes, so the module
+          // completes rather than being marked FAILED.
           moduleComplete('github-scanner', 'GitHub Repository Scanner', target, 64, findings.length - repoFindingStart, repoAttempt.error)
         } catch (err) {
           moduleComplete('github-scanner', 'GitHub Repository Scanner', target, 64, findings.length - repoFindingStart, (err as Error).message)

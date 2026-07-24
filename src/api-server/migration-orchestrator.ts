@@ -1,7 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import type {
-  OrchestratorCapability,
   OrchestratorJobPhase,
   OrchestratorMetrics,
   OrchestratorSnapshot,
@@ -259,21 +258,6 @@ function scaleTierFor(total: number): string {
   return '1–10'
 }
 
-function capabilities(config: SchedulerConfig): OrchestratorCapability[] {
-  return [
-    { name: 'Parallel execution', enabled: true, detail: `Up to ${config.maxConcurrentPerTenant} concurrent jobs per tenant across stateless workers` },
-    { name: 'Priority queues', enabled: true, detail: 'Jobs leased highest-priority first (criticality-weighted)' },
-    { name: 'Dependency-aware scheduling', enabled: true, detail: 'Jobs stay blocked until their dependencies complete' },
-    { name: 'Rate limiting & back-pressure', enabled: true, detail: `Concurrency cap ${config.maxConcurrentPerTenant} prevents queue backlogs & resource starvation` },
-    { name: 'Exponential-backoff retry', enabled: true, detail: `base ${config.baseBackoffSeconds}s × 2^n, up to ${config.maxRetries} retries` },
-    { name: 'Distributed locking (leases)', enabled: true, detail: `${config.leaseSeconds}s lease TTL; idempotent claim prevents double-execution` },
-    { name: 'Node-failure recovery', enabled: true, detail: 'Expired leases are reclaimed and re-queued automatically' },
-    { name: 'Dead-letter isolation', enabled: true, detail: 'Exhausted jobs are quarantined — a failed asset never blocks others' },
-    { name: 'Queue persistence', enabled: true, detail: 'Durable Postgres-backed queue survives worker/process restarts' },
-    { name: 'Snapshot + auto-rollback', enabled: true, detail: 'Pre-migration snapshots restore on validation failure' },
-  ]
-}
-
 /* ------------------------------------------------------------------ */
 /* Snapshot assembly + reconciliation                                  */
 /* ------------------------------------------------------------------ */
@@ -332,24 +316,15 @@ async function buildSnapshot(token: string, userId: string): Promise<Orchestrato
   // Windowed throughput series (per-minute completions over the window).
   const throughput = buildThroughputSeries(jobs, now)
 
-  const notes: string[] = []
-  if (plan.reclaim.length) notes.push(`${plan.reclaim.length} stale lease(s) reclaimed this cycle (node-failure recovery).`)
-  if (plan.retry.length) notes.push(`${plan.retry.length} failed job(s) re-queued under exponential backoff.`)
-  if (plan.deadLetter.length) notes.push(`${plan.deadLetter.length} exhausted job(s) quarantined to the dead-letter queue.`)
-  if (metrics.blocked) notes.push(`${metrics.blocked} job(s) blocked on unmet dependencies.`)
-  if (metrics.inFlight >= config.maxConcurrentPerTenant) notes.push('Concurrency cap reached — back-pressure engaged; new jobs queue instead of overloading workers.')
-
   return {
     generatedAt: new Date().toISOString(),
     hasData: jobs.length > 0,
     config,
     metrics,
     throughput,
-    capabilities: capabilities(config),
     priorityQueue,
     agents: agentSummaries,
     scaleTier: scaleTierFor(Math.max(jobs.length, metrics.total)),
-    notes,
   }
 }
 

@@ -120,6 +120,16 @@ export interface GitRepoScanResult {
   filesScanned: number
   totalFiles: number
   patterns: GitCryptoMatch[]
+  /** false when the repo tree could not be read (private / not found / rate-limited / empty). Not a hard failure. */
+  accessible?: boolean
+  /** Human-readable reason when a non-fatal access limitation occurred. */
+  notice?: string
+  /** Actionable next step for the user (e.g. supply a token). */
+  recommendation?: string
+  /** Repository visibility once resolved. */
+  visibility?: 'public' | 'private' | 'unknown'
+  /** Resolved default branch used for the tree read. */
+  defaultBranch?: string
 }
 
 export interface GitCryptoMatch {

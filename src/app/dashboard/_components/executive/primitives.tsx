@@ -58,7 +58,7 @@ export function relativeTime(iso: string | null | undefined): string {
 
 /* ---- Panel + header ---------------------------------------------- */
 
-export function Panel({ children, className, href, label }: { children: ReactNode; className?: string; href?: string; label?: string }) {
+export function Panel({ children, className, href, label }: { children: ReactNode; className?: string; href?: string; label?: string; key?: string | number }) {
   const classes = cx(
     PANEL,
     'p-5 no-underline outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0a1020]',
