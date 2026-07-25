@@ -43,8 +43,19 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 hkdf = "0.12"
 sha3 = "0.10"
-pqcrypto-kyber = "0.8"
-pqcrypto-mldsa = "0.1"
+# PORTABLE (`clean`) PQC implementations ONLY. These crates' DEFAULT features
+# include `neon`, which on aarch64 compiles the optimized Keccak from
+# pqcrypto-internals' keccak2x built with `-march=armv8.2-a+sha3` — i.e. it emits
+# ARMv8.2 SHA3 crypto-extension opcodes (EOR3/RAX1/XAR/BCAX) with NO runtime CPU
+# detection. Many Android arm64 devices lack FEAT_SHA3 (e.g. Huawei Kirin /
+# older Cortex-A cores), so that code hits an ILLEGAL INSTRUCTION → SIGILL and
+# the app is killed the instant the post-login ML-KEM/ML-DSA keygen runs. This
+# was the real "closes after login" crash on the physical tablet (never on the
+# x86_64 emulator). The `clean` C implementations use only baseline ARMv8-A and
+# run on every CPU. Keep `std`; drop `neon`/`avx2` (PQC keygen/sign are
+# infrequent here, so the portable-vs-SIMD perf difference is imperceptible).
+pqcrypto-kyber = { version = "0.8", default-features = false, features = ["std"] }
+pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 
 [target.'cfg(windows)'.dependencies]
@@ -75,7 +86,15 @@ pure-rust-pqc = []
 oqs-backend = []
 
 [profile.release]
-panic = "abort"
+# Unwind (NOT abort) on panic. The Android build is single-process: the WebView
+# and the Rust core share ONE OS process, so `panic = "abort"` turned a panic in
+# ANY command — or a dependency assertion / overflow-checks arithmetic — into a
+# full-app kill. That is why the release APK closed the instant the post-login
+# key/identity bootstrap hit an unexpected condition on a real device. Unwinding
+# lets Tauri surface the failure to the caller as a rejected `invoke` (the
+# frontend already treats bootstrap failure as non-fatal and retries) instead of
+# taking the whole app down. Desktop is unaffected — unwind is the Rust default.
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "z"

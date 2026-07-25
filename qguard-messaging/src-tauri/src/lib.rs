@@ -31,6 +31,15 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Android runs the WebView and this Rust core in ONE process, so a panic
+    // must never be silent — the tracing fmt layer below writes to stderr, which
+    // Android drops. This routes any panic to logcat under a greppable tag so a
+    // future occurrence is diagnosable in one step:  adb logcat -s QGuardPanic:E
+    // (Pairs with `panic = "unwind"` in Cargo.toml, which keeps that panic from
+    // taking the whole app down in the first place.)
+    #[cfg(target_os = "android")]
+    install_android_panic_logger();
+
     // On Android there is no APPDATA/HOME convention — the sandboxed app data
     // dir is only knowable from the app handle, so it is resolved in setup().
     #[cfg(not(mobile))]
@@ -107,7 +116,7 @@ pub fn run() {
             let data_dir = app
                 .path()
                 .app_data_dir()
-                .expect("android app data dir is always available")
+                .map_err(|e| format!("resolve android app data dir: {e}"))?
                 .join("qguard-messaging");
             let state = AppState::new(data_dir)?;
             app.manage(state);
@@ -233,4 +242,41 @@ fn dirs_fallback() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Route Rust panics to the Android log (`liblog`) so they are visible via
+/// `adb logcat -s QGuardPanic:E`. Installed once, before the Tauri builder, and
+/// chained to the default hook so normal panic output is preserved. `liblog` is
+/// always present on Android and is linked explicitly in build.rs.
+#[cfg(target_os = "android")]
+fn install_android_panic_logger() {
+    use std::sync::Once;
+
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // android/util/Log priority ERROR == 6.
+            const ANDROID_LOG_ERROR: std::os::raw::c_int = 6;
+            extern "C" {
+                fn __android_log_write(
+                    prio: std::os::raw::c_int,
+                    tag: *const std::os::raw::c_char,
+                    text: *const std::os::raw::c_char,
+                ) -> std::os::raw::c_int;
+            }
+            // CString::new only fails on an interior NUL, which a panic message
+            // never contains; if it somehow does, we still fall through to the
+            // default hook below rather than losing the panic entirely.
+            if let (Ok(tag), Ok(text)) = (
+                std::ffi::CString::new("QGuardPanic"),
+                std::ffi::CString::new(format!("{info}")),
+            ) {
+                // SAFETY: liblog is linked (build.rs) and both pointers are valid
+                // NUL-terminated C strings that outlive the call.
+                unsafe { __android_log_write(ANDROID_LOG_ERROR, tag.as_ptr(), text.as_ptr()) };
+            }
+            previous(info);
+        }));
+    });
 }
