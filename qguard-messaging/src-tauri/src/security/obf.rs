@@ -52,6 +52,18 @@ pub fn workspace_chat_verifier_info() -> Vec<u8> { deobf(WORKSPACE_CHAT_VERIFIER
 const WORKSPACE_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 218, 47, 219, 84, 21, 162, 122, 148, 237, 1, 24, 241, 218, 6, 117, 213, 32, 245, 205, 98, 76];
 pub fn workspace_material_aad() -> Vec<u8> { deobf(WORKSPACE_MATERIAL_AAD) }
 
+const APPLOCK_VERIFIER_INFO: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 204, 48, 217, 115, 9, 177, 112, 218, 222, 73, 39, 249, 200, 10, 98, 206, 108, 239, 209];
+pub fn applock_verifier_info() -> Vec<u8> { deobf(APPLOCK_VERIFIER_INFO) }
+
+const APPLOCK_SEK_WRAP_INFO: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 204, 48, 217, 115, 9, 177, 112, 218, 219, 105, 30, 189, 249, 17, 102, 204, 108, 239, 209];
+pub fn applock_sek_wrap_info() -> Vec<u8> { deobf(APPLOCK_SEK_WRAP_INFO) }
+
+const APPLOCK_SESSION_WRAP_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 204, 48, 217, 115, 9, 177, 112, 218, 219, 73, 38, 227, 199, 12, 105, 145, 22, 235, 129, 100, 80, 188, 7];
+pub fn applock_session_wrap_aad() -> Vec<u8> { deobf(APPLOCK_SESSION_WRAP_AAD) }
+
+const APPLOCK_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 204, 48, 217, 115, 9, 177, 112, 218, 197, 77, 33, 245, 220, 10, 102, 208, 108, 239, 209];
+pub fn applock_material_aad() -> Vec<u8> { deobf(APPLOCK_MATERIAL_AAD) }
+
 const LOCAL_RATCHET_INFO: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 225, 47, 202, 94, 10, 255, 105, 150, 252, 79, 61, 245, 218];
 pub fn local_ratchet_info() -> Vec<u8> { deobf(LOCAL_RATCHET_INFO) }
 
@@ -108,6 +120,10 @@ mod tests {
         assert_eq!(workspace_vault_wrap_aad(), b"QGuard-Workspace-Vault-Wrap-v1".to_vec());
         assert_eq!(workspace_chat_verifier_info(), b"QGuard-Workspace-Chat-Verifier-v1".to_vec());
         assert_eq!(workspace_material_aad(), b"QGuard-Workspace-Material-v1".to_vec());
+        assert_eq!(applock_verifier_info(), b"QGuard-AppLock-Verifier-v1".to_vec());
+        assert_eq!(applock_sek_wrap_info(), b"QGuard-AppLock-SEK-Wrap-v1".to_vec());
+        assert_eq!(applock_session_wrap_aad(), b"QGuard-AppLock-Session-Wrap-v1".to_vec());
+        assert_eq!(applock_material_aad(), b"QGuard-AppLock-Material-v1".to_vec());
         assert_eq!(local_ratchet_info(), b"QGuard-local-ratchet".to_vec());
         assert_eq!(vault_stream_wrap_info(), b"QGuard-Vault-Stream-FileKey-Wrap-v1".to_vec());
         assert_eq!(vault_stream_chunk_aad_prefix(), b"QGuard-Vault-Stream-Chunk-v1:".to_vec());
