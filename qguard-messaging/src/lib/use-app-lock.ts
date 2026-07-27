@@ -69,10 +69,15 @@ export function useAppLock(userId: string | null) {
   );
 
   const unlock = useCallback(async (pin: string) => {
-    const result = await safeInvoke<AppLockUnlockResult>("applock_unlock", { pin });
-    setStatus(result.status);
-    return result;
-  }, []);
+    try {
+      const result = await safeInvoke<AppLockUnlockResult>("applock_unlock", { pin });
+      setStatus(result.status);
+      return result;
+    } catch (error) {
+      await refresh();
+      throw error;
+    }
+  }, [refresh]);
 
   const lock = useCallback(async () => {
     if (!enabled) return;
@@ -81,10 +86,15 @@ export function useAppLock(userId: string | null) {
   }, [enabled]);
 
   const changePin = useCallback(async (oldPin: string, newPin: string, digits: number) => {
-    const result = await safeInvoke<AppLockStatus>("applock_change_pin", { oldPin, newPin, digits });
-    setStatus(result);
-    return result;
-  }, []);
+    try {
+      const result = await safeInvoke<AppLockStatus>("applock_change_pin", { oldPin, newPin, digits });
+      setStatus(result);
+      return result;
+    } catch (error) {
+      await refresh();
+      throw error;
+    }
+  }, [refresh]);
 
   const remove = useCallback(async () => {
     await safeInvoke("applock_remove", undefined, null);
