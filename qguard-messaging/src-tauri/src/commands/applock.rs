@@ -47,6 +47,27 @@ fn lockout_delay_secs(failed_attempts: u32) -> i64 {
     }
 }
 
+/// Records a failed PIN attempt on `record`: increments the counter and sets
+/// the lockout delay (3rd->5s, 4th->15s). Returns true when the 5th failure is
+/// reached, meaning the CALLER must wipe the stored session (delete_applock).
+///
+/// This is the single source of truth for the anti-brute-force ladder so every
+/// PIN-guessing surface (`applock_unlock`, `applock_change_pin`) enforces the
+/// same max-5-attempts contract — a caller that only incremented the counter
+/// without also applying the delay/wipe ladder would leave an unthrottled PIN
+/// oracle on that surface.
+fn apply_failed_attempt(record: &mut PersistedAppLock) -> bool {
+    record.failed_attempts += 1;
+    if record.failed_attempts >= MAX_ATTEMPTS {
+        return true;
+    }
+    let delay = lockout_delay_secs(record.failed_attempts);
+    if delay > 0 {
+        record.lockout_until = Some(Utc::now() + chrono::Duration::seconds(delay));
+    }
+    false
+}
+
 fn attempts_remaining(failed_attempts: u32) -> u32 {
     MAX_ATTEMPTS.saturating_sub(failed_attempts)
 }
@@ -225,19 +246,56 @@ pub async fn applock_setup(
     device_name: String,
     app_version: String,
 ) -> Result<AppLockStatus> {
+    // Thin wrapper: owns the PIN and guarantees it is zeroized on every exit
+    // path of `applock_setup_inner` (success, validation error, auth error,
+    // storage error, ...) rather than only on the paths the inner logic
+    // happened to remember to zeroize inline.
+    let out = applock_setup_inner(&state, digits, &pin, &session, &device_name, &app_version).await;
+    pin.zeroize();
+    out
+}
+
+async fn applock_setup_inner(
+    state: &State<'_, AppState>,
+    digits: u8,
+    pin: &str,
+    session: &StoredSession,
+    device_name: &str,
+    app_version: &str,
+) -> Result<AppLockStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    if let Err(e) = validate_pin(digits, &pin) {
-        pin.zeroize();
-        return Err(e);
-    }
-    let sek = symmetric::random_key();
-    let sealed = seal_pin(&pin, &sek).await;
-    pin.zeroize();
-    let (salt, verifier, sek_wrapped) = sealed?;
-    let session_wrapped = wrap_session_under_sek(&sek, &session)?;
-    let existing = state.load_applock(&user_id)?;
-    let device = build_device(&state, &user_id, &device_name, &app_version, existing.as_ref().map(|r| &r.device))?;
+    validate_pin(digits, pin)?;
+
+    let mut sek = symmetric::random_key();
+    let (salt, verifier, sek_wrapped) = match seal_pin(pin, &sek).await {
+        Ok(v) => v,
+        Err(e) => {
+            sek.zeroize();
+            return Err(e);
+        }
+    };
+    let session_wrapped = match wrap_session_under_sek(&sek, session) {
+        Ok(v) => v,
+        Err(e) => {
+            sek.zeroize();
+            return Err(e);
+        }
+    };
+    let existing = match state.load_applock(&user_id) {
+        Ok(v) => v,
+        Err(e) => {
+            sek.zeroize();
+            return Err(e);
+        }
+    };
+    let device = match build_device(state, &user_id, device_name, app_version, existing.as_ref().map(|r| &r.device)) {
+        Ok(v) => v,
+        Err(e) => {
+            sek.zeroize();
+            return Err(e);
+        }
+    };
     let record = PersistedAppLock {
         version: 1, enabled: true, digits, kdf_version: KDF_ARGON2ID_V1,
         salt, verifier, sek_wrapped_by_pin: sek_wrapped, session_wrapped_by_sek: session_wrapped,
@@ -245,7 +303,10 @@ pub async fn applock_setup(
         inactivity_minutes: existing.as_ref().map(|r| r.inactivity_minutes).unwrap_or(DEFAULT_INACTIVITY_MINUTES),
         device, created_at: existing.as_ref().map(|r| r.created_at).unwrap_or_else(Utc::now),
     };
-    state.save_applock(&user_id, &record)?;
+    if let Err(e) = state.save_applock(&user_id, &record) {
+        sek.zeroize();
+        return Err(e);
+    }
     state.set_applock_sek(sek)?;
     state.audit_info("applock_setup", "App-entry PIN configured");
     Ok(status_from(Some(&record), true))
@@ -253,28 +314,43 @@ pub async fn applock_setup(
 
 #[tauri::command]
 pub async fn applock_unlock(state: State<'_, AppState>, mut pin: String) -> Result<AppLockUnlockResult> {
+    let out = applock_unlock_inner(&state, &pin).await;
+    pin.zeroize();
+    out
+}
+
+async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<AppLockUnlockResult> {
     let user_id = state.user_id()?;
     let mut record = state
         .load_applock(&user_id)?
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
 
-    match open_with_pin(&record, &pin).await {
-        Ok(sek) => {
-            pin.zeroize();
-            let session = unwrap_session_from_sek(&sek, &record.session_wrapped_by_sek)?;
+    match open_with_pin(&record, pin).await {
+        Ok(mut sek) => {
+            let session = match unwrap_session_from_sek(&sek, &record.session_wrapped_by_sek) {
+                Ok(v) => v,
+                Err(e) => {
+                    sek.zeroize();
+                    return Err(e);
+                }
+            };
             record.failed_attempts = 0;
             record.lockout_until = None;
             record.device.last_login_at = Utc::now();
-            state.save_applock(&user_id, &record)?;
+            if let Err(e) = state.save_applock(&user_id, &record) {
+                sek.zeroize();
+                return Err(e);
+            }
             state.set_applock_sek(sek)?;
             state.audit_info("applock_unlock", "App unlocked with PIN");
             Ok(AppLockUnlockResult { session: Some(session), status: status_from(Some(&record), true) })
         }
         Err(_) => {
-            pin.zeroize();
-            record.failed_attempts += 1;
-            if record.failed_attempts >= MAX_ATTEMPTS {
+            // Shared max-5-attempts ladder (also used by `applock_change_pin`):
+            // increments the counter, sets the 3rd/4th-failure delay, and
+            // signals the 5th failure so the caller wipes the stored session.
+            if apply_failed_attempt(&mut record) {
                 // Wipe the stored session; the config is dropped so the next
                 // launch requires full email/password login. This is NOT an
                 // error to the caller — it returns a session-less result whose
@@ -284,10 +360,6 @@ pub async fn applock_unlock(state: State<'_, AppState>, mut pin: String) -> Resu
                 let mut status = status_from(None, false);
                 status.requires_full_auth = true;
                 return Ok(AppLockUnlockResult { session: None, status });
-            }
-            let delay = lockout_delay_secs(record.failed_attempts);
-            if delay > 0 {
-                record.lockout_until = Some(Utc::now() + chrono::Duration::seconds(delay));
             }
             state.save_applock(&user_id, &record)?;
             state.audit_info("applock_unlock_failed", "Incorrect app PIN");
@@ -328,31 +400,53 @@ pub async fn applock_change_pin(
     mut new_pin: String,
     digits: u8,
 ) -> Result<AppLockStatus> {
+    let out = applock_change_pin_inner(&state, &old_pin, &new_pin, digits).await;
+    old_pin.zeroize();
+    new_pin.zeroize();
+    out
+}
+
+async fn applock_change_pin_inner(
+    state: &State<'_, AppState>,
+    old_pin: &str,
+    new_pin: &str,
+    digits: u8,
+) -> Result<AppLockStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    if let Err(e) = validate_pin(digits, &new_pin) {
-        old_pin.zeroize();
-        new_pin.zeroize();
-        return Err(e);
-    }
+    validate_pin(digits, new_pin)?;
+
     let mut record = state
         .load_applock(&user_id)?
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
-    let sek = match open_with_pin(&record, &old_pin).await {
+    let mut sek = match open_with_pin(&record, old_pin).await {
         Ok(sek) => sek,
+        Err(_) => {
+            // Same max-5-attempts ladder as `applock_unlock`: a wrong old PIN
+            // on change-PIN must count against, and be throttled/wiped by,
+            // the SAME failed_attempts counter — otherwise change-PIN is an
+            // unthrottled oracle for guessing the PIN.
+            if apply_failed_attempt(&mut record) {
+                state.delete_applock(&user_id)?;
+                return Err(QGuardError::Trust(
+                    "Too many attempts. Please sign in again.".to_string(),
+                ));
+            }
+            state.save_applock(&user_id, &record)?;
+            return Err(QGuardError::Trust(format!(
+                "Incorrect PIN. {} attempt(s) remaining.",
+                attempts_remaining(record.failed_attempts)
+            )));
+        }
+    };
+    let (salt, verifier, sek_wrapped) = match seal_pin(new_pin, &sek).await {
+        Ok(v) => v,
         Err(e) => {
-            old_pin.zeroize();
-            new_pin.zeroize();
-            record.failed_attempts += 1;
-            let _ = state.save_applock(&user_id, &record);
+            sek.zeroize();
             return Err(e);
         }
     };
-    old_pin.zeroize();
-    let sealed = seal_pin(&new_pin, &sek).await;
-    new_pin.zeroize();
-    let (salt, verifier, sek_wrapped) = sealed?;
     record.salt = salt;
     record.verifier = verifier;
     record.sek_wrapped_by_pin = sek_wrapped;
@@ -360,7 +454,10 @@ pub async fn applock_change_pin(
     record.kdf_version = KDF_ARGON2ID_V1;
     record.failed_attempts = 0;
     record.lockout_until = None;
-    state.save_applock(&user_id, &record)?;
+    if let Err(e) = state.save_applock(&user_id, &record) {
+        sek.zeroize();
+        return Err(e);
+    }
     state.set_applock_sek(sek)?;
     state.audit_info("applock_change_pin", "App PIN changed");
     Ok(status_from(Some(&record), true))
@@ -511,5 +608,48 @@ mod tests {
         assert_eq!(attempts_remaining(0), 5);
         assert_eq!(attempts_remaining(4), 1);
         assert_eq!(attempts_remaining(5), 0);
+    }
+
+    fn blank_record() -> PersistedAppLock {
+        PersistedAppLock {
+            version: 1, enabled: true, digits: 6, kdf_version: KDF_ARGON2ID_V1,
+            salt: vec![0u8; 16], verifier: String::new(),
+            sek_wrapped_by_pin: EncryptedEnvelope { nonce: vec![], ciphertext: vec![], tag: vec![] },
+            session_wrapped_by_sek: EncryptedEnvelope { nonce: vec![], ciphertext: vec![], tag: vec![] },
+            failed_attempts: 0, lockout_until: None, inactivity_minutes: 10,
+            device: DeviceRegistration {
+                device_id: "d1".into(), device_name: "Tablet".into(), platform: "android".into(),
+                app_version: "1.0.0".into(), registered_at: Utc::now(), last_login_at: Utc::now(),
+            },
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn apply_failed_attempt_ladder_and_wipe() {
+        let mut record = blank_record();
+
+        assert!(!apply_failed_attempt(&mut record)); // 1st
+        assert_eq!(record.failed_attempts, 1);
+        assert!(record.lockout_until.is_none());
+
+        assert!(!apply_failed_attempt(&mut record)); // 2nd
+        assert_eq!(record.failed_attempts, 2);
+        assert!(record.lockout_until.is_none());
+
+        assert!(!apply_failed_attempt(&mut record)); // 3rd -> ~5s lockout
+        assert_eq!(record.failed_attempts, 3);
+        let until = record.lockout_until.expect("3rd failure sets a lockout");
+        let secs = (until - Utc::now()).num_seconds();
+        assert!((1..=5).contains(&secs), "expected ~5s lockout, got {secs}s");
+
+        assert!(!apply_failed_attempt(&mut record)); // 4th -> ~15s lockout
+        assert_eq!(record.failed_attempts, 4);
+        let until = record.lockout_until.expect("4th failure sets a lockout");
+        let secs = (until - Utc::now()).num_seconds();
+        assert!((11..=15).contains(&secs), "expected ~15s lockout, got {secs}s");
+
+        assert!(apply_failed_attempt(&mut record)); // 5th -> wipe signal
+        assert_eq!(record.failed_attempts, 5);
     }
 }
