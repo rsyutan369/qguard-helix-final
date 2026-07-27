@@ -170,6 +170,50 @@ impl PersistedWorkspaceScope {
     }
 }
 
+/// A trusted-device registration record (banking-style device binding).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRegistration {
+    pub device_id: String,
+    pub device_name: String,
+    pub platform: String,
+    pub app_version: String,
+    pub registered_at: chrono::DateTime<Utc>,
+    pub last_login_at: chrono::DateTime<Utc>,
+}
+
+/// The Supabase session the app-entry PIN restores. Serialized, encrypted under
+/// the SEK, and never stored in plaintext.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredSession {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+    pub user_id: String,
+    pub email: String,
+}
+
+/// Device-local, encrypted-at-rest app-entry PIN state. The session is wrapped
+/// under a random SEK; the SEK is wrapped under the PIN-derived key. The whole
+/// struct is then encrypted at rest under the hardware-backed device DEK.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedAppLock {
+    pub version: u8,
+    pub enabled: bool,
+    pub digits: u8,
+    pub kdf_version: u8,
+    pub salt: Vec<u8>,
+    pub verifier: String,
+    pub sek_wrapped_by_pin: crate::crypto::EncryptedEnvelope,
+    pub session_wrapped_by_sek: crate::crypto::EncryptedEnvelope,
+    pub failed_attempts: u32,
+    pub lockout_until: Option<chrono::DateTime<Utc>>,
+    pub inactivity_minutes: u32,
+    pub device: DeviceRegistration,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
 #[derive(Clone, Debug)]
 pub struct AuthSession {
     pub user_id: String,
@@ -201,6 +245,9 @@ pub struct AppState {
     pub vault_session: Mutex<Option<PersistedVaultMaster>>,
     /// Set of currently-unlocked workspace scopes ("chat" | "vault").
     pub workspace_unlocked: Mutex<HashSet<String>>,
+    /// In-memory Session Encryption Key while the app is PIN-unlocked (None =
+    /// locked). Zeroized on lock / background / sign-out.
+    pub applock_sek: Mutex<Option<[u8; crate::crypto::symmetric::KEY_SIZE]>>,
 }
 
 impl AppState {
@@ -227,6 +274,7 @@ impl AppState {
             decrypt_attempts: Mutex::new(HashMap::new()),
             vault_session: Mutex::new(None),
             workspace_unlocked: Mutex::new(HashSet::new()),
+            applock_sek: Mutex::new(None),
         })
     }
 
@@ -768,6 +816,91 @@ impl AppState {
         let material: PersistedWorkspaceScope = serde_json::from_slice(&plaintext)
             .map_err(|e| QGuardError::Storage(format!("decode workspace scope payload: {e}")))?;
         Ok(Some(material))
+    }
+
+    // ---- App-entry PIN (applock) ------------------------------------------
+
+    fn applock_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.applock.enc"))
+    }
+
+    pub fn save_applock(&self, user_id: &str, material: &PersistedAppLock) -> Result<()> {
+        let encoded = serde_json::to_vec(material)
+            .map_err(|e| QGuardError::Storage(format!("encode applock: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let envelope = crate::crypto::symmetric::encrypt(
+            &key,
+            &encoded,
+            &crate::security::obf::applock_material_aad(),
+        )?;
+        let file = EncryptedKeyMaterialFile { version: 1, envelope };
+        let serialized = serde_json::to_vec(&file)
+            .map_err(|e| QGuardError::Storage(format!("encode encrypted applock: {e}")))?;
+        std::fs::write(self.applock_path(user_id), &serialized)
+            .map_err(|e| QGuardError::Storage(format!("write applock: {e}")))?;
+        Ok(())
+    }
+
+    pub fn load_applock(&self, user_id: &str) -> Result<Option<PersistedAppLock>> {
+        let path = self.applock_path(user_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| QGuardError::Storage(format!("read applock: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode applock file: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let mut plaintext = crate::crypto::symmetric::decrypt(
+            &key,
+            &file.envelope,
+            &crate::security::obf::applock_material_aad(),
+        )?;
+        let material: PersistedAppLock = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode applock payload: {e}")))?;
+        plaintext.zeroize();
+        Ok(Some(material))
+    }
+
+    pub fn delete_applock(&self, user_id: &str) -> Result<()> {
+        let path = self.applock_path(user_id);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|e| QGuardError::Storage(format!("delete applock: {e}")))?;
+        }
+        self.clear_applock_sek();
+        Ok(())
+    }
+
+    pub fn set_applock_sek(&self, sek: [u8; crate::crypto::symmetric::KEY_SIZE]) -> Result<()> {
+        let mut guard = self
+            .applock_sek
+            .lock()
+            .map_err(|_| QGuardError::Storage("applock sek lock poisoned".to_string()))?;
+        *guard = Some(sek);
+        Ok(())
+    }
+
+    pub fn take_applock_sek(&self) -> Option<[u8; crate::crypto::symmetric::KEY_SIZE]> {
+        self.applock_sek.lock().ok().and_then(|guard| *guard)
+    }
+
+    pub fn clear_applock_sek(&self) {
+        if let Ok(mut guard) = self.applock_sek.lock() {
+            if let Some(mut sek) = guard.take() {
+                sek.zeroize();
+            }
+        }
+    }
+
+    pub fn is_applock_unlocked(&self) -> bool {
+        self.applock_sek
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
     }
 
     /// Store the unlocked VMK for this session (vault unlocked).
