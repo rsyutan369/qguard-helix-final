@@ -307,7 +307,10 @@ async fn applock_setup_inner(
         sek.zeroize();
         return Err(e);
     }
-    state.set_applock_sek(sek)?;
+    if let Err(e) = state.set_applock_sek(sek) {
+        sek.zeroize();
+        return Err(e);
+    }
     state.audit_info("applock_setup", "App-entry PIN configured");
     Ok(status_from(Some(&record), true))
 }
@@ -342,7 +345,10 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
                 sek.zeroize();
                 return Err(e);
             }
-            state.set_applock_sek(sek)?;
+            if let Err(e) = state.set_applock_sek(sek) {
+                sek.zeroize();
+                return Err(e);
+            }
             state.audit_info("applock_unlock", "App unlocked with PIN");
             Ok(AppLockUnlockResult { session: Some(session), status: status_from(Some(&record), true) })
         }
@@ -374,15 +380,37 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
 #[tauri::command]
 pub fn applock_update_session(state: State<'_, AppState>, session: StoredSession) -> Result<()> {
     let user_id = state.user_id()?;
-    let sek = state
+    // `take_applock_sek` returns a COPY of the in-memory SEK (the real one
+    // stays in AppState so the app remains unlocked) — this local copy is
+    // used once to re-wrap the refreshed session and is never re-stored, so
+    // unlike setup/unlock/change_pin (which deliberately hand their `sek` to
+    // `set_applock_sek` at the end) it must be zeroized on EVERY exit path.
+    let mut sek = state
         .take_applock_sek()
         .ok_or_else(|| QGuardError::Trust("app is locked".to_string()))?;
-    let mut record = match state.load_applock(&user_id)? {
-        Some(r) => r,
-        None => return Ok(()),
+    let mut record = match state.load_applock(&user_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            sek.zeroize();
+            return Ok(());
+        }
+        Err(e) => {
+            sek.zeroize();
+            return Err(e);
+        }
     };
-    record.session_wrapped_by_sek = wrap_session_under_sek(&sek, &session)?;
-    state.save_applock(&user_id, &record)?;
+    record.session_wrapped_by_sek = match wrap_session_under_sek(&sek, &session) {
+        Ok(v) => v,
+        Err(e) => {
+            sek.zeroize();
+            return Err(e);
+        }
+    };
+    if let Err(e) = state.save_applock(&user_id, &record) {
+        sek.zeroize();
+        return Err(e);
+    }
+    sek.zeroize();
     Ok(())
 }
 
@@ -458,7 +486,10 @@ async fn applock_change_pin_inner(
         sek.zeroize();
         return Err(e);
     }
-    state.set_applock_sek(sek)?;
+    if let Err(e) = state.set_applock_sek(sek) {
+        sek.zeroize();
+        return Err(e);
+    }
     state.audit_info("applock_change_pin", "App PIN changed");
     Ok(status_from(Some(&record), true))
 }
