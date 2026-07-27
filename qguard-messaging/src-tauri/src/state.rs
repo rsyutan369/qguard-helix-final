@@ -828,15 +828,16 @@ impl AppState {
     }
 
     pub fn save_applock(&self, user_id: &str, material: &PersistedAppLock) -> Result<()> {
-        let encoded = serde_json::to_vec(material)
+        let mut encoded = serde_json::to_vec(material)
             .map_err(|e| QGuardError::Storage(format!("encode applock: {e}")))?;
         let key = self.device_storage_key(user_id)?;
         let envelope = crate::crypto::symmetric::encrypt(
             &key,
             &encoded,
             &crate::security::obf::applock_material_aad(),
-        )?;
-        let file = EncryptedKeyMaterialFile { version: 1, envelope };
+        );
+        encoded.zeroize();
+        let file = EncryptedKeyMaterialFile { version: 1, envelope: envelope? };
         let serialized = serde_json::to_vec(&file)
             .map_err(|e| QGuardError::Storage(format!("encode encrypted applock: {e}")))?;
         std::fs::write(self.applock_path(user_id), &serialized)
@@ -884,6 +885,8 @@ impl AppState {
         Ok(())
     }
 
+    /// Returns a COPY of the in-memory SEK, leaving it in place (needed so
+    /// token refresh can re-wrap the session while unlocked). None when locked.
     pub fn take_applock_sek(&self) -> Option<[u8; crate::crypto::symmetric::KEY_SIZE]> {
         self.applock_sek.lock().ok().and_then(|guard| *guard)
     }
