@@ -20,7 +20,7 @@ use serde::Serialize;
 use tauri::State;
 use zeroize::Zeroize;
 
-use crate::crypto::kdf::{derive_32_with_salt, sha3_hex};
+use crate::crypto::passcode::{self, KDF_ARGON2ID_V1, KDF_LEGACY_HKDF};
 use crate::crypto::signatures::VaultSigningKeypair;
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::{vault_recovery, EncryptedEnvelope};
@@ -87,75 +87,26 @@ fn validate_secret(method: &str, secret: &str) -> Result<()> {
 }
 
 fn random_salt() -> Vec<u8> {
-    use rand::RngCore;
-    let mut salt = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
-    salt.to_vec()
+    passcode::random_salt()
 }
 
-/// KDF versions for `WorkspaceCredential::kdf_version`.
-const KDF_LEGACY_HKDF: u8 = 0;
-const KDF_ARGON2ID_V1: u8 = 1;
-
-/// Argon2id parameters: 64 MiB, 3 passes, 1 lane (OWASP-recommended class).
-/// ~0.3–1s per stretch — slow enough to make offline brute force of a stolen
-/// credential file expensive, fast enough for an interactive unlock gate.
-const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
-const ARGON2_ITERATIONS: u32 = 3;
-const ARGON2_LANES: u32 = 1;
-
-/// Memory-hard Argon2id prehash of the unlock secret.
-fn argon2id_prehash(salt: &[u8], secret: &[u8]) -> Result<[u8; 32]> {
-    use argon2::{Algorithm, Argon2, Params, Version};
-    let params = Params::new(ARGON2_MEMORY_KIB, ARGON2_ITERATIONS, ARGON2_LANES, Some(32))
-        .map_err(|e| QGuardError::Crypto(format!("argon2id params: {e}")))?;
-    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut out = [0u8; 32];
-    argon
-        .hash_password_into(secret, salt, &mut out)
-        .map_err(|e| QGuardError::Crypto(format!("argon2id stretch failed: {e}")))?;
-    Ok(out)
-}
-
-/// Stretch the unlock secret into the input keying material every HKDF subkey
-/// (verifier + VMK wrap key) is derived from. Legacy (v0) feeds the raw secret
-/// straight into HKDF — kept only so pre-upgrade credentials still verify.
 fn secret_ikm(kdf_version: u8, salt: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
-    match kdf_version {
-        KDF_LEGACY_HKDF => Ok(secret.to_vec()),
-        KDF_ARGON2ID_V1 => Ok(argon2id_prehash(salt, secret)?.to_vec()),
-        other => Err(QGuardError::Crypto(format!(
-            "workspace credential uses unsupported KDF version {other}; update QGuard Messaging"
-        ))),
-    }
+    passcode::secret_ikm(kdf_version, salt, secret)
 }
 
-/// Run the (deliberately slow, memory-hard) secret stretch on the blocking
-/// thread pool. Workspace commands are async so the Argon2id pass never runs on
-/// the MAIN thread — a sync command would freeze the window event loop for the
-/// full stretch (the same freeze class the vault stream commands fixed).
-async fn stretch_secret(kdf_version: u8, salt: Vec<u8>, mut secret: Vec<u8>) -> Result<Vec<u8>> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let ikm = secret_ikm(kdf_version, &salt, &secret);
-        secret.zeroize();
-        ikm
-    })
-    .await
-    .map_err(|e| QGuardError::Crypto(format!("secret stretch worker failed: {e}")))?
+async fn stretch_secret(kdf_version: u8, salt: Vec<u8>, secret: Vec<u8>) -> Result<Vec<u8>> {
+    passcode::stretch_secret(kdf_version, salt, secret).await
 }
 
 /// Verifier (hash of an independent HKDF subkey) — validates a re-entered
 /// secret without revealing the unlock key.
 fn derive_verifier_from_ikm(salt: &[u8], ikm: &[u8]) -> Result<String> {
-    let mut k = derive_32_with_salt(salt, ikm, &crate::security::obf::workspace_chat_verifier_info())?;
-    let verifier = sha3_hex(&k);
-    k.zeroize();
-    Ok(verifier)
+    passcode::derive_verifier(salt, ikm, &crate::security::obf::workspace_chat_verifier_info())
 }
 
 /// Unlock key (distinct HKDF context from the verifier) that wraps the VMK.
 fn derive_vault_wrap_key_from_ikm(salt: &[u8], ikm: &[u8]) -> Result<[u8; KEY_SIZE]> {
-    derive_32_with_salt(salt, ikm, &crate::security::obf::workspace_vault_unlock_info())
+    passcode::derive_wrap_key(salt, ikm, &crate::security::obf::workspace_vault_unlock_info())
 }
 
 /// AES-256-GCM-wrap a serialized `PersistedVaultMaster` under the unlock key
