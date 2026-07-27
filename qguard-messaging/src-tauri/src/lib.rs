@@ -17,6 +17,7 @@ pub mod vault;
 pub mod vault_stream;
 
 use commands::auth::*;
+use commands::applock::*;
 use commands::billing::*;
 use commands::devices::*;
 use commands::keys::*;
@@ -216,6 +217,17 @@ pub fn run() {
             workspace_lock_all,
             workspace_reset_chat_lock,
             workspace_reset_vault,
+            applock_status,
+            applock_setup,
+            applock_unlock,
+            applock_update_session,
+            applock_lock,
+            applock_change_pin,
+            applock_remove,
+            applock_reset,
+            applock_set_inactivity,
+            applock_wipe,
+            applock_device_integrity,
             security_verify_fingerprint,
             security_export_report,
             security_hardening_status,
