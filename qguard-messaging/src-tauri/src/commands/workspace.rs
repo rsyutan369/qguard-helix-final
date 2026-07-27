@@ -20,7 +20,7 @@ use serde::Serialize;
 use tauri::State;
 use zeroize::Zeroize;
 
-use crate::crypto::passcode::{self, KDF_ARGON2ID_V1, KDF_LEGACY_HKDF};
+use crate::crypto::passcode::{self, KDF_ARGON2ID_V1};
 use crate::crypto::signatures::VaultSigningKeypair;
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::{vault_recovery, EncryptedEnvelope};
@@ -90,6 +90,11 @@ fn random_salt() -> Vec<u8> {
     passcode::random_salt()
 }
 
+/// Test-only: production code now stretches secrets exclusively through
+/// `stretch_secret` (which delegates straight to `passcode::stretch_secret`).
+/// The tests still exercise `secret_ikm` directly (e.g. to derive an IKM
+/// without a `spawn_blocking` round trip), so keep the thin wrapper for them.
+#[cfg(test)]
 fn secret_ikm(kdf_version: u8, salt: &[u8], secret: &[u8]) -> Result<Vec<u8>> {
     passcode::secret_ikm(kdf_version, salt, secret)
 }
@@ -628,6 +633,7 @@ pub async fn workspace_reset_vault(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::passcode::KDF_LEGACY_HKDF;
 
     fn verifier_for(kdf_version: u8, salt: &[u8], secret: &[u8]) -> String {
         let ikm = secret_ikm(kdf_version, salt, secret).unwrap();
