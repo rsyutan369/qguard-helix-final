@@ -87,17 +87,25 @@ export function AppLockScreen(props: AppLockScreenProps) {
     (n: string) => {
       if (disabled) return;
       setError(null);
-      setEntry((prev) => {
-        if (prev.length >= digits) return prev;
-        const next = prev + n;
-        if (next.length === digits) window.setTimeout(() => void commit(next), 80);
-        return next;
-      });
+      setEntry((prev) => (prev.length >= digits ? prev : prev + n));
     },
-    [disabled, digits, commit],
+    [disabled, digits],
   );
 
-  const back = useCallback(() => setEntry((p) => p.slice(0, -1)), []);
+  // Auto-submit once the entry reaches the target length. Kept out of the
+  // setEntry updater above — updaters must be pure, and under
+  // React.StrictMode (main.tsx double-invokes updaters in dev) a side effect
+  // there would schedule commit() twice, burning two attempts for one PIN.
+  useEffect(() => {
+    if (entry.length !== digits) return;
+    const id = window.setTimeout(() => void commit(entry), 80);
+    return () => window.clearTimeout(id);
+  }, [entry, digits, commit]);
+
+  const back = useCallback(() => {
+    if (disabled) return;
+    setEntry((p) => p.slice(0, -1));
+  }, [disabled]);
 
   const heading = useMemo(() => {
     if (mode === "unlock") return "Enter your PIN";
