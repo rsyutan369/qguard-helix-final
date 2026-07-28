@@ -97,7 +97,14 @@ async fn seal_pin(
 }
 
 /// Verify a PIN against a stored record and, on success, recover the SEK.
-async fn open_with_pin(record: &PersistedAppLock, pin: &str) -> Result<[u8; KEY_SIZE]> {
+///
+/// Returns `Ok(None)` ONLY for a verifier mismatch (a wrong PIN) — the sole
+/// outcome the caller may count against the 5-strike anti-brute-force ladder.
+/// Any internal failure (e.g. an Argon2id 64 MiB allocation failure on a
+/// low-RAM device, or an AES-GCM/decode error unwrapping the SEK) propagates
+/// as `Err(e)` instead, so a legitimate PIN entry on a constrained device is
+/// never mistaken for — and penalized like — a wrong guess.
+async fn open_with_pin(record: &PersistedAppLock, pin: &str) -> Result<Option<[u8; KEY_SIZE]>> {
     let mut ikm = passcode::stretch_secret(record.kdf_version, record.salt.clone(), pin.as_bytes().to_vec()).await?;
     let verifier = passcode::derive_verifier(&record.salt, &ikm, &crate::security::obf::applock_verifier_info());
     let verifier = match verifier {
@@ -109,7 +116,7 @@ async fn open_with_pin(record: &PersistedAppLock, pin: &str) -> Result<[u8; KEY_
     };
     if verifier != record.verifier {
         ikm.zeroize();
-        return Err(QGuardError::Trust("Incorrect PIN.".to_string()));
+        return Ok(None);
     }
     let wrap_key = passcode::derive_wrap_key(&record.salt, &ikm, &crate::security::obf::applock_sek_wrap_info());
     ikm.zeroize();
@@ -124,7 +131,7 @@ async fn open_with_pin(record: &PersistedAppLock, pin: &str) -> Result<[u8; KEY_
     let mut sek = [0u8; KEY_SIZE];
     sek.copy_from_slice(&sek_bytes);
     sek_bytes.zeroize();
-    Ok(sek)
+    Ok(Some(sek))
 }
 
 fn wrap_session_under_sek(sek: &[u8; KEY_SIZE], session: &StoredSession) -> Result<EncryptedEnvelope> {
@@ -311,6 +318,7 @@ async fn applock_setup_inner(
         sek.zeroize();
         return Err(e);
     }
+    sek.zeroize();
     state.audit_info("applock_setup", "App-entry PIN configured");
     Ok(status_from(Some(&record), true))
 }
@@ -330,7 +338,7 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
     check_lockout(&record)?;
 
     match open_with_pin(&record, pin).await {
-        Ok(mut sek) => {
+        Ok(Some(mut sek)) => {
             let session = match unwrap_session_from_sek(&sek, &record.session_wrapped_by_sek) {
                 Ok(v) => v,
                 Err(e) => {
@@ -349,10 +357,11 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
                 sek.zeroize();
                 return Err(e);
             }
+            sek.zeroize();
             state.audit_info("applock_unlock", "App unlocked with PIN");
             Ok(AppLockUnlockResult { session: Some(session), status: status_from(Some(&record), true) })
         }
-        Err(_) => {
+        Ok(None) => {
             // Shared max-5-attempts ladder (also used by `applock_change_pin`):
             // increments the counter, sets the 3rd/4th-failure delay, and
             // signals the 5th failure so the caller wipes the stored session.
@@ -374,6 +383,10 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
                 attempts_remaining(record.failed_attempts)
             )))
         }
+        // Internal failure (e.g. Argon2id allocation failure, AES-GCM/decode
+        // error) — NOT a wrong-PIN signal, so it must never advance the
+        // 5-strike ladder. Propagate as-is.
+        Err(e) => Err(e),
     }
 }
 
@@ -449,8 +462,8 @@ async fn applock_change_pin_inner(
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
     let mut sek = match open_with_pin(&record, old_pin).await {
-        Ok(sek) => sek,
-        Err(_) => {
+        Ok(Some(sek)) => sek,
+        Ok(None) => {
             // Same max-5-attempts ladder as `applock_unlock`: a wrong old PIN
             // on change-PIN must count against, and be throttled/wiped by,
             // the SAME failed_attempts counter — otherwise change-PIN is an
@@ -467,6 +480,10 @@ async fn applock_change_pin_inner(
                 attempts_remaining(record.failed_attempts)
             )));
         }
+        // Internal failure (e.g. Argon2id allocation failure, AES-GCM/decode
+        // error) — NOT a wrong-PIN signal, so it must never advance the
+        // 5-strike ladder. Propagate as-is.
+        Err(e) => return Err(e),
     };
     let (salt, verifier, sek_wrapped) = match seal_pin(new_pin, &sek).await {
         Ok(v) => v,
@@ -490,6 +507,7 @@ async fn applock_change_pin_inner(
         sek.zeroize();
         return Err(e);
     }
+    sek.zeroize();
     state.audit_info("applock_change_pin", "App PIN changed");
     Ok(status_from(Some(&record), true))
 }
@@ -612,12 +630,16 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        let recovered_sek = open_with_pin(&record, "123456").await.unwrap();
+        let recovered_sek = open_with_pin(&record, "123456").await.unwrap().unwrap();
         let recovered = unwrap_session_from_sek(&recovered_sek, &record.session_wrapped_by_sek).unwrap();
         assert_eq!(recovered.access_token, session.access_token);
         assert_eq!(recovered.refresh_token, session.refresh_token);
 
-        assert!(open_with_pin(&record, "000000").await.is_err());
+        // Verifier mismatch (wrong PIN) is the ONLY outcome that resolves to
+        // `Ok(None)` — it must never surface as an `Err` here, since callers
+        // use `Err` to mean "internal failure, do not count against the
+        // 5-strike ladder".
+        assert!(open_with_pin(&record, "000000").await.unwrap().is_none());
     }
 
     #[test]
