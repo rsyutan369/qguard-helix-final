@@ -759,7 +759,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
         </div>
       </section>
 
-      {appLock && user?.id && (
+      {appLock?.enabled && user?.id && (
         <ApplicationPinSection appLock={appLock} verifyAccountPassword={verifyAccountPassword} userId={user.id} />
       )}
 
@@ -955,7 +955,9 @@ function ApplicationPinSection({
   const [showChangeForm, setShowChangeForm] = useState(false);
   const [oldPin, setOldPin] = useState("");
   const [newPin, setNewPin] = useState("");
-  const [newDigits, setNewDigits] = useState<4 | 6>(6);
+  // Preselect the currently configured digit count (a 4-digit user sees
+  // "4-digit" preselected instead of always defaulting to 6).
+  const [newDigits, setNewDigits] = useState<4 | 6>(appLock.status?.digits === 4 ? 4 : 6);
   const [changeBusy, setChangeBusy] = useState(false);
   const [changeMsg, setChangeMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
@@ -963,6 +965,7 @@ function ApplicationPinSection({
   const [removePassword, setRemovePassword] = useState("");
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeMsg, setRemoveMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [devicesMsg, setDevicesMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
   const refreshDevices = useCallback(async () => {
     setDevices(await listTrustedDevices(supabase, userId));
@@ -1025,9 +1028,12 @@ function ApplicationPinSection({
 
   const revoke = async (deviceId: string) => {
     setDevicesBusy(true);
+    setDevicesMsg(null);
     try {
       await revokeTrustedDevice(supabase, userId, deviceId);
       await refreshDevices();
+    } catch (err) {
+      setDevicesMsg({ tone: "error", text: err instanceof Error ? err.message : "Could not revoke device." });
     } finally {
       setDevicesBusy(false);
     }
@@ -1182,6 +1188,9 @@ function ApplicationPinSection({
 
           <div className="mt-5">
             <h4 className="flex items-center gap-2 text-xs font-bold text-ink-950"><Smartphone size={14} /> Trusted devices</h4>
+            {devicesMsg && (
+              <p className={`mt-1 text-[11px] font-semibold ${devicesMsg.tone === "ok" ? "text-emerald-600" : "text-rose-600"}`}>{devicesMsg.text}</p>
+            )}
             <ul className="mt-2 space-y-2">
               {devices.map((device) => (
                 <li key={device.id} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-white px-3 py-2">

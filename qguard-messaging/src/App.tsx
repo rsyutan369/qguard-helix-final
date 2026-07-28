@@ -201,6 +201,12 @@ function ProtectedMessagingApp() {
       if (appLock.status?.device) {
         const revoked = await isDeviceRevoked(supabase, result.session.userId, appLock.status.device.deviceId).catch(() => false);
         if (revoked) {
+          // Revoked/stolen device: destroy the local session + stored PIN so this
+          // device must pass full email/password (+ MFA) again, not a PIN reset.
+          // scope:"local" clears only THIS device (never signs the user out elsewhere).
+          await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+          await safeInvoke("applock_wipe", { userId: result.session.userId }, null);
+          await appLock.refresh();
           setForcePasswordLogin(true);
           throw new Error("This device was signed out remotely. Please sign in again.");
         }
