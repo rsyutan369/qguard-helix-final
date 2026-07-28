@@ -1,0 +1,135 @@
+Feature Request: Banking-Grade PIN Authentication for QGuard Messaging (Android)
+Objective
+
+Implement a secure application PIN authentication system for the QGuard Messaging Android application, similar to the authentication experience provided by modern banking applications.
+
+User Flow:
+
+First-Time Login
+The user installs and opens the QGuard Messaging app.
+The user signs in using their email and password (or their existing authentication method).
+After successful authentication:
+Register the device as a trusted device.
+Store the authentication session securely.
+Prompt the user to create an application PIN.
+Allow the user to choose either:
+4-digit PIN
+6-digit PIN
+Ask the user to confirm the PIN before saving it.
+Returning User Experience
+
+Once the device has been registered:
+
+The user should NOT be required to enter their email and password every time they open the application.
+Instead, every app launch should display a secure PIN entry screen.
+After entering the correct PIN:
+Unlock the application.
+Restore the authenticated session.
+Navigate directly to the user's conversations/dashboard.
+
+This should behave similarly to banking applications where users log in only once and subsequently unlock the app using their PIN.
+
+Security Requirements
+Secure PIN Storage
+
+Never store the PIN in plaintext.
+
+Use Android security best practices:
+
+Android Keystore
+EncryptedSharedPreferences or Jetpack Security Crypto
+Hardware-backed encryption when available
+
+The PIN must be encrypted before storage.
+
+Session Authentication
+
+After the initial successful login:
+
+Store authentication tokens securely.
+Maintain the authenticated session.
+The PIN should only unlock the locally stored authenticated session.
+The PIN must not replace server authentication.
+Tokens should still expire according to backend policy.
+When tokens expire or become invalid:
+Require the user to authenticate again using email and password.
+After successful authentication, continue using the existing PIN.
+Failed PIN Protection
+
+Implement banking-style protection:
+
+Maximum of 5 incorrect PIN attempts.
+After 5 failed attempts:
+Lock the application.
+Require full authentication using email and password.
+Clear failed attempt counter after successful authentication.
+Additional Security Features
+
+Implement the following:
+
+Auto-lock after configurable inactivity (10 minutes).
+Lock the app whenever it goes into the background.
+Require the PIN when reopening the app.
+Prevent screenshots on sensitive screens using FLAG_SECURE.
+Clear sensitive UI from the Recent Apps preview.
+Detect rooted devices if supported by the existing security architecture.
+Prevent PIN brute-force attacks using increasing delays between failed attempts.
+PIN Management
+
+Inside Settings → Security, allow users to:
+
+Change PIN
+Remove PIN (requires password verification)
+Switch between 4-digit and 6-digit PIN
+Enable or disable PIN authentication
+Configure auto-lock timeout
+Reset forgotten PIN (requires email/password authentication)
+Biometric Authentication (Optional but Recommended)
+
+Support Android Biometrics:
+
+Fingerprint
+Face Unlock
+Device Credentials
+
+Workflow:
+
+User enters PIN once.
+Enable biometric authentication.
+Future app launches may use biometrics.
+If biometrics fail, fall back to the PIN.
+Device Registration
+
+Each trusted device should have:
+
+Unique Device ID
+Device Name
+Registration Timestamp
+Last Login Timestamp
+Platform Information
+App Version
+
+Allow users to manage trusted devices from their account settings.
+
+Logout Behavior
+
+When the user logs out:
+
+Delete locally stored authentication tokens.
+Delete the encrypted PIN.
+Remove the trusted device registration.
+Require full email/password login again.
+Enterprise Security Goals
+
+The implementation should follow Android security best practices and provide a banking-grade user experience with:
+
+Secure encrypted credential storage
+Trusted device registration
+Session persistence
+PIN-based application unlocking
+Secure token lifecycle management
+Protection against brute-force attacks
+Hardware-backed cryptography where available
+Clean architecture and production-ready implementation
+
+The authentication flow should feel seamless: users authenticate with their email and password only once on a trusted device, then unlock the app securely using their PIN (or biometrics) on subsequent launches, while preserving enterprise-grade security throughout the authentication lifecycle.

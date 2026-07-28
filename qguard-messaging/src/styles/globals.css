@@ -645,12 +645,12 @@ button:not(:disabled):hover {
     border-radius: 14px;
   }
 
-  /* The chat workspace fills the mobile shell (header 64px + nav 84px). */
-  .mobile-shell [class*="h-[calc(100vh-124px)]"] {
-    height: calc(100dvh - 172px) !important;
-  }
+  /* The chat workspace fills the mobile shell via flex/h-full (see
+     SecureChatPage). No fixed-height magic number here — that broke on tablets
+     and after rotation because the shell chrome height is device-dependent. */
 
-  /* Column-resize handles are a pointer-only affordance. */
+  /* Column-resize handles are a pointer-only affordance; on phone-width the
+     chat collapses to a single pane, so there are no columns to resize. */
   .mobile-shell [role="separator"][aria-orientation="vertical"] {
     display: none;
   }

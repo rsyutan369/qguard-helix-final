@@ -1,0 +1,144 @@
+The Problem With How Most Vibe Coders Approach Security
+Most builders treat security like a feature they will add in version 2.
+It is not a feature. It is the floor.
+AI lets you ship a product in a weekend. That same speed lets you ship a liability in a weekend. The codebase looks clean. The UI looks polished. The demo runs perfectly. None of that protects you when someone opens DevTools and reads your entire database.
+When founders come to us at the agency asking us to rebuild a broken MVP, the same five categories of failure show up almost every time. Open databases. Auth flows that leak information. API keys sitting in frontend bundles. No rate limits on expensive endpoints. Error messages that map the entire schema for any attacker who triggers them.
+The fix is not paranoia.
+The fix is a 30-minute checklist you run before every launch. Five categories. The same one we run at the agency. Same one I am about to walk you through.
+Section 1: Protect Yourself, Not Just Your App
+The moment you collect user data, you are in legal territory. GDPR. CCPA. Platform terms of service.
+Most vibe coders do not think about this until it is too late.
+Three minimums.
+→ A real privacy policy, even if it is generated. Termly and PrivacyPolicies.com both do this for free in under 5 minutes.
+→ Know exactly where your user data lives. Supabase region, Vercel region, any third party services touching the data.
+→ Nothing dodgy. No selling user data. No exporting it to your personal email. No keeping passwords in plain text.
+Not perfect. Just not reckless.
+This is the cheapest 10 minutes of work you will do all year and it is the difference between a normal launch and getting a cease and desist email in week two.
+What changed in 2026, and why this section matters more now.
+The legal ground under AI-built apps shifted this year, and most builders have not caught up.
+→ The Supreme Court let the human-authorship ruling stand. Code written purely by AI cannot be copyrighted in the US. If a competitor clones your AI-built app line for line, you may have no legal ground to stop them.
+→ If your AI quietly pulls in open-source code under a license like GPL, you can be forced to open-source your entire codebase, or face an infringement claim. You get all of the liability and none of the protection.
+→ The biggest AI copyright case yet ended in a $1.5 billion settlement, and it got final court approval this week. The lawyers are not coming. They are already here.
+None of this means stop building. It means stop shipping blind. The rest of this checklist is how you do that.
+Section 2: Lock Down Your Database
+This is the section we spend the most time on when we audit inbound projects. Almost every vibe coded app we have ever opened up fails at least one of the three checks below.
+Row Level Security on Supabase.
+Without RLS, anyone can open browser DevTools, run a query, and read your entire database. Not hack. Not exploit. Just open the console and type a command.
+Go to your Supabase dashboard. Click Authentication, then Policies. If you see zero policies, your app is naked.
+The fix is simple. Add policies that restrict who can read, insert, update, or delete rows based on the authenticated user. If you are using Lovable or Bolt, just ask the agent to enable RLS and write policies for your tables. It will generate the SQL automatically.
+5 minutes. The difference between a secure app and a data breach waiting to happen.
+Server-side validation on every form.
+Zod on the client is not security. It is UX.
+Attackers disable JavaScript, open Postman, and send whatever they want directly to your API. If your only validation is on the frontend, they can send malformed data, SQL injection attempts, or scripts. If your form writes to the database, validate it AGAIN on the server. Check data types. Check length limits. Sanitize inputs.
+This is the baseline. Not optional.
+Error messages that do not leak data.
+Bad error message. "SELECT * FROM users WHERE email failed."
+That tells an attacker your table names, column names, and query logic.
+Good error message. "User not found."
+Log full errors server-side with context. Show generic messages to users. Never expose stack traces in production. Basic operational security. Most apps fail this on day one.
+Bad messages hand attackers your schema. Good messages reveal nothing.
+0:00 / 0:10
+One prompt. Most of your OWASP vulnerabilities flagged in 30 seconds.
+Section 3: Test the Failure Cases on Auth
+Most devs only test the happy path. Sign up with a valid email. Log in. Call it done.
+Apps break when things go wrong. That is exactly where attackers probe first.
+Here is the exact 4-point failure case test we run before signing off on any project.
+→ Log in with the wrong password 5 times in a row. Does it lock the account? Does it show a generic error or does it confirm the email exists?
+→ Reset password for an email that does not exist. Does it reveal whether the email is in the system?
+→ Click the email verification link twice. Does it break the flow or handle it gracefully?
+→ Sign up with an email that is already registered. Does it leak that the user already exists?
+10 minutes of testing. Catches 80% of auth vulnerabilities before they go live.
+We have run this exact test on every inbound audit we have done this year. It has caught issues in roughly 7 out of 10 codebases. Vibe coders with beautiful UIs missed these every single time.
+Section 4: The 4 AI Prompts You Run Before Every Launch
+This is the part the Reddit post nailed. These four prompts cover 80% of the surface-level security audit and take about 8 minutes combined.
+You run them inside Claude Code, Cursor, or whatever agent you build with. Save them. Make them part of your launch ritual.
+Prompt 1. Baseline security posture.
+Review my app as a security specialist and make sure I have
+strong security headers and a solid baseline security posture.
+2 minutes. Fixes the obvious gaps. Headers alone are not enough but they are the floor.
+Prompt 2. OWASP standards check.
+Review my app against OWASP standards and highlight vulnerabilities.
+This is where SQL injection, XSS, and auth issues actually get caught.
+Prompt 3. Data leak audit.
+Check my app for any credential or sensitive data leaks in
+frontend or API routes.
+AI generated code leaks data in 3 places almost every time. .env values ending up in frontend code. API responses returning too much data. Secrets showing up in logs.
+Prompt 4. API key exposure check.
+Ensure no API keys are exposed in frontend code or network calls.
+If your key is in the browser, assume it has already been taken. This one bug has drained entire indie projects in a single weekend.
+Going Deeper on API Keys.
+That prompt catches the obvious cases. Here is the rule we run on every project beyond that.
+Public keys can stay in the frontend. Supabase anon keys, publishable Stripe keys, anything explicitly marked as public. These are designed to be exposed.
+Secret keys must stay server-side. Service role keys, Stripe secret keys, OpenAI keys, anything without a "publishable" prefix. Store them in Supabase Edge Function Secrets or Vercel environment variables. Never commit them to version control. Never paste them into your frontend code.
+If you think a key might have been exposed, regenerate it immediately. Do not wait. Do not hope nobody found it. Public GitHub repos get scraped for keys within minutes.
+Two minutes to know if your security headers are doing anything.
+Section 5: Protect Your Infrastructure
+This is the section that protects your wallet, not just your data.
+Rate limits on every endpoint.
+This is the fastest way a vibe coded app empties your wallet. Without rate limits, someone can spam your API 10,000 times in a minute. Maybe brute forcing a login. Maybe scraping your database. Maybe just being malicious.
+I have personally watched a Supabase bill jump from $20 to $200 in a single day on a side project because one endpoint had no rate limit. It happens fast.
+Three minimums.
+→ Rate limit every endpoint that hits a paid API (OpenAI, Anthropic, Stripe, Resend)
+→ Set hard daily caps in the OpenAI and Anthropic dashboards
+→ Set up alerts at 50% of your daily cap so you catch a spike before it hits you in the morning
+For Supabase Edge Functions, Upstash is the easiest rate limit solution. 100 requests per minute per IP for public endpoints, 1,000 per minute for authenticated users is a sane baseline.
+CAPTCHA on every public form.
+Contact forms, signup pages, waitlists. Without CAPTCHA, bots flood you on day one. We have seen contact forms collect 500 spam submissions in an hour on apps with no protection.
+Cloudflare Turnstile is free and privacy focused. Integration takes 10 minutes.
+CORS restrictions on your API.
+By default, many frameworks allow API requests from anywhere. Fine for local development. Disaster in production.
+Specify exactly which domains can access your API. Allow your production domain. Allow localhost for testing. Block everything else. 2 minutes. Prevents cross-site request forgery and unauthorized API access.
+Hard caps and alerts. The 3-minute setting that saves your monthly bill.
+Run the Built-in Security Scan Last
+The 4 prompts in Section 4 are manual. You paste them and read what comes back. As of 3 days ago, you have something better for the final gate.
+Anthropic just shipped a Claude Security plugin for Claude Code.
+It is in beta, released July 22, and it is not a single prompt. It is a multi-agent vulnerability scanner that runs right in your terminal. Install it inside a Claude Code session:
+/plugin install claude-security@claude-plugins-official then /reload-plugins. That gives you one command, /claude-security.
+What makes it different from pasting a prompt.
+→ A team of agents maps your architecture, builds a threat model, then hunts across 4 categories: injection, auth and access, memory, and crypto and secrets
+→ Every finding has to survive a 3-agent adversarial panel before it reaches your report, so you are not wading through false positives
+→ The report gives you severity, CWE ID, and the exact file and line, and it can turn findings into patch files you review and apply yourself
+→ The model behind it has already found 500+ previously unknown high-severity vulnerabilities in open-source codebases
+You need a paid Claude Code plan (v2.1.154 or newer), and scans use your plan's tokens.
+Cursor and visual builders like Lovable also ship their own scanners that flag RLS misconfigurations, exposed secrets, vulnerable dependencies, and insecure patterns. Run whichever your stack has.
+Fix everything they flag. Do not ship with warnings. Do not tell yourself you will fix it later. Security debt compounds faster than feature debt.
+Treat this scan as the final gate before deploy. The manual prompts catch what the scanner misses. The scanner catches what you forget to prompt. Now that Anthropic has built a real one into Claude Code, there is no excuse to skip it.
+When to Use This Checklist
+This checklist is built for the 80% of builders shipping MVPs, SaaS, AI tools, or anything with user data.
+Use it when.
+→ You are shipping any app that collects user data, even an email
+→ You are running on Supabase, Firebase, or any backend with database access
+→ You are calling paid APIs (OpenAI, Anthropic, Stripe) from your codebase
+→ You are about to share your app publicly for the first time
+Phase it in slowly when.
+→ You are shipping internal tools used only by your own team behind auth
+→ You are working with a security team that already runs a more comprehensive audit
+→ You are in pre-MVP exploration mode and not collecting any user data yet
+For most vibe coders shipping anything real, every item on this list applies. Skipping any one of them is taking on liability you do not need.
+What to Watch Out For
+A few honest flags before you treat this as the final word.
+This checklist gets you to a confident baseline, not enterprise grade compliance. If you are storing health data, financial data, or anything regulated, you need a real security audit on top of this.
+AI prompts and scanners catch surface level issues. They do not catch business logic vulnerabilities, complex auth state bugs, or sophisticated injection attacks. Treat them as the floor, not the ceiling.
+Security debt compounds. The longer you wait, the more painful the cleanup. Run this before every launch, not once at the start.
+RLS policies are easy to write incorrectly. Test them by trying to access data as a different user. Just enabling RLS without testing is worse than not having it because it creates false confidence.
+What This Actually Means
+Here is my honest take.
+The vibe coding economy is maturing fast. A year ago you could ship anything and nobody cared. Now platforms are enforcing security policies. Users expect it. Investors are checking for it. The courts have drawn real lines this year, and the lawyers have started showing up.
+The 30 minutes you skip before launch will cost you 30 days of fire drills when something breaks. We have watched it play out on multiple inbound audits this year, where founders came to us asking for a rebuild after their first version started leaking data or burning cash.
+At the agency we treat this checklist like deployment. It is not optional. It is part of shipping. And with Anthropic now baking a security scanner directly into Claude Code, the gap between builders who run this and vibe coders who skip it is going to widen even faster.
+You do not need to be paranoid. You do not need enterprise grade security on day one. You just need this checklist.
+Run it before every launch. Make it part of your workflow. Treat it like testing or deployment.
+Because the apps that survive in 2026 are not just the ones that ship fast. They are the ones that ship fast and do not break when real users show up.
+2026 is going to be UNFAIR for builders who treat security as a workflow instead of an afterthought.
+TLDR
+→ Vibe coders are getting sued, fined, and drained. Most have not realized it yet.
+→ New in 2026: AI-only code cannot be copyrighted in the US, GPL contamination can force you to open-source your whole app, and the biggest AI copyright settlement in history ($1.5B) just got final court approval. Protect yourself first.
+→ Step 1. Protect yourself legally. Privacy policy, data location, no shady handling.
+→ Step 2. Lock down your database. RLS on Supabase, server-side validation on every form, error messages that do not leak data.
+→ Step 3. Test the failure cases on auth. Wrong password 5 times. Password reset for fake email. Verification link clicked twice. Signup with existing email.
+→ Step 4. Run the 4 AI security prompts. Security posture. OWASP. Data leaks. API key exposure.
+→ Lock down environment variables. Public keys can live in the frontend. Secret keys go in Supabase Edge Function Secrets or Vercel env vars. If exposed, regenerate immediately.
+→ Step 5. Protect your infrastructure. Rate limit every endpoint. Set hard caps on paid APIs. CAPTCHA on public forms. CORS restrictions on your API.
+→ Run a real scanner as your final gate. Anthropic's new Claude Security plugin runs a multi-agent scan right in your terminal. Beta, paid Claude Code plans.
+→ This takes 30 minutes. Run it before every launch.
+→ The gap between builders who run this and builders who skip it is going to widen fast in 2026.

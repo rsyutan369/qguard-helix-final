@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Activity, BadgeCheck, Check, Copy, Mic, MicOff, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { Activity, BadgeCheck, Check, Copy, Maximize2, Mic, MicOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
 import type { CallState } from "@/lib/call-state";
 import { qualityLabel, type CallQuality } from "@/lib/call-quality";
 import type { CallStatsSample } from "@/lib/call-stats";
@@ -83,12 +83,73 @@ export function InCallOverlay(props: {
 }) {
   const localRef = useRef<HTMLVideoElement>(null);
   const remoteRef = useRef<HTMLVideoElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const pipRef = useRef<HTMLDivElement>(null);
   const [showSas, setShowSas] = useState(false);
   const [sasAcknowledged, setSasAcknowledged] = useState(false);
   const [typedSas, setTypedSas] = useState("");
   const [sasCopied, setSasCopied] = useState(false);
+  // Whether the remote frame is cropped to fill (cover) or shown whole (contain).
+  // "contain" answers "I can't see the caller's entire picture".
+  const [remoteFit, setRemoteFit] = useState<"cover" | "contain">("cover");
+  // Draggable self-preview position (top-left, in px, relative to the video
+  // stage). Null until first measured, then defaulted to the top-right corner.
+  const [pipPos, setPipPos] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => { if (localRef.current) localRef.current.srcObject = props.localStream; }, [props.localStream]);
   useEffect(() => { if (remoteRef.current) remoteRef.current.srcObject = props.remoteStream; }, [props.remoteStream]);
+
+  // Keep the self-preview fully on-screen. Clamps a proposed position to the
+  // stage bounds using the live element sizes (so it works at any PiP size).
+  const clampPip = useCallback((x: number, y: number) => {
+    const stage = stageRef.current;
+    const pip = pipRef.current;
+    if (!stage || !pip) return { x, y };
+    const margin = 12;
+    const maxX = Math.max(margin, stage.clientWidth - pip.offsetWidth - margin);
+    const maxY = Math.max(margin, stage.clientHeight - pip.offsetHeight - margin);
+    return { x: Math.min(Math.max(x, margin), maxX), y: Math.min(Math.max(y, margin), maxY) };
+  }, []);
+
+  // Default to the top-right (clear of the bottom controls) and re-clamp on
+  // rotation / resize so the box never ends up off-screen — "automatic
+  // detection and adjustment of screen size".
+  useLayoutEffect(() => {
+    const place = () => {
+      const stage = stageRef.current;
+      const pip = pipRef.current;
+      if (!stage || !pip) return;
+      setPipPos((prev) => (prev
+        ? clampPip(prev.x, prev.y)
+        : clampPip(stage.clientWidth - pip.offsetWidth - 12, 12)));
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    if (stageRef.current) observer.observe(stageRef.current);
+    window.addEventListener("orientationchange", place);
+    return () => { observer.disconnect(); window.removeEventListener("orientationchange", place); };
+  }, [clampPip]);
+
+  const startPipDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const pip = pipRef.current;
+    const stage = stageRef.current;
+    if (!pip || !stage) return;
+    event.preventDefault();
+    const pipRect = pip.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    const grabX = event.clientX - pipRect.left;
+    const grabY = event.clientY - pipRect.top;
+    try { pip.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+    const onMove = (move: PointerEvent) => {
+      setPipPos(clampPip(move.clientX - stageRect.left - grabX, move.clientY - stageRect.top - grabY));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      try { pip.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [clampPip]);
   // Re-prompt verification for each new call (each call derives a fresh number).
   useEffect(() => { setSasAcknowledged(false); setTypedSas(""); setSasCopied(false); }, [props.state.safetyNumber]);
 
@@ -135,7 +196,10 @@ export function InCallOverlay(props: {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-ink-950">
-      <div className="flex items-center justify-between px-5 py-3 text-white">
+      <div
+        className="flex items-center justify-between gap-2 px-5 py-3 text-white"
+        style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}
+      >
         <div className="flex min-w-0 items-center gap-3">
           <UserAvatar userId={props.peerUserId} name={props.peerName} size={36} className="ring-2 ring-white/20" />
           <div className="min-w-0">
@@ -173,8 +237,8 @@ export function InCallOverlay(props: {
           </button>
         </div>
       </div>
-      <div className="relative flex-1">
-        <video ref={remoteRef} autoPlay playsInline className="h-full w-full bg-black object-cover" />
+      <div ref={stageRef} className="relative flex-1 overflow-hidden">
+        <video ref={remoteRef} autoPlay playsInline className={`h-full w-full bg-black ${remoteFit === "cover" ? "object-cover" : "object-contain"}`} />
         {!props.remoteStream && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950/60">
             <div className="relative">
@@ -185,7 +249,30 @@ export function InCallOverlay(props: {
             <div className="text-xs text-white/60">{phaseLabel}</div>
           </div>
         )}
-        <video ref={localRef} autoPlay playsInline muted className="absolute bottom-24 right-5 h-36 w-48 rounded-lg border border-white/30 object-cover" />
+        {/* Self-preview: draggable, responsive (scales with the viewport, never
+            larger than a small fixed cap), and clamped on-screen. Positioned
+            via state once measured; the CSS corner is only the pre-measure
+            fallback so it never flashes off-screen. */}
+        <div
+          ref={pipRef}
+          onPointerDown={startPipDrag}
+          style={pipPos ? { left: pipPos.x, top: pipPos.y, right: "auto", bottom: "auto" } : undefined}
+          className="group absolute right-3 top-3 z-20 aspect-[3/4] w-[26vw] min-w-[92px] max-w-[150px] cursor-grab touch-none select-none overflow-hidden rounded-xl border border-white/30 bg-black/70 shadow-soft transition-shadow active:cursor-grabbing active:shadow-lg"
+          role="button"
+          tabIndex={0}
+          aria-label="Your camera preview — drag to reposition"
+          title="Drag to reposition"
+        >
+          <video ref={localRef} autoPlay playsInline muted className="pointer-events-none h-full w-full object-cover" />
+          {!props.cameraEnabled && (
+            <div className="absolute inset-0 flex items-center justify-center bg-ink-950/80 text-white/70">
+              <VideoOff size={18} />
+            </div>
+          )}
+          <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center gap-1 bg-gradient-to-b from-black/55 to-transparent py-1 text-[9px] font-bold uppercase tracking-wide text-white/85 opacity-0 transition group-hover:opacity-100 group-active:opacity-100">
+            <Move size={10} /> You
+          </div>
+        </div>
         {sasVisible && props.state.safetyNumber && (
           <div className="absolute left-1/2 top-4 z-10 w-[min(92vw,420px)] -translate-x-1/2 rounded-xl border border-emerald-300/50 bg-white/95 p-4 text-center shadow-soft backdrop-blur">
             <div className="flex items-center justify-center gap-2 text-[11px] font-bold uppercase tracking-wide text-emerald-600">
@@ -259,10 +346,22 @@ export function InCallOverlay(props: {
         </div>
         {props.stats && props.state.phase === "connected" && <CallStatsPanel stats={props.stats} />}
       </div>
-      <div className="flex items-center justify-center gap-4 py-5">
-        <button type="button" onClick={props.onToggleMic} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.micEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>
-        <button type="button" onClick={props.onToggleCamera} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.cameraEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.cameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}</button>
-        <button type="button" onClick={props.onHangup} className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500 text-white hover:bg-rose-600"><PhoneOff size={20} /></button>
+      <div
+        className="flex items-center justify-center gap-4 py-5"
+        style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+      >
+        <button type="button" onClick={props.onToggleMic} title={props.micEnabled ? "Mute microphone" : "Unmute microphone"} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.micEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>
+        <button type="button" onClick={props.onToggleCamera} title={props.cameraEnabled ? "Turn camera off" : "Turn camera on"} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.cameraEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.cameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}</button>
+        <button
+          type="button"
+          onClick={() => setRemoteFit((fit) => (fit === "cover" ? "contain" : "cover"))}
+          title={remoteFit === "cover" ? "Fit whole picture (show the caller's full frame)" : "Fill screen (crop to fit)"}
+          aria-pressed={remoteFit === "contain"}
+          className={`flex h-12 w-12 items-center justify-center rounded-full ${remoteFit === "contain" ? "bg-cyan-500 text-white" : "bg-white/15 text-white"}`}
+        >
+          <Maximize2 size={20} />
+        </button>
+        <button type="button" onClick={props.onHangup} title="End call" className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500 text-white hover:bg-rose-600"><PhoneOff size={20} /></button>
       </div>
     </div>
   );

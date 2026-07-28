@@ -3405,7 +3405,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     <>
     <div
       ref={chatGridRef}
-      className="grid h-[calc(100vh-124px)] gap-0"
+      className="grid h-full min-h-0 gap-0"
       style={{ gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : chatGridTemplate(chatColumnWidths) }}
     >
       <section className={`shell-card overflow-hidden ${isMobile && mobilePane !== "list" ? "hidden" : ""}`}>
@@ -3575,10 +3575,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           setChatColumnWidths(reset);
           persistChatColumnWidths(reset);
         }}
-        className="group flex cursor-col-resize touch-none items-center justify-center"
+        className="group relative z-20 flex cursor-col-resize touch-none items-center justify-center"
         title="Drag to resize · double-click to reset"
       >
-        <div className="h-16 w-1 rounded-full bg-line transition group-hover:bg-violet-400 group-active:bg-violet-500" />
+        {/* Widened, finger-sized touch target that overhangs both panels;
+            pointerdown bubbles to the separator's handler. */}
+        <span className="absolute inset-y-0 -left-3 -right-3" aria-hidden="true" />
+        <div className="h-20 w-1.5 rounded-full bg-line transition group-hover:h-24 group-hover:w-2 group-hover:bg-violet-400 group-active:bg-violet-500" />
       </div>
 
       <section className={`shell-card flex min-h-0 flex-col overflow-hidden ${isMobile && mobilePane !== "thread" ? "hidden" : ""}`}>
@@ -3938,10 +3941,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           setChatColumnWidths(reset);
           persistChatColumnWidths(reset);
         }}
-        className="group flex cursor-col-resize touch-none items-center justify-center"
+        className="group relative z-20 flex cursor-col-resize touch-none items-center justify-center"
         title="Drag to resize · double-click to reset"
       >
-        <div className="h-16 w-1 rounded-full bg-line transition group-hover:bg-violet-400 group-active:bg-violet-500" />
+        <span className="absolute inset-y-0 -left-3 -right-3" aria-hidden="true" />
+        <div className="h-20 w-1.5 rounded-full bg-line transition group-hover:h-24 group-hover:w-2 group-hover:bg-violet-400 group-active:bg-violet-500" />
       </div>
 
       <section className={`shell-card flex min-h-0 flex-col overflow-hidden ${isMobile ? "hidden" : ""}`}>
