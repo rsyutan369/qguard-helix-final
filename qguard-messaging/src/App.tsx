@@ -14,6 +14,7 @@ import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { useSubscription } from "@/lib/use-subscription";
 import { useIsMobile } from "@/lib/use-mobile";
 import { useAppLock } from "@/lib/use-app-lock";
+import { upsertTrustedDevice, isDeviceRevoked } from "@/lib/trusted-devices";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useWorkspaceLock, type UnlockMethod, type WorkspaceScope } from "@/lib/use-workspace-lock";
@@ -191,6 +192,20 @@ function ProtectedMessagingApp() {
           throw new Error("Your session expired. Please sign in with your password.");
         }
       }
+      // Check remote revocation (Settings -> Security -> Revoke) even on cold
+      // launch, when the just-restored session hasn't yet propagated back into
+      // `auth.user` (the setSession above updates auth state asynchronously via
+      // onAuthStateChange) -- gate on the decrypted appLock device instead of
+      // `auth.user` so a stolen-then-revoked device is blocked immediately
+      // rather than only on its *next* unlock.
+      if (appLock.status?.device) {
+        const revoked = await isDeviceRevoked(supabase, result.session.userId, appLock.status.device.deviceId).catch(() => false);
+        if (revoked) {
+          setForcePasswordLogin(true);
+          throw new Error("This device was signed out remotely. Please sign in again.");
+        }
+        await upsertTrustedDevice(supabase, result.session.userId, appLock.status.device).catch(() => undefined);
+      }
     };
     return (
       <AppLockScreen
@@ -238,8 +253,10 @@ function ProtectedMessagingApp() {
         email={auth.user.email ?? null}
         onSubmit={async (pin, digits) => {
           if (!stored) throw new Error("No active session to secure.");
-          // TODO(Task 9): upsertTrustedDevice
-          await appLock.setup(digits, pin, stored, "Android Device", appVersion);
+          const status = await appLock.setup(digits, pin, stored, "Android Device", appVersion);
+          if (status.device && auth.user) {
+            await upsertTrustedDevice(supabase, auth.user.id, status.device).catch(() => undefined);
+          }
           setForcePasswordLogin(false);
         }}
       />
@@ -299,7 +316,7 @@ function ProtectedMessagingApp() {
         }
         settingsPage={
           <Suspense fallback={<ModuleFallback />}>
-            <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} />
+            <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} appLock={appLock} />
           </Suspense>
         }
       />
@@ -417,7 +434,7 @@ function ProtectedMessagingApp() {
         content = <SubscriptionPage userId={auth.user.id} email={auth.user.email ?? null} accessToken={auth.session.access_token ?? null} state={subscriptionState} mode="manage" />;
         break;
       case "settings":
-        content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} />;
+        content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} appLock={appLock} verifyAccountPassword={verifyAccountPassword} />;
         break;
       default:
         content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => navigate(next as Page)} />;

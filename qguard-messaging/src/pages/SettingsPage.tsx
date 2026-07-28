@@ -12,6 +12,7 @@ import {
   QrCode,
   RefreshCcw,
   ShieldCheck,
+  Smartphone,
   Sun,
   UserRound,
 } from "lucide-react";
@@ -23,7 +24,9 @@ import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
+import { listTrustedDevices, revokeTrustedDevice, type TrustedDeviceRow } from "@/lib/trusted-devices";
 import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
+import { useAppLock } from "@/lib/use-app-lock";
 import type { ThemeMode } from "@/lib/use-theme";
 import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
 
@@ -118,6 +121,11 @@ interface SettingsPageProps {
   onSetInactivityMinutes: (minutes: number) => void;
   workspaceStatus: WorkspaceStatus | null;
   onLockWorkspaces: () => void | Promise<void>;
+  // Android app-entry PIN (Task 6/8/9). Optional because desktop builds never
+  // mount the Android app-lock gate, and the paywall-mode SettingsPage render
+  // site in App.tsx has no `verifyAccountPassword` in scope.
+  appLock?: ReturnType<typeof useAppLock>;
+  verifyAccountPassword?: (password: string) => Promise<void>;
 }
 
 interface MfaEnrollment {
@@ -201,7 +209,7 @@ async function resizeAvatar(file: File): Promise<Blob> {
   }
 }
 
-export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh, inactivityMinutes, onSetInactivityMinutes, workspaceStatus, onLockWorkspaces }: SettingsPageProps) {
+export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh, inactivityMinutes, onSetInactivityMinutes, workspaceStatus, onLockWorkspaces, appLock, verifyAccountPassword }: SettingsPageProps) {
   const auth = useAuth();
   const user = auth.user;
   const [displayName, setDisplayName] = useState(profile?.name ?? "");
@@ -751,6 +759,10 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
         </div>
       </section>
 
+      {appLock && user?.id && (
+        <ApplicationPinSection appLock={appLock} verifyAccountPassword={verifyAccountPassword} userId={user.id} />
+      )}
+
       <CallDeviceProtectionCard />
 
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[1fr_420px]">
@@ -915,5 +927,291 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
         </aside>
       </div>
     </div>
+  );
+}
+
+/**
+ * Android-only "Application PIN" security section: change/switch the app-entry
+ * PIN, remove it (falling back to account password on next launch), tune the
+ * auto-lock timeout, and manage/revoke the trusted-device registry (migration
+ * 031). Every control is an inline, styled form -- no window.prompt/alert,
+ * since native browser dialogs render unreliably inside the Android WebView.
+ * `verifyAccountPassword` is optional (the paywall-mode SettingsPage render
+ * site in App.tsx has none in scope), so the Remove PIN control simply hides
+ * when it's absent rather than allowing an unverified removal.
+ */
+function ApplicationPinSection({
+  appLock,
+  verifyAccountPassword,
+  userId,
+}: {
+  appLock: ReturnType<typeof useAppLock>;
+  verifyAccountPassword?: (password: string) => Promise<void>;
+  userId: string;
+}) {
+  const [devices, setDevices] = useState<TrustedDeviceRow[]>([]);
+  const [devicesBusy, setDevicesBusy] = useState(false);
+
+  const [showChangeForm, setShowChangeForm] = useState(false);
+  const [oldPin, setOldPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [newDigits, setNewDigits] = useState<4 | 6>(6);
+  const [changeBusy, setChangeBusy] = useState(false);
+  const [changeMsg, setChangeMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+
+  const [showRemoveForm, setShowRemoveForm] = useState(false);
+  const [removePassword, setRemovePassword] = useState("");
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeMsg, setRemoveMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+
+  const refreshDevices = useCallback(async () => {
+    setDevices(await listTrustedDevices(supabase, userId));
+  }, [userId]);
+
+  useEffect(() => {
+    void refreshDevices();
+    // Re-pull whenever this device's own last-login timestamp advances (e.g.
+    // after an unlock upserts it), so a freshly-registered device shows up
+    // without requiring a manual refresh.
+  }, [refreshDevices, appLock.status?.device?.lastLoginAt]);
+
+  if (!appLock.enabled) return null;
+  const status = appLock.status;
+
+  if (appLock.loading || !status) {
+    return (
+      <section className="shell-card p-5">
+        <div className="flex items-center gap-2 text-sm font-bold text-ink-950"><LockKeyhole size={18} /> Application PIN</div>
+        <p className="mt-2 text-xs text-ink-500">Checking device lock status…</p>
+      </section>
+    );
+  }
+
+  const submitChangePin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (oldPin.length === 0 || newPin.length !== newDigits) return;
+    setChangeBusy(true);
+    setChangeMsg(null);
+    try {
+      await appLock.changePin(oldPin, newPin, newDigits);
+      setChangeMsg({ tone: "ok", text: "PIN updated." });
+      setOldPin("");
+      setNewPin("");
+      setShowChangeForm(false);
+    } catch (err) {
+      setChangeMsg({ tone: "error", text: err instanceof Error ? err.message : "Could not change PIN." });
+    } finally {
+      setChangeBusy(false);
+    }
+  };
+
+  const submitRemovePin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!verifyAccountPassword || removePassword.length === 0) return;
+    setRemoveBusy(true);
+    setRemoveMsg(null);
+    try {
+      await verifyAccountPassword(removePassword);
+      await appLock.remove();
+      setRemoveMsg({ tone: "ok", text: "App PIN removed. You'll sign in with your password next launch." });
+      setRemovePassword("");
+      setShowRemoveForm(false);
+    } catch (err) {
+      setRemoveMsg({ tone: "error", text: err instanceof Error ? err.message : "Could not remove PIN." });
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
+
+  const revoke = async (deviceId: string) => {
+    setDevicesBusy(true);
+    try {
+      await revokeTrustedDevice(supabase, userId, deviceId);
+      await refreshDevices();
+    } finally {
+      setDevicesBusy(false);
+    }
+  };
+
+  return (
+    <section className="shell-card p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-bold text-ink-950"><LockKeyhole size={18} /> Application PIN</div>
+        <span className={`status-pill ${status.configured ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"}`}>
+          {status.configured ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
+          {status.configured ? `${status.digits}-digit PIN active` : "Not configured"}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-ink-600">
+        Banking-grade unlock for QGuard Messaging on this device, separate from your account password.
+      </p>
+
+      {!status.configured && (
+        <p className="mt-3 text-xs text-ink-500">No app PIN is configured on this device yet.</p>
+      )}
+
+      {status.configured && (
+        <>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowChangeForm((v) => !v);
+                setShowRemoveForm(false);
+                setChangeMsg(null);
+              }}
+              className="rounded-lg border border-line bg-white px-3 py-2 text-xs font-bold text-ink-700 hover:bg-canvas"
+            >
+              {showChangeForm ? "Cancel" : "Change / switch 4↔6 digits"}
+            </button>
+            {verifyAccountPassword && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRemoveForm((v) => !v);
+                  setShowChangeForm(false);
+                  setRemoveMsg(null);
+                }}
+                className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50"
+              >
+                {showRemoveForm ? "Cancel" : "Remove PIN"}
+              </button>
+            )}
+          </div>
+
+          {showChangeForm && (
+            <form onSubmit={submitChangePin} className="mt-4 grid gap-3 rounded-lg border border-line bg-canvas p-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs font-semibold text-ink-700">
+                  Current PIN
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={12}
+                    value={oldPin}
+                    onChange={(event) => setOldPin(event.target.value.replace(/\D/g, "").slice(0, 12))}
+                    className="mt-1.5 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                  />
+                </label>
+                <label className="text-xs font-semibold text-ink-700">
+                  New {newDigits}-digit PIN
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={newDigits}
+                    value={newPin}
+                    onChange={(event) => setNewPin(event.target.value.replace(/\D/g, "").slice(0, newDigits))}
+                    className="mt-1.5 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                  />
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-ink-700">New PIN length</span>
+                <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-white p-1" role="radiogroup" aria-label="New PIN length">
+                  {([4, 6] as const).map((digitCount) => (
+                    <button
+                      key={digitCount}
+                      type="button"
+                      role="radio"
+                      aria-checked={newDigits === digitCount}
+                      onClick={() => { setNewDigits(digitCount); setNewPin(""); }}
+                      className={`rounded-md px-3 py-1 text-xs font-bold transition ${newDigits === digitCount ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-canvas"}`}
+                    >
+                      {digitCount}-digit
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {changeMsg && (
+                <p className={`text-xs font-semibold ${changeMsg.tone === "ok" ? "text-emerald-600" : "text-rose-600"}`}>{changeMsg.text}</p>
+              )}
+              <button
+                type="submit"
+                disabled={changeBusy || oldPin.length === 0 || newPin.length !== newDigits}
+                className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {changeBusy ? "Updating…" : "Update PIN"}
+              </button>
+            </form>
+          )}
+
+          {showRemoveForm && verifyAccountPassword && (
+            <form onSubmit={submitRemovePin} className="mt-4 grid gap-3 rounded-lg border border-rose-200 bg-rose-50 p-4">
+              <p className="text-xs font-semibold text-rose-700">
+                Removing the app PIN means you'll sign in with your account password every time you open QGuard Messaging on this device.
+              </p>
+              <label className="text-xs font-semibold text-rose-700">
+                Confirm your account password
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={removePassword}
+                  onChange={(event) => setRemovePassword(event.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm outline-none focus:border-rose-300"
+                />
+              </label>
+              {removeMsg && (
+                <p className={`text-xs font-semibold ${removeMsg.tone === "ok" ? "text-emerald-600" : "text-rose-600"}`}>{removeMsg.text}</p>
+              )}
+              <button
+                type="submit"
+                disabled={removeBusy || removePassword.length === 0}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {removeBusy ? "Removing…" : "Remove PIN"}
+              </button>
+            </form>
+          )}
+
+          <div className="mt-5">
+            <label className="text-xs font-semibold text-ink-700">
+              Auto-lock after
+              <select
+                value={status.inactivityMinutes}
+                onChange={(event) => void appLock.setInactivity(Number(event.currentTarget.value))}
+                className="ml-2 rounded-lg border border-line bg-white px-2 py-1 text-xs outline-none focus:border-cyan-300"
+              >
+                {[1, 5, 10, 15, 30, 60].map((minutes) => (
+                  <option key={minutes} value={minutes}>{minutes} minute{minutes > 1 ? "s" : ""}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-5">
+            <h4 className="flex items-center gap-2 text-xs font-bold text-ink-950"><Smartphone size={14} /> Trusted devices</h4>
+            <ul className="mt-2 space-y-2">
+              {devices.map((device) => (
+                <li key={device.id} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-white px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-semibold text-ink-950">
+                      {device.device_name ?? "Device"}{" "}
+                      {device.revoked_at && <span className="text-rose-500">(revoked)</span>}
+                    </div>
+                    <div className="truncate text-[11px] text-ink-500">
+                      {[device.platform, device.app_version ? `v${device.app_version}` : null].filter(Boolean).join(" · ")}
+                      {device.last_login_at ? ` · last login ${new Date(device.last_login_at).toLocaleString()}` : ""}
+                    </div>
+                  </div>
+                  {!device.revoked_at && (
+                    <button
+                      type="button"
+                      disabled={devicesBusy}
+                      onClick={() => void revoke(device.device_id)}
+                      className="shrink-0 text-[11px] font-bold text-rose-600 hover:underline disabled:opacity-50"
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </li>
+              ))}
+              {devices.length === 0 && <li className="text-[11px] text-ink-500">No devices registered yet.</li>}
+            </ul>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
