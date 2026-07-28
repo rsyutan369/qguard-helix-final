@@ -234,13 +234,30 @@ fn build_device(
     })
 }
 
+/// The user whose app-lock applies on THIS device. Prefers the live auth
+/// session; on a cold launch (no session restored yet) it falls back to the
+/// persisted enrollment pointer, so the PIN screen can be shown and the stored
+/// session restored WITHOUT asking for email/password again.
+fn resolve_applock_user(state: &AppState) -> Option<String> {
+    if let Ok(id) = state.user_id() {
+        return Some(id);
+    }
+    state.load_applock_user_pointer()
+}
+
 #[tauri::command]
 pub fn applock_status(state: State<'_, AppState>) -> Result<AppLockStatus> {
-    let user_id = match state.user_id() {
-        Ok(id) => id,
-        Err(_) => return Ok(status_from(None, false)),
+    let user_id = match resolve_applock_user(&state) {
+        Some(id) => id,
+        None => return Ok(status_from(None, false)),
     };
     let record = state.load_applock(&user_id)?;
+    // Self-heal: if a session is live and the user is enrolled but the device
+    // pointer is missing (e.g. enrolled on a build before the pointer existed),
+    // write it now so the NEXT cold launch shows the PIN, not the login form.
+    if record.is_some() && state.user_id().is_ok() {
+        let _ = state.save_applock_user_pointer(&user_id);
+    }
     Ok(status_from(record.as_ref(), state.is_applock_unlocked()))
 }
 
@@ -331,7 +348,10 @@ pub async fn applock_unlock(state: State<'_, AppState>, mut pin: String) -> Resu
 }
 
 async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<AppLockUnlockResult> {
-    let user_id = state.user_id()?;
+    // Cold launch has no live session, so resolve the enrolled user from the
+    // device pointer — unlocking is exactly what restores the session.
+    let user_id = resolve_applock_user(state)
+        .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     let mut record = state
         .load_applock(&user_id)?
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;

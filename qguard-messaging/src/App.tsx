@@ -169,6 +169,17 @@ function ProtectedMessagingApp() {
     );
   }
 
+  // On Android, wait for the app-lock status to load before deciding what to
+  // render, so a cold launch never briefly flashes the email/password login
+  // before the PIN gate appears. (The PIN gate below restores the session.)
+  if (android && appLock.loading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-canvas">
+        <div className="h-24 w-80 animate-pulse rounded-lg border border-line bg-white" />
+      </div>
+    );
+  }
+
   // ---- Android app-entry PIN gate (banking-grade) ----
   if (android && !appLock.loading && appLock.status?.configured && appLock.status.locked && !forcePasswordLogin) {
     // No live session yet (cold launch) -> unlocking restores it; else the app

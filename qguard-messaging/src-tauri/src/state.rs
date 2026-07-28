@@ -827,6 +827,31 @@ impl AppState {
             .join(format!("{safe_user_id}.applock.enc"))
     }
 
+    fn applock_pointer_path(&self) -> PathBuf {
+        self.data_dir.join("keys").join("applock.current")
+    }
+
+    /// Persist which user's app-lock is enrolled on this device, so the PIN
+    /// screen can be shown on a COLD LAUNCH before any Supabase session exists.
+    /// The applock config file is keyed by user id; without this pointer the
+    /// app can't tell whose PIN to prompt for and falls back to full email/
+    /// password login. The value is an opaque account UUID — not a secret.
+    pub fn save_applock_user_pointer(&self, user_id: &str) -> Result<()> {
+        std::fs::write(self.applock_pointer_path(), user_id.as_bytes())
+            .map_err(|e| QGuardError::Storage(format!("write applock pointer: {e}")))
+    }
+
+    pub fn load_applock_user_pointer(&self) -> Option<String> {
+        std::fs::read_to_string(self.applock_pointer_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn clear_applock_user_pointer(&self) {
+        let _ = std::fs::remove_file(self.applock_pointer_path());
+    }
+
     pub fn save_applock(&self, user_id: &str, material: &PersistedAppLock) -> Result<()> {
         let mut encoded = serde_json::to_vec(material)
             .map_err(|e| QGuardError::Storage(format!("encode applock: {e}")))?;
@@ -842,6 +867,9 @@ impl AppState {
             .map_err(|e| QGuardError::Storage(format!("encode encrypted applock: {e}")))?;
         std::fs::write(self.applock_path(user_id), &serialized)
             .map_err(|e| QGuardError::Storage(format!("write applock: {e}")))?;
+        // Point this device at the enrolled user so a cold-launch PIN prompt
+        // can find the config before any session is restored.
+        self.save_applock_user_pointer(user_id)?;
         Ok(())
     }
 
@@ -873,6 +901,7 @@ impl AppState {
                 .map_err(|e| QGuardError::Storage(format!("delete applock: {e}")))?;
         }
         self.clear_applock_sek();
+        self.clear_applock_user_pointer();
         Ok(())
     }
 

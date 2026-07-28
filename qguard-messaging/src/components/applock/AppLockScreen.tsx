@@ -30,7 +30,7 @@ function useLockoutCountdown(lockoutUntil?: string | null): number {
 }
 
 export function AppLockScreen(props: AppLockScreenProps) {
-  const { mode, email, attemptsRemaining, lockoutUntil, rootWarning, onSubmit, onUsePassword, busy } = props;
+  const { mode, attemptsRemaining, lockoutUntil, rootWarning, onSubmit, onUsePassword, busy } = props;
   const [chosenDigits, setChosenDigits] = useState<number>(props.digits ?? 6);
   const [stage, setStage] = useState<"choose" | "enter" | "confirm">(mode === "setup" ? "choose" : "enter");
   const [entry, setEntry] = useState("");
@@ -115,10 +115,10 @@ export function AppLockScreen(props: AppLockScreenProps) {
   }, [mode, stage, digits]);
 
   const subheading = useMemo(() => {
-    if (mode === "unlock") return email ? `Unlock QGuard Messaging — ${email}` : "Unlock QGuard Messaging";
+    if (mode === "unlock") return "Unlock QGuard Messaging";
     if (stage === "choose") return "You'll use this PIN to unlock the app on this device.";
     return "";
-  }, [mode, stage, email]);
+  }, [mode, stage]);
 
   return (
     <div className="flex min-h-screen w-screen flex-col items-center justify-center bg-canvas px-6 py-10">
