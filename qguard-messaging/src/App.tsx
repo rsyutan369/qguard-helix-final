@@ -8,15 +8,17 @@ import { CallProvider } from "@/components/call/CallProvider";
 import { PaywallGate } from "@/components/PaywallGate";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
+import { AppLockScreen } from "@/components/applock/AppLockScreen";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { useSubscription } from "@/lib/use-subscription";
 import { useIsMobile } from "@/lib/use-mobile";
+import { useAppLock } from "@/lib/use-app-lock";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useWorkspaceLock, type UnlockMethod, type WorkspaceScope } from "@/lib/use-workspace-lock";
-import { createEphemeralSupabaseClient } from "@/lib/supabase";
-import { safeInvoke } from "@/lib/tauri";
+import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
+import { isAndroidRuntime, safeInvoke } from "@/lib/tauri";
 import { useTheme } from "@/lib/use-theme";
 import LoginPage from "@/pages/LoginPage";
 import type { Page } from "@/lib/types";
@@ -75,6 +77,13 @@ function ModuleFallback() {
 
 function ProtectedMessagingApp() {
   const auth = useAuth();
+  // Android app-entry PIN gate (banking-grade). appLock.status is null until
+  // the first `applock_status` round-trip resolves; `android` is stable per
+  // runtime so every desktop build takes none of the gate branches below.
+  const android = isAndroidRuntime();
+  const appLock = useAppLock(auth.user?.id ?? null);
+  const [forcePasswordLogin, setForcePasswordLogin] = useState(false);
+  const appVersion = (window as unknown as { __APP_VERSION__?: string }).__APP_VERSION__ ?? "0.0.0";
   const isMobile = useIsMobile();
   const [showMobileOnboarding, setShowMobileOnboarding] = useState(isMobileOnboardingPending);
   const { theme, toggleTheme } = useTheme();
@@ -159,6 +168,45 @@ function ProtectedMessagingApp() {
     );
   }
 
+  // ---- Android app-entry PIN gate (banking-grade) ----
+  if (android && !appLock.loading && appLock.status?.configured && appLock.status.locked && !forcePasswordLogin) {
+    // No live session yet (cold launch) -> unlocking restores it; else the app
+    // is merely re-locked (background/inactivity) and unlock just clears the flag.
+    const restoreFromUnlock = async (pin: string) => {
+      const result = await appLock.unlock(pin);
+      // 5th wrong attempt wiped the store -> fall back to full auth.
+      if (result.status.requiresFullAuth || !result.session) {
+        setForcePasswordLogin(true);
+        await appLock.refresh();
+        return;
+      }
+      if (!auth.user || !auth.session) {
+        const { error } = await supabase.auth.setSession({
+          access_token: result.session.accessToken,
+          refresh_token: result.session.refreshToken,
+        });
+        if (error) {
+          // Refresh token expired -> fall back to full auth, keep existing PIN.
+          setForcePasswordLogin(true);
+          throw new Error("Your session expired. Please sign in with your password.");
+        }
+      }
+    };
+    return (
+      <AppLockScreen
+        mode="unlock"
+        email={auth.user?.email ?? null}
+        digits={appLock.status.digits}
+        attemptsRemaining={appLock.status.attemptsRemaining}
+        lockoutUntil={appLock.status.lockoutUntil}
+        onSubmit={async (pin) => {
+          await restoreFromUnlock(pin);
+        }}
+        onUsePassword={() => setForcePasswordLogin(true)}
+      />
+    );
+  }
+
   if (!auth.user || !auth.session) {
     // First launch on a phone: branded splash + quantum-security tour before login.
     if (isMobile && showMobileOnboarding) {
@@ -177,6 +225,43 @@ function ProtectedMessagingApp() {
         onResendVerification={auth.resendVerification}
         onResetPassword={auth.resetPassword}
         onClearError={auth.clearError}
+      />
+    );
+  }
+
+  // First login on Android with no PIN yet -> force PIN creation before the app.
+  if (android && !appLock.loading && auth.user && auth.session && !appLock.status?.configured) {
+    const stored = auth.currentStoredSession();
+    return (
+      <AppLockScreen
+        mode="setup"
+        email={auth.user.email ?? null}
+        onSubmit={async (pin, digits) => {
+          if (!stored) throw new Error("No active session to secure.");
+          // TODO(Task 9): upsertTrustedDevice
+          await appLock.setup(digits, pin, stored, "Android Device", appVersion);
+          setForcePasswordLogin(false);
+        }}
+      />
+    );
+  }
+
+  // Forced-password re-login (5 wrong PIN attempts, or user chose "use
+  // password") re-authenticated the account -> re-confirm the existing PIN so
+  // it can re-wrap the freshly restored session, instead of silently trusting
+  // a stale local PIN against a session it never wrapped.
+  if (android && forcePasswordLogin && auth.user && auth.session && appLock.status?.configured) {
+    const stored = auth.currentStoredSession();
+    return (
+      <AppLockScreen
+        mode="setup"
+        email={auth.user.email ?? null}
+        digits={appLock.status.digits}
+        onSubmit={async (pin, digits) => {
+          if (!stored) throw new Error("No active session to secure.");
+          await appLock.reset(digits, pin, stored, appLock.status?.device?.deviceName ?? "Android Device", appVersion);
+          setForcePasswordLogin(false);
+        }}
       />
     );
   }

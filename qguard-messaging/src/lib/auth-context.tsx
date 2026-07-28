@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Session, User } from "@supabase/supabase-js";
 import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
 import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase } from "@/lib/supabase";
-import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
+import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
+import type { StoredSession } from "@/lib/use-app-lock";
 
 interface AuthContextValue {
   user: User | null;
@@ -19,6 +20,7 @@ interface AuthContextValue {
   resetPassword: (email: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   clearError: () => void;
+  currentStoredSession: () => StoredSession | null;
 }
 
 interface PendingMfaChallenge {
@@ -79,6 +81,20 @@ function getEmailRedirectTo(): string | undefined {
   return origin;
 }
 
+// Projects a live Supabase session into the compact shape the Android app-lock
+// vault persists (Task 6/7). Missing tokens mean the session cannot be
+// restored later, so callers must treat a null return as "nothing to store".
+function toStoredSession(session: Session | null): StoredSession | null {
+  if (!session?.access_token || !session.refresh_token) return null;
+  return {
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+    expiresAt: session.expires_at ?? 0,
+    userId: session.user.id,
+    email: session.user.email ?? "",
+  };
+}
+
 const missingProviderAuth: AuthContextValue = {
   user: null,
   session: null,
@@ -94,6 +110,7 @@ const missingProviderAuth: AuthContextValue = {
   resetPassword: async () => false,
   signOut: async () => undefined,
   clearError: () => undefined,
+  currentStoredSession: () => null,
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -285,6 +302,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (nextSession.access_token === activeSessionTokenRef.current) {
         setSession(nextSession);
         setUser(nextSession.user);
+        if (isAndroidRuntime()) {
+          const stored = toStoredSession(nextSession);
+          if (stored) void safeInvoke("applock_update_session", { session: stored }, null).catch(() => undefined);
+        }
         setLoading(false);
         return;
       }
@@ -292,6 +313,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(true);
       const processSession = () => {
         completeAuthenticatedSession(nextSession)
+          .then((completed) => {
+            if (completed && isAndroidRuntime()) {
+              const stored = toStoredSession(nextSession);
+              if (stored) void safeInvoke("applock_update_session", { session: stored }, null).catch(() => undefined);
+            }
+          })
           .catch((err) => {
             activeSessionTokenRef.current = null;
             setSession(null);
@@ -517,6 +544,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearChatPlaintextCaches();
     await supabase.auth.signOut();
     await safeInvoke("auth_logout", userId ? { userId } : {}, false);
+    if (isAndroidRuntime()) {
+      await safeInvoke("applock_wipe", userId ? { userId } : {}, null).catch(() => undefined);
+    }
     activeSessionTokenRef.current = null;
     setUser(null);
     setSession(null);
@@ -541,6 +571,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError(null);
       setNotice(null);
     },
+    currentStoredSession: () => toStoredSession(session),
   }), [cancelMfaSignIn, error, loading, notice, pendingMfa, resendVerification, resetPassword, session, signIn, signOut, signUp, user, verifyMfaSignIn]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
