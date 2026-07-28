@@ -144,10 +144,15 @@ export function useAppLock(userId: string | null) {
       window.addEventListener(e, onActivity, { passive: true }),
     );
     resetInactivity();
+    // Belt-and-suspenders: expose a global the native Android layer can call
+    // from onStop() when the app is backgrounded (best-effort backstop; the
+    // visibilitychange listener above is the primary trigger).
+    (window as unknown as { __qguardAppLock?: () => void }).__qguardAppLock = () => lockNow();
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       ["mousedown", "keydown", "touchstart", "wheel"].forEach((e) => window.removeEventListener(e, onActivity));
       if (inactivityTimerRef.current !== undefined) window.clearTimeout(inactivityTimerRef.current);
+      delete (window as unknown as { __qguardAppLock?: () => void }).__qguardAppLock;
     };
   }, [enabled, unlocked, inactivityMinutes, lock]);
 

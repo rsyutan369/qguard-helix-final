@@ -40,6 +40,26 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  override fun onStop() {
+    super.onStop()
+    // Belt-and-suspenders app-entry lock: when the app is backgrounded, ask the
+    // web layer to lock immediately (the JS visibilitychange listener is the
+    // primary trigger). NOTE: FLAG_SECURE is intentionally NOT set — users must
+    // be able to take screenshots.
+    runCatching {
+      runOnUiThread {
+        // Tauri exposes the WebView via the generated activity; evaluate a tiny
+        // hook the frontend installs on window. Guard for null during teardown.
+        val hook = "window.__qguardAppLock && window.__qguardAppLock()"
+        this.javaClass.getMethod("getWebView")?.let { m ->
+          val wv = m.invoke(this)
+          wv?.javaClass?.getMethod("evaluateJavascript", String::class.java, android.webkit.ValueCallback::class.java)
+            ?.invoke(wv, hook, null)
+        }
+      }
+    }
+  }
+
   private companion object {
     const val PERMISSION_REQUEST_CODE = 1001
   }
