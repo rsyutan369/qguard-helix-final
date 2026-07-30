@@ -108,9 +108,14 @@ export function scoreToGrade(score: number): GradeRow {
 
 /**
  * The gauge's colored arc, ascending 0→100 — literally `SCORE_GRADE_TABLE`
- * re-ordered, not a separate hand-picked ramp. Whatever color the arc shows
- * under the pointer at a given score IS the color `scoreToGrade` assigns that
- * score; the two can never disagree because they read the same table.
+ * re-ordered, not a separate hand-picked ramp.
+ *
+ * SEMANTICS: each band is half-open `[from, to)` so the drawn segments abut with
+ * no hairline gap; only the final band includes its upper bound. Do NOT look a
+ * score up in this array with an inclusive `score <= to` test — at every
+ * boundary that returns the band *below* (score 70 would resolve to C rather
+ * than C+). Use `arcBandColorFor()` instead, which is defined as the grade's own
+ * colour and therefore cannot disagree with `scoreToGrade`.
  */
 export const GAUGE_ARC_BANDS: Array<{ from: number; to: number; color: string }> = [...SCORE_GRADE_TABLE]
   .sort((a, b) => a.min - b.min)
@@ -119,6 +124,17 @@ export const GAUGE_ARC_BANDS: Array<{ from: number; to: number; color: string }>
     to: index === ascending.length - 1 ? 100 : ascending[index + 1].min,
     color: row.color,
   }))
+
+/**
+ * Colour of the arc segment a given score falls in.
+ *
+ * Defined as the grade's own colour rather than by searching the band array, so
+ * "the colour under the pointer" and "the colour of the grade" are the same
+ * value by construction and cannot drift apart.
+ */
+export function arcBandColorFor(score: number): string {
+  return scoreToGrade(score).color
+}
 
 /**
  * The six ratings a grade can carry, each with the color of its *best* (lowest

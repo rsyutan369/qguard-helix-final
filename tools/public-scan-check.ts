@@ -21,6 +21,8 @@ import {
 import {
   GAUGE_ARC_BANDS,
   RATING_TIERS,
+  RISK_ORDER,
+  arcBandColorFor,
   SCORE_CATEGORY_DEFS,
   SCORE_GRADE_TABLE,
   scoreToGrade,
@@ -92,6 +94,70 @@ async function main(): Promise<void> {
   check(
     'score component weights sum to 100',
     report.scoreComponents.reduce((sum, component) => sum + component.weight, 0) === 100,
+  )
+
+  // ── Published grading reference ↔ live report ─────────────────────────────
+  // A user comparing the report against the "How the Grading Works" document
+  // must never find a discrepancy. These assert the live report against the
+  // same tables that document is generated from.
+  check(
+    'the live decomposition is exactly the published 12-category model',
+    report.scoreComponents.length === SCORE_CATEGORY_DEFS.length &&
+      SCORE_CATEGORY_DEFS.every((def, index) => {
+        const live = report.scoreComponents[index]
+        return live.key === def.key && live.label === def.label && live.weight === def.weight
+      }),
+    `${report.scoreComponents.length} categories, order + weights match`,
+  )
+  check(
+    'the grade matches the published score-to-grade mapping for its score',
+    !executive.gradeable || executive.grade === scoreToGrade(executive.encryptionScore).grade,
+    `${executive.encryptionScore} → ${scoreToGrade(executive.encryptionScore).grade} (report: ${executive.grade})`,
+  )
+  check(
+    'the rating label matches the mapping row for that grade',
+    !executive.gradeable || executive.gradeLabel === scoreToGrade(executive.encryptionScore).rating,
+    `${executive.gradeLabel} vs ${scoreToGrade(executive.encryptionScore).rating}`,
+  )
+  check(
+    'the risk level matches the mapping row, or is escalated by a real finding',
+    !executive.gradeable ||
+      RISK_ORDER.indexOf(executive.businessRisk) >=
+        RISK_ORDER.indexOf(scoreToGrade(executive.encryptionScore).riskLevel),
+    `${executive.businessRisk} vs table ${scoreToGrade(executive.encryptionScore).riskLevel}`,
+  )
+  check(
+    'every score-to-grade band is contiguous and covers 0-100',
+    SCORE_GRADE_TABLE.every((row) => row.min <= row.max) &&
+      Math.min(...SCORE_GRADE_TABLE.map((row) => row.min)) === 0 &&
+      Math.max(...SCORE_GRADE_TABLE.map((row) => row.max)) === 100 &&
+      Array.from({ length: 101 }, (_, score) => score).every((score) =>
+        SCORE_GRADE_TABLE.some((row) => score >= row.min && score <= row.max),
+      ),
+  )
+  check(
+    'the gauge arc colour under the pointer is the grade colour for that score',
+    // Bands are half-open [from, to) except the last — an inclusive test would
+    // resolve every boundary score to the band below.
+    (() => {
+      const score = executive.encryptionScore
+      const band = GAUGE_ARC_BANDS.find(
+        (entry, index) =>
+          score >= entry.from && (index === GAUGE_ARC_BANDS.length - 1 ? score <= entry.to : score < entry.to),
+      )
+      return band?.color === arcBandColorFor(score) && band?.color === scoreToGrade(score).color
+    })(),
+    `score ${executive.encryptionScore} → ${arcBandColorFor(executive.encryptionScore)}`,
+  )
+  check(
+    'every score 0-100 resolves to exactly one arc band, matching its grade',
+    Array.from({ length: 101 }, (_, score) => score).every((score) => {
+      const matches = GAUGE_ARC_BANDS.filter(
+        (entry, index) =>
+          score >= entry.from && (index === GAUGE_ARC_BANDS.length - 1 ? score <= entry.to : score < entry.to),
+      )
+      return matches.length === 1 && matches[0].color === scoreToGrade(score).color
+    }),
   )
 
   // 3 — encryption score (the graded number) is reproducible from the
@@ -566,6 +632,41 @@ async function main(): Promise<void> {
   check(
     'unobservable TLS properties are null, never guessed',
     bundle.tls.data.compression === null && bundle.tls.data.secureRenegotiation === null,
+  )
+  // Hybrid ML-KEM groups exist only in the TLS 1.3 key_share. Claiming one on an
+  // endpoint that cannot negotiate TLS 1.3 would credit post-quantum readiness to
+  // a server that has none — the most damaging false positive available here.
+  check(
+    'hybrid PQ is never claimed without TLS 1.3',
+    bundle.tls.data.hybridGroups.length === 0 ||
+      bundle.tls.data.supportedProtocols.includes('TLSv1.3'),
+    `hybrid=[${bundle.tls.data.hybridGroups.join(', ')}] protocols=[${bundle.tls.data.supportedProtocols.join(', ')}]`,
+  )
+  check(
+    'a TLS 1.2-only endpoint reports hybrid PQ as unsupported, not untested',
+    !bundle.tls.ok ||
+      bundle.tls.data.supportedProtocols.includes('TLSv1.3') ||
+      (bundle.tls.data.hybridProbed === false &&
+        report.findings.find((finding) => finding.id === 'pq-key-agreement')?.status === 'Not Supported'),
+  )
+  check(
+    'a group the server ignored is recorded inconclusive, not accepted',
+    bundle.tls.data.inconclusiveGroups.every(
+      (group) =>
+        !bundle.tls.data.hybridGroups.includes(group) &&
+        !bundle.tls.data.classicalGroups.includes(group),
+    ),
+    bundle.tls.data.inconclusiveGroups.length
+      ? `inconclusive: ${bundle.tls.data.inconclusiveGroups.join(', ')}`
+      : 'none inconclusive',
+  )
+  // A reachable endpoint must never be reported as a failed handshake.
+  check(
+    'a reachable endpoint is not reported as a failed TLS handshake',
+    bundle.tls.ok || !bundle.certificate.ok,
+    bundle.tls.ok
+      ? 'handshake completed'
+      : 'handshake failed AND no certificate was read — consistent',
   )
 
   // Certificate engine

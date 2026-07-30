@@ -1,0 +1,878 @@
+
+Enterprise Real-Time Quantum Visualization Engine™
+
+Objective:
+
+Transform, Improve and Enhance the Existing Hero Section in Public Scan page into a premium Enterprise SOC/NOC visualization hero dashboard.
+
+The visualization must represent actual backend scanning activity in real time.
+
+This is NOT a marketing animation.
+
+Every animation must correspond to a real scan event.
+
+The interface should feel similar to:
+
+IBM Quantum System Console
+NVIDIA GTC Keynotes
+Cisco ThousandEyes
+CrowdStrike Falcon
+Palo Alto Cortex
+Microsoft Defender XDR
+Iron Man JARVIS HUD
+Apple Vision Pro UI
+
+while maintaining the QGuard Helix branding.
+
+The UI should be premium, minimal, responsive, elegant, GPU accelerated and production ready.
+
+Technology Stack
+
+Frontend
+
+React
+
+Next.js
+
+TypeScript
+
+TailwindCSS
+
+shadcn/ui
+
+Animation
+
+Use
+
+Framer Motion
+
+for
+
+page transitions
+card animations
+fade
+layout transitions
+number counters
+micro interactions
+
+Use
+
+Motion (motion.dev)
+
+for
+
+high-performance animated values.
+
+Use
+
+GSAP
+
+MotionPathPlugin
+
+for
+
+animated energy beams
+moving scan packets
+flowing data
+orbit paths
+
+2D Graphics
+
+SVG
+
+react-svg
+
+react-use-measure
+
+All connection lines must be SVG paths.
+
+Never use PNG lines.
+
+GPU Particle Engine
+
+Use
+
+PixiJS
+
+for
+
+energy particles
+sparks
+packet particles
+glow particles
+
+Use
+
+tsParticles
+
+for
+
+background
+
+stars
+quantum dust
+digital particles
+floating bits
+
+Particles must react to scan activity.
+
+3D Quantum Core
+
+Use
+
+Three.js
+
+React Three Fiber
+
+Drei
+
+Postprocessing
+
+The center shield must become an interactive holographic Quantum Core.
+
+Features:
+
+Bloom
+
+God Rays
+
+Soft Shadows
+
+Environment
+
+Glow
+
+Transmission Material
+
+Animated shaders
+
+Refraction
+
+Depth
+
+Noise
+
+Orbiting energy rings
+
+Floating quantum particles
+
+Animated quantum field
+
+Holographic shield
+
+Energy pulse
+
+Scanning radar
+
+Rotating inner core
+
+Animated hexagon mesh
+
+Dynamic lighting
+
+The Quantum Core must always remain alive.
+
+Never static.
+
+Background
+
+Replace static background with
+
+animated cyber world.
+
+Include
+
+Subtle world map
+
+Digital mesh
+
+Quantum wave
+
+Particle field
+
+Neural network
+
+Cyber grid
+
+Rotating hexagon field
+
+Blue
+
+Purple
+
+Cyan
+
+Only.
+
+No distracting colors.
+
+Real-Time Scan Engine
+
+The UI must synchronize with backend scan progress.
+
+Support
+
+Server Sent Events (SSE)
+
+and
+
+WebSocket.
+
+Create ScanEvent model.
+
+interface ScanEvent {
+
+timestamp:number
+
+category:string
+
+status:string
+
+progress:number
+
+severity:string
+
+finding?:string
+
+asset?:string
+
+details?:object
+
+}
+
+Supported events
+
+SCAN_STARTED
+
+DNS_STARTED
+
+DNS_COMPLETED
+
+TLS_STARTED
+
+TLS_PROTOCOLS
+
+TLS_CIPHERS
+
+TLS_PFS
+
+TLS_CERTIFICATE
+
+OCSP
+
+HEADERS
+
+CAA
+
+DNSSEC
+
+CT
+
+PQ_DISCOVERY
+
+PQC_GROUP
+
+PQ_KEM
+
+PQ_SIGNATURE
+
+FINDING
+
+WARNING
+
+ERROR
+
+SCAN_COMPLETED
+
+Example
+
+{
+"type":"TLS_CIPHERS",
+
+"progress":42,
+
+"status":"running"
+}
+
+Live Visualization
+
+When an event arrives
+
+the corresponding node becomes active.
+
+Connection begins glowing.
+
+Particles travel.
+
+Progress ring updates.
+
+Status text updates.
+
+Score updates.
+
+No fake timers.
+
+Everything must be event driven.
+
+Connection Beams
+
+Each node connects to the Quantum Core.
+
+Draw using SVG.
+
+Animate using GSAP MotionPath.
+
+Packet animation
+
+Blue
+
+↓
+
+Green
+
+↓
+
+Purple
+
+↓
+
+Red
+
+depending on state.
+
+Beam colors
+
+Scanning
+
+Electric Blue
+
+Pass
+
+Emerald Green
+
+Warning
+
+Amber
+
+Critical
+
+Red
+
+Post Quantum
+
+Purple
+
+Energy Packets
+
+Instead of dots
+
+Render glowing packets.
+
+Packets should accelerate.
+
+Leave motion trails.
+
+Fade naturally.
+
+Add additive blending.
+
+Critical Detection
+
+If backend reports
+
+High
+
+Critical
+
+Immediately
+
+Turn beam red.
+
+Flash node.
+
+Shake slightly.
+
+Emit sparks.
+
+Create red pulse.
+
+Center shield emits alert.
+
+Play subtle warning sound.
+
+Display finding.
+
+Pass Detection
+
+Beam becomes green.
+
+Soft glow.
+
+Node locks.
+
+Green pulse enters Quantum Core.
+
+Quantum Detection
+
+When
+
+Hybrid PQ
+
+or
+
+ML-KEM
+
+or
+
+ML-DSA
+
+detected
+
+Purple energy flows.
+
+Quantum Core upgrades visually.
+
+Purple wave expands.
+
+Center hologram changes.
+
+Quantum Core
+
+Replace current center illustration.
+
+Build a real holographic core.
+
+Contains
+
+Rotating shield
+
+Three orbital rings
+
+Floating sphere
+
+Inner energy
+
+Hexagonal shield
+
+Scanning radar
+
+Particle orbit
+
+Animated quantum waveform
+
+Dynamic glow
+
+Reactive lighting
+
+Outer bloom
+
+Every scan category feeds energy into the core.
+
+Quantum Wave
+
+Around center
+
+render waveform.
+
+Wave color depends on grade.
+
+A+
+
+Purple + Cyan
+
+A
+
+Blue
+
+B
+
+Green
+
+C
+
+Yellow
+
+D
+
+Orange
+
+F
+
+Red
+
+Wave reacts to scan results.
+
+Scan Radar
+
+Every
+
+3 seconds
+
+emit
+
+radar wave.
+
+Expands outward.
+
+Hits nodes.
+
+Nodes briefly illuminate.
+
+Category Nodes
+
+Each node
+
+DNS
+
+TLS
+
+Certificates
+
+Headers
+
+OCSP
+
+CAA
+
+DNSSEC
+
+Quantum
+
+Contains
+
+Status
+
+Progress
+
+Spinner
+
+Current task
+
+Completion %
+
+Severity
+
+Animated icon
+
+When scanning
+
+icons rotate.
+
+When complete
+
+icons pulse.
+
+TLS Visualization
+
+Instead of
+
+TLS 1.3 Enabled
+
+Show
+
+Handshake animation
+
+ClientHello
+
+↓
+
+ServerHello
+
+↓
+
+Certificate
+
+↓
+
+Key Exchange
+
+↓
+
+Finished
+
+Each packet animated.
+
+If PQ
+
+Show
+
+X25519
+
+ML-KEM-768
+
+↓
+
+AES-256
+
+Certificate Visualization
+
+Animate
+
+Leaf
+
+↓
+
+Intermediate
+
+↓
+
+Root
+
+Each certificate lights.
+
+Chain glows.
+
+Validation particles.
+
+CT log verification.
+
+OCSP verification.
+
+Score Ring
+
+Center ring
+
+fills progressively.
+
+Never jump instantly.
+
+Animate
+
+0→100
+
+Smoothly.
+
+Grade updates
+
+live.
+
+Bottom Timeline
+
+Real-time log
+
+00:01
+
+DNS Discovery
+
+✓
+
+00:03
+
+TLS Negotiation
+
+✓
+
+00:04
+
+Cipher Analysis
+
+Running...
+
+00:06
+
+Certificate Chain
+
+✓
+
+00:07
+
+HTTP Headers
+
+Running...
+
+00:09
+
+Quantum Discovery
+
+Running...
+
+00:11
+
+Assessment Complete
+
+Newest events animate in.
+
+Performance Requirements
+
+Maintain
+
+60 FPS
+
+Use
+
+requestAnimationFrame
+
+Memoization
+
+React.memo
+
+useMemo
+
+useCallback
+
+Instanced Mesh
+
+GPU rendering
+
+Virtualization
+
+Avoid unnecessary rerenders.
+
+Lazy load
+
+Three.js
+
+PixiJS
+
+Charts.
+
+Charts
+
+Animate
+
+Risk
+
+Grade
+
+Quantum Score
+
+Security Score
+
+Evidence
+
+Attack Surface
+
+Use
+
+Recharts
+
+or
+
+D3
+
+Smooth transitions.
+
+Accessibility
+
+Respect
+
+prefers-reduced-motion.
+
+Disable heavy effects automatically on low-end devices.
+
+Keyboard accessible.
+
+Responsive.
+
+Audio
+
+Use
+
+Howler.js
+
+Optional.
+
+Soft futuristic UI sounds.
+
+Packet received.
+
+Scan complete.
+
+Warning.
+
+Critical finding.
+
+Muted by default.
+
+Design Language
+
+Dark premium theme.
+
+Glass morphism.
+
+Neon cyber aesthetic.
+
+Apple-quality spacing.
+
+NVIDIA-quality animations.
+
+Microsoft Fluent polish.
+
+Consistent iconography.
+
+Minimal but highly informative.
+
+Code Quality
+
+Strict TypeScript.
+
+Component-driven architecture.
+
+Reusable hooks.
+
+Feature-based folders.
+
+Clean separation between
+
+Animation
+
+Rendering
+
+Networking
+
+Telemetry
+
+Visualization
+
+State
+
+Avoid monolithic components.
+
+Deliverables
+
+Implement:
+
+Live Quantum Core
+Animated SVG beam network
+Real-time SSE/WebSocket synchronization
+GPU particle engine
+PixiJS energy packets
+Three.js holographic center
+Animated TLS handshake visualization
+Certificate chain visualization
+Quantum readiness animation
+Scan timeline
+Live score transitions
+Dynamic node states
+Enterprise-grade responsive layout
+Performance optimizations
+Accessibility support
+Comprehensive inline documentation
+Production-ready code with no placeholders or simulated data paths (except behind explicit development mocks)
+
+⭐ One additional recommendation
+
+Since QGuard Helix is positioning itself as a premium cybersecurity and post-quantum platform, I would introduce a dedicated subsystem called the Quantum Visualization Engine™ (QVE) rather than embedding animation logic directly into the scan page.
+
+A clean architecture could look like this:
+
+Frontend
+├── Public Scan Page
+│
+├── Quantum Visualization Engine™
+│   ├── Beam Renderer
+│   ├── Quantum Core
+│   ├── Particle Engine
+│   ├── Event Timeline
+│   ├── Node State Manager
+│   ├── Scan Animation Controller
+│   ├── Audio Manager
+│   └── Performance Manager
+│
+├── Scan Event Store
+│
+├── SSE/WebSocket Client
+│
+└── Scan API
+
+This keeps all visualization concerns isolated from the scanning logic, making the engine reusable across your Public Scanner, Quantum Readiness Dashboard, Migration Sandbox, Live Operations, and future SOC views. It's a much cleaner long-term architecture for an enterprise platform.

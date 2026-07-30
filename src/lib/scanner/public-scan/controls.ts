@@ -499,6 +499,8 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
   /* ── Post-quantum key agreement (feeds the PQ score, not the classical) ── */
 
   const hybrid = keyAgreement.hybridGroups
+  // Hybrid ML-KEM is only reachable on an endpoint that negotiates TLS 1.3.
+  const hybridReachable = evidence.engines?.tls?.data?.hybridProbed ?? true
   states.push(
     control({
       key: 'pq-key-agreement',
@@ -512,9 +514,14 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
         : hybrid.length
           ? hybrid.join(', ')
           : 'No hybrid PQ group accepted',
-      evidence: keyAgreement.probed
-        ? `Named-group probe accepted: ${[...hybrid, ...keyAgreement.classicalGroups].join(', ') || 'none'}`
-        : 'Named-group probe did not run',
+      // When the endpoint has no TLS 1.3, hybrid ML-KEM is not merely absent —
+      // it is unreachable, because those groups exist only in the TLS 1.3
+      // key_share. Saying so is far more useful than "no group accepted".
+      evidence: !keyAgreement.probed
+        ? 'Named-group probe did not run'
+        : !hybridReachable
+          ? 'Endpoint does not negotiate TLS 1.3, where ML-KEM groups are defined — hybrid PQ is unreachable until TLS 1.3 is enabled'
+          : `Named-group probe accepted: ${[...hybrid, ...keyAgreement.classicalGroups].join(', ') || 'none'}`,
       businessImpact: hybrid.length
         ? 'New sessions are already protected against harvest-now-decrypt-later.'
         : 'Traffic captured today can be decrypted once a quantum computer exists.',
@@ -523,12 +530,16 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
         : 'Key agreement is fully recoverable by Shor’s algorithm.',
       nextStep: hybrid.length
         ? 'Extend hybrid coverage to internal services and machine identities.'
-        : 'Enable X25519MLKEM768 — supported by current TLS stacks and CDNs.',
+        : !hybridReachable
+          ? 'Enable TLS 1.3 first — it is the prerequisite for any hybrid ML-KEM group.'
+          : 'Enable X25519MLKEM768 — supported by current TLS stacks and CDNs.',
       // Scored by the post-quantum model, not the classical weighted mean.
       score: null,
       weight: 0,
-      observed: hybrid.join(', ') || 'none accepted',
-      detail: 'Hybrid ML-KEM groups accepted when offered in isolation',
+      observed: hybrid.join(', ') || (hybridReachable ? 'none accepted' : 'TLS 1.3 not supported'),
+      detail: hybridReachable
+        ? 'Hybrid ML-KEM groups accepted when offered in isolation under a TLS 1.3 floor'
+        : 'ML-KEM groups exist only in TLS 1.3 key_share; this endpoint does not negotiate TLS 1.3',
       inAttackSurface: true,
       isInventory: false,
       inFindings: true,

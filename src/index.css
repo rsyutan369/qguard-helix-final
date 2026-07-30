@@ -3964,3 +3964,41 @@ html.qg-theme-ready .qc-page * {
     radial-gradient(circle at 50% 4%, rgba(0, 197, 235, 0.18), transparent 26%),
     radial-gradient(circle at 80% 32%, rgba(14, 165, 233, 0.09), transparent 30%);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Quantum Visualization Engine™ (/public-scan hero)
+
+   Only the two keyframes the backdrop drives through CSS rather than JS: the
+   rotating hexagon field and the quantum wave drift. Both are compositor-only
+   (transform), run at any refresh rate without a rAF loop, and are gated in the
+   component by the Performance Manager's `animate` budget — so they are never
+   attached under prefers-reduced-motion.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+@keyframes qve-hex-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes qve-wave-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(-3%, -6px, 0);
+  }
+}
+
+/* The engine's WebGL surfaces must never intercept pointer events or show a
+   focus ring — the accessible controls are the node cards above them. */
+.qve-surface canvas {
+  pointer-events: none;
+  outline: none;
+}

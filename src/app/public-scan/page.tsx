@@ -37,6 +37,7 @@ import { cn } from '@/lib/utils';
 import { usePublicScan } from '@/hooks/use-public-scan';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { ACCENT, Panel, QuantumField, Reveal, SectionLabel } from './_ui';
+import { QuantumScanHero } from './_qve';
 import {
   AssessmentScopePanel,
   AttackSurface,
@@ -336,7 +337,10 @@ function ExportBar({ report }: { report: PublicScanReport }) {
 /* ------------------------------------------------------------------ page --- */
 
 export default function PublicScanPage() {
-  const { state, stages, report, error, progress, scan, reset } = usePublicScan();
+  // The whole result is kept (not just the destructured fields) because the QVE
+  // hero consumes the live stream object directly to drive its event store.
+  const scanResult = usePublicScan();
+  const { state, stages, report, error, progress, scan, reset } = scanResult;
   const [target, setTarget] = React.useState('');
   const resultsRef = React.useRef<HTMLDivElement>(null);
 
@@ -371,123 +375,42 @@ export default function PublicScanPage() {
           scroll inside their own containers, and nothing may push the page
           sideways on a phone. */}
       <main className="mx-auto max-w-[92rem] overflow-x-clip px-4 pb-24 pt-6 sm:px-6">
-        {/* ── Hero + rail ─────────────────────────────────────────────── */}
-        <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
-          {/* On a phone the hero (and its input) must come first — the rail is
-              supporting detail, not the entry point. */}
-          <div className="order-2 space-y-5 lg:order-1">
-            <ScanRail stages={stages} progress={progress} state={state} />
+        {/* ── Hero: Enterprise Quantum Real-Time Visualization Engine™ ──
+            The hero is now owned end-to-end by the QVE subsystem (_qve/): the
+            live beam network, holographic Quantum Core, GPU packet engine,
+            event timeline and infrastructure strip all read from one scan-event
+            store fed by this page's real SSE stream. The workflow rail and the
+            enterprise CTA are passed through as a slot so they keep their exact
+            position, markup and behaviour. Nothing below this block changed. */}
+        <QuantumScanHero
+          scan={scanResult}
+          report={report}
+          target={target}
+          onTargetChange={setTarget}
+          onSubmit={submit}
+          railSlot={
+            <>
+              <ScanRail stages={stages} progress={progress} state={state} />
 
-            <Panel className="overflow-hidden border-violet-400/15">
-              <div className="px-4 py-4">
-                <h3 className="text-[15px] font-black leading-tight text-white">
-                  Unlock Full Enterprise Assessment
-                </h3>
-                <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
-                  Analyze your entire infrastructure, source code, cryptographic inventory and migration readiness.
-                </p>
-                <Link
-                  to="/register"
-                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
-                >
-                  Explore Enterprise Platform <ArrowRight className="h-4 w-4" />
-                </Link>
-              </div>
-            </Panel>
-          </div>
-
-          <Panel className="relative order-1 overflow-hidden lg:order-2" glow>
-            <div className="grid grid-cols-[minmax(0,1fr)] items-center gap-6 px-5 py-7 sm:px-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-              <div className="relative z-10">
-                <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/25 bg-cyan-400/[0.08] px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-                  <Radar className="h-3 w-3" /> No registration required
-                </span>
-                <h1 className="mt-4 text-3xl font-black leading-[1.08] tracking-tight text-white sm:text-[2.6rem]">
-                  Quantum Exposure Assessment
-                </h1>
-                <p className="mt-3 max-w-lg text-[13.5px] leading-relaxed text-slate-400">
-                  Analyze your Internet-facing cryptographic posture, identify post-quantum migration readiness,
-                  and estimate enterprise risk — from publicly observable evidence only.
-                </p>
-
-                <form onSubmit={submit} className="mt-6 flex max-w-xl items-center gap-2 rounded-xl border border-white/[0.09] bg-[#060a14]/80 p-1.5 focus-within:border-cyan-400/40">
-                  <Globe className="ml-2.5 h-4 w-4 shrink-0 text-slate-500" />
-                  <input
-                    value={target}
-                    onChange={(event) => setTarget(event.target.value)}
-                    placeholder="https://company.com"
-                    aria-label="Domain or URL to assess"
-                    autoComplete="url"
-                    spellCheck={false}
-                    className="min-w-0 flex-1 bg-transparent py-2 text-[14px] text-white outline-none placeholder:text-slate-600"
-                  />
-                  <button
-                    type="submit"
-                    disabled={state === 'scanning'}
-                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[13px] font-black text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              <Panel className="overflow-hidden border-violet-400/15">
+                <div className="px-4 py-4">
+                  <h3 className="text-[15px] font-black leading-tight text-white">
+                    Unlock Full Enterprise Assessment
+                  </h3>
+                  <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
+                    Analyze your entire infrastructure, source code, cryptographic inventory and migration readiness.
+                  </p>
+                  <Link
+                    to="/register"
+                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
                   >
-                    {state === 'scanning' ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" /> Analyzing
-                      </>
-                    ) : (
-                      <>
-                        <Search className="h-4 w-4" /> Analyze Now
-                      </>
-                    )}
-                  </button>
-                </form>
-
-                <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
-                  <span>Results in seconds</span>
-                  <span>·</span>
-                  <span>Public evidence only</span>
-                  <span>·</span>
-                  <span>Privacy-first logging</span>
-                </p>
-
-                {/* What the edge scanner actually measures — sets expectations
-                    before the scan runs and fills the hero's lower band. */}
-                <dl className="mt-7 grid max-w-xl grid-cols-2 gap-x-6 gap-y-3 border-t border-white/[0.06] pt-5 sm:grid-cols-3">
-                  {[
-                    { term: 'Protocols probed', detail: 'TLS 1.0 → 1.3, per-version' },
-                    { term: 'PQ detection', detail: 'Hybrid ML-KEM named groups' },
-                    { term: 'Chain evidence', detail: 'SAN · CT · OCSP · CAA' },
-                  ].map((item) => (
-                    <div key={item.term}>
-                      <dt className="font-mono text-[9px] uppercase tracking-[0.16em] text-cyan-400/70">
-                        {item.term}
-                      </dt>
-                      <dd className="mt-1 text-[12px] font-semibold leading-snug text-slate-300">{item.detail}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-
-              <div className="relative hidden lg:block">
-                <motion.img
-                  src="/public-scan-hero.webp"
-                  alt=""
-                  aria-hidden
-                  className="pointer-events-none w-full select-none object-contain"
-                  initial={{ opacity: 0, scale: 0.94 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 1.1, ease: [0.22, 1, 0.36, 1] }}
-                  style={{ mixBlendMode: 'screen' }}
-                />
-                <motion.div
-                  aria-hidden
-                  className="pointer-events-none absolute inset-0"
-                  animate={{ opacity: [0.35, 0.6, 0.35] }}
-                  transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut' }}
-                  style={{
-                    background: 'radial-gradient(circle at 55% 50%, rgba(34,211,238,0.18), transparent 62%)',
-                  }}
-                />
-              </div>
-            </div>
-          </Panel>
-        </div>
+                    Explore Enterprise Platform <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </div>
+              </Panel>
+            </>
+          }
+        />
 
         {/* ── Status bar ──────────────────────────────────────────────── */}
         <AnimatePresence mode="wait">
