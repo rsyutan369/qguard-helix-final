@@ -3,6 +3,7 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildScannerIntelligence } from './scanner'
 import { buildSharedResponsibility } from '@/lib/shared-responsibility'
 import { buildOwnershipInputs } from './shared-responsibility-inputs'
+import { collapseCriticalFindings, type RawCriticalFinding } from './critical-findings'
 
 /**
  * Quantum Readiness Assessment Engine™ — aggregation router.
@@ -511,17 +512,7 @@ async function computeSnapshot(token: string, userId: string) {
   // Mirror the scanner's expanded findings (critical/high) when available so the
   // QR findings table matches scanner intelligence; otherwise use graded scan rows.
   const assetNameById = new Map<string, Record<string, unknown>>(assets.map((a) => [str(a.id), a]))
-  type CriticalFinding = {
-    id: string
-    title: string
-    asset: string
-    assetType: string
-    environment: string
-    severity: string
-    algorithm: string
-    detectedAt: string | null
-    instances: number
-  }
+  type CriticalFinding = RawCriticalFinding
 
   // Map raw scanner evidence into display rows. The scanner emits one finding per
   // detected instance, so the same algorithm on the same asset shows up many times.
@@ -562,23 +553,11 @@ async function computeSnapshot(token: string, userId: string) {
           }
         })
 
-  // Collapse identical evidence rows (same finding + algorithm + asset + environment
-  // + severity) into a single record, tracking how many raw instances it represents.
-  // Keep the earliest detection timestamp so the evidence stays traceable.
-  const findingByKey = new Map<string, CriticalFinding>()
-  for (const f of rawCriticalFindings) {
-    const key = `${f.title}|${f.algorithm}|${f.asset}|${f.environment}|${f.severity}`.toLowerCase()
-    const existing = findingByKey.get(key)
-    if (existing) {
-      existing.instances += 1
-      if (f.detectedAt && (!existing.detectedAt || f.detectedAt < existing.detectedAt)) {
-        existing.detectedAt = f.detectedAt
-      }
-    } else {
-      findingByKey.set(key, { ...f })
-    }
-  }
-  const criticalFindings = Array.from(findingByKey.values()).slice(0, 24)
+  // Collapse identical evidence into one record per algorithm + canonical asset +
+  // environment + severity, carrying the true instance count and every merged
+  // detection location. See src/api-server/critical-findings.ts for why the raw
+  // location cannot be the key.
+  const criticalFindings = collapseCriticalFindings(rawCriticalFindings).slice(0, 24)
 
   // ---- Recommended actions ---------------------------------------------
   const recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }> = []

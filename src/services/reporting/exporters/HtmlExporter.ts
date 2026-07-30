@@ -1,5 +1,6 @@
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
 import { qrSvg, reportVerificationUrl } from '../ReportQr';
+import { playbookRows } from '../ReportPlaybook';
 
 /** HTML-escape all dynamic, evidence-derived strings to prevent injection. */
 function esc(value: unknown): string {
@@ -362,7 +363,10 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <p class="muted"><b>${report.sharedResponsibility.actionableNow}</b> customer-actionable now &middot; <b>${report.sharedResponsibility.waitingDependencies}</b> waiting on a provider/ecosystem dependency &middot; <b>${report.sharedResponsibility.migrationBlockers}</b> migration blocker(s).</p>
   ${report.sharedResponsibility.reconciliationNote ? `<p class="muted"><b>Finding-count reconciliation:</b> ${esc(report.sharedResponsibility.reconciliationNote)}</p>` : ''}
   <h3>Shared Responsibility Matrix (Ownership)</h3>
-  ${gridTable(['Finding', 'Owner', 'Recommended Action', 'Priority', 'Status'], report.sharedResponsibility.matrix.map((m) => [m.finding, m.owner, m.action, m.priority, m.status]))}
+  <p class="muted">One row per cryptographic exposure, owner and asset. The scanner reports one finding per detected instance and observes the same
+  asset through several detection channels; identical detections are consolidated and the Instances column preserves the raw evidence count
+  (${esc(report.sharedResponsibility.matrix.length)} ownership row(s) covering ${esc(report.sharedResponsibility.matrixInstances)} scanner instance(s)).</p>
+  ${gridTable(['Finding', 'Asset', 'Owner', 'Recommended Action', 'Instances', 'Priority', 'Status'], report.sharedResponsibility.matrix.map((m) => [m.finding, m.asset, m.owner, m.action, m.occurrences, m.priority, m.status]))}
   ${report.sharedResponsibility.blockers.length ? `<h3>Migration Blockers</h3>${gridTable(['Finding', 'Owner', 'Dependency'], report.sharedResponsibility.blockers.map((b) => [b.title, b.owner, b.dependency]))}` : ''}
   <h3>Dependency-Ordered Roadmap &mdash; 7 Waves</h3>
   ${gridTable(['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], report.sharedResponsibility.waves.map((w) => [`Wave ${w.wave}`, w.name, w.domain, String(w.findingCount), w.status, w.timeline]))}
@@ -464,23 +468,10 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${gridTable(['Team', 'Waves', 'Hours', 'Engineers', 'Window', 'Availability', 'Allocation', 'Dependencies'], report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.availabilityPct}%`, `${r.allocationPct}%`, r.dependencies.join(', ')]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Enterprise Remediation Playbook&trade;</h2>
-  ${report.playbookDetail.length ? report.playbookDetail.map((p) => `<h3>${esc(p.finding)}</h3>${gridTable(['Step', 'Detail'], [
-    ['Current State', p.currentState],
-    ['Target State', p.targetState],
-    ['Pre-Requisites', p.prerequisites.join('; ')],
-    ['Dependencies', p.dependencies.join('; ')],
-    ['Execution Steps', p.executionSteps.map((st, i) => `${i + 1}. ${st}`).join('  ')],
-    ['Validation Steps', p.validationSteps.join('; ')],
-    ['Rollback Steps', p.rollbackSteps.join('; ')],
-    ['Success Criteria', p.successCriteria.join('; ')],
-    ['Expected Downtime', p.estimatedDowntime],
-    ['Maintenance Window', p.maintenanceWindow],
-    ['Rollback Duration', p.rollbackDuration],
-    ['Validation Owner', p.validationOwner],
-    ['Success KPI', p.successKpi],
-    ['Automation Status', p.automationStatus],
-    ['SLA Impact', p.slaImpact],
-  ])}`).join('') : '<p class="muted">Evidence Not Available — run a discovery scan to generate the remediation playbook.</p>'}
+  ${report.playbookStandardControls.rows.length ? `<h3>Standard Change Controls — Applies To All ${esc(report.playbookStandardControls.applies)} Playbooks</h3>
+  <p class="muted">${esc(report.playbookStandardControls.note)}</p>
+  ${gridTable(['Control', 'Detail'], report.playbookStandardControls.rows.map((r) => [r.step, r.detail]))}` : ''}
+  ${report.playbookDetail.length ? report.playbookDetail.map((p) => `<h3>${esc(p.finding)}</h3>${gridTable(['Step', 'Detail'], playbookRows(p, report.playbookStandardControls.sharedKeys))}`).join('') : '<p class="muted">Evidence Not Available — run a discovery scan to generate the remediation playbook.</p>'}
 
   <h2>Cost Forecast Intelligence&trade;</h2>
   <p class="muted">Every cost line is derived from labour hours × blended engineer rate ($${esc(report.costBreakdown.blendedRateUsd)}/hr). Total ${esc(report.costBreakdown.totalHours.toLocaleString())} hours.</p>
@@ -534,8 +525,11 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   ${gridTable(['Asset', 'Readiness', 'Risk', 'Owner', 'Business Unit', 'Environment', 'Criticality', 'Platform / Cloud', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure', 'Internet-Facing', 'Primary Driver'], report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.owner, a.businessUnit, a.environment, a.criticality, `${a.platform} / ${a.cloudProvider}`, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Executive Risk Acceptance</h2>
-  <p class="muted">Formal disposition of residual risk — mitigate, accept, transfer or defer — for governance and audit. Each disposition carries a Risk Owner Approval block: approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report's digital signature (SHA3-256 integrity hash + verification token).</p>
-  ${gridTable(['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], report.riskAcceptance.length ? report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
+  <p class="muted">Formal disposition of residual risk — mitigate, accept, transfer or defer — for governance and audit. Approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report's digital signature (SHA3-256 integrity hash + verification token).</p>
+  ${report.riskApprovalPolicy.uniform ? `<div class="callout"><b>Risk Owner Approval:</b> ${esc(report.riskApprovalPolicy.note)}</div>` : ''}
+  ${report.riskApprovalPolicy.uniform
+    ? gridTable(['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver'], report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver]))
+    : gridTable(['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], report.riskAcceptance.length ? report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) : [['Evidence Not Available', '—', '—', '—', '—', '—', '—', '—', '—', '—']])}
 
   <h2>Decision Traceability</h2>
   <p class="muted">${esc(report.decisionChain.headline)}</p>

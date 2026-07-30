@@ -30,6 +30,13 @@
 # `native <methods>`, which does NOT cover these, so keep the whole bridge class.
 -keep class com.qguard.messaging.PlayBilling { *; }
 
+# Same contract for the Quantum Vault's Storage Access Framework folder picker:
+# src-tauri/src/security/saf_folder.rs loads `com.qguard.messaging.VaultFolderPicker`
+# through the app class loader and calls launch / getStateJson / reset /
+# createDocument / deleteDocument / describeTree by STRING NAME. Renamed or
+# stripped, choosing a destination folder would fail only in release builds.
+-keep class com.qguard.messaging.VaultFolderPicker { *; }
+
 # Tauri plugin classes are constructed/invoked reflectively by the Tauri plugin
 # manager (getPluginManager); keep them so a release build can't strip a plugin
 # the app loads at runtime (shell/dialog, and future plugins).

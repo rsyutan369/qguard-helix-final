@@ -19,6 +19,7 @@ import QguardMessagingOverview from './app/qguard-messaging/page';
 import QguardMessagingSecureChat from './app/qguard-messaging/secure-chat/page';
 import QguardMessagingQuantumVault from './app/qguard-messaging/quantum-vault/page';
 import QuantumReadinessAssessmentPage from './app/quantum-readiness-assessment/page';
+import PublicScanPage from './app/public-scan/page';
 import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
@@ -131,6 +132,10 @@ export default function App() {
           <Route path="/qguard-messaging/secure-chat" element={<QguardMessagingSecureChat />} />
           <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />
           <Route path="/quantum-readiness-assessment" element={<QuantumReadinessAssessmentPage />} />
+          {/* Public Quantum Exposure Assessment™ — anonymous edge scanner. */}
+          <Route path="/public-scan" element={<PublicScanPage />} />
+          <Route path="/public-scanner" element={<Navigate to="/public-scan" replace />} />
+          <Route path="/scan" element={<Navigate to="/public-scan" replace />} />
           <Route path="/post-quantum-migration-platform" element={<PostQuantumMigrationPlatform />} />
           <Route path="/quantum-trust-governance-center" element={<QuantumTrustGovernanceCenter />} />
           <Route path="/pqc-solutions" element={<PqcSolutions />} />

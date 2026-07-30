@@ -98,6 +98,15 @@ interface LiveTableSpec {
 }
 
 const fallbackPollMs = 30_000;
+// Floor between full dashboard refreshes. A refresh is ~17 Supabase queries
+// (devices, 500 envelopes, prekeys, telemetry, …) and re-renders the whole app.
+// Sending one message writes several rows — envelopes per recipient device, read
+// states, two crypto-telemetry records — and each of those echoes back as a live
+// event. Without a floor those echoes chained refreshes back-to-back every
+// ~450ms, which on a phone is what made typing, history and message delivery all
+// feel stalled. Coalescing to one refresh per window keeps the data fresh
+// without the app spending its time re-fetching itself.
+const minRefreshGapMs = 2_500;
 
 function serializeSse(event: Omit<QGuardLiveEvent, "raw">): string {
   return `event: qguard-live\nid: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`;
@@ -158,6 +167,7 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
   const retryRef = useRef(0);
   const retryTimerRef = useRef<number | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  const lastRefreshAtRef = useRef(0);
 
   useEffect(() => {
     refreshRef.current = onRefresh;
@@ -205,10 +215,13 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
 
     const scheduleRefresh = (delayMs = 450) => {
       if (!active || refreshTimerRef.current) return;
+      const sinceLast = Date.now() - lastRefreshAtRef.current;
+      const wait = Math.max(delayMs, minRefreshGapMs - sinceLast);
       refreshTimerRef.current = window.setTimeout(() => {
         refreshTimerRef.current = null;
+        lastRefreshAtRef.current = Date.now();
         void refreshRef.current();
-      }, delayMs);
+      }, Math.max(0, wait));
     };
 
     const scheduleRetry = () => {

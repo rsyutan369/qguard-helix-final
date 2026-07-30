@@ -1,0 +1,654 @@
+QGuard Helix Public Quantum Exposure Assessment™
+Enterprise Internet-Facing Cryptographic Scanner
+Objective
+
+Design and build a production-ready Enterprise Quantum Exposure Assessment™ page that integrates seamlessly into the existing QGuard Helix platform.
+
+This page is NOT intended to compete with SSL Labs or other TLS scanners. Instead, it serves as an executive-grade, public-facing assessment that analyzes only externally observable cryptographic evidence while introducing QGuard Helix's premium enterprise capabilities.
+
+The scanner should establish technical credibility, provide valuable insights, and naturally guide organizations toward the authenticated Enterprise platform for deeper analysis.
+
+The implementation must follow enterprise UX principles similar to CrowdStrike Falcon, Wiz, Microsoft Defender, Palo Alto Prisma Cloud, and Datadog.
+
+Overall Flow
+Landing
+
+↓
+
+Enter Domain
+
+↓
+
+TLS Handshake
+
+↓
+
+Certificate Discovery
+
+↓
+
+HTTP Security Analysis
+
+↓
+
+DNS Security Checks
+
+↓
+
+Cryptographic Analysis
+
+↓
+
+Executive Summary
+
+↓
+
+Quantum Exposure Assessment
+
+↓
+
+Recommendations
+
+↓
+
+Enterprise Opportunity Preview
+
+↓
+
+Call To Action
+
+Everything should feel premium, animated, responsive, and enterprise-focused.
+
+Technology Stack
+
+Implement using:
+
+Next.js App Router
+React
+TypeScript
+Tailwind CSS
+Framer Motion
+shadcn/ui
+Radix UI
+Recharts
+Lucide Icons
+React Query
+Server Components where appropriate
+Edge Functions for scan execution
+Server-Sent Events (SSE) or WebSockets for live scan progress
+PostgreSQL/Supabase for scan history (optional)
+Cloudflare caching for anonymous scans
+UI Design Language
+
+The design should match the existing QGuard Helix platform.
+
+Requirements:
+
+Dark enterprise theme
+Quantum blue / cyan accents
+Purple highlights
+Glassmorphism
+Soft gradients
+Animated backgrounds
+Grid overlay
+Framer Motion transitions
+Premium typography
+WCAG 2.2 AA accessibility
+Fully responsive
+Hero Section
+Enterprise Quantum Exposure Assessment™
+
+Analyze your Internet-facing cryptographic posture,
+estimate post-quantum migration readiness,
+and identify publicly observable security risks.
+
+Domain input:
+
+https://company.com
+
+[ Analyze Exposure ]
+
+Below:
+
+No registration required.
+
+Results available in under 10 seconds.
+
+Public evidence only.
+Live Scan Progress
+
+Replace traditional spinners with enterprise workflow stages.
+
+Step 1
+
+DNS Resolution
+
+✔
+
+Step 2
+
+TLS Handshake
+
+Running
+
+Step 3
+
+Certificate Collection
+
+Waiting
+
+Step 4
+
+Security Header Analysis
+
+Waiting
+
+Step 5
+
+Quantum Assessment
+
+Waiting
+
+Step 6
+
+Executive Report
+
+Waiting
+
+Each step should animate in real time.
+
+Live Handshake Visualization
+
+Animated handshake visualization displaying:
+
+Client Hello
+Server Hello
+TLS Version
+Cipher Negotiation
+Certificate Exchange
+Key Exchange
+Session Established
+
+Render as an animated timeline or flow diagram.
+
+Executive Summary
+
+Display executive KPI cards:
+
+Overall Security
+
+A
+
+Encryption Score
+
+94
+
+Post Quantum Readiness
+
+26%
+
+Business Risk
+
+Moderate
+
+Migration Complexity
+
+Medium
+
+Confidence
+
+97%
+
+Assessment Scope
+
+Public Internet Edge
+
+Use gauges, progress rings, and animated counters.
+
+Encryption Score
+
+Composite score based on:
+
+TLS Version
+Cipher Strength
+Certificate Health
+Forward Secrecy
+HSTS
+DNS Security
+HTTP Security
+Certificate Lifecycle
+
+Do not overstate what cannot be inferred externally.
+
+Public Cryptographic Findings
+
+Display only externally observable evidence.
+
+Include:
+
+TLS Version
+Supported Protocols
+Cipher Suite
+Key Exchange
+Certificate Algorithm
+Signature Algorithm
+Key Size
+Certificate Chain
+Certificate Lifetime
+Issuer
+Subject
+SAN
+OCSP Stapling
+SCT
+ALPN
+HSTS
+HPKP (legacy if present)
+DNS CAA
+HTTP Security Headers
+Forward Secrecy
+Supported Groups
+Extensions
+
+Each finding includes:
+
+Finding
+
+Observed Value
+
+Status
+
+Business Impact
+
+Quantum Impact
+
+Recommendation
+Cryptographic Intelligence
+
+Create a premium intelligence card.
+
+Example:
+
+Observed Algorithms
+
+AES-256-GCM
+
+ECDSA P-256
+
+SHA384
+
+TLS 1.3
+
+Key Exchange
+
+ECDHE
+
+Forward Secrecy
+
+Enabled
+
+Estimated PQ Migration Targets
+
+ML-KEM-768
+
+ML-DSA-65
+
+Hybrid TLS
+
+Confidence
+
+98%
+Public Attack Surface Summary
+
+Include:
+
+Internet Facing
+
+Yes
+
+Public Certificates
+
+2
+
+TLS Services
+
+HTTPS
+
+Certificate Chains
+
+1
+
+DNS Security
+
+Pass
+
+Certificate Transparency
+
+Pass
+
+OCSP
+
+Pass
+
+Forward Secrecy
+
+Enabled
+
+HTTP Security
+
+Strong
+Quantum Exposure Timeline
+
+Visual timeline:
+
+Current Classical Cryptography
+
+↓
+
+Harvest Now
+
+↓
+
+Future Cryptographically Relevant Quantum Computer
+
+↓
+
+Potential Decryption Risk
+
+↓
+
+Hybrid TLS Deployment
+
+↓
+
+Full PQC Adoption
+
+Each phase includes explanatory text.
+
+Executive Recommendations
+
+Generate contextual recommendations such as:
+
+Maintain TLS 1.3
+Adopt hybrid PQ key exchange
+Monitor certificate lifecycle
+Enable DNS CAA
+Prepare PQ migration roadmap
+Validate cryptographic inventory internally
+
+Each recommendation should include:
+
+Priority
+
+Business Impact
+
+Estimated Effort
+
+Risk Reduction
+
+Governance Readiness
+
+Because governance cannot be determined externally, display:
+
+Governance Assessment
+
+Status
+
+Unknown
+
+Reason
+
+Cannot be validated through public observation.
+
+Requires Enterprise Assessment.
+
+Include:
+
+Policy Management
+Approval Workflow
+Audit Trail
+Cryptographic Inventory
+Key Lifecycle
+Compliance Evidence
+
+All marked:
+
+Unknown
+Enterprise Opportunity Cards
+
+Instead of generic locked features, present premium modules.
+
+Source Code Discovery
+Repositories
+
+Crypto APIs
+
+Hardcoded Keys
+
+RSA
+
+ECC
+
+SHA
+
+PQC Debt
+
+Dependencies
+
+Secrets
+Cryptographic Bill of Materials
+Algorithms
+
+Libraries
+
+Certificates
+
+HSM
+
+PKI
+
+Dependencies
+
+Crypto Providers
+Cryptographic Governance Center™
+Policies
+
+Exceptions
+
+Approvals
+
+Governance Receipts
+
+ML-DSA Signatures
+
+Audit Trails
+Quantum Readiness Assessment™
+Applications
+
+Servers
+
+Cloud
+
+Containers
+
+Databases
+
+Identity
+
+Enterprise Score
+Runtime Crypto Telemetry™
+Live TLS
+
+Certificates
+
+Drift Detection
+
+Key Rotation
+
+Continuous Compliance
+Migration Sandbox™
+Digital Twin
+
+Simulation
+
+Rollback
+
+Compatibility Testing
+
+Risk Prediction
+
+Each card should appear slightly blurred or dimmed with a tasteful lock icon and a brief explanation that the capability requires an authenticated enterprise deployment.
+
+Sophia AI Assessment
+
+Add an AI-generated assessment.
+
+Example:
+
+Sophia AI Analysis
+
+The observed public cryptographic posture demonstrates modern TLS deployment with strong classical encryption.
+
+However, public observation cannot validate:
+
+• Source code cryptography
+• Internal PKI
+• Key management
+• Database encryption
+• Cloud workloads
+• HSM usage
+• Cryptographic governance
+• Compliance evidence
+
+An authenticated Enterprise Assessment is recommended.
+Enterprise Report Preview
+
+Show preview pages.
+
+Blur:
+
+Executive Report
+
+Migration Plan
+
+Compliance Mapping
+
+CBOM
+
+Governance Report
+
+Risk Matrix
+
+Runtime Telemetry
+
+Digital Twin
+
+Button:
+
+Unlock Enterprise Report
+Estimated Enterprise Footprint
+
+Provide clearly labeled estimates derived from public observations.
+
+Estimated Domains
+
+Estimated Certificates
+
+Estimated Applications
+
+Estimated Crypto Assets
+
+Estimated Migration Duration
+
+Estimated Project Complexity
+
+Label prominently:
+
+Estimated from publicly observable infrastructure.
+Assessment Scope
+
+Professional wording:
+
+This assessment analyzes publicly observable TLS,
+certificate,
+DNS,
+and HTTP security metadata exposed by Internet-facing services.
+
+It does not inspect source code,
+internal infrastructure,
+cloud workloads,
+private PKI,
+key management systems,
+databases,
+or enterprise cryptographic governance.
+
+Authenticated Enterprise Discovery is required for complete visibility.
+Export Features
+
+Allow:
+
+Executive PDF
+JSON
+Share Link
+Print
+CSV (public findings only)
+
+Enterprise exports remain locked.
+
+Backend Requirements
+
+Build modular scanning services.
+
+Components:
+
+DNS Service
+
+TLS Scanner
+
+Certificate Parser
+
+Cipher Analyzer
+
+Security Header Analyzer
+
+CAA Checker
+
+CT Log Parser
+
+OCSP Validator
+
+ALPN Analyzer
+
+Quantum Scoring Engine
+
+Recommendation Engine
+
+Report Generator
+
+All services should expose typed APIs and support asynchronous execution.
+
+Security Requirements
+
+Implement:
+
+Rate limiting
+Domain validation
+Input sanitization
+Scan timeout
+Caching
+Abuse detection
+No authentication required for basic scans
+Optional authenticated scan history
+Privacy-first logging
+Multi-tenant readiness for authenticated users
+Performance
+
+Target:
+
+First Contentful Paint < 1.5 s
+Largest Contentful Paint < 2.5 s
+Scan completion < 10 s (network dependent)
+Lighthouse ≥ 95
+WCAG 2.2 AA compliance
+Final Goal
+
+Deliver a polished, production-ready Enterprise Quantum Exposure Assessment™ experience that demonstrates QGuard Helix's expertise in cryptography and post-quantum security while remaining technically accurate about what can be inferred from Internet-facing evidence. The public scanner should provide meaningful executive insights, clear business recommendations, and visually compelling results, while naturally leading users toward authenticated Enterprise capabilities such as Cryptographic Governance Center™, Quantum Readiness Assessment Engine™, Cryptographic Bill of Materials (CBOM), Runtime Crypto Telemetry Engine™, Migration Sandbox™, and Sophia AI Security Copilot™. Every UI component, workflow, and recommendation should reinforce QGuard Helix as an enterprise platform for cryptographic governance and post-quantum migration—not merely a TLS scanner.

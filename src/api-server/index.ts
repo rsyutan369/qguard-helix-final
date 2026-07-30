@@ -29,6 +29,7 @@ import playBillingRoutes from './play-billing'
 import revenueRoutes from './revenue'
 import adminRoutes from './admin'
 import scannerRoutes from './scanner'
+import publicScanRoutes from './public-scan'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import serviceRecordRoutes from './service-records'
 import migrationRoutes from './migration'
@@ -755,6 +756,12 @@ export function createApiServer() {
   // gate (the certificate is meant to be verifiable by anyone). Mounted BEFORE
   // the subscription gateway so unauthenticated visitors can verify a cert.
   app.use('/api/v1/certificate-verification', certificateVerificationRouter)
+
+  // Public Quantum Exposure Assessment™ — anonymous, edge-only scanner behind
+  // /public-scan. No auth and no tier gate by design (that is the product), so
+  // it mounts BEFORE the subscription gateway. It carries its own rate limiting,
+  // concurrency cap, SSRF guard and result cache.
+  app.use('/api/v1/public-scan', publicScanRoutes)
 
   app.use('/api', subscriptionGateway)
 

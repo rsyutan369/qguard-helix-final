@@ -1,0 +1,424 @@
+Enterprise SEO & AI Search Optimization for QGuard Helix
+Objective
+
+Perform a complete enterprise-grade SEO, technical SEO, performance optimization, structured data implementation, accessibility audit, and AI Search Optimization across the entire QGuard Helix website and SaaS platform.
+
+The goal is to maximize visibility on:
+
+Google Search
+Google AI Overviews
+Google Discover
+Bing
+Bing Copilot
+ChatGPT Search
+Perplexity AI
+Claude
+Gemini
+Brave Search
+DuckDuckGo
+Enterprise security search queries
+
+The implementation should follow Google's latest SEO best practices, Core Web Vitals, Schema.org structured data, and AI-search optimization principles.
+
+1. Enterprise Metadata
+
+Every page must have unique, optimized metadata.
+
+Implement:
+
+Dynamic <title> tags (50–60 characters)
+Meta descriptions (140–160 characters)
+Canonical URLs
+Meta robots directives
+Keywords (optional for internal use)
+Language (hreflang) support
+Author metadata
+Publisher metadata
+Copyright metadata
+Theme color
+Mobile web app metadata
+Apple touch metadata
+Microsoft application metadata
+Open Graph metadata
+Twitter/X Card metadata
+LinkedIn preview metadata
+Slack/Discord preview optimization
+
+Example title:
+
+QGuard Helix | Enterprise Post-Quantum Cryptography Platform
+
+Example description:
+
+Protect your enterprise from quantum threats with QGuard Helix. Discover cryptographic assets, assess post-quantum readiness, automate migration planning, enforce cryptographic governance, and generate compliance evidence.
+2. Open Graph & Social Sharing
+
+Every page should generate rich previews.
+
+Include:
+
+og:title
+og:description
+og:image
+og:url
+og:type
+og:site_name
+og:locale
+twitter:card
+twitter:title
+twitter:description
+twitter:image
+
+Automatically generate dynamic preview images for reports, blog posts, products, and documentation.
+
+3. JSON-LD Structured Data
+
+Implement structured data using Schema.org.
+
+Homepage:
+
+Organization
+SoftwareApplication
+Product
+WebSite
+SearchAction
+
+Documentation:
+
+TechArticle
+HowTo
+FAQPage
+
+Pricing:
+
+Product
+Offer
+AggregateOffer
+
+Blog:
+
+BlogPosting
+Article
+
+Company:
+
+Organization
+ContactPoint
+Logo
+
+Security Research:
+
+Article
+Dataset
+Report
+
+Events:
+
+Event
+
+Videos:
+
+VideoObject
+
+Breadcrumbs:
+
+BreadcrumbList
+
+Reviews:
+
+Review
+AggregateRating (only if genuine ratings exist)
+
+Search:
+
+SearchAction
+4. Enterprise LocalBusiness Schema
+
+Although QGuard Helix is SaaS, include Organization and LocalBusiness information where appropriate.
+
+Include:
+
+Company name
+Logo
+Website
+Email
+Support contact
+Social profiles
+Founder (if desired)
+Country
+Operating regions
+Business category
+Opening hours (if applicable)
+5. XML Sitemap
+
+Automatically generate:
+
+sitemap.xml
+sitemap-index.xml
+images sitemap
+videos sitemap
+documentation sitemap
+blog sitemap
+products sitemap
+
+Automatically update during builds.
+
+6. robots.txt
+
+Create an optimized robots.txt.
+
+Allow:
+
+Landing pages
+Documentation
+Blog
+Product pages
+Pricing
+Resources
+
+Disallow:
+
+Admin
+Dashboard
+API internals
+Authentication
+Private reports
+Internal tools
+Temporary build files
+
+Reference the sitemap.
+
+7. Core Web Vitals Optimization
+
+Target:
+
+LCP < 2.5s
+
+INP < 200ms
+
+CLS < 0.1
+
+Optimize:
+
+Image loading
+Lazy loading
+Code splitting
+Route prefetching
+Font optimization
+Tree shaking
+Asset compression
+Brotli
+Gzip
+CDN caching
+Edge rendering
+Incremental Static Regeneration (where appropriate)
+8. Image Optimization
+
+Every image must:
+
+Use descriptive filenames
+Include meaningful alt text
+Include width and height
+Use modern formats (WebP/AVIF where supported)
+Lazy-load below-the-fold images
+Use responsive srcset
+Avoid layout shifts
+
+Example:
+
+alt="QGuard Helix Quantum Readiness Assessment Dashboard"
+9. Heading Hierarchy
+
+Every page must follow semantic structure.
+
+H1
+
+H2
+
+H3
+
+H4
+
+Only one H1 per page.
+
+No skipped heading levels.
+
+10. Accessibility (WCAG 2.2 AA)
+
+Implement:
+
+Proper ARIA labels
+Keyboard navigation
+Accessible forms
+Focus indicators
+Color contrast compliance
+Screen-reader support
+Skip-to-content links
+Semantic HTML
+Descriptive link text
+11. Internal Linking Strategy
+
+Create intelligent links between:
+
+Product pages
+Documentation
+Blog posts
+Features
+Pricing
+Whitepapers
+Security research
+PQC migration guides
+
+Use descriptive anchor text.
+
+12. AI Search Optimization
+
+Optimize content for AI-generated answers.
+
+Each major page should include:
+
+Clear summaries
+Definitions
+Bullet points
+FAQs
+Tables
+Comparisons
+Step-by-step guides
+Entity-rich content
+Natural language explanations
+
+Ensure content is easy for LLMs to cite accurately.
+
+13. FAQ Sections
+
+Add FAQ schema to major pages.
+
+Example questions:
+
+What is post-quantum cryptography?
+What is quantum readiness?
+What is cryptographic governance?
+How does QGuard Helix discover cryptographic assets?
+How does the Migration Planner work?
+How does Cryptographic Governance Center improve compliance?
+14. Security Trust Signals
+
+Create trust sections highlighting:
+
+FIPS 203
+FIPS 204
+FIPS 205
+NIST guidance
+ML-KEM
+ML-DSA
+AES-256-GCM
+SHA3-512
+TLS 1.3
+Zero Trust
+Cryptographic Governance
+Enterprise readiness
+
+Avoid overstating certifications or compliance that have not been achieved.
+
+15. Enterprise Landing Pages
+
+Create optimized landing pages for topics such as:
+
+Post-Quantum Cryptography
+Quantum Readiness Assessment
+Cryptographic Governance
+PQC Migration Planning
+Cryptographic Bill of Materials (CBOM)
+Runtime Crypto Telemetry
+Quantum Exposure Graph
+Enterprise Cryptography Inventory
+Harvest Now, Decrypt Later
+Quantum Risk Assessment
+
+Each page should target distinct search intent.
+
+16. Technical SEO
+
+Implement:
+
+Canonical URLs
+Clean URLs
+Breadcrumbs
+Pagination support
+Structured navigation
+Proper redirects
+Custom 404 page
+XML feeds
+RSS for blogs/news
+HTTPS enforcement
+Compression
+HTTP/2 or HTTP/3 support
+Cache headers
+17. Performance Optimization
+
+Optimize:
+
+JavaScript bundles
+CSS bundles
+Fonts
+Images
+API requests
+Hydration
+React rendering
+Server Components where appropriate
+Prefetching
+Preloading
+DNS prefetch
+Preconnect
+18. Analytics & Monitoring
+
+Integrate:
+
+Google Search Console
+Google Analytics 4
+Microsoft Clarity
+Bing Webmaster Tools
+Core Web Vitals monitoring
+Error monitoring
+Sitemap submission
+Structured data validation
+Crawl error monitoring
+19. Enterprise SEO Dashboard
+
+Create an internal SEO dashboard displaying:
+
+Indexed pages
+Crawl status
+Broken links
+Structured data validation
+Core Web Vitals
+Lighthouse scores
+Page speed
+Accessibility score
+SEO score
+AI readiness score
+Sitemap status
+Robots.txt validation
+Top-performing pages
+Search query trends (when integrated with analytics)
+20. Deliverables
+
+The implementation should include:
+
+✅ Enterprise-grade technical SEO
+✅ Optimized metadata for every page
+✅ Complete Schema.org JSON-LD implementation
+✅ XML sitemap generation
+✅ Optimized robots.txt
+✅ Open Graph and social sharing support
+✅ AI-search optimization
+✅ WCAG 2.2 AA accessibility improvements
+✅ Core Web Vitals optimization
+✅ Enterprise image optimization
+✅ Intelligent internal linking
+✅ SEO monitoring and reporting
+✅ Automated sitemap updates
+✅ Rich snippets and structured data validation
+✅ Clean, scalable architecture integrated with the existing Next.js codebase
+
+Final Goal: Achieve Lighthouse scores of 95+ for Performance, Accessibility, Best Practices, and SEO where feasible, while ensuring the QGuard Helix website is optimized not only for traditional search engines but also for AI-powered search experiences and enterprise cybersecurity audiences.

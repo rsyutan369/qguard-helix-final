@@ -13,6 +13,7 @@ use crate::crypto::vault_recovery;
 use crate::crypto::AlgorithmSuite;
 use crate::error::{QGuardError, Result};
 use crate::security::content_uri;
+use crate::security::saf_folder;
 use crate::state::{AppState, PersistedVaultMaster, PersistedVaultRecovery};
 use crate::vault_stream::{self, FolderReader, FolderWriter, StreamSummary};
 
@@ -1074,23 +1075,35 @@ pub async fn vault_decrypt_folder_path_with_enterprise(
 /// Permanently delete a local `.qvault` container from disk. Restricted to the
 /// `.qvault` extension so the command can never remove arbitrary files.
 #[tauri::command]
-pub fn vault_delete_file(state: State<'_, AppState>, source_path: String) -> Result<()> {
+pub async fn vault_delete_file(state: State<'_, AppState>, source_path: String) -> Result<()> {
     state.require_auth()?;
-    let path = Path::new(&source_path);
-    let is_qvault = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("qvault"))
-        .unwrap_or(false);
-    if !is_qvault {
-        return Err(QGuardError::InvalidInput(
-            "only .qvault containers can be deleted from the vault".to_string(),
-        ));
-    }
-    if !path.is_file() {
-        return Err(QGuardError::NotFound("vault file not found".to_string()));
-    }
-    std::fs::remove_file(path).map_err(|e| QGuardError::Storage(format!("delete vault file: {e}")))?;
+    // Containers can now live in a user-chosen Android folder, so a registry
+    // path may be a SAF document URI rather than a filesystem path. Both are
+    // still restricted to `.qvault` so this command can never remove anything
+    // else the app happens to hold a grant for.
+    run_stream_blocking(move || {
+        let name = vault_source_name(&source_path);
+        let is_qvault = Path::new(&name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("qvault"))
+            .unwrap_or(false);
+        if !is_qvault {
+            return Err(QGuardError::InvalidInput(
+                "only .qvault containers can be deleted from the vault".to_string(),
+            ));
+        }
+        if content_uri::is_content_uri(&source_path) {
+            return saf_folder::delete_document(&source_path);
+        }
+        let path = Path::new(&source_path);
+        if !path.is_file() {
+            return Err(QGuardError::NotFound("vault file not found".to_string()));
+        }
+        std::fs::remove_file(path)
+            .map_err(|e| QGuardError::Storage(format!("delete vault file: {e}")))
+    })
+    .await?;
     state.audit_info("vault_delete_file", "Local vault container permanently deleted");
     state.touch_telemetry("vault", "Local vault container permanently deleted from disk", 100);
     Ok(())
@@ -1107,6 +1120,120 @@ pub async fn vault_resolve_name(
 ) -> Result<String> {
     state.require_auth()?;
     run_stream_blocking(move || Ok(vault_source_name(&source_path))).await
+}
+
+/// A destination folder the user picked, as returned to the UI.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultFolderChoice {
+    /// SAF tree URI (Android) or filesystem directory path (desktop).
+    pub path: String,
+    /// Human-readable location for the activity log.
+    pub label: String,
+}
+
+/// Ask the user for a destination FOLDER on Android.
+///
+/// Android's document pickers only offer "pick a file" and "create one file";
+/// the Tauri dialog plugin has no folder picker at all on mobile, which is why
+/// encrypted containers used to be forced into the app-private vault directory.
+/// This drives the Storage Access Framework tree picker instead and persists the
+/// grant, so the chosen folder keeps working for later decrypt/verify/delete.
+///
+/// `None` means the user backed out. Desktop callers use the native directory
+/// dialog and never reach this command.
+#[tauri::command]
+pub async fn vault_pick_folder(state: State<'_, AppState>) -> Result<Option<VaultFolderChoice>> {
+    state.require_auth()?;
+    // The picker blocks on an Activity result delivered by the MAIN thread, so
+    // it must never run there itself.
+    let choice = run_stream_blocking(saf_folder::pick_folder).await?;
+    Ok(choice.map(|choice| VaultFolderChoice { path: choice.path, label: choice.label }))
+}
+
+/// Human-readable label for an already-chosen destination folder.
+#[tauri::command]
+pub async fn vault_describe_folder(state: State<'_, AppState>, folder: String) -> Result<String> {
+    state.require_auth()?;
+    if !saf_folder::is_tree_uri(&folder) {
+        return Ok(folder);
+    }
+    run_stream_blocking(move || Ok(saf_folder::describe_folder(&folder))).await
+}
+
+/// Turn a destination FOLDER plus a file name into a concrete output target for
+/// the vault stream commands.
+///
+/// Android: creates the document inside the granted SAF tree and returns its
+/// `content://` URI (the platform de-duplicates the name itself).
+/// Desktop: joins the path and adds a ` (n)` suffix so an existing file is never
+/// silently overwritten.
+#[tauri::command]
+pub async fn vault_prepare_dest(
+    state: State<'_, AppState>,
+    folder: String,
+    file_name: String,
+) -> Result<String> {
+    state.require_auth()?;
+    let safe_name = sanitize_dest_name(&file_name);
+    run_stream_blocking(move || {
+        if saf_folder::is_tree_uri(&folder) {
+            return saf_folder::create_document_in_tree(&folder, &safe_name);
+        }
+        let dir = PathBuf::from(&folder);
+        if !dir.is_dir() {
+            return Err(QGuardError::InvalidInput(
+                "the selected destination is not a folder".to_string(),
+            ));
+        }
+        Ok(unique_in_dir(&dir, &safe_name).to_string_lossy().to_string())
+    })
+    .await
+}
+
+/// File name that is safe to create in any destination: no path separators, no
+/// NULs, never empty.
+fn sanitize_dest_name(file_name: &str) -> String {
+    let cleaned = file_name
+        .replace(['/', '\\', '\0'], "_")
+        .trim()
+        // Windows rejects trailing dots and spaces. Leading dots are legitimate
+        // (hidden files such as `.env`) and must survive — with separators gone
+        // the name is already a leaf, so no traversal is possible.
+        .trim_end_matches(['.', ' '])
+        .to_string();
+    if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
+        "file".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// `name`, or `name (n)` keeping the extension, so an existing file in `dir` is
+/// never overwritten.
+fn unique_in_dir(dir: &Path, name: &str) -> PathBuf {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    // `report.pdf.qvault` -> stem `report.pdf`, ext `qvault`.
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string());
+    let ext = path.extension().map(|value| value.to_string_lossy().to_string());
+    for counter in 1u32..10_000 {
+        let next = match &ext {
+            Some(ext) => format!("{stem} ({counter}).{ext}"),
+            None => format!("{stem} ({counter})"),
+        };
+        let candidate = dir.join(next);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(name)
 }
 
 /// On-device destination for a new encrypted container, used by the mobile flow
@@ -1131,4 +1258,49 @@ pub fn vault_default_encrypt_dest(
         counter += 1;
     }
     Ok(candidate.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitized_names_can_never_escape_the_chosen_folder() {
+        assert_eq!(sanitize_dest_name("report.pdf"), "report.pdf");
+        assert_eq!(sanitize_dest_name("  spaced.txt  "), "spaced.txt");
+        // Path traversal and separators are neutralised, not rejected: the user
+        // picked the folder, so the name must simply be forced to a leaf.
+        assert_eq!(sanitize_dest_name("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(sanitize_dest_name(r"a\b/c"), "a_b_c");
+        // Hidden files keep their leading dot; a trailing dot (illegal on
+        // Windows) is trimmed.
+        assert_eq!(sanitize_dest_name(".env"), ".env");
+        assert_eq!(sanitize_dest_name("notes.txt."), "notes.txt");
+        assert_eq!(sanitize_dest_name(""), "file");
+        assert_eq!(sanitize_dest_name("..."), "file");
+    }
+
+    #[test]
+    fn destination_never_overwrites_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("qguard-dest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Free name is used as-is.
+        assert_eq!(unique_in_dir(&dir, "report.pdf.qvault"), dir.join("report.pdf.qvault"));
+
+        // Taken names get a counter suffix that KEEPS the extension, so the
+        // container is still recognised as a .qvault by every later operation.
+        std::fs::write(dir.join("report.pdf.qvault"), b"x").unwrap();
+        assert_eq!(unique_in_dir(&dir, "report.pdf.qvault"), dir.join("report.pdf (1).qvault"));
+
+        std::fs::write(dir.join("report.pdf (1).qvault"), b"x").unwrap();
+        assert_eq!(unique_in_dir(&dir, "report.pdf.qvault"), dir.join("report.pdf (2).qvault"));
+
+        // Extension-less names still de-duplicate.
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        assert_eq!(unique_in_dir(&dir, "README"), dir.join("README (1)"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

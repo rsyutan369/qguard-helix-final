@@ -133,7 +133,9 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
       ['Waiting on Dependency', '', sr.waitingDependencies],
       ['Migration Blockers', '', sr.migrationBlockers],
     ] }, 'Ownership Readiness');
-    addTableSheet(workbook, { title: 'Shared Responsibility Matrix', columns: ['Finding', 'Owner', 'Recommended Action', 'Priority', 'Status', 'Ownership'], rows: sr.matrix.map((m) => [m.finding, m.owner, m.action, m.priority, m.status, m.domain]) }, 'SR Matrix');
+    // Consolidated: one row per exposure, owner and asset. `Instances` and the
+    // merged detection labels keep the raw scanner evidence reconstructable.
+    addTableSheet(workbook, { title: `Shared Responsibility Matrix — ${sr.matrix.length} consolidated row(s) covering ${sr.matrixInstances} scanner instance(s)`, columns: ['Finding', 'Asset', 'Owner', 'Recommended Action', 'Instances', 'Detection Channels', 'Priority', 'Status', 'Ownership'], rows: sr.matrix.map((m) => [m.finding, m.asset, m.owner, m.action, m.occurrences, m.detectionLabels.join(' | '), m.priority, m.status, m.domain]) }, 'SR Matrix');
     addTableSheet(workbook, { title: 'Dependency-Ordered Roadmap', columns: ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], rows: sr.waves.map((w) => [w.wave, w.name, w.domain, w.findingCount, w.status, w.timeline]) }, 'SR Roadmap');
     if (sr.providers.length) addTableSheet(workbook, { title: 'Provider & Ecosystem Readiness', columns: ['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Customer Influence'], rows: sr.providers.map((p) => [p.name, p.domain, p.count, p.pqRoadmap, p.customerInfluence]) }, 'SR Providers');
     // §1 summary + §4 timeline + reconciliation
@@ -199,6 +201,14 @@ export async function exportExcel(report: EnterpriseAssessmentReport): Promise<B
   addTableSheet(workbook, { title: 'Asset-Level Readiness & Intelligence', columns: ['Asset', 'Readiness', 'Risk', 'Posture', 'Owner', 'Business Unit', 'Environment', 'Criticality', 'Platform', 'Cloud Provider', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure', 'Internet-Facing', 'Primary Driver'], rows: report.assetReadiness.map((a) => [a.asset, a.readiness, a.risk, a.posture, a.owner, a.businessUnit, a.environment, a.criticality, a.platform, a.cloudProvider, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]) }, 'Asset Readiness');
   addTableSheet(workbook, { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) }, 'Risk Acceptance');
   addTableSheet(workbook, { title: 'Decision Traceability', columns: ['Stage', 'Detail'], rows: report.decisionChain.steps.map((s) => [s.stage, s.detail]) }, 'Decision Chain');
+  // The change controls shared by every playbook, called out on their own sheet.
+  // The full per-playbook sheet below deliberately keeps ALL columns: XLSX is a
+  // machine-readable export that gets filtered and pivoted, so dropping the
+  // hoisted columns there would lose data for GRC ingestion. Hoisting applies to
+  // the presentation formats (PDF / DOCX / HTML / PPTX).
+  if (report.playbookStandardControls.rows.length) {
+    addTableSheet(workbook, { title: `Standard Change Controls — applies to all ${report.playbookStandardControls.applies} playbooks`, columns: ['Control', 'Detail'], rows: report.playbookStandardControls.rows.map((r) => [r.step, r.detail]) }, 'Change Controls');
+  }
   addTableSheet(workbook, { title: 'Remediation Playbook', columns: ['Finding', 'Current State', 'Target State', 'Prerequisites', 'Dependencies', 'Execution Steps', 'Validation Steps', 'Rollback Steps', 'Success Criteria', 'Expected Downtime', 'Maintenance Window', 'Rollback Duration', 'Validation Owner', 'Success KPI', 'Automation Status', 'SLA Impact'], rows: report.playbookDetail.map((p) => [
     p.finding, p.currentState, p.targetState, p.prerequisites.join('; '), p.dependencies.join('; '),
     p.executionSteps.map((s, i) => `${i + 1}. ${s}`).join('  '), p.validationSteps.join('; '), p.rollbackSteps.join('; '), p.successCriteria.join('; '),

@@ -17,6 +17,7 @@ import {
 } from 'docx';
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
 import { qrPngDataUrl, reportVerificationUrl } from '../ReportQr';
+import { playbookRows } from '../ReportPlaybook';
 
 function dataUrlToBytes(dataUrl: string): Uint8Array {
   const base64 = dataUrl.split(',')[1] || '';
@@ -184,7 +185,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
     ['Provider-Controlled', `${sr.readiness.provider}/100`, `${sr.providerControlled}`],
     ['Ecosystem-Dependent', `${sr.readiness.ecosystem}/100`, `${sr.ecosystemDependent}`],
   ] };
-  const srMatrixTable: ReportTable = { title: 'Shared Responsibility Matrix', columns: ['Finding', 'Owner', 'Action', 'Priority', 'Status'], rows: sr.matrix.map((m) => [m.finding, m.owner, m.action, m.priority, m.status]) };
+  const srMatrixTable: ReportTable = { title: 'Shared Responsibility Matrix', columns: ['Finding', 'Asset', 'Owner', 'Action', 'Instances', 'Priority', 'Status'], rows: sr.matrix.map((m) => [m.finding, m.asset, m.owner, m.action, m.occurrences, m.priority, m.status]) };
   const srWavesTable: ReportTable = { title: 'Dependency-Ordered Roadmap (7 Waves)', columns: ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], rows: sr.waves.map((w) => [`Wave ${w.wave}`, w.name, w.domain, `${w.findingCount}`, w.status, w.timeline]) };
   const srProvidersTable: ReportTable = { title: 'Provider & Ecosystem Readiness', columns: ['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Customer Influence'], rows: sr.providers.map((p) => [p.name, p.domain, `${p.count}`, p.pqRoadmap, p.customerInfluence]) };
   const depTable: ReportTable = { title: 'Dependencies', columns: ['Dependency Chain', 'Blast Radius', 'Complexity'], rows: report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]) };
@@ -225,7 +226,13 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const impactReasonTable: ReportTable = { title: 'Business Impact Intelligence', columns: ['Dimension', 'Level', 'Why', 'Evidence'], rows: report.impactReasons.map((r) => [r.dimension, r.level, r.reason, r.evidence.join('; ')]) };
   const assetReadinessTable: ReportTable = { title: 'Asset-Level Readiness', columns: ['Asset', 'Readiness', 'Risk', 'Criticality', 'Environment', 'Business Unit', 'Owner', 'Internet-Facing', 'Primary Driver'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, `${a.readiness}/100`, `${a.risk}/100`, a.criticality, a.environment, a.businessUnit, a.owner, a.internetFacing ? 'Yes' : 'No', a.primaryDriver]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-', '-']] };
   const assetCryptoProfileTable: ReportTable = { title: 'Asset Crypto Profile', columns: ['Asset', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] };
-  const riskAcceptanceTable: ReportTable = { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) };
+  // When every disposition shares the same approval status, date and signature
+  // method, they collapse into one policy statement and the approver joins the
+  // main table — instead of a second table of identical rows.
+  const approvalPolicy = report.riskApprovalPolicy;
+  const riskAcceptanceTable: ReportTable = approvalPolicy.uniform
+    ? { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date', 'Approver'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver]) }
+    : { title: 'Executive Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual Risk', 'Review Date'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) };
   const riskApprovalTable: ReportTable = { title: 'Risk Owner Approval', columns: ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) };
   const decisionChainTable: ReportTable = { title: 'Decision Traceability', columns: ['Stage', 'Detail'], rows: report.decisionChain.steps.map((st) => [st.stage, st.detail]) };
   const findingGroupTable: ReportTable = { title: 'Consolidated Findings', columns: ['Finding', 'Occurrences', 'Affected Assets', 'Impact', 'Evidence'], rows: report.findingGroups.map((g) => [g.title, g.occurrences, g.affectedAssets, g.impact.toUpperCase(), g.evidence.join(', ') || '-']) };
@@ -247,15 +254,22 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
   const cryptoPolicyTable: ReportTable = { title: 'Crypto-Policy Profiles', columns: ['Profile', 'Key Establishment', 'Digital Signature', 'Certificate Chain', 'Symmetric / Hash', 'Guidance'], rows: report.cryptoPolicy.profiles.map((p) => [p.profile === report.cryptoPolicy.activeProfile ? `${p.profile} (ACTIVE)` : p.profile, p.keyEstablishment, p.digitalSignature, p.certificateChain, `${p.symmetric} / ${p.hash}`, p.guidance]) };
   const definitionsTable: ReportTable = { title: 'Terminology & Definitions', columns: ['Term', 'Definition'], rows: report.definitions.length ? report.definitions.map((d) => [d.term, d.definition]) : [['Evidence Not Available', '-']] };
   const reportValidationTable: ReportTable = { title: 'Report Validation', columns: ['Validation Check', 'Result', 'Detail'], rows: report.reportValidation.checks.length ? report.reportValidation.checks.map((c) => [c.check, c.status === 'pass' ? 'PASS' : 'FAIL', c.detail]) : [['Evidence Not Available', '-', '-']] };
-  const playbookChildren = report.playbookDetail.flatMap((p) => [
-    para(p.finding, INK),
-    docTable({ title: 'Playbook', columns: ['Step', 'Detail'], rows: [
-      ['Current State', p.currentState], ['Target State', p.targetState], ['Pre-Requisites', p.prerequisites.join('; ')], ['Dependencies', p.dependencies.join('; ')],
-      ['Execution', p.executionSteps.map((st, i) => `${i + 1}. ${st}`).join('  ')], ['Validation', p.validationSteps.join('; ')], ['Rollback', p.rollbackSteps.join('; ')], ['Success Criteria', p.successCriteria.join('; ')],
-      ['Expected Downtime', p.estimatedDowntime], ['Maintenance Window', p.maintenanceWindow], ['Rollback Duration', p.rollbackDuration], ['Validation Owner', p.validationOwner],
-      ['Success KPI', p.successKpi], ['Automation Status', p.automationStatus], ['SLA Impact', p.slaImpact],
-    ] }),
-  ]);
+  // Controls identical across every playbook are stated once; each playbook then
+  // lists only what differs for that finding.
+  const standardControls = report.playbookStandardControls;
+  const playbookChildren: Array<Paragraph | Table> = [
+    ...(standardControls.rows.length
+      ? [
+          para(`Standard Change Controls — applies to all ${standardControls.applies} playbooks`, INK),
+          para(standardControls.note, MUTED),
+          docTable({ title: 'Standard Change Controls', columns: ['Control', 'Detail'], rows: standardControls.rows.map((r) => [r.step, r.detail]) }),
+        ]
+      : []),
+    ...report.playbookDetail.flatMap((p) => [
+      para(p.finding, INK),
+      docTable({ title: 'Playbook', columns: ['Step', 'Detail'], rows: playbookRows(p, standardControls.sharedKeys) }),
+    ]),
+  ];
   const explainChildren = report.explainability.flatMap((x) => [
     para(x.metric, INK),
     docTable({ title: x.metric, columns: ['Question', 'Answer'], rows: [['What was calculated?', x.what], ['How was it calculated?', x.how], ['Which evidence was used?', x.evidence], ['Why does it matter?', x.why], ['What action should be taken?', x.action]] }),
@@ -406,6 +420,7 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
             docTable(srTimelineTable),
             docTable(srReadinessTable),
             ...(sr.reconciliationNote ? [para(`Finding-count reconciliation: ${sr.reconciliationNote}`, MUTED)] : []),
+            para(`Ownership matrix: ${sr.matrix.length} consolidated row(s) covering ${sr.matrixInstances} raw scanner instance(s). One row per cryptographic exposure, owner and asset — repeated detections of the same exposure are merged and the Instances column preserves the raw count.`, MUTED),
             docTable(srMatrixTable),
             docTable(srWavesTable),
             ...(sr.providers.length ? [docTable(srProvidersTable)] : []),
@@ -493,8 +508,9 @@ export async function exportDocx(report: EnterpriseAssessmentReport): Promise<Bl
           docTable(assetCryptoProfileTable),
           heading('Executive Risk Acceptance'),
           para('Approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report digital signature.', MUTED),
+          ...(approvalPolicy.uniform ? [para(`Risk Owner Approval: ${approvalPolicy.note}`, MUTED)] : []),
           docTable(riskAcceptanceTable),
-          docTable(riskApprovalTable),
+          ...(approvalPolicy.uniform ? [] : [docTable(riskApprovalTable)]),
           heading('Decision Traceability'),
           para(report.decisionChain.headline, INK),
           docTable(decisionChainTable),

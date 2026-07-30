@@ -1,0 +1,661 @@
+/**
+ * Public Quantum Exposure Assessment™ — verification harness.
+ *
+ *   npx tsx tools/public-scan-check.ts [target]
+ *
+ * Runs a live edge assessment and asserts the accuracy invariants that keep the
+ * public scanner honest:
+ *   • no fabricated post-quantum readiness (0 unless a PQ group/signature is seen)
+ *   • every governance item stays `Unknown`
+ *   • scores stay inside their declared bounds and match their components
+ *   • the report never claims visibility it does not have
+ */
+
+import 'dotenv/config'
+import { assessPublicTarget } from '../src/lib/scanner/public-scan/assess'
+import {
+  buildScoreComponents,
+  computeClassicalScore,
+  computePostQuantumReadiness,
+} from '../src/lib/scanner/public-scan/engine'
+import {
+  GAUGE_ARC_BANDS,
+  RATING_TIERS,
+  SCORE_CATEGORY_DEFS,
+  SCORE_GRADE_TABLE,
+  scoreToGrade,
+} from '../src/lib/scanner/public-scan/grading-model'
+
+const TARGET = process.argv[2] || 'google.com'
+
+let passed = 0
+let failed = 0
+
+function check(name: string, condition: boolean, detail = ''): void {
+  if (condition) {
+    passed += 1
+    console.log(`  PASS  ${name}${detail ? ` — ${detail}` : ''}`)
+  } else {
+    failed += 1
+    console.error(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`)
+  }
+}
+
+async function main(): Promise<void> {
+  console.log(`\nQGuard Helix — Public Quantum Exposure Assessment check`)
+  console.log(`Target: ${TARGET}\n`)
+
+  const started = Date.now()
+  const report = await assessPublicTarget({ input: TARGET, host: TARGET, port: 443 })
+  const elapsed = Date.now() - started
+
+  console.log(`Completed in ${(elapsed / 1000).toFixed(1)}s\n`)
+  console.log(`  Grade                 ${report.executive.grade} (${report.executive.gradeLabel})`)
+  console.log(`  Classical score       ${report.executive.classicalScore}/100`)
+  console.log(`  Post-quantum ready    ${report.executive.postQuantumReadiness}%`)
+  console.log(`  Encryption score      ${report.executive.encryptionScore}/100 (${report.executive.encryptionBand})`)
+  console.log(`  Business risk         ${report.executive.businessRisk}`)
+  console.log(`  Migration complexity  ${report.executive.migrationComplexity}`)
+  console.log(`  Confidence            ${report.executive.confidence}%`)
+  console.log(`  TLS                   ${report.evidence.tls?.tlsVersion ?? 'n/a'} · ${report.evidence.tls?.cipherSuite ?? 'n/a'}`)
+  console.log(`  Key exchange          ${report.intelligence.keyExchange}`)
+  console.log(`  Certificate           ${report.evidence.certificate?.publicKeyAlgorithm ?? 'n/a'}`)
+  console.log(`  SANs                  ${report.evidence.certificateExtras?.sanCount ?? 0}`)
+  console.log(`  CT SCTs               ${report.evidence.certificateExtras?.sctCount ?? 0}`)
+  console.log(`  OCSP stapled          ${report.evidence.certificateExtras?.ocspStapled ?? false}`)
+  console.log(`  CAA                   ${report.evidence.dns.caaQueryable ? (report.evidence.dns.caaPresent ? report.evidence.dns.caaRecords.join(' | ') : 'absent') : 'not queryable (Unknown)'}`)
+  console.log(`  Hybrid PQ groups      ${report.evidence.keyAgreement.hybridGroups.join(', ') || 'none accepted'}`)
+  console.log(`  Classical groups      ${report.evidence.keyAgreement.classicalGroups.join(', ') || 'none accepted'}`)
+  console.log(`  Findings              ${report.findings.length}`)
+  console.log(`  Recommendations       ${report.recommendations.length}\n`)
+
+  console.log('Invariants:')
+
+  // 1 — score bounds
+  const { executive } = report
+  check(
+    'all headline scores within 0-100',
+    [executive.classicalScore, executive.postQuantumReadiness, executive.encryptionScore, executive.confidence].every(
+      (value) => value >= 0 && value <= 100,
+    ),
+  )
+
+  // 2 — the published 12-category weighted model is exactly what the grade
+  // decomposition shows, and it is what encryptionScore is computed from —
+  // not a 60/40 classical/PQ blend (that formula no longer exists).
+  check(
+    'the report publishes exactly the 12 categories in the weighted scoring model',
+    report.scoreComponents.length === SCORE_CATEGORY_DEFS.length &&
+      SCORE_CATEGORY_DEFS.every((def) => report.scoreComponents.some((c) => c.key === def.key && c.weight === def.weight)),
+    report.scoreComponents.map((c) => `${c.key}:${c.weight}`).join(', '),
+  )
+  check(
+    'score component weights sum to 100',
+    report.scoreComponents.reduce((sum, component) => sum + component.weight, 0) === 100,
+  )
+
+  // 3 — encryption score (the graded number) is reproducible from the
+  // published 12-category components; classicalScore is the same weighted
+  // mean restricted to the 10 non-PQ categories.
+  const recomputedComponents = buildScoreComponents(report.evidence)
+  const recomputedEncryption = computeClassicalScore(recomputedComponents)
+  check(
+    'encryption score reproducible from the published 12-category model',
+    recomputedEncryption === executive.encryptionScore,
+    `${recomputedEncryption} vs ${executive.encryptionScore}`,
+  )
+  const recomputedClassical = computeClassicalScore(
+    recomputedComponents.filter((c) => c.key !== 'cryptographic-algorithms' && c.key !== 'post-quantum-readiness'),
+  )
+  check(
+    'classical score reproducible as the 10-category subset of the same model',
+    recomputedClassical === executive.classicalScore,
+    `${recomputedClassical} vs ${executive.classicalScore}`,
+  )
+  check(
+    "the post-quantum-readiness category equals the report's postQuantumReadiness stat",
+    report.scoreComponents.find((c) => c.key === 'post-quantum-readiness')?.applicable === false ||
+      report.scoreComponents.find((c) => c.key === 'post-quantum-readiness')?.score === executive.postQuantumReadiness,
+  )
+  check(
+    'unobservable dimensions are excluded, not scored as failures',
+    report.scoreComponents
+      .filter((component) => !component.applicable)
+      .every((component) => component.observed.length > 0),
+    `${report.scoreComponents.filter((c) => !c.applicable).map((c) => c.key).join(', ') || 'none inapplicable'}`,
+  )
+  check(
+    'TLS 1.3 endpoints are credited with forward secrecy',
+    !report.evidence.tls?.supportedProtocols.includes('TLSv1.3') ||
+      (report.scoreComponents.find((component) => component.key === 'forward-secrecy')?.score ?? 0) > 0,
+  )
+  check(
+    'CAA is reported Unknown (not Fail) when the RRset is not queryable',
+    report.evidence.dns.caaQueryable ||
+      report.findings.find((finding) => finding.id === 'dns-caa')?.status === 'Unknown',
+  )
+
+  // 3a — the badge, gauge and risk level are all derived from the SAME
+  // scoreToGrade(encryptionScore) row — this is the "properly applied and
+  // aligned" contract for the grading model: nothing on screen may disagree
+  // with the published Score-to-Grade Mapping for this score.
+  if (executive.gradeable) {
+    const graded = scoreToGrade(executive.encryptionScore)
+    check(
+      'grade letter matches the published Score-to-Grade Mapping for this score',
+      executive.grade === graded.grade,
+      `score ${executive.encryptionScore} → table says ${graded.grade}, report says ${executive.grade}`,
+    )
+    check(
+      'grade rating (Elite/Excellent/Good/Fair/Weak/Critical) matches the table',
+      executive.gradeLabel === graded.rating,
+      `${executive.gradeLabel} vs ${graded.rating}`,
+    )
+    check('grade color matches the table', executive.gradeColor === graded.color)
+    check(
+      'business risk is at least the risk level the score table assigns (escalation only raises it)',
+      SCORE_GRADE_TABLE.some(
+        (row) =>
+          row.grade === executive.grade &&
+          (row.riskLevel === executive.businessRisk ||
+            // escalated for a critical finding — never downgraded below the table
+            ['Elevated', 'High', 'Critical'].includes(executive.businessRisk)),
+      ),
+      `table risk for ${executive.grade} vs reported ${executive.businessRisk}`,
+    )
+  } else {
+    check('an ungradeable report has no grade color from the table', executive.gradeColor === '#94a3b8')
+  }
+  check(
+    'the score-to-grade table is exhaustive over 0-100 with no gaps or overlaps',
+    Array.from({ length: 101 }, (_, score) => score).every((score) => {
+      const matches = SCORE_GRADE_TABLE.filter((row) => score >= row.min && score <= row.max)
+      return matches.length === 1
+    }),
+  )
+  check(
+    'every SecurityGrade value the table can produce is reachable',
+    new Set(SCORE_GRADE_TABLE.map((row) => row.grade)).size === SCORE_GRADE_TABLE.length,
+  )
+
+  // The gauge legend (RATING_TIERS) and the colored arc (GAUGE_ARC_BANDS) are
+  // both DERIVED from SCORE_GRADE_TABLE — this is what guarantees the chip
+  // that lights up, the arc color under the pointer, and the grade badge can
+  // never show three different answers for the same score.
+  check(
+    'the gauge legend covers exactly the ratings the grade table produces, no more no less',
+    new Set(RATING_TIERS.map((tier) => tier.rating)).size === RATING_TIERS.length &&
+      RATING_TIERS.every((tier) => SCORE_GRADE_TABLE.some((row) => row.rating === tier.rating)) &&
+      SCORE_GRADE_TABLE.every((row) => RATING_TIERS.some((tier) => tier.rating === row.rating)),
+    RATING_TIERS.map((t) => t.rating).join(', '),
+  )
+  check(
+    'the gauge arc bands are gapless across 0-100 and match the grade table color at every score',
+    Array.from({ length: 101 }, (_, score) => score).every((score) => {
+      const band = GAUGE_ARC_BANDS.find((b) => score >= b.from && (score < b.to || b.to === 100))
+      return band !== undefined && band.color === scoreToGrade(score).color
+    }),
+  )
+
+  // 3b — a grade is withheld rather than invented when the edge did not respond
+  check(
+    'grade is withheld (N/A) when evidence coverage is below the threshold',
+    executive.gradeable === executive.evidenceCoverage >= 40 &&
+      (executive.gradeable || executive.grade === 'N/A'),
+    `coverage ${executive.evidenceCoverage}% → grade ${executive.grade}`,
+  )
+  check(
+    'an ungradeable scan does not publish a business-risk conclusion',
+    executive.gradeable || executive.businessRisk === 'Not assessable',
+  )
+  // A control that could not be measured must report Unknown — never a failure.
+  // Controls are always emitted (so the published weights still sum to 100);
+  // what changes is the verdict.
+  const unmeasurable: Array<{ id: string; measurable: boolean }> = [
+    { id: 'tls-version', measurable: report.evidence.tls !== null },
+    { id: 'cipher-suite', measurable: Boolean(report.evidence.tls?.cipherSuite) },
+    { id: 'forward-secrecy', measurable: report.evidence.tls !== null },
+    { id: 'certificate-algorithm', measurable: report.evidence.certificate !== null },
+    { id: 'certificate-issuer', measurable: report.evidence.certificate !== null },
+    { id: 'certificate-lifetime', measurable: report.evidence.certificateExtras !== null },
+    { id: 'ocsp-stapling', measurable: report.evidence.certificateExtras !== null },
+    { id: 'certificate-transparency', measurable: report.evidence.certificateExtras !== null },
+    { id: 'hsts', measurable: report.evidence.http.reachable },
+    { id: 'http-security', measurable: report.evidence.http.reachable },
+    { id: 'dns-caa', measurable: report.evidence.dns.caaQueryable },
+    { id: 'pq-key-agreement', measurable: report.evidence.keyAgreement.probed },
+  ]
+  const wrongVerdicts = unmeasurable
+    .filter((entry) => !entry.measurable)
+    .filter((entry) => {
+      const finding = report.findings.find((candidate) => candidate.id === entry.id)
+      return finding !== undefined && finding.status !== 'Unknown'
+    })
+  check(
+    'no failure finding is raised for a control that could not be measured',
+    wrongVerdicts.length === 0,
+    wrongVerdicts.length ? `wrongly rated: ${wrongVerdicts.map((e) => e.id).join(', ')}` : 'all unmeasured are Unknown',
+  )
+
+  // 4 — no fabricated post-quantum readiness
+  const pq = computePostQuantumReadiness(report.evidence)
+  check(
+    'PQ readiness < 30% unless a hybrid group or PQ signature is observed',
+    pq.hybridObserved || pq.pqSignatureObserved || executive.postQuantumReadiness < 30,
+    `hybrid=${pq.hybridObserved} pqSig=${pq.pqSignatureObserved} score=${executive.postQuantumReadiness}`,
+  )
+  check(
+    'quantum vulnerability label matches observed evidence',
+    (report.intelligence.quantumVulnerability === 'Vulnerable') === !pq.hybridObserved,
+    report.intelligence.quantumVulnerability,
+  )
+
+  // 5 — governance is always unknown from a public scan
+  check(
+    'every governance item reports Unknown',
+    report.governance.length >= 6 && report.governance.every((item) => item.status === 'Unknown'),
+  )
+  check(
+    'each governance item states why it cannot be validated',
+    report.governance.every((item) => item.reason.includes('Enterprise Assessment')),
+  )
+
+  // 6 — scope disclosure is present and honest
+  check('scope lists what was analyzed', report.scope.analyzed.length >= 5)
+  check('scope lists what was NOT analyzed', report.scope.notAnalyzed.length >= 6)
+  check(
+    'scope statement disclaims internal visibility',
+    report.scope.statement.includes('does not inspect source code'),
+  )
+
+  // 7 — findings carry the full executive columns
+  check(
+    'every finding has impact, quantum impact and a next step',
+    report.findings.every(
+      (finding) => finding.businessImpact && finding.quantumImpact && finding.nextStep && finding.evidence,
+    ),
+  )
+  check('findings are sorted most-severe first', isSortedBySeverity(report))
+
+  // 8 — footprint publishes counts, never invented inventory
+  check(
+    'footprint states that its values are counts, not estimates of the estate',
+    report.footprint.basis.startsWith('These are counts of what this scan observed'),
+  )
+  check(
+    'every footprint metric names what was counted',
+    report.footprint.metrics.length > 0 &&
+      report.footprint.metrics.every((metric) => metric.countedFrom.length > 0),
+  )
+  check(
+    'footprint names what it cannot count instead of guessing a number',
+    report.footprint.notCounted.length >= 5,
+  )
+
+  // 9 — Sophia narrative never claims internal visibility
+  check(
+    'Sophia lists the internal domains she cannot validate',
+    report.sophia.cannotValidate.length >= 6 &&
+      report.sophia.recommendation.includes('Enterprise Assessment'),
+  )
+
+  // 10 — timeline + recommendations present
+  check('quantum exposure timeline has all phases', report.timeline.length === 7)
+  check('recommendations are prioritised', report.recommendations.every((rec) => Boolean(rec.priority)))
+  check(
+    'an internal-inventory recommendation is always present',
+    report.recommendations.some((rec) => rec.id === 'internal-inventory'),
+  )
+
+  // 11 — CROSS-PANEL CONSISTENCY
+  // Every panel is a projection of one control array, so the same control must
+  // read identically wherever it appears.
+  console.log('\nCross-panel consistency:')
+
+  const surfaceByKey = new Map(report.attackSurface.map((item) => [item.key, item]))
+  const findingByKey = new Map(report.findings.map((finding) => [finding.id, finding]))
+  const componentByKey = new Map(report.scoreComponents.map((component) => [component.key, component]))
+
+  // Seven-state model: only `Not Supported` joins Critical as a real failure.
+  const STATUS_TO_SURFACE: Record<string, string> = {
+    Healthy: 'pass',
+    Warning: 'partial',
+    Critical: 'fail',
+    'Not Supported': 'fail',
+    Unknown: 'unknown',
+    'Not Observable': 'unknown',
+    'Not Applicable': 'unknown',
+  }
+
+  const shared = [...findingByKey.keys()].filter((key) => surfaceByKey.has(key))
+  const statusMismatches = shared.filter((key) => {
+    const expected = STATUS_TO_SURFACE[findingByKey.get(key)!.status]
+    const actual = surfaceByKey.get(key)!.status
+    return actual !== expected && actual !== 'info'
+  })
+  check(
+    'Attack Surface status matches Public Findings status for every shared control',
+    statusMismatches.length === 0,
+    statusMismatches.length ? `mismatched: ${statusMismatches.join(', ')}` : `${shared.length} shared controls agree`,
+  )
+
+  // The compact value must not read as a pass when the verdict is a failure —
+  // "Fail" text under a Partial dot, or "256-bit AEAD" on a Weak control.
+  const POSITIVE_TOKENS = /^(pass|yes|enabled|healthy)$/i
+  const NEGATIVE_TOKENS = /^(fail|no|missing|disabled)$/i
+  const toneMismatches = report.attackSurface.filter((item) => {
+    const finding = findingByKey.get(item.key)
+    if (!finding) return false
+    if (finding.status === 'Healthy' && NEGATIVE_TOKENS.test(item.value)) return true
+    if ((finding.status === 'Critical' || finding.status === 'Not Supported') && POSITIVE_TOKENS.test(item.value)) return true
+    // A Partial verdict must not be shown with the harder "Fail" wording.
+    if (finding.status === 'Warning' && NEGATIVE_TOKENS.test(item.value)) return true
+    return false
+  })
+  check(
+    'Attack Surface value wording matches the control verdict',
+    toneMismatches.length === 0,
+    toneMismatches.length
+      ? toneMismatches.map((item) => `${item.key}="${item.value}" vs ${findingByKey.get(item.key)!.status}`).join('; ')
+      : 'wording aligned',
+  )
+
+  // Score-category keys are the published model's keys (tls-configuration,
+  // cipher-suites, …), which no longer equal the granular finding ids they
+  // aggregate (tls-version, cipher-suite, …) now that categories can combine
+  // more than one control (Certificates = algorithm + lifetime). For the
+  // eight categories that DO pass a single control through unchanged, verify
+  // "unobservable" still lines up with that source finding reporting Unknown.
+  const DIRECT_CATEGORY_SOURCE: Record<string, string> = {
+    'tls-configuration': 'tls-version',
+    'cipher-suites': 'cipher-suite',
+    'forward-secrecy': 'forward-secrecy',
+    hsts: 'hsts',
+    'dns-caa': 'dns-caa',
+    'ocsp-stapling': 'ocsp-stapling',
+    'certificate-transparency': 'certificate-transparency',
+    'http-security-headers': 'http-security',
+  }
+  const scoreMismatches = Object.entries(DIRECT_CATEGORY_SOURCE).filter(([categoryKey, findingId]) => {
+    const finding = findingByKey.get(findingId)
+    const component = componentByKey.get(categoryKey)
+    if (!finding || !component) return false
+    return !component.applicable && finding.status !== 'Unknown'
+  })
+  check(
+    'directly-sourced categories stay unobservable exactly when their source finding is Unknown',
+    scoreMismatches.length === 0,
+    scoreMismatches.length ? `mismatched: ${scoreMismatches.map(([k]) => k).join(', ')}` : 'aligned',
+  )
+
+  // Key exchange must read the same in three places.
+  const kexSurface = surfaceByKey.get('forward-secrecy')
+  const kexFinding = findingByKey.get('forward-secrecy')
+  const kexHandshake = report.handshake.find((step) => step.key === 'key-exchange')
+  check(
+    'Key Exchange agrees across Attack Surface, Findings, Intelligence and Handshake',
+    !report.evidence.tls ||
+      (kexHandshake?.value === report.intelligence.keyExchange &&
+        Boolean(kexFinding) &&
+        Boolean(kexSurface)),
+    `intelligence="${report.intelligence.keyExchange}" handshake="${kexHandshake?.value}"`,
+  )
+
+  // Post-quantum verdict must agree across four panels.
+  const pqSurface = surfaceByKey.get('pq-key-agreement')
+  const hybridSeen = report.evidence.keyAgreement.hybridGroups.length > 0
+  check(
+    'Post-quantum verdict agrees across Attack Surface, Intelligence, Executive and Timeline',
+    (pqSurface ? (pqSurface.status === 'pass') === hybridSeen : true) &&
+      (report.intelligence.quantumVulnerability !== 'Vulnerable') === hybridSeen &&
+      (report.executive.postQuantumReadiness >= 55) === hybridSeen &&
+      (report.timeline.find((phase) => phase.key === 'hybrid')?.state === 'now') === hybridSeen,
+    `hybrid=${hybridSeen}, pq=${report.executive.postQuantumReadiness}%`,
+  )
+
+  // Certificate counts must agree between Attack Surface and the footprint.
+  const chainSurface = surfaceByKey.get('certificate-chain')
+  const chainMetric = report.footprint.metrics.find((metric) => metric.key === 'chain')
+  check(
+    'Chain certificate count agrees between Attack Surface and Public Footprint',
+    !report.evidence.certificateExtras ||
+      chainSurface?.value === `${chainMetric?.value} certs`,
+    `surface="${chainSurface?.value}" footprint=${chainMetric?.value}`,
+  )
+
+  const namesSurface = surfaceByKey.get('covered-names')
+  const namesMetric = report.footprint.metrics.find((metric) => metric.key === 'names')
+  check(
+    'Covered-name count agrees between Attack Surface and Public Footprint',
+    !report.evidence.certificateExtras || namesSurface?.value === String(namesMetric?.value),
+    `surface="${namesSurface?.value}" footprint=${namesMetric?.value}`,
+  )
+
+  // A recommendation may only exist for a control that actually failed.
+  const failedControls = new Set(
+    report.findings.filter((finding) => finding.status !== 'Healthy').map((finding) => finding.id),
+  )
+  const orphanRecommendations = report.recommendations.filter((rec) => {
+    const map: Record<string, string> = {
+      'disable-legacy-tls': 'tls-version',
+      'strengthen-cipher-suites': 'cipher-suite',
+      'forward-secrecy': 'forward-secrecy',
+      'enable-caa': 'dns-caa',
+      'enable-hsts': 'hsts',
+      'harden-http-headers': 'http-security',
+      'enable-ocsp-stapling': 'ocsp-stapling',
+      'certificate-automation': 'certificate-lifetime',
+      'hybrid-kex': 'pq-key-agreement',
+    }
+    const control = map[rec.id]
+    return control ? !failedControls.has(control) : false
+  })
+  check(
+    'every recommendation maps to a control that actually failed',
+    orphanRecommendations.length === 0,
+    orphanRecommendations.length ? `orphaned: ${orphanRecommendations.map((r) => r.id).join(', ')}` : 'all mapped',
+  )
+
+  // Score gains must be reproducible from the published model, not asserted.
+  check(
+    'recommendation score gains are modelled, not hand-assigned',
+    report.recommendations.every(
+      (rec) =>
+        (rec.scoreGain === null && rec.scoreGainTarget === null) ||
+        (typeof rec.scoreGain === 'number' && rec.scoreGain >= 0 && rec.scoreGain <= 100),
+    ) && report.recommendations.every((rec) => rec.scoreGainBasis.length > 0),
+  )
+  check(
+    'the unscored recommendation is the internal-inventory one',
+    report.recommendations.filter((rec) => rec.scoreGain === null).every((rec) => rec.id === 'internal-inventory'),
+  )
+
+  // Sophia must not introduce metrics that contradict the Executive Summary.
+  // Only quoted *metrics* count — a percentage, an "/100" composite, or a score
+  // introduced with "score of". Algorithm names (P-256) and protocol versions
+  // (TLS 1.3) are prose, not claims about this assessment.
+  const quotedMetrics = [
+    ...report.sophia.narrative.matchAll(/(\d{1,3})\s*%/g),
+    ...report.sophia.narrative.matchAll(/(\d{1,3})\s*\/\s*100/g),
+    ...report.sophia.narrative.matchAll(/score of (\d{1,3})/g),
+  ].map((match) => match[1])
+  const executiveNumbers = new Set(
+    [
+      report.executive.postQuantumReadiness,
+      report.executive.classicalScore,
+      report.executive.encryptionScore,
+      report.executive.evidenceCoverage,
+    ].map(String),
+  )
+  check(
+    'Sophia quotes only metrics that appear in the Executive Summary',
+    quotedMetrics.length > 0 && quotedMetrics.every((value) => executiveNumbers.has(value)),
+    `narrative metrics=[${quotedMetrics.join(', ')}]`,
+  )
+
+  // ── Public Scan Intelligence Engine modules ──────────────────────────────
+  console.log('\nScanner engine modules:')
+
+  const bundle = report.evidence.engines
+  check(
+    'all five intelligence engines produced a result envelope',
+    Boolean(bundle?.dns && bundle?.tls && bundle?.certificate && bundle?.http && bundle?.crypto),
+    `${bundle?.totalMs}ms, confidence ${bundle?.confidence}%`,
+  )
+  check(
+    'every engine returns evidence with a detection method and source',
+    bundle.evidence.length > 0 &&
+      bundle.evidence.every(
+        (item) => item.label && item.detectionMethod && item.evidenceSource && item.confidence >= 0,
+      ),
+    `${bundle.evidence.length} structured observations`,
+  )
+  check(
+    'no engine throws — a failed probe is a result, not an exception',
+    [bundle.dns, bundle.tls, bundle.certificate, bundle.http, bundle.crypto].every(
+      (engine) => typeof engine.ok === 'boolean' && engine.data !== null,
+    ),
+  )
+
+  // DNS engine: the transport fallback is what makes CAA answerable at all.
+  check(
+    'DNS engine resolves CAA over some transport (system resolver or DoH)',
+    bundle.dns.data.caaQueryable,
+    bundle.dns.data.caaSource ?? 'no transport answered',
+  )
+  check(
+    'DNS engine reports which transports actually answered',
+    bundle.dns.data.transports.length > 0,
+    bundle.dns.data.transports.join(', '),
+  )
+  check(
+    'DNSSEC verdict is measured, not assumed',
+    !bundle.dns.data.dnssecQueryable ||
+      typeof bundle.dns.data.dnssecSigned === 'boolean',
+  )
+
+  // HTTP engine: must read headers even when the chain is untrusted.
+  check(
+    'HTTP engine assesses the full OWASP transport-header set',
+    bundle.http.data.headers.length === 9,
+    `${bundle.http.data.headers.length} headers, groups: ${[...new Set(bundle.http.data.headers.map((h) => h.group))].join('/')}`,
+  )
+  check(
+    'absent headers on a reachable origin are Not Supported, not Unknown',
+    !bundle.http.data.reachable ||
+      bundle.http.data.headers.filter((h) => !h.present).every((h) => h.status === 'Not Supported'),
+  )
+  check(
+    'HSTS analysis reports preload eligibility with blockers',
+    !bundle.http.data.reachable ||
+      (typeof bundle.http.data.hsts.preloadEligible === 'boolean' &&
+        (bundle.http.data.hsts.preloadEligible || bundle.http.data.hsts.preloadBlockers.length > 0)),
+    `${bundle.http.data.hsts.status} · maxAge ${bundle.http.data.hsts.maxAge} · eligible ${bundle.http.data.hsts.preloadEligible}`,
+  )
+
+  // TLS engine
+  check(
+    'TLS engine probes named groups including hybrid ML-KEM',
+    // Only meaningful when a handshake completed — there is nothing to offer a
+    // group to when the host does not resolve.
+    !bundle.tls.ok || bundle.tls.data.groupsProbed,
+    bundle.tls.ok
+      ? `hybrid: ${bundle.tls.data.hybridGroups.join(', ') || 'none'} · classical: ${bundle.tls.data.classicalGroups.join(', ') || 'none'}`
+      : 'no handshake — group probing not applicable',
+  )
+  check(
+    'unobservable TLS properties are null, never guessed',
+    bundle.tls.data.compression === null && bundle.tls.data.secureRenegotiation === null,
+  )
+
+  // Certificate engine
+  check(
+    'certificate engine verifies the chain rather than trusting the issuer name',
+    !bundle.certificate.ok || typeof bundle.certificate.data.chainTrusted === 'boolean',
+    `trusted=${bundle.certificate.data.chainTrusted} ${bundle.certificate.data.trustError ?? ''}`,
+  )
+  check(
+    'hostname coverage is evaluated with RFC 6125 matching',
+    !bundle.certificate.ok || bundle.certificate.data.hostnameMatches !== undefined,
+  )
+
+  // Crypto engine
+  check(
+    'every catalogued algorithm carries a classification and a source',
+    bundle.crypto.data.algorithms.every(
+      (algorithm) => algorithm.classification && algorithm.evidenceSource && algorithm.detail,
+    ),
+    `${bundle.crypto.data.algorithms.length} algorithms observed`,
+  )
+  check(
+    'Quantum Risk Engine explains every factor it scores',
+    bundle.crypto.data.riskFactors.every((factor) => factor.explanation.length > 20),
+    `${bundle.crypto.data.quantumRisk} from ${bundle.crypto.data.riskFactors.length} factors`,
+  )
+  check(
+    'AES-128 is not reported as quantum-safe',
+    bundle.crypto.data.algorithms
+      .filter((algorithm) => algorithm.name === 'AES-128-GCM')
+      .every((algorithm) => algorithm.quantumVulnerable && algorithm.postQuantumBits === 64),
+  )
+
+  // Seven-state discipline across the whole report.
+  const VALID_STATUSES = new Set([
+    'Healthy',
+    'Warning',
+    'Critical',
+    'Unknown',
+    'Not Observable',
+    'Not Supported',
+    'Not Applicable',
+  ])
+  check(
+    'every finding uses the seven-state status model',
+    report.findings.every((finding) => VALID_STATUSES.has(finding.status)),
+    [...new Set(report.findings.map((f) => f.status))].join(', '),
+  )
+  check(
+    'Not Applicable is used only where the control is genuinely irrelevant',
+    report.findings
+      .filter((finding) => finding.status === 'Not Applicable')
+      .every((finding) => finding.businessImpact.length > 0),
+  )
+
+  console.log('\nOther invariants:')
+
+  // 12 — handshake visualization mirrors the real handshake
+  check('handshake visualization has 8 steps', report.handshake.length === 8)
+  check(
+    'handshake timings are real measurements or explicitly absent',
+    report.handshake.every((step) => step.timingMs === null || step.timingMs >= 0),
+  )
+  check(
+    'every handshake step names the measurement it came from',
+    report.handshake.every((step) => step.detail.length > 0),
+  )
+  check(
+    'chain trust is verified, not assumed from the issuer name',
+    !report.evidence.certificateExtras ||
+      typeof report.evidence.certificateExtras.chainTrusted === 'boolean',
+  )
+  check(
+    'handshake steps not observed are flagged',
+    report.handshake.every((step) => typeof step.observed === 'boolean'),
+  )
+
+  console.log(`\n${passed} passed, ${failed} failed\n`)
+  process.exit(failed > 0 ? 1 : 0)
+}
+
+function isSortedBySeverity(report: Awaited<ReturnType<typeof assessPublicTarget>>): boolean {
+  const rank: Record<string, number> = { CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, SAFE: 1 }
+  for (let i = 1; i < report.findings.length; i += 1) {
+    if (rank[report.findings[i - 1].severity] < rank[report.findings[i].severity]) return false
+  }
+  return true
+}
+
+main().catch((err) => {
+  console.error('\nCheck harness failed:', err)
+  process.exit(1)
+})

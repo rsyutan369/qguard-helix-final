@@ -367,8 +367,10 @@ export default function MigrationIntelligence() {
                   <thead>
                     <tr className="border-b border-white/10 text-[10px] font-black uppercase tracking-wide text-white/40">
                       <th className="py-2 pr-3">Finding</th>
+                      <th className="py-2 pr-3">Asset</th>
                       <th className="py-2 pr-3">Owner</th>
                       <th className="py-2 pr-3">Action</th>
+                      <th className="py-2 pr-3 text-right">Inst.</th>
                       <th className="py-2 pr-3">Priority</th>
                       <th className="py-2 pr-3">Status</th>
                       <th className="py-2" />
@@ -377,20 +379,25 @@ export default function MigrationIntelligence() {
                   <tbody>
                     {pagedMatrix.map((row) => {
                       const meta = DOMAIN_META[row.domain];
+                      const occurrences = Math.max(1, row.occurrences ?? 1);
                       return (
                         <tr
                           key={row.findingId}
                           className="cursor-pointer border-b border-white/5 transition hover:bg-white/[0.03]"
                           onClick={() => openFinding(row.findingId)}
                         >
-                          <td className="max-w-[240px] py-2.5 pr-3">
+                          <td className="max-w-[220px] py-2.5 pr-3">
                             <div className="flex items-center gap-2">
                               <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />
-                              <span className="truncate font-semibold text-white/85">{row.finding}</span>
+                              <span className="truncate font-semibold text-white/85" title={row.finding}>{row.finding}</span>
                             </div>
                           </td>
+                          <td className="max-w-[180px] py-2.5 pr-3">
+                            <span className="block truncate text-white/60" title={(row.detectionLabels ?? [row.asset]).join(' · ')}>{row.asset}</span>
+                          </td>
                           <td className="py-2.5 pr-3"><span className="font-semibold" style={{ color: meta.color }}>{row.owner}</span></td>
-                          <td className="max-w-[260px] py-2.5 pr-3"><span className="line-clamp-2 text-white/60">{row.action}</span></td>
+                          <td className="max-w-[240px] py-2.5 pr-3"><span className="line-clamp-2 text-white/60">{row.action}</span></td>
+                          <td className="py-2.5 pr-3 text-right font-mono text-white/55">{occurrences}</td>
                           <td className="py-2.5 pr-3"><Badge color={PRIORITY_COLOR[row.priority]}>{row.priority}</Badge></td>
                           <td className="py-2.5 pr-3"><span className="text-white/65">{row.status}</span></td>
                           <td className="py-2.5 text-white/30"><ChevronRight className="h-4 w-4" /></td>

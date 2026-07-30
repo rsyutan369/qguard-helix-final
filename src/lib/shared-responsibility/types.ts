@@ -276,6 +276,16 @@ export interface AttributionContext {
   connectorProviders?: string[]
 }
 
+/**
+ * One CONSOLIDATED ownership row.
+ *
+ * The scanner emits one finding per detected instance, so the same cryptographic
+ * exposure on the same asset arrives many times (different detection channel,
+ * category or evidence string). Rendering those raw is what produced identical
+ * repeated matrix rows in the dashboards and every export. A matrix row is
+ * therefore an ownership GROUP — one cryptographic exposure under one owner —
+ * and carries the instance/asset counts that make the consolidation auditable.
+ */
 export interface SharedResponsibilityMatrixRow {
   findingId: string
   finding: string
@@ -286,6 +296,14 @@ export interface SharedResponsibilityMatrixRow {
   domain: ResponsibilityDomain
   customerActionable: CustomerActionability
   migrationDependencyStatus: MigrationDependencyStatus
+  /** The asset this exposure was observed on — its own column, not part of `finding`. */
+  asset: string
+  /** Raw scanner finding instances consolidated into this row (>= 1). */
+  occurrences: number
+  /** Distinct raw detection labels merged into this row (evidence traceability). */
+  detectionLabels: string[]
+  /** Highest severity observed across the consolidated instances. */
+  severity: FindingSeverityLevel
 }
 
 export interface DomainReadiness {

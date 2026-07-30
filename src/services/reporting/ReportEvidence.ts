@@ -4,6 +4,7 @@ import type { QuantumReadinessSnapshot } from '@/app/dashboard/quantum-readiness
 // Runtime-only function import; the ReportScope↔ReportEvidence cycle is safe
 // because both modules only export hoisted functions consumed at call time.
 import { buildReportScope } from './ReportScope';
+import { buildPlaybookStandardControls } from './ReportPlaybook';
 import {
   EVIDENCE_UNAVAILABLE,
   normalizeSeverity,
@@ -53,6 +54,8 @@ import {
   type MigrationWave,
   type PlaybookDetail,
   type PlaybookStage,
+  type PlaybookStandardControls,
+  type RiskApprovalPolicy,
   type ReadinessDomain,
   type ReadinessIndex,
   type ReadinessMethodology,
@@ -2203,6 +2206,33 @@ export function buildDecisionPackage(args: {
 // I2#10 — Report Validation™: self-verifies the report's own arithmetic and
 // cross-section consistency at generation time. A failed check is reported
 // honestly as FAIL — the badge is computed, never asserted.
+/**
+ * Risk Owner Approval policy.
+ *
+ * Approvals are generated as "Pending Executive Sign-off" and executed against
+ * the report's digital signature, so the status, date and signature method are
+ * identical on every disposition. Repeating them per row added four identical
+ * cells to every line without adding information — when they are uniform they
+ * are stated once as policy and the per-row columns are dropped. The APPROVER
+ * genuinely varies (CISO vs CFO / Risk Committee) and always stays per-row.
+ */
+export function buildRiskApprovalPolicy(riskAcceptance: RiskAcceptance[]): RiskApprovalPolicy {
+  const empty = { uniform: false, status: '', approvalDate: '', method: '', note: '' };
+  if (riskAcceptance.length < 2) return empty;
+  const [first] = riskAcceptance;
+  const uniform = riskAcceptance.every(
+    (r) => r.approvalStatus === first.approvalStatus && r.approvalDate === first.approvalDate && r.approvalMethod === first.approvalMethod,
+  );
+  if (!uniform) return empty;
+  return {
+    uniform: true,
+    status: first.approvalStatus,
+    approvalDate: first.approvalDate,
+    method: first.approvalMethod,
+    note: `All ${riskAcceptance.length} risk dispositions carry the same approval state — ${first.approvalStatus} (${first.approvalDate}), executed via ${first.approvalMethod}. It is stated once here rather than repeated on every row; the accountable approver is listed per disposition below.`,
+  };
+}
+
 export function buildReportValidation(args: {
   snapshot: QuantumReadinessSnapshot;
   costForecast: CostForecast;
@@ -2218,8 +2248,11 @@ export function buildReportValidation(args: {
   riskCategories: RiskCategory[];
   findings: ReportFinding[];
   impactReasons: ImpactReason[];
+  sharedResponsibility: SharedResponsibilityReport;
+  playbookDetail: PlaybookDetail[];
+  playbookStandardControls: PlaybookStandardControls;
 }): ReportValidation {
-  const { snapshot, costForecast, costBreakdown, riskMethodology, readinessMethodology, waves, executiveBlock, riskForecast, waveSimulation, advisor, riskDomainModel, riskCategories, findings, impactReasons } = args;
+  const { snapshot, costForecast, costBreakdown, riskMethodology, readinessMethodology, waves, executiveBlock, riskForecast, waveSimulation, advisor, riskDomainModel, riskCategories, findings, impactReasons, sharedResponsibility, playbookDetail, playbookStandardControls } = args;
   const checks: ReportValidation['checks'] = [];
   const push = (check: string, ok: boolean, detail: string) => checks.push({ check, status: ok ? 'pass' : 'fail', detail });
 
@@ -2262,6 +2295,27 @@ export function buildReportValidation(args: {
   const waveCostOk = !costForecast.totalUsd || waveCostSum === costForecast.totalUsd;
   const migrationOk = waveSum === executiveBlock.expectedRiskReductionPct && waveSum === riskForecast.reductionPct && waveCostOk && (!lastSim || (lastSim.readinessTo === executiveBlock.targetReadiness && lastSim.riskTo <= executiveBlock.targetRisk));
   push('Migration Consistency Verified', migrationOk, `Σ wave reductions ${waveSum}% = executive ${executiveBlock.expectedRiskReductionPct}% = forecast ${riskForecast.reductionPct}%; Σ wave costs $${waveCostSum.toLocaleString()} = migration budget $${costForecast.totalUsd.toLocaleString()}; full-programme simulation lands on target readiness ${executiveBlock.targetReadiness} with residual risk ≤ ${executiveBlock.targetRisk}.`);
+
+  // Presentation integrity — a board report must never print the same row
+  // twice. The scanner reports one finding per detected instance, so any table
+  // rendered straight from raw evidence can silently repeat; this check fails
+  // the report rather than shipping duplicates to an executive audience.
+  const duplicateRows = (rows: string[]): number => {
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row, (counts.get(row) || 0) + 1);
+    return [...counts.values()].reduce((sum, c) => sum + (c - 1), 0);
+  };
+  const srDuplicates = duplicateRows(sharedResponsibility.matrix.map((m) => [m.finding, m.asset, m.owner, m.action, m.priority, m.status].join('|')));
+  const findingDuplicates = duplicateRows(findings.map((f) => [f.title, f.severity, f.affectedAssets.join(','), f.currentState].join('|')));
+  const playbookRepeats = playbookStandardControls.sharedKeys.length * Math.max(0, playbookDetail.length - 1);
+  const noDuplicates = srDuplicates === 0 && findingDuplicates === 0;
+  push(
+    'Presentation Integrity Verified',
+    noDuplicates,
+    noDuplicates
+      ? `No duplicate rows across the evidence tables: ${sharedResponsibility.matrix.length} consolidated ownership row(s) representing ${sharedResponsibility.matrixInstances} raw scanner instance(s), and ${findings.length} distinct finding record(s). ${playbookRepeats > 0 ? `${playbookRepeats} repeated change-control row(s) were hoisted into a single Standard Change Controls block.` : 'No repeated change-control rows to hoist.'}`
+      : `${srDuplicates} duplicate ownership row(s) and ${findingDuplicates} duplicate finding row(s) detected — consolidation did not run. Investigate before distribution.`,
+  );
 
   const overall = checks.every((c) => c.status === 'pass') ? 'PASS' : 'FAIL';
   return { overall, checks, note: 'All checks are computed from the generated report model at export time — the badge is verified, not asserted. A FAIL indicates an internal inconsistency that must be investigated before distribution.' };
@@ -2334,7 +2388,20 @@ export function buildSharedResponsibilityReport(snapshot: QuantumReadinessSnapsh
     actionableNow: sr.widgets.actionableFindings,
     waitingDependencies: sr.widgets.waitingDependencies,
     migrationBlockers: sr.widgets.migrationBlockers,
-    matrix: sr.matrix.slice(0, 40).map((m) => ({ finding: m.finding, owner: m.owner, action: m.action, priority: m.priority, status: m.status, domain: m.domain })),
+    // Consolidated ownership rows. The cap now buys 40 DISTINCT exposures
+    // instead of 40 repeats of the same one.
+    matrix: sr.matrix.slice(0, 40).map((m) => ({
+      finding: m.finding,
+      asset: m.asset || EVIDENCE_UNAVAILABLE,
+      owner: m.owner,
+      action: m.action,
+      priority: m.priority,
+      status: m.status,
+      domain: m.domain,
+      occurrences: Math.max(1, m.occurrences || 1),
+      detectionLabels: m.detectionLabels || [],
+    })),
+    matrixInstances: sr.matrix.reduce((sum, m) => sum + Math.max(1, m.occurrences || 1), 0),
     blockers: sr.blockers.slice(0, 12).map((b) => ({ title: b.title, owner: b.ownerType, dependency: depLabel(b.migrationDependencyStatus) })),
     waves: sr.waves.map((w) => ({ wave: w.wave, name: w.name, domain: String(w.domain), findingCount: w.findingCount, status: w.status, timeline: w.estimatedTimeline })),
     providers: sr.providerBreakdown.slice(0, 12).map((p) => ({ name: p.name, domain: p.domain, count: p.count, pqRoadmap: p.pqRoadmapStatus, customerInfluence: p.customerInfluence })),
@@ -2687,6 +2754,14 @@ export function buildReportModel(
   const confidenceSummary = buildConfidenceSummary(snapshot, migrationConfidence, advisor, evidenceConfidence, waveSimulation);
   const operationalBenefits = buildOperationalBenefits(snapshot);
   const maturityModel = buildMaturityModel(snapshot, domains, waves);
+  // Ownership section is needed by Report Validation's presentation-integrity
+  // check, so it is built before validation rather than with the board sections.
+  const sharedResponsibility = buildSharedResponsibilityReport(snapshot);
+  // Presentation consolidation — hoist the change-management controls every
+  // playbook shares, and the risk-approval fields every disposition shares, so
+  // the exports state them once instead of repeating them per row.
+  const playbookStandardControls = buildPlaybookStandardControls(playbookDetail);
+  const riskApprovalPolicy = buildRiskApprovalPolicy(riskAcceptance);
   const reportValidation = buildReportValidation({
     snapshot,
     costForecast,
@@ -2702,6 +2777,9 @@ export function buildReportModel(
     riskCategories,
     findings,
     impactReasons,
+    sharedResponsibility,
+    playbookDetail,
+    playbookStandardControls,
   });
   // Improvements_04 — refinements
   const readinessProgression = buildReadinessProgression(snapshot, waves, waveSimulation, executiveBlock);
@@ -2738,7 +2816,6 @@ export function buildReportModel(
 
   // Improvements_06 — board-level visual intelligence. All derive from sections
   // built above (no new evidence sources), so they reconcile by construction.
-  const sharedResponsibility = buildSharedResponsibilityReport(snapshot);
   const remediationProgram = buildRemediationProgram(snapshot, findings, waves);
   const executiveHeatMap = buildExecutiveHeatMap(findingGroups);
   const businessPriorityMatrix = buildBusinessPriorityMatrix(remediationProgram);
@@ -2802,6 +2879,8 @@ export function buildReportModel(
     evidenceQuality,
     remediationCampaigns,
     playbookDetail,
+    playbookStandardControls,
+    riskApprovalPolicy,
     waveSimulation,
     governanceGates,
     explainability,

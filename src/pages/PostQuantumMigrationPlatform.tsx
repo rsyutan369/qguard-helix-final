@@ -173,6 +173,7 @@ const FOOTER_GROUPS = [
     links: [
       { label: 'Qguard Messaging', to: '/qguard-messaging' },
       { label: 'Quantum Readiness', to: '/quantum-readiness-assessment' },
+      { label: 'Free Scan', to: '/public-scan' },
       { label: 'Migration Platform', to: '/post-quantum-migration-platform' },
       { label: 'Trust & Governance', to: '/quantum-trust-governance-center' },
     ],

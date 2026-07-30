@@ -79,6 +79,10 @@ export interface QuantumReadinessSnapshot {
     severity: string;
     algorithm: string;
     detectedAt: string | null;
+    /** Raw scanner instances consolidated into this record (see api-server/critical-findings.ts). */
+    instances?: number;
+    /** Every raw detection location merged into this record. */
+    locations?: string[];
   }>;
   recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }>;
   topRiskAssets: Array<{

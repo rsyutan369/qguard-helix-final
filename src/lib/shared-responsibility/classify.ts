@@ -242,6 +242,34 @@ function ownerLabels(
   return { ownerType: 'Industry Ecosystem', responsibleParty: name, remediationDomain: remediation }
 }
 
+/**
+ * Which NIST primitive class replaces this finding.
+ *
+ * `isTransportFinding` matches the word "certificate", so a certificate SIGNATURE
+ * finding used to be handed the ML-KEM key-exchange recommendation — ML-KEM is a
+ * key-establishment mechanism (FIPS 203) and can never replace a signature.
+ * Cipher-suite identifiers are checked first: `TLS_ECDHE_ECDSA_…` names both a
+ * key exchange and a signature, and its quantum-vulnerable key agreement (ECDHE)
+ * is what ML-KEM replaces.
+ */
+export type RemediationTarget = 'key-establishment' | 'signature' | 'general'
+
+export function classifyRemediationTarget(input: OwnershipFindingInput): RemediationTarget {
+  const algorithm = `${input.algorithm ?? ''}`.trim()
+  const hay = `${algorithm} ${input.category ?? ''} ${input.title ?? ''} ${input.description ?? ''}`.toLowerCase()
+
+  // A cipher-suite / key-agreement finding — ML-KEM (FIPS 203) territory.
+  if (/^tls[_-]/i.test(algorithm)) return 'key-establishment'
+  if (/cipher suite|key exchange|key agreement|forward secrecy|\bkex\b|\becdh\b|\bdhe?\b|handshake|x25519/.test(hay)) {
+    return 'key-establishment'
+  }
+  // A signature / certificate-chain finding — ML-DSA (FIPS 204) territory.
+  if (/signature|certificate|\bcert\b|\becdsa\b|ed25519|\bdsa\b|\bx\.?509\b|signing|sha-?1\s*with|with-?sha/.test(hay)) {
+    return 'signature'
+  }
+  return 'general'
+}
+
 function recommendedActionFor(
   domain: ResponsibilityDomain,
   attribution: ProviderAttribution,
@@ -249,11 +277,15 @@ function recommendedActionFor(
   isProviderFrontedTransport: boolean,
 ): { action: string; status: string; allowed: string[] } {
   if (domain === 'customer') {
-    const transport = isTransportFinding(input)
+    const target = classifyRemediationTarget(input)
+    const action =
+      target === 'key-establishment'
+        ? 'Replace RSA/ECC key exchange with an ML-KEM hybrid (X25519+ML-KEM, FIPS 203) and upgrade the origin TLS library.'
+        : target === 'signature'
+          ? 'Migrate the certificate / signature chain to ML-DSA-65 (FIPS 204), hybrid with ECDSA P-256 where interoperability requires, and re-issue affected certificates.'
+          : 'Migrate to the NIST-approved PQC replacement and rotate affected keys/certificates.'
     return {
-      action: transport
-        ? 'Replace RSA/ECC key exchange with an ML-KEM hybrid (X25519+ML-KEM) and upgrade the origin TLS library.'
-        : 'Migrate to the NIST-approved PQC replacement and rotate affected keys/certificates.',
+      action,
       status: 'Action Required',
       allowed: ['migrate', 'rotate_key', 'deploy_hybrid', 'create_ticket', 'enable_monitoring'],
     }

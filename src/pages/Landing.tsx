@@ -2682,6 +2682,7 @@ export default function App() {
                 { label: 'Platform', href: '#migration-process', active: true, dropdown: true },
                 { label: 'Solutions', href: '#nist-strategy', dropdown: true },
                 { label: 'Resources', href: '/docs', dropdown: true },
+                { label: 'Free Scan', href: '/public-scan' },
                 { label: 'Pricing', href: '#pricing' },
                 { label: 'Company', href: '#faq' }
               ].map((item) => {
@@ -2847,6 +2848,12 @@ export default function App() {
                     description: 'End-to-end encrypted Secure Chat and an on-device Quantum Vault, built on NIST post-quantum cryptography.',
                     href: '/qguard-messaging',
                     icon: MessageSquareLock
+                  },
+                  {
+                    title: 'Public Quantum Exposure Assessment',
+                    description: 'Free, no-signup scan of your Internet-facing TLS, certificates and post-quantum readiness.',
+                    href: '/public-scan',
+                    icon: Search
                   },
                   {
                     title: 'Quantum Readiness & Assessment',

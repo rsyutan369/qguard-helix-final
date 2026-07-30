@@ -301,7 +301,26 @@ export const sharedResponsibilityReportSchema = z.object({
   actionableNow: z.number().default(0),
   waitingDependencies: z.number().default(0),
   migrationBlockers: z.number().default(0),
-  matrix: z.array(z.object({ finding: z.string(), owner: z.string(), action: z.string(), priority: z.string(), status: z.string(), domain: z.string() })).default([]),
+  // CONSOLIDATED ownership rows — one cryptographic exposure, per owner, per
+  // asset. `occurrences` carries the raw scanner instances behind the row, so
+  // the consolidation is auditable and no export prints repeated rows.
+  matrix: z
+    .array(
+      z.object({
+        finding: z.string(),
+        asset: z.string().default(EVIDENCE_UNAVAILABLE),
+        owner: z.string(),
+        action: z.string(),
+        priority: z.string(),
+        status: z.string(),
+        domain: z.string(),
+        occurrences: z.number().default(1),
+        detectionLabels: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+  /** Raw scanner instances represented by `matrix` (Σ occurrences). */
+  matrixInstances: z.number().default(0),
   blockers: z.array(z.object({ title: z.string(), owner: z.string(), dependency: z.string() })).default([]),
   waves: z.array(z.object({ wave: z.number(), name: z.string(), domain: z.string(), findingCount: z.number(), status: z.string(), timeline: z.string() })).default([]),
   providers: z.array(z.object({ name: z.string(), domain: z.string(), count: z.number(), pqRoadmap: z.string(), customerInfluence: z.string() })).default([]),
@@ -462,6 +481,31 @@ export const playbookDetailSchema = z.object({
   slaImpact: z.string().default(EVIDENCE_UNAVAILABLE),
 });
 export type PlaybookDetail = z.infer<typeof playbookDetailSchema>;
+
+// Change-management controls that are identical for EVERY playbook, hoisted out
+// of the per-playbook tables and stated once. `sharedKeys` tells the exporters
+// which per-playbook rows to omit so nothing is printed twice.
+export const playbookStandardControlsSchema = z.object({
+  /** Number of playbooks these controls govern. */
+  applies: z.number().default(0),
+  /** Row keys hoisted out of the per-playbook tables. */
+  sharedKeys: z.array(z.string()).default([]),
+  rows: z.array(z.object({ step: z.string(), detail: z.string() })).default([]),
+  note: z.string().default(''),
+});
+export type PlaybookStandardControls = z.infer<typeof playbookStandardControlsSchema>;
+
+// I4#5 follow-up — when every risk disposition carries the same approval status,
+// date and signature method, they are stated once as policy instead of repeated
+// on every row. `uniform: false` keeps the full per-row columns.
+export const riskApprovalPolicySchema = z.object({
+  uniform: z.boolean().default(false),
+  status: z.string().default(''),
+  approvalDate: z.string().default(''),
+  method: z.string().default(''),
+  note: z.string().default(''),
+});
+export type RiskApprovalPolicy = z.infer<typeof riskApprovalPolicySchema>;
 
 // Phase 12 — Migration Simulation Engine™
 export const waveSimulationSchema = z.object({ label: z.string(), readinessFrom: z.number(), readinessTo: z.number(), riskFrom: z.number(), riskTo: z.number(), costUsd: z.number(), timelineWeeks: z.number(), confidencePct: z.number() });
@@ -919,6 +963,7 @@ export const enterpriseAssessmentReportSchema = z.object({
     waitingDependencies: 0,
     migrationBlockers: 0,
     matrix: [],
+    matrixInstances: 0,
     blockers: [],
     waves: [],
     providers: [],
@@ -930,6 +975,8 @@ export const enterpriseAssessmentReportSchema = z.object({
     note: '',
   }),
   playbookDetail: z.array(playbookDetailSchema),
+  playbookStandardControls: playbookStandardControlsSchema.default({ applies: 0, sharedKeys: [], rows: [], note: '' }),
+  riskApprovalPolicy: riskApprovalPolicySchema.default({ uniform: false, status: '', approvalDate: '', method: '', note: '' }),
   waveSimulation: z.array(waveSimulationSchema),
   governanceGates: z.array(governanceGateSchema),
   explainability: z.array(explainabilitySchema),

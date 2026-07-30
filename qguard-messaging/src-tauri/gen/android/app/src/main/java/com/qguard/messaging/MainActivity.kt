@@ -1,6 +1,7 @@
 package com.qguard.messaging
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +15,18 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     requestCorePermissions()
+  }
+
+  /**
+   * The Quantum Vault's destination-folder picker is a plain
+   * `startActivityForResult` (ACTION_OPEN_DOCUMENT_TREE), so its result has to
+   * be routed back here. Everything else keeps the default handling.
+   */
+  @Deprecated("Routing the vault folder picker's Activity result")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    @Suppress("DEPRECATION")
+    super.onActivityResult(requestCode, resultCode, data)
+    VaultFolderPicker.onActivityResult(this, requestCode, resultCode, data)
   }
 
   /**

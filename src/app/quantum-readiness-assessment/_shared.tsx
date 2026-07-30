@@ -320,6 +320,9 @@ function QRNav() {
               {item.label}
             </a>
           ))}
+          <Link to="/public-scan" className="rounded-lg px-3.5 py-2 text-sm font-semibold text-slate-600 no-underline transition-colors hover:text-gold">
+            Free Scan
+          </Link>
           <Link to="/dashboard/quantum-readiness" className="rounded-lg px-3.5 py-2 text-sm font-semibold text-slate-600 no-underline transition-colors hover:text-gold">
             Live Dashboard
           </Link>

@@ -270,9 +270,10 @@ function verifyImprovements02(report: ReturnType<typeof buildReportModel>, snaps
   assert(report.benchmarking.rows.length === 5 && report.benchmarking.rows[0].readiness === snapshot.scores.quantumReadiness && /modeled/i.test(report.benchmarking.note), `I2#9 Benchmarking: ${report.benchmarking.rows.map((r) => `${r.cohort}=${r.readiness}`).join(', ')}`);
 
   // I2#10 Report validation badge: computed at build time and PASSING.
-  // 7 checks since R7 added "Target Reconciliation Verified" (domain targets
-  // blend back to the programme target risk).
-  assert(report.reportValidation.checks.length === 7 && report.reportValidation.checks.some((c) => c.check === 'Target Reconciliation Verified') && report.reportValidation.overall === 'PASS', `I2#10 Report validation: ${report.reportValidation.overall} (${report.reportValidation.checks.filter((c) => c.status === 'pass').length}/${report.reportValidation.checks.length} checks)`);
+  // 8 checks: R7 added "Target Reconciliation Verified" (domain targets blend
+  // back to the programme target risk) and the deduplication work added
+  // "Presentation Integrity Verified" (no evidence table repeats a row).
+  assert(report.reportValidation.checks.length === 8 && report.reportValidation.checks.some((c) => c.check === 'Target Reconciliation Verified') && report.reportValidation.checks.some((c) => c.check === 'Presentation Integrity Verified') && report.reportValidation.overall === 'PASS', `I2#10 Report validation: ${report.reportValidation.overall} (${report.reportValidation.checks.filter((c) => c.status === 'pass').length}/${report.reportValidation.checks.length} checks)`);
   for (const c of report.reportValidation.checks.filter((x) => x.status === 'fail')) console.log(`      ✗ FAILING CHECK: ${c.check} — ${c.detail}`);
 
   // I2#11 Quantum Readiness Index: pillars reconcile; evidence-less pillars Not Measured.

@@ -179,7 +179,8 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
         return [t.domain, srPct(count), t.label, `${t.readiness}/100`];
       }), [3.4, 2.6, 3.5, 2.8]);
     if (sr.reconciliationNote) srSummarySlide.addText(`Finding-count reconciliation: ${sr.reconciliationNote}`, { x: 0.5, y: 6.1, w: 12.3, h: 0.8, fontSize: 9.5, color: MUTED, valign: 'top' });
-    tableSlide('Shared Responsibility Matrix', ['Finding', 'Owner', 'Action', 'Pri', 'Status'], sr.matrix.slice(0, 12).map((m) => [m.finding, m.owner, m.action, m.priority, m.status]), [2.6, 1.8, 2.8, 1, 1.6]);
+    const srMatrixSlide = tableSlide('Shared Responsibility Matrix', ['Finding', 'Asset', 'Owner', 'Action', 'Inst', 'Pri', 'Status'], sr.matrix.slice(0, 12).map((m) => [m.finding, m.asset, m.owner, m.action, `${m.occurrences}`, m.priority, m.status]), [2.4, 1.9, 1.6, 2.8, 0.7, 1, 1.4]);
+    srMatrixSlide.addText(`One row per cryptographic exposure, owner and asset — ${sr.matrix.length} consolidated row(s) covering ${sr.matrixInstances} raw scanner instance(s).`, { x: 0.5, y: 6.1, w: 12.3, h: 0.5, fontSize: 9.5, color: MUTED, valign: 'top' });
     tableSlide('Dependency-Ordered Roadmap (7 Waves)', ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], sr.waves.map((w) => [`W${w.wave}`, w.name, w.domain, `${w.findingCount}`, w.status, w.timeline]), [0.9, 2.6, 1.8, 1.2, 1.4, 2]);
   }
   tableSlide('Cost Forecast', ['Category', 'Estimated Cost'], [...report.costForecast.lines.map((l) => [l.category, usd(l.costUsd)]), ['TOTAL', usd(report.costForecast.totalUsd)]], [8, 4.3]);
@@ -301,8 +302,15 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   tableSlide('Asset Crypto Profile™', ['Asset', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure'], report.assetReadiness.map((a) => [a.asset, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure]), [2.3, 1.9, 1.3, 2.4, 1.3, 1.6, 1.5]);
 
   // Executive Risk Acceptance (residual-risk disposition) + I4#5 approvals
-  tableSlide('Executive Risk Acceptance™', ['Risk', 'Decision', 'Owner', 'Rationale', 'Review'], report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.reviewDate]), [3.0, 1.4, 1.8, 4.6, 1.5]);
-  tableSlide('Risk Owner Approval™', ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]), [3.2, 1.6, 2, 1.5, 4]);
+  if (report.riskApprovalPolicy.uniform) {
+    // One approval state for every disposition — stated once instead of a
+    // second slide of identical rows.
+    const acceptanceSlide = tableSlide('Executive Risk Acceptance™', ['Risk', 'Decision', 'Owner', 'Rationale', 'Review', 'Approver'], report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.reviewDate, r.approver]), [2.8, 1.3, 1.7, 3.9, 1.3, 1.5]);
+    acceptanceSlide.addText(`Risk Owner Approval: ${report.riskApprovalPolicy.note}`, { x: 0.5, y: 6.1, w: 12.3, h: 0.6, fontSize: 9.5, color: MUTED, valign: 'top' });
+  } else {
+    tableSlide('Executive Risk Acceptance™', ['Risk', 'Decision', 'Owner', 'Rationale', 'Review'], report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.reviewDate]), [3.0, 1.4, 1.8, 4.6, 1.5]);
+    tableSlide('Risk Owner Approval™', ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]), [3.2, 1.6, 2, 1.5, 4]);
+  }
 
   // Decision Traceability (Evidence → … → Approval)
   tableSlide('Decision Traceability™', ['Stage', 'Detail'], report.decisionChain.steps.map((s) => [s.stage, s.detail]), [2.4, 10]);
@@ -343,7 +351,17 @@ export async function exportPptx(report: EnterpriseAssessmentReport): Promise<Bl
   validationSlide.addTable(validationRows, { x: 0.5, y: 1.1, w: 12.3, colW: [3, 1.3, 8], fontSize: 10, border: { type: 'solid', color: 'E2E8F0', pt: 1 }, valign: 'middle' });
   footer(validationSlide);
 
-  // Enterprise Remediation Playbook™ — one detailed slide per finding family
+  // Enterprise Remediation Playbook™ — the change controls every playbook shares
+  // get one slide up front, then one detailed slide per finding family.
+  if (report.playbookStandardControls.rows.length) {
+    const controlsSlide = tableSlide(
+      `Standard Change Controls — All ${report.playbookStandardControls.applies} Playbooks`,
+      ['Control', 'Detail'],
+      report.playbookStandardControls.rows.map((r) => [r.step, r.detail]),
+      [3.2, 9.1],
+    );
+    controlsSlide.addText(report.playbookStandardControls.note, { x: 0.5, y: 6.1, w: 12.3, h: 0.6, fontSize: 9.5, color: MUTED, valign: 'top' });
+  }
   for (const p of report.playbookDetail) {
     const slide = pptx.addSlide();
     slide.addText('Enterprise Remediation Playbook™', { x: 0.5, y: 0.3, w: 12, h: 0.5, fontSize: 22, bold: true, color: INK });

@@ -1,6 +1,7 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, degrees, rgb, type RGB } from 'pdf-lib';
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
 import { qrMatrix, reportVerificationUrl } from '../ReportQr';
+import { playbookRows } from '../ReportPlaybook';
 
 /**
  * Enterprise PDF exporter built on pdf-lib (pure JS — identical in dev and
@@ -511,7 +512,12 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
       ['Ecosystem-Dependent', `${sr.readiness.ecosystem}/100`, `${sr.ecosystemDependent}`],
     ] }, [50, 25, 25]);
     if (sr.reconciliationNote) layout.paragraph(`Finding-count reconciliation: ${sr.reconciliationNote}`, 8.5, MUTED);
-    layout.table({ title: 'Shared Responsibility Matrix', columns: ['Finding', 'Owner', 'Action', 'Pri', 'Status'], rows: sr.matrix.slice(0, 24).map((m) => [m.finding, m.owner, m.action, m.priority, m.status]) }, [26, 16, 30, 10, 18]);
+    layout.paragraph(
+      `Ownership matrix: ${sr.matrix.length} consolidated row(s) covering ${sr.matrixInstances} raw scanner instance(s). One row per exposure, owner and asset - repeated detections of the same exposure are merged and counted.`,
+      8.5,
+      MUTED,
+    );
+    layout.table({ title: 'Shared Responsibility Matrix', columns: ['Finding', 'Asset', 'Owner', 'Action', 'Inst', 'Pri', 'Status'], rows: sr.matrix.slice(0, 24).map((m) => [m.finding, m.asset, m.owner, m.action, `${m.occurrences}`, m.priority, m.status]) }, [20, 16, 13, 24, 6, 8, 13]);
     layout.table({ title: 'Dependency-Ordered Roadmap (7 Waves)', columns: ['Wave', 'Focus', 'Ownership', 'Findings', 'Status', 'Timeline'], rows: sr.waves.map((w) => [`W${w.wave}`, w.name, w.domain, `${w.findingCount}`, w.status, w.timeline]) }, [8, 26, 20, 12, 14, 20]);
     if (sr.providers.length) {
       layout.table({ title: 'Provider & Ecosystem Readiness', columns: ['Provider / Technology', 'Ownership', 'Findings', 'PQ Roadmap', 'Cust. Influence'], rows: sr.providers.map((p) => [p.name, p.domain, `${p.count}`, p.pqRoadmap, p.customerInfluence]) }, [28, 20, 14, 20, 18]);
@@ -605,24 +611,16 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table({ title: 'Resource Loading', columns: ['Team', 'Waves', 'Hrs', 'Eng.', 'Window', 'Avail', 'Alloc', 'Dependencies'], rows: report.resourceLoading.length ? report.resourceLoading.map((r) => [r.team, r.waves, r.hours, r.engineers, `${r.windowWeeks}w`, `${r.availabilityPct}%`, `${r.allocationPct}%`, r.dependencies.join(', ')]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-', '-']] }, [14, 20, 7, 6, 8, 8, 8, 29]);
 
   layout.heading('Enterprise Remediation Playbook');
+  // Controls identical across every playbook are stated once, then each playbook
+  // lists only what differs for that finding.
+  if (report.playbookStandardControls.rows.length) {
+    layout.paragraph(`Standard Change Controls - applies to all ${report.playbookStandardControls.applies} playbooks`, 10, INK);
+    layout.paragraph(report.playbookStandardControls.note, 8.5, MUTED);
+    layout.table({ title: 'Standard Change Controls', columns: ['Control', 'Detail'], rows: report.playbookStandardControls.rows.map((r) => [r.step, r.detail]) }, [18, 82]);
+  }
   for (const p of report.playbookDetail) {
     layout.paragraph(p.finding, 10, INK);
-    layout.table({ title: 'Playbook', columns: ['Step', 'Detail'], rows: [
-      ['Current State', p.currentState],
-      ['Target State', p.targetState],
-      ['Pre-Requisites', p.prerequisites.join('; ')],
-      ['Execution', p.executionSteps.map((st, i) => `${i + 1}. ${st}`).join('  ')],
-      ['Validation', p.validationSteps.join('; ')],
-      ['Rollback', p.rollbackSteps.join('; ')],
-      ['Success Criteria', p.successCriteria.join('; ')],
-      ['Expected Downtime', p.estimatedDowntime],
-      ['Maintenance Window', p.maintenanceWindow],
-      ['Rollback Duration', p.rollbackDuration],
-      ['Validation Owner', p.validationOwner],
-      ['Success KPI', p.successKpi],
-      ['Automation Status', p.automationStatus],
-      ['SLA Impact', p.slaImpact],
-    ] }, [18, 82]);
+    layout.table({ title: 'Playbook', columns: ['Step', 'Detail'], rows: playbookRows(p, report.playbookStandardControls.sharedKeys) }, [18, 82]);
   }
 
   layout.heading('Cost Forecast Intelligence');
@@ -665,9 +663,16 @@ export async function exportPdf(report: EnterpriseAssessmentReport): Promise<Blo
   layout.table({ title: 'Asset Crypto Profile', columns: ['Asset', 'TLS Version', 'Cert Expiry', 'Primary Algorithm', 'Key Size', 'PQC Status', 'HNDL Exposure'], rows: report.assetReadiness.length ? report.assetReadiness.map((a) => [a.asset, a.tlsVersion, a.certExpiry, a.primaryAlgorithm, a.keySize, a.pqcStatus, a.hndlExposure]) : [['Evidence Not Available', '-', '-', '-', '-', '-', '-']] }, [16, 15, 11, 20, 11, 13, 14]);
 
   layout.heading('Executive Risk Acceptance');
-  layout.paragraph('Formal disposition of residual risk (mitigate / accept / transfer / defer) for governance and audit. Each disposition carries a Risk Owner Approval block; approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report digital signature.', 9, MUTED);
-  layout.table({ title: 'Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual', 'Review'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) }, [22, 12, 14, 30, 14, 8]);
-  layout.table({ title: 'Risk Owner Approval', columns: ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) }, [26, 12, 16, 12, 34]);
+  layout.paragraph('Formal disposition of residual risk (mitigate / accept / transfer / defer) for governance and audit. Approvals are generated as Pending Executive Sign-off (never fabricated) and are executed against the report digital signature.', 9, MUTED);
+  if (report.riskApprovalPolicy.uniform) {
+    // Status, date and signature method are identical on every disposition —
+    // stated once as policy instead of repeated as four identical cells per row.
+    layout.paragraph(`Risk Owner Approval: ${report.riskApprovalPolicy.note}`, 9, MUTED);
+    layout.table({ title: 'Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual', 'Review', 'Approver'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate, r.approver]) }, [20, 10, 13, 25, 13, 8, 11]);
+  } else {
+    layout.table({ title: 'Risk Acceptance', columns: ['Risk', 'Decision', 'Owner', 'Rationale', 'Residual', 'Review'], rows: report.riskAcceptance.map((r) => [r.risk, r.decision, r.owner, r.rationale, r.residualRisk, r.reviewDate]) }, [22, 12, 14, 30, 14, 8]);
+    layout.table({ title: 'Risk Owner Approval', columns: ['Risk', 'Approver', 'Approval Status', 'Approval Date', 'Signature Method'], rows: report.riskAcceptance.map((r) => [r.risk, r.approver, r.approvalStatus, r.approvalDate, r.approvalMethod]) }, [26, 12, 16, 12, 34]);
+  }
 
   layout.heading('Decision Traceability');
   layout.paragraph(report.decisionChain.headline, 9, INK);

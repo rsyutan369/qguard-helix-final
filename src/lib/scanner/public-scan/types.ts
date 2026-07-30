@@ -1,0 +1,465 @@
+/**
+ * QGuard Helix — Public Quantum Exposure Assessment™
+ * Type contract for the unauthenticated, edge-only public scanner.
+ *
+ * SCOPE DISCIPLINE (enforced by construction):
+ * Everything in this contract is derivable from *publicly observable* Internet
+ * edge evidence — the TLS handshake, the served X.509 chain, public DNS records
+ * and HTTP response headers. Nothing here may be sourced from source code,
+ * internal PKI, key management, cloud workloads or governance systems: those
+ * belong to the authenticated Enterprise platform and are reported as `unknown`.
+ */
+
+import type {
+  CertificateInfo,
+  CipherSuiteDetail,
+  ThreatLevel,
+  TlsAnalysisResult,
+} from '../web-scanner/types'
+
+// ─── Scan lifecycle ───────────────────────────────────────────────────────────
+
+export type PublicScanStageKey =
+  | 'dns'
+  | 'tls'
+  | 'certificate'
+  | 'headers'
+  | 'quantum'
+  | 'report'
+
+export type PublicScanStageState = 'waiting' | 'running' | 'complete' | 'failed' | 'skipped'
+
+export interface PublicScanStage {
+  key: PublicScanStageKey
+  label: string
+  description: string
+  state: PublicScanStageState
+  detail?: string
+  startedAt?: string
+  completedAt?: string
+}
+
+export const PUBLIC_SCAN_STAGES: ReadonlyArray<Pick<PublicScanStage, 'key' | 'label' | 'description'>> = [
+  { key: 'dns', label: 'DNS Resolution', description: 'Resolving public records and CAA policy' },
+  { key: 'tls', label: 'TLS Handshake', description: 'Negotiating protocols and cipher suites' },
+  { key: 'certificate', label: 'Certificate Collection', description: 'Reading the served X.509 chain' },
+  { key: 'headers', label: 'Security Header Analysis', description: 'Inspecting HTTP transport controls' },
+  { key: 'quantum', label: 'Quantum Assessment', description: 'Scoring post-quantum exposure' },
+  { key: 'report', label: 'Executive Report', description: 'Composing the executive assessment' },
+] as const
+
+// ─── Handshake visualization ──────────────────────────────────────────────────
+
+export interface HandshakeStep {
+  key: string
+  label: string
+  value: string
+  observed: boolean
+  /** Secondary evidence line — what the value was read from. */
+  detail: string
+  /** Measured wall-clock milliseconds for this phase, when the probe timed it. */
+  timingMs: number | null
+}
+
+/** Wall-clock timings measured on the scanner's own TLS connection. */
+export interface HandshakeTiming {
+  tcpConnectMs: number | null
+  tlsHandshakeMs: number | null
+  totalMs: number | null
+  httpResponseMs: number | null
+}
+
+// ─── Executive summary ────────────────────────────────────────────────────────
+
+/**
+ * `N/A` is emitted when too little of the edge was observable to grade
+ * honestly. The eleven graded values match the published Score-to-Grade
+ * Mapping exactly (grading-model.ts) — this is not an independent scale.
+ */
+export type SecurityGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D' | 'F' | 'N/A'
+export type RiskBand = 'Very Low' | 'Low' | 'Moderate' | 'Elevated' | 'High' | 'Critical' | 'Not assessable'
+export type ComplexityBand = 'Low' | 'Medium' | 'High' | 'Very High' | 'Unknown'
+
+export interface ExecutiveSummary {
+  grade: SecurityGrade
+  /** Rating from the published grade table (Elite/Excellent/Good/Fair/Weak/Critical). */
+  gradeLabel: string
+  gradeDetail: string
+  /** Hex color from the published grade table's Color column; ACCENT.slate when ungradeable. */
+  gradeColor: string
+  /**
+   * 0-100 weighted mean of the ten non-PQ categories only, renormalized among
+   * themselves. An informative sub-metric — it does NOT drive the grade.
+   */
+  classicalScore: number
+  /** 0-100 post-quantum readiness observable at the edge. */
+  postQuantumReadiness: number
+  /**
+   * 0-100 weighted mean across all 12 published categories (grading-model.ts).
+   * This — not classicalScore — is what scoreToGrade() maps to a letter grade.
+   */
+  encryptionScore: number
+  encryptionBand: string
+  businessRisk: RiskBand
+  businessRiskDetail: string
+  migrationComplexity: ComplexityBand
+  migrationComplexityDetail: string
+  confidence: number
+  confidenceDetail: string
+  confidenceFactors: string[]
+  /**
+   * Share (0-100) of the declared scoring weight that was actually observable.
+   * Below MIN_GRADEABLE_COVERAGE the grade is withheld as `N/A` — a target that
+   * refused the handshake has not earned an F, it simply was not measured.
+   */
+  evidenceCoverage: number
+  gradeable: boolean
+  scope: string
+}
+
+export interface ScoreComponent {
+  key: string
+  label: string
+  /** 0-100 score for this dimension. Meaningless when `applicable` is false. */
+  score: number
+  /** Declared contribution to the classical score. All weights sum to 100. */
+  weight: number
+  /**
+   * False when the dimension could not be observed at all (e.g. the DNS
+   * resolver was unreachable). Inapplicable dimensions are excluded from the
+   * score and their weight is redistributed — an unobservable control is never
+   * scored as a failure.
+   */
+  applicable: boolean
+  observed: string
+  detail: string
+}
+
+// ─── Findings ─────────────────────────────────────────────────────────────────
+
+/**
+ * Seven-state status model (Public_Scan_Intelligence_Engines).
+ * Re-exported from the engine contract so findings, controls and engine
+ * modules all speak one vocabulary — the four negative states are NOT
+ * interchangeable and conflating them is how a scanner ends up lying.
+ */
+export type { ControlStatus } from './engines/contract'
+export type FindingStatus = import('./engines/contract').ControlStatus
+
+/**
+ * The single source of truth for every assessed control.
+ *
+ * Executive Summary, Encryption Score, Public Attack Surface, Public Findings
+ * and Executive Recommendations are all *projections* of this one array. That
+ * is deliberate: when each panel derived its own status independently, the same
+ * control could read Pass in one card and Fail in another. Deriving all of them
+ * from one evaluation makes cross-panel agreement structural rather than
+ * something that has to be re-checked by hand after every change.
+ */
+export interface ControlState {
+  key: string
+  /** Name used in the findings table. */
+  control: string
+  /** Short name used in the compact attack-surface list. */
+  shortLabel: string
+  status: FindingStatus
+  severity: ThreatLevel
+  /** Compact value for the attack-surface row, e.g. "Pass", "3 certs". */
+  value: string
+  /** Full finding text for the findings table. */
+  finding: string
+  evidence: string
+  businessImpact: string
+  quantumImpact: string
+  nextStep: string
+  /** 0-100 for this control; null when it could not be observed. */
+  score: number | null
+  /** Scoring weight. 0 when the control is reported but not scored. */
+  weight: number
+  /** Human-readable statement of what was measured, shown in the decomposition. */
+  observed: string
+  detail: string
+  /** Whether this control appears in the compact attack-surface list. */
+  inAttackSurface: boolean
+  /** Whether this control appears in the findings table. */
+  inFindings: boolean
+  /**
+   * True for rows that report *what exists* rather than pass/fail (address
+   * count, chain size, covered names). These render as neutral info. Declared
+   * explicitly rather than inferred from `score === null`, because an
+   * unscored control can still be a genuine pass/fail — post-quantum key
+   * agreement is scored by the PQ model, not the classical weighted mean.
+   */
+  isInventory: boolean
+}
+
+export interface PublicFinding {
+  id: string
+  control: string
+  finding: string
+  status: FindingStatus
+  severity: ThreatLevel
+  businessImpact: string
+  quantumImpact: string
+  nextStep: string
+  /** Raw observable this row was derived from (kept for the evidence drawer). */
+  evidence: string
+}
+
+// ─── Cryptographic intelligence ───────────────────────────────────────────────
+
+export interface CryptoIntelligence {
+  observedAlgorithms: Array<{ name: string; role: string; quantumVulnerable: boolean }>
+  keyExchange: string
+  forwardSecrecy: 'Enabled' | 'Partial' | 'Not observed'
+  quantumVulnerability: 'Vulnerable' | 'Hybrid-protected' | 'Quantum-safe'
+  quantumVulnerabilityReason: string
+  migrationTargets: Array<{ name: string; standard: string; replaces: string }>
+  confidence: number
+}
+
+// ─── Public attack surface ────────────────────────────────────────────────────
+
+export type SurfaceStatus = 'pass' | 'partial' | 'fail' | 'info' | 'unknown'
+
+export interface AttackSurfaceItem {
+  key: string
+  label: string
+  value: string
+  status: SurfaceStatus
+  detail: string
+}
+
+// ─── Quantum exposure timeline ────────────────────────────────────────────────
+
+export type TimelinePhaseState = 'now' | 'active' | 'future' | 'target'
+
+export interface TimelinePhase {
+  key: string
+  title: string
+  description: string
+  state: TimelinePhaseState
+  horizon: string
+}
+
+// ─── Recommendations ──────────────────────────────────────────────────────────
+
+export type RecommendationPriority = 'Critical' | 'High' | 'Medium' | 'Low'
+
+export interface Recommendation {
+  id: string
+  title: string
+  priority: RecommendationPriority
+  businessImpact: string
+  effort: string
+  /**
+   * Modelled point gain on the composite encryption score if this action is
+   * taken, computed by re-running the published scoring model with the relevant
+   * dimension set to its passing value. `null` when the action improves
+   * something this scan cannot score (e.g. internal inventory).
+   */
+  scoreGain: number | null
+  /** Which score the gain applies to, so the number is never free-floating. */
+  scoreGainTarget: 'encryption' | null
+  /** Plain-English statement of how scoreGain was derived. */
+  scoreGainBasis: string
+  rationale: string
+}
+
+// ─── Governance (always unknown from a public scan) ───────────────────────────
+
+export interface GovernanceItem {
+  key: string
+  label: string
+  status: 'Unknown'
+  reason: string
+}
+
+// ─── Enterprise footprint estimate ────────────────────────────────────────────
+
+/**
+ * Counted, not estimated. Every tile in the Enterprise Opportunity panel is a
+ * direct count of something the scan observed, with the observation named. No
+ * multipliers, no invented headcounts — a public scan cannot see application
+ * counts or crypto-asset inventories, and claiming otherwise would be the exact
+ * fabrication this scanner exists to argue against.
+ */
+export interface FootprintMetric {
+  key: string
+  label: string
+  value: number
+  /** What was counted, e.g. "DNS names on the served certificate". */
+  countedFrom: string
+  /** True when this is a floor (more exist that the edge cannot see). */
+  isLowerBound: boolean
+}
+
+export interface FootprintEstimate {
+  metrics: FootprintMetric[]
+  exposureLevel: string
+  recommendedAssessment: string
+  /** Explicit statement that these are edge counts, not estimates of the estate. */
+  basis: string
+  /** What an authenticated assessment would add, named rather than numbered. */
+  notCounted: string[]
+}
+
+// ─── Sophia narrative ─────────────────────────────────────────────────────────
+
+export interface SophiaAssessment {
+  headline: string
+  narrative: string
+  cannotValidate: string[]
+  recommendation: string
+}
+
+// ─── Raw evidence (edge only) ─────────────────────────────────────────────────
+
+export interface DnsEvidence {
+  addresses: string[]
+  addressCount: number
+  caaRecords: string[]
+  caaPresent: boolean
+  /**
+   * False when the authoritative resolver itself was unreachable. A CAA
+   * *query failure* is not the same as "no CAA policy" — the report must say
+   * Unknown rather than Fail, and the score must drop the dimension entirely.
+   */
+  caaQueryable: boolean
+  /** False when only the OS stub resolver answered (no record-type queries). */
+  resolverAvailable: boolean
+  nameservers: string[]
+  mxHosts: string[]
+  resolvedVia: string
+  error: string | null
+}
+
+/**
+ * Named key-agreement groups the endpoint actually accepts, established by
+ * offering one group at a time. This is the only way to prove hybrid
+ * post-quantum support from the outside — Node does not expose the negotiated
+ * TLS 1.3 group.
+ */
+export interface KeyAgreementEvidence {
+  probed: boolean
+  hybridGroups: string[]
+  classicalGroups: string[]
+  /** Preferred group description for display, e.g. "X25519MLKEM768". */
+  primaryGroup: string | null
+  forwardSecrecy: boolean
+  forwardSecrecyBasis: string
+}
+
+export interface HttpEvidence {
+  reachable: boolean
+  statusCode: number | null
+  finalUrl: string | null
+  /** True when the response came back from a different origin than requested. */
+  redirected: boolean
+  redirectedToHttps: boolean
+  responseMs: number | null
+  server: string | null
+  poweredBy: string | null
+  alpn: string | null
+  headers: Array<{
+    name: string
+    value: string | null
+    present: boolean
+    secure: boolean
+    required: boolean
+    recommendation: string
+  }>
+  error: string | null
+}
+
+export interface CertificateEvidence {
+  subjectAltNames: string[]
+  sanCount: number
+  ocspStapled: boolean
+  ocspUri: string | null
+  mustStaple: boolean
+  signedCertificateTimestamps: boolean
+  sctCount: number
+  chainDepth: number
+  daysRemaining: number
+  validityDays: number
+  isWildcard: boolean
+  /**
+   * Result of real chain verification against the system trust store
+   * (`socket.authorized`). The probe connects with rejectUnauthorized:false so
+   * it can OBSERVE broken chains, but Node still runs verification and reports
+   * the verdict here — no claim about issuer trust is made without it.
+   */
+  chainTrusted: boolean
+  trustError: string | null
+}
+
+export interface PublicScanEvidence {
+  tls: TlsAnalysisResult | null
+  certificate: CertificateInfo | null
+  certificateExtras: CertificateEvidence | null
+  cipherSuites: CipherSuiteDetail[]
+  keyAgreement: KeyAgreementEvidence
+  dns: DnsEvidence
+  http: HttpEvidence
+  timing: HandshakeTiming
+  /** The port the assessment actually connected to. */
+  port: number
+  /** ALPN protocol negotiated on the scanner's own connection. */
+  alpn: string | null
+  /**
+   * Full output of the Public Scan Intelligence Engine — every module's raw
+   * data, structured evidence and confidence. The flattened fields above are
+   * an adapter over this so the report contract stayed stable when the modular
+   * engine replaced the single-file probe.
+   */
+  engines: import('./engines').ScanEvidenceBundle
+}
+
+// ─── Assessment scope disclosure ──────────────────────────────────────────────
+
+export interface AssessmentScope {
+  analyzed: string[]
+  notAnalyzed: string[]
+  statement: string
+}
+
+// ─── Complete report ──────────────────────────────────────────────────────────
+
+export interface PublicScanReport {
+  scanId: string
+  target: {
+    input: string
+    host: string
+    port: number
+    displayUrl: string
+  }
+  startedAt: string
+  completedAt: string
+  durationMs: number
+  cached: boolean
+  degraded: boolean
+  degradedReason: string | null
+
+  executive: ExecutiveSummary
+  scoreComponents: ScoreComponent[]
+  handshake: HandshakeStep[]
+  findings: PublicFinding[]
+  intelligence: CryptoIntelligence
+  attackSurface: AttackSurfaceItem[]
+  timeline: TimelinePhase[]
+  recommendations: Recommendation[]
+  governance: GovernanceItem[]
+  footprint: FootprintEstimate
+  sophia: SophiaAssessment
+  scope: AssessmentScope
+  evidence: PublicScanEvidence
+}
+
+// ─── Streaming events ─────────────────────────────────────────────────────────
+
+export type PublicScanEvent =
+  | { type: 'scan-start'; scanId: string; target: string; timestamp: string }
+  | { type: 'stage'; scanId: string; stage: PublicScanStage; timestamp: string }
+  | { type: 'scan-complete'; scanId: string; report: PublicScanReport; timestamp: string }
+  | { type: 'error'; scanId: string; code: string; message: string; timestamp: string }

@@ -523,28 +523,50 @@ export default function ReportCenterPage() {
                 </div>
 
                 <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-                  {/* Matrix preview */}
+                  {/* Matrix preview — CONSOLIDATED ownership rows. One row per
+                      cryptographic exposure per owner per asset; the scanner's
+                      repeated detection channels are merged and counted. */}
                   <div>
-                    <div className="mb-2 text-[10px] font-black uppercase tracking-wide text-white/50">Shared Responsibility Matrix</div>
+                    <div className="mb-2 flex items-baseline justify-between gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wide text-white/50">Shared Responsibility Matrix</span>
+                      <span className="font-mono text-[9px] text-white/40">
+                        {integerFmt(sr.matrix.length)} ownership row{sr.matrix.length === 1 ? '' : 's'} ·{' '}
+                        {integerFmt(sr.matrix.reduce((sum, m) => sum + Math.max(1, m.occurrences ?? 1), 0))} instances
+                      </span>
+                    </div>
                     <div className="overflow-x-auto rounded-md border border-white/8">
-                      <table className="w-full min-w-[420px] text-left text-[11px]">
+                      <table className="w-full min-w-[480px] text-left text-[11px]">
                         <thead>
                           <tr className="border-b border-white/10 text-[9px] font-black uppercase tracking-wide text-white/40">
-                            <th className="px-2 py-1.5">Finding</th><th className="px-2 py-1.5">Owner</th><th className="px-2 py-1.5">Priority</th><th className="px-2 py-1.5">Status</th>
+                            <th className="px-2 py-1.5">Finding</th>
+                            <th className="px-2 py-1.5">Asset</th>
+                            <th className="px-2 py-1.5">Owner</th>
+                            <th className="px-2 py-1.5 text-right">Inst.</th>
+                            <th className="px-2 py-1.5">Priority</th>
                           </tr>
                         </thead>
                         <tbody>
                           {sr.matrix.slice(0, 8).map((m) => (
                             <tr key={m.findingId} className="border-b border-white/5">
-                              <td className="max-w-[150px] truncate px-2 py-1.5 text-white/80"><span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ backgroundColor: domColor(m.domain) }} />{m.finding}</td>
+                              <td className="max-w-[150px] truncate px-2 py-1.5 text-white/80" title={m.finding}>
+                                <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ backgroundColor: domColor(m.domain) }} />
+                                {m.finding}
+                              </td>
+                              <td className="max-w-[120px] truncate px-2 py-1.5 text-white/55" title={(m.detectionLabels ?? [m.asset]).join(' · ')}>
+                                {m.asset}
+                              </td>
                               <td className="px-2 py-1.5" style={{ color: domColor(m.domain) }}>{m.owner}</td>
+                              <td className="px-2 py-1.5 text-right font-mono text-white/60">{integerFmt(Math.max(1, m.occurrences ?? 1))}</td>
                               <td className="px-2 py-1.5 capitalize text-white/60">{m.priority}</td>
-                              <td className="px-2 py-1.5 text-white/55">{m.status}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
+                    <p className="mt-1.5 text-[10px] text-white/35">
+                      One row per exposure, owner and asset. Repeated scanner detections of the same exposure are consolidated — the instance count
+                      preserves the raw evidence.
+                    </p>
                   </div>
 
                   {/* 7-wave roadmap */}

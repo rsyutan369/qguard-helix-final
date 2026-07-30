@@ -38,18 +38,26 @@ export function exportCsv(report: EnterpriseAssessmentReport): Blob {
   const sr = report.sharedResponsibility;
   let srBlock = '';
   if (sr.hasData) {
+    // One row per cryptographic exposure, owner and asset. `occurrences` carries
+    // the raw scanner instance count and `detection_labels` the merged detection
+    // channels, so a GRC pipeline ingesting this block can reconstruct the raw
+    // evidence without re-importing duplicate rows.
     const ownershipRows = sr.matrix.map((m) => ({
       finding: m.finding,
+      asset: m.asset,
       owner: m.owner,
       ownership_domain: m.domain,
       recommended_action: m.action,
+      occurrences: m.occurrences,
+      detection_labels: m.detectionLabels.join(' | '),
       priority: m.priority,
       status: m.status,
     }));
     srBlock =
-      `\n\n# Shared Responsibility Assessment — Ownership Matrix\n` +
+      `\n\n# Shared Responsibility Assessment — Ownership Matrix (consolidated)\n` +
       `# Customer readiness ${sr.readiness.customer}/100 | Provider ${sr.readiness.provider}/100 | Ecosystem ${sr.readiness.ecosystem}/100 | Overall ${sr.readiness.overall}/100\n` +
       `# Customer-controlled ${sr.customerControlled} | Provider-controlled ${sr.providerControlled} | Ecosystem-dependent ${sr.ecosystemDependent} | Actionable now ${sr.actionableNow} | Blockers ${sr.migrationBlockers}\n` +
+      `# ${sr.matrix.length} consolidated ownership row(s) representing ${sr.matrixInstances} raw scanner instance(s)\n` +
       (ownershipRows.length ? Papa.unparse(ownershipRows) : '');
   }
 

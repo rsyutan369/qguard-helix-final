@@ -1063,6 +1063,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return activeConversations;
   }, [activeConversations, archivedConversations, conversationView, hiddenConversations, isArchivedUnlocked, isHiddenUnlocked]);
   const activeConversation = visibleConversations.find((conversation) => conversation.id === activeConversationId) ?? visibleConversations[0] ?? null;
+  // Stable identity for the message-load and realtime effects. `activeConversation`
+  // is a NEW object on every dashboard refresh (see `effectiveConversations`), so
+  // depending on it churned both effects; the id only changes on a real switch.
+  const activeConversationLoadId = activeConversation?.id ?? null;
+  // Live mirror for async work that finishes after a conversation switch.
+  const activeConversationIdRef = useRef<string | null>(activeConversationLoadId);
+  activeConversationIdRef.current = activeConversationLoadId;
   const myDevices = devices.filter((device) => device.user_id === userId && isTrustedDeviceForDelivery(device));
   const rawLocalDevice = localDeviceId ? myDevices.find((device) => device.device_id === localDeviceId) ?? null : null;
   const localDevice = rawLocalDevice
@@ -1935,7 +1942,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }
 
   const loadConversationMessages = useCallback(async () => {
-    if (!activeConversation) {
+    if (!activeConversationLoadId) {
       messageLoadSeqRef.current += 1;
       setChatMessages([]);
       return;
@@ -1943,7 +1950,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
     // Bind read-state persistence to the conversation THIS load is for, so a
     // fast switch to another thread can't misroute the "mark read" write.
-    const conversationForLoad = activeConversation;
+    const conversationForLoad = activeConversationLoadId;
     const loadSeq = ++messageLoadSeqRef.current;
     setMessagesLoading(true);
     setMessageAction(null);
@@ -1952,7 +1959,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         supabase
         .from("messaging_message_envelopes")
         .select("id,conversation_id,client_message_id,parent_client_message_id,sender_user_id,sender_device_id,recipient_user_id,recipient_device_id,message_kind,sealed_sender_envelope,ciphertext,nonce,auth_tag,aad,ratchet_counter,suite,lifecycle,verification_state,threat_result,deleted_at,created_at")
-        .eq("conversation_id", activeConversation.id)
+        .eq("conversation_id", conversationForLoad)
         .is("deleted_at", null)
         // Newest 250 — ascending+limit returned the OLDEST page, so long
         // conversations could never even see their recent messages.
@@ -1961,7 +1968,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         supabase
           .from("messaging_message_user_states")
           .select("client_message_id,first_read_at,hidden_at,verification_state,threat_score,threat_flags")
-          .eq("conversation_id", activeConversation.id)
+          .eq("conversation_id", conversationForLoad)
           .eq("user_id", userId),
       ]);
       if (error) throw error;
@@ -2020,7 +2027,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       // unread badges (conversation list, sidebar, and top-bar bell) clear
       // immediately instead of waiting for the next realtime tick or 30s poll.
       try {
-        const recordedNewRead = await persistMessageUserStates(hydrated, userStates, conversationForLoad.id);
+        const recordedNewRead = await persistMessageUserStates(hydrated, userStates, conversationForLoad);
         if (recordedNewRead) onSent();
       } catch (persistError) {
         console.warn("[secure-chat] Read-state persistence failed:", persistError);
@@ -2037,7 +2044,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     } finally {
       if (messageLoadSeqRef.current === loadSeq) setMessagesLoading(false);
     }
-  }, [activeConversation, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId, onSent]);
+    // Deliberately keyed on the conversation ID (a string), never the
+    // conversation OBJECT. The dashboard refresh that follows every send and
+    // every live event rebuilds `conversations` — and `effectiveConversations`
+    // spreads each row into a fresh object — so the object identity changed
+    // constantly. That re-created this callback, which re-fired the load effect
+    // (a full 250-envelope re-fetch) AND tore down + re-subscribed the realtime
+    // channel below, losing any insert that landed in the gap. Keying on the id
+    // makes both effects stable for the lifetime of the open conversation.
+  }, [activeConversationLoadId, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId, onSent]);
 
   // Switching conversations must instantly show a clean slate. Clearing in a
   // layout effect (keyed on the conversation id, so it only fires on a real
@@ -2057,7 +2072,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }, [loadConversationMessages]);
 
   useEffect(() => {
-    if (!activeConversation) return undefined;
+    const conversationId = activeConversationLoadId;
+    if (!conversationId) return undefined;
     // Coalesce realtime bursts into ONE reload per window. Every envelope insert
     // (a send writes one per recipient device) and every read-state write (ours
     // AND the peer's — the filter is conversation-scoped) previously triggered a
@@ -2066,33 +2082,82 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // the previous one before it set `chatMessages` — so the view was pinned on
     // "Loading encrypted history..." forever. Throttling lets a reload complete
     // before the next starts, and collapses the post-send churn to a single tick.
+    let disposed = false;
     let reloadTimer: number | undefined;
-    const scheduleReload = () => {
-      if (reloadTimer !== undefined) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let resubscribeTimer: number | undefined;
+    let attempts = 0;
+
+    const scheduleReload = (delayMs = 500) => {
+      if (disposed || reloadTimer !== undefined) return;
       reloadTimer = window.setTimeout(() => {
         reloadTimer = undefined;
         loadConversationMessages();
-      }, 500);
+      }, delayMs);
     };
-    const channel = supabase
-      .channel(`qguard-chat-messages-${activeConversation.id}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "messaging_message_envelopes", filter: `conversation_id=eq.${activeConversation.id}` },
-        scheduleReload,
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "messaging_message_user_states", filter: `conversation_id=eq.${activeConversation.id}` },
-        scheduleReload,
-      )
-      .subscribe();
+
+    const open = () => {
+      if (disposed) return;
+      if (channel) {
+        const previous = channel;
+        channel = null;
+        void supabase.removeChannel(previous);
+      }
+      // Unique channel name per attempt: re-subscribing an object the server
+      // already closed silently never rejoins.
+      const next = supabase
+        .channel(`qguard-chat-messages-${conversationId}-${crypto.randomUUID()}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "messaging_message_envelopes", filter: `conversation_id=eq.${conversationId}` },
+          () => scheduleReload(),
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "messaging_message_user_states", filter: `conversation_id=eq.${conversationId}` },
+          () => scheduleReload(),
+        );
+      channel = next;
+      next.subscribe((status) => {
+        if (disposed || channel !== next) return;
+        if (status === "SUBSCRIBED") {
+          attempts = 0;
+          // Pull anything written while the channel was down — postgres_changes
+          // has no replay, so without this the messages that landed during a
+          // suspend/reconnect would only appear on the next unrelated event.
+          scheduleReload(0);
+          return;
+        }
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          attempts += 1;
+          if (resubscribeTimer !== undefined) window.clearTimeout(resubscribeTimer);
+          resubscribeTimer = window.setTimeout(open, Math.min(15_000, 1_000 * 2 ** Math.min(4, attempts)));
+        }
+      });
+    };
+
+    // Android suspends the WebView socket when the app is backgrounded and the
+    // screen turns off; on resume the channel is often dead with no event to
+    // prove it. Re-open and re-read on every return to the foreground.
+    const onResume = () => {
+      if (disposed || document.visibilityState !== "visible") return;
+      open();
+      scheduleReload(0);
+    };
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("online", onResume);
+
+    open();
 
     return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("online", onResume);
       if (reloadTimer !== undefined) window.clearTimeout(reloadTimer);
-      supabase.removeChannel(channel);
+      if (resubscribeTimer !== undefined) window.clearTimeout(resubscribeTimer);
+      if (channel) void supabase.removeChannel(channel);
     };
-  }, [activeConversation, loadConversationMessages]);
+  }, [activeConversationLoadId, loadConversationMessages]);
 
   useEffect(() => {
     const viewport = messageViewportRef.current;
@@ -2135,7 +2200,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }, [userId]);
 
   const loadTypingIndicators = useCallback(async () => {
-    if (!activeConversation) {
+    const conversationId = activeConversationIdRef.current;
+    if (!conversationId) {
       setTypingIndicators([]);
       return;
     }
@@ -2147,7 +2213,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const { data, error } = await supabase
       .from("messaging_typing_indicators")
       .select("user_id,device_id,expires_at,is_typing")
-      .eq("conversation_id", activeConversation.id)
+      .eq("conversation_id", conversationId)
       .neq("user_id", userId)
       .eq("is_typing", true)
       .gt("expires_at", new Date().toISOString());
@@ -2157,7 +2223,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       device_id: row.device_id ? String(row.device_id) : null,
       expires_at: String(row.expires_at),
     } satisfies TypingIndicator)));
-  }, [activeConversation, userId]);
+    // Reads the conversation id from a ref rather than depending on the
+    // conversation OBJECT: this callback gates the typing/telemetry realtime
+    // channel below, and depending on the object tore that channel down and
+    // re-subscribed it on every dashboard refresh — socket churn competing with
+    // the message and call-signal channels on the same connection.
+  }, [userId]);
 
   useEffect(() => {
     loadChatTelemetry();
@@ -2168,16 +2239,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }, [loadTypingIndicators]);
 
   useEffect(() => {
-    if (!activeConversation) return undefined;
+    if (!activeConversationLoadId) return undefined;
     const channel = supabase
-      .channel(`qguard-chat-security-${activeConversation.id}-${userId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messaging_typing_indicators", filter: `conversation_id=eq.${activeConversation.id}` }, loadTypingIndicators)
+      .channel(`qguard-chat-security-${activeConversationLoadId}-${userId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messaging_typing_indicators", filter: `conversation_id=eq.${activeConversationLoadId}` }, loadTypingIndicators)
       .on("postgres_changes", { event: "*", schema: "public", table: "messaging_crypto_telemetry", filter: `user_id=eq.${userId}` }, loadChatTelemetry)
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [activeConversation, loadChatTelemetry, loadTypingIndicators, userId]);
+  }, [activeConversationLoadId, loadChatTelemetry, loadTypingIndicators, userId]);
 
   async function pulseTyping() {
     if (!activeConversation || !currentDevice || !typingEnabled) return;
@@ -3214,7 +3285,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     } else {
       const secureMessage = parseSecurePlaintext(plaintext);
       const isLocked = Boolean(secureMessage.lifecycle.available_at && new Date(secureMessage.lifecycle.available_at).getTime() > Date.now());
-      decryptedMessageCacheRef.current.set(clientMessageId, {
+      const localEcho: ChatMessage = {
         id: clientMessageId,
         client_message_id: clientMessageId,
         row_ids: [],
@@ -3238,7 +3309,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         created_at: cachedAt,
         error: null,
         can_delete: true,
-      });
+      };
+      decryptedMessageCacheRef.current.set(clientMessageId, localEcho);
+      // Paint the sender's own message NOW. Previously it only appeared after
+      // `loadConversationMessages()` finished a fresh 250-envelope fetch +
+      // hydrate — a full network round trip the sender had to sit through
+      // watching "Sending". The reload still runs behind this to reconcile the
+      // real row ids; it replaces this entry with an identical one.
+      // A conversation switch during the seal/insert must not drop this echo
+      // into someone else's thread.
+      if (activeConversationIdRef.current === activeConversation.id) {
+        setChatMessages((current) => {
+          if (current.some((item) => item.client_message_id === clientMessageId)) return current;
+          return [...current, localEcho]
+            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        });
+      }
     }
     return clientMessageId;
   }

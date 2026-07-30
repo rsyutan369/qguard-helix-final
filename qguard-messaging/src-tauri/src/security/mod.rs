@@ -5,6 +5,7 @@ use crate::crypto::kdf::sha3_hex;
 pub mod content_uri;
 pub mod keystore;
 pub mod obf;
+pub mod saf_folder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SecurityHardeningStatus {

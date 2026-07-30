@@ -1,0 +1,12 @@
+Design Principle I'd Recommend
+
+One thing I think would make QGuard Helix stand out is to avoid building a single monolithic "scanner." Instead, create a Scanning Engine Framework composed of independent, reusable modules. For example:
+
+Network Discovery Engine – DNS, CDN, IPs, public services.
+TLS Intelligence Engine – Handshakes, protocol negotiation, cipher suites, key exchange.
+Certificate Intelligence Engine – X.509 analysis, chains, SCTs, OCSP, CRLs.
+HTTP Security Engine – Security headers, HSTS, CSP, COOP/COEP.
+Cryptographic Intelligence Engine – Observed algorithms, key sizes, hybrid PQ detection.
+Post-Quantum Readiness Engine – ML-KEM, ML-DSA, hybrid TLS observations, migration readiness scoring.
+Evidence & Reporting Engine – Confidence scoring, structured findings, executive summaries.
+Governance Engine (Enterprise) – Policies, approvals, cryptographic inventory, signed audit evidence.

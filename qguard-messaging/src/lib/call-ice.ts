@@ -98,3 +98,13 @@ export async function resolveRtcConfiguration(): Promise<RTCConfiguration> {
   cachedRelay = { value: relay, fetchedAt: now };
   return buildRtcConfiguration(relay);
 }
+
+/**
+ * Warm the relay cache outside any call. On a cold cache `resolveRtcConfiguration`
+ * costs a Supabase round trip (up to its 2.5s timeout) — on a phone that is dead
+ * time between "Accept" and the first media packet. Called on mount and when the
+ * app resumes so the cache is already fresh when a call actually starts.
+ */
+export function prewarmRtcConfiguration(): void {
+  void resolveRtcConfiguration().catch(() => undefined);
+}

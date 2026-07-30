@@ -1,0 +1,731 @@
+QGuard Helix Public Scan Intelligence Engine™
+
+Enterprise Internet-Facing Discovery Engine
+
+Objective:
+
+Improve and Enhance the Public Quantum Exposure Assessment Scanner http://localhost:3000/public-scan,  into a modular, enterprise-grade scanning engine capable of accurately discovering and analyzing publicly observable cryptographic controls, HTTP security posture, DNS security configuration, TLS implementation, certificate properties, and basic post-quantum cryptographic readiness.
+
+The scanner must clearly distinguish between:
+
+Healthy
+Warning
+Critical
+Unknown
+Not Observable
+Not Supported
+Not Applicable
+
+Never infer internal information from public observations.
+
+New Modular Scanner Architecture
+
+Create the following scanning modules.
+
+1. DNS Intelligence Module
+
+Purpose:
+
+Analyze all publicly observable DNS records.
+
+Detect:
+
+A
+AAAA
+CNAME
+MX
+TXT
+NS
+SOA
+CAA
+DNSSEC
+SPF
+DKIM
+DMARC
+
+Output
+
+CAA
+
+Enabled
+
+Status
+
+Healthy
+
+Evidence
+
+issue "letsencrypt.org"
+
+Business Impact
+
+Restricts unauthorized certificate issuance.
+
+Quantum Impact
+
+None
+
+Confidence
+
+100%
+
+If unavailable
+
+Status
+
+Not Supported
+
+Reason
+
+No CAA records published.
+
+If DNS server blocks lookup
+
+Status
+
+Unknown
+
+Reason
+
+Authoritative DNS server unavailable.
+
+2. HTTP Security Header Module
+
+Perform an actual HTTP(S) request.
+
+Analyze
+
+HSTS
+CSP
+X-Frame-Options
+X-Content-Type-Options
+Referrer-Policy
+Permissions-Policy
+COOP
+COEP
+CORP
+
+Example
+
+HSTS
+
+Present
+
+max-age=31536000
+
+includeSubDomains
+
+preload
+
+Status
+
+Healthy
+
+Missing
+
+Status
+
+Not Supported
+
+Reason
+
+Header not returned.
+
+Blocked
+
+Status
+
+Unknown
+
+Reason
+
+Server unreachable.
+
+3. TLS Discovery Engine
+
+Detect
+
+TLS versions
+
+Cipher suites
+
+Key exchange
+
+ALPN
+
+Supported groups
+
+Named groups
+
+Session tickets
+
+Compression
+
+Renegotiation
+
+Forward secrecy
+
+Certificate chain
+
+4. Certificate Intelligence Module
+
+Collect
+
+Certificate issuer
+
+Chain
+
+Leaf
+
+Intermediate
+
+SAN
+
+CN
+
+Public Key
+
+Signature Algorithm
+
+Key Size
+
+Validity
+
+Expiration
+
+OCSP
+
+SCT
+
+CRL
+
+Certificate Transparency
+
+Certificate Lifetime
+
+5. Public Cryptographic Discovery Engine
+
+Identify
+
+RSA
+
+ECC
+
+ECDSA
+
+Ed25519
+
+AES
+
+ChaCha20
+
+SHA1
+
+SHA2
+
+SHA3
+
+TLS
+
+DTLS
+
+Hybrid PQ Groups
+
+ML-KEM
+
+X25519MLKEM768
+
+SecP256r1MLKEM768
+
+ML-KEM-1024
+
+ML-DSA
+
+SLH-DSA
+
+Falcon (if encountered experimentally)
+
+Only report algorithms that are actually observable.
+
+6. Post-Quantum Detection Engine
+
+Determine
+
+Hybrid Key Exchange
+
+Example
+
+Key Share
+
+X25519MLKEM768
+
+Status
+
+Hybrid PQ Enabled
+
+If classical
+
+ECDHE
+
+Status
+
+Classical Only
+
+Quantum Risk
+
+Harvest Now Decrypt Later
+
+7. HTTP Fingerprinting
+
+Determine
+
+HTTP Server
+
+CDN
+
+Reverse Proxy
+
+Cloud Provider
+
+WAF
+
+TLS Termination
+
+Example
+
+Cloudflare
+
+Fastly
+
+Akamai
+
+AWS ALB
+
+Azure Front Door
+
+Google Cloud LB
+
+8. Public Attack Surface Counter
+
+Instead of static numbers
+
+Compute
+
+Internet Facing
+
+TRUE
+
+HTTPS Services
+
+443
+
+8443
+
+9443
+
+Certificates
+
+Unique Chains
+
+SAN Names
+
+Protocols
+
+TLS Versions
+
+Cipher Families
+
+DNS Records
+
+Security Headers
+
+Public Endpoints
+
+Confidence
+
+Everything shown should originate from actual scan results.
+
+9. Public Footprint Estimator
+
+Estimate
+
+Observed Domains
+
+Observed Certificates
+
+Observed Public Services
+
+Observed Protocols
+
+Observed Public Crypto Controls
+
+Observed Security Controls
+
+Never estimate internal applications from external evidence.
+
+If estimates are shown, label them as estimates and explain their basis.
+
+10. HSTS Scanner
+
+Check
+
+Presence
+
+max-age
+
+includeSubDomains
+
+preload
+
+preload eligibility
+
+Example
+
+Healthy
+
+Strict Transport Security Enabled
+
+max-age
+
+31536000
+
+includeSubDomains
+
+Yes
+
+preload
+
+Yes
+
+Missing
+
+Not Supported
+
+No HSTS header detected.
+
+11. DNS CAA Scanner
+
+Query
+
+CAA records
+
+Example
+
+issue
+
+letsencrypt.org
+
+iodef
+
+mailto:security@company.com
+
+Status
+
+Healthy
+
+No record
+
+Not Supported
+
+Timeout
+
+Unknown
+
+12. HTTP Header Scanner
+
+Show every detected header
+
+Group them
+
+Critical
+
+Recommended
+
+Optional
+
+Missing
+
+13. Certificate Transparency Scanner
+
+Query SCT extension
+
+Detect
+
+Embedded SCTs
+
+CT logs
+
+Status
+
+Healthy
+
+Missing SCTs
+
+Warning
+
+14. OCSP Scanner
+
+Determine
+
+Stapled
+
+Not Stapled
+
+Unknown
+
+Responder Timeout
+
+15. Forward Secrecy Detection
+
+Detect
+
+ECDHE
+
+DHE
+
+Hybrid PQ
+
+Static RSA
+
+Output
+
+Forward Secrecy
+
+Enabled
+
+Algorithm
+
+ECDHE X25519
+
+Status
+
+Healthy
+
+16. Quantum Algorithm Scanner
+
+Identify
+
+RSA
+
+ECC
+
+ECDSA
+
+ECDHE
+
+Ed25519
+
+AES
+
+ChaCha20
+
+SHA256
+
+SHA384
+
+SHA512
+
+SHA3
+
+TLS
+
+ML-KEM
+
+ML-DSA
+
+SLH-DSA
+
+Assign
+
+Quantum Safe
+
+Hybrid
+
+Classical
+
+Legacy
+
+Deprecated
+
+Quantum Risk Engine
+
+Evaluate
+
+RSA
+
+ECC
+
+ECDSA
+
+ECDHE
+
+DH
+
+Static RSA
+
+TLS Version
+
+Key Exchange
+
+Certificate Algorithm
+
+Cipher
+
+Hash
+
+Produce
+
+Quantum Risk
+
+Low
+
+Medium
+
+High
+
+Critical
+
+Explain why.
+
+Example
+
+RSA-2048
+
+Classical public-key cryptography.
+
+Potentially vulnerable to Shor's algorithm once a cryptographically relevant quantum computer exists.
+
+Recommendation
+
+Adopt hybrid ML-KEM deployment planning.
+Evidence Classification
+
+Every finding must include:
+
+Finding
+
+Observed Value
+
+Detection Method
+
+Evidence Source
+
+Confidence
+
+Business Impact
+
+Quantum Impact
+
+Recommendation
+
+Status
+
+Example
+
+Finding
+
+HSTS
+
+Observed
+
+max-age=31536000
+
+Detection
+
+HTTP Response Header
+
+Confidence
+
+100%
+
+Status
+
+Healthy
+Unknown vs Not Observable vs Not Supported Logic
+
+Implement strict logic.
+
+Unknown
+
+The scanner attempted to determine the value, but could not reach a reliable conclusion.
+
+Examples:
+
+Timeout
+DNS failure
+Partial handshake
+CDN interference
+Network interruption
+Not Observable
+
+The property cannot be determined from an external Internet-facing scan.
+
+Examples:
+
+Internal HSM
+Source code cryptography
+Database encryption
+Internal PKI
+Enterprise governance
+Cryptographic inventory
+Secrets management
+Not Supported
+
+The control was expected but is absent.
+
+Examples:
+
+Missing HSTS
+Missing CAA
+Missing OCSP
+Missing SCT
+Not Applicable
+
+The control is irrelevant for the scanned service.
+
+Public Scanner Scope
+
+Display prominently:
+
+This assessment is limited to publicly observable Internet-facing cryptographic evidence.
+
+It does not inspect:
+
+Source code
+Internal APIs
+Databases
+Cloud KMS
+HSMs
+Internal PKI
+Secrets
+Identity systems
+Enterprise cryptographic governance
+Runtime telemetry
+
+Include modules such as:
+
+DNS Intelligence
+TLS Handshake Analysis
+Certificate Intelligence
+Cipher Suite Analysis
+Forward Secrecy Detection
+HSTS Detection
+HTTP Security Header Analysis
+DNS CAA Detection
+OCSP Stapling
+Certificate Transparency
+ALPN & Supported Protocols
+Basic Cryptographic Algorithm Detection (RSA, ECDSA, TLS versions, etc.)
+Basic Post-Quantum Readiness Estimate
+Executive Summary
+Encryption Score
+Quantum Exposure Timeline
+Basic Recommendations
+
+These are all appropriate for an unauthenticated public scan because they rely only on externally observable information.
+
+Those capabilities are available through the authenticated QGuard Helix Enterprise Platform.
+
+Final Deliverable
+
+Deliver a modular, asynchronous scanning engine composed of independent services for DNS, TLS, certificates, HTTP security headers, OCSP, Certificate Transparency, CAA, HSTS, forward secrecy, cryptographic algorithm detection, and post-quantum readiness analysis. Each module must produce structured evidence with confidence scores and clear status semantics ("Healthy", "Warning", "Critical", "Unknown", "Not Observable", "Not Supported", or "Not Applicable"). The engine should rely only on publicly observable data, avoid unsupported inferences about internal systems, and generate transparent executive findings suitable for enterprise reporting while serving as the public entry point into the broader QGuard Helix platform.

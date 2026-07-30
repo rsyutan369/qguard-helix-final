@@ -29,7 +29,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import { open as openDialog, save as saveDialog } from "@/lib/tauri-dialog";
+import { open as openDialog } from "@/lib/tauri-dialog";
+import { withNativeDialog } from "@/lib/native-dialog-guard";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { loadAccountRecovery, publishAccountRecovery, type AccountRecoveryRecord } from "@/lib/account-recovery";
 import { supabase } from "@/lib/supabase";
@@ -260,15 +261,54 @@ function renderFileTypeIcon(node: VaultExplorerNode) {
 const REGISTRY_VERSION = "v1";
 
 // Android: pickers return SAF `content://` URIs (handled natively via file
-// descriptors), there is no folder/save-location picker, and encrypted
-// containers live in the app-private vault directory so registry paths stay
-// valid across restarts.
+// descriptors). Folder ARCHIVE operations (encrypt/restore a whole directory
+// tree) still need real directory traversal, which SAF does not give us, so
+// they stay desktop-only; single-file encrypt/decrypt is fully supported and
+// writes into a folder the user chooses through the SAF tree picker.
 const IS_ANDROID = isAndroidRuntime();
 
 /** User-facing name for a picked source; resolves SAF content URIs through the
  * provider (their raw tail is an opaque id like `msf:33`). */
 async function resolveSourceName(sourcePath: string): Promise<string> {
   return safeInvoke<string>("vault_resolve_name", { sourcePath }, pathBasename(sourcePath));
+}
+
+interface VaultFolderChoice {
+  /** SAF tree URI (Android) or a filesystem directory path (desktop). */
+  path: string;
+  /** Human-readable location for the activity log. */
+  label: string;
+}
+
+/**
+ * Ask the user where the output should go.
+ *
+ * Desktop uses the native directory dialog. Android has no folder picker in the
+ * Tauri dialog plugin, so `vault_pick_folder` drives the Storage Access
+ * Framework tree picker natively and persists the grant — which is what lets a
+ * user-chosen Android folder hold registry-tracked containers that stay
+ * decryptable after a restart.
+ */
+async function chooseDestinationFolder(title: string): Promise<VaultFolderChoice | null> {
+  if (IS_ANDROID) {
+    // MUST be guarded like any other app-opened native dialog. The SAF picker is
+    // a separate Activity, so launching it fires the WebView's `visibilitychange`
+    // AND MainActivity.onStop — both of which mean "the user left the app" to the
+    // Zero-Trust auto-lock. Unguarded, choosing a folder would drop the user onto
+    // the PIN screen and tear the vault operation down mid-flight.
+    const choice = await withNativeDialog(() =>
+      safeInvoke<VaultFolderChoice | null>("vault_pick_folder", undefined, null),
+    );
+    return choice ?? null;
+  }
+  const directory = await openDialog({ multiple: false, directory: true, title });
+  if (typeof directory !== "string") return null;
+  return { path: directory, label: directory };
+}
+
+/** Resolve a chosen folder + file name into the concrete output target. */
+async function prepareDestination(folder: string, fileName: string): Promise<string> {
+  return safeInvoke<string>("vault_prepare_dest", { folder, fileName });
 }
 
 export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPageProps) {
@@ -755,24 +795,28 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     }
   }
 
+  // Step 1 pick the file, step 2 pick the destination FOLDER — the same two-step
+  // flow on desktop and Android. The output file name is derived from the source
+  // (`<name>.qvault` on encrypt, the original name on decrypt) and de-duplicated
+  // natively, so the user only ever answers "which file" and "which folder".
   async function localEncryptFile() {
     await runLocalVault("encrypt-file", async () => {
-      const source = await openDialog({ multiple: false, directory: false, title: "Select a file to encrypt" });
+      const source = await openDialog({ multiple: false, directory: false, title: "Step 1 of 2 — select a file to encrypt" });
       if (typeof source !== "string") return;
       const sourceName = await resolveSourceName(source);
-      // Android has no save-location picker flow worth using here — the
-      // container goes into the app-private vault directory so the registry
-      // path stays durable (SAF write grants don't survive an app restart).
-      const dest = IS_ANDROID
-        ? await safeInvoke<string>("vault_default_encrypt_dest", { fileName: sourceName })
-        : await saveDialog({ title: "Save encrypted vault file", defaultPath: `${sourceName}.qvault` });
-      if (!dest) return;
+      setStatus("Choose the folder for the encrypted file");
+      const folder = await chooseDestinationFolder("Step 2 of 2 — choose the folder for the encrypted file");
+      if (!folder) {
+        setStatus("Encryption cancelled — no destination folder chosen");
+        return;
+      }
+      const dest = await prepareDestination(folder.path, `${sourceName}.qvault`);
       appendLog("info", localSuiteLine);
-      appendLog("info", `Encrypting ${sourceName} → ${pathBasename(dest)}`);
+      appendLog("info", `Encrypting ${sourceName} → ${pathBasename(dest)} in ${folder.label}`);
       setStatus("Encrypting to a local quantum-safe vault file");
       const summary = await runVaultStream("vault_encrypt_path", { sourcePath: source, destPath: dest });
       upsertRegistryFromSummary(summary, "encrypted");
-      const line = `Encrypted ${summary.name} (${formatBytes(summary.original_size)}, ${summary.total_chunks} chunk${summary.total_chunks === 1 ? "" : "s"}) → ${dest}`;
+      const line = `Encrypted ${summary.name} (${formatBytes(summary.original_size)}, ${summary.total_chunks} chunk${summary.total_chunks === 1 ? "" : "s"}) → ${folder.label}`;
       appendLog("success", line);
       pushActivity({ source: "encrypt", title: "File encrypted", detail: line, status: "success" });
       setStatus("Local encrypted vault file saved");
@@ -783,19 +827,24 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   async function localEncryptFolder() {
     await runLocalVault("encrypt-folder", async () => {
       if (IS_ANDROID) {
-        appendLog("error", "Folder vaults are not available on Android yet — encrypt individual files instead.");
+        appendLog("error", "Whole-folder vaults are desktop-only: Android cannot walk a directory tree through the Storage Access Framework. Encrypt individual files instead — you can still choose the destination folder.");
         return;
       }
-      const source = await openDialog({ multiple: false, directory: true, title: "Select a folder to encrypt" });
+      const source = await openDialog({ multiple: false, directory: true, title: "Step 1 of 2 — select a folder to encrypt" });
       if (typeof source !== "string") return;
-      const dest = await saveDialog({ title: "Save encrypted folder archive", defaultPath: `${pathBasename(source)}.qguard-folder.qvault` });
-      if (!dest) return;
+      setStatus("Choose the folder for the encrypted archive");
+      const folder = await chooseDestinationFolder("Step 2 of 2 — choose where to save the encrypted archive");
+      if (!folder) {
+        setStatus("Encryption cancelled — no destination folder chosen");
+        return;
+      }
+      const dest = await prepareDestination(folder.path, `${pathBasename(source)}.qguard-folder.qvault`);
       appendLog("info", localSuiteLine);
-      appendLog("info", `Archiving and encrypting folder ${pathBasename(source)} → ${pathBasename(dest)}`);
+      appendLog("info", `Archiving and encrypting folder ${pathBasename(source)} → ${pathBasename(dest)} in ${folder.label}`);
       setStatus("Encrypting folder into a single local archive");
       const summary = await runVaultStream("vault_encrypt_folder_path", { sourceDir: source, destPath: dest });
       upsertRegistryFromSummary(summary, "encrypted");
-      const line = `Encrypted folder ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      const line = `Encrypted folder ${summary.name} (${formatBytes(summary.original_size)}) → ${folder.label}`;
       appendLog("success", line);
       pushActivity({ source: "encrypt", title: "Folder encrypted", detail: line, status: "success" });
       setStatus("Local encrypted folder archive saved");
@@ -808,18 +857,23 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       const source = await openDialog({
         multiple: false,
         directory: false,
-        title: "Select an encrypted vault file",
+        title: "Step 1 of 2 — select an encrypted vault file",
         filters: [{ name: "QGuard Vault", extensions: ["qvault"] }],
       });
       if (typeof source !== "string") return;
       const sourceName = await resolveSourceName(source);
       const suggested = sourceName.replace(/\.qvault$/i, "") || "restored-file";
-      const dest = await saveDialog({ title: "Save decrypted file", defaultPath: suggested });
-      if (!dest) return;
-      appendLog("info", `Decrypting ${sourceName} on this device`);
+      setStatus("Choose the folder for the decrypted file");
+      const folder = await chooseDestinationFolder("Step 2 of 2 — choose the folder for the decrypted file");
+      if (!folder) {
+        setStatus("Decryption cancelled — no destination folder chosen");
+        return;
+      }
+      const dest = await prepareDestination(folder.path, suggested);
+      appendLog("info", `Decrypting ${sourceName} on this device → ${folder.label}`);
       setStatus("Decrypting local vault file");
       const summary = await runVaultStream("vault_decrypt_path", { sourcePath: source, destPath: dest });
-      const line = `Decrypted ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
+      const line = `Decrypted ${summary.name} (${formatBytes(summary.original_size)}) → ${folder.label}`;
       appendLog("success", line);
       pushActivity({ source: "decrypt", title: "File decrypted", detail: line, status: "success" });
       setStatus("Local file decrypted");
@@ -830,7 +884,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   async function localDecryptFolder() {
     await runLocalVault("decrypt-folder", async () => {
       if (IS_ANDROID) {
-        appendLog("error", "Folder restore is not available on Android yet — Android has no folder picker.");
+        appendLog("error", "Whole-folder restore is desktop-only: Android cannot write a directory tree through the Storage Access Framework. Single-file decrypt works and lets you choose the destination folder.");
         return;
       }
       const source = await openDialog({
@@ -871,8 +925,12 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         setStatus("Local folder archive restored");
       } else {
         const suggested = entry.name.replace(/\.qvault$/i, "") || pathBasename(entry.qvaultPath).replace(/\.qvault$/i, "") || "restored-file";
-        const dest = await saveDialog({ title: "Save decrypted file", defaultPath: pathBasename(suggested) });
-        if (!dest) return;
+        const folder = await chooseDestinationFolder("Choose the folder for the decrypted file");
+        if (!folder) {
+          setStatus("Decryption cancelled — no destination folder chosen");
+          return;
+        }
+        const dest = await prepareDestination(folder.path, pathBasename(suggested));
         setStatus(`Decrypting ${entry.name}`);
         const summary = await runVaultStream("vault_decrypt_path", { sourcePath: entry.qvaultPath, destPath: dest });
         updateRegistryEntry(entry.id, { status: "decrypted" });
@@ -1170,8 +1228,12 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       if (typeof source !== "string") return;
       const sourceName = await resolveSourceName(source);
       const suggested = sourceName.replace(/\.qvault$/i, "") || "recovered-file";
-      const dest = await saveDialog({ title: "Save recovered file", defaultPath: suggested });
-      if (!dest) return;
+      const folder = await chooseDestinationFolder("Choose the folder for the recovered file");
+      if (!folder) {
+        setStatus("Recovery cancelled — no destination folder chosen");
+        return;
+      }
+      const dest = await prepareDestination(folder.path, suggested);
       setStatus("Recovering vault file");
       const summary = enterpriseKey
         ? await safeInvoke<VaultLocalStreamSummary>("vault_decrypt_path_with_enterprise", {
@@ -1203,7 +1265,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   async function recoverDecryptFolder() {
     if (recoveryBusy) return;
     if (IS_ANDROID) {
-      setRecoveryNotice("Folder recovery is not available on Android yet — Android has no folder picker.");
+      setRecoveryNotice("Whole-folder recovery is desktop-only: Android cannot write a directory tree through the Storage Access Framework. Single-file recovery works and lets you choose the destination folder.");
       return;
     }
     const recoveryKey = recoveryKeyInput.trim();

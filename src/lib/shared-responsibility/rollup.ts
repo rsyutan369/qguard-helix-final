@@ -117,15 +117,89 @@ function addSeverity(bucket: SeverityBucket, severity: OwnershipFinding['severit
   else if (severity === 'low') bucket.low += 1
 }
 
-/** Expand a finding into matrix rows — provider-fronted TLS yields edge + origin. */
-function matrixRowsFor(finding: OwnershipFinding): SharedResponsibilityMatrixRow[] {
+/* ------------------------------------------------------------------ */
+/* Matrix consolidation                                                */
+/* ------------------------------------------------------------------ */
+
+const SEVERITY_RANK: Record<OwnershipFinding['severity'], number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+  safe: 0,
+}
+
+/**
+ * Canonical asset label for grouping.
+ *
+ * The scanner records the same host through several detection channels, so one
+ * asset arrives as `example.com`, `example.com:443`, `https://example.com` and
+ * `Cipher Suite - https://example.com`. Reduce all of those to the bare host so
+ * one exposure on one asset consolidates into one ownership row. Labels that
+ * carry no host (e.g. `Detection Rule TLS-006`) are kept verbatim — they are a
+ * different evidence channel and must not be silently merged into a host.
+ */
+export function canonicalAssetLabel(raw: string): string {
+  const value = String(raw ?? '').trim()
+  if (!value) return ''
+  const host = value
+    .toLowerCase()
+    .replace(/^[a-z0-9 /&+-]*?\s-\s/, '') // strip a leading "Category - " prefix
+    .match(/(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}/)
+  return host ? host[0] : value.toLowerCase()
+}
+
+/**
+ * Display label for a grouped asset: the canonical host when one was found
+ * (hostnames are case-insensitive, so the lowercase form is correct), otherwise
+ * the original label verbatim — lowercasing `Detection Rule TLS-006` into
+ * `detection rule tls-006` would corrupt an evidence identifier.
+ */
+export function assetDisplayLabel(raw: string): string {
+  const value = String(raw ?? '').trim()
+  if (!value) return ''
+  const canonical = canonicalAssetLabel(value)
+  return canonical === value.toLowerCase() ? value : canonical
+}
+
+/**
+ * Grouping identity for one cryptographic exposure: the algorithm when the
+ * scanner recorded one, otherwise the finding title with its trailing
+ * ` — <location>` suffix removed (that suffix is the asset, which the group
+ * tracks separately).
+ */
+function findingStem(finding: OwnershipFinding): string {
+  const algorithm = String(finding.algorithm ?? '').trim()
+  if (algorithm) return algorithm
+  return String(finding.title ?? '')
+    .split(/\s[—–-]\s/)[0]
+    .trim() || 'Cryptographic finding'
+}
+
+interface MatrixSeed extends SharedResponsibilityMatrixRow {
+  /** Grouping key — never rendered. */
+  groupKey: string
+  /** How specific the row's recommended action is (see `actionSpecificity`). */
+  specificity: number
+}
+
+/** Expand a finding into matrix seeds — provider-fronted TLS yields edge + origin. */
+function matrixSeedsFor(finding: OwnershipFinding): MatrixSeed[] {
+  const rawAsset = finding.asset || 'Unknown asset'
+  const assetKey = canonicalAssetLabel(rawAsset)
+  const asset = assetDisplayLabel(rawAsset) || rawAsset
+  const base = { occurrences: 1, detectionLabels: [rawAsset], severity: finding.severity, asset }
+
   if (finding.edgeOrigin && finding.edgeOrigin.isProviderFronted && finding.edgeOrigin.edge && finding.edgeOrigin.origin) {
     const edge = finding.edgeOrigin.edge
     const origin = finding.edgeOrigin.origin
     return [
       {
+        ...base,
+        groupKey: `edge|${edge.owner.toLowerCase()}|${assetKey}`,
+        specificity: 2,
         findingId: `${finding.id}:edge`,
-        finding: `Edge TLS — ${finding.asset}`,
+        finding: 'Edge TLS',
         owner: edge.owner,
         action: 'Monitor provider roadmap',
         priority: 'informational',
@@ -135,8 +209,11 @@ function matrixRowsFor(finding: OwnershipFinding): SharedResponsibilityMatrixRow
         migrationDependencyStatus: finding.migrationDependencyStatus,
       },
       {
+        ...base,
+        groupKey: `origin|${origin.owner.toLowerCase()}|${assetKey}`,
+        specificity: 2,
         findingId: `${finding.id}:origin`,
-        finding: `Origin TLS — ${finding.asset}`,
+        finding: 'Origin TLS',
         owner: origin.owner,
         action: 'Replace with ML-KEM hybrid',
         priority: finding.severity === 'critical' || finding.severity === 'high' ? 'high' : 'medium',
@@ -147,10 +224,18 @@ function matrixRowsFor(finding: OwnershipFinding): SharedResponsibilityMatrixRow
       },
     ]
   }
+
+  const stem = findingStem(finding)
   return [
     {
+      ...base,
+      // One row per cryptographic exposure per owner per asset. Detection
+      // channel, scanner category and evidence text are deliberately excluded
+      // from the key — they are what made one exposure repeat as identical rows.
+      groupKey: `f|${finding.domain}|${finding.ownerType.toLowerCase()}|${stem.toLowerCase()}|${assetKey}`,
+      specificity: actionSpecificity(finding.recommendedAction),
       findingId: finding.id,
-      finding: finding.title,
+      finding: stem,
       owner: finding.ownerType,
       action: finding.recommendedAction,
       priority: finding.priority,
@@ -160,6 +245,55 @@ function matrixRowsFor(finding: OwnershipFinding): SharedResponsibilityMatrixRow
       migrationDependencyStatus: finding.migrationDependencyStatus,
     },
   ]
+}
+
+/**
+ * How specific a recommended action is.
+ *
+ * The classifier names the exact NIST replacement when it can identify the
+ * primitive class (ML-KEM for key establishment, ML-DSA for signatures) and
+ * falls back to generic guidance otherwise. When duplicate scanner records of
+ * one exposure disagree — because they carry different `category` values — the
+ * named-primitive action wins, so a report can never print two contradictory
+ * remediations for the same finding.
+ */
+function actionSpecificity(action: string): number {
+  if (/ML-KEM|ML-DSA|SLH-DSA/i.test(action)) return 2
+  return 1
+}
+
+/**
+ * Merge a seed into its group.
+ *
+ * The classifier can produce two different recommended actions for the same
+ * exposure when duplicate scanner records disagree on `category` (one says
+ * "migrate to the NIST replacement", the other "replace the key exchange with an
+ * ML-KEM hybrid"). Consolidation resolves that deterministically in favour of
+ * the transport-specific action, so a report can never print two contradictory
+ * remediations for one finding.
+ */
+function mergeSeed(target: MatrixSeed, seed: MatrixSeed): void {
+  target.occurrences += seed.occurrences
+  for (const label of seed.detectionLabels) {
+    if (target.detectionLabels.length < 8 && !target.detectionLabels.includes(label)) target.detectionLabels.push(label)
+  }
+  if (SEVERITY_RANK[seed.severity] > SEVERITY_RANK[target.severity]) target.severity = seed.severity
+  if (PRIORITY_RANK[seed.priority] < PRIORITY_RANK[target.priority]) {
+    target.priority = seed.priority
+    target.status = seed.status
+  }
+  if (seed.specificity > target.specificity) {
+    target.action = seed.action
+    target.specificity = seed.specificity
+  }
+  // Actionability and dependency status take the most actionable observation:
+  // if any instance is customer-fixable today, the group is.
+  if (target.customerActionable === 'no' && seed.customerActionable !== 'no') {
+    target.customerActionable = seed.customerActionable
+  }
+  if (target.migrationDependencyStatus !== 'ready' && seed.migrationDependencyStatus === 'ready') {
+    target.migrationDependencyStatus = 'ready'
+  }
 }
 
 const WAVE_META: { wave: number; name: string; domain: ResponsibilityDomain | 'mixed'; description: string; timeline: string; dependency: MigrationWave['dependencyStatus'] }[] = [
@@ -224,18 +358,32 @@ export function buildSharedResponsibility(
   const severityByDomain = { customer: emptySeverityBucket(), provider: emptySeverityBucket(), ecosystem: emptySeverityBucket() }
   for (const f of findings) addSeverity(severityByDomain[f.domain], f.severity)
 
-  // Matrix (bounded).
-  const matrix: SharedResponsibilityMatrixRow[] = []
+  // Matrix — CONSOLIDATED, then bounded.
+  //
+  // Consolidation runs over the whole finding population before the cap is
+  // applied, so the bound now buys unique ownership rows instead of being
+  // spent on repeats of the same exposure.
   const sortedForMatrix = [...findings].sort(
     (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || b.quantumRiskScore - a.quantumRiskScore,
   )
+  const matrixGroups = new Map<string, MatrixSeed>()
   for (const f of sortedForMatrix) {
-    if (matrix.length >= maxMatrix) break
-    for (const row of matrixRowsFor(f)) {
-      if (matrix.length >= maxMatrix) break
-      matrix.push(row)
+    for (const seed of matrixSeedsFor(f)) {
+      const existing = matrixGroups.get(seed.groupKey)
+      if (existing) mergeSeed(existing, seed)
+      else matrixGroups.set(seed.groupKey, seed)
     }
   }
+  const matrix: SharedResponsibilityMatrixRow[] = Array.from(matrixGroups.values())
+    .sort(
+      (a, b) =>
+        PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+        SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
+        b.occurrences - a.occurrences ||
+        a.finding.localeCompare(b.finding),
+    )
+    .slice(0, maxMatrix)
+    .map(({ groupKey: _groupKey, specificity: _specificity, ...row }) => row)
 
   // Provider breakdown.
   const providerGroups = new Map<string, { rows: OwnershipFinding[]; sample: OwnershipFinding }>()

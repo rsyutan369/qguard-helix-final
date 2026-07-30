@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { resolveRtcConfiguration } from "@/lib/call-ice";
+import { prewarmRtcConfiguration, resolveRtcConfiguration } from "@/lib/call-ice";
 import { callReducer, INITIAL_CALL_STATE } from "@/lib/call-state";
-import { sendCallSignal, subscribeCallSignals } from "@/lib/call-signaling";
+import { sendCallSignal, subscribeCallSignals, type CallSignalChannel } from "@/lib/call-signaling";
 import type { CallSignalRow } from "@/lib/call-types";
 import { safeInvoke } from "@/lib/tauri";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
@@ -42,6 +42,24 @@ interface CallRoute { conversationId: string; toUserId: string; toDeviceId: stri
 
 const AUDIO_CTX = [1, 0, 0, 0];
 const VIDEO_CTX = [2, 0, 0, 0];
+
+// Ring/offer rows older than this are leftovers from a previous session (the
+// catch-up reader looks back over a window, and a device that was offline can
+// see a long-dead call). Never pop an incoming-call modal for one. Matched to
+// the caller's own 45s give-up: past that, nobody is still dialling.
+const SIGNAL_FRESHNESS_MS = 45_000;
+// How long `accept()` waits for the caller's offer row when the user answers
+// off the ring — the ring is sent BEFORE the caller's camera and KEM setup, so
+// a fast tap on Accept legitimately arrives first.
+const OFFER_WAIT_MS = 30_000;
+
+function isFreshSignal(row: CallSignalRow): boolean {
+  const at = new Date(row.created_at).getTime();
+  if (!Number.isFinite(at)) return true;
+  // Only "too old" is disqualifying; a device clock running behind the DB
+  // yields a negative age, which is harmless.
+  return Date.now() - at < SIGNAL_FRESHNESS_MS;
+}
 
 // Two encoded-transform plumbings deliver the same E2EE media encryption:
 //   - "worker": RTCRtpScriptTransform (Chromium >= 115), runs in a Worker.
@@ -112,7 +130,19 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const setupRef = useRef<CallSetup | null>(null);
   const routeRef = useRef<CallRoute | null>(null);
   const pendingOfferRef = useRef<CallSignalRow | null>(null);
+  // The `ring` that opened the incoming-call modal. It carries the caller's
+  // ids + conversation, so the callee can answer (and address `accept`/`reject`)
+  // before the offer — which the caller only sends once its camera and hybrid
+  // KEM setup finish — has landed.
+  const pendingRingRef = useRef<CallSignalRow | null>(null);
+  // Resolvers waiting for the offer of the call currently being answered.
+  const offerWaitersRef = useRef<Array<(row: CallSignalRow) => void>>([]);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  // Live signal transport, so a call can switch it into fast catch-up polling.
+  const signalChannelRef = useRef<CallSignalChannel | null>(null);
+  // Bumped by cleanup(); lets a late `getUserMedia` resolution know its call is
+  // already gone so it releases the camera instead of re-arming it.
+  const callGenRef = useRef(0);
   const phaseRef = useRef(state.phase);
   // Mirrors of call state for the signal subscription, so its handler can read
   // the current role/call id WITHOUT those being effect dependencies. The
@@ -175,6 +205,11 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   }, []);
 
   const cleanup = useCallback(() => {
+    // Invalidate any media capture still in flight. Camera warm-up now overlaps
+    // signalling, so a call that fails or is hung up mid-setup can have a
+    // `getUserMedia` promise that resolves AFTER teardown — without this guard
+    // it would re-arm `localStreamRef` and leave the camera light on with no call.
+    callGenRef.current += 1;
     statsStopRef.current?.();
     statsStopRef.current = null;
     setStats(null);
@@ -186,6 +221,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     setupRef.current = null;
     routeRef.current = null;
     pendingOfferRef.current = null;
+    pendingRingRef.current = null;
+    offerWaitersRef.current = [];
     pendingCandidatesRef.current = [];
     if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
     if (reconnectTimerRef.current !== undefined) { window.clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = undefined; }
@@ -206,12 +243,24 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     if (timeoutRef.current !== undefined) window.clearTimeout(timeoutRef.current);
     timeoutRef.current = window.setTimeout(() => {
       timeoutRef.current = undefined;
-      if (phaseRef.current !== "connected") {
-        dispatch({ type: "failed", error: "Call timed out" });
-        cleanup();
+      if (phaseRef.current === "connected") return;
+      // The far end is now told about the give-up. Since the ring is sent before
+      // any local setup, an unanswered call leaves the callee's phone ringing —
+      // without this it would keep ringing after we had already stopped calling.
+      const route = routeRef.current;
+      const callId = callIdRef.current;
+      if (route && callId) {
+        void sendCallSignal({
+          call_id: callId, conversation_id: route.conversationId,
+          from_user_id: args.userId, from_device_id: args.deviceId,
+          to_user_id: route.toUserId, to_device_id: route.toDeviceId,
+          signal_type: "hangup", payload: {},
+        }).catch(() => undefined);
       }
+      dispatch({ type: "failed", error: "Call timed out" });
+      cleanup();
     }, ms);
-  }, [cleanup]);
+  }, [args.deviceId, args.userId, cleanup]);
 
   const buildPeerConnection = useCallback(async (callId: string, route: CallRoute) => {
     // Live STUN/TURN resolution (operator relay config → env → Open Relay):
@@ -287,6 +336,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     // (GPU driver wedge → hard restart), the next launch boots WebView2 in
     // GPU-safe software rendering. Cleared in cleanup() and on graceful close.
     // Fallback `null` keeps non-Tauri environments (tests, web preview) working.
+    const generation = callGenRef.current;
     await safeInvoke("call_watchdog_begin", undefined, null);
     const constraints = mediaConstraints(qualityRef.current);
     let stream: MediaStream;
@@ -297,6 +347,10 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       // so a bad webcam can never hang the call (a key freeze guard).
       stream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio ?? true });
       setCameraEnabled(false);
+    }
+    if (callGenRef.current !== generation) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error("Call ended before the camera was ready");
     }
     // Steer encoder degradation decisions: camera = "motion", mic = "speech".
     applyContentHints(stream);
@@ -313,6 +367,30 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     await applyTrackConstraints(localStream, next);
   }, [localStream]);
 
+  /**
+   * Resolve once the offer row for `callId` is in hand. The callee can answer
+   * before the caller has finished opening its camera and deriving the hybrid
+   * KEM key, so "Accept" must be able to wait for the offer instead of being a
+   * no-op (which used to make an early tap do nothing at all).
+   */
+  const waitForOffer = useCallback((callId: string): Promise<CallSignalRow> => {
+    const existing = pendingOfferRef.current;
+    if (existing && existing.call_id === callId) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        offerWaitersRef.current = offerWaitersRef.current.filter((w) => w !== waiter);
+        reject(new Error("The caller never completed the connection setup"));
+      }, OFFER_WAIT_MS);
+      const waiter = (row: CallSignalRow) => {
+        if (row.call_id !== callId) return;
+        window.clearTimeout(timer);
+        offerWaitersRef.current = offerWaitersRef.current.filter((w) => w !== waiter);
+        resolve(row);
+      };
+      offerWaitersRef.current.push(waiter);
+    });
+  }, []);
+
   const startCall = useCallback(async (peer: CallPeer, conversationId: string) => {
     if (!supported || !args.deviceId || !conversationId) return;
     const route: CallRoute = { conversationId, toUserId: peer.userId, toDeviceId: peer.deviceId };
@@ -320,21 +398,42 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     const callId = crypto.randomUUID();
     dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.deviceId });
     armTimeout(45000);
+    // Fast catch-up polling for the whole setup window: the `answer` and the
+    // first ICE candidates must not wait on a possibly-suspended WebSocket.
+    signalChannelRef.current?.boost();
+    const envelope = {
+      call_id: callId, conversation_id: route.conversationId,
+      from_user_id: args.userId, from_device_id: args.deviceId,
+      to_user_id: route.toUserId, to_device_id: route.toDeviceId,
+    };
     try {
-      const setup = await safeInvoke<CallSetup>("call_caller_setup", {
-        peer: {
-          user_id: peer.userId,
-          device_id: peer.deviceId,
-          x25519_identity_public: peer.x25519,
-          mlkem_identity_public: peer.mlkem,
-          ed25519_identity_public: peer.ed25519,
-          mldsa_identity_public: peer.mldsa,
-          identity_signature: peer.identitySignature,
-        },
-        callId,
-      });
+      // RING FIRST — one insert, nothing else on the critical path. Previously
+      // the ring went out only AFTER caller KEM setup + camera open + ICE config
+      // resolution + offer creation, which on a phone is several seconds of dead
+      // air; the callee's screen stayed dark until the call was nearly timed out.
+      await sendCallSignal({ ...envelope, signal_type: "ring", payload: {} });
+
+      // Now do the expensive work CONCURRENTLY instead of one stage at a time.
+      // The KEM/identity work is a Rust round trip, the camera is a hardware
+      // warm-up and the relay config is a network read — none of them depend on
+      // each other, and serialising them was most of the remaining delay.
+      const [setup, stream] = await Promise.all([
+        safeInvoke<CallSetup>("call_caller_setup", {
+          peer: {
+            user_id: peer.userId,
+            device_id: peer.deviceId,
+            x25519_identity_public: peer.x25519,
+            mlkem_identity_public: peer.mlkem,
+            ed25519_identity_public: peer.ed25519,
+            mldsa_identity_public: peer.mldsa,
+            identity_signature: peer.identitySignature,
+          },
+          callId,
+        }),
+        getMedia(),
+        resolveRtcConfiguration().catch(() => undefined),
+      ]);
       setupRef.current = setup;
-      const stream = await getMedia();
       const pc = await buildPeerConnection(callId, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       // Deterministic VP8: the E2EE frame crypto's unencrypted-header layout is
@@ -344,28 +443,53 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await applySenderParams(pc, qualityRef.current);
-      await sendCallSignal({ call_id: callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "ring", payload: {} });
-      await sendCallSignal({ call_id: callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "offer", payload: { sdp: offer.sdp, hybridCiphertext: setup.hybridCiphertext } });
+      await sendCallSignal({ ...envelope, signal_type: "offer", payload: { sdp: offer.sdp, hybridCiphertext: setup.hybridCiphertext } });
     } catch (e) {
+      // Stop the far end ringing for a call we can no longer complete.
+      void sendCallSignal({ ...envelope, signal_type: "hangup", payload: {} }).catch(() => undefined);
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Call failed" });
       cleanup();
     }
   }, [args.deviceId, args.userId, armTimeout, attachMediaTransforms, buildPeerConnection, cleanup, getMedia, supported]);
 
   const accept = useCallback(async () => {
-    const offer = pendingOfferRef.current;
-    if (!offer) return;
-    // Everything the callee needs travels in the offer row: the conversation,
-    // the caller's user/device ids, and the hybrid KEM ciphertext.
-    const route: CallRoute = { conversationId: offer.conversation_id, toUserId: offer.from_user_id, toDeviceId: offer.from_device_id };
+    // Either the ring (which arrives first) or the offer can be what is on
+    // screen when the user taps Accept — both carry the caller's address.
+    const incoming = pendingOfferRef.current ?? pendingRingRef.current;
+    if (!incoming) return;
+    const callId = incoming.call_id;
+    const route: CallRoute = { conversationId: incoming.conversation_id, toUserId: incoming.from_user_id, toDeviceId: incoming.from_device_id };
     routeRef.current = route;
     dispatch({ type: "accept" });
     armTimeout(45000);
+    signalChannelRef.current?.boost();
     try {
-      const setup = await safeInvoke<CallSetup>("call_callee_setup", { hybridCiphertext: (offer.payload as { hybridCiphertext: unknown }).hybridCiphertext, callId: offer.call_id });
+      // Camera + relay config start NOW, overlapping the wait for the caller's
+      // offer and the KEM decapsulation that follows it.
+      const mediaPromise = getMedia();
+      // The offer wait below can abort this accept; attaching a handler keeps a
+      // superseded capture from surfacing as an unhandled rejection (the promise
+      // is still consumed by the Promise.all when the accept succeeds).
+      mediaPromise.catch(() => undefined);
+      const configPromise = resolveRtcConfiguration().catch(() => undefined);
+      // Tell the caller we are answering, so it can stop ringing us and (on a
+      // build that waits for it) start pushing media setup immediately.
+      void sendCallSignal({
+        call_id: callId, conversation_id: route.conversationId,
+        from_user_id: args.userId, from_device_id: args.deviceId,
+        to_user_id: route.toUserId, to_device_id: route.toDeviceId,
+        signal_type: "accept", payload: {},
+      }).catch(() => undefined);
+
+      const offer = await waitForOffer(callId);
+      pendingOfferRef.current = offer;
+      const [setup, stream] = await Promise.all([
+        safeInvoke<CallSetup>("call_callee_setup", { hybridCiphertext: (offer.payload as { hybridCiphertext: unknown }).hybridCiphertext, callId }),
+        mediaPromise,
+        configPromise,
+      ]);
       setupRef.current = setup;
-      const stream = await getMedia();
-      const pc = await buildPeerConnection(offer.call_id, route);
+      const pc = await buildPeerConnection(callId, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       // Same VP8 pinning as the caller side, before the answer is created.
       pinVideoCodec(pc);
@@ -375,12 +499,18 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await applySenderParams(pc, qualityRef.current);
-      await sendCallSignal({ call_id: offer.call_id, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "answer", payload: { sdp: answer.sdp } });
+      await sendCallSignal({ call_id: callId, conversation_id: route.conversationId, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: route.toUserId, to_device_id: route.toDeviceId, signal_type: "answer", payload: { sdp: answer.sdp } });
     } catch (e) {
+      void sendCallSignal({
+        call_id: callId, conversation_id: route.conversationId,
+        from_user_id: args.userId, from_device_id: args.deviceId,
+        to_user_id: route.toUserId, to_device_id: route.toDeviceId,
+        signal_type: "hangup", payload: {},
+      }).catch(() => undefined);
       dispatch({ type: "failed", error: e instanceof Error ? e.message : "Accept failed" });
       cleanup();
     }
-  }, [args.deviceId, args.userId, armTimeout, attachMediaTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia]);
+  }, [args.deviceId, args.userId, armTimeout, attachMediaTransforms, buildPeerConnection, cleanup, flushPendingCandidates, getMedia, waitForOffer]);
 
   const endCall = useCallback((notify: boolean) => {
     const route = routeRef.current;
@@ -395,9 +525,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   }, [args.deviceId, args.userId, cleanup]);
 
   const reject = useCallback(() => {
-    const offer = pendingOfferRef.current;
-    if (offer) {
-      void sendCallSignal({ call_id: offer.call_id, conversation_id: offer.conversation_id, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: offer.from_user_id, to_device_id: offer.from_device_id, signal_type: "reject", payload: {} });
+    const incoming = pendingOfferRef.current ?? pendingRingRef.current;
+    if (incoming) {
+      void sendCallSignal({ call_id: incoming.call_id, conversation_id: incoming.conversation_id, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: incoming.from_user_id, to_device_id: incoming.from_device_id, signal_type: "reject", payload: {} });
     }
     endCall(false);
   }, [args.deviceId, args.userId, endCall]);
@@ -408,55 +538,124 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
 
   // Signal handling
   useEffect(() => {
-    if (!args.userId || !args.deviceId) return;
-    const unsub = subscribeCallSignals({
+    if (!args.userId || !args.deviceId) return undefined;
+    // Relay config is resolved once here (and again on resume) so it is warm
+    // before any call rather than costing a round trip mid-setup.
+    prewarmRtcConfiguration();
+
+    /** Decline an incoming call we cannot take right now. */
+    const replyBusy = (row: CallSignalRow) => {
+      void sendCallSignal({
+        call_id: row.call_id, conversation_id: row.conversation_id,
+        from_user_id: args.userId, from_device_id: args.deviceId,
+        to_user_id: row.from_user_id, to_device_id: row.from_device_id,
+        signal_type: "busy", payload: {},
+      }).catch(() => undefined);
+    };
+
+    /** Start ringing for `row` unless this device is already on a call. */
+    const openIncoming = (row: CallSignalRow): boolean => {
+      // Already handling this exact call: a re-delivered ring/offer (realtime
+      // and the catch-up reader can both deliver it) must never answer "busy"
+      // to our own in-progress call — that is what used to tear it down.
+      if (row.call_id === callIdRef.current) return true;
+      if (["ringing", "calling", "connecting", "connected"].includes(phaseRef.current)) {
+        replyBusy(row);
+        return false;
+      }
+      // Address the caller from the moment we start ringing, so a rejection or a
+      // ring timeout can tell them — not only once the user has accepted.
+      routeRef.current = {
+        conversationId: row.conversation_id,
+        toUserId: row.from_user_id,
+        toDeviceId: row.from_device_id,
+      };
+      dispatch({ type: "incoming", callId: row.call_id, peerUserId: row.from_user_id, peerDeviceId: row.from_device_id });
+      // A caller whose app dies mid-dial sends no hangup. Without a ceiling the
+      // modal would ring forever; 60s is comfortably past the caller's own 45s
+      // give-up (whose hangup normally dismisses this first).
+      armTimeout(60_000);
+      return true;
+    };
+
+    const channel = subscribeCallSignals({
       userId: args.userId, deviceId: args.deviceId,
       onSignal: (row) => {
         if (row.from_user_id === args.userId) return;
         switch (row.signal_type) {
-          case "offer": {
-            // A re-delivered offer for the call we're already handling (realtime
-            // can deliver an insert more than once): ignore it. Replying "busy"
-            // to our own in-progress call is what tore it down on accept.
+          case "ring": {
+            // The ring is the caller's FIRST write, sent before its camera and
+            // KEM setup — this is what makes the phone light up immediately
+            // instead of seconds later. A stale row from a long-dead call must
+            // never pop the modal, hence the freshness gate.
+            if (!isFreshSignal(row)) return;
             if (row.call_id === callIdRef.current) return;
-            const busy = ["ringing", "calling", "connecting", "connected"].includes(phaseRef.current);
-            if (busy) {
-              void sendCallSignal({
-                call_id: row.call_id, conversation_id: row.conversation_id,
-                from_user_id: args.userId, from_device_id: args.deviceId,
-                to_user_id: row.from_user_id, to_device_id: row.from_device_id,
-                signal_type: "busy", payload: {},
-              });
+            if (!openIncoming(row)) return;
+            pendingRingRef.current = row;
+            signalChannelRef.current?.boost();
+            break;
+          }
+          case "offer": {
+            if (!isFreshSignal(row)) return;
+            const forCurrentCall = row.call_id === callIdRef.current;
+            // Answering off the ring: `accept()` is already waiting for exactly
+            // this row.
+            if (forCurrentCall) {
+              pendingOfferRef.current = row;
+              offerWaitersRef.current.slice().forEach((waiter) => waiter(row));
               return;
             }
+            if (!openIncoming(row)) return;
             pendingOfferRef.current = row;
-            dispatch({ type: "incoming", callId: row.call_id, peerUserId: row.from_user_id, peerDeviceId: row.from_device_id });
             break;
           }
           case "answer":
             if (pcRef.current && roleRef.current === "caller") {
               void pcRef.current
                 .setRemoteDescription({ type: "answer", sdp: String(row.payload.sdp) })
-                .then(() => flushPendingCandidates());
+                .then(() => flushPendingCandidates())
+                .catch(() => undefined);
               dispatch({ type: "remote-answered" });
             }
             break;
+          case "accept":
+            // The callee is answering: keep signalling hot through connect.
+            if (row.call_id === callIdRef.current) signalChannelRef.current?.boost();
+            break;
           case "ice": {
             if (!row.payload.candidate) break;
+            if (row.call_id !== callIdRef.current) break;
             const candidate = row.payload.candidate as RTCIceCandidateInit;
-            if (pcRef.current?.remoteDescription) void pcRef.current.addIceCandidate(candidate);
+            if (pcRef.current?.remoteDescription) void pcRef.current.addIceCandidate(candidate).catch(() => undefined);
             else pendingCandidatesRef.current.push(candidate);
             break;
           }
           case "reject": case "hangup": case "busy":
-            endCall(false);
+            // Only the call this device is actually on may be torn down.
+            if (row.call_id === callIdRef.current) endCall(false);
             break;
           default: break;
         }
       },
     });
-    return unsub;
-  }, [args.deviceId, args.userId, endCall, flushPendingCandidates]);
+    signalChannelRef.current = channel;
+
+    // A resumed app has a cold relay cache and possibly a dead socket.
+    const onResume = () => {
+      if (document.visibilityState !== "visible") return;
+      prewarmRtcConfiguration();
+      channel.refresh();
+    };
+    document.addEventListener("visibilitychange", onResume);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onResume);
+      signalChannelRef.current = null;
+      channel.close();
+    };
+    // All four are stable callbacks, so the transport stays mounted for the whole
+    // session — re-subscribing mid-call is what used to drop the inbound answer.
+  }, [args.deviceId, args.userId, armTimeout, endCall, flushPendingCandidates]);
 
   // Keep synchronous mirrors of call state for ref-based decisions (busy
   // detection, role checks, hangup addressing) inside the signal handler, so it

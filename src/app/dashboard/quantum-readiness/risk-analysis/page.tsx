@@ -84,6 +84,14 @@ export default function RiskAnalysisPage() {
     [snapshot.exposureGraph.nodes],
   );
 
+  // Consolidated evidence tally — records shown vs the raw scanner instances they
+  // represent, so the collapse is visible rather than implied.
+  const evidence = useMemo(() => {
+    const records = snapshot.criticalFindings.length;
+    const instances = snapshot.criticalFindings.reduce((sum, f) => sum + Math.max(1, f.instances ?? 1), 0);
+    return { records, instances };
+  }, [snapshot.criticalFindings]);
+
   const kpis = [
     { label: 'Quantum Risk', value: integerFmt(scores.quantumRisk), suffix: '/100', detail: scores.quantumRiskLevel, color: riskTone(scores.quantumRisk), ring: scores.quantumRisk },
     { label: 'HNDL Risk', value: integerFmt(scores.hndlRisk), suffix: '/100', detail: scores.hndlRiskLevel, color: riskTone(scores.hndlRisk), ring: scores.hndlRisk },
@@ -285,35 +293,69 @@ export default function RiskAnalysisPage() {
         </Panel>
       </section>
 
-      {/* Evidence table */}
+      {/* Evidence table — consolidated: one record per algorithm + asset + severity.
+          The scanner emits one finding per detected instance and records the same
+          host through several detection channels, so raw rows repeat; the backend
+          collapses them and reports the true instance count here. */}
       <Panel className="p-5">
-        <SectionTitle suffix={<span className="text-[11px] text-white/40">{snapshot.criticalFindings.length} evidence records</span>}>Critical / High Evidence</SectionTitle>
+        <SectionTitle
+          suffix={
+            <span className="text-[11px] text-white/40">
+              {integerFmt(evidence.records)} record{evidence.records === 1 ? '' : 's'} · {integerFmt(evidence.instances)} scanner instance
+              {evidence.instances === 1 ? '' : 's'}
+            </span>
+          }
+        >
+          Critical / High Evidence
+        </SectionTitle>
         {snapshot.criticalFindings.length ? (
           <div className="overflow-x-auto">
-            <table className="min-w-[680px] w-full text-left text-xs">
+            <table className="min-w-[760px] w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-white/8 text-[9px] uppercase tracking-[0.08em] text-white/35">
                   <th className="pb-3 font-black">Finding</th>
                   <th className="pb-3 font-black">Algorithm</th>
                   <th className="pb-3 font-black">Asset</th>
                   <th className="pb-3 font-black">Environment</th>
+                  <th className="pb-3 font-black text-right">Instances</th>
                   <th className="pb-3 font-black">Severity</th>
                 </tr>
               </thead>
               <tbody>
-                {snapshot.criticalFindings.map((finding) => (
-                  <tr key={finding.id} className="border-b border-white/5 text-white/70">
-                    <td className="max-w-[200px] truncate py-2.5 text-white/82">{finding.title}</td>
-                    <td className="py-2.5 font-mono">{finding.algorithm}</td>
-                    <td className="max-w-[150px] truncate py-2.5">{finding.asset}</td>
-                    <td className="py-2.5">{finding.environment}</td>
-                    <td className="py-2.5 font-bold" style={{ color: severityColor(finding.severity) }}>
-                      {finding.severity}
-                    </td>
-                  </tr>
-                ))}
+                {snapshot.criticalFindings.map((finding) => {
+                  const instances = Math.max(1, finding.instances ?? 1);
+                  const locations = finding.locations ?? [];
+                  return (
+                    <tr key={finding.id} className="border-b border-white/5 text-white/70">
+                      <td className="max-w-[200px] truncate py-2.5 text-white/82" title={finding.title}>
+                        {finding.title}
+                      </td>
+                      <td className="py-2.5 font-mono">{finding.algorithm}</td>
+                      <td className="max-w-[180px] py-2.5">
+                        <div className="truncate" title={finding.asset}>
+                          {finding.asset}
+                        </div>
+                        {locations.length > 1 ? (
+                          <div className="truncate text-[10px] text-white/35" title={locations.join(' · ')}>
+                            {locations.length} detection channels
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="py-2.5">{finding.environment}</td>
+                      <td className="py-2.5 text-right font-mono font-bold text-white/75">{integerFmt(instances)}</td>
+                      <td className="py-2.5 font-bold" style={{ color: severityColor(finding.severity) }}>
+                        {finding.severity}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+            <p className="mt-2 text-[10px] text-white/35">
+              One record per algorithm, asset, environment and severity. The scanner reports one finding per detected instance and observes the
+              same host through several detection channels — identical evidence is consolidated and the Instances column carries the raw count, so
+              the totals still reconcile with the severity distribution above.
+            </p>
           </div>
         ) : (
           <EmptyState label="No critical evidence records." hint="Findings appear here once a scan completes." />
