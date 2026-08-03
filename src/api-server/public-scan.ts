@@ -18,14 +18,30 @@ import { Router, type Request, type Response } from 'express'
 import net from 'node:net'
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { assessPublicTarget } from '@/lib/scanner/public-scan/assess'
+import type { ObservationSink } from '@/lib/scanner/public-scan/engines'
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types'
 
 const router = Router()
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
-const SCAN_TIMEOUT_MS = 45_000
+/**
+ * Raised from 45s. Named-group enumeration is now strictly sequential and
+ * re-samples every group for agreement, which is deliberately slower than the
+ * old two-at-a-time batching — accuracy over speed. The group phase carries its
+ * own 26s internal budget, so this is a backstop for the rest of the pipeline
+ * rather than the thing that normally bounds a scan.
+ */
+const SCAN_TIMEOUT_MS = 75_000
 const CACHE_TTL_MS = 10 * 60 * 1000
+/**
+ * The streaming endpoint serves cached results for far less time than the
+ * one-shot API. A cache hit replays a finished assessment in a single frame,
+ * which is the correct answer for a JSON caller and a misleading one for a
+ * visitor watching a live assessment: it looks like the scan ran in a second.
+ * Rate limiting, not caching, is the abuse control for the stream.
+ */
+const STREAM_CACHE_TTL_MS = 45 * 1000
 const CACHE_MAX_ENTRIES = 400
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX_SCANS = 5
@@ -96,18 +112,26 @@ function checkRateLimit(ip: string): { allowed: boolean; retryAfterSeconds: numb
 
 interface CacheEntry {
   report: PublicScanReport
+  storedAt: number
   expiresAt: number
 }
 
 const resultCache = new Map<string, CacheEntry>()
 
-function readCache(key: string): PublicScanReport | null {
+/**
+ * `maxAgeMs` lets a caller demand a fresher entry than the cache's own TTL.
+ * The stream uses it to keep a live assessment live; the one-shot JSON API
+ * takes the full TTL.
+ */
+function readCache(key: string, maxAgeMs = CACHE_TTL_MS): PublicScanReport | null {
   const entry = resultCache.get(key)
   if (!entry) return null
-  if (entry.expiresAt < Date.now()) {
+  const now = Date.now()
+  if (entry.expiresAt < now) {
     resultCache.delete(key)
     return null
   }
+  if (now - entry.storedAt > maxAgeMs) return null
   return { ...entry.report, cached: true }
 }
 
@@ -116,7 +140,7 @@ function writeCache(key: string, report: PublicScanReport): void {
     const oldest = resultCache.keys().next().value
     if (oldest) resultCache.delete(oldest)
   }
-  resultCache.set(key, { report, expiresAt: Date.now() + CACHE_TTL_MS })
+  resultCache.set(key, { report, storedAt: Date.now(), expiresAt: Date.now() + CACHE_TTL_MS })
 }
 
 // ─── Concurrency guard ────────────────────────────────────────────────────────
@@ -180,12 +204,19 @@ function resolveTarget(raw: unknown): { target: ResolvedTarget } | { error: { co
 async function runScan(
   target: ResolvedTarget,
   onStage?: (stage: PublicScanStage) => void,
+  onObservation?: ObservationSink,
 ): Promise<PublicScanReport> {
   inFlight += 1
   const startedAt = Date.now()
   try {
     const report = await Promise.race([
-      assessPublicTarget({ input: target.input, host: target.host, port: target.port, onStage }),
+      assessPublicTarget({
+        input: target.input,
+        host: target.host,
+        port: target.port,
+        onStage,
+        onObservation,
+      }),
       new Promise<never>((_resolve, reject) =>
         setTimeout(() => reject(new Error('Assessment exceeded the public scan time budget.')), SCAN_TIMEOUT_MS),
       ),
@@ -338,7 +369,9 @@ router.get('/stream', async (req: Request, res: Response) => {
   })
 
   try {
-    const cached = readCache(resolved.target.cacheKey)
+    // Only a very recent result short-circuits the stream — see
+    // STREAM_CACHE_TTL_MS. Anything older is re-measured live.
+    const cached = readCache(resolved.target.cacheKey, STREAM_CACHE_TTL_MS)
     if (cached) {
       for (const stage of cached.evidence ? cachedStages(cached) : []) {
         send('stage', { stage, timestamp: new Date().toISOString() })
@@ -347,9 +380,18 @@ router.get('/stream', async (req: Request, res: Response) => {
       return
     }
 
-    const report = await runScan(resolved.target, (stage) => {
-      send('stage', { stage, timestamp: new Date().toISOString() })
-    })
+    const report = await runScan(
+      resolved.target,
+      (stage) => {
+        send('stage', { stage, timestamp: new Date().toISOString() })
+      },
+      // Each observation is written the instant the measurement completes, so
+      // the hero fills in over the real duration of the assessment instead of
+      // in one burst when the report is composed.
+      (observation) => {
+        send('observation', observation)
+      },
+    )
     send('scan-complete', { report, timestamp: new Date().toISOString() })
   } catch (err) {
     send('error', {

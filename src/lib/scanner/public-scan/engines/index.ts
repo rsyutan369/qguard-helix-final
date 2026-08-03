@@ -22,7 +22,13 @@ import { runCryptoEngine, type CryptoIntelligenceData } from './crypto-engine'
 import { runDnsEngine, emptyDns, type DnsIntelligence } from './dns-engine'
 import { runHttpEngine, emptyHttp, type HttpIntelligence } from './http-engine'
 import { runTlsEngine, emptyTls, type TlsIntelligence } from './tls-engine'
-import { type EngineResult, type Evidence, clampScore } from './contract'
+import {
+  type EngineResult,
+  type Evidence,
+  type ObservationSink,
+  clampScore,
+  observationEmitter,
+} from './contract'
 
 export * from './contract'
 export * from './dns-engine'
@@ -61,14 +67,20 @@ export interface OrchestratorOptions {
   port: number
   /** Called as each engine finishes, for SSE progress. */
   onEngine?: (engine: string, ok: boolean, detail: string) => void
+  /** Called as individual measurements land, for the live visualization. */
+  onObservation?: ObservationSink
+  /** Called when an engine begins, so the rail reflects real start times. */
+  onEngineStart?: (engine: string) => void
 }
 
 export async function runScanEngines(options: OrchestratorOptions): Promise<ScanEvidenceBundle> {
-  const { host, port, onEngine } = options
+  const { host, port, onEngine, onEngineStart } = options
   const startedAt = Date.now()
+  const emit = observationEmitter(options.onObservation)
 
   // DNS and HTTP touch different infrastructure than the TLS probes, so they
   // run alongside the TLS chain without competing for the same connection pool.
+  onEngineStart?.('dns-intelligence')
   const dnsPromise = runDnsEngine(host).then((result) => {
     onEngine?.(
       'dns-intelligence',
@@ -77,21 +89,57 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
         result.data.caaQueryable ? (result.data.caaPresent ? 'present' : 'absent') : 'unknown'
       }`,
     )
+    emit({
+      surface: 'dns',
+      label: 'Address resolution',
+      detail: result.data.addressCount
+        ? `${result.data.addressCount} address(es) resolved · ${result.data.resolvedVia}`
+        : 'No public address records',
+      status: result.data.addressCount ? 'pass' : 'critical',
+      severity: result.data.addressCount ? 'none' : 'high',
+      verdict: result.data.addressCount ? 'Resolved' : 'Unresolved',
+    })
+    emit({
+      surface: 'dns',
+      label: 'CAA issuance policy',
+      detail: !result.data.caaQueryable
+        ? 'CAA not observable from this resolver'
+        : result.data.caaPresent
+          ? `CAA record found · ${result.data.caaRecords.length} issuer(s)`
+          : 'No CAA issuance policy',
+      status: !result.data.caaQueryable ? 'info' : result.data.caaPresent ? 'pass' : 'warning',
+      severity: !result.data.caaQueryable ? 'info' : result.data.caaPresent ? 'none' : 'low',
+      verdict: !result.data.caaQueryable ? 'Partial' : result.data.caaPresent ? 'Secure' : 'Open issuance',
+    })
     return result
   })
 
+  onEngineStart?.('http-security')
   const httpPromise = runHttpEngine(host, port).then((result) => {
+    const hardened = result.data.headers.filter((h) => h.status === 'Healthy').length
+    const ratio = hardened / Math.max(1, result.data.headers.length)
     onEngine?.(
       'http-security',
       result.ok,
       result.data.reachable
-        ? `HTTP ${result.data.statusCode} · ${result.data.headers.filter((h) => h.status === 'Healthy').length}/${result.data.headers.length} hardened`
+        ? `HTTP ${result.data.statusCode} · ${hardened}/${result.data.headers.length} hardened`
         : 'origin unreachable',
     )
+    emit({
+      surface: 'headers',
+      label: 'Transport security headers',
+      detail: result.data.reachable
+        ? `${hardened}/${result.data.headers.length} headers hardened · HTTP ${result.data.statusCode}`
+        : (result.data.error ?? 'Origin did not answer over HTTPS'),
+      status: !result.data.reachable ? 'critical' : ratio >= 0.8 ? 'pass' : ratio >= 0.5 ? 'warning' : 'critical',
+      severity: !result.data.reachable ? 'medium' : ratio >= 0.5 ? 'low' : 'medium',
+      verdict: !result.data.reachable ? 'Unreachable' : ratio >= 0.8 ? 'Good' : ratio >= 0.5 ? 'Fair' : 'Weak',
+    })
     return result
   })
 
-  const tlsResult = await runTlsEngine(host, port)
+  onEngineStart?.('tls-intelligence')
+  const tlsResult = await runTlsEngine(host, port, options.onObservation)
   onEngine?.(
     'tls-intelligence',
     tlsResult.ok,
@@ -102,9 +150,8 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
       : tlsResult.error ?? 'handshake failed',
   )
 
-  const certificateResult = tlsResult.ok
-    ? await runCertificateEngine(host, port)
-    : { ...(await runCertificateEngine(host, port)) }
+  onEngineStart?.('certificate-intelligence')
+  const certificateResult = await runCertificateEngine(host, port, options.onObservation)
   onEngine?.(
     'certificate-intelligence',
     certificateResult.ok,
@@ -117,6 +164,7 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
 
   const [dnsResult, httpResult] = await Promise.all([dnsPromise, httpPromise])
 
+  onEngineStart?.('cryptographic-intelligence')
   const cryptoResult = await runCryptoEngine(
     tlsResult.data,
     certificateResult.data,
@@ -127,6 +175,21 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
     cryptoResult.ok,
     `PQ readiness ${cryptoResult.data.postQuantumReadiness}% · quantum risk ${cryptoResult.data.quantumRisk}`,
   )
+  emit({
+    surface: 'quantum',
+    label: 'Post-quantum readiness',
+    detail: tlsResult.data.hybridGroups.length
+      ? `ML-KEM key establishment active (${tlsResult.data.primaryGroup}) · readiness ${cryptoResult.data.postQuantumReadiness}%`
+      : `Hybrid not detected · classical key establishment only · readiness ${cryptoResult.data.postQuantumReadiness}%`,
+    status: tlsResult.data.hybridGroups.length ? 'pass' : 'warning',
+    severity: tlsResult.data.hybridGroups.length ? 'none' : 'medium',
+    verdict: tlsResult.data.hybridGroups.length
+      ? 'Hybrid ready'
+      : cryptoResult.data.postQuantumReadiness >= 40
+        ? 'Fair'
+        : 'Classical only',
+    postQuantum: tlsResult.data.hybridGroups.length > 0,
+  })
 
   const engines = [dnsResult, tlsResult, certificateResult, httpResult, cryptoResult]
 

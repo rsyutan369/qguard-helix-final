@@ -85,6 +85,64 @@ export interface Evidence {
   confidence: number
 }
 
+/* ─── Live observations ─────────────────────────────────────────────────────── */
+
+/**
+ * The six surfaces the public hero renders around the core. An observation is
+ * addressed to one of them so the UI can route it without knowing anything
+ * about engine internals.
+ */
+export type ObservationSurface = 'dns' | 'tls' | 'certificate' | 'headers' | 'ocsp' | 'quantum'
+
+/**
+ * A single measurement, emitted AT THE MOMENT IT IS MADE.
+ *
+ * Engines return their full result when they finish, which is correct for the
+ * report but useless for a live view: a named-group phase that takes fourteen
+ * sequential handshakes reports fourteen real facts over ten seconds and then
+ * used to deliver all of them in one frame at the end. Streaming them keeps the
+ * honesty contract intact — nothing here is generated, scheduled or paced; each
+ * frame is emitted by the code path that just performed the measurement, and
+ * carries the wall-clock time at which it happened.
+ */
+export interface ScanObservation {
+  surface: ObservationSurface
+  /** What was measured, e.g. "X25519MLKEM768". */
+  label: string
+  /** What came back, in the operator's language. */
+  detail: string
+  /** Verdict for this single measurement. */
+  status: 'pass' | 'warning' | 'critical' | 'info'
+  severity: 'none' | 'info' | 'low' | 'medium' | 'high' | 'critical'
+  /**
+   * Headline word for the surface, e.g. "Secure" / "Not stapled". Set only by
+   * the observation that is the surface's PRIMARY finding — a per-group probe
+   * result is real evidence but it is not the verdict on the whole surface, and
+   * letting it rewrite the headline would make the card flicker through eleven
+   * different words during one enumeration.
+   */
+  verdict?: string
+  /** True when this observation is post-quantum evidence. */
+  postQuantum?: boolean
+  /** Epoch ms at which the measurement completed. */
+  at: number
+}
+
+/** Sink an engine writes live measurements to. Always optional. */
+export type ObservationSink = (observation: Omit<ScanObservation, 'at'> & { at?: number }) => void
+
+/** Wraps a sink so every observation is stamped and a throwing sink is contained. */
+export function observationEmitter(sink?: ObservationSink): ObservationSink {
+  return (observation) => {
+    if (!sink) return
+    try {
+      sink({ ...observation, at: observation.at ?? Date.now() })
+    } catch {
+      /* A broken consumer must never fail the scan. */
+    }
+  }
+}
+
 /** Result envelope every engine returns. */
 export interface EngineResult<T> {
   engine: string

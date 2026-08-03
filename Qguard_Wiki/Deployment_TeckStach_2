@@ -1,0 +1,517 @@
+Your QGuard Helix might eventually look something like this:
+
+qguard-helix/
+
+apps/
+    web/                  <-- Next.js Frontend
+    api/                  <-- Express/FastAPI Gateway
+    scanner-service/
+    tls-scanner/
+    pq-scanner/
+    report-engine/
+    migration-engine/
+    sandbox-engine/
+
+packages/
+    shared-ui/
+    shared-types/
+    shared-utils/
+
+infra/
+    docker/
+    kubernetes/
+    terraform/
+
+supabase/
+    migrations/
+    functions/
+    storage/
+
+Notice that not everything goes to one provider.
+
+1. What goes to Vercel?
+
+Only your Next.js application.
+
+Think:
+
+Everything the customer sees.
+
+Examples:
+
+Landing Page
+
+Dashboard
+
+Login
+
+Register
+
+Settings
+
+Pricing
+
+Billing
+
+Executive Reports UI
+
+Scanner UI
+
+Migration Planner UI
+
+Sophia AI Chat Interface
+
+Profile
+
+Notifications
+
+Basically:
+
+apps/web
+
+gets deployed to
+
+Vercel
+
+Nothing else.
+
+Example
+apps/web/
+
+app/
+
+components/
+
+public/
+
+styles/
+
+package.json
+
+next.config.ts
+
+That's all Vercel needs.
+
+What does Vercel NOT run?
+
+Not this:
+
+TLS Scanner
+
+Nmap
+
+Nuclei
+
+Celery
+
+Redis
+
+Background workers
+
+Docker containers
+
+Long-running scans
+
+AI workers
+
+Those belong elsewhere.
+
+2. What goes to Cloudflare?
+
+This is the confusing one.
+
+Almost no application code.
+
+Cloudflare is mostly configuration.
+
+Think:
+
+Internet
+
+↓
+
+Cloudflare
+
+↓
+
+Vercel
+
+Cloudflare owns:
+
+DNS
+
+SSL
+
+CDN
+
+Caching
+
+WAF
+
+Firewall
+
+Rate Limits
+
+Bot Protection
+
+Zero Trust
+
+Email Routing (optional)
+
+Analytics
+
+You don't upload your application here.
+
+Instead, you configure:
+
+qguardhelix.com
+
+↓
+
+points to
+
+↓
+
+Vercel
+
+Think of Cloudflare as your building's security guard.
+
+The guard doesn't work inside the office.
+
+He protects the entrance.
+
+3. What goes to Supabase?
+
+This one you already understand well.
+
+Your application stores data here.
+
+Examples:
+
+Users
+
+Organizations
+
+Assets
+
+Scan History
+
+Reports
+
+Certificates
+
+Subscriptions
+
+Findings
+
+Storage
+
+Authentication
+
+You'll also deploy:
+
+SQL Migrations
+
+Edge Functions (optional)
+
+Storage Buckets
+
+Policies
+
+RLS
+
+Triggers
+
+Views
+
+Inside your repo you'll have
+
+supabase/
+
+migrations/
+
+functions/
+
+seed.sql
+
+config.toml
+4. What goes to DigitalOcean?
+
+This is your backend infrastructure.
+
+Everything that's heavy.
+
+Imagine:
+
+User clicks Scan
+
+The browser doesn't scan.
+
+Instead:
+
+DigitalOcean scans.
+
+Examples:
+
+TLS Scanner
+
+Quantum Scanner
+
+Certificate Scanner
+
+DNS Scanner
+
+Report Generator
+
+Scheduler
+
+Cron Jobs
+
+Queue Workers
+
+Background Jobs
+
+Migration Sandbox
+
+AI Workers
+
+Sophia backend
+
+Telemetry
+
+Asset Discovery
+
+These are Docker containers.
+
+For example:
+
+scanner-service/
+
+Dockerfile
+
+main.py
+
+requirements.txt
+
+Kubernetes starts hundreds of these if needed.
+
+A Real Example
+
+Suppose the user clicks:
+
+Start Scan
+
+Here's what happens.
+
+Step 1
+
+Browser
+
+↓
+
+https://qguardhelix.com
+
+Served by
+
+Vercel
+Step 2
+
+User clicks
+
+Scan
+
+Next.js sends
+
+POST /api/scan
+Step 3
+
+Your Backend
+
+running on
+
+DigitalOcean
+
+receives
+
+scan target
+
+tenant
+
+scan type
+
+priority
+Step 4
+
+Backend saves
+
+Pending Scan
+
+into
+
+Supabase
+Step 5
+
+Backend sends
+
+Scan Job
+
+to
+
+Redis Queue
+Step 6
+
+Kubernetes notices
+
+New Job
+
+Starts
+
+TLS Scanner Container
+Step 7
+
+Scanner performs
+
+TLS Analysis
+
+Headers
+
+Certificates
+
+DNS
+
+Cipher Suites
+
+PQC Analysis
+Step 8
+
+Results
+
+↓
+
+Supabase
+
+Step 9
+
+Next.js
+
+↓
+
+receives realtime update
+
+↓
+
+shows
+
+95%
+
+96%
+
+97%
+
+Completed
+Visual Diagram
+                    User
+                      │
+                      ▼
+             Cloudflare DNS
+          WAF • CDN • TLS • DDoS
+                      │
+                      ▼
+                 Vercel
+              (Next.js UI)
+                      │
+           HTTPS API Requests
+                      │
+                      ▼
+         DigitalOcean Kubernetes
+       ┌─────────────────────────┐
+       │ Backend API             │
+       │ Scan Orchestrator       │
+       │ TLS Scanner             │
+       │ PQ Scanner              │
+       │ Report Generator        │
+       │ Migration Sandbox       │
+       │ AI Services             │
+       └─────────────────────────┘
+               │            │
+               ▼            ▼
+          Redis Queue   Supabase
+                         Auth
+                         PostgreSQL
+                         Storage
+                         Realtime
+In your GitHub Repository
+
+Here's how I'd organize it:
+
+QGuard Helix
+│
+├── apps/
+│   ├── web/                 --> Deploy to Vercel
+│   ├── api/                 --> Docker → Kubernetes
+│   ├── tls-scanner/         --> Docker → Kubernetes
+│   ├── pq-scanner/          --> Docker → Kubernetes
+│   ├── report-engine/       --> Docker → Kubernetes
+│   ├── migration-engine/    --> Docker → Kubernetes
+│   └── sandbox-engine/      --> Docker → Kubernetes
+│
+├── packages/
+│   ├── ui/
+│   ├── types/
+│   └── shared/
+│
+├── supabase/
+│   ├── migrations/
+│   ├── functions/
+│   └── config.toml
+│
+├── infra/
+│   ├── docker/
+│   ├── kubernetes/
+│   └── terraform/
+│
+└── docs/
+Deployment Flow
+
+This is the deployment pipeline I'd recommend:
+
+Developer
+    │
+    ▼
+GitHub Repository
+    │
+    ├───────────────┐
+    │               │
+    ▼               ▼
+Vercel         GitHub Actions
+(Frontend)          │
+                    ▼
+          Build Docker Images
+                    │
+                    ▼
+      Push to Container Registry
+                    │
+                    ▼
+      DigitalOcean Kubernetes
+                    │
+                    ▼
+        Rolling Update Scanner Services
+
+Supabase CLI
+    │
+    ▼
+Deploy Migrations
+Deploy Edge Functions
+
+This gives you a single source of truth (one GitHub repository) while each platform automatically deploys only the part of the codebase it is responsible for.
+
+One architectural refinement I'd suggest
+
+Since your platform is evolving into a full enterprise security product, I'd avoid putting your primary backend API on Vercel. Instead:
+
+Vercel → Next.js frontend (and only lightweight serverless endpoints if truly needed)
+Cloudflare → DNS, CDN, WAF, SSL, caching, DDoS protection
+Supabase → Authentication, PostgreSQL, Storage, Realtime
+DigitalOcean Kubernetes → Backend API, scanner orchestration, all scanner engines, report generation, background workers, AI services, and Redis
+
+That separation keeps the frontend fast, the backend fully under your control, and makes it much easier to scale scanners independently from the user interface. As QGuard Helix grows, this architecture is one that many production SaaS platforms follow because each component has a clear responsibility and can evolve without affecting the others.

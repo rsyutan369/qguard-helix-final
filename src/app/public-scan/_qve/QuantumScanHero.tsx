@@ -93,6 +93,7 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
     state: scan.state,
     stages: scan.stages,
     report,
+    observations: scan.observations,
     progress: scan.progress,
     asset: report?.target.displayUrl ?? target.trim(),
     reducedMotion: !budget.animate,
@@ -252,7 +253,21 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
     [],
   );
 
-  const accent = React.useMemo(() => {
+  /**
+   * TWO accents, deliberately.
+   *
+   * `accent` is structural — the hologram, beams, backdrop and node chrome. The
+   * design language restricts the engine to blue / violet / cyan, so it only
+   * ever shifts to violet, and only when hybrid post-quantum evidence has
+   * actually been observed. A C- grade must not repaint the whole hero amber.
+   *
+   * `verdictColor` is informational — the score arc, the readout and the grade
+   * line. There the colour IS the finding, so it follows the published grade
+   * table exactly.
+   */
+  const accent = state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan;
+
+  const verdictColor = React.useMemo(() => {
     if (state.run === 'error') return QVE_COLOR.critical;
     if (state.run === 'complete' && state.gradeColor) return state.gradeColor;
     if (state.run === 'complete') return QVE_COLOR.pass;
@@ -320,21 +335,29 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
 
               <div aria-hidden className="hidden self-stretch bg-gradient-to-b from-transparent via-white/[0.12] to-transparent lg:block" />
 
-              <div className="flex min-w-0 flex-col justify-between gap-3 lg:h-full">
-                <p className="max-w-md text-[13.5px] leading-relaxed text-slate-400">
+              {/* Engine audio is opt-in and out of the reading path. It gets its
+                  own row at the top of this column rather than floating over
+                  the panel corner: as an overlay it landed on the first line of
+                  the promise copy, and a control that obscures the explanation
+                  of what the scan does is worse than no control at all. */}
+              <div className="flex min-w-0 flex-col">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={audio.toggle}
+                    aria-pressed={audio.enabled}
+                    title={audio.enabled ? 'Mute engine audio cues' : 'Enable engine audio cues'}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-white/[0.08] bg-[#050a15]/70 px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-slate-500 backdrop-blur transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
+                  >
+                    {audio.enabled ? <Volume2 className="h-3 w-3" /> : <VolumeX className="h-3 w-3" />}
+                    <span className="hidden sm:inline">Audio {audio.enabled ? 'on' : 'off'}</span>
+                  </button>
+                </div>
+
+                <p className="mt-2.5 min-w-0 max-w-md text-[13.5px] leading-relaxed text-slate-400">
                   Analyze your Internet-facing cryptographic posture, identify post-quantum migration readiness,
                   and estimate enterprise risk — from publicly observable evidence only.
                 </p>
-                <button
-                  type="button"
-                  onClick={audio.toggle}
-                  aria-pressed={audio.enabled}
-                  title={audio.enabled ? 'Mute engine audio cues' : 'Enable engine audio cues'}
-                  className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-white/[0.08] px-2.5 py-1.5 font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
-                >
-                  {audio.enabled ? <Volume2 className="h-3 w-3" /> : <VolumeX className="h-3 w-3" />}
-                  Audio {audio.enabled ? 'on' : 'off'}
-                </button>
               </div>
             </div>
 
@@ -352,6 +375,7 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
                     nodes={state.nodes}
                     animate={budget.animate}
                     density={budget.tier === 'full' ? 3 : budget.tier === 'balanced' ? 2 : 0}
+                    running={state.run === 'scanning'}
                     onPaths={onPaths}
                   />
                   {budget.packets && (
@@ -368,21 +392,29 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
                 </>
               )}
 
-              <div className="relative grid grid-cols-[minmax(0,1fr)] items-center gap-3 lg:grid-cols-[minmax(0,13.5rem)_minmax(0,1fr)_minmax(0,13.5rem)] lg:gap-4">
+              {/* 15rem columns are the minimum that fits "QUANTUM READINESS"
+                  and "OCSP STAPLING" without the title ellipsing — the card
+                  titles are the labels for the whole visualization and must
+                  never be truncated. */}
+              <div className="relative grid grid-cols-[minmax(0,1fr)] items-center gap-3 lg:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_minmax(0,15rem)] lg:gap-3">
                 {/* Core first in DOM order so it leads on a phone, then
                     re-ordered into the middle column at lg. */}
-                <div ref={setCoreElement} className="order-1 lg:order-2">
+                <div className="order-1 lg:order-2">
                   <CoreStage
                     run={state.run}
                     progress={state.run === 'idle' ? 0 : state.progress}
                     score={state.score}
                     grade={state.grade}
                     accent={accent}
+                    verdictColor={verdictColor}
                     quantum={state.quantumDetected}
                     alertKey={alertKey}
                     budget={budget}
                     statusLabel={statusLabel}
                     statusDetail={statusDetail}
+                    // Beams aim at the ORB, not the whole stage — the verdict
+                    // bar above it must not drag the beam target off-centre.
+                    orbRef={setCoreElement}
                   />
                 </div>
 
@@ -508,7 +540,7 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
                   <p className="flex items-center gap-2 font-mono text-[9.5px] font-bold uppercase tracking-[0.2em] text-slate-400">
                     <span
                       className={cn('h-1.5 w-1.5 rounded-full', state.run === 'scanning' && budget.animate && 'animate-pulse')}
-                      style={{ backgroundColor: accent }}
+                      style={{ backgroundColor: verdictColor }}
                     />
                     Live assessment log
                   </p>

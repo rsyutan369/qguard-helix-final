@@ -1,0 +1,202 @@
+Many startups jump into cloud services, then realize 6 months later they're paying $400–$1,000/month for infrastructure they barely use.
+
+For QGuard Helix, I'd recommend planning three phases:
+
+🟢 Phase 1 – MVP / Startup
+🟡 Phase 2 – Growing SaaS
+🔴 Phase 3 – Enterprise Scale
+
+This helps you spend money only where it delivers value.
+
+🟢 Phase 1 — MVP (What I would recommend)
+Service	Plan	Monthly
+Vercel	Pro	$20
+Supabase	Pro	$25
+Cloudflare	Free	$0
+DigitalOcean Kubernetes	2 × Basic Nodes ($12 each)	$24
+DigitalOcean Load Balancer	Standard	$12
+DigitalOcean Block Storage	100 GB	$10
+DigitalOcean Managed Redis	Basic	~$15
+GitHub	Free	$0
+GitHub Actions	Included for light usage	$0
+Estimated Monthly Total
+
+≈ $106/month (depending on Redis size and storage)
+
+Why I recommend these
+1. Vercel Pro — ~$20/month
+
+This is enough for:
+
+✅ Next.js
+
+✅ Dashboard
+
+✅ Landing Page
+
+✅ Reports UI
+
+✅ Authentication UI
+
+✅ Team collaboration
+
+You don't need Enterprise.
+
+2. Supabase Pro — ~$25/month
+
+You already know this one.
+
+Covers:
+
+PostgreSQL
+Authentication
+Storage
+Realtime
+Backups
+Database branching (depending on plan/features)
+3. Cloudflare Free — $0/month
+
+For a startup:
+
+You already get
+
+✅ DNS
+
+✅ CDN
+
+✅ SSL
+
+✅ HTTP/3
+
+✅ WAF basics
+
+✅ DDoS Protection
+
+You don't need the paid plan immediately.
+
+Upgrade only when you need advanced WAF rules or business features.
+
+4. DigitalOcean Kubernetes
+
+This surprises many people.
+
+Kubernetes itself is free to manage on DigitalOcean—you pay for the worker nodes and any attached resources. Basic worker nodes start at $12/month per node.
+
+For production, I would start with:
+
+2 Basic Nodes
+
+2 vCPU
+
+4GB RAM
+
+≈ $24/month total
+
+That provides redundancy compared with a single node.
+
+5. Load Balancer
+
+Required so traffic reaches your Kubernetes services.
+
+Around:
+
+$12/month
+
+6. Block Storage
+
+Needed for:
+
+reports
+persistent data
+logs
+PVCs
+
+Start with:
+
+100 GB
+
+≈ $10/month
+
+7. Redis
+
+You'll want this because your scanners shouldn't run synchronously.
+
+Use it for:
+
+Scan Queue
+
+↓
+
+Worker
+
+↓
+
+Scanner
+
+↓
+
+Results
+
+A small managed Redis instance is typically around $15/month on DigitalOcean, depending on the size you choose.
+
+Monthly Cost Breakdown
+Provider	Monthly
+Cloudflare	$0
+Vercel	$20
+Supabase	$25
+Kubernetes Nodes	$24
+Load Balancer	$12
+Redis	~$15
+Block Storage	$10
+Total	≈ $106/month
+🟡 Phase 2 — Growing SaaS (100–1,000 customers)
+Service	Monthly
+Vercel Pro	$20
+Supabase Pro/Team	$25–$100+
+Cloudflare Pro	$25
+Kubernetes (3–4 Nodes)	$36–$48
+Load Balancer	$12
+Redis	$30–$50
+Storage	$20
+Monitoring & Logging	$20–$50
+Estimated Total
+
+≈ $170–$300/month
+
+🔴 Phase 3 — Enterprise
+
+As QGuard Helix grows:
+
+Kubernetes
+Redis HA
+GPU nodes
+Prometheus
+Grafana
+Loki
+OpenTelemetry
+Separate staging cluster
+Backup clusters
+Multi-region
+
+You're looking at roughly:
+
+$600–$2,000+/month, depending on customer count, scan volume, and AI workloads.
+
+💰 What I would personally do if I were launching QGuard Helix
+
+I'd start with this exact stack:
+
+Service	Monthly
+Cloudflare Free	$0
+Vercel Pro	$20
+Supabase Pro	$25
+DigitalOcean Kubernetes (2 Nodes)	$24
+DigitalOcean Load Balancer	$12
+DigitalOcean Redis	~$15
+Block Storage	$10
+Grand Total	≈ $106/month
+My recommendation
+
+For an MVP, I would budget around $120–$150/month even though the expected infrastructure cost is closer to $106/month. That extra buffer covers things like bandwidth overages, backups, additional storage, container registry usage, or temporary increases in compute during testing.
+
+Once QGuard Helix starts generating recurring revenue, you can scale Kubernetes nodes, Redis, storage, and monitoring independently without needing to redesign the architecture. That makes this a solid foundation that balances cost with room to grow. 🚀

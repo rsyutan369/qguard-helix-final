@@ -89,9 +89,17 @@ object VaultFolderPicker {
         return json.toString()
     }
 
+    // Returns "ok" (not Unit) because Rust invokes this through the same
+    // String-returning JNI signature as launch/getStateJson (see
+    // call_context_string in saf_folder.rs). A void-returning `reset` compiles
+    // fine but has a DIFFERENT JNI descriptor ((Context)V vs (Context)Ljava/lang/String;),
+    // so the lookup fails with NoSuchMethodError on every call — which is what
+    // made every encrypt/decrypt on Android fail before the folder picker ever
+    // opened, reported to the user as a false "cancelled".
     @JvmStatic
-    fun reset(context: Context) {
+    fun reset(context: Context): String {
         publish("idle")
+        return "ok"
     }
 
     /**

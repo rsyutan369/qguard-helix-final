@@ -1,0 +1,341 @@
+Recommended Architecture
+                    Users
+                      │
+                      ▼
+              Cloudflare DNS
+                      │
+          WAF • CDN • DDoS • TLS
+                      │
+        ┌─────────────┴─────────────┐
+        │                           │
+        ▼                           ▼
+   Vercel Frontend            API Gateway
+ (Next.js + React)          (Next.js API Routes /
+                                   Express)
+
+                      │
+        ┌─────────────┴─────────────┐
+        │                           │
+        ▼                           ▼
+   Supabase                 DigitalOcean Kubernetes
+(PostgreSQL/Auth)         Scanner Microservices
+ Storage/Realtime          Background Workers
+                           Report Generation
+                           Live Operations
+
+        │                           │
+        └─────────────┬─────────────┘
+                      ▼
+             Object Storage
+        (Supabase Storage initially,
+       DO Spaces later if needed)
+1. Cloudflare ⭐⭐⭐⭐⭐
+
+This should be your public edge.
+
+Use it for:
+
+✅ DNS
+
+✅ CDN
+
+✅ WAF
+
+✅ Rate Limiting
+
+✅ Bot Protection
+
+✅ TLS 1.3
+
+✅ HTTP/3
+
+✅ DDoS Protection
+
+✅ Zero Trust Access (for internal dashboards)
+
+This is exactly what Cloudflare excels at.
+
+2. Vercel ⭐⭐⭐⭐⭐
+
+Perfect for:
+
+Next.js
+React
+Dashboard
+Landing page
+Marketing website
+Customer Portal
+Executive Reports UI
+
+Also acceptable for:
+
+lightweight APIs
+authentication callbacks
+webhook handlers
+payment callbacks
+simple CRUD
+
+Avoid putting scanner logic here.
+
+3. Supabase ⭐⭐⭐⭐⭐
+
+Excellent choice.
+
+Use it for:
+
+✅ Authentication
+
+✅ PostgreSQL
+
+✅ Row Level Security
+
+✅ Storage
+
+✅ Realtime
+
+✅ User Management
+
+✅ Multi-tenancy
+
+For QGuard Helix this covers:
+
+users
+tenants
+organizations
+findings
+assets
+scan history
+reports metadata
+subscriptions
+notifications
+4. DigitalOcean Kubernetes ⭐⭐⭐⭐⭐
+
+This is where the heavy lifting belongs.
+
+Examples:
+
+Scanner Service
+
+TLS Scanner
+
+PQC Scanner
+
+Certificate Scanner
+
+DNS Scanner
+
+Header Scanner
+
+Crypto Discovery
+
+Quantum Readiness Engine
+
+Migration Planner
+
+Migration Sandbox
+
+Live Operations
+
+Report Generator
+
+AI Workers
+
+Each becomes its own deployment.
+
+Scale independently.
+
+I would also add Redis
+
+This is one thing missing from your list.
+
+You'll eventually need:
+
+Redis
+
+↓
+
+Job Queue
+
+↓
+
+Celery
+
+↓
+
+Background Workers
+
+Use it for:
+
+scan queues
+retries
+rate limiting
+cache
+session data
+distributed locks
+
+DigitalOcean Managed Redis is a good fit.
+
+I would NOT use Vercel for scanners
+
+Bad fit because scanners are:
+
+long-running
+CPU-intensive
+parallel
+sometimes require privileged networking
+containerized
+
+Kubernetes is much better.
+
+Communication Flow
+User clicks "Scan"
+
+↓
+
+Next.js (Vercel)
+
+↓
+
+API
+
+↓
+
+Supabase
+
+↓
+
+Create Scan Record
+
+↓
+
+Send Job
+
+↓
+
+Redis Queue
+
+↓
+
+DigitalOcean Kubernetes
+
+↓
+
+Scanner Pod Starts
+
+↓
+
+Run Scan
+
+↓
+
+Save Findings
+
+↓
+
+Supabase
+
+↓
+
+Realtime Event
+
+↓
+
+Dashboard Updates Live
+
+That architecture scales cleanly.
+
+Future AI (Sophia)
+
+Later:
+
+User
+
+↓
+
+Sophia AI
+
+↓
+
+API
+
+↓
+
+Vector Search
+
+↓
+
+LLM
+
+↓
+
+DigitalOcean GPU Node
+
+↓
+
+Answer
+
+You don't need GPUs on day one—add them when AI inference becomes a meaningful workload.
+
+My only suggested improvements
+
+Instead of:
+
+Cloudflare
+↓
+
+Vercel
+↓
+
+Supabase
+↓
+
+DigitalOcean
+
+I'd recommend this:
+
+Cloudflare
+     │
+     ▼
+Vercel (Frontend)
+     │
+     ▼
+Backend API
+     │
+ ┌───┴────────────┐
+ │                │
+ ▼                ▼
+Supabase      Redis Queue
+ │                │
+ │                ▼
+ │       DigitalOcean Kubernetes
+ │                │
+ └────────► Findings/Results
+                  │
+                  ▼
+             Supabase Storage
+One consideration: backend APIs
+
+Since your scanner orchestration, billing, RBAC, and enterprise workflows will likely grow beyond "lightweight APIs," I'd recommend having a dedicated backend (Express, FastAPI, or NestJS) running in your DigitalOcean Kubernetes cluster rather than relying heavily on Vercel Functions.
+
+That gives you:
+
+✅ Long-running API requests when needed
+✅ Consistent networking to scanner services
+✅ Easier service-to-service authentication
+✅ Better control over scaling
+✅ No serverless execution constraints
+
+Vercel then focuses on delivering the frontend, while Kubernetes hosts your core platform services.
+
+Overall assessment ⭐⭐⭐⭐⭐ (9.8/10)
+
+For an enterprise SaaS like QGuard Helix, I would recommend:
+
+🌐 Cloudflare: DNS, CDN, WAF, TLS, DDoS, Zero Trust
+💻 Vercel: Next.js frontend and lightweight edge/serverless functionality
+🗄️ Supabase: Authentication, PostgreSQL, Realtime, Storage
+☸️ DigitalOcean Kubernetes: Scanner engines, orchestration services, backend APIs, background workers
+🚀 Redis (Managed): Queues, caching, distributed coordination
+📦 Object Storage: Start with Supabase Storage; consider DigitalOcean Spaces later if storage volume or cost makes it advantageous
+
+This is a robust, cloud-native architecture that separates responsibilities cleanly and should serve QGuard Helix well from MVP through enterprise-scale deployments.

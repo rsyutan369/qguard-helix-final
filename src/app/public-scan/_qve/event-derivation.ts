@@ -24,6 +24,7 @@ import type {
   PublicScanStage,
   PublicScanStageKey,
 } from '@/lib/scanner/public-scan/types';
+import type { PublicScanObservation } from '@/hooks/use-public-scan';
 import type {
   QveNodeKey,
   ScanEvent,
@@ -31,6 +32,56 @@ import type {
   ScanEventStatus,
   ScanEventType,
 } from './types';
+
+/* ------------------------------------------------------------- node scoring - */
+
+/**
+ * Which of the report's twelve published grading categories belong to each
+ * node. This is a projection of the SAME model that produces the headline
+ * grade — not a second scoring scheme — so a node can never disagree with the
+ * report it came from.
+ *
+ * `certificate-transparency` sits under Certificates rather than OCSP even
+ * though the OCSP card surfaces an SCT count: CT is a property of the issued
+ * certificate, and scoring it twice would double-count it.
+ */
+export const NODE_SCORE_CATEGORIES: Record<QveNodeKey, readonly string[]> = {
+  dns: ['dns-caa'],
+  tls: ['tls-configuration', 'cipher-suites', 'forward-secrecy'],
+  certificate: ['certificates', 'certificate-transparency'],
+  headers: ['http-security-headers', 'hsts'],
+  ocsp: ['ocsp-stapling'],
+  quantum: ['key-exchange', 'cryptographic-algorithms', 'post-quantum-readiness'],
+};
+
+/**
+ * Per-node 0-100 scores, weighted by each category's published weight.
+ *
+ * Inapplicable categories are excluded entirely rather than scored as zero —
+ * the grading model already redistributes their weight, and a node whose only
+ * category was unobservable returns no score at all so the UI can keep showing
+ * "not measured" instead of painting it red.
+ */
+export function nodeScoresFromReport(report: PublicScanReport): Partial<Record<QveNodeKey, number>> {
+  const byKey = new Map(report.scoreComponents.map((component) => [component.key, component]));
+  const scores: Partial<Record<QveNodeKey, number>> = {};
+
+  for (const [node, categories] of Object.entries(NODE_SCORE_CATEGORIES) as Array<
+    [QveNodeKey, readonly string[]]
+  >) {
+    let weighted = 0;
+    let weight = 0;
+    for (const category of categories) {
+      const component = byKey.get(category);
+      if (!component || !component.applicable) continue;
+      weighted += component.score * component.weight;
+      weight += component.weight;
+    }
+    if (weight > 0) scores[node] = Math.round(weighted / weight);
+  }
+
+  return scores;
+}
 
 /* ------------------------------------------------------------------ helpers - */
 
@@ -46,7 +97,14 @@ interface EventDraft {
   category: QveNodeKey | 'scan';
   status: ScanEventStatus;
   severity?: ScanEventSeverity;
+  /** Full statement of the observation — timeline and inspector. */
   finding?: string;
+  /**
+   * Short form for the node card, which is ~200px wide. `null` marks a
+   * timeline-only observation that must not take a card line. Omitted falls
+   * back to `finding`.
+   */
+  nodeLine?: string | null;
   timelineLabel?: string;
   timelineDetail?: string;
   verdict?: string;
@@ -63,6 +121,7 @@ function make(draft: EventDraft, progress: number, asset: string | null, timesta
     status,
     severity = 'info',
     finding,
+    nodeLine,
     timelineLabel,
     timelineDetail,
     verdict,
@@ -83,6 +142,7 @@ function make(draft: EventDraft, progress: number, asset: string | null, timesta
     asset: asset ?? undefined,
     details: {
       ...details,
+      ...(nodeLine !== undefined ? { nodeLine } : {}),
       ...(timelineLabel !== undefined ? { timelineLabel } : {}),
       ...(timelineDetail !== undefined ? { timelineDetail } : {}),
       ...(verdict !== undefined ? { verdict } : {}),
@@ -228,7 +288,13 @@ export function stageTransitionEvents(
           status: failed ? 'failed' : 'info',
           severity: failed ? 'high' : 'info',
           finding: stage.detail || stage.description,
-          verdict: failed ? 'Unreachable' : 'Analyzing',
+          // A completed module does NOT get a placeholder verdict. It used to
+          // stamp "Analyzing", which raced the module's own live observations:
+          // whichever landed second won, so a card that had already reported
+          // "Resolved" could fall back to "Analyzing" and sit there. Silence
+          // here means "keep whatever the evidence said" — and a failure is the
+          // one case where the lifecycle event IS the verdict.
+          verdict: failed ? 'Unreachable' : undefined,
           nodeProgress: failed ? 100 : 75,
           timelineLabel: stage.label,
           timelineDetail: stage.detail,
@@ -241,6 +307,55 @@ export function stageTransitionEvents(
   }
 
   return [];
+}
+
+/* ------------------------------------------------------- live observations - */
+
+/** Observation status → the engine's event status. */
+const OBSERVATION_STATUS: Record<string, ScanEventStatus> = {
+  pass: 'pass',
+  warning: 'warning',
+  critical: 'critical',
+  info: 'info',
+};
+
+/**
+ * A live measurement, as an engine event.
+ *
+ * These arrive DURING the scan, each stamped with the moment the scanner made
+ * the measurement, so they are dispatched straight through rather than queued:
+ * the pacing is the scan's own, which is the entire point. The completed
+ * report still emits its full evidence set afterwards — the store de-duplicates
+ * card lines, and the report remains the authoritative account of the run.
+ */
+export function observationEvent(
+  observation: PublicScanObservation,
+  progress: number,
+  asset: string | null,
+): ScanEvent {
+  const status = OBSERVATION_STATUS[observation.status] ?? 'info';
+  // A probe announcement ("Offering X in isolation") is deliberately given no
+  // card line: it is work in progress, not a result, and must not displace
+  // evidence a card has already earned.
+  const provisional = observation.status === 'info' && /^Offering /.test(observation.detail);
+
+  return make(
+    {
+      type: 'FINDING',
+      category: observation.surface,
+      status,
+      severity: observation.severity,
+      finding: observation.detail,
+      nodeLine: provisional ? null : observation.detail,
+      timelineLabel: observation.label,
+      timelineDetail: observation.detail,
+      verdict: observation.verdict,
+      postQuantum: observation.postQuantum,
+    },
+    progress,
+    asset,
+    observation.at,
+  );
 }
 
 /* ---------------------------------------------------------- evidence events - */
@@ -280,8 +395,9 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     severity: dnsReachable ? 'none' : 'high',
     verdict: dnsReachable ? 'Resolved' : 'Unresolved',
     finding: dnsReachable
-      ? `${pluralize(dns.addressCount, 'address')} resolved`
+      ? `${pluralize(dns.addressCount, 'address')} resolved · ${dns.resolvedVia}`
       : 'No public address records',
+    nodeLine: dnsReachable ? `${pluralize(dns.addressCount, 'address')} resolved` : 'No address records',
     nodeProgress: 100,
     timelineLabel: 'DNS discovery',
     timelineDetail: dns.resolvedVia,
@@ -299,6 +415,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       : dns.caaPresent
         ? `CAA record found · ${pluralize(dns.caaRecords.length, 'issuer')}`
         : 'No CAA issuance policy',
+    nodeLine: !dns.caaQueryable ? 'CAA not observable' : dns.caaPresent ? 'CAA record found' : 'No CAA policy',
     timelineLabel: 'CAA issuance policy',
     timelineDetail: dns.caaAtName ?? dns.caaSource ?? undefined,
   });
@@ -313,6 +430,8 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       : dns.dnssecSigned
         ? `Zone signed${dns.dnssecValidated ? ', resolver-validated' : ''}`
         : 'Zone not DNSSEC-signed',
+    // Timeline only: the DNS card's two lines belong to resolution and CAA.
+    nodeLine: null,
     timelineLabel: 'DNSSEC validation',
   });
 
@@ -330,6 +449,11 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       finding: legacy.length
         ? `Legacy protocols offered: ${legacy.join(', ')}`
         : `${tls.supportedProtocols.join(' / ')} accepted`,
+      nodeLine: legacy.length
+        ? `Legacy ${legacy.join(', ')} offered`
+        : hasTls13
+          ? 'TLS 1.3 enabled'
+          : `${tls.tlsVersion} negotiated`,
       nodeProgress: 100,
       timelineLabel: 'Protocol enumeration',
       timelineDetail: `${pluralize(tls.protocolSupport.length, 'version')} probed`,
@@ -342,6 +466,9 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       status: 'pass',
       severity: 'none',
       finding: `${tls.cipherSuite || 'Negotiated suite'} · ${pluralize(evidence.cipherSuites.length, 'suite')} enumerated`,
+      nodeLine: evidence.cipherSuites.length
+        ? `${pluralize(evidence.cipherSuites.length, 'suite')} confirmed`
+        : 'Negotiated suite only',
       timelineLabel: 'Cipher analysis',
       timelineDetail: tls.cipherSuite || undefined,
       details: { suites: evidence.cipherSuites.length },
@@ -355,6 +482,8 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       finding: keyAgreement.forwardSecrecy
         ? `Forward secrecy via ${keyAgreement.primaryGroup ?? (tls.keyExchange || 'ephemeral key agreement')}`
         : 'Forward secrecy not established',
+      // Timeline only when secrecy holds; a failure earns a card line.
+      nodeLine: keyAgreement.forwardSecrecy ? null : 'No forward secrecy',
       timelineLabel: 'Forward secrecy',
       timelineDetail: keyAgreement.forwardSecrecyBasis,
     });
@@ -383,6 +512,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       finding: certificate.chainTrusted
         ? `Valid chain · ${pluralize(certificate.chainDepth, 'certificate')}`
         : (certificate.trustError ?? 'Chain does not verify against the trust store'),
+      nodeLine: certificate.chainTrusted ? 'Valid chain' : 'Chain not verified',
       nodeProgress: 100,
       timelineLabel: 'Certificate chain',
       timelineDetail: `${pluralize(certificate.sanCount, 'SAN')} · ${certificate.daysRemaining}d remaining`,
@@ -397,6 +527,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       finding: certificate.signedCertificateTimestamps
         ? `${pluralize(certificate.sctCount, 'SCT')} in Certificate Transparency`
         : 'No embedded Certificate Transparency SCTs',
+      nodeLine: pluralize(certificate.chainDepth, 'certificate'),
       timelineLabel: 'CT log verification',
     });
 
@@ -413,6 +544,11 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
         : certificate.ocspUri
           ? 'Responder published, response not stapled'
           : 'No OCSP responder in the certificate',
+      nodeLine: certificate.ocspStapled
+        ? 'Stapling enabled'
+        : certificate.ocspUri
+          ? 'Response not stapled'
+          : 'No OCSP responder',
       nodeProgress: 100,
       timelineLabel: 'OCSP stapling',
       timelineDetail: certificate.ocspUri ?? undefined,
@@ -426,6 +562,9 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       finding: certificate.mustStaple
         ? 'must-staple asserted'
         : `${pluralize(certificate.sctCount, 'SCT')} · chain depth ${certificate.chainDepth}`,
+      nodeLine: certificate.signedCertificateTimestamps
+        ? `${pluralize(certificate.sctCount, 'SCT')} logged`
+        : 'No CT SCTs',
       timeline: false,
     });
   } else {
@@ -464,10 +603,21 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       severity: ratio >= 0.8 ? 'none' : ratio >= 0.5 ? 'low' : 'medium',
       verdict: ratio >= 0.8 ? 'Good' : ratio >= 0.5 ? 'Fair' : 'Weak',
       finding: `${secure}/${total} security headers detected`,
+      nodeLine: `${secure}/${total} headers hardened`,
       nodeProgress: 100,
       timelineLabel: 'HTTP headers',
       timelineDetail: `HTTP ${http.statusCode ?? '—'}${http.server ? ` · ${http.server}` : ''}`,
       details: { secure, total },
+    });
+
+    push({
+      type: 'HEADERS',
+      category: 'headers',
+      status: 'info',
+      severity: 'info',
+      finding: `HTTP ${http.statusCode}${http.server ? ` · ${http.server}` : ''}`,
+      nodeLine: http.server ? `Served by ${http.server}` : `HTTP ${http.statusCode}`,
+      timeline: false,
     });
   } else {
     push({
@@ -495,6 +645,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     finding: keyAgreement.probed
       ? `${pluralize(hybrid.length + keyAgreement.classicalGroups.length, 'named group')} probed individually`
       : 'Named key-agreement groups could not be probed',
+    nodeLine: null,
     timelineLabel: 'Quantum discovery',
     timelineDetail: keyAgreement.probed ? 'One group offered per handshake' : undefined,
   });
@@ -508,6 +659,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       postQuantum: true,
       verdict: 'Hybrid PQ',
       finding: `${group} accepted`,
+      nodeLine: null,
       nodeProgress: 100,
       timelineLabel: `Hybrid group ${group}`,
     });
@@ -523,6 +675,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     finding: pqReady
       ? `ML-KEM key establishment active (${keyAgreement.primaryGroup ?? hybrid[0]})`
       : 'Hybrid not detected · classical key establishment only',
+    nodeLine: pqReady ? `${keyAgreement.primaryGroup ?? hybrid[0]} active` : 'Hybrid not detected',
     nodeProgress: 100,
     timelineLabel: 'ML-KEM key establishment',
     timelineDetail: `PQ readiness ${executive.postQuantumReadiness}%`,
@@ -538,6 +691,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     finding: signature
       ? `Certificate signed with ${signature} — ML-DSA migration target`
       : 'Signature algorithm not observable',
+    nodeLine: signature ? 'Classical signatures' : 'Signatures not observable',
     timelineLabel: 'Signature algorithm',
     timelineDetail: intelligence.quantumVulnerabilityReason,
   });

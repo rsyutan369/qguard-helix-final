@@ -296,8 +296,13 @@ async function chooseDestinationFolder(title: string): Promise<VaultFolderChoice
     // AND MainActivity.onStop — both of which mean "the user left the app" to the
     // Zero-Trust auto-lock. Unguarded, choosing a folder would drop the user onto
     // the PIN screen and tear the vault operation down mid-flight.
+    //
+    // No `fallback` on this safeInvoke call: a real Rust/JNI failure must throw,
+    // not collapse into the same `null` as a genuine user cancel — a swallowed
+    // native error here previously surfaced as a misleading "no destination
+    // folder chosen" with no way to tell it apart from an actual cancel.
     const choice = await withNativeDialog(() =>
-      safeInvoke<VaultFolderChoice | null>("vault_pick_folder", undefined, null),
+      safeInvoke<VaultFolderChoice | null>("vault_pick_folder"),
     );
     return choice ?? null;
   }

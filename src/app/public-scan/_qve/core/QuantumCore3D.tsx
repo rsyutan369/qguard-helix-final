@@ -195,20 +195,20 @@ function HoloGlobe({ intensity, accent, count }: { intensity: number; accent: st
       <mesh>
         <sphereGeometry args={[0.55, 40, 40]} />
         <meshStandardMaterial
-          color="#062a63"
-          emissive="#0b3f8f"
-          emissiveIntensity={0.55 + intensity * 0.7}
-          roughness={0.35}
-          metalness={0.25}
+          color="#04204f"
+          emissive="#0a3170"
+          emissiveIntensity={0.28 + intensity * 0.3}
+          roughness={0.4}
+          metalness={0.2}
           transparent
-          opacity={0.94}
+          opacity={0.96}
         />
       </mesh>
 
       {/* Latitude / longitude lattice. */}
       <mesh scale={1.008}>
         <icosahedronGeometry args={[0.56, 3]} />
-        <meshBasicMaterial color={color} wireframe transparent opacity={0.2 + intensity * 0.22} />
+        <meshBasicMaterial color={color} wireframe transparent opacity={0.34 + intensity * 0.28} />
       </mesh>
 
       {/* Surface nodes — the "digital globe" read from the reference hero. */}
@@ -227,10 +227,12 @@ function HoloGlobe({ intensity, accent, count }: { intensity: number; accent: st
         />
       </points>
 
-      {/* Inner emissive heart — the light source the bloom picks up. */}
-      <mesh scale={0.34}>
+      {/* Inner emissive heart — the light source the bloom picks up. Kept small
+          and semi-transparent: at full opacity it blooms over the wireframe and
+          the globe stops reading as a globe. */}
+      <mesh scale={0.26}>
         <sphereGeometry args={[0.55, 24, 24]} />
-        <meshBasicMaterial color={color} transparent opacity={0.5 + intensity * 0.35} />
+        <meshBasicMaterial color={color} transparent opacity={0.3 + intensity * 0.28} />
       </mesh>
     </group>
   );
@@ -272,23 +274,25 @@ function HoloShield({ accent, intensity, transmission }: { accent: string; inten
     <group ref={group} scale={1.06}>
       <mesh geometry={geometry}>
         <meshPhysicalMaterial
-          color="#0a1f3d"
+          color="#081a35"
           emissive={accent}
-          emissiveIntensity={0.14 + intensity * 0.2}
-          roughness={0.12}
+          emissiveIntensity={0.08 + intensity * 0.12}
+          roughness={0.14}
           metalness={0.18}
           transparent
-          opacity={0.26}
-          transmission={transmission ? 0.82 : 0}
-          thickness={0.55}
+          opacity={0.2}
+          transmission={transmission ? 0.86 : 0}
+          thickness={0.5}
           ior={1.38}
           clearcoat={1}
           clearcoatRoughness={0.08}
           side={THREE.DoubleSide}
         />
       </mesh>
+      {/* The silhouette is what makes it read as a shield — keep the edge bright
+          even as the fill stays glassy. */}
       <lineSegments geometry={edges}>
-        <lineBasicMaterial color={accent} transparent opacity={0.55 + intensity * 0.35} />
+        <lineBasicMaterial color={accent} transparent opacity={0.7 + intensity * 0.3} />
       </lineSegments>
     </group>
   );
@@ -522,7 +526,7 @@ function SunCore({ accent }: { accent: string }) {
 
   return (
     <>
-      <mesh ref={setSun} position={[0, 0, -0.12]} scale={0.19}>
+      <mesh ref={setSun} position={[0, 0, -0.55]} scale={0.11}>
         <sphereGeometry args={[1, 20, 20]} />
         <meshBasicMaterial ref={material} color={accent} />
       </mesh>
@@ -531,28 +535,39 @@ function SunCore({ accent }: { accent: string }) {
   );
 }
 
+/**
+ * POST-FX BUDGET — read before raising any of these numbers.
+ *
+ * The core is a *readable instrument*, not a light show: a shield silhouette and
+ * a wireframe globe have to stay legible, and the score readout sits on top of
+ * it. Bloom and god rays are both additive, so they compound; tuned generously
+ * they merge every element into one undifferentiated glow blob and destroy the
+ * contrast the readout depends on. Hence: a high luminance threshold so only the
+ * inner heart blooms, modest intensity, and god rays present but faint —
+ * volumetric depth, not a floodlight.
+ */
 function GodRaysLayer({ sun }: { sun: THREE.Mesh }) {
   return (
     <EffectComposer multisampling={0}>
       <GodRays
         sun={sun}
         blendFunction={BlendFunction.SCREEN}
-        samples={30}
-        density={0.9}
-        decay={0.92}
-        weight={0.45}
-        exposure={0.32}
-        clampMax={1}
+        samples={24}
+        density={0.72}
+        decay={0.9}
+        weight={0.16}
+        exposure={0.12}
+        clampMax={0.7}
         blur
       />
       <Bloom
-        intensity={1.35}
-        luminanceThreshold={0.18}
-        luminanceSmoothing={0.42}
-        kernelSize={KernelSize.LARGE}
+        intensity={0.55}
+        luminanceThreshold={0.62}
+        luminanceSmoothing={0.28}
+        kernelSize={KernelSize.MEDIUM}
         resolutionX={Resolution.AUTO_SIZE}
       />
-      <Vignette offset={0.32} darkness={0.55} blendFunction={BlendFunction.NORMAL} />
+      <Vignette offset={0.28} darkness={0.6} blendFunction={BlendFunction.NORMAL} />
     </EffectComposer>
   );
 }
@@ -597,7 +612,7 @@ function CoreScene({ intensity, accent, quantum, alertKey, budget, active }: Omi
       {budget.postFx ? (
         <SunCore accent={accent} />
       ) : (
-        <mesh position={[0, 0, -0.12]} scale={0.19}>
+        <mesh position={[0, 0, -0.55]} scale={0.11}>
           <sphereGeometry args={[1, 16, 16]} />
           <meshBasicMaterial color={accent} />
         </mesh>

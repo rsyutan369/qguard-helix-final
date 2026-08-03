@@ -17,6 +17,25 @@ import type {
 
 export type PublicScanState = 'idle' | 'scanning' | 'complete' | 'error';
 
+/**
+ * A single measurement, delivered the moment the scanner made it.
+ *
+ * Mirrors `ScanObservation` on the server. It is redeclared rather than
+ * imported so the client bundle never pulls a `node:tls`-rooted module graph in
+ * behind a type import.
+ */
+export interface PublicScanObservation {
+  surface: 'dns' | 'tls' | 'certificate' | 'headers' | 'ocsp' | 'quantum';
+  label: string;
+  detail: string;
+  status: 'pass' | 'warning' | 'critical' | 'info';
+  severity: 'none' | 'info' | 'low' | 'medium' | 'high' | 'critical';
+  /** Headline word for the surface. Only primary observations carry one. */
+  verdict?: string;
+  postQuantum?: boolean;
+  at: number;
+}
+
 const STAGE_TEMPLATE: Array<Pick<PublicScanStage, 'key' | 'label' | 'description'>> = [
   { key: 'dns', label: 'DNS Resolution', description: 'Resolving public records and CAA policy' },
   { key: 'tls', label: 'TLS Handshake', description: 'Negotiating protocols and cipher suites' },
@@ -37,15 +56,21 @@ export interface UsePublicScanResult {
   error: string | null;
   /** 0-100 across the six workflow stages. */
   progress: number;
+  /** Live measurements, in the order the scanner made them. */
+  observations: PublicScanObservation[];
   scan: (target: string) => void;
   reset: () => void;
 }
+
+/** Guard against an unbounded array if a target somehow produces a long tail. */
+const OBSERVATIONS_MAX = 200;
 
 export function usePublicScan(): UsePublicScanResult {
   const [state, setState] = useState<PublicScanState>('idle');
   const [stages, setStages] = useState<PublicScanStage[]>(initialStages);
   const [report, setReport] = useState<PublicScanReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [observations, setObservations] = useState<PublicScanObservation[]>([]);
   const sourceRef = useRef<EventSource | null>(null);
 
   const closeStream = useCallback(() => {
@@ -61,6 +86,7 @@ export function usePublicScan(): UsePublicScanResult {
     setStages(initialStages());
     setReport(null);
     setError(null);
+    setObservations([]);
   }, [closeStream]);
 
   const scan = useCallback(
@@ -77,9 +103,20 @@ export function usePublicScan(): UsePublicScanResult {
       setStages(initialStages());
       setReport(null);
       setError(null);
+      setObservations([]);
 
       const source = new EventSource(`/api/v1/public-scan/stream?target=${encodeURIComponent(trimmed)}`);
       sourceRef.current = source;
+
+      source.addEventListener('observation', (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data) as PublicScanObservation;
+          if (!payload?.surface || !payload.label) return;
+          setObservations((current) => [...current, payload].slice(-OBSERVATIONS_MAX));
+        } catch {
+          /* malformed frame — the scan continues, the report is authoritative */
+        }
+      });
 
       source.addEventListener('stage', (event) => {
         try {
@@ -135,7 +172,7 @@ export function usePublicScan(): UsePublicScanResult {
   const running = stages.some((stage) => stage.state === 'running') ? 0.5 : 0;
   const progress = Math.round(((done + running) / stages.length) * 100);
 
-  return { state, stages, report, error, progress, scan, reset };
+  return { state, stages, report, error, progress, observations, scan, reset };
 }
 
 export type { PublicScanReport, PublicScanStage, PublicScanStageKey };

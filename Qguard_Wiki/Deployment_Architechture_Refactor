@@ -1,0 +1,775 @@
+# ROLE
+
+You are a Principal Software Architect, Enterprise Cloud Architect, Kubernetes Architect, DevOps Engineer, and Staff Full Stack Engineer.
+
+Your responsibility is to completely refactor and reorganize the existing QGuard Helix codebase into an enterprise-grade production-ready monorepo WITHOUT breaking existing functionality.
+
+The application must remain fully functional after the refactor.
+
+Do NOT simplify features.
+
+Do NOT remove any functionality.
+
+Only improve architecture.
+
+Follow clean architecture principles, Domain Driven Design where appropriate, SOLID principles, dependency inversion, reusable modules, and production-grade cloud-native design.
+
+This project is NOT a small web application.
+
+It is an Enterprise Quantum Cyber Defense Platform.
+
+Think like Microsoft Defender, Wiz, Palo Alto Cortex, CrowdStrike Falcon, Prisma Cloud, and Cloudflare Zero Trust.
+
+------------------------------------------------------------
+
+# OBJECTIVES
+
+Restructure the project into a production-ready NX monorepo. --> https://nx.dev/
+
+Target deployment architecture:
+
+Users
+↓
+
+Cloudflare
+↓
+
+Vercel (Next.js Frontend)
+
+↓
+
+DigitalOcean Kubernetes
+
+↓
+
+Supabase
+
+This architecture must support:
+
+• Millions of scan jobs
+• Multi-tenancy
+• Horizontal scaling
+• Kubernetes deployments
+• Docker containers
+• Background workers
+• AI services
+• Report generation
+• Future microservices
+
+------------------------------------------------------------
+
+# REQUIRED DIRECTORY STRUCTURE
+
+Create the following structure exactly.
+
+qguard-helix/
+
+apps/
+
+web/
+Next.js Frontend
+
+api/
+Express/FastAPI API Gateway
+
+tls-scanner/
+TLS Scanner
+
+pqc-scanner/
+Quantum Readiness Scanner
+
+certificate-scanner/
+
+dns-scanner/
+
+header-scanner/
+
+crypto-discovery/
+
+report-engine/
+
+migration-engine/
+
+migration-sandbox/
+
+live-ops/
+
+scheduler/
+
+notification-service/
+
+telemetry/
+
+audit-service/
+
+sophia-ai/
+
+worker/
+
+packages/
+
+ui/
+
+shared/
+
+types/
+
+config/
+
+eslint-config/
+
+tsconfig/
+
+security/
+
+supabase/
+
+migrations/
+
+functions/
+
+seed/
+
+config.toml
+
+infra/
+
+docker/
+
+kubernetes/
+
+terraform/
+
+helm/
+
+.github/
+
+workflows/
+
+docs/
+
+architecture/
+
+deployment/
+
+developer/
+
+api/
+
+security/
+
+------------------------------------------------------------
+
+# APPS
+
+------------------------------------------------------------
+
+apps/web
+
+Contains ONLY:
+
+Next.js
+
+React
+
+Tailwind
+
+ShadCN
+
+Framer Motion
+
+Dashboard
+
+Landing Page
+
+Settings
+
+Billing
+
+Authentication UI
+
+Executive Reports UI
+
+Quantum Dashboard
+
+Migration Planner UI
+
+Sandbox UI
+
+Sophia AI Interface
+
+NO scanner logic belongs here.
+
+------------------------------------------------------------
+
+apps/api
+
+Acts as the Backend API Gateway.
+
+Responsibilities:
+
+Authentication middleware
+
+RBAC
+
+Organization management
+
+Tenant isolation
+
+REST API
+
+GraphQL (optional)
+
+WebSockets
+
+SSE
+
+Job orchestration
+
+API versioning
+
+Rate limiting
+
+Logging
+
+Audit logging
+
+Calling scanner services
+
+Publishing scan jobs
+
+Managing report generation
+
+Managing migration workflows
+
+Managing sandbox
+
+Communicating with Supabase
+
+Communicating with Redis
+
+Communicating with Kubernetes services
+
+------------------------------------------------------------
+
+Scanner Services
+
+Every scanner must become an independent microservice.
+
+Example:
+
+apps/tls-scanner
+
+Responsibilities:
+
+TLS 1.2
+
+TLS 1.3
+
+Cipher Suites
+
+Certificates
+
+OCSP
+
+HSTS
+
+ALPN
+
+HTTP/2
+
+HTTP/3
+
+Post Quantum TLS
+
+X25519MLKEM768
+
+MLDSA
+
+Generate findings
+
+Return JSON
+
+------------------------------------------------------------
+
+apps/pqc-scanner
+
+Responsibilities:
+
+Cryptographic inventory
+
+Quantum vulnerable algorithms
+
+RSA
+
+ECC
+
+SHA1
+
+SHA256
+
+Kyber readiness
+
+ML-KEM readiness
+
+ML-DSA readiness
+
+Crypto inventory
+
+CBOM generation
+
+------------------------------------------------------------
+
+apps/report-engine
+
+Responsibilities:
+
+Executive PDF
+
+Word
+
+JSON
+
+CSV
+
+Evidence
+
+Charts
+
+Risk score
+
+Compliance mapping
+
+NIST
+
+PCI DSS
+
+ISO27001
+
+CIS
+
+OWASP
+
+------------------------------------------------------------
+
+apps/migration-engine
+
+Responsibilities:
+
+Migration planning
+
+Compatibility analysis
+
+Priorities
+
+Roadmaps
+
+Impact analysis
+
+Dependency graph
+
+Migration recommendations
+
+------------------------------------------------------------
+
+apps/migration-sandbox
+
+Responsibilities:
+
+Digital Twin
+
+Simulation
+
+Failure prediction
+
+Rollback
+
+Migration rehearsal
+
+Compatibility testing
+
+------------------------------------------------------------
+
+apps/sophia-ai
+
+Responsibilities:
+
+AI Copilot
+
+Natural language
+
+Threat explanation
+
+Report explanation
+
+Recommendations
+
+Future RAG support
+
+------------------------------------------------------------
+
+PACKAGES
+
+------------------------------------------------------------
+
+packages/ui
+
+Reusable React components
+
+Buttons
+
+Cards
+
+Dialogs
+
+Tables
+
+Charts
+
+Theme
+
+Icons
+
+Forms
+
+------------------------------------------------------------
+
+packages/shared
+
+Shared logic
+
+Utilities
+
+API clients
+
+Helpers
+
+Validators
+
+Security utilities
+
+Logging
+
+Retry logic
+
+------------------------------------------------------------
+
+packages/types
+
+Shared TypeScript interfaces
+
+DTOs
+
+API contracts
+
+Enums
+
+Scan results
+
+Report schemas
+
+------------------------------------------------------------
+
+packages/config
+
+Shared configurations
+
+ESLint
+
+Prettier
+
+Tailwind
+
+TSConfig
+
+Environment validation
+
+------------------------------------------------------------
+
+SUPABASE
+
+------------------------------------------------------------
+
+Keep ONLY:
+
+Database
+
+Authentication
+
+Storage
+
+Realtime
+
+Migrations
+
+Policies
+
+Edge Functions
+
+Triggers
+
+Views
+
+Seed scripts
+
+Do NOT move business logic into Supabase.
+
+Business logic belongs inside API services.
+
+------------------------------------------------------------
+
+INFRA
+
+------------------------------------------------------------
+
+infra/docker
+
+Dockerfiles
+
+Compose
+
+Development containers
+
+------------------------------------------------------------
+
+infra/kubernetes
+
+Deployments
+
+Services
+
+Ingress
+
+Secrets
+
+Namespaces
+
+Autoscaling
+
+ConfigMaps
+
+PersistentVolumes
+
+CronJobs
+
+Jobs
+
+------------------------------------------------------------
+
+infra/terraform
+
+Infrastructure as Code
+
+DigitalOcean
+
+Cloudflare
+
+Supabase configuration
+
+Networking
+
+Secrets
+
+Managed Redis
+
+Kubernetes Cluster
+
+------------------------------------------------------------
+
+CI/CD
+
+------------------------------------------------------------
+
+Implement GitHub Actions.
+
+Workflow:
+
+Developer
+
+↓
+
+Push to GitHub
+
+↓
+
+Lint
+
+↓
+
+Type Check
+
+↓
+
+Unit Tests
+
+↓
+
+Build
+
+↓
+
+Docker Build
+
+↓
+
+Push Images
+
+↓
+
+Deploy Kubernetes
+
+↓
+
+Deploy Vercel
+
+↓
+
+Supabase Migration
+
+------------------------------------------------------------
+
+DEPLOYMENT TARGETS
+
+apps/web
+
+Deploy ONLY to Vercel
+
+apps/api
+
+Deploy ONLY to Kubernetes
+
+All scanner services
+
+Deploy ONLY to Kubernetes
+
+Supabase folder
+
+Deploy ONLY using Supabase CLI
+
+Cloudflare
+
+Used ONLY for
+
+DNS
+
+SSL
+
+WAF
+
+CDN
+
+Caching
+
+Zero Trust
+
+DDoS
+
+No application code belongs there.
+
+------------------------------------------------------------
+
+ARCHITECTURE
+
+Use:
+
+NX https://nx.dev/
+
+pnpm Workspaces
+
+TypeScript
+
+Node 22+
+
+Express or Fastify
+
+Next.js latest
+
+Tailwind latest
+
+Docker
+
+Docker Compose
+
+Kubernetes
+
+Helm
+
+Terraform
+
+Redis
+
+Supabase
+
+Cloudflare
+
+DigitalOcean
+
+GitHub Actions
+
+OpenTelemetry
+
+Prometheus
+
+Grafana
+
+Structured logging
+
+Health checks
+
+Graceful shutdown
+
+Retry policies
+
+Circuit breakers
+
+Distributed tracing
+
+RBAC
+
+JWT
+
+Refresh tokens
+
+API versioning
+
+Feature flags
+
+Environment validation
+
+Secrets management
+
+------------------------------------------------------------
+
+OUTPUT REQUIREMENTS
+
+1. Reorganize the repository.
+
+2. Preserve every feature.
+
+3. Update imports automatically.
+
+4. Generate missing folders.
+
+5. Generate README for every service.
+
+6. Generate Dockerfiles.
+
+7. Generate Kubernetes manifests.
+
+8. Generate Helm charts.
+
+9. Generate Terraform skeleton.
+
+10. Generate GitHub Actions.
+
+11. Generate environment templates.
+
+12. Generate architecture documentation.
+
+13. Generate dependency graph.
+
+14. Ensure zero broken imports.
+
+15. Ensure the application builds successfully.
+
+Do not stop until the repository follows this enterprise architecture completely.

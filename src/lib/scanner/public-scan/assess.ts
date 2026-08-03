@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { parseTarget } from '../web-scanner/tls-analyzer'
-import { runScanEngines, type ScanEvidenceBundle } from './engines'
+import { runScanEngines, type ObservationSink, type ScanEvidenceBundle } from './engines'
 import {
   buildControlStates,
   buildExecutiveSummary,
@@ -43,6 +43,12 @@ export interface AssessOptions {
   port: number
   /** Called as each workflow stage transitions, for SSE streaming. */
   onStage?: (stage: PublicScanStage) => void
+  /**
+   * Called as individual measurements land, for the live visualization. This is
+   * finer-grained than `onStage`: the named-group phase alone reports a dozen
+   * separate facts over several seconds inside a single stage.
+   */
+  onObservation?: ObservationSink
   signal?: AbortSignal
 }
 
@@ -162,17 +168,22 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
   const startedAt = new Date()
   const emit = (value: PublicScanStage) => onStage?.(value)
 
-  for (const key of ['dns', 'tls', 'certificate', 'headers'] as PublicScanStageKey[]) {
-    emit(stage(key, 'running'))
-  }
-
+  // Stages are marked running when their engine ACTUALLY starts. Flipping all
+  // four to running up front made the rail claim four concurrent modules from
+  // the first frame, and left every card sitting on "Analyzing" for the whole
+  // run regardless of what was really executing.
   const bundle = await runScanEngines({
     host,
     port,
+    onEngineStart: (engine) => {
+      const key = ENGINE_STAGE[engine]
+      if (key) emit(stage(key, 'running'))
+    },
     onEngine: (engine, ok, detail) => {
       const key = ENGINE_STAGE[engine]
       if (key) emit(stage(key, ok ? 'complete' : 'failed', detail))
     },
+    onObservation: options.onObservation,
   })
 
   const evidence = toReportEvidence(bundle)
@@ -186,13 +197,9 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
   const findings = sortFindings(toFindings(controls))
   const attackSurface = toAttackSurface(controls)
   const executive = buildExecutiveSummary(evidence, scoreComponents, findings)
-  emit(
-    stage(
-      'quantum',
-      'complete',
-      `PQ readiness ${executive.postQuantumReadiness}% · quantum risk ${bundle.crypto.data.quantumRisk}`,
-    ),
-  )
+  // The quantum stage is already completed by the cryptographic-intelligence
+  // engine's own callback. Emitting it a second time here published two
+  // identical completions for one module and double-counted it in the rail.
 
   // ── Executive report ──────────────────────────────────────────────────────
   emit(stage('report', 'running'))

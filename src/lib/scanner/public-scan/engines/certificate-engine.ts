@@ -22,7 +22,9 @@ import { parseCertificateFromPeer } from '../../web-scanner/certificate-parser'
 import {
   type Evidence,
   type EngineResult,
+  type ObservationSink,
   clampScore,
+  observationEmitter,
   retryTransient,
   runEngine,
 } from './contract'
@@ -75,6 +77,14 @@ export interface CertificateIntelligence {
 
   ocspStapled: boolean
   ocspUri: string | null
+  /**
+   * Whether the advertised responder actually answered. `not-advertised` and
+   * `unreachable` are different failures and must not be flattened: one is a
+   * certificate that never promised revocation, the other is one that promised
+   * it and cannot deliver.
+   */
+  ocspResponderState: OcspResponderState
+  ocspResponderDetail: string | null
   mustStaple: boolean
   crlDistributionPoints: string[]
 
@@ -112,6 +122,8 @@ export function emptyCertificate(error: string | null = null): CertificateIntell
     daysRemaining: 0,
     ocspStapled: false,
     ocspUri: null,
+    ocspResponderState: 'not-probed',
+    ocspResponderDetail: null,
     mustStaple: false,
     crlDistributionPoints: [],
     signedCertificateTimestamps: false,
@@ -317,15 +329,77 @@ function probeCertificate(host: string, port: number): Promise<CertProbe> {
   })
 }
 
+// ─── OCSP responder liveness ──────────────────────────────────────────────────
+
+const OCSP_PROBE_TIMEOUT_MS = 6_000
+
+export type OcspResponderState = 'reachable' | 'unreachable' | 'not-advertised' | 'not-probed'
+
+/**
+ * Is the advertised OCSP responder actually answering?
+ *
+ * The certificate telling us where the responder lives is not the same claim as
+ * the responder being alive. A published-but-dead responder is a real and
+ * common failure: clients that soft-fail revocation silently lose revocation
+ * checking entirely, and until now this scanner reported that endpoint
+ * identically to one with a healthy responder.
+ *
+ * This is a liveness probe, NOT a revocation check. A real revocation query
+ * needs a DER-encoded OCSPRequest for this specific serial, which is outside
+ * what an anonymous edge assessment should be issuing. So the claim made is
+ * exactly the claim measured: the responder answered, or it did not.
+ */
+async function probeOcspResponder(
+  uri: string | null,
+): Promise<{ state: OcspResponderState; detail: string; statusCode: number | null }> {
+  if (!uri) return { state: 'not-advertised', detail: 'No OCSP responder in the certificate', statusCode: null }
+
+  let parsed: URL
+  try {
+    parsed = new URL(uri)
+  } catch {
+    return { state: 'not-probed', detail: 'Responder URI could not be parsed', statusCode: null }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { state: 'not-probed', detail: `Unsupported responder scheme ${parsed.protocol}`, statusCode: null }
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), OCSP_PROBE_TIMEOUT_MS)
+  try {
+    const response = await fetch(parsed.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { accept: 'application/ocsp-response' },
+    })
+    // Any HTTP answer proves the responder is serving. RFC 6960 responders
+    // routinely return 400 for a GET with no encoded request — that is the
+    // responder replying, which is exactly what is being measured.
+    return {
+      state: 'reachable',
+      detail: `Responder answered HTTP ${response.status}`,
+      statusCode: response.status,
+    }
+  } catch (err) {
+    const reason = (err as Error).name === 'AbortError' ? 'timed out' : (err as Error).message
+    return { state: 'unreachable', detail: `Responder did not answer (${reason})`, statusCode: null }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
 export async function runCertificateEngine(
   host: string,
   port: number,
+  onObservation?: ObservationSink,
 ): Promise<EngineResult<CertificateIntelligence>> {
   return runEngine('certificate-intelligence', emptyCertificate(), async () => {
     const evidence: Evidence[] = []
     const notes: string[] = []
+    const emit = observationEmitter(onObservation)
 
     // Hosts under load reset the first connection often enough that a single
     // attempt loses the chain entirely, which would down-rank issuer, OCSP, CT
@@ -339,6 +413,13 @@ export async function runCertificateEngine(
     if (!probe.peer || Object.keys(probe.peer).length === 0) {
       const data = emptyCertificate(probe.error ?? 'No certificate presented')
       notes.push('Certificate chain unavailable; certificate controls report Unknown.')
+      emit({
+        surface: 'certificate',
+        label: 'Certificate chain',
+        detail: probe.error ?? 'No certificate presented',
+        status: 'critical',
+        severity: 'high',
+      })
       return { data, ok: false, confidence: 0, evidence, notes, error: data.error }
     }
 
@@ -391,6 +472,9 @@ export async function runCertificateEngine(
       daysRemaining: validTo ? Math.max(0, Math.floor((validTo.getTime() - now) / 86_400_000)) : 0,
       ocspStapled: probe.ocspStapled,
       ocspUri: infoAccess['OCSP - URI']?.[0] ?? null,
+      // Filled in below by the live responder probe.
+      ocspResponderState: 'not-probed',
+      ocspResponderDetail: null,
       mustStaple: raw ? raw.includes(MUST_STAPLE_OID_DER) : false,
       crlDistributionPoints: crlPoints.slice(0, 4),
       signedCertificateTimestamps: sctCount > 0,
@@ -438,6 +522,65 @@ export async function runCertificateEngine(
       evidenceSource: data.ocspUri ?? 'no responder advertised',
       confidence: 100,
     })
+
+    emit({
+      surface: 'certificate',
+      label: 'Chain trust',
+      detail:
+        probe.authorized === true
+          ? `Valid chain · ${chain.length} certificate(s) · ${data.daysRemaining}d remaining`
+          : `Chain not verified: ${probe.authorizationError ?? 'unknown reason'}`,
+      status: probe.authorized === true ? 'pass' : 'critical',
+      severity: probe.authorized === true ? 'none' : 'high',
+      verdict: probe.authorized === true ? 'Valid chain' : 'Untrusted chain',
+    })
+    emit({
+      surface: 'ocsp',
+      label: 'OCSP stapling',
+      detail: probe.ocspStapled
+        ? 'Stapled response returned in the handshake'
+        : data.ocspUri
+          ? 'Responder published, response not stapled'
+          : 'No OCSP responder in the certificate',
+      status: probe.ocspStapled ? 'pass' : data.ocspUri ? 'warning' : 'info',
+      severity: probe.ocspStapled ? 'none' : data.ocspUri ? 'low' : 'info',
+      verdict: probe.ocspStapled ? 'Secure' : data.ocspUri ? 'Not stapled' : 'No responder',
+    })
+
+    // Live responder liveness — a real request, made only when the certificate
+    // actually advertises a responder.
+    const responder = await probeOcspResponder(data.ocspUri)
+    data.ocspResponderState = responder.state
+    data.ocspResponderDetail = responder.detail
+    evidence.push({
+      label: 'OCSP responder liveness',
+      observedValue: responder.detail,
+      detectionMethod: 'OCSP staple',
+      evidenceSource: data.ocspUri ?? 'no responder advertised',
+      confidence: responder.state === 'not-probed' ? 40 : 100,
+    })
+    if (responder.state === 'unreachable') {
+      notes.push(
+        `The certificate advertises an OCSP responder at ${data.ocspUri} but it did not answer. Clients that soft-fail revocation will not be checking revocation for this endpoint.`,
+      )
+    }
+    if (data.ocspUri) {
+      emit({
+        surface: 'ocsp',
+        label: 'Responder liveness',
+        detail: responder.detail,
+        status: responder.state === 'reachable' ? 'pass' : responder.state === 'unreachable' ? 'warning' : 'info',
+        severity: responder.state === 'unreachable' ? 'medium' : 'none',
+      })
+    }
+    emit({
+      surface: 'ocsp',
+      label: 'Certificate Transparency',
+      detail: sctCount ? `${sctCount} embedded SCT(s) logged` : 'No embedded CT SCTs',
+      status: sctCount ? 'pass' : 'warning',
+      severity: sctCount ? 'none' : 'low',
+    })
+
     if (data.hostnameMatches === false) {
       notes.push(`Certificate does not cover ${host}; clients will reject the name.`)
     }

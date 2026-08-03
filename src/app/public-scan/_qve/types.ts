@@ -104,6 +104,23 @@ export interface QveNode {
   updatedAt: number;
   /** Set when the node carries post-quantum evidence — drives violet energy. */
   postQuantum: boolean;
+  /**
+   * True once at least one real observation has been routed here. Until then the
+   * card is showing its idle legend, which must be replaced wholesale rather
+   * than merged with — otherwise "Origin not queried" survives next to the
+   * headers the scanner just read.
+   */
+  hasEvidence: boolean;
+  /**
+   * This node's own 0-100 score, as a weight-respecting aggregate of the
+   * published grading model's categories that belong to it (see
+   * `NODE_SCORE_CATEGORIES`). Null until the report lands — a node has no score
+   * while it is still being measured, and inventing one would be the exact kind
+   * of fabricated posture number the platform forbids.
+   */
+  score: number | null;
+  /** Grade band derived from {@link score}. Null while unscored. */
+  band: QveGradeBand | null;
 }
 
 /* ------------------------------------------------------------- engine state - */
@@ -151,6 +168,13 @@ export interface QveState {
 /**
  * Beam / packet palette. Blue → green → amber → red by verdict, violet for
  * post-quantum energy, exactly as specified by the engine guidelines.
+ *
+ * `idle` is deliberately NOT slate-800. A conduit at `#334155` over the hero's
+ * `#040810` backdrop is below the threshold at which a 1px stroke is visible at
+ * all, which made the two nodes that settle last — OCSP and Quantum Readiness —
+ * look disconnected from the core for most of the run. The topology must read
+ * before a scan starts, so the dormant conduit is a dimmed steel that survives
+ * the backdrop.
  */
 export const QVE_COLOR = {
   scanning: '#38bdf8',
@@ -158,14 +182,86 @@ export const QVE_COLOR = {
   warning: '#fbbf24',
   critical: '#f43f5e',
   quantum: '#a78bfa',
-  idle: '#334155',
+  idle: '#64748b',
   cyan: '#22d3ee',
 } as const;
 
+/* ------------------------------------------------------------- grade bands - */
+
+/**
+ * Verdict bands. These are the colour of a *measured posture*, not decoration,
+ * so they follow the published grading vocabulary:
+ *
+ *   elite / excellent   green   — hardened, nothing outstanding
+ *   good / fair         cyan    — acceptable, with work to do
+ *   weak                amber   — degraded controls
+ *   critical            red     — critical or high-severity exposure
+ *
+ * Green and cyan are each shared by two bands on purpose: the band name is the
+ * precise statement and the colour is the at-a-glance one, and four colours is
+ * the most a viewer can reliably separate in peripheral vision on a beam.
+ */
+export type QveGradeBand = 'elite' | 'excellent' | 'good' | 'fair' | 'weak' | 'critical';
+
+export const QVE_BAND_COLOR: Record<QveGradeBand, string> = {
+  elite: '#34d399',
+  excellent: '#34d399',
+  good: '#22d3ee',
+  fair: '#22d3ee',
+  weak: '#fbbf24',
+  critical: '#f43f5e',
+};
+
+export const QVE_BAND_LABEL: Record<QveGradeBand, string> = {
+  elite: 'Elite',
+  excellent: 'Excellent',
+  good: 'Good',
+  fair: 'Fair',
+  weak: 'Weak',
+  critical: 'Critical',
+};
+
+/**
+ * Score → band. Thresholds are aligned to the scanner's own
+ * `SCORE_GRADE_TABLE`: 90+ is A-and-above, 80+ is B+/A-, 70+ is B-/B, 60+ is
+ * C-/C+, below 50 is D/F. Keeping the cuts on the same boundaries is what stops
+ * a beam from reading green next to a card that says C.
+ */
+export function bandForScore(score: number): QveGradeBand {
+  if (score >= 95) return 'elite';
+  if (score >= 85) return 'excellent';
+  if (score >= 75) return 'good';
+  if (score >= 60) return 'fair';
+  if (score >= 50) return 'weak';
+  return 'critical';
+}
+
+/**
+ * The colour a node's beam, ring and chrome carry.
+ *
+ * Order matters, and it is an escalation ladder:
+ *
+ *  1. A HIGH or CRITICAL severity observation wins outright. A node that scores
+ *     88 but is serving an untrusted chain is red, not green — the worst thing
+ *     observed about a surface is the thing an operator has to see first.
+ *
+ *  2. Otherwise the MEASURED BAND decides, once the node has been scored. This
+ *     deliberately outranks the node's lifecycle state. The lifecycle status is
+ *     a coarse per-observation heuristic (an HTTP surface with under half its
+ *     headers hardened is flagged `critical` while it is being read); the band
+ *     is a weighted aggregate of the published grading model. Letting the
+ *     heuristic win painted a surface scoring 62 — a Fair C — in the same red
+ *     as one scoring 12, which is precisely the kind of colour that stops
+ *     meaning anything.
+ *
+ *  3. Before a score exists, the lifecycle state is all there is.
+ */
 export function beamColor(node: QveNode): string {
+  if (isAlertSeverity(node.severity)) return QVE_COLOR.critical;
+  if (node.band && node.hasEvidence) return QVE_BAND_COLOR[node.band];
   if (node.state === 'critical' || node.state === 'failed') return QVE_COLOR.critical;
   if (node.state === 'warning') return QVE_COLOR.warning;
-  if (node.state === 'pass') return node.postQuantum ? QVE_COLOR.quantum : QVE_COLOR.pass;
+  if (node.state === 'pass') return QVE_COLOR.pass;
   if (node.state === 'scanning') return QVE_COLOR.scanning;
   return QVE_COLOR.idle;
 }

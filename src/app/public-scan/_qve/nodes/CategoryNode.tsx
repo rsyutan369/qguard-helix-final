@@ -194,7 +194,7 @@ export const CategoryNode = React.memo(function CategoryNode({
       <span
         aria-hidden
         className={cn('absolute top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full', side === 'left' ? '-right-[3px]' : '-left-[3px]')}
-        style={{ backgroundColor: color, opacity: live ? 1 : 0.35, boxShadow: live ? `0 0 8px ${color}` : undefined }}
+        style={{ backgroundColor: color, opacity: live ? 1 : 0.65, boxShadow: `0 0 8px ${color}` }}
       />
     </motion.button>
   );

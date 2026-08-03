@@ -22,7 +22,13 @@
 import React from 'react';
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types';
 import type { UsePublicScanResult } from '@/hooks/use-public-scan';
-import { reportEvidenceEvents, scanStartedEvent, stageTransitionEvents } from './event-derivation';
+import {
+  nodeScoresFromReport,
+  observationEvent,
+  reportEvidenceEvents,
+  scanStartedEvent,
+  stageTransitionEvents,
+} from './event-derivation';
 import { useQve } from './scan-event-store';
 import type { ScanEvent } from './types';
 
@@ -33,6 +39,8 @@ export interface ScanEventBridgeInput {
   state: UsePublicScanResult['state'];
   stages: PublicScanStage[];
   report: PublicScanReport | null;
+  /** Live measurements streamed during the run. */
+  observations: UsePublicScanResult['observations'];
   progress: number;
   /** Host or URL being assessed, for the `asset` field. */
   asset: string;
@@ -44,6 +52,7 @@ export function useScanEventBridge({
   state,
   stages,
   report,
+  observations,
   progress,
   asset,
   reducedMotion,
@@ -53,6 +62,7 @@ export function useScanEventBridge({
   const previousStates = React.useRef(new Map<string, PublicScanStage['state']>());
   const previousRunState = React.useRef<typeof state>('idle');
   const reportedScanId = React.useRef<string | null>(null);
+  const consumedObservations = React.useRef(0);
   const queue = React.useRef<ScanEvent[]>([]);
   const timer = React.useRef<number | null>(null);
 
@@ -105,12 +115,14 @@ export function useScanEventBridge({
       clearQueue();
       previousStates.current.clear();
       reportedScanId.current = null;
+      consumedObservations.current = 0;
       dispatch({ type: 'reset' });
       dispatch({ type: 'ingest', event: scanStartedEvent(asset) });
     } else if (state === 'idle') {
       clearQueue();
       previousStates.current.clear();
       reportedScanId.current = null;
+      consumedObservations.current = 0;
       dispatch({ type: 'reset' });
     }
     // `asset` is read at transition time only; a later edit to the input must
@@ -135,6 +147,25 @@ export function useScanEventBridge({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stages, state, progress, dispatch]);
 
+  /* ── Live observations (real, streamed as measured) ────────────────────── */
+
+  React.useEffect(() => {
+    // A reset shrinks the array — rewind rather than replaying history.
+    if (observations.length < consumedObservations.current) consumedObservations.current = 0;
+    if (observations.length === consumedObservations.current) return;
+
+    for (let index = consumedObservations.current; index < observations.length; index += 1) {
+      // Dispatched immediately, never queued: these already arrived at the
+      // scanner's own pace, and re-spacing them would replace a real cadence
+      // with an invented one.
+      dispatch({ type: 'ingest', event: observationEvent(observations[index], progress, asset) });
+    }
+    consumedObservations.current = observations.length;
+    // `progress` and `asset` are read at dispatch time; re-running on their
+    // change alone would re-emit observations already consumed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [observations, dispatch]);
+
   /* ── Completed report (real evidence) ──────────────────────────────────── */
 
   React.useEffect(() => {
@@ -147,6 +178,7 @@ export function useScanEventBridge({
       gradeColor: report.executive.gradeColor,
       score: report.executive.encryptionScore,
       postQuantumScore: report.executive.postQuantumReadiness,
+      nodeScores: nodeScoresFromReport(report),
     });
   }, [report, enqueue, dispatch]);
 }

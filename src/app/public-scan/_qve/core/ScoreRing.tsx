@@ -21,8 +21,10 @@ export interface ScoreRingProps {
   /** 0-100 composite score once graded; drives wave amplitude. */
   score: number;
   grade: string | null;
-  /** Primary accent (verdict or grade colour). */
+  /** Structural accent — blue / violet / cyan only. */
   accent: string;
+  /** Verdict colour, applied to the graduated bezel and the progress arc only. */
+  verdictColor: string;
   /** True while the scan is live — enables the activity arc. */
   active: boolean;
   /** Master motion switch from the Performance Manager. */
@@ -72,6 +74,7 @@ export const ScoreRing = React.memo(function ScoreRing({
   score,
   grade,
   accent,
+  verdictColor,
   active,
   animate,
   size = 400,
@@ -145,8 +148,8 @@ export const ScoreRing = React.memo(function ScoreRing({
     >
       <defs>
         <linearGradient id={`${gradientId}-progress`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor={waveFrom} />
-          <stop offset="55%" stopColor={accent} />
+          <stop offset="0%" stopColor={accent} />
+          <stop offset="55%" stopColor={verdictColor} />
           <stop offset="100%" stopColor={waveTo} />
         </linearGradient>
         <radialGradient id={`${gradientId}-wave`}>
@@ -154,7 +157,7 @@ export const ScoreRing = React.memo(function ScoreRing({
           <stop offset="100%" stopColor={waveTo} stopOpacity="0.4" />
         </radialGradient>
         <filter id={`${gradientId}-glow`} x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur stdDeviation="3.2" result="blur" />
+          <feGaussianBlur stdDeviation="2" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
@@ -178,9 +181,9 @@ export const ScoreRing = React.memo(function ScoreRing({
               y1={y1}
               x2={x2}
               y2={y2}
-              stroke={reached ? accent : 'rgba(148,163,184,0.35)'}
+              stroke={reached ? verdictColor : 'rgba(148,163,184,0.35)'}
               strokeWidth={major ? 1.6 : 0.9}
-              opacity={reached ? 0.95 : 0.45}
+              opacity={reached ? 0.9 : 0.4}
             />
           );
         })}
@@ -193,7 +196,7 @@ export const ScoreRing = React.memo(function ScoreRing({
           d={arcPath(176, 0, Math.min(359.9, progressSweep))}
           fill="none"
           stroke={`url(#${gradientId}-progress)`}
-          strokeWidth={4}
+          strokeWidth={3}
           strokeLinecap="round"
           filter={`url(#${gradientId}-glow)`}
         />

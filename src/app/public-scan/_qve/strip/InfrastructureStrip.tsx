@@ -58,12 +58,32 @@ export function buildInfraTiles(report: PublicScanReport | null): InfraTile[] {
   const tls = report.evidence.tls;
   const handshakeOk = Boolean(tls);
 
-  /** Human protocol list, e.g. "TLS 1.2 / 1.3". */
-  const protocols = tls?.supportedProtocols.length
-    ? tls.supportedProtocols
-        .map((protocol) => protocol.replace(/^TLSv?/i, 'TLS ').replace(/\s+/g, ' ').trim())
-        .join(' / ')
+  // Protocol versions, normalised and compacted. Node reports "TLSv1",
+  // "TLSv1.1"… — "TLSv1" is TLS 1.0 and must render as such, or the tile reads
+  // as a nonsense "TLS 1". A contiguous run collapses to a range so the tile
+  // stays legible at its width; a gap is listed explicitly because "1.0 → 1.3"
+  // would falsely imply the middle versions are offered.
+  const versions = (tls?.supportedProtocols ?? [])
+    .map((protocol) => {
+      const match = /(\d+(?:\.\d+)?)/.exec(protocol);
+      if (!match) return null;
+      return match[1].includes('.') ? match[1] : `${match[1]}.0`;
+    })
+    .filter((value): value is string => Boolean(value))
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  const contiguous =
+    versions.length > 2 &&
+    versions.every((value, index) => index === 0 || Math.abs(value - versions[index - 1] - 0.1) < 0.001);
+
+  const protocols = versions.length
+    ? contiguous
+      ? `TLS ${versions[0].toFixed(1)} → ${versions[versions.length - 1].toFixed(1)}`
+      : `TLS ${versions.map((value) => value.toFixed(1)).join(' / ')}`
     : 'Not observable';
+
+  const hasLegacy = versions.some((value) => value < 1.2);
 
   const cdn = fingerprint.cdn ?? fingerprint.waf ?? fingerprint.reverseProxy ?? null;
 
@@ -104,11 +124,15 @@ export function buildInfraTiles(report: PublicScanReport | null): InfraTile[] {
       label: 'Protocols',
       value: protocols,
       basis: tls?.protocolSupport.length
-        ? `${tls.protocolSupport.length} versions probed individually · negotiated ${tls.tlsVersion}`
+        ? `${tls.protocolSupport.length} versions probed individually · negotiated ${tls.tlsVersion}${
+            hasLegacy ? ' · legacy TLS 1.0/1.1 still accepted' : ''
+          }`
         : 'Protocol enumeration did not complete',
       icon: Network,
-      measured: Boolean(tls?.supportedProtocols.length),
-      tone: tls?.supportedProtocols.some((protocol) => /1\.3/.test(protocol)) ? '#22d3ee' : '#fbbf24',
+      measured: versions.length > 0,
+      // Amber when a deprecated version is still offered — the tile is a
+      // verdict, not an inventory.
+      tone: hasLegacy ? '#fbbf24' : '#22d3ee',
     },
     {
       key: 'cdn',

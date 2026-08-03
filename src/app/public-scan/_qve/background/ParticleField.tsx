@@ -14,7 +14,7 @@
 'use client';
 
 import React from 'react';
-import type { Engine, ISourceOptions } from '@tsparticles/engine';
+import type { Container, Engine, ISourceOptions } from '@tsparticles/engine';
 import { Particles, ParticlesProvider } from '@tsparticles/react';
 
 export interface ParticleFieldProps {
@@ -30,8 +30,20 @@ const registerEngine = async (engine: Engine): Promise<void> => {
   await loadSlim(engine);
 };
 
-function buildOptions(accent: string, quantum: boolean, count: number, active: boolean): ISourceOptions {
-  const linkColor = quantum ? '#a78bfa' : accent;
+/**
+ * OPTIONS MUST STAY REFERENTIALLY STABLE.
+ *
+ * `<Particles>` tears the container down and rebuilds it whenever `options`
+ * changes identity, which blanks the canvas for a frame or two. Rebuilding it on
+ * scan start and again on completion — precisely the two moments the visitor is
+ * watching — produced a visible blink. So the option set is built once from
+ * `count` alone, and scan reactivity is applied to the *live* container instead
+ * (see the effect below), which needs no rebuild.
+ */
+function buildOptions(count: number): ISourceOptions {
+  const accent = '#22d3ee';
+  const linkColor = '#60a5fa';
+  const active = false;
   return {
     fullScreen: { enable: false },
     detectRetina: true,
@@ -69,19 +81,49 @@ function buildOptions(accent: string, quantum: boolean, count: number, active: b
 }
 
 export default function ParticleField({ accent, quantum, count, active }: ParticleFieldProps) {
-  const options = React.useMemo(
-    () => buildOptions(accent, quantum, count, active),
-    [accent, quantum, count, active],
-  );
+  const options = React.useMemo(() => buildOptions(count), [count]);
+  const container = React.useRef<Container | null>(null);
+
+  const onLoaded = React.useCallback((instance?: Container) => {
+    container.current = instance ?? null;
+  }, []);
+
+  // Scan reactivity applied in place: new particles adopt the faster drift and
+  // longer link reach, and the wrapper brightens. No rebuild, no blink.
+  React.useEffect(() => {
+    const instance = container.current;
+    if (!instance) return;
+    try {
+      const particles = instance.actualOptions.particles;
+      particles.move.speed = active ? 0.9 : 0.28;
+      // `links` is contributed by the interaction plugin, so the engine types it
+      // as `unknown` on the base particle options. Narrowed here rather than
+      // reaching into plugin internals.
+      const links = particles.links as { distance: number; color: { value: string } } | undefined;
+      if (links) {
+        links.distance = active ? 148 : 118;
+        links.color.value = quantum ? '#a78bfa' : accent;
+      }
+    } catch {
+      // tsParticles internals are best-effort enrichment; the field is
+      // decorative and must never break the hero if the shape changes.
+    }
+  }, [active, quantum, accent]);
 
   return (
     <ParticlesProvider init={registerEngine}>
-      <Particles
-        id="qve-quantum-dust"
-        options={options}
-        className="absolute inset-0 h-full w-full"
-        style={{ position: 'absolute', inset: 0 }}
-      />
+      <div
+        className="absolute inset-0 transition-opacity duration-700"
+        style={{ opacity: active ? 1 : 0.55 }}
+      >
+        <Particles
+          id="qve-quantum-dust"
+          options={options}
+          particlesLoaded={onLoaded}
+          className="absolute inset-0 h-full w-full"
+          style={{ position: 'absolute', inset: 0 }}
+        />
+      </div>
     </ParticlesProvider>
   );
 }

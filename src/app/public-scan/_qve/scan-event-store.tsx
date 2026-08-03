@@ -12,6 +12,7 @@
 
 import React from 'react';
 import {
+  bandForScore,
   isAlertSeverity,
   maxSeverity,
   type QveNode,
@@ -60,7 +61,7 @@ export const QVE_NODE_BLUEPRINTS: readonly NodeBlueprint[] = [
   },
   {
     key: 'ocsp',
-    title: 'OCSP & Revocation',
+    title: 'OCSP Stapling',
     idleVerdict: 'Standby',
     idleLines: ['Stapling unknown', 'CT logs unread'],
   },
@@ -87,6 +88,9 @@ function idleNode(blueprint: NodeBlueprint): QveNode {
     severity: 'none',
     updatedAt: 0,
     postQuantum: false,
+    hasEvidence: false,
+    score: null,
+    band: null,
   };
 }
 
@@ -139,6 +143,12 @@ export type QveAction =
       gradeColor: string | null;
       score: number;
       postQuantumScore: number;
+      /**
+       * Per-node 0-100 scores, derived from the report's own published grading
+       * categories. Absent keys stay unscored rather than defaulting to zero —
+       * "not measured" and "measured as bad" must never render the same.
+       */
+      nodeScores?: Partial<Record<QveNodeKey, number>>;
     }
   | { type: 'reset' };
 
@@ -186,14 +196,23 @@ export function qveReducer(state: QveState, action: QveAction): QveState {
     case 'reset':
       return initialQveState();
 
-    case 'settle':
+    case 'settle': {
+      const nodes = { ...state.nodes };
+      for (const [key, value] of Object.entries(action.nodeScores ?? {})) {
+        const node = nodes[key as QveNodeKey];
+        if (!node || typeof value !== 'number') continue;
+        const bounded = Math.max(0, Math.min(100, Math.round(value)));
+        nodes[key as QveNodeKey] = { ...node, score: bounded, band: bandForScore(bounded) };
+      }
       return {
         ...state,
         grade: action.grade,
         gradeColor: action.gradeColor,
         score: action.score,
         postQuantumScore: action.postQuantumScore,
+        nodes,
       };
+    }
 
     case 'ingest': {
       const event = action.event;
@@ -228,17 +247,36 @@ export function qveReducer(state: QveState, action: QveAction): QveState {
         const current = nodes[event.category];
         if (current) {
           const incomingState = nodeStateFor(event.status);
-          const nextLines = event.finding
-            ? [event.finding, ...current.lines.filter((line) => line !== event.finding)].slice(0, 2)
-            : current.lines;
+          // The card shows the SHORT form (`nodeLine`); the verbose `finding`
+          // belongs to the timeline and the inspector, where there is room for
+          // it. `null` means "this observation has no card line" — a timeline-
+          // only event must not evict a headline the card already earned.
+          const rawLine = event.details?.nodeLine;
+          const line = rawLine === null ? null : ((rawLine as string | undefined) ?? event.finding ?? null);
+          const settled = event.status !== 'running';
+
+          // Cards keep the FIRST two real observations, not the last two: the
+          // derivation emits each category's headline evidence first, so
+          // append-and-cap reads like the assessment rather than like a log tail.
+          // Only settled events contribute — a "probing…" line must never
+          // displace evidence that has already landed.
+          let lines = current.lines;
+          if (settled && line) {
+            lines = current.hasEvidence
+              ? current.lines.includes(line)
+                ? current.lines
+                : [...current.lines, line].slice(0, 2)
+              : [line];
+          } else if (!settled && !current.hasEvidence) {
+            lines = [line ?? 'Probing…'];
+          }
+
           nodes[event.category] = {
             ...current,
             state: mergeNodeState(current.state, incomingState),
             verdict: typeof event.details?.verdict === 'string' ? event.details.verdict : current.verdict,
-            lines:
-              current.state === 'idle' && event.status === 'running'
-                ? [event.finding ?? 'Probing…']
-                : nextLines,
+            hasEvidence: current.hasEvidence || (settled && Boolean(line)),
+            lines,
             progress:
               typeof event.details?.nodeProgress === 'number'
                 ? Math.max(current.progress, event.details.nodeProgress)
