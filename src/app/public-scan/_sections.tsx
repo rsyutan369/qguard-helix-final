@@ -663,6 +663,17 @@ export function Recommendations({ report }: { report: PublicScanReport }) {
                   </div>
                 </div>
                 <p className="mt-2.5 font-mono text-[10px] leading-snug text-slate-600">{recommendation.rationale}</p>
+                {/* Platform-specific "where to make the change", present only
+                    when the scan actually detected a platform it can speak
+                    accurately about. */}
+                {recommendation.remediation && (
+                  <p
+                    className="mt-2 rounded-md border border-cyan-400/15 bg-cyan-400/[0.04] px-2.5 py-1.5 font-mono text-[10px] leading-snug text-cyan-200/85"
+                    style={{ overflowWrap: 'anywhere' }}
+                  >
+                    {recommendation.remediation}
+                  </p>
+                )}
                 <p className="mt-1 font-mono text-[9.5px] leading-snug text-slate-700">
                   {recommendation.scoreGainBasis}
                 </p>

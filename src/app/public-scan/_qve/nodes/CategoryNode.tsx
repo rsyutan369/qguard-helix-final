@@ -21,11 +21,14 @@ import {
   AlertTriangle,
   Atom,
   BadgeCheck,
+  Braces,
   Check,
   FileText,
   Globe,
+  KeyRound,
   Loader2,
   Lock,
+  Radar,
   ShieldCheck,
   XCircle,
   type LucideIcon,
@@ -33,13 +36,27 @@ import {
 import { cn } from '@/lib/utils';
 import { beamColor, type QveNode, type QveNodeKey } from '../types';
 
-const NODE_ICON: Record<QveNodeKey, LucideIcon> = {
+/**
+ * Icon per node key. Open-ended because the node ring is supplied by whoever
+ * mounts the engine — a surface the public scanner does not know about (the
+ * Dashboard Scanner's estate categories, say) supplies its own entry here or
+ * falls back to the generic radar mark rather than rendering nothing.
+ */
+const NODE_ICON: Record<string, LucideIcon> = {
+  // Public edge (/public-scan)
   dns: Globe,
   tls: Lock,
   certificate: ShieldCheck,
   headers: FileText,
   ocsp: BadgeCheck,
   quantum: Atom,
+  // Authenticated estate discovery (/dashboard/scanner)
+  discovery: Radar,
+  transport: Lock,
+  certificates: ShieldCheck,
+  identity: KeyRound,
+  code: Braces,
+  posture: Atom,
 };
 
 export interface CategoryNodeProps {
@@ -95,7 +112,7 @@ export const CategoryNode = React.memo(function CategoryNode({
   animate,
 }: CategoryNodeProps) {
   const reduce = useReducedMotion();
-  const Icon = NODE_ICON[node.key];
+  const Icon = NODE_ICON[node.key] ?? Radar;
   const color = beamColor(node);
   const live = node.state !== 'idle';
   const alert = node.state === 'critical' || node.state === 'failed';

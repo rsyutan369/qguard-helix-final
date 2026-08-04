@@ -27,6 +27,7 @@ import type {
 import type { PublicScanObservation } from '@/hooks/use-public-scan';
 import type {
   QveNodeKey,
+  QvePublicNodeKey,
   ScanEvent,
   ScanEventSeverity,
   ScanEventStatus,
@@ -45,7 +46,7 @@ import type {
  * though the OCSP card surfaces an SCT count: CT is a property of the issued
  * certificate, and scoring it twice would double-count it.
  */
-export const NODE_SCORE_CATEGORIES: Record<QveNodeKey, readonly string[]> = {
+export const NODE_SCORE_CATEGORIES: Record<QvePublicNodeKey, readonly string[]> = {
   dns: ['dns-caa'],
   tls: ['tls-configuration', 'cipher-suites', 'forward-secrecy'],
   certificate: ['certificates', 'certificate-transparency'],
@@ -67,7 +68,7 @@ export function nodeScoresFromReport(report: PublicScanReport): Partial<Record<Q
   const scores: Partial<Record<QveNodeKey, number>> = {};
 
   for (const [node, categories] of Object.entries(NODE_SCORE_CATEGORIES) as Array<
-    [QveNodeKey, readonly string[]]
+    [QvePublicNodeKey, readonly string[]]
   >) {
     let weighted = 0;
     let weight = 0;

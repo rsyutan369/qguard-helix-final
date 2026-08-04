@@ -1,17 +1,36 @@
+/**
+ * Dashboard Scanner — /dashboard/scanner
+ *
+ * The authenticated enterprise edition of the Public Quantum Exposure
+ * Assessment. It renders in the same design language as /public-scan — the same
+ * Quantum Visualization Engine™ hero, the same glass panels, gauge, rings,
+ * meters and reveal motion — while running the platform's real scanner against
+ * the tenant's authorized estate.
+ *
+ * Composition:
+ *   _types.ts      shared domain vocabulary (mirrors the SSE payloads)
+ *   _intel.ts      pure derivations: real evidence → assessment model
+ *   _qve-bridge.ts real scan events → visualization events
+ *   _hero.tsx      the QVE hero, mounted with the estate-discovery node ring
+ *   _sections.tsx  the result panels
+ *
+ * DATA CONTRACT: every number on this page traces to a measurement the scanner
+ * made — the SSE summary, per-target results, the Scanner_2 enterprise pass,
+ * module execution state, or the tenant-wide Scanner Intelligence snapshot that
+ * also feeds Assets, CBOM, Exposure and Quantum Readiness. Nothing is
+ * placeholder, and anything unmeasured renders as Unknown rather than zero.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useSubscription } from '@/hooks/use-subscription';
 import { tierMeets } from '@/lib/subscription-access';
 import { isOwnerEmail } from '@/lib/admin-access';
 import {
-  Play, Pause, Shield, AlertTriangle, Activity, Terminal,
-  Radio, Target, Search, ChevronRight, CheckCircle2, XCircle,
-  Loader2, Server, Database, Globe, Wifi, Lock, Layers,
-  Plus, Trash2, History, Network, RefreshCw, Copy, Download,
-  RotateCcw, Eraser, FileWarning, KeyRound, Settings, Eye,
-  PowerOff, ClipboardCheck, Package, Cloud, Code2, HardDrive,
-  Calendar, ChevronDown, Cpu, Sparkles
+  Calendar, CheckCircle2, ChevronRight, Copy, Database, Download, Eraser, Eye,
+  FileJson, FileSpreadsheet, Globe, History, Layers, Loader2, Lock, Network, Plus,
+  RefreshCw, RotateCcw, Search, Server, ShieldAlert, Sparkles, Target, Terminal,
+  Trash2, Wifi, XCircle,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import {
@@ -24,9 +43,48 @@ import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import AgentCollectorConsole from '@/components/agent-collector/AgentCollectorConsole';
 import AgentSettingsConsole from '@/components/agent-collector/AgentSettingsConsole';
-
-type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled';
-type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history' | 'agents' | 'settings';
+import {
+  ACCENT,
+  CountUp,
+  Meter,
+  Modal,
+  Panel,
+  QuantumField,
+  Reveal,
+  SectionLabel,
+  StatusPill,
+  scoreColor,
+} from '@/components/quantum-scan/ui';
+import { ScannerHero } from './_hero';
+import { buildAssessment, SCANNER_NODE_BLUEPRINTS, SCANNER_NODE_MODULES } from './_intel';
+import {
+  ScannerAttackSurface,
+  ScannerCoverage,
+  ScannerCryptoIntelligence,
+  ScannerEmptyState,
+  ScannerEncryptionScore,
+  ScannerExecutiveSummary,
+  ScannerFindingsTable,
+  ScannerFootprint,
+  ScannerModuleFlow,
+  ScannerQuantumTimeline,
+  ScannerRecommendations,
+  ScannerScopePanel,
+  ScannerSophiaInsight,
+} from './_sections';
+import type {
+  DefensiveFinding,
+  EnterpriseScanner2,
+  HistoryEntry,
+  HistoryTimeframe,
+  LogEntry,
+  ModuleState,
+  ScanResultRecord,
+  ScanStatus,
+  ScanSummary,
+  ScheduledScan,
+  TabId,
+} from './_types';
 
 const scannerTabFromParam = (value: string | null): TabId | null => {
   if (!value) return null;
@@ -42,104 +100,6 @@ const scannerTabFromParam = (value: string | null): TabId | null => {
 
   return null;
 };
-
-type DefensiveFinding = {
-  id: string;
-  algorithm: string;
-  category: string;
-  location: string;
-  threatLevel: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'SAFE';
-  status: string;
-  description: string;
-  recommendation: string;
-  pqcReplacement: string | null;
-  keySize: number | null;
-  evidence: string;
-  detectionMethod: string;
-  source: string;
-};
-
-type ScanSummary = {
-  targetsScanned: number;
-  totalFindings: number;
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  safe: number;
-  vulnerable: number;
-  pqcReady: number;
-  riskScore: number;
-  qScore: number;
-};
-
-type LogEntry = {
-  timestamp: string;
-  level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
-  message: string;
-  phase?: string;
-  severity?: DefensiveFinding['threatLevel'];
-  elapsed?: string;
-  moduleName?: string;
-};
-
-type ModuleStatus = 'Queued' | 'Running' | 'Completed' | 'Failed' | 'Skipped' | 'No findings';
-
-type ModuleState = {
-  id: string;
-  name: string;
-  status: ModuleStatus;
-  target?: string;
-  startedAt: string | null;
-  completedAt: string | null;
-  durationMs: number | null;
-  findingsCount: number;
-  severityCounts?: {
-    critical: number;
-    high: number;
-    medium: number;
-    low: number;
-    safe: number;
-  };
-  error: string | null;
-};
-
-type HistoryEntry = {
-  scanId: string;
-  userId: string;
-  target: string;
-  scanType: string;
-  startedAt: string;
-  completedAt: string | null;
-  durationMs: number | null;
-  status: string;
-  detectedComponents: number;
-  vulnerableFindings: number;
-  pqcReadyFindings: number;
-  riskScore: number | null;
-  qScore: number | null;
-  telemetry: any[];
-  moduleStates?: ModuleState[];
-  scannerModulesUsed?: string[];
-  summary?: ScanSummary | null;
-  findings?: DefensiveFinding[];
-  recommendations?: string[];
-  enterpriseScanner2?: any;
-  errorLogs: string[];
-  linkedCbomRecords: string[];
-  linkedAssetRecords: string[];
-  linkedExposureNodes: string[];
-};
-
-type ScheduledScan = {
-  id: string;
-  scheduledFor: string;
-  createdAt: string;
-  status: 'scheduled';
-  targets: string[];
-};
-
-type HistoryTimeframe = 'last7' | 'all';
 
 type AgentPolicy = {
   enabled?: boolean;
@@ -492,23 +452,29 @@ function detectedMitigationScanTypesFromData(
   return orderedKnownScanTypes(selected);
 }
 
+/**
+ * Severity palette, aligned to the shared design tokens so a severity chip on
+ * this page is the same colour as the same severity anywhere else on the
+ * platform. Returns Tailwind class fragments for the places that still compose
+ * classes, plus the raw token for inline styles.
+ */
 function sevColor(s: string) {
   switch (s.toLowerCase()) {
-    case 'critical': return { t: 'text-red-400', b: 'bg-red-500/10', br: 'border-red-500/30', d: 'bg-red-500' };
-    case 'high': return { t: 'text-orange-400', b: 'bg-orange-500/10', br: 'border-orange-500/30', d: 'bg-orange-500' };
-    case 'medium': return { t: 'text-yellow-400', b: 'bg-yellow-500/10', br: 'border-yellow-500/30', d: 'bg-yellow-500' };
-    case 'low': return { t: 'text-green-400', b: 'bg-green-500/10', br: 'border-green-500/30', d: 'bg-green-500' };
-    case 'safe': return { t: 'text-green-400', b: 'bg-green-500/10', br: 'border-green-500/30', d: 'bg-green-500' };
-    default: return { t: 'text-cyan-400', b: 'bg-cyan-500/10', br: 'border-cyan-500/30', d: 'bg-cyan-500' };
+    case 'critical': return { t: 'text-rose-300', b: 'bg-rose-500/10', br: 'border-rose-400/30', d: 'bg-rose-400', hex: ACCENT.rose };
+    case 'high': return { t: 'text-amber-300', b: 'bg-amber-500/10', br: 'border-amber-400/30', d: 'bg-amber-400', hex: ACCENT.amber };
+    case 'medium': return { t: 'text-yellow-300', b: 'bg-yellow-500/10', br: 'border-yellow-400/30', d: 'bg-yellow-400', hex: '#facc15' };
+    case 'low': return { t: 'text-emerald-300', b: 'bg-emerald-500/10', br: 'border-emerald-400/30', d: 'bg-emerald-400', hex: ACCENT.emerald };
+    case 'safe': return { t: 'text-emerald-300', b: 'bg-emerald-500/10', br: 'border-emerald-400/30', d: 'bg-emerald-400', hex: ACCENT.emerald };
+    default: return { t: 'text-cyan-300', b: 'bg-cyan-500/10', br: 'border-cyan-400/30', d: 'bg-cyan-400', hex: ACCENT.cyan };
   }
 }
 
 function logColor(level: string) {
   switch (level) {
-    case 'WARN': return 'text-yellow-400';
-    case 'ERROR': return 'text-red-500';
-    case 'SUCCESS': return 'text-green-400';
-    default: return 'text-white/50';
+    case 'WARN': return 'text-amber-300';
+    case 'ERROR': return 'text-rose-400';
+    case 'SUCCESS': return 'text-emerald-300';
+    default: return 'text-slate-400';
   }
 }
 
@@ -544,16 +510,7 @@ function formatElapsed(startedAt: number | null, timestamp?: string) {
   return `${mm}:${ss}`;
 }
 
-function moduleStatusColor(status: ModuleStatus) {
-  switch (status) {
-    case 'Running': return 'border-gold/40 bg-gold/10 text-gold';
-    case 'Completed': return 'border-green-500/30 bg-green-500/10 text-green-400';
-    case 'Failed': return 'border-red-500/30 bg-red-500/10 text-red-400';
-    case 'Skipped': return 'border-white/10 bg-white/[0.03] text-white/35';
-    case 'No findings': return 'border-cyan-500/25 bg-cyan-500/10 text-cyan-400';
-    default: return 'border-white/10 bg-[#0f1428]/30 text-white/35';
-  }
-}
+/** Module lifecycle status → the seven-state status vocabulary of `StatusPill`. */
 
 function normalizeAgentPolicy(policy?: AgentPolicy) {
   return {
@@ -762,23 +719,8 @@ function historyMetricSnapshot(entries: HistoryEntry[]) {
   };
 }
 
-function formatCompactNumber(value: number) {
-  return Number.isFinite(value) ? value.toLocaleString() : '0';
-}
 
-function formatTrend(current: number, previous: number) {
-  if (!Number.isFinite(current) || !Number.isFinite(previous)) return '0% vs previous 7 days';
-  if (previous <= 0) return current > 0 ? 'new vs previous 7 days' : '0% vs previous 7 days';
-  const delta = ((current - previous) / previous) * 100;
-  const sign = delta > 0 ? '+' : delta < 0 ? '-' : '';
-  return `${sign}${Math.abs(delta).toFixed(1)}% vs previous 7 days`;
-}
 
-function trendClass(current: number, previous: number, higherIsBetter: boolean) {
-  if (previous <= 0) return current > 0 && higherIsBetter ? 'text-green-400' : current > 0 ? 'text-yellow-400' : 'text-white/35';
-  const improved = higherIsBetter ? current >= previous : current <= previous;
-  return improved ? 'text-green-400' : 'text-red-400';
-}
 
 function csvCell(value: unknown) {
   const text = String(value ?? '').replace(/\r?\n/g, ' ');
@@ -797,7 +739,7 @@ function downloadTextFile(filename: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-[#FFD36B]/20 bg-[#0f1428]/45 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] transition-all duration-500 hover:-translate-y-1 hover:border-[#FFD36B]/70 hover:bg-[#0f1428]/65 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FFF4C0]/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] group-hover:before:via-[#FFF4C0] after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-[#FFD36B]/10 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-[#FFD36B]/25 group-hover:after:blur-[36px] text-white';
+
 
 export default function ScannerDashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -859,6 +801,12 @@ export default function ScannerDashboard() {
   const [findings, setFindings] = useState<DefensiveFinding[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [modules, setModules] = useState<ModuleState[]>([]);
+  // Per-target results and the Scanner_2 enterprise pass arrive on the same
+  // `scan-complete` frame the summary does. They carry the published risk
+  // decomposition, scan confidence, HNDL analysis and migration
+  // recommendations — the evidence the assessment panels are built from.
+  const [scanResults, setScanResults] = useState<ScanResultRecord[]>([]);
+  const [scanner2, setScanner2] = useState<EnterpriseScanner2 | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [expandedHistoryFinding, setExpandedHistoryFinding] = useState<string | null>(null);
@@ -1165,6 +1113,8 @@ export default function ScannerDashboard() {
     setFindings([]);
     setLogs([]);
     setModules([]);
+    setScanResults([]);
+    setScanner2(null);
     setProgress(0);
     setJobId(null);
     setCopiedLogs(false);
@@ -1172,7 +1122,8 @@ export default function ScannerDashboard() {
     setTerminalPinned(false);
     setScanStartedAt(startedAtMs);
     setStatus('queued');
-    setActiveTab('overview');
+    // The hero visualization sits above the tab strip and is visible from every
+    // tab, so a run no longer needs to steal the user's current view.
     addLog({ level: 'INFO', message: 'Scan job created', elapsed: '00:00' });
 
     const controller = new AbortController();
@@ -1244,14 +1195,21 @@ export default function ScannerDashboard() {
           if (Array.isArray(event.results)) {
             const allFindings = event.results.flatMap((result: any) => result.findings || []);
             setFindings(allFindings);
+            // The per-target records carry the published risk decomposition and
+            // scan confidence the assessment panels read. Captured here rather
+            // than re-derived so the page never computes a second opinion.
+            setScanResults(event.results as ScanResultRecord[]);
           }
+          if (event.enterpriseScanner2) setScanner2(event.enterpriseScanner2 as EnterpriseScanner2);
 
           if (event.summary) setSummary(event.summary);
           if (Array.isArray(event.moduleStates)) setModules(event.moduleStates);
           if (event.type === 'scan-complete') {
             setStatus('completed');
             setProgress(100);
-            setActiveTab('findings');
+            // Land on the full assessment — the enterprise equivalent of the
+            // public scan's results stack.
+            setActiveTab('setup');
             await fetchHistory();
           }
           if (event.type === 'scan-failed') {
@@ -1820,6 +1778,10 @@ export default function ScannerDashboard() {
       qScore: entry.qScore ?? 0,
     });
     setModules(entry.moduleStates || []);
+    // Restore the same evidence the live run captured so the assessment panels
+    // describe the scan being reviewed rather than the last one that ran.
+    setScanResults(entry.results ?? []);
+    setScanner2(entry.enterpriseScanner2 ?? null);
     setLogs((entry.telemetry || []).slice(-500).map((event: any) => ({
       timestamp: event.timestamp || entry.startedAt,
       level: statusToLevel(String(event.type || ''), event.status),
@@ -1865,10 +1827,6 @@ export default function ScannerDashboard() {
     URL.revokeObjectURL(url);
   }, []);
 
-  const riskLabel = summary
-    ? summary.riskScore >= 80 ? 'Critical' : summary.riskScore >= 60 ? 'High' : summary.riskScore >= 40 ? 'Medium' : 'Low'
-    : 'Idle';
-
   const liveCounts = {
     assets: summary?.targetsScanned ?? 0,
     components: summary?.totalFindings ?? findings.length,
@@ -1882,9 +1840,7 @@ export default function ScannerDashboard() {
   const showMitigationNextStep = status === 'completed' && liveCounts.vulnerable > 0;
 
   const displayedHistory = filterHistoryByTimeframe(history, historyTimeframe);
-  const previousSevenDayHistory = history.filter((entry) => isHistoryEntryInLastDays(entry, 7, 7));
   const historyMetrics = historyMetricSnapshot(displayedHistory);
-  const previousMetrics = historyMetricSnapshot(previousSevenDayHistory);
   const currentScanReadiness = summary?.totalFindings
     ? Math.round(((summary.pqcReady ?? 0) / Math.max(1, summary.totalFindings)) * 100)
     : 0;
@@ -1963,13 +1919,6 @@ export default function ScannerDashboard() {
       ...row,
       color: row.risk === 'CRITICAL' ? 'text-red-400' : row.risk === 'HIGH' ? 'text-orange-400' : row.risk === 'MEDIUM' ? 'text-yellow-400' : 'text-green-400',
     }));
-  const assetOutcomeRows = [
-    { label: 'Scanned', value: dashboardMetrics.totalAssetsScanned, color: '#3b82f6' },
-    { label: 'Vulnerable', value: dashboardMetrics.vulnerableAssets, color: '#ef4444' },
-    { label: 'Findings', value: dashboardMetrics.totalFindings, color: '#f97316' },
-    { label: 'PQC Ready', value: dashboardMetrics.pqcReady, color: '#22c55e' },
-    { label: 'Scheduled', value: scheduledScans.filter((scan) => Date.parse(scan.scheduledFor) > Date.now()).length, color: '#a855f7' },
-  ];
   const nextScheduledScan = scheduledScans
     .filter((scan) => Date.parse(scan.scheduledFor) > Date.now())
     .sort((a, b) => Date.parse(a.scheduledFor) - Date.parse(b.scheduledFor))[0] || null;
@@ -2001,7 +1950,6 @@ export default function ScannerDashboard() {
     low: selectedHistorySummary?.low ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'LOW').length,
     safe: selectedHistorySummary?.safe ?? selectedHistoryFindings.filter((finding) => finding.threatLevel === 'SAFE').length,
   };
-  const terminalVisible = status !== 'idle' || logs.length > 0;
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null;
   const tenantId = user?.id || 'tenant_id_here';
   const apiUrlPlaceholder = typeof window !== 'undefined' ? window.location.origin : 'https://api.yourdomain.com';
@@ -2141,1583 +2089,1598 @@ export default function ScannerDashboard() {
       .some((value) => String(value || '').toLowerCase().includes(q));
   });
 
-  const kpis = [
-    { label: 'Assets', value: `${liveCounts.assets}`, icon: Server, color: 'text-white' },
-    { label: 'Components', value: `${liveCounts.components}`, icon: Target, color: 'text-white' },
-    { label: 'Critical', value: `${liveCounts.critical}`, icon: AlertTriangle, color: 'text-red-400' },
-    { label: 'High', value: `${liveCounts.high}`, icon: AlertTriangle, color: 'text-orange-400' },
-    { label: 'Medium', value: `${liveCounts.medium}`, icon: FileWarning, color: 'text-yellow-400' },
-    { label: 'Low', value: `${liveCounts.low}`, icon: Shield, color: 'text-green-400' },
-    { label: 'Vulnerable', value: `${liveCounts.vulnerable}`, icon: AlertTriangle, color: 'text-red-400' },
-    { label: 'PQC Ready', value: `${liveCounts.pqcReady}`, icon: CheckCircle2, color: 'text-green-400' },
-    { label: 'Risk', value: summary ? `${summary.riskScore}/100` : 'N/A', icon: Shield, color: summary && summary.riskScore >= 60 ? 'text-red-400' : 'text-green-400' },
-    { label: 'Q-Score', value: summary ? `${summary.qScore}/100` : 'N/A', icon: Activity, color: 'text-gold' },
-    { label: 'Status', value: riskLabel, icon: Radio, color: 'text-cyan-400' },
+
+
+  /* ── Enterprise assessment ───────────────────────────────────────────────
+     One derivation, shared by every result panel, so the executive summary,
+     the gauge, the surface list and the recommendations can never disagree.
+     Falls back from live scan evidence to the tenant-wide Scanner Intelligence
+     snapshot — the same snapshot Assets, CBOM, Exposure and Quantum Readiness
+     read — which is what keeps this page tallying with the rest of the
+     platform between runs. */
+  const latestHistoryEntry = displayedHistory[0] || history[0] || null;
+  const effectiveResults = scanResults.length > 0
+    ? scanResults
+    : (latestHistoryEntry?.results ?? []);
+  const effectiveScanner2 = scanner2 ?? latestHistoryEntry?.enterpriseScanner2 ?? null;
+  const effectiveModules = modules.length > 0 ? modules : (latestHistoryEntry?.moduleStates ?? []);
+
+  const assessment = useMemo(
+    () => buildAssessment({
+      status,
+      summary: summary ?? latestHistoryEntry?.summary ?? null,
+      findings: dashboardFindings,
+      modules: effectiveModules,
+      results: effectiveResults,
+      scanner2: effectiveScanner2,
+      targets: targets.map((target) => target.normalized || target.raw),
+      completedAt: latestHistoryEntry?.completedAt ?? null,
+      estate: {
+        totalAssets: intelSummary.totalAssets,
+        totalFindings: intelSummary.totalFindings,
+        criticalFindings: intelSummary.criticalFindings,
+        vulnerableAssets: intelSummary.vulnerableAssets,
+        pqcReadiness: intelSummary.pqcReadiness,
+        riskScore: intelSummary.riskScore,
+      },
+      linked: {
+        cbom: latestHistoryEntry?.linkedCbomRecords?.length ?? 0,
+        assets: latestHistoryEntry?.linkedAssetRecords?.length ?? 0,
+        exposures: latestHistoryEntry?.linkedExposureNodes?.length ?? 0,
+      },
+      provenance: status !== 'idle' && summary
+        ? 'Live scan evidence'
+        : intelHasData
+          ? 'Tenant Scanner Intelligence'
+          : 'No evidence yet',
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      status,
+      summary,
+      dashboardFindings,
+      effectiveModules,
+      effectiveResults,
+      effectiveScanner2,
+      targets,
+      latestHistoryEntry,
+      intelSummary,
+      intelHasData,
+    ],
+  );
+
+  const showResults = assessment.hasEvidence;
+
+  /* ── Real risk trend, one point per recorded scan ─────────────────────── */
+  const riskTrendPoints = useMemo(() => {
+    const points = [...displayedHistory]
+      .filter((entry) => typeof (entry.qScore ?? entry.summary?.qScore) === 'number')
+      .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt))
+      .slice(-14)
+      .map((entry) => ({
+        scanId: entry.scanId,
+        at: entry.startedAt,
+        score: Math.max(0, Math.min(100, Math.round((entry.qScore ?? entry.summary?.qScore) as number))),
+      }));
+    return points;
+  }, [displayedHistory]);
+
+  const parsedPreview = useMemo(
+    () => (inputText.trim() ? parseAssetInput(inputText).slice(0, 6) : []),
+    [inputText],
+  );
+
+  const TABS: Array<{ id: TabId; label: string; count?: number }> = [
+    { id: 'setup', label: 'Assessment' },
+    { id: 'overview', label: 'Live Dashboard' },
+    { id: 'findings', label: 'Findings', count: dashboardFindings.length },
+    { id: 'logs', label: 'Telemetry', count: logs.length },
+    { id: 'history', label: 'History', count: history.length },
+    { id: 'agents', label: 'Agent Collectors' },
+    { id: 'settings', label: 'Settings' },
   ];
 
   return (
-    <div className="p-6 lg:p-8 space-y-6 min-h-screen">
-      <WorkflowRail activeStage="discovery" />
-      <header className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-white">
-            PQC Remediation <span className="text-gold">Scanner</span>
-          </h1>
-          <p className="text-white/50 mt-1 text-sm">
-            Authorized cryptographic discovery, CBOM generation, approved patch orchestration, validation, rollback, and PQC readiness reporting.
-          </p>
-        </div>
-        <div className="flex gap-3 items-center">
-          {isRunning ? (
-            <button onClick={handleCancel} className="px-5 py-2.5 rounded-lg border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 text-[10px] font-black uppercase tracking-[0.15em] flex items-center gap-2 hover:bg-yellow-500/20 transition-colors">
-              <Pause className="h-3.5 w-3.5" /> Cancel Scan
-            </button>
-          ) : (
-            <button
-              onClick={handleStart}
-              disabled={targets.length === 0 || !authorizationAccepted || !session?.access_token}
-              className="px-5 py-2.5 rounded-lg border border-gold/40 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-[0.15em] flex items-center gap-2 hover:bg-gold/20 transition-colors shadow-[0_0_20px_rgba(212,175,55,0.15)] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Play className="h-3.5 w-3.5" /> Start Authorized Scan
-            </button>
-          )}
-          {isRunning && (
-            <div className="px-4 py-2 border border-gold/30 bg-gold/5 rounded-lg text-[10px] font-black text-gold uppercase tracking-[0.15em] flex items-center gap-2">
-              <Radio className="h-3 w-3 animate-pulse" /> Live SSE
-            </div>
-          )}
-        </div>
-      </header>
+    <div className="relative min-h-full text-slate-200 antialiased">
+      <QuantumField scoped />
 
-      {error && (
-        <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-300 flex items-start gap-3">
-          <XCircle className="h-4 w-4 mt-0.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
+      {/* overflow-x-clip is the backstop: the findings table and module rail
+          scroll inside their own containers, and nothing may push the page
+          sideways on a phone. */}
+      <div className="relative z-10 mx-auto max-w-[92rem] overflow-x-clip px-3 pb-16 pt-4 sm:px-5 sm:pt-6">
+        <WorkflowRail activeStage="discovery" />
 
-      {status !== 'idle' && activeTab !== 'setup' && (
-        <div className="rounded-xl border p-5 glass-panel">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              {isRunning && <Loader2 className="h-4 w-4 text-gold animate-spin" />}
-              {status === 'completed' && <CheckCircle2 className="h-4 w-4 text-green-400" />}
-              {status === 'failed' && <XCircle className="h-4 w-4 text-red-400" />}
-              <span className="text-xs font-black uppercase tracking-[0.15em] text-white/60">{status}</span>
-            </div>
-            <span className="text-lg font-black text-gold">{progress}%</span>
-          </div>
-          <div className="h-2.5 rounded-full bg-white/[0.06] overflow-hidden">
-            <motion.div
-              className={`h-full rounded-full ${status === 'completed' ? 'bg-green-500' : status === 'failed' ? 'bg-red-500' : 'bg-gradient-to-r from-gold via-yellow-300 to-gold'}`}
-              animate={{ width: `${progress}%` }}
-              transition={{ duration: 0.25 }}
-            />
-          </div>
-        </div>
-      )}
-
-      {terminalVisible && (
-        <div className="grid xl:grid-cols-[minmax(0,1fr)_380px] gap-4">
-          <div className="rounded-xl border overflow-hidden shadow-[0_0_35px_rgba(212,175,55,0.08)] glass-panel">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 px-4 py-3 border-b border-gold/10 bg-gold/[0.04]">
-              <div className="flex items-center gap-3 min-w-0">
-                <Terminal className="h-4 w-4 text-gold" />
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/60">Live Terminal Telemetry</div>
-                  <div className="text-[10px] text-white/30 font-mono truncate">{jobId || 'waiting-for-job-id'} - {progress}%</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <button onClick={() => setTerminalPaused((value) => !value)} className="px-2.5 py-1.5 rounded-md border border-gold/15 text-[9px] font-black uppercase tracking-wider text-white/55 hover:text-gold hover:border-gold/40 transition-colors">
-                  {terminalPaused ? 'Resume View' : 'Pause View'}
-                </button>
-                <button onClick={() => setTerminalPinned((value) => !value)} className="px-2.5 py-1.5 rounded-md border border-gold/15 text-[9px] font-black uppercase tracking-wider text-white/55 hover:text-gold hover:border-gold/40 transition-colors">
-                  {terminalPinned ? 'Auto-scroll' : 'Manual'}
-                </button>
-                <button onClick={handleCopyLogs} disabled={logs.length === 0} className="p-1.5 rounded-md border border-gold/15 text-white/45 hover:text-gold hover:border-gold/40 disabled:opacity-30 transition-colors" title="Copy logs">
-                  <Copy className="h-3.5 w-3.5" />
-                </button>
-                <button onClick={handleDownloadReport} disabled={logs.length === 0 && findings.length === 0} className="p-1.5 rounded-md border border-gold/15 text-white/45 hover:text-gold hover:border-gold/40 disabled:opacity-30 transition-colors" title="Download scan report">
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-                <button onClick={handleClearTerminal} disabled={isRunning || logs.length === 0} className="p-1.5 rounded-md border border-gold/15 text-white/45 hover:text-red-400 hover:border-red-500/30 disabled:opacity-30 transition-colors" title="Clear terminal after completion">
-                  <Eraser className="h-3.5 w-3.5" />
-                </button>
-                {isRunning && (
-                  <button onClick={handleCancel} className="px-2.5 py-1.5 rounded-md border border-yellow-500/30 bg-yellow-500/10 text-[9px] font-black uppercase tracking-wider text-yellow-400 hover:bg-yellow-500/20 transition-colors">
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-px border-b border-gold/10 bg-gold/10">
-              {[
-                ['Assets', liveCounts.assets, 'text-white'],
-                ['Components', liveCounts.components, 'text-white'],
-                ['Critical', liveCounts.critical, 'text-red-400'],
-                ['High', liveCounts.high, 'text-orange-400'],
-                ['Medium', liveCounts.medium, 'text-yellow-400'],
-                ['Low', liveCounts.low, 'text-green-400'],
-                ['PQC Ready', liveCounts.pqcReady, 'text-green-400'],
-                ['Vulnerable', liveCounts.vulnerable, 'text-red-400'],
-              ].map(([label, value, color]) => (
-                <div key={label as string} className="px-3 py-2 glass-panel">
-                  <div className="text-[8px] uppercase tracking-wider text-white/25 font-black">{label}</div>
-                  <div className={`text-lg font-black ${color}`}>{value}</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="h-[360px] overflow-y-auto p-4 font-mono text-[11px] space-y-1 bg-[radial-gradient(circle_at_top_right,rgba(212,175,55,0.06),transparent_30%)]">
-              {logs.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-white/15 uppercase tracking-widest text-[10px] font-black">
-                  Awaiting authorized scan initiation...
-                </div>
-              ) : logs.map((entry, index) => {
-                const severity = entry.severity ? sevColor(entry.severity.toLowerCase()) : null;
-                return (
-                  <div key={`${entry.timestamp}-${index}`} className={`leading-relaxed break-words ${logColor(entry.level)}`}>
-                    <span className="text-white/20 inline-block w-14">[{entry.elapsed || '00:00'}]</span>
-                    <span className={`font-bold inline-block w-20 ${logColor(entry.level)}`}>[{entry.level}]</span>
-                    {severity && <span className={`mr-2 px-1.5 py-0.5 rounded border text-[9px] ${severity.br} ${severity.b} ${severity.t}`}>{entry.severity}</span>}
-                    {entry.phase && <span className="text-white/30 mr-2">[{entry.phase}]</span>}
-                    {entry.moduleName && <span className="text-gold/50 mr-2">[{entry.moduleName}]</span>}
-                    <span>{entry.message}</span>
-                  </div>
-                );
-              })}
-              {copiedLogs && <div className="text-green-400">[copy] Telemetry copied to clipboard</div>}
-              {isRunning && <div className="text-gold/50 animate-pulse mt-2">|</div>}
-              <div ref={logEndRef} />
-            </div>
-          </div>
-
-          <div className="rounded-xl border overflow-hidden glass-panel">
-            <div className="px-4 py-3 border-b border-gold/10 bg-gold/[0.04] flex items-center justify-between">
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/60">Module Execution Timeline</div>
-              <div className="text-[10px] text-white/30 font-mono">{modules.filter((module) => module.status === 'Completed').length}/{modules.length || 0}</div>
-            </div>
-            <div className="max-h-[456px] overflow-y-auto p-3 space-y-2">
-              {modules.length === 0 ? (
-                <div className="text-center text-white/20 text-[10px] uppercase tracking-widest font-bold py-16">
-                  Module queue will appear when the backend stream starts
-                </div>
-              ) : modules.map((module) => (
-                <div key={module.id} className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold text-white/75 truncate">{module.name}</div>
-                      <div className="text-[9px] text-white/25 font-mono truncate">{module.target || 'queued'}</div>
-                    </div>
-                    <span className={`shrink-0 px-2 py-1 rounded border text-[8px] font-black uppercase tracking-wider ${moduleStatusColor(module.status)}`}>
-                      {module.status}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 mt-3 text-[9px]">
-                    <div>
-                      <div className="text-white/25 uppercase font-black">Duration</div>
-                      <div className="text-white/55 font-mono">{formatMs(module.durationMs)}</div>
-                    </div>
-                    <div>
-                      <div className="text-white/25 uppercase font-black">Findings</div>
-                      <div className="text-white/55 font-mono">{module.findingsCount}</div>
-                    </div>
-                    <div>
-                      <div className="text-white/25 uppercase font-black">Started</div>
-                      <div className="text-white/55 font-mono">{module.startedAt ? new Date(module.startedAt).toLocaleTimeString() : 'N/A'}</div>
-                    </div>
-                  </div>
-                  {module.error && (
-                    <div className="mt-3 rounded-md border border-red-500/20 bg-red-500/10 p-2">
-                      <div className="text-[8px] font-black uppercase tracking-wider text-red-400/70 mb-1">Error Details</div>
-                      <div className="text-[10px] text-red-300 leading-relaxed">{module.error}</div>
-                      {!isRunning && (
-                        <button onClick={() => handleRetryFailedModule(module)} className="mt-2 px-2.5 py-1.5 rounded border border-red-500/25 text-[8px] font-black uppercase tracking-wider text-red-300 hover:bg-red-500/10 transition-colors flex items-center gap-1.5">
-                          <RotateCcw className="h-3 w-3" /> Retry Failed Module
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {failedModules.length > 0 && (
-        <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4">
-          <div className="flex items-center gap-2 text-red-300 text-xs font-black uppercase tracking-[0.15em] mb-2">
-            <XCircle className="h-4 w-4" /> Module Errors
-          </div>
-          <div className="space-y-2">
-            {failedModules.map((module) => (
-              <div key={module.id} className="text-xs text-red-200/80 flex flex-col md:flex-row md:items-center justify-between gap-2">
-                <span><strong>{module.name}:</strong> {module.error || 'Module failed'}</span>
-                {!isRunning && (
-                  <button onClick={() => handleRetryFailedModule(module)} className="px-3 py-1.5 rounded border border-red-500/30 text-[9px] font-black uppercase tracking-wider text-red-300 hover:bg-red-500/10 transition-colors">
-                    Retry Failed Module
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="flex gap-1 border-b border-gold/10 pb-0 overflow-x-auto">
-        {[
-          { id: 'setup' as TabId, label: 'Scanner' },
-          { id: 'history' as TabId, label: 'History' },
-          { id: 'agents' as TabId, label: 'Agent Collector Scanners' },
-          { id: 'settings' as TabId, label: 'Settings' },
-          { id: 'overview' as TabId, label: 'Live Dashboard' },
-          { id: 'findings' as TabId, label: `Findings (${dashboardFindings.length})` },
-          { id: 'logs' as TabId, label: 'Telemetry' },
-        ].filter((tab) => tab.id !== 'agents' || canUseAgents).map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => handleTabSelect(tab.id)}
-            className={`px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.15em] border-b-2 transition-all -mb-px whitespace-nowrap ${
-              activeTab === tab.id ? 'border-gold text-gold' : 'border-transparent text-white/35 hover:text-white/55'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === 'setup' && (
-        <div className="space-y-8 animate-in fade-in duration-500">
-          {/* 1. Cloned Premium Gold Header Section */}
-          <header className="flex flex-col xl:flex-row xl:items-end justify-between gap-6 mb-6 mt-2">
-            <div>
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 rounded bg-gold/10 border border-gold/20">
-                  <Cpu className="w-6 h-6 text-gold" />
-                </div>
-                <h1 className="text-3xl font-black uppercase tracking-tight text-white leading-none">
-                  PQC <span className="text-gold">Scanner</span>
-                </h1>
-              </div>
-              <p className="text-white/50 text-sm font-medium">Discover and analyze quantum-vulnerable cryptographic assets across your infrastructure.</p>
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex items-center gap-3 overflow-x-auto pb-1 xl:pb-0 shrink-0 select-none custom-scrollbar">
-              {/* Scan Now / Stop Scan Button */}
-              <button
-                onClick={() => {
-                  if (isRunning) {
-                    void handleCancel();
-                    showToast('Quantum scan terminated by operator.');
-                  } else {
-                    if (targets.length === 0) {
-                      showToast('Please enter and add authorized targets to the Scan Queue below.');
-                      return;
-                    }
-                    if (!authorizationAccepted) {
-                      showToast('Please accept the authorization check before initiating the scan.');
-                      return;
-                    }
-                    void handleStart();
-                    showToast('Quantum scanning engines initialized...');
-                  }
-                }}
-                className={`px-4 py-2.5 border rounded-lg text-white transition-all flex items-center gap-2 group shrink-0 ${
-                  isRunning
-                    ? 'border-red-500/30 bg-red-500/10 hover:bg-red-500/20'
-                    : 'bg-gold/10 hover:bg-gold/20 border-gold/30 shadow-[0_0_20px_rgba(212,175,55,0.15)] animate-pulse'
-                }`}
-              >
-                {isRunning ? (
-                  <Pause className="w-4 h-4 text-red-500 animate-pulse" />
-                ) : (
-                  <Play className="w-4 h-4 text-gold group-hover:scale-110 transition-transform" />
-                )}
-                <div className="text-left leading-none">
-                  <div className={`text-[10px] font-black uppercase tracking-wider ${isRunning ? 'text-red-400' : 'text-gold'}`}>
-                    {isRunning ? 'Stop Scan' : 'Scan Now'}
-                  </div>
-                  <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">
-                    {isRunning ? 'Scan in Progress' : 'Start New Scan'}
-                  </div>
-                </div>
-              </button>
-
-              {/* Schedule Scan */}
-              <button
-                onClick={handleOpenSchedule}
-                className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white transition-all flex items-center gap-2 group shrink-0"
-              >
-                <Calendar className="w-4 h-4 text-gold group-hover:rotate-12 transition-transform" />
-                <div className="text-left leading-none">
-                  <div className="text-[10px] font-black uppercase tracking-wider text-white">Schedule Scan</div>
-                  <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">
-                    {nextScheduledScan ? new Date(nextScheduledScan.scheduledFor).toLocaleDateString() : 'Automate Scans'}
-                  </div>
-                </div>
-              </button>
-
-              {/* Export Report */}
-              <button
-                onClick={handleExportScannerReport}
-                className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white transition-all flex items-center gap-2 group shrink-0"
-              >
-                <Download className="w-4 h-4 text-gold group-hover:-translate-y-0.5 transition-transform" />
-                <div className="text-left leading-none">
-                  <div className="text-[10px] font-black uppercase tracking-wider text-white">Export Report</div>
-                  <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">Download Results</div>
-                </div>
-              </button>
-
-              {/* Timeframe toggle — All Time ⇄ Last 7 Days */}
-              <div className="relative group/dropdown shrink-0">
-                <button
-                  onClick={() => void handleToggleTimeframe()}
-                  title={historyTimeframe === 'all' ? 'Showing all recorded scans — click to filter to the last 7 days' : 'Showing the last 7 days — click to show all recorded scans'}
-                  className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-white hover:border-gold/30 transition-all flex items-center gap-3 text-left"
-                >
-                  <Calendar className="w-4 h-4 text-gold shrink-0" />
-                  <div className="leading-none">
-                    <div className="text-[10px] font-black uppercase tracking-wider text-white">{historyTimeframe === 'all' ? 'All Time' : 'Last 7 Days'}</div>
-                    <div className="text-[9px] text-white/40 font-bold uppercase mt-0.5">{displayedHistory.length} {displayedHistory.length === 1 ? 'Scan' : 'Scans'}</div>
-                  </div>
-                  <ChevronDown className="w-3.5 h-3.5 text-white/40 group-hover/dropdown:text-gold transition-colors ml-1 shrink-0" />
-                </button>
-              </div>
-            </div>
-          </header>
-
-          {/* 2. Metrics Grid (5 Columns) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-6">
-            {/* Metric 1: Total Assets Scanned */}
-            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
-              <div className="space-y-1">
-                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block">TOTAL ASSETS SCANNED</span>
-                <span className="text-2xl font-black text-white block leading-none font-mono">
-                  {formatCompactNumber(dashboardMetrics.totalAssetsScanned)}
-                </span>
-                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.totalAssetsScanned, previousMetrics.totalAssetsScanned, true)}`}>
-                  {formatTrend(dashboardMetrics.totalAssetsScanned, previousMetrics.totalAssetsScanned)}
-                </span>
-              </div>
-              <div className="shrink-0 ml-4">
-                <Layers className="w-6 h-6 text-gold drop-shadow-[0_0_6px_rgba(255,211,107,0.4)]" />
-              </div>
-            </div>
-
-            {/* Metric 2: Vulnerable Assets */}
-            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
-              <div className="space-y-1">
-                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block">VULNERABLE ASSETS</span>
-                <span className="text-2xl font-black text-white block leading-none font-mono">
-                  {formatCompactNumber(dashboardMetrics.vulnerableAssets)}
-                </span>
-                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.vulnerableAssets, previousMetrics.vulnerableAssets, false)}`}>
-                  {formatTrend(dashboardMetrics.vulnerableAssets, previousMetrics.vulnerableAssets)}
-                </span>
-              </div>
-              <div className="shrink-0 ml-4">
-                <AlertTriangle className="w-6 h-6 text-gold drop-shadow-[0_0_6px_rgba(255,211,107,0.4)]" />
-              </div>
-            </div>
-
-            {/* Metric 3: Risk Score */}
-            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
-              <div className="space-y-1">
-                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block">RISK SCORE</span>
-                <span className="text-2xl font-black text-white block leading-none font-mono">
-                  {dashboardMetrics.riskScore}/100
-                </span>
-                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.riskScore, previousMetrics.riskScore, false)}`}>
-                  {dashboardRiskLabel}
-                </span>
-              </div>
-              <div className="shrink-0 ml-4">
-                <svg className="w-16 h-8" viewBox="0 0 60 20">
-                  <path
-                    d="M0,15 Q10,12 20,18 T40,6 T60,2"
-                    fill="none"
-                    stroke="#ef4444"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    className="drop-shadow-[0_0_4px_rgba(239,68,68,0.5)]"
-                  />
-                </svg>
-              </div>
-            </div>
-
-            {/* Metric 4: Critical Findings */}
-            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES} border-red-500/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(239,68,68,0.03),0_0_40px_rgba(239,68,68,0.1)] hover:border-red-500/70 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(239,68,68,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(239,68,68,0.4)]`}>
-              <div className="space-y-1">
-                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block font-mono">CRITICAL FINDINGS</span>
-                <span className="text-2xl font-black text-red-500 block leading-none font-mono">
-                  {formatCompactNumber(dashboardMetrics.criticalFindings)}
-                </span>
-                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.criticalFindings, previousMetrics.criticalFindings, false)}`}>
-                  {formatTrend(dashboardMetrics.criticalFindings, previousMetrics.criticalFindings)}
-                </span>
-              </div>
-              <div className="shrink-0 ml-4">
-                <Target className="w-6 h-6 text-red-500 drop-shadow-[0_0_6px_rgba(239,68,68,0.4)]" />
-              </div>
-            </div>
-
-            {/* Metric 5: PQC Readiness */}
-            <div className={`p-5 flex items-center justify-between ${GLASS_PANEL_CLASSES}`}>
-              <div className="space-y-1">
-                <span className="text-[9px] font-bold text-white/40 uppercase tracking-widest block font-mono">PQC READINESS</span>
-                <span className="text-2xl font-black text-white block leading-none font-mono">
-                  {dashboardMetrics.pqcReadiness}%
-                </span>
-                <span className={`text-[10px] font-black uppercase tracking-wider block pt-1 font-sans ${trendClass(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness, true)}`}>
-                  {formatTrend(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness)}
-                </span>
-              </div>
-              <div className="shrink-0 ml-4">
-                <svg className="w-12 h-12 rotate-[-90deg]">
-                  <circle cx="24" cy="24" r="18" stroke="rgba(255,255,255,0.05)" strokeWidth="4" fill="none" />
-                  <circle
-                    cx="24" cy="24" r="18"
-                    stroke="#10b981" strokeWidth="4" fill="none"
-                    strokeDasharray={`${2 * Math.PI * 18}`}
-                    strokeDashoffset={`${2 * Math.PI * 18 * (1 - Math.max(0, Math.min(100, dashboardMetrics.pqcReadiness)) / 100)}`}
-                    strokeLinecap="round"
-                    className="drop-shadow-[0_0_4px_rgba(16,185,129,0.5)]"
-                  />
-                </svg>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid lg:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div className={GLASS_PANEL_CLASSES + " p-5"}>
-              <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 mb-4 flex items-center gap-2">
-                <Target className="h-4 w-4 text-gold" /> Authorized Asset Input
-              </h2>
-              <p className="text-xs text-white/40 mb-4 leading-relaxed">
-                Enter domains, URLs, public IPs, GitHub repository URLs, or SSH endpoints that you own or are explicitly authorized to assess.
-              </p>
-              <textarea
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder={'example.com\nhttps://api.company.com\nhttps://github.com/company/repo\nssh://bastion.company.com:22'}
-                className="w-full h-40 border rounded-lg p-4 text-sm font-mono focus:outline-none focus:transition-colors text-white placeholder-white/20 resize-none mb-4 glass-panel"
+        <div className="mt-5">
+          <ScannerHero
+            status={status}
+            progress={progress}
+            modules={modules}
+            findings={findings}
+            summary={summary}
+            error={error}
+            targets={targets.map((target) => target.normalized || target.raw)}
+            evidenceFindings={dashboardFindings}
+            results={effectiveResults}
+            scanner2={effectiveScanner2}
+            counters={{
+              components: dashboardMetrics.totalFindings,
+              vulnerable: dashboardMetrics.vulnerableFindings,
+              cbom: latestHistoryEntry?.linkedCbomRecords?.length ?? 0,
+              assets: latestHistoryEntry?.linkedAssetRecords?.length ?? 0,
+              exposures: latestHistoryEntry?.linkedExposureNodes?.length ?? 0,
+            }}
+            hasEvidence={assessment.hasEvidence}
+            gradeLabel={assessment.executive.gradeable ? assessment.executive.gradeLabel : null}
+            onStart={() => {
+              if (targets.length === 0) {
+                showToast('Add an authorized target to the scan queue first.');
+                return;
+              }
+              if (!authorizationAccepted) {
+                showToast('Confirm authorization for every submitted target before scanning.');
+                return;
+              }
+              void handleStart();
+            }}
+            onCancel={() => {
+              void handleCancel();
+              showToast('Scan terminated by operator.');
+            }}
+            canStart={targets.length > 0 && authorizationAccepted && Boolean(session?.access_token)}
+            composerSlot={
+              <TargetComposer
+                inputText={inputText}
+                onInputChange={setInputText}
+                onAdd={handleParseInput}
+                targets={targets}
+                onRemoveTarget={(index) => setTargets(targets.filter((_, current) => current !== index))}
+                onClearTargets={() => setTargets([])}
+                authorizationAccepted={authorizationAccepted}
+                onAuthorizationChange={setAuthorizationAccepted}
+                preview={parsedPreview}
               />
-              <label className="flex items-start gap-3 rounded-lg border border-gold/10 bg-white/[0.02] p-3 mb-4 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={authorizationAccepted}
-                  onChange={(e) => setAuthorizationAccepted(e.target.checked)}
-                  className="mt-1 accent-[#D4AF37]"
+            }
+            railSlot={
+              <>
+                <ScanModuleRail
+                  modules={modules}
+                  progress={progress}
+                  status={status}
+                  isRunning={isRunning}
                 />
-                <span className="text-xs text-white/45 leading-relaxed">
-                  I confirm these assets belong to this account or are explicitly authorized for defensive cryptographic inventory and compliance scanning. No exploitation, credential collection, or stealth scanning will be performed.
-                </span>
-              </label>
-              <div className="flex justify-end">
-                <button
-                  onClick={handleParseInput}
-                  disabled={!inputText.trim()}
-                  className="px-4 py-2 rounded-lg border border-gold/30 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-[0.15em] flex items-center gap-2 hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Plus className="h-3.5 w-3.5" /> Add Targets
-                </button>
-              </div>
-            </div>
 
-            {inputText && (
-              <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-                <div className="text-xs font-bold text-white/50 mb-2">Live Validation</div>
-                <div className="space-y-1 max-h-32 overflow-y-auto font-mono text-[10px]">
-                  {parseAssetInput(inputText).slice(0, 6).map((asset, index) => (
-                    <div key={`${asset.raw}-${index}`} className={`flex items-center gap-2 ${asset.valid ? 'text-green-400' : 'text-red-400'}`}>
-                      {asset.valid ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
-                      <span className="truncate">{asset.raw}</span>
-                      <span className="text-white/30 ml-2">{asset.valid ? asset.type : asset.error}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col"}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 flex items-center gap-2">
-                <Network className="h-4 w-4 text-gold" /> Scan Queue ({targets.length})
-              </h2>
-              {targets.length > 0 && (
-                <button onClick={() => setTargets([])} className="text-white/30 hover:text-red-400 transition-colors" title="Clear all targets">
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-2 pr-2 min-h-[250px]">
-              {targets.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-white/20 text-xs uppercase tracking-widest font-bold border-2 border-dashed border-white/5 rounded-lg">
-                  No authorized targets queued
-                </div>
-              ) : targets.map((target, index) => (
-                <div key={`${target.host}-${target.port}-${index}`} className="flex items-center justify-between p-3 rounded-lg border border-gold/10 bg-white/[0.02] group">
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <div className="h-6 w-6 rounded bg-gold/10 border border-gold/20 flex items-center justify-center shrink-0">
-                      <Globe className="h-3 w-3 text-gold/60" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold text-white/80 truncate">{target.host}</div>
-                      <div className="text-[9px] font-mono text-white/30 uppercase">{target.type} {target.port ? `:${target.port}` : ''}</div>
-                    </div>
-                  </div>
-                  <button onClick={() => setTargets(targets.filter((_, idx) => idx !== index))} className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-400 p-1 transition-all">
-                    <XCircle className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 pt-4 border-t border-gold/10">
-              <button
-                onClick={handleStart}
-                disabled={targets.length === 0 || isRunning || !authorizationAccepted || !session?.access_token}
-                className="w-full py-3 rounded-lg bg-gold text-black text-xs font-black uppercase tracking-[0.15em] flex items-center justify-center gap-2 hover:bg-yellow-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Play className="h-4 w-4" /> Start Defensive Scan
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-      )}
-
-      {activeTab === 'agents' && canUseAgents && <AgentCollectorConsole />}
-
-      {activeTab === 'settings' && (
-        canUseAgents ? (
-          <AgentSettingsConsole />
-        ) : (
-          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-8 text-center">
-            <p className="text-sm text-white/55">Agent Collector settings require the <span className="font-bold text-white/80">Pro</span> plan or higher.</p>
-          </div>
-        )
-      )}
-
-      {activeTab === 'overview' && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-            {kpis.map((kpi, index) => (
-              <motion.div key={kpi.label} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }} className={GLASS_PANEL_CLASSES + " p-4"}>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <kpi.icon className="h-3 w-3 text-gold/40" />
-                  <span className="text-[9px] font-black uppercase tracking-[0.15em] text-white/35">{kpi.label}</span>
-                </div>
-                <div className={`text-2xl font-black ${kpi.color}`}>{kpi.value}</div>
-              </motion.div>
-            ))}
-          </div>
-
-          {/* Cloned Metrics & Activity Dashboard (2 Cards Per Row) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-            {/* Row 1 : Vulnerabilities by Type and Top Vulnerable Algorithms */}
-
-            {/* 1. Vulnerabilities by Type Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10 space-y-2">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-2">Vulnerabilities by Type</h3>
-
-                <div className="space-y-1.5">
-                  {[
-                    { label: 'RSA', count: 1256, max: 1500, color: 'from-red-600 to-red-500', shadow: 'shadow-[0_0_8px_rgba(239,68,68,0.3)]' },
-                    { label: 'ECC', count: 865, max: 1500, color: 'from-orange-600 to-orange-500', shadow: 'shadow-[0_0_8px_rgba(249,115,22,0.3)]' },
-                    { label: 'Weak TLS', count: 643, max: 1500, color: 'from-yellow-600 to-yellow-500', shadow: 'shadow-[0_0_8px_rgba(234,179,8,0.3)]' },
-                    { label: 'SHA-1', count: 512, max: 1500, color: 'from-yellow-500 to-yellow-400', shadow: 'shadow-[0_0_8px_rgba(234,179,8,0.2)]' },
-                    { label: 'MD5', count: 276, max: 1500, color: 'from-amber-500 to-amber-400', shadow: 'shadow-[0_0_8px_rgba(245,158,11,0.2)]' },
-                    { label: '3DES', count: 214, max: 1500, color: 'from-amber-400 to-yellow-400', shadow: 'shadow-[0_0_8px_rgba(250,204,21,0.2)]' },
-                    { label: 'Other', count: 187, max: 1500, color: 'from-gold/70 to-gold/50', shadow: 'shadow-[0_0_8px_rgba(212,175,55,0.2)]' }
-                  ].map((item) => {
-                    const pct = (item.count / item.max) * 100;
-                    return (
-                      <div key={item.label} className="space-y-0.5">
-                        <div className="flex items-center justify-between text-[8px] font-bold">
-                          <span className="text-white/50 font-mono tracking-wider">{item.label}</span>
-                          <span className="text-white/80 font-mono">{item.count.toLocaleString()}</span>
+                <Panel className="overflow-hidden border-violet-400/15">
+                  <div className="px-4 py-4">
+                    <h3 className="text-[15px] font-black leading-tight text-white">Platform Synchronization</h3>
+                    <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
+                      Every completed scan writes CBOM records, asset inventory and exposure nodes for this tenant —
+                      the same evidence the rest of the platform reads.
+                    </p>
+                    <dl className="mt-3 space-y-1.5">
+                      {[
+                        { label: 'Assets', value: intelSummary.totalAssets, to: '/dashboard/assets' },
+                        { label: 'Components', value: intelSummary.totalComponents ?? intelSummary.totalFindings, to: '/dashboard/cbom' },
+                        { label: 'Critical findings', value: intelSummary.criticalFindings, to: '/dashboard/findings' },
+                      ].map((row) => (
+                        <div key={row.label} className="flex items-center justify-between gap-3 text-[12px]">
+                          <dt className="text-slate-500">{row.label}</dt>
+                          <dd>
+                            <Link to={row.to} className="font-mono font-bold text-cyan-300 no-underline hover:underline">
+                              {row.value}
+                            </Link>
+                          </dd>
                         </div>
-                        <div className="h-1 rounded-full bg-white/[0.04] overflow-hidden flex">
-                          <div
-                            className={`h-full rounded-full bg-gradient-to-r ${item.color} ${item.shadow}`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* 2. Top Vulnerable Algorithms Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-2">Top Vulnerable Algorithms</h3>
-                <div className="overflow-x-auto scrollbar-none">
-                  <table className="w-full text-left text-[8px] font-bold">
-                    <thead>
-                      <tr className="border-b border-gold/10 text-white/30 uppercase tracking-[0.1em]">
-                        <th className="pb-1 font-black">Algorithm</th>
-                        <th className="pb-1 font-black text-center">Assets</th>
-                        <th className="pb-1 font-black text-right">Risk Level</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gold/5 text-white/70">
-                      {topVulnerableAlgorithmRows.length === 0 ? (
-                        <tr>
-                          <td colSpan={3} className="py-6 text-center text-white/25 uppercase tracking-widest">No vulnerable algorithms recorded</td>
-                        </tr>
-                      ) : topVulnerableAlgorithmRows.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-white/5 transition-colors">
-                          <td className="py-1 font-mono">{row.algo}</td>
-                          <td className="py-1 font-mono text-center">{formatCompactNumber(row.assets)}</td>
-                          <td className={`py-1 font-black text-right uppercase tracking-wider ${row.color}`}>{row.risk}</td>
-                        </tr>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            {/* Row 2 : Recent Alerts and Scan Activities */}
-
-            {/* 3. Recent Alerts Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10 space-y-3.5">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B]">Recent Alerts</h3>
-
-                <div className="space-y-3">
-                  {[
-                    { title: 'Critical Vulnerability Detected', desc: 'RSA-1024 key detected on web-server-01', time: '5m ago', type: 'critical' },
-                    { title: 'Weak TLS Version Detected', desc: 'TLS 1.0 enabled on api.payment.local', time: '15m ago', type: 'warning' },
-                    { title: 'Expired Certificate Found', desc: 'Certificate expired on mail.enterprise.com', time: '27m ago', type: 'critical' },
-                    { title: 'Deprecated Algorithm Detected', desc: 'SHA-1 usage detected on legacy-app-02', time: '45m ago', type: 'warning' },
-                    { title: 'New Asset Discovered', desc: '10.0.50.23 added to scan scope', time: '1h ago', type: 'info' }
-                  ].map((alert, idx) => {
-                    const isCritical = alert.type === 'critical';
-                    const isWarning = alert.type === 'warning';
-                    return (
-                      <div key={idx} className="flex gap-2">
-                        <div className="shrink-0 mt-0.5">
-                          {isCritical ? (
-                            <div className="w-5.5 h-5.5 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-500">
-                              <AlertTriangle className="w-3 h-3" />
-                            </div>
-                          ) : isWarning ? (
-                            <div className="w-5.5 h-5.5 rounded-full bg-yellow-500/10 border border-yellow-500/20 flex items-center justify-center text-yellow-500">
-                              <AlertTriangle className="w-3 h-3" />
-                            </div>
-                          ) : (
-                            <div className="w-5.5 h-5.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-                              <Globe className="w-3 h-3" />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-1">
-                            <span className={`text-[8.5px] font-black uppercase tracking-wider ${isCritical ? 'text-red-400' : isWarning ? 'text-yellow-400' : 'text-cyan-400'}`}>
-                              {alert.title}
-                            </span>
-                            <span className="text-[7.5px] font-mono text-white/30 shrink-0">{alert.time}</span>
-                          </div>
-                          <p className="text-[9px] text-white/50 mt-0.5 leading-normal break-words">{alert.desc}</p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <button className="w-full text-center text-[8.5px] font-black uppercase tracking-widest text-gold/70 hover:text-gold hover:underline pt-2 border-t border-gold/5 block">
-                  View All Alerts →
-                </button>
-              </div>
-            </div>
-
-            {/* 4. Scan Activities Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10 space-y-2">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-1">Scan Activities</h3>
-
-                <div className="space-y-1.5">
-                  {[
-                    { title: 'Full Infrastructure Scan', time: 'May 24, 2025 10:30 AM', status: 'Completed' },
-                    { title: 'Web Applications Scan', time: 'May 24, 2025 02:15 AM', status: 'Completed' },
-                    { title: 'Internal Network Scan', time: 'May 23, 2025 10:30 PM', status: 'Completed' },
-                    { title: 'Cloud Assets Scan', time: 'May 23, 2025 05:20 PM', status: 'Completed' },
-                    { title: 'Certificates Scan', time: 'May 23, 2025 01:10 PM', status: 'Completed' }
-                  ].map((scan, idx) => (
-                    <div key={idx} className="flex items-center justify-between p-1.5 rounded border border-gold/5 bg-white/[0.01] hover:bg-white/5 transition-colors">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <Target className="w-3 h-3 text-gold/60 shrink-0" />
-                        <div className="min-w-0">
-                          <div className="text-[8.5px] font-bold text-white/70 leading-none truncate">{scan.title}</div>
-                          <div className="text-[7.5px] font-mono text-white/30 mt-0.5">{scan.time}</div>
-                        </div>
-                      </div>
-                      <span className="px-1 py-0.5 rounded border border-green-500/20 bg-green-500/10 text-green-400 text-[7px] font-black uppercase tracking-wider shrink-0">
-                        {scan.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                <button className="w-full text-center text-[8.5px] font-black uppercase tracking-widest text-gold/70 hover:text-gold hover:underline pt-1">
-                  View All Scans →
-                </button>
-              </div>
-            </div>
-
-            {/* Row 3 : Scan Outcomes and PQC Migration Readiness */}
-
-            {/* 5. Scan Outcomes Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-4">Scan Outcomes</h3>
-                <div className="flex items-center justify-between gap-4">
-                  {/* SVG Donut */}
-                  <div className="relative w-28 h-28 flex items-center justify-center shrink-0">
-                    <svg className="w-full h-full transform rotate-[-90deg]" viewBox="0 0 100 100">
-                      <circle cx="50" cy="50" r="40" stroke="rgba(255,255,255,0.03)" strokeWidth="8" fill="none" />
-
-                      {/* Other: 4.4% -> grey (#6b7280) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#6b7280" strokeWidth="8" fill="none"
-                        strokeDasharray="11.1 251.2"
-                        strokeDashoffset="-240.3"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(107,114,128,0.5)]"
-                      />
-
-                      {/* Test: 12.8% -> purple (#a855f7) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#a855f7" strokeWidth="8" fill="none"
-                        strokeDasharray="32.2 251.2"
-                        strokeDashoffset="-208.1"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(168,85,247,0.5)]"
-                      />
-
-                      {/* Development: 22.1% -> orange (#f97316) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#f97316" strokeWidth="8" fill="none"
-                        strokeDasharray="55.5 251.2"
-                        strokeDashoffset="-152.6"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(249,115,22,0.5)]"
-                      />
-
-                      {/* Staging: 16.8% -> teal (#14b8a6) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#14b8a6" strokeWidth="8" fill="none"
-                        strokeDasharray="42.2 251.2"
-                        strokeDashoffset="-110.3"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(20,184,166,0.5)]"
-                      />
-
-                      {/* Production: 43.9% -> blue (#3b82f6) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#3b82f6" strokeWidth="8" fill="none"
-                        strokeDasharray="110.3 251.2"
-                        strokeDashoffset="0"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(59,130,246,0.5)]"
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                      <span className="text-sm font-black text-white leading-none font-mono">{formatCompactNumber(dashboardMetrics.totalAssetsScanned)}</span>
-                      <span className="text-[7px] text-white/30 font-bold uppercase mt-1">Assets</span>
-                    </div>
+                    </dl>
+                    <Link
+                      to="/dashboard/migration-planner?source=scanner"
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
+                    >
+                      Plan the migration <ChevronRight className="h-4 w-4" />
+                    </Link>
                   </div>
-
-                  {/* Legend */}
-                  <div className="space-y-1 flex-1 text-[8px] font-bold">
-                    {assetOutcomeRows.map((row) => (
-                      <div key={row.label} className="flex items-center justify-between text-white/70">
-                        <span className="flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: row.color }} /> {row.label}
-                        </span>
-                        <span className="font-mono text-white/50">{formatCompactNumber(row.value)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 6. PQC Migration Readiness Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between shrink-0"}>
-              <div className="relative z-10 space-y-3">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B]">PQC Migration Readiness</h3>
-
-                <div className="flex items-center gap-4">
-                  {/* Progress Circle */}
-                  <div className="relative w-16 h-16 flex items-center justify-center shrink-0">
-                    <svg className="w-full h-full rotate-[-90deg]">
-                      <circle cx="32" cy="32" r="26" stroke="rgba(255,255,255,0.03)" strokeWidth="5" fill="none" />
-                      <circle
-                        cx="32" cy="32" r="26"
-                        stroke="#FFD36B" strokeWidth="5" fill="none"
-                        strokeDasharray={`${2 * Math.PI * 26}`}
-                        strokeDashoffset={`${2 * Math.PI * 26 * (1 - Math.max(0, Math.min(100, dashboardMetrics.pqcReadiness)) / 100)}`}
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(255,211,107,0.5)]"
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span className="text-xs font-black text-white font-mono">{dashboardMetrics.pqcReadiness}%</span>
-                    </div>
-                  </div>
-
-                  <div className="flex-1 space-y-0.5">
-                    <div className="text-sm font-black text-white">Ready</div>
-                    <div className={`text-[9px] font-black uppercase tracking-wider flex items-center gap-0.5 ${trendClass(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness, true)}`}>
-                      {formatTrend(dashboardMetrics.pqcReadiness, previousMetrics.pqcReadiness)}
-                    </div>
-                  </div>
-                </div>
-
-                <button className="w-full text-center text-[8.5px] font-black uppercase tracking-widest text-gold/70 hover:text-gold hover:underline pt-2 border-t border-gold/5 block">
-                  View Migration Dashboard →
-                </button>
-              </div>
-            </div>
-
-            {/* Row 4 : Risk Trend (Last 30 days) and Risk Distribution */}
-
-            {/* 7. Risk Trend Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10 space-y-3">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B]">Risk Trend (Last 30 Days)</h3>
-                <div className="relative h-24 w-full">
-                  <svg className="w-full h-full" viewBox="0 0 300 100" preserveAspectRatio="none">
-                    {/* Y Axis Grid Lines */}
-                    <line x1="0" y1="20" x2="300" y2="20" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3 3" />
-                    <line x1="0" y1="50" x2="300" y2="50" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3 3" />
-                    <line x1="0" y1="80" x2="300" y2="80" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3 3" />
-
-                    {/* Gradient fill under the line */}
-                    <defs>
-                      <linearGradient id="riskTrendGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#FFD36B" stopOpacity="0.15" />
-                        <stop offset="100%" stopColor="#FFD36B" stopOpacity="0" />
-                      </linearGradient>
-                    </defs>
-
-                    {/* Fill path */}
-                    <path
-                      d="M 15,75 Q 50,60 85,72 T 155,50 T 225,25 T 285,15 L 285,100 L 15,100 Z"
-                      fill="url(#riskTrendGrad)"
-                    />
-
-                    {/* Golden Line Path */}
-                    <path
-                      d="M 15,75 Q 50,60 85,72 T 155,50 T 225,25 T 285,15"
-                      fill="none"
-                      stroke="#FFD36B"
-                      strokeWidth="2"
-                      className="drop-shadow-[0_0_6px_rgba(255,211,107,0.6)]"
-                    />
-
-                    {/* Interactive glowing points */}
-                    {[
-                      { x: 15, y: 75, val: 34 },
-                      { x: 50, y: 60, val: 45 },
-                      { x: 85, y: 72, val: 38 },
-                      { x: 120, y: 58, val: 48 },
-                      { x: 155, y: 50, val: 55 },
-                      { x: 190, y: 35, val: 68 },
-                      { x: 225, y: 25, val: 78 },
-                      { x: 255, y: 32, val: 72 },
-                      { x: 285, y: 15, val: 89 }
-                    ].map((pt, idx) => (
-                      <g key={idx} className="group/pt cursor-pointer">
-                        <circle
-                          cx={pt.x}
-                          cy={pt.y}
-                          r="3.5"
-                          fill="#FFD36B"
-                          stroke="#0f1428"
-                          strokeWidth="1.2"
-                          className="transition-all duration-300 group-hover/pt:r-5"
-                        />
-                        <circle
-                          cx={pt.x}
-                          cy={pt.y}
-                          r="7"
-                          fill="#FFD36B"
-                          opacity="0.2"
-                          className="animate-ping"
-                          style={{ animationDuration: '3s', animationDelay: `${idx * 0.3}s` }}
-                        />
-                      </g>
-                    ))}
-                  </svg>
-                </div>
-                {/* X Axis Labels */}
-                <div className="flex justify-between text-[7px] font-mono text-white/30 uppercase px-1">
-                  <span>Apr 25</span>
-                  <span>May 2</span>
-                  <span>May 9</span>
-                  <span>May 16</span>
-                  <span>May 23</span>
-                </div>
-              </div>
-            </div>
-
-            {/* 8. Risk Distribution Card */}
-            <div className={GLASS_PANEL_CLASSES + " p-5 flex flex-col justify-between"}>
-              <div className="relative z-10">
-                <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[#FFD36B] mb-4">Risk Distribution</h3>
-                <div className="flex items-center justify-between gap-4">
-                  {/* SVG Donut */}
-                  <div className="relative w-28 h-28 flex items-center justify-center shrink-0">
-                    <svg className="w-full h-full transform rotate-[-90deg]" viewBox="0 0 100 100">
-                      <circle cx="50" cy="50" r="40" stroke="rgba(255,255,255,0.03)" strokeWidth="8" fill="none" />
-
-                      {/* Secure: 13.9% -> color: cyan/teal (#06b6d4) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#06b6d4" strokeWidth="8" fill="none"
-                        strokeDasharray="34.9 251.2"
-                        strokeDashoffset="0"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(6,182,212,0.5)]"
-                      />
-
-                      {/* Low: 36.4% -> color: green (#22c55e) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#22c55e" strokeWidth="8" fill="none"
-                        strokeDasharray="91.4 251.2"
-                        strokeDashoffset="-34.9"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(34,197,94,0.5)]"
-                      />
-
-                      {/* Medium: 32.9% -> color: yellow (#eab308) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#eab308" strokeWidth="8" fill="none"
-                        strokeDasharray="82.6 251.2"
-                        strokeDashoffset="-126.3"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(234,179,8,0.5)]"
-                      />
-
-                      {/* High: 14.3% -> color: orange (#f97316) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#f97316" strokeWidth="8" fill="none"
-                        strokeDasharray="35.9 251.2"
-                        strokeDashoffset="-208.9"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(249,115,22,0.5)]"
-                      />
-
-                      {/* Critical: 2.5% -> color: red (#ef4444) */}
-                      <circle
-                        cx="50" cy="50" r="40"
-                        stroke="#ef4444" strokeWidth="8" fill="none"
-                        strokeDasharray="6.3 251.2"
-                        strokeDashoffset="-244.8"
-                        strokeLinecap="round"
-                        className="drop-shadow-[0_0_6px_rgba(239,68,68,0.5)]"
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                      <span className="text-sm font-black text-white leading-none font-mono">{formatCompactNumber(dashboardMetrics.totalFindings)}</span>
-                      <span className="text-[7px] text-white/30 font-bold uppercase mt-1">Findings</span>
-                    </div>
-                  </div>
-
-                  {/* Legend */}
-                  <div className="space-y-1 flex-1 text-[8px] font-bold">
-                    {riskDistributionRows.map((row) => (
-                      <div key={row.label} className="flex items-center justify-between text-white/70">
-                        <span className="flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: row.color }} /> {row.label}
-                        </span>
-                        <span className="font-mono text-white/50">
-                          {formatCompactNumber(row.count)} ({((row.count / dashboardSeverityTotal) * 100).toFixed(1)}%)
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-          </div>
-
-          <div className={GLASS_PANEL_CLASSES + " p-5"}>
-            <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60 mb-3">Defensive Scanner Scope</h2>
-            <div className="grid md:grid-cols-3 gap-3 text-xs text-white/45">
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">Public TLS certificate, protocol, cipher, API header, web crypto, GitHub code-pattern, and SSH public metadata checks.</div>
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">No exploitation, credential collection, stealth behavior, persistence, or unauthorized reconnaissance.</div>
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3">Results persist per authenticated user and populate CBOM, assets, exposure map, history, and audit records.</div>
-            </div>
-          </div>
+                </Panel>
+              </>
+            }
+          />
         </div>
-      )}
 
-      {activeTab === 'findings' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap gap-3 items-center">
-            <div className="relative flex-1 min-w-[200px] max-w-md">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/25" />
-              <input
-                type="text"
-                placeholder="Search algorithms, evidence, locations..."
-                value={searchQ}
-                onChange={(e) => setSearchQ(e.target.value)}
-                className="w-full border rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none focus:transition-colors text-white placeholder-white/20 glass-panel"
-              />
-            </div>
-            {['critical', 'high', 'medium', 'low', 'safe'].map((severity) => (
-              <button key={severity} onClick={() => setSevFilter(sevFilter === severity ? null : severity)} className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all ${sevFilter === severity ? `${sevColor(severity).br} ${sevColor(severity).b} ${sevColor(severity).t}` : 'text-white/35 hover:'} glass-panel`}>
-                {severity} ({dashboardFindings.filter((finding) => finding.threatLevel.toLowerCase() === severity).length})
-              </button>
-            ))}
-            {showMitigationNextStep && (
-              <a
-                href={`/dashboard/migration-planner?source=scanner&scanId=${encodeURIComponent(jobId || 'latest')}`}
-                className="inline-flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-gold transition-all hover:border-gold/70 hover:bg-gold/20"
-                aria-label="Go to the migration planner to mitigate scanner findings"
-              >
-                Next Step
-                <ChevronRight className="h-3.5 w-3.5" />
-              </a>
-            )}
-          </div>
-
-          <div className="space-y-2 max-h-[650px] overflow-y-auto pr-1">
-            {filteredFindings.length === 0 ? (
-              <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold">
-                {dashboardFindings.length === 0 ? 'Run an authorized scan to discover cryptographic findings' : 'No findings match filters'}
-              </div>
-            ) : filteredFindings.map((finding, index) => {
-              const severity = finding.threatLevel.toLowerCase();
-              const sc = sevColor(severity);
-              const isExpanded = expandedFinding === finding.id;
-              const Icon = targetIcon(finding.category);
-              return (
-                <motion.div key={finding.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: Math.min(index * 0.02, 0.5) }} className={`rounded-xl border overflow-hidden ${sc.br} ${sc.b}`}>
-                  <button onClick={() => setExpandedFinding(isExpanded ? null : finding.id)} className="w-full text-left p-4 flex items-center gap-3 group">
-                    <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${sc.d}`} />
-                    <Icon className="h-4 w-4 text-gold/40 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                        <span className="text-xs font-bold text-white/80">{finding.algorithm}</span>
-                        <span className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${sc.br} ${sc.b} ${sc.t}`}>{finding.threatLevel}</span>
-                        <span className="text-[9px] font-bold text-gold/50">{finding.status}</span>
-                      </div>
-                      <div className="text-[10px] text-white/35 font-mono truncate">{finding.location}</div>
-                    </div>
-                    <div className="text-right shrink-0 hidden lg:block">
-                      <div className="text-[10px] font-bold text-gold/60">{finding.pqcReplacement || 'Review'}</div>
-                      <div className="text-[9px] text-white/20">{finding.detectionMethod}</div>
-                    </div>
-                    <ChevronRight className={`h-4 w-4 text-white/15 shrink-0 transition-transform ${isExpanded ? 'rotate-90 text-gold' : ''}`} />
+        {/* ── Status bar ──────────────────────────────────────────────── */}
+        <AnimatePresence mode="wait">
+          {(status === 'completed' || status === 'failed' || status === 'cancelled') && (
+            <motion.div
+              key={status}
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.35 }}
+              className="mt-5"
+            >
+              <Panel className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  {status === 'completed' && failedModules.length === 0 ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                  ) : (
+                    <ShieldAlert
+                      className={`h-4 w-4 shrink-0 ${status === 'completed' ? 'text-amber-400' : 'text-rose-400'}`}
+                    />
+                  )}
+                  <span className="text-[13.5px] font-bold text-white">
+                    {status === 'completed'
+                      ? failedModules.length > 0
+                        ? 'Scan completed with module errors'
+                        : 'Scan completed'
+                      : status === 'cancelled'
+                        ? 'Scan cancelled'
+                        : 'Scan could not complete'}
+                  </span>
+                  <span className="truncate text-[12px] text-slate-500">
+                    {status === 'completed'
+                      ? `${assessment.target.label} · ${new Date().toUTCString().replace('GMT', 'UTC')}`
+                      : error || 'The scan stream stopped before every module reported.'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <ScannerExportBar
+                    onCsv={handleExportScannerReport}
+                    onJson={handleDownloadReport}
+                    onPrint={() => window.print()}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStatus('idle');
+                      setProgress(0);
+                      setError(null);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-400 transition-colors hover:text-white"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> New scan
                   </button>
-                  <AnimatePresence>
-                    {isExpanded && (
-                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="border-t px-4 py-4 glass-panel">
-                        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
-                          <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                            <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Category</div>
-                            <div className="text-xs font-mono text-white/70">{finding.category}</div>
-                          </div>
-                          <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                            <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Key Size</div>
-                            <div className="text-xs font-mono text-white/70">{finding.keySize ? `${finding.keySize} bit` : 'Unknown'}</div>
-                          </div>
-                          <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                            <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Source</div>
-                            <div className="text-xs font-mono text-cyan-400">{finding.source}</div>
-                          </div>
-                          <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                            <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Replacement</div>
-                            <div className="text-xs font-mono text-green-400">{finding.pqcReplacement || 'Manual review'}</div>
-                          </div>
-                        </div>
-                        <p className="text-xs text-white/45 leading-relaxed mb-2">{finding.description}</p>
-                        <div className="p-2.5 rounded-lg border border-gold/15 bg-gold/[0.03] mb-2">
-                          <div className="text-[8px] font-black uppercase tracking-wider text-gold/70 mb-0.5">Evidence</div>
-                          <div className="text-xs text-white/60">{finding.evidence}</div>
-                        </div>
-                        <div className="p-2.5 rounded-lg border border-green-500/15 bg-green-500/[0.03]">
-                          <div className="text-[8px] font-black uppercase tracking-wider text-green-400/60 mb-0.5">Remediation</div>
-                          <div className="text-xs text-green-400/80">{finding.recommendation}</div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
+                </div>
+              </Panel>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {error && (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-500/[0.07] px-4 py-3">
+            <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+            <p className="text-[12.5px] leading-relaxed text-rose-100/85">{error}</p>
+          </div>
+        )}
+
+        {failedModules.length > 0 && (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] px-4 py-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <p className="text-[12.5px] leading-relaxed text-amber-100/85">
+              <strong className="font-bold">Partial coverage.</strong>{' '}
+              {failedModules.map((module) => `${module.name}: ${module.error || 'failed'}`).join(' · ')}. Scores below
+              are computed only from the modules that reported — unmeasured dimensions are excluded rather than scored
+              as failures.
+            </p>
+          </div>
+        )}
+
+        {/* ── Tabs ─────────────────────────────────────────────────────── */}
+        <div className="mt-5 overflow-x-auto">
+          <div role="tablist" aria-label="Scanner views" className="flex min-w-max gap-1.5 border-b border-white/[0.07] pb-2">
+            {TABS.filter((tab) => tab.id !== 'agents' || canUseAgents).map((tab) => {
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  id={`scanner-tab-${tab.id}`}
+                  aria-selected={active}
+                  aria-controls={`scanner-panel-${tab.id}`}
+                  onClick={() => handleTabSelect(tab.id)}
+                  className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3.5 py-2 text-[12.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/50 ${
+                    active
+                      ? 'bg-cyan-400/10 text-cyan-300 ring-1 ring-cyan-400/25'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {tab.label}
+                  {typeof tab.count === 'number' && tab.count > 0 && (
+                    <span className="rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
               );
             })}
           </div>
         </div>
-      )}
 
-      {activeTab === 'logs' && (
-        <div className={GLASS_PANEL_CLASSES + " overflow-hidden flex flex-col h-[600px]"}>
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gold/10 bg-gold/[0.03] shrink-0">
-            <Terminal className="h-3.5 w-3.5 text-gold/50" />
-            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/50">Scanner Telemetry</span>
-            <span className="ml-auto text-[10px] text-white/20 font-mono">{logs.length} lines</span>
-          </div>
-          <div className="p-4 overflow-y-auto flex-1 font-mono text-[11px] space-y-1">
-            {logs.length === 0 ? (
-              <div className="text-white/15 text-center py-12 uppercase tracking-widest text-[10px] font-bold">Awaiting authorized scan initiation...</div>
-            ) : logs.map((entry, index) => (
-              <div key={`${entry.timestamp}-${index}`} className={`leading-relaxed break-words ${logColor(entry.level)}`}>
-                <span className="text-white/15 inline-block w-20">{entry.timestamp.split('T')[1]?.slice(0, 12) || entry.timestamp}</span>
-                <span className={`font-bold inline-block w-20 ${logColor(entry.level)}`}>[{entry.level}]</span>
-                {entry.phase && <span className="text-white/30 mr-2">[{entry.phase}]</span>}
-                {entry.message}
-              </div>
-            ))}
-            {isRunning && <div className="text-gold/50 animate-pulse mt-2">|</div>}
-            <div ref={logEndRef} />
-          </div>
-        </div>
-      )}
+        {/* ── Assessment ───────────────────────────────────────────────── */}
+        {activeTab === 'setup' && (
+          <div role="tabpanel" id="scanner-panel-setup" aria-labelledby="scanner-tab-setup">
+            {showResults ? (
+              <div className="mt-5 space-y-5">
+                <Reveal>
+                  <ScannerExecutiveSummary assessment={assessment} />
+                </Reveal>
 
-      {activeTab === 'history' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-black uppercase tracking-[0.2em] text-white/60">Audit-Ready Scan History</h2>
-            <button onClick={fetchHistory} className="text-[10px] font-black uppercase tracking-wider text-gold flex items-center gap-2">
-              <RefreshCw className={`h-3.5 w-3.5 ${historyLoading ? 'animate-spin' : ''}`} /> Refresh
-            </button>
-          </div>
-          <div className="grid xl:grid-cols-[minmax(360px,0.95fr)_minmax(520px,1.35fr)] gap-4 items-start">
-          <div className="space-y-3">
-            {displayedHistory.length === 0 ? (
-              <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold border border-dashed border-white/10 rounded-xl">
-                {historyEmptyText}
-              </div>
-            ) : displayedHistory.map((entry) => (
-              <div
-                key={entry.scanId}
-                onClick={() => setSelectedHistoryId(entry.scanId)}
-                className={`${GLASS_PANEL_CLASSES} p-4 cursor-pointer ${selectedHistoryEntry?.scanId === entry.scanId ? 'border-gold/70 bg-gold/[0.04]' : ''}`}
-              >
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-3">
-                  <div className="flex items-center gap-3">
-                    <History className="h-5 w-5 text-gold/60" />
-                    <div>
-                      <div className="text-sm font-bold text-white/80">{entry.scanId}</div>
-                      <div className="text-[10px] text-white/30 font-mono">{new Date(entry.startedAt).toLocaleString()} - {formatMs(entry.durationMs)}</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className="px-3 py-1.5 rounded border border-white/5 text-center glass-panel">
-                      <div className="text-sm font-black text-white">{entry.detectedComponents}</div>
-                      <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">Components</div>
-                    </div>
-                    <div className="px-3 py-1.5 rounded border border-red-500/10 text-center glass-panel">
-                      <div className="text-sm font-black text-red-400">{entry.vulnerableFindings}</div>
-                      <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">Vulnerable</div>
-                    </div>
-                    <div className="px-3 py-1.5 rounded border border-green-500/10 text-center glass-panel">
-                      <div className="text-sm font-black text-green-400">{entry.pqcReadyFindings}</div>
-                      <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">PQC Ready</div>
-                    </div>
-                    <div className="px-3 py-1.5 rounded border text-center glass-panel">
-                      <div className="text-sm font-black text-gold">{entry.qScore ?? 'N/A'}</div>
-                      <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">Q-Score</div>
-                    </div>
-                  </div>
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)_minmax(0,1fr)]">
+                  <Reveal>
+                    <ScannerEncryptionScore assessment={assessment} />
+                  </Reveal>
+                  <Reveal delay={0.05}>
+                    <ScannerAttackSurface assessment={assessment} />
+                  </Reveal>
+                  <Reveal delay={0.1}>
+                    <ScannerCryptoIntelligence assessment={assessment} />
+                  </Reveal>
                 </div>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedHistoryId(entry.scanId);
-                    }}
-                    className="px-3 py-1.5 rounded border border-gold/25 text-[9px] font-black uppercase tracking-wider text-gold hover:bg-gold/10 transition-colors flex items-center gap-1.5"
-                  >
-                    <Eye className="h-3 w-3" /> Review Findings
-                  </button>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleOpenHistoryInFindings(entry);
-                    }}
-                    disabled={!entry.findings?.length}
-                    className="px-3 py-1.5 rounded border border-white/10 text-[9px] font-black uppercase tracking-wider text-white/50 hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Open In Findings
-                  </button>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleDownloadHistoryAudit(entry);
-                    }}
-                    className="px-3 py-1.5 rounded border border-white/10 text-[9px] font-black uppercase tracking-wider text-white/50 hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1.5"
-                  >
-                    <Download className="h-3 w-3" /> Audit JSON
-                  </button>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setPendingDeleteEntry(entry);
-                    }}
-                    disabled={deletingScanId === entry.scanId}
-                    title="Delete this scan and all of its data"
-                    className="ml-auto px-3 py-1.5 rounded border border-red-500/25 text-[9px] font-black uppercase tracking-wider text-red-300/90 hover:text-red-200 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
-                  >
-                    {deletingScanId === entry.scanId ? (
-                      <RefreshCw className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3 w-3" />
-                    )}
-                    {deletingScanId === entry.scanId ? 'Deleting' : 'Delete'}
-                  </button>
-                </div>
-                <div className="text-[10px] text-white/40 border-t border-gold/5 pt-3 grid md:grid-cols-2 gap-2">
-                  <span><span className="font-bold text-white/60 mr-2">Target:</span>{entry.target}</span>
-                  <span><span className="font-bold text-white/60 mr-2">Status:</span>{entry.status}</span>
-                  <span><span className="font-bold text-white/60 mr-2">CBOM Records:</span>{entry.linkedCbomRecords?.length || 0}</span>
-                  <span><span className="font-bold text-white/60 mr-2">Exposure Nodes:</span>{entry.linkedExposureNodes?.length || 0}</span>
-                  <span><span className="font-bold text-white/60 mr-2">Modules:</span>{entry.scannerModulesUsed?.length || entry.moduleStates?.filter((module) => module.status !== 'Skipped').length || 0}</span>
-                  <span><span className="font-bold text-white/60 mr-2">Errors:</span>{entry.errorLogs?.length || 0}</span>
-                  <span><span className="font-bold text-white/60 mr-2">Persisted Findings:</span>{entry.findings?.length || 0}</span>
-                </div>
-              </div>
-            ))}
-          </div>
 
-          <div className={GLASS_PANEL_CLASSES + " p-4"}>
-            {!selectedHistoryEntry ? (
-              <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold">
-                Select a scan to review persisted findings
+                <Reveal>
+                  <ScannerModuleFlow
+                    modules={effectiveModules}
+                    onRetry={handleRetryFailedModule}
+                    canRetry={!isRunning}
+                  />
+                </Reveal>
+
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
+                  <Reveal>
+                    <ScannerFindingsTable findings={dashboardFindings} total={dashboardMetrics.totalFindings} />
+                  </Reveal>
+                  <Reveal delay={0.05}>
+                    <ScannerQuantumTimeline assessment={assessment} />
+                  </Reveal>
+                </div>
+
+                <Reveal>
+                  <ScannerRecommendations assessment={assessment} />
+                </Reveal>
+
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
+                  <Reveal>
+                    <ScannerFootprint assessment={assessment} />
+                  </Reveal>
+                  <Reveal delay={0.05}>
+                    <ScannerCoverage assessment={assessment} />
+                  </Reveal>
+                </div>
+
+                <Reveal>
+                  <ScannerSophiaInsight assessment={assessment} />
+                </Reveal>
+
+                <Reveal>
+                  <ScannerScopePanel assessment={assessment} />
+                </Reveal>
               </div>
             ) : (
-              <div className="space-y-4">
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-gold mb-2">Persisted Audit Details</div>
-                    <h3 className="text-base font-black text-white/85 break-all">{selectedHistoryEntry.scanId}</h3>
-                    <div className="text-[10px] text-white/35 font-mono mt-1">{selectedHistoryEntry.target}</div>
-                    <div className="text-[10px] text-white/30 font-mono mt-1">
-                      {new Date(selectedHistoryEntry.startedAt).toLocaleString()} - {formatMs(selectedHistoryEntry.durationMs)}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 shrink-0">
-                    {[
-                      ['Critical', selectedHistorySeverityCounts.critical, 'text-red-400'],
-                      ['High', selectedHistorySeverityCounts.high, 'text-orange-400'],
-                      ['Medium', selectedHistorySeverityCounts.medium, 'text-yellow-400'],
-                      ['Low', selectedHistorySeverityCounts.low, 'text-green-400'],
-                      ['Safe', selectedHistorySeverityCounts.safe, 'text-green-400'],
-                    ].map(([label, count, color]) => (
-                      <div key={String(label)} className="px-3 py-2 rounded border border-white/5 text-center glass-panel">
-                        <div className={`text-sm font-black ${color}`}>{count}</div>
-                        <div className="text-[8px] uppercase tracking-wider text-white/30 font-bold">{label}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-3 items-center">
-                  <div className="relative flex-1 min-w-[220px]">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/25" />
-                    <input
-                      type="text"
-                      placeholder="Search persisted findings..."
-                      value={historyFindingSearch}
-                      onChange={(event) => setHistoryFindingSearch(event.target.value)}
-                      className="w-full border rounded-lg py-2.5 pl-10 pr-4 text-sm focus:outline-none focus:transition-colors text-white placeholder-white/20 glass-panel"
-                    />
-                  </div>
-                  {['critical', 'high', 'medium', 'low', 'safe'].map((severity) => (
-                    <button
-                      key={severity}
-                      onClick={() => setHistorySeverityFilter(historySeverityFilter === severity ? null : severity)}
-                      className={`text-[10px] font-black uppercase tracking-wider px-3 py-2 rounded-lg border transition-all ${historySeverityFilter === severity ? `${sevColor(severity).br} ${sevColor(severity).b} ${sevColor(severity).t}` : 'text-white/35'} glass-panel`}
-                    >
-                      {severity}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="space-y-2 max-h-[620px] overflow-y-auto pr-1">
-                  {filteredHistoryFindings.length === 0 ? (
-                    <div className="text-center py-16 text-white/20 text-xs uppercase tracking-widest font-bold border border-dashed border-white/10 rounded-xl">
-                      {selectedHistoryFindings.length === 0 ? 'No persisted findings were recorded for this scan' : 'No persisted findings match filters'}
-                    </div>
-                  ) : filteredHistoryFindings.map((finding, index) => {
-                    const severity = finding.threatLevel.toLowerCase();
-                    const sc = sevColor(severity);
-                    const isExpanded = expandedHistoryFinding === finding.id;
-                    const Icon = targetIcon(finding.category);
-                    return (
-                      <motion.div key={finding.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: Math.min(index * 0.015, 0.35) }} className={`rounded-xl border overflow-hidden ${sc.br} ${sc.b}`}>
-                        <button onClick={() => setExpandedHistoryFinding(isExpanded ? null : finding.id)} className="w-full text-left p-4 flex items-center gap-3 group">
-                          <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${sc.d}`} />
-                          <Icon className="h-4 w-4 text-gold/40 shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                              <span className="text-xs font-bold text-white/80">{finding.algorithm}</span>
-                              <span className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${sc.br} ${sc.b} ${sc.t}`}>{finding.threatLevel}</span>
-                              <span className="text-[9px] font-bold text-gold/50">{finding.status}</span>
-                            </div>
-                            <div className="text-[10px] text-white/35 font-mono truncate">{finding.location}</div>
-                          </div>
-                          <div className="text-right shrink-0 hidden lg:block">
-                            <div className="text-[10px] font-bold text-gold/60">{finding.pqcReplacement || 'Review'}</div>
-                            <div className="text-[9px] text-white/20">{finding.detectionMethod}</div>
-                          </div>
-                          <ChevronRight className={`h-4 w-4 text-white/15 shrink-0 transition-transform ${isExpanded ? 'rotate-90 text-gold' : ''}`} />
-                        </button>
-                        <AnimatePresence>
-                          {isExpanded && (
-                            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="border-t px-4 py-4 glass-panel">
-                              <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
-                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Category</div>
-                                  <div className="text-xs font-mono text-white/70">{finding.category}</div>
-                                </div>
-                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Key Size</div>
-                                  <div className="text-xs font-mono text-white/70">{finding.keySize ? `${finding.keySize} bit` : 'Unknown'}</div>
-                                </div>
-                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Source</div>
-                                  <div className="text-xs font-mono text-cyan-400">{finding.source}</div>
-                                </div>
-                                <div className="p-2.5 rounded-lg border border-gold/10 bg-white/[0.015]">
-                                  <div className="text-[8px] font-black uppercase tracking-wider text-white/25 mb-0.5">Replacement</div>
-                                  <div className="text-xs font-mono text-green-400">{finding.pqcReplacement || 'Manual review'}</div>
-                                </div>
-                              </div>
-                              <p className="text-xs text-white/45 leading-relaxed mb-2">{finding.description}</p>
-                              <div className="p-2.5 rounded-lg border border-gold/15 bg-gold/[0.03] mb-2">
-                                <div className="text-[8px] font-black uppercase tracking-wider text-gold/70 mb-0.5">Evidence</div>
-                                <div className="text-xs text-white/60 break-words">{finding.evidence}</div>
-                              </div>
-                              <div className="p-2.5 rounded-lg border border-green-500/15 bg-green-500/[0.03]">
-                                <div className="text-[8px] font-black uppercase tracking-wider text-green-400/60 mb-0.5">Remediation</div>
-                                <div className="text-xs text-green-400/80">{finding.recommendation}</div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </motion.div>
-                    );
-                  })}
-                </div>
-              </div>
+              <ScannerEmptyState scanning={isRunning} />
             )}
           </div>
-          </div>
-        </div>
-      )}
+        )}
 
-      <AnimatePresence>
-        {scheduleOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-            onClick={() => setScheduleOpen(false)}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 20, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.98 }}
-              onClick={(event) => event.stopPropagation()}
-              className={`${GLASS_PANEL_CLASSES} w-full max-w-lg p-5`}
-            >
-              <div className="flex items-start justify-between gap-4 mb-5">
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.18em] text-gold mb-2">Schedule Scan</div>
-                  <h3 className="text-lg font-black text-white/90">Select Scan Date</h3>
+        {/* ── Live dashboard ───────────────────────────────────────────── */}
+        {activeTab === 'overview' && (
+          <div role="tabpanel" id="scanner-panel-overview" aria-labelledby="scanner-tab-overview" className="mt-5 space-y-5">
+            <Panel className="overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
+                <SectionLabel>Live Scan Metrics</SectionLabel>
+                <span className="font-mono text-[9.5px] uppercase tracking-widest text-slate-600">
+                  {assessment.provenance}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-px bg-white/[0.05] sm:grid-cols-3 lg:grid-cols-6">
+                {[
+                  { label: 'Assets Scanned', value: dashboardMetrics.totalAssetsScanned, color: ACCENT.cyan },
+                  { label: 'Components', value: dashboardMetrics.totalFindings, color: ACCENT.blue },
+                  { label: 'Critical', value: dashboardMetrics.criticalFindings, color: ACCENT.rose },
+                  { label: 'Vulnerable', value: dashboardMetrics.vulnerableFindings, color: ACCENT.amber },
+                  { label: 'PQC Ready', value: dashboardMetrics.pqcReady, color: ACCENT.emerald },
+                  { label: 'Vulnerable Assets', value: dashboardMetrics.vulnerableAssets, color: ACCENT.violet },
+                ].map((metric) => (
+                  <div key={metric.label} className="bg-[#080d1a] px-4 py-4">
+                    <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">{metric.label}</p>
+                    <p className="mt-2 text-3xl font-black tracking-tight" style={{ color: metric.color }}>
+                      <CountUp value={metric.value} />
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-px bg-white/[0.05] lg:grid-cols-4">
+                <div className="bg-[#080d1a] px-4 py-4">
+                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Posture Score</p>
+                  <p className="mt-2 text-2xl font-black" style={{ color: scoreColor(assessment.executive.encryptionScore) }}>
+                    {assessment.executive.encryptionScore}/100
+                  </p>
+                  <Meter value={assessment.executive.encryptionScore} className="mt-2" />
                 </div>
-                <button
-                  onClick={() => setScheduleOpen(false)}
-                  className="rounded-lg border border-white/10 p-2 text-white/45 hover:text-white hover:border-gold/30 transition-colors"
-                  aria-label="Close schedule dialog"
-                >
-                  <XCircle className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                <label className="block">
-                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Date</span>
-                  <input
-                    type="date"
-                    value={scheduleDate}
-                    min={dateInputFor(0)}
-                    onChange={(event) => setScheduleDate(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gold/15 bg-white/[0.03] px-3 py-2 text-sm text-white focus:outline-none focus:border-gold/50"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-[9px] font-black uppercase tracking-wider text-white/35">Time</span>
-                  <input
-                    type="time"
-                    value={scheduleTime}
-                    onChange={(event) => setScheduleTime(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-gold/15 bg-white/[0.03] px-3 py-2 text-sm text-white focus:outline-none focus:border-gold/50"
-                  />
-                </label>
-              </div>
-
-              <div className="rounded-lg border border-gold/10 bg-white/[0.02] p-3 mb-4">
-                <div className="text-[9px] font-black uppercase tracking-wider text-white/30 mb-1">Targets</div>
-                <div className="text-xs text-white/60 font-mono break-words">
-                  {targets.length > 0
-                    ? targets.map((target) => target.normalized || target.raw).join(', ')
-                    : history[0]?.target || 'No authorized target queued'}
+                <div className="bg-[#080d1a] px-4 py-4">
+                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Risk Level</p>
+                  <p className="mt-2 text-2xl font-black text-slate-100">{dashboardRiskLabel}</p>
+                  <p className="mt-1 font-mono text-[10px] text-slate-600">Exposure {dashboardMetrics.riskScore}/100</p>
+                </div>
+                <div className="bg-[#080d1a] px-4 py-4">
+                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">PQC Readiness</p>
+                  <p className="mt-2 text-2xl font-black" style={{ color: scoreColor(dashboardMetrics.pqcReadiness) }}>
+                    {dashboardMetrics.pqcReadiness}%
+                  </p>
+                  <Meter value={dashboardMetrics.pqcReadiness} className="mt-2" />
+                </div>
+                <div className="bg-[#080d1a] px-4 py-4">
+                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Next Scheduled</p>
+                  <p className="mt-2 text-[15px] font-black text-slate-100">
+                    {nextScheduledScan ? new Date(nextScheduledScan.scheduledFor).toLocaleString() : 'None scheduled'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleOpenSchedule}
+                    className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-bold text-cyan-300 transition-colors hover:text-cyan-200"
+                  >
+                    <Calendar className="h-3 w-3" /> Schedule a scan
+                  </button>
                 </div>
               </div>
+            </Panel>
 
-              {scheduledScans.length > 0 && (
-                <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 mb-4">
-                  <div className="text-[9px] font-black uppercase tracking-wider text-white/30 mb-2">Upcoming</div>
-                  <div className="space-y-2 max-h-28 overflow-y-auto">
-                    {scheduledScans
-                      .filter((scan) => Date.parse(scan.scheduledFor) > Date.now())
-                      .slice(0, 3)
-                      .map((scan) => (
-                        <div key={scan.id} className="flex items-center justify-between gap-3 text-xs">
-                          <span className="text-white/65">{new Date(scan.scheduledFor).toLocaleString()}</span>
-                          <span className="text-white/30 font-mono">{scan.targets.length} target(s)</span>
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-2">
+              <Reveal>
+                <Panel className="h-full overflow-hidden">
+                  <div className="border-b border-white/[0.06] px-5 py-3">
+                    <SectionLabel accent={ACCENT.rose}>Severity Distribution</SectionLabel>
+                  </div>
+                  <div className="space-y-3 px-5 py-4">
+                    {riskDistributionRows.map((row) => (
+                      <div key={row.label}>
+                        <div className="flex items-center justify-between text-[12px]">
+                          <span className="text-slate-300">{row.label}</span>
+                          <span className="font-mono text-slate-400">
+                            {row.count} ({((row.count / dashboardSeverityTotal) * 100).toFixed(1)}%)
+                          </span>
                         </div>
+                        <Meter value={(row.count / dashboardSeverityTotal) * 100} color={row.color} className="mt-1.5" />
+                      </div>
+                    ))}
+                    {dashboardFindings.length === 0 && (
+                      <p className="py-4 text-center text-[12px] text-slate-600">
+                        No findings recorded yet — the distribution appears after the first scan.
+                      </p>
+                    )}
+                  </div>
+                </Panel>
+              </Reveal>
+
+              <Reveal delay={0.05}>
+                <Panel className="h-full overflow-hidden">
+                  <div className="border-b border-white/[0.06] px-5 py-3">
+                    <SectionLabel accent={ACCENT.amber}>Top Vulnerable Algorithms</SectionLabel>
+                  </div>
+                  {topVulnerableAlgorithmRows.length === 0 ? (
+                    <p className="px-5 py-8 text-center text-[12px] text-slate-600">
+                      No quantum-vulnerable algorithm has been recorded for this tenant.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[24rem] border-collapse text-left">
+                        <thead>
+                          <tr className="border-b border-white/[0.06] font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">
+                            <th scope="col" className="px-5 py-2.5 font-bold">Algorithm</th>
+                            <th scope="col" className="px-3 py-2.5 text-center font-bold">Observations</th>
+                            <th scope="col" className="px-5 py-2.5 text-right font-bold">Worst Severity</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.04]">
+                          {topVulnerableAlgorithmRows.map((row) => (
+                            <tr key={row.algo} className="transition-colors hover:bg-white/[0.02]">
+                              <td className="px-5 py-2.5 font-mono text-[12px] text-slate-200">{row.algo}</td>
+                              <td className="px-3 py-2.5 text-center font-mono text-[12px] text-slate-400">{row.assets}</td>
+                              <td className="px-5 py-2.5 text-right">
+                                <StatusPill
+                                  status={row.risk === 'CRITICAL' || row.risk === 'HIGH' ? 'critical' : row.risk === 'MEDIUM' ? 'warning' : 'pass'}
+                                  label={row.risk}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Panel>
+              </Reveal>
+
+              <Reveal>
+                <Panel className="h-full overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
+                    <SectionLabel accent={ACCENT.cyan}>Posture Trend</SectionLabel>
+                    <span className="font-mono text-[9.5px] uppercase tracking-widest text-slate-600">
+                      One point per recorded scan
+                    </span>
+                  </div>
+                  {riskTrendPoints.length < 2 ? (
+                    <p className="px-5 py-8 text-center text-[12px] leading-relaxed text-slate-600">
+                      A trend needs at least two recorded scans. {riskTrendPoints.length === 1 ? 'One scan is on record.' : 'No scan is on record yet.'}
+                    </p>
+                  ) : (
+                    <div className="px-5 py-5">
+                      <PostureTrendChart points={riskTrendPoints} />
+                    </div>
+                  )}
+                </Panel>
+              </Reveal>
+
+              <Reveal delay={0.05}>
+                <Panel className="h-full overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
+                    <SectionLabel accent={ACCENT.emerald}>Recent Scan Activity</SectionLabel>
+                    <button
+                      type="button"
+                      onClick={() => handleTabSelect('history')}
+                      className="text-[11px] font-bold text-cyan-300 transition-colors hover:text-cyan-200"
+                    >
+                      View all
+                    </button>
+                  </div>
+                  {displayedHistory.length === 0 ? (
+                    <p className="px-5 py-8 text-center text-[12px] text-slate-600">{historyEmptyText}</p>
+                  ) : (
+                    <ul className="divide-y divide-white/[0.05]">
+                      {displayedHistory.slice(0, 6).map((entry) => (
+                        <li key={entry.scanId} className="flex items-center justify-between gap-3 px-5 py-2.5">
+                          <span className="flex min-w-0 items-center gap-2.5">
+                            <Target className="h-3.5 w-3.5 shrink-0 text-cyan-400/70" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-[12.5px] text-slate-200">{entry.target}</span>
+                              <span className="block font-mono text-[10px] text-slate-600">
+                                {new Date(entry.startedAt).toLocaleString()} · {formatMs(entry.durationMs)}
+                              </span>
+                            </span>
+                          </span>
+                          <StatusPill
+                            status={entry.status === 'completed' ? 'pass' : entry.status === 'failed' ? 'fail' : 'warning'}
+                            label={entry.status}
+                          />
+                        </li>
                       ))}
+                    </ul>
+                  )}
+                </Panel>
+              </Reveal>
+            </div>
+
+            <Reveal>
+              <ScannerCoverage assessment={assessment} />
+            </Reveal>
+          </div>
+        )}
+
+        {/* ── Findings ─────────────────────────────────────────────────── */}
+        {activeTab === 'findings' && (
+          <div role="tabpanel" id="scanner-panel-findings" aria-labelledby="scanner-tab-findings" className="mt-5 space-y-4">
+            <Panel className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <div className="relative min-w-[200px] max-w-md flex-1">
+                <Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" />
+                <input
+                  type="search"
+                  aria-label="Search findings"
+                  placeholder="Search algorithms, evidence, locations…"
+                  value={searchQ}
+                  onChange={(event) => setSearchQ(event.target.value)}
+                  className="w-full rounded-lg border border-white/[0.08] bg-[#040810]/80 py-2 pl-10 pr-4 text-[13px] text-white outline-none transition-colors placeholder:text-slate-600 focus:border-cyan-400/50"
+                />
+              </div>
+              {['critical', 'high', 'medium', 'low', 'safe'].map((severity) => {
+                const active = sevFilter === severity;
+                const count = dashboardFindings.filter((finding) => finding.threatLevel.toLowerCase() === severity).length;
+                return (
+                  <button
+                    key={severity}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setSevFilter(active ? null : severity)}
+                    className={`rounded-lg border px-3 py-1.5 text-[11.5px] font-bold uppercase tracking-wider transition-colors ${
+                      active
+                        ? `${sevColor(severity).br} ${sevColor(severity).b} ${sevColor(severity).t}`
+                        : 'border-white/[0.08] text-slate-500 hover:text-slate-200'
+                    }`}
+                  >
+                    {severity} ({count})
+                  </button>
+                );
+              })}
+              {showMitigationNextStep && (
+                <Link
+                  to={`/dashboard/migration-planner?source=scanner&scanId=${encodeURIComponent(jobId || 'latest')}`}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-400 to-violet-500 px-3.5 py-1.5 text-[11.5px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
+                >
+                  Mitigate findings <ChevronRight className="h-3.5 w-3.5" />
+                </Link>
+              )}
+            </Panel>
+
+            <div className="space-y-2">
+              {filteredFindings.length === 0 ? (
+                <Panel className="px-5 py-12 text-center">
+                  <p className="text-[12.5px] text-slate-500">
+                    {dashboardFindings.length === 0
+                      ? 'Run an authorized scan to discover cryptographic findings.'
+                      : 'No finding matches the current filters.'}
+                  </p>
+                </Panel>
+              ) : (
+                filteredFindings.map((finding, index) => (
+                  <FindingRow
+                    key={finding.id}
+                    finding={finding}
+                    index={index}
+                    expanded={expandedFinding === finding.id}
+                    onToggle={() => setExpandedFinding(expandedFinding === finding.id ? null : finding.id)}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Telemetry ────────────────────────────────────────────────── */}
+        {activeTab === 'logs' && (
+          <div role="tabpanel" id="scanner-panel-logs" aria-labelledby="scanner-tab-logs" className="mt-5">
+            <Panel className="overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Terminal className="h-4 w-4 shrink-0 text-cyan-400" />
+                  <div className="min-w-0">
+                    <SectionLabel>Scanner Telemetry</SectionLabel>
+                    <p className="mt-1 truncate font-mono text-[10px] text-slate-600">
+                      {jobId || 'awaiting job id'} · {progress}% · {logs.length} lines
+                    </p>
                   </div>
                 </div>
-              )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTerminalPinned((value) => !value)}
+                    className="rounded-lg border border-white/[0.08] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
+                  >
+                    {terminalPinned ? 'Auto-scroll' : 'Manual'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTerminalPaused((value) => !value)}
+                    className="rounded-lg border border-white/[0.08] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
+                  >
+                    {terminalPaused ? 'Resume' : 'Pause'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyLogs}
+                    disabled={logs.length === 0}
+                    aria-label="Copy telemetry to clipboard"
+                    className="rounded-lg border border-white/[0.08] p-1.5 text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300 disabled:opacity-30"
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadReport}
+                    disabled={logs.length === 0 && findings.length === 0}
+                    aria-label="Download scan report"
+                    className="rounded-lg border border-white/[0.08] p-1.5 text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300 disabled:opacity-30"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearTerminal}
+                    disabled={isRunning || logs.length === 0}
+                    aria-label="Clear telemetry"
+                    className="rounded-lg border border-white/[0.08] p-1.5 text-slate-400 transition-colors hover:border-rose-400/30 hover:text-rose-300 disabled:opacity-30"
+                  >
+                    <Eraser className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
 
-              <div className="flex justify-end gap-2">
+              <div className="grid grid-cols-2 gap-px bg-white/[0.05] sm:grid-cols-4 lg:grid-cols-8">
+                {[
+                  ['Assets', liveCounts.assets, ACCENT.cyan],
+                  ['Components', liveCounts.components, ACCENT.blue],
+                  ['Critical', liveCounts.critical, ACCENT.rose],
+                  ['High', liveCounts.high, ACCENT.amber],
+                  ['Medium', liveCounts.medium, '#facc15'],
+                  ['Low', liveCounts.low, ACCENT.emerald],
+                  ['PQC Ready', liveCounts.pqcReady, ACCENT.emerald],
+                  ['Vulnerable', liveCounts.vulnerable, ACCENT.rose],
+                ].map(([label, value, color]) => (
+                  <div key={String(label)} className="bg-[#080d1a] px-3 py-2.5">
+                    <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">{label}</p>
+                    <p className="mt-1 text-lg font-black" style={{ color: color as string }}>{value as number}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="h-[440px] space-y-1 overflow-y-auto bg-[#04060e]/60 p-4 font-mono text-[11px]">
+                {logs.length === 0 ? (
+                  <p className="grid h-full place-items-center font-sans text-[12px] text-slate-600">
+                    Awaiting authorized scan initiation…
+                  </p>
+                ) : (
+                  logs.map((entry, index) => {
+                    const severity = entry.severity ? sevColor(entry.severity.toLowerCase()) : null;
+                    return (
+                      <div key={`${entry.timestamp}-${index}`} className={`break-words leading-relaxed ${logColor(entry.level)}`}>
+                        <span className="inline-block w-14 text-slate-700">[{entry.elapsed || '00:00'}]</span>
+                        <span className={`inline-block w-20 font-bold ${logColor(entry.level)}`}>[{entry.level}]</span>
+                        {severity && (
+                          <span className={`mr-2 rounded border px-1.5 py-0.5 text-[9px] ${severity.br} ${severity.b} ${severity.t}`}>
+                            {entry.severity}
+                          </span>
+                        )}
+                        {entry.phase && <span className="mr-2 text-slate-600">[{entry.phase}]</span>}
+                        {entry.moduleName && <span className="mr-2 text-cyan-400/60">[{entry.moduleName}]</span>}
+                        <span>{entry.message}</span>
+                      </div>
+                    );
+                  })
+                )}
+                {copiedLogs && <div className="text-emerald-400">[copy] Telemetry copied to clipboard</div>}
+                {isRunning && <div className="mt-2 animate-pulse text-cyan-400/60">|</div>}
+                <div ref={logEndRef} />
+              </div>
+            </Panel>
+          </div>
+        )}
+
+        {/* ── History ──────────────────────────────────────────────────── */}
+        {activeTab === 'history' && (
+          <div role="tabpanel" id="scanner-panel-history" aria-labelledby="scanner-tab-history" className="mt-5 space-y-4">
+            <Panel className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+              <SectionLabel>Audit-Ready Scan History</SectionLabel>
+              <div className="flex flex-wrap items-center gap-2">
                 <button
-                  onClick={() => setScheduleOpen(false)}
-                  className="px-4 py-2 rounded-lg border border-white/10 text-[10px] font-black uppercase tracking-wider text-white/45 hover:text-white hover:bg-white/5 transition-colors"
+                  type="button"
+                  onClick={() => void handleToggleTimeframe()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
                 >
-                  Cancel
+                  <Calendar className="h-3.5 w-3.5" />
+                  {historyTimeframe === 'all' ? 'All time' : 'Last 7 days'} · {displayedHistory.length}
                 </button>
                 <button
-                  onClick={handleSaveSchedule}
-                  className="px-4 py-2 rounded-lg border border-gold/30 bg-gold/10 text-[10px] font-black uppercase tracking-wider text-gold hover:bg-gold/20 transition-colors"
+                  type="button"
+                  onClick={fetchHistory}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
                 >
-                  Save Schedule
+                  <RefreshCw className={`h-3.5 w-3.5 ${historyLoading ? 'animate-spin' : ''}`} /> Refresh
                 </button>
               </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </Panel>
 
+            <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
+              <div className="space-y-3">
+                {displayedHistory.length === 0 ? (
+                  <Panel className="px-5 py-12 text-center">
+                    <p className="text-[12.5px] text-slate-500">{historyEmptyText}</p>
+                  </Panel>
+                ) : (
+                  displayedHistory.map((entry) => (
+                    <Panel
+                      key={entry.scanId}
+                      className={`cursor-pointer px-4 py-4 transition-colors ${
+                        selectedHistoryEntry?.scanId === entry.scanId ? 'border-cyan-400/35' : 'hover:border-white/[0.14]'
+                      }`}
+                      onClick={() => setSelectedHistoryId(entry.scanId)}
+                    >
+                      <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <History className="h-4 w-4 shrink-0 text-cyan-400/70" />
+                          <div className="min-w-0">
+                            <p className="truncate text-[13px] font-bold text-slate-100">{entry.scanId}</p>
+                            <p className="truncate font-mono text-[10px] text-slate-600">
+                              {new Date(entry.startedAt).toLocaleString()} · {formatMs(entry.durationMs)}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {[
+                            ['Components', entry.detectedComponents, ACCENT.blue],
+                            ['Vulnerable', entry.vulnerableFindings, ACCENT.rose],
+                            ['PQC Ready', entry.pqcReadyFindings, ACCENT.emerald],
+                            ['Q-Score', entry.qScore ?? '—', ACCENT.cyan],
+                          ].map(([label, value, color]) => (
+                            <div key={String(label)} className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 text-center">
+                              <p className="text-[13px] font-black" style={{ color: color as string }}>{String(value)}</p>
+                              <p className="font-mono text-[8.5px] uppercase tracking-wider text-slate-600">{label}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); setSelectedHistoryId(entry.scanId); }}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/25 px-2.5 py-1.5 text-[11px] font-bold text-cyan-300 transition-colors hover:bg-cyan-400/10"
+                        >
+                          <Eye className="h-3 w-3" /> Review
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); handleOpenHistoryInFindings(entry); }}
+                          disabled={!entry.findings?.length}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-2.5 py-1.5 text-[11px] font-semibold text-slate-400 transition-colors hover:text-white disabled:opacity-30"
+                        >
+                          Open in findings
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); handleDownloadHistoryAudit(entry); }}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-2.5 py-1.5 text-[11px] font-semibold text-slate-400 transition-colors hover:text-white"
+                        >
+                          <Download className="h-3 w-3" /> Audit JSON
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); setPendingDeleteEntry(entry); }}
+                          disabled={deletingScanId === entry.scanId}
+                          title="Delete this scan and all of its data"
+                          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-rose-400/25 px-2.5 py-1.5 text-[11px] font-bold text-rose-300 transition-colors hover:bg-rose-500/10 disabled:opacity-40"
+                        >
+                          {deletingScanId === entry.scanId ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                          {deletingScanId === entry.scanId ? 'Deleting' : 'Delete'}
+                        </button>
+                      </div>
+
+                      <dl className="mt-3 grid gap-x-4 gap-y-1 border-t border-white/[0.06] pt-3 text-[11px] md:grid-cols-2">
+                        {[
+                          ['Target', entry.target],
+                          ['Status', entry.status],
+                          ['CBOM records', entry.linkedCbomRecords?.length || 0],
+                          ['Exposure nodes', entry.linkedExposureNodes?.length || 0],
+                          ['Modules', entry.scannerModulesUsed?.length || entry.moduleStates?.filter((module) => module.status !== 'Skipped').length || 0],
+                          ['Persisted findings', entry.findings?.length || 0],
+                        ].map(([label, value]) => (
+                          <div key={String(label)} className="flex min-w-0 gap-2">
+                            <dt className="shrink-0 text-slate-600">{label}:</dt>
+                            <dd className="truncate text-slate-400">{String(value)}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </Panel>
+                  ))
+                )}
+              </div>
+
+              <Panel className="overflow-hidden">
+                {!selectedHistoryEntry ? (
+                  <p className="px-5 py-12 text-center text-[12.5px] text-slate-500">
+                    Select a scan to review its persisted findings.
+                  </p>
+                ) : (
+                  <div>
+                    <div className="flex flex-col justify-between gap-4 border-b border-white/[0.06] px-5 py-4 lg:flex-row lg:items-start">
+                      <div className="min-w-0">
+                        <SectionLabel>Persisted Audit Detail</SectionLabel>
+                        <h3 className="mt-2 break-all text-[15px] font-black text-white">{selectedHistoryEntry.scanId}</h3>
+                        <p className="mt-1 truncate font-mono text-[11px] text-slate-500">{selectedHistoryEntry.target}</p>
+                        <p className="mt-0.5 font-mono text-[10px] text-slate-600">
+                          {new Date(selectedHistoryEntry.startedAt).toLocaleString()} · {formatMs(selectedHistoryEntry.durationMs)}
+                        </p>
+                      </div>
+                      <div className="grid shrink-0 grid-cols-3 gap-2 sm:grid-cols-5">
+                        {[
+                          ['Critical', selectedHistorySeverityCounts.critical, ACCENT.rose],
+                          ['High', selectedHistorySeverityCounts.high, ACCENT.amber],
+                          ['Medium', selectedHistorySeverityCounts.medium, '#facc15'],
+                          ['Low', selectedHistorySeverityCounts.low, ACCENT.emerald],
+                          ['Safe', selectedHistorySeverityCounts.safe, ACCENT.cyan],
+                        ].map(([label, value, color]) => (
+                          <div key={String(label)} className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 text-center">
+                            <p className="text-[13px] font-black" style={{ color: color as string }}>{String(value)}</p>
+                            <p className="font-mono text-[8.5px] uppercase tracking-wider text-slate-600">{label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-5 py-3">
+                      <div className="relative min-w-[200px] flex-1">
+                        <Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-600" />
+                        <input
+                          type="search"
+                          aria-label="Search persisted findings"
+                          placeholder="Search persisted findings…"
+                          value={historyFindingSearch}
+                          onChange={(event) => setHistoryFindingSearch(event.target.value)}
+                          className="w-full rounded-lg border border-white/[0.08] bg-[#040810]/80 py-2 pl-10 pr-4 text-[13px] text-white outline-none transition-colors placeholder:text-slate-600 focus:border-cyan-400/50"
+                        />
+                      </div>
+                      {['critical', 'high', 'medium', 'low', 'safe'].map((severity) => {
+                        const active = historySeverityFilter === severity;
+                        return (
+                          <button
+                            key={severity}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => setHistorySeverityFilter(active ? null : severity)}
+                            className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider transition-colors ${
+                              active
+                                ? `${sevColor(severity).br} ${sevColor(severity).b} ${sevColor(severity).t}`
+                                : 'border-white/[0.08] text-slate-500 hover:text-slate-200'
+                            }`}
+                          >
+                            {severity}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="max-h-[620px] space-y-2 overflow-y-auto p-3">
+                      {filteredHistoryFindings.length === 0 ? (
+                        <p className="py-12 text-center text-[12.5px] text-slate-500">
+                          {selectedHistoryFindings.length === 0
+                            ? 'No persisted finding was recorded for this scan.'
+                            : 'No persisted finding matches the current filters.'}
+                        </p>
+                      ) : (
+                        filteredHistoryFindings.map((finding, index) => (
+                          <FindingRow
+                            key={finding.id}
+                            finding={finding}
+                            index={index}
+                            expanded={expandedHistoryFinding === finding.id}
+                            onToggle={() =>
+                              setExpandedHistoryFinding(expandedHistoryFinding === finding.id ? null : finding.id)
+                            }
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </Panel>
+            </div>
+          </div>
+        )}
+
+        {/* ── Agent collectors ─────────────────────────────────────────── */}
+        {activeTab === 'agents' && canUseAgents && (
+          <div role="tabpanel" id="scanner-panel-agents" aria-labelledby="scanner-tab-agents" className="mt-5">
+            <AgentCollectorConsole />
+          </div>
+        )}
+
+        {/* ── Settings ─────────────────────────────────────────────────── */}
+        {activeTab === 'settings' && (
+          <div role="tabpanel" id="scanner-panel-settings" aria-labelledby="scanner-tab-settings" className="mt-5">
+            {canUseAgents ? (
+              <AgentSettingsConsole />
+            ) : (
+              <Panel className="px-6 py-10 text-center">
+                <span className="mx-auto grid h-11 w-11 place-items-center rounded-xl border border-violet-400/30 bg-violet-500/10 text-violet-300">
+                  <Lock className="h-5 w-5" />
+                </span>
+                <h3 className="mt-3 text-[15px] font-black text-white">Collector settings require Pro</h3>
+                <p className="mx-auto mt-1.5 max-w-md text-[12.5px] leading-relaxed text-slate-400">
+                  Agent Collector policy management is available on the Pro plan and above. Scanning, findings and
+                  history remain fully available on your current plan.
+                </p>
+                <Link
+                  to="/dashboard/settings?tab=billing"
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-violet-400/30 px-3.5 py-2 text-[12px] font-bold text-violet-300 no-underline transition-colors hover:bg-violet-500/10"
+                >
+                  <Lock className="h-3.5 w-3.5" /> Compare plans
+                </Link>
+              </Panel>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Schedule dialog ─────────────────────────────────────────────── */}
+      <Modal open={scheduleOpen} onClose={() => setScheduleOpen(false)} title="Schedule Scan" maxWidthClassName="max-w-lg">
+        <div className="space-y-4 px-5 py-5">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">Date</span>
+              <input
+                type="date"
+                value={scheduleDate}
+                min={dateInputFor(0)}
+                onChange={(event) => setScheduleDate(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/[0.1] bg-white/[0.03] px-3 py-2 text-[13px] text-white outline-none focus:border-cyan-400/50"
+              />
+            </label>
+            <label className="block">
+              <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">Time</span>
+              <input
+                type="time"
+                value={scheduleTime}
+                onChange={(event) => setScheduleTime(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-white/[0.1] bg-white/[0.03] px-3 py-2 text-[13px] text-white outline-none focus:border-cyan-400/50"
+              />
+            </label>
+          </div>
+
+          <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3">
+            <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">Targets</p>
+            <p className="mt-1 break-words font-mono text-[12px] text-slate-300">
+              {targets.length > 0
+                ? targets.map((target) => target.normalized || target.raw).join(', ')
+                : history[0]?.target || 'No authorized target queued'}
+            </p>
+          </div>
+
+          {scheduledScans.filter((scan) => Date.parse(scan.scheduledFor) > Date.now()).length > 0 && (
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3">
+              <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">Upcoming</p>
+              <ul className="mt-2 max-h-28 space-y-1.5 overflow-y-auto">
+                {scheduledScans
+                  .filter((scan) => Date.parse(scan.scheduledFor) > Date.now())
+                  .slice(0, 3)
+                  .map((scan) => (
+                    <li key={scan.id} className="flex items-center justify-between gap-3 text-[12px]">
+                      <span className="text-slate-300">{new Date(scan.scheduledFor).toLocaleString()}</span>
+                      <span className="font-mono text-slate-600">{scan.targets.length} target(s)</span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="text-[11px] leading-relaxed text-slate-600">
+            Schedules are stored on this device for this account and start the same authorized scan when you return.
+          </p>
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setScheduleOpen(false)}
+              className="rounded-lg border border-white/[0.1] px-4 py-2 text-[12px] font-semibold text-slate-400 transition-colors hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveSchedule}
+              className="rounded-lg bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2 text-[12px] font-black text-[#04060e] transition-opacity hover:opacity-90"
+            >
+              Save schedule
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Delete confirmation ─────────────────────────────────────────── */}
+      <Modal
+        open={Boolean(pendingDeleteEntry)}
+        onClose={() => { if (!deletingScanId) setPendingDeleteEntry(null); }}
+        title="Delete this scan?"
+        maxWidthClassName="max-w-lg"
+      >
+        {pendingDeleteEntry && (
+          <div className="space-y-4 px-5 py-5">
+            <div className="flex items-start gap-4">
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-rose-400/30 bg-rose-500/10 text-rose-300">
+                <Trash2 className="h-5 w-5" />
+              </span>
+              <p className="text-[12.5px] leading-relaxed text-slate-400">
+                This permanently removes the scan and everything it produced — findings, CBOM components, exposures,
+                certificates and events — from every dashboard and report. This cannot be undone.
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-[11.5px]">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="truncate font-mono font-bold text-slate-200">{pendingDeleteEntry.scanId}</span>
+                <StatusPill status={pendingDeleteEntry.status === 'completed' ? 'pass' : 'warning'} label={pendingDeleteEntry.status} />
+              </div>
+              <p className="mb-3 truncate text-slate-500">
+                <span className="font-bold text-slate-400">Target:</span> {pendingDeleteEntry.target}
+              </p>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-slate-500 sm:grid-cols-4">
+                <span><span className="font-bold text-slate-300">{pendingDeleteEntry.detectedComponents}</span> Components</span>
+                <span><span className="font-bold text-rose-300">{pendingDeleteEntry.vulnerableFindings}</span> Vulnerable</span>
+                <span><span className="font-bold text-slate-300">{pendingDeleteEntry.linkedCbomRecords?.length || 0}</span> CBOM</span>
+                <span><span className="font-bold text-slate-300">{pendingDeleteEntry.linkedExposureNodes?.length || 0}</span> Exposures</span>
+              </div>
+              <p className="mt-3 border-t border-white/[0.06] pt-2.5 text-[10.5px] text-slate-600">
+                Assets scanned by other retained scans are preserved — only records unique to this scan are removed.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteEntry(null)}
+                disabled={Boolean(deletingScanId)}
+                className="rounded-lg border border-white/[0.1] px-4 py-2 text-[12px] font-semibold text-slate-400 transition-colors hover:text-white disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteHistoryEntry(pendingDeleteEntry.scanId)}
+                disabled={Boolean(deletingScanId)}
+                className="inline-flex items-center gap-2 rounded-lg border border-rose-400/40 bg-rose-500/15 px-4 py-2 text-[12px] font-black uppercase tracking-wider text-rose-200 transition-colors hover:bg-rose-500/25 disabled:opacity-50"
+              >
+                {deletingScanId ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                {deletingScanId ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Toast ───────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {toast && (
           <motion.div
-            initial={{ opacity: 0, y: 50, scale: 0.95 }}
+            role="status"
+            aria-live="polite"
+            initial={{ opacity: 0, y: 40, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.95 }}
-            className="fixed bottom-6 right-6 z-50 px-6 py-3 rounded-lg border border-[#FFD36B]/30 bg-[#0f1428]/90 backdrop-blur-xl shadow-[0_0_30px_rgba(255,211,107,0.3)] text-white font-medium flex items-center gap-3 text-sm"
+            exit={{ opacity: 0, y: 16, scale: 0.97 }}
+            className="fixed bottom-6 right-6 z-[80] flex items-center gap-3 rounded-xl border border-cyan-400/25 bg-[#080d1a]/95 px-5 py-3 text-[13px] font-medium text-white shadow-[0_24px_60px_-30px_rgba(0,0,0,0.9)] backdrop-blur-xl"
           >
-            <Sparkles className="w-5 h-5 text-gold animate-pulse" />
+            <Sparkles className="h-4 w-4 shrink-0 text-cyan-300" />
             <span>{toast}</span>
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
 
-      {/* Delete-scan confirmation — enterprise safeguard against accidental removal. */}
-      <AnimatePresence>
-        {pendingDeleteEntry && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-            onClick={() => { if (!deletingScanId) setPendingDeleteEntry(null); }}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 24, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 16, scale: 0.97 }}
-              transition={{ duration: 0.2 }}
-              onClick={(event) => event.stopPropagation()}
-              className="w-full max-w-lg rounded-2xl border border-red-500/25 bg-[#0b0f1e]/95 backdrop-blur-2xl shadow-[0_0_60px_rgba(239,68,68,0.18)] p-6"
-              role="dialog"
-              aria-modal="true"
-            >
-              <div className="flex items-start gap-4">
-                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border border-red-500/30 bg-red-500/10 text-red-300">
-                  <Trash2 className="h-6 w-6" />
-                </span>
-                <div className="min-w-0">
-                  <h3 className="text-base font-black text-white">Delete this scan?</h3>
-                  <p className="mt-1 text-xs leading-relaxed text-white/50">
-                    This permanently removes the scan and everything it produced — findings, CBOM components, exposures,
-                    certificates and events — from every dashboard and report. This cannot be undone.
+/* ================================================================== atoms == */
+
+/**
+ * Export bar — the authenticated mirror of /public-scan's. Every action exports
+ * evidence that already exists; nothing is synthesised at export time.
+ */
+function ScannerExportBar({
+  onCsv,
+  onJson,
+  onPrint,
+}: {
+  onCsv: () => void;
+  onJson: () => void;
+  onPrint: () => void;
+}) {
+  const actions = [
+    { label: 'CSV', icon: FileSpreadsheet, onClick: onCsv, hint: 'Summary, findings, history and telemetry' },
+    { label: 'JSON', icon: FileJson, onClick: onJson, hint: 'Full machine-readable scan report' },
+    { label: 'Print', icon: Download, onClick: onPrint, hint: 'Print this assessment to PDF' },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {actions.map((action) => (
+        <button
+          key={action.label}
+          type="button"
+          onClick={action.onClick}
+          title={action.hint}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
+        >
+          <action.icon className="h-3.5 w-3.5" />
+          {action.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The scan rail — the authenticated counterpart to /public-scan's stage rail.
+ * Stages are the scanner's six discovery surfaces, and each one's state is
+ * aggregated from the REAL module states the backend published for it.
+ */
+function ScanModuleRail({
+  modules,
+  progress,
+  status,
+  isRunning,
+}: {
+  modules: ModuleState[];
+  progress: number;
+  status: ScanStatus;
+  isRunning: boolean;
+}) {
+  const stages = SCANNER_NODE_BLUEPRINTS.map((blueprint) => {
+    const owned = modules.filter((module) => SCANNER_NODE_MODULES[blueprint.key]?.includes(module.id));
+    const done = owned.filter((module) => module.status === 'Completed' || module.status === 'No findings');
+    const failed = owned.filter((module) => module.status === 'Failed');
+    const running = owned.some((module) => module.status === 'Running');
+    const state: 'waiting' | 'running' | 'complete' | 'failed' | 'skipped' =
+      owned.length === 0
+        ? 'waiting'
+        : failed.length > 0
+          ? 'failed'
+          : running
+            ? 'running'
+            : done.length === owned.length
+              ? 'complete'
+              : 'waiting';
+    return {
+      key: blueprint.key,
+      label: blueprint.title,
+      state,
+      detail: owned.length === 0
+        ? 'Awaiting module catalog'
+        : `${done.length}/${owned.length} modules · ${owned.reduce((sum, module) => sum + module.findingsCount, 0)} findings`,
+    };
+  });
+
+  const STATE_STYLE = {
+    waiting: { color: ACCENT.slate, label: 'Waiting' },
+    running: { color: ACCENT.cyan, label: 'Running' },
+    complete: { color: ACCENT.emerald, label: 'Complete' },
+    failed: { color: ACCENT.rose, label: 'Failed' },
+    skipped: { color: ACCENT.slate, label: 'Skipped' },
+  } as const;
+
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
+        <SectionLabel>Discovery Workflow</SectionLabel>
+        {isRunning && (
+          <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-bold text-cyan-300">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {progress}%
+          </span>
+        )}
+      </div>
+      <p className="px-4 pt-3 font-mono text-[9.5px] uppercase tracking-[0.16em] text-slate-500">
+        Authorized Estate Scan · {status}
+      </p>
+
+      <ol className="space-y-1 px-4 py-3">
+        {stages.map((stage, index) => {
+          const style = STATE_STYLE[stage.state];
+          return (
+            <li key={stage.key} className="flex items-start gap-3 py-1.5">
+              <span
+                className="relative grid h-7 w-7 shrink-0 place-items-center rounded-full border text-[11px] font-black transition-colors"
+                style={{ borderColor: `${style.color}55`, backgroundColor: `${style.color}14`, color: style.color }}
+              >
+                {stage.state === 'complete' ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                ) : stage.state === 'failed' ? (
+                  <XCircle className="h-3.5 w-3.5" />
+                ) : (
+                  index + 1
+                )}
+                {stage.state === 'running' && (
+                  <motion.span
+                    className="absolute inset-0 rounded-full border"
+                    style={{ borderColor: style.color }}
+                    animate={{ scale: [1, 1.35], opacity: [0.6, 0] }}
+                    transition={{ duration: 1.4, repeat: Infinity, ease: 'easeOut' }}
+                  />
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p
+                    className="truncate text-[13px] font-bold"
+                    style={{ color: stage.state === 'waiting' ? '#94a3b8' : '#e2e8f0' }}
+                  >
+                    {stage.label}
                   </p>
+                  <span className="shrink-0 font-mono text-[9px] uppercase tracking-widest" style={{ color: style.color }}>
+                    {style.label}
+                  </span>
                 </div>
-              </div>
-
-              <div className="mt-4 rounded-xl border border-white/8 bg-white/[0.02] p-4 text-[11px]">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <span className="font-mono font-bold text-white/80 truncate">{pendingDeleteEntry.scanId}</span>
-                  <span className="shrink-0 rounded px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-white/45 border border-white/10">{pendingDeleteEntry.status}</span>
-                </div>
-                <div className="mb-3 truncate text-white/45"><span className="font-bold text-white/60">Target:</span> {pendingDeleteEntry.target}</div>
-                <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-white/45 sm:grid-cols-4">
-                  <span><span className="font-bold text-white/70">{pendingDeleteEntry.detectedComponents}</span> Components</span>
-                  <span><span className="font-bold text-red-300">{pendingDeleteEntry.vulnerableFindings}</span> Vulnerable</span>
-                  <span><span className="font-bold text-white/70">{pendingDeleteEntry.linkedCbomRecords?.length || 0}</span> CBOM</span>
-                  <span><span className="font-bold text-white/70">{pendingDeleteEntry.linkedExposureNodes?.length || 0}</span> Exposures</span>
-                </div>
-                <p className="mt-3 border-t border-white/8 pt-2.5 text-[10px] text-white/35">
-                  Assets scanned by other retained scans are preserved — only records unique to this scan are removed.
+                <p className="truncate text-[11px] text-slate-500" title={stage.detail}>
+                  {stage.detail}
                 </p>
               </div>
+            </li>
+          );
+        })}
+      </ol>
 
-              <div className="mt-5 flex items-center justify-end gap-3">
+      <div className="h-1 w-full bg-white/[0.05]">
+        <motion.div
+          className="h-full bg-gradient-to-r from-cyan-400 to-violet-500"
+          animate={{ width: `${progress}%` }}
+          transition={{ duration: 0.4, ease: 'easeOut' }}
+        />
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Target composer — the authenticated equivalent of the public hero's single
+ * domain field. An authorized scan needs a queue and an explicit authorization
+ * acknowledgement, so the composer carries both.
+ */
+function TargetComposer({
+  inputText,
+  onInputChange,
+  onAdd,
+  targets,
+  onRemoveTarget,
+  onClearTargets,
+  authorizationAccepted,
+  onAuthorizationChange,
+  preview,
+}: {
+  inputText: string;
+  onInputChange: (value: string) => void;
+  onAdd: () => void;
+  targets: ValidatedAsset[];
+  onRemoveTarget: (index: number) => void;
+  onClearTargets: () => void;
+  authorizationAccepted: boolean;
+  onAuthorizationChange: (value: boolean) => void;
+  preview: ValidatedAsset[];
+}) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
+      <div className="rounded-xl border border-cyan-400/25 bg-[#040810]/85 p-3 shadow-[0_0_34px_-22px_rgba(34,211,238,0.9)] transition-colors focus-within:border-cyan-400/55">
+        <label htmlFor="scanner-targets" className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">
+          Authorized assets
+        </label>
+        <textarea
+          id="scanner-targets"
+          value={inputText}
+          onChange={(event) => onInputChange(event.target.value)}
+          rows={4}
+          spellCheck={false}
+          placeholder={'example.com\nhttps://api.company.com\nhttps://github.com/company/repo\nssh://bastion.company.com:22'}
+          className="mt-2 w-full resize-none bg-transparent font-mono text-[13px] text-white outline-none placeholder:text-slate-700"
+        />
+
+        {preview.length > 0 && (
+          <ul className="mt-2 max-h-24 space-y-0.5 overflow-y-auto font-mono text-[10.5px]">
+            {preview.map((asset, index) => (
+              <li
+                key={`${asset.raw}-${index}`}
+                className={`flex items-center gap-2 ${asset.valid ? 'text-emerald-400' : 'text-rose-400'}`}
+              >
+                {asset.valid ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : <XCircle className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{asset.raw}</span>
+                <span className="ml-auto shrink-0 text-slate-600">{asset.valid ? asset.type : asset.error}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+          <input
+            type="checkbox"
+            checked={authorizationAccepted}
+            onChange={(event) => onAuthorizationChange(event.target.checked)}
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-cyan-400"
+          />
+          <span className="text-[11px] leading-relaxed text-slate-400">
+            I confirm these assets belong to this account or are explicitly authorized for defensive cryptographic
+            inventory and compliance scanning. No exploitation, credential collection or stealth scanning is performed.
+          </span>
+        </label>
+
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={onAdd}
+            disabled={!inputText.trim()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3.5 py-2 text-[12px] font-bold text-cyan-300 transition-colors hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus className="h-3.5 w-3.5" /> Add to queue
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-col rounded-xl border border-white/[0.08] bg-[#040810]/70 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="flex items-center gap-2 font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">
+            <Network className="h-3 w-3" /> Scan queue ({targets.length})
+          </p>
+          {targets.length > 0 && (
+            <button
+              type="button"
+              onClick={onClearTargets}
+              aria-label="Clear the scan queue"
+              className="text-slate-600 transition-colors hover:text-rose-400"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+
+        <div className="mt-2 min-h-[9.5rem] flex-1 space-y-1.5 overflow-y-auto pr-1">
+          {targets.length === 0 ? (
+            <div className="grid h-[9.5rem] place-items-center rounded-lg border border-dashed border-white/[0.08] text-center">
+              <p className="px-4 text-[11.5px] text-slate-600">
+                No authorized target queued.
+                <br />
+                Add assets on the left to begin.
+              </p>
+            </div>
+          ) : (
+            targets.map((target, index) => (
+              <div
+                key={`${target.host}-${target.port}-${index}`}
+                className="group flex items-center justify-between gap-2 rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded border border-cyan-400/20 bg-cyan-400/[0.08]">
+                    <Globe className="h-3 w-3 text-cyan-400/70" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12.5px] font-semibold text-slate-200">{target.host}</span>
+                    <span className="block font-mono text-[9.5px] uppercase text-slate-600">
+                      {target.type}
+                      {target.port ? ` :${target.port}` : ''}
+                    </span>
+                  </span>
+                </span>
                 <button
                   type="button"
-                  onClick={() => setPendingDeleteEntry(null)}
-                  disabled={!!deletingScanId}
-                  className="px-4 py-2 rounded-lg border border-white/10 text-xs font-bold text-white/60 hover:text-white hover:bg-white/5 disabled:opacity-40 transition-colors"
+                  onClick={() => onRemoveTarget(index)}
+                  aria-label={`Remove ${target.host} from the scan queue`}
+                  className="shrink-0 text-slate-700 opacity-0 transition-all hover:text-rose-400 focus-visible:opacity-100 group-hover:opacity-100"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => deleteHistoryEntry(pendingDeleteEntry.scanId)}
-                  disabled={!!deletingScanId}
-                  className="px-4 py-2 rounded-lg border border-red-500/40 bg-red-500/15 text-xs font-black uppercase tracking-wider text-red-200 hover:bg-red-500/25 hover:border-red-500/60 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                >
-                  {deletingScanId ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  {deletingScanId ? 'Deleting…' : 'Delete Permanently'}
+                  <XCircle className="h-4 w-4" />
                 </button>
               </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            ))
+          )}
+        </div>
+      </div>
     </div>
+  );
+}
+
+/**
+ * Posture trend — one point per recorded scan, plotted from each scan's own
+ * persisted Q-score. There is no synthetic smoothing and no invented history:
+ * with fewer than two recorded scans the caller renders an explanation instead.
+ */
+function PostureTrendChart({ points }: { points: Array<{ scanId: string; at: string; score: number }> }) {
+  const width = 300;
+  const height = 96;
+  const padding = 8;
+  const step = points.length > 1 ? (width - padding * 2) / (points.length - 1) : 0;
+  const yFor = (score: number) => padding + (1 - score / 100) * (height - padding * 2);
+  const coords = points.map((point, index) => ({ ...point, x: padding + index * step, y: yFor(point.score) }));
+  const line = coords.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  const area = `${line} L ${coords[coords.length - 1].x} ${height} L ${coords[0].x} ${height} Z`;
+  const latest = points[points.length - 1];
+  const first = points[0];
+  const delta = latest.score - first.score;
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-24 w-full" role="img" aria-label={`Posture score across ${points.length} recorded scans, currently ${latest.score} out of 100`}>
+        <defs>
+          <linearGradient id="scanner-posture-trend" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={ACCENT.cyan} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={ACCENT.cyan} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[25, 50, 75].map((tick) => (
+          <line
+            key={tick}
+            x1={padding}
+            y1={yFor(tick)}
+            x2={width - padding}
+            y2={yFor(tick)}
+            stroke="rgba(255,255,255,0.05)"
+            strokeDasharray="3 3"
+          />
+        ))}
+        <path d={area} fill="url(#scanner-posture-trend)" />
+        <path d={line} fill="none" stroke={ACCENT.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        {coords.map((point) => (
+          <circle key={point.scanId} cx={point.x} cy={point.y} r={3} fill={scoreColor(point.score)} stroke="#080d1a" strokeWidth={1.2}>
+            <title>{`${new Date(point.at).toLocaleString()} — ${point.score}/100`}</title>
+          </circle>
+        ))}
+      </svg>
+      <div className="mt-2 flex items-center justify-between font-mono text-[10px] text-slate-600">
+        <span>{new Date(first.at).toLocaleDateString()}</span>
+        <span style={{ color: delta >= 0 ? ACCENT.emerald : ACCENT.rose }}>
+          {delta >= 0 ? '+' : ''}
+          {delta} pts across {points.length} scans
+        </span>
+        <span>{new Date(latest.at).toLocaleDateString()}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One expandable finding. Shared by the Findings tab and the History tab's
+ * persisted-findings list so the two can never drift apart visually.
+ */
+function FindingRow({
+  finding,
+  index,
+  expanded,
+  onToggle,
+}: {
+  finding: DefensiveFinding;
+  index: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const severity = finding.threatLevel.toLowerCase();
+  const tone = sevColor(severity);
+  const Icon = targetIcon(finding.category);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: Math.min(index * 0.02, 0.4) }}
+    >
+      <Panel className="overflow-hidden">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-400/40"
+        >
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: tone.hex }} />
+          <Icon className="h-4 w-4 shrink-0 text-slate-600" />
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="text-[13px] font-bold text-slate-100">{finding.algorithm}</span>
+              <StatusPill
+                status={severity === 'critical' || severity === 'high' ? 'critical' : severity === 'safe' ? 'pass' : 'warning'}
+                label={finding.threatLevel}
+              />
+              <span className="font-mono text-[10px] text-slate-600">{finding.status}</span>
+            </span>
+            <span className="mt-0.5 block truncate font-mono text-[10.5px] text-slate-600">{finding.location}</span>
+          </span>
+          <span className="hidden shrink-0 text-right lg:block">
+            <span className="block text-[11px] font-bold text-emerald-300/80">{finding.pqcReplacement || 'Review'}</span>
+            <span className="block font-mono text-[9.5px] text-slate-700">{finding.detectionMethod}</span>
+          </span>
+          <ChevronRight className={`h-4 w-4 shrink-0 text-slate-700 transition-transform ${expanded ? 'rotate-90 text-cyan-400' : ''}`} />
+        </button>
+
+        <AnimatePresence initial={false}>
+          {expanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              className="overflow-hidden border-t border-white/[0.06]"
+            >
+              <div className="px-4 py-4">
+                <dl className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  {[
+                    ['Category', finding.category],
+                    ['Key size', finding.keySize ? `${finding.keySize} bit` : 'Unknown'],
+                    ['Source', finding.source],
+                    ['PQC replacement', finding.pqcReplacement || 'Manual review'],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+                      <dt className="font-mono text-[9px] uppercase tracking-wider text-slate-600">{label}</dt>
+                      <dd className="mt-0.5 truncate font-mono text-[11.5px] text-slate-300" title={String(value)}>
+                        {String(value)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <p className="mt-3 text-[12px] leading-relaxed text-slate-400">{finding.description}</p>
+                <div className="mt-2 rounded-lg border border-cyan-400/15 bg-cyan-400/[0.04] px-3 py-2">
+                  <p className="font-mono text-[9px] uppercase tracking-wider text-cyan-400/70">Evidence</p>
+                  <p className="mt-0.5 break-words text-[11.5px] text-slate-300">{finding.evidence}</p>
+                </div>
+                <div className="mt-2 rounded-lg border border-emerald-400/15 bg-emerald-400/[0.04] px-3 py-2">
+                  <p className="font-mono text-[9px] uppercase tracking-wider text-emerald-400/70">Remediation</p>
+                  <p className="mt-0.5 text-[11.5px] text-emerald-200/85">{finding.recommendation}</p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </Panel>
+    </motion.div>
   );
 }

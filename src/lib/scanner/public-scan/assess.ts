@@ -93,6 +93,8 @@ export function toReportEvidence(bundle: ScanEvidenceBundle): PublicScanEvidence
           sanCount: certificate.data.sanCount,
           ocspStapled: certificate.data.ocspStapled,
           ocspUri: certificate.data.ocspUri,
+          ocspResponderState: certificate.data.ocspResponderState,
+          ocspResponderDetail: certificate.data.ocspResponderDetail,
           mustStaple: certificate.data.mustStaple,
           signedCertificateTimestamps: certificate.data.signedCertificateTimestamps,
           sctCount: certificate.data.sctCount,
@@ -108,6 +110,7 @@ export function toReportEvidence(bundle: ScanEvidenceBundle): PublicScanEvidence
     keyAgreement: {
       probed: tls.data.groupsProbed,
       hybridGroups: tls.data.hybridGroups,
+      pureKemGroups: tls.data.pureKemGroups,
       classicalGroups: tls.data.classicalGroups,
       primaryGroup: tls.data.primaryGroup,
       forwardSecrecy: tls.data.forwardSecrecy,
@@ -142,6 +145,8 @@ export function toReportEvidence(bundle: ScanEvidenceBundle): PublicScanEvidence
         secure: header.status === 'Healthy',
         required: header.group === 'Critical',
         recommendation: header.recommendation,
+        applicable: header.status !== 'Not Applicable',
+        supersededBy: header.supersededBy ?? null,
       })),
       error: http.data.error,
     },
@@ -197,6 +202,9 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
   const findings = sortFindings(toFindings(controls))
   const attackSurface = toAttackSurface(controls)
   const executive = buildExecutiveSummary(evidence, scoreComponents, findings)
+  // Hoisted so Sophia can read the same array the Recommendations panel renders
+  // rather than being handed a second, independently-built one.
+  const recommendations = buildRecommendations(evidence, controls, scoreComponents)
   // The quantum stage is already completed by the cryptographic-intelligence
   // engine's own callback. Emitting it a second time here published two
   // identical completions for one module and double-counted it in the rail.
@@ -224,10 +232,12 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
     intelligence: buildIntelligence(evidence, executive.confidence),
     attackSurface,
     timeline: buildTimeline(evidence),
-    recommendations: buildRecommendations(evidence, controls, scoreComponents),
+    recommendations,
     governance: buildGovernance(),
     footprint: buildFootprint(evidence),
-    sophia: buildSophia(evidence, executive),
+    // Sophia is composed last and reads the finished findings and
+    // recommendations, so her narrative can only cite what those panels show.
+    sophia: buildSophia(evidence, executive, findings, recommendations),
     scope: buildScope(),
     evidence,
   }

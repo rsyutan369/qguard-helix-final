@@ -4,6 +4,7 @@
  */
 
 import type {
+  WebScanRiskApplicability,
   WebScanFinding,
   TlsAnalysisResult,
   CertificateInfo,
@@ -40,8 +41,11 @@ const THREAT_SCORES: Record<ThreatLevel, number> = {
 /**
  * Calculate certificate risk (0-100)
  */
-function calculateCertificateRisk(certInfo: CertificateInfo | null): number {
-  if (!certInfo) return 50 // Unknown cert = moderate risk
+function calculateCertificateRisk(certInfo: CertificateInfo | null): number | null {
+  // Not measured is NOT "moderately risky". Inventing 50 here put a score on a
+  // dimension the scan never observed and dragged the composite toward the
+  // middle; the dimension is now excluded and its weight redistributed.
+  if (!certInfo) return null
 
   let score = 0
 
@@ -81,8 +85,10 @@ function calculateCertificateRisk(certInfo: CertificateInfo | null): number {
 /**
  * Calculate TLS configuration risk (0-100)
  */
-function calculateTlsConfigRisk(tlsResult: TlsAnalysisResult | null): number {
-  if (!tlsResult) return 60 // No TLS = high risk
+function calculateTlsConfigRisk(tlsResult: TlsAnalysisResult | null): number | null {
+  // No TLS analysis means no handshake was attempted for this target type (a
+  // repository scan, say) — not that the transport is bad. Excluded, not scored.
+  if (!tlsResult) return null
 
   let score = 0
 
@@ -126,8 +132,8 @@ function calculateTlsConfigRisk(tlsResult: TlsAnalysisResult | null): number {
 function calculateCipherSuiteRisk(
   tlsResult: TlsAnalysisResult | null,
   findings: WebScanFinding[]
-): number {
-  if (!tlsResult) return 50
+): number | null {
+  if (!tlsResult) return null
 
   let score = 0
 
@@ -163,7 +169,13 @@ function calculateAppCryptoRisk(
   repoResult: GitRepoScanResult | null,
   webCryptoResult: WebCryptoScanResult | null,
   apiResult: ApiSecurityResult | null
-): number {
+): number | null {
+  // Nothing to read means nothing to say. Returning 0 here (a PERFECT posture)
+  // for a scan that never looked at any application code was the single largest
+  // source of inflated scores: at weight 15 it lifted a genuinely failing target
+  // by ~10 points.
+  if (!repoResult && !webCryptoResult && !apiResult) return null
+
   let score = 0
   let totalPatterns = 0
 
@@ -199,8 +211,8 @@ function calculateAppCryptoRisk(
     score += Math.min(missingHeaders.length * 5, 15)
   }
 
-  // If no code was scanned, don't penalize
-  if (totalPatterns === 0 && !apiResult) return 0
+  // Code paths present but nothing matched is a real, clean measurement.
+  if (totalPatterns === 0 && !apiResult) return null
 
   return Math.min(100, score)
 }
@@ -213,7 +225,11 @@ function calculatePqcReadinessRisk(
   certInfo: CertificateInfo | null,
   findings: WebScanFinding[],
   ruleResults: DetectionRuleResult[]
-): number {
+): number | null {
+  // Post-quantum readiness cannot be judged without transport, certificate or
+  // rule evidence to judge it from.
+  if (!tlsResult && !certInfo && ruleResults.length === 0) return null
+
   let score = 0
 
   // Check PQC readiness rule results
@@ -263,7 +279,7 @@ export function calculateRiskScore(
   webCryptoResult: WebCryptoScanResult | null,
   ruleResults: DetectionRuleResult[]
 ): WebScanRiskScore {
-  const breakdown: WebScanRiskBreakdown = {
+  const measured = {
     certificateRisk: calculateCertificateRisk(certInfo),
     tlsConfigRisk: calculateTlsConfigRisk(tlsResult),
     cipherSuiteRisk: calculateCipherSuiteRisk(tlsResult, findings),
@@ -271,14 +287,46 @@ export function calculateRiskScore(
     pqcReadiness: calculatePqcReadinessRisk(tlsResult, certInfo, findings, ruleResults),
   }
 
-  // Weighted overall score
-  const overallScore = Math.round(
-    breakdown.certificateRisk * WEIGHTS.certificateRisk +
-    breakdown.tlsConfigRisk * WEIGHTS.tlsConfigRisk +
-    breakdown.cipherSuiteRisk * WEIGHTS.cipherSuiteRisk +
-    breakdown.appCryptoRisk * WEIGHTS.appCryptoRisk +
-    breakdown.pqcReadiness * WEIGHTS.pqcReadiness
-  )
+  /**
+   * WEIGHT REDISTRIBUTION — the reason this is not a plain dot product.
+   *
+   * A dimension the scan could not measure is EXCLUDED and its weight spread
+   * across the dimensions that were measured. It is never scored, because every
+   * possible stand-in value is a lie: 0 claims a perfect posture the scan never
+   * verified, and 50 invents a mediocre one. This is the same rule the platform's
+   * published grading model already applies on the public-scan surface, so a
+   * target assessed on either surface is scored on one methodology.
+   */
+  const applicableWeight = (Object.keys(WEIGHTS) as Array<keyof WebScanRiskBreakdown>)
+    .filter((key) => measured[key] !== null)
+    .reduce((sum, key) => sum + WEIGHTS[key], 0)
+
+  const weightedRisk = (Object.keys(WEIGHTS) as Array<keyof WebScanRiskBreakdown>)
+    .filter((key) => measured[key] !== null)
+    .reduce((sum, key) => sum + (measured[key] as number) * WEIGHTS[key], 0)
+
+  // No dimension measured at all — the caller has no evidence to score, and a 0
+  // exposure (a perfect posture) would be the very claim this guard prevents.
+  const overallScore = applicableWeight > 0 ? Math.round(weightedRisk / applicableWeight) : 0
+
+  // `breakdown` keeps its numeric shape for the persisted `risk_breakdown`
+  // column and existing consumers; `breakdownApplicable` is what tells them
+  // which of those numbers is a measurement rather than a placeholder.
+  const breakdown: WebScanRiskBreakdown = {
+    certificateRisk: measured.certificateRisk ?? 0,
+    tlsConfigRisk: measured.tlsConfigRisk ?? 0,
+    cipherSuiteRisk: measured.cipherSuiteRisk ?? 0,
+    appCryptoRisk: measured.appCryptoRisk ?? 0,
+    pqcReadiness: measured.pqcReadiness ?? 0,
+  }
+
+  const breakdownApplicable: WebScanRiskApplicability = {
+    certificateRisk: measured.certificateRisk !== null,
+    tlsConfigRisk: measured.tlsConfigRisk !== null,
+    cipherSuiteRisk: measured.cipherSuiteRisk !== null,
+    appCryptoRisk: measured.appCryptoRisk !== null,
+    pqcReadiness: measured.pqcReadiness !== null,
+  }
 
   // Clamp to 0-100
   const clampedScore = Math.max(0, Math.min(100, overallScore))
@@ -290,6 +338,9 @@ export function calculateRiskScore(
     quantumReadinessLevel: readinessScoreToLevel(riskExposureToReadinessScore(clampedScore)),
     legacyQScore: Math.round(riskExposureToReadinessScore(clampedScore) / 10),
     breakdown,
+    breakdownApplicable,
+    /** Sum of the weights that actually contributed, out of 100. */
+    measuredWeight: applicableWeight,
   }
 }
 

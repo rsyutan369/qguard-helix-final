@@ -79,12 +79,20 @@ export interface ScanEvent {
 /* ------------------------------------------------------------------- nodes - */
 
 /**
- * The six category nodes rendered around the core. They mirror the reference
- * hero exactly: CAA/DNSSEC/CT evidence surfaces inside the DNS and certificate
- * nodes rather than as separate cards, which keeps the ring readable at the
- * width the hero actually has.
+ * Identity of a category node rendered around the core.
+ *
+ * Deliberately an open string rather than a closed union: the node ring is
+ * supplied by whoever mounts the engine (see `QveProvider`'s `blueprints`
+ * prop), because the categories a scan reports are a property of that scan, not
+ * of the visualization. /public-scan mounts the six public-edge surfaces
+ * (`QVE_NODE_BLUEPRINTS` — DNS/CAA, TLS, certificates, headers, OCSP, quantum);
+ * the authenticated Dashboard Scanner mounts its own estate-discovery ring. A
+ * closed union would have forced one surface's vocabulary onto the other.
  */
-export type QveNodeKey = 'dns' | 'tls' | 'certificate' | 'headers' | 'ocsp' | 'quantum';
+export type QveNodeKey = string;
+
+/** The six public-edge node keys, for modules that speak specifically to them. */
+export type QvePublicNodeKey = 'dns' | 'tls' | 'certificate' | 'headers' | 'ocsp' | 'quantum';
 
 export type QveNodeState = 'idle' | 'scanning' | 'pass' | 'warning' | 'critical' | 'failed';
 

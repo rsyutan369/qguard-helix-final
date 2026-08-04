@@ -116,20 +116,30 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
 
   onEngineStart?.('http-security')
   const httpPromise = runHttpEngine(host, port).then((result) => {
-    const hardened = result.data.headers.filter((h) => h.status === 'Healthy').length
-    const ratio = hardened / Math.max(1, result.data.headers.length)
+    // HSTS is scored as its own control and reported on its own card, so the
+    // transport-header tally EXCLUDES it — exactly as `http-security` in
+    // controls.ts does. Counting every header here made the live hero say
+    // "4/9 hardened" while the report's Findings and Encryption Score panels
+    // both said "3 of 8" for the same scan.
+    // Same denominator as the `http-security` control: HSTS is scored
+    // separately, and a header superseded by an equivalent control is exempt.
+    const transport = result.data.headers.filter(
+      (h) => h.name !== 'strict-transport-security' && h.status !== 'Not Applicable',
+    )
+    const hardened = transport.filter((h) => h.status === 'Healthy').length
+    const ratio = hardened / Math.max(1, transport.length)
     onEngine?.(
       'http-security',
       result.ok,
       result.data.reachable
-        ? `HTTP ${result.data.statusCode} · ${hardened}/${result.data.headers.length} hardened`
+        ? `HTTP ${result.data.statusCode} · ${hardened}/${transport.length} hardened`
         : 'origin unreachable',
     )
     emit({
       surface: 'headers',
       label: 'Transport security headers',
       detail: result.data.reachable
-        ? `${hardened}/${result.data.headers.length} headers hardened · HTTP ${result.data.statusCode}`
+        ? `${hardened}/${transport.length} headers hardened · HTTP ${result.data.statusCode}`
         : (result.data.error ?? 'Origin did not answer over HTTPS'),
       status: !result.data.reachable ? 'critical' : ratio >= 0.8 ? 'pass' : ratio >= 0.5 ? 'warning' : 'critical',
       severity: !result.data.reachable ? 'medium' : ratio >= 0.5 ? 'low' : 'medium',

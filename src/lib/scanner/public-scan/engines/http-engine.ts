@@ -128,11 +128,21 @@ export interface SecurityHeaderResult {
   group: HeaderGroup
   present: boolean
   value: string | null
-  /** Healthy | Warning | Not Supported (absent) | Unknown (origin unreachable). */
+  /**
+   * Healthy | Warning | Not Supported (absent) | Not Applicable (superseded by
+   * another header that provides the same protection) | Unknown (unreachable).
+   */
   status: ControlStatus
   purpose: string
   weakness: string | null
   recommendation: string
+  /**
+   * Set when the header is absent but its protection is genuinely delivered by
+   * another header — currently only `X-Frame-Options` superseded by a CSP
+   * `frame-ancestors` directive. Names the superseding control so the reason is
+   * auditable rather than an unexplained exemption.
+   */
+  supersededBy?: string | null
 }
 
 export interface HstsAnalysis {
@@ -357,6 +367,39 @@ async function requestFollowing(
   return { response: null, chain, blockedRedirect: null }
 }
 
+// ─── Header supersession ──────────────────────────────────────────────────────
+
+/**
+ * Does a CSP restrict framing well enough to replace `X-Frame-Options`?
+ *
+ * `frame-ancestors` is the standardised successor to X-Frame-Options: it is
+ * strictly more expressive, and CSP Level 2 §4.2 requires browsers that support
+ * it to IGNORE X-Frame-Options entirely when both are present. Flagging a
+ * missing X-Frame-Options on an origin that already ships a restrictive
+ * `frame-ancestors` therefore penalises a site for omitting a header that would
+ * have had no effect — and pushes operators toward redundant configuration.
+ *
+ * The exemption is deliberately narrow:
+ *  • `frame-ancestors *` (or a bare `*` in the source list) permits framing by
+ *    anyone and supersedes nothing.
+ *  • No `frame-ancestors` directive at all means CSP says nothing about framing,
+ *    so X-Frame-Options is still the only control in play.
+ *
+ * Exported so the behaviour is directly testable rather than buried in the
+ * engine's response-mapping loop.
+ */
+export function frameAncestorsDirective(cspValue: string | null | undefined): string | null {
+  if (!cspValue) return null
+  return cspValue.match(/frame-ancestors\s+([^;]+)/i)?.[1]?.trim() ?? null
+}
+
+export function supersedesXFrameOptions(cspValue: string | null | undefined): boolean {
+  const directive = frameAncestorsDirective(cspValue)
+  if (!directive) return false
+  // A wildcard anywhere in the source list opens framing to any origin.
+  return !/(^|\s)\*(\s|$)/.test(directive)
+}
+
 // ─── HSTS ─────────────────────────────────────────────────────────────────────
 
 export function analyzeHsts(raw: string | undefined, host: string): HstsAnalysis {
@@ -490,9 +533,29 @@ export async function runHttpEngine(host: string, port: number): Promise<EngineR
       return Array.isArray(value) ? value.join(', ') : value
     }
 
+    // CSP frame-ancestors supersedes X-Frame-Options — see the predicate above.
+    const cspValue = headerValue('content-security-policy') ?? ''
+    const frameAncestors = frameAncestorsDirective(cspValue)
+    const frameAncestorsRestrictive = supersedesXFrameOptions(cspValue)
+
     const headers: SecurityHeaderResult[] = HEADER_SPECS.map((spec) => {
       const value = headerValue(spec.name) ?? null
       if (value === null) {
+        if (spec.name === 'x-frame-options' && frameAncestorsRestrictive) {
+          return {
+            name: spec.name,
+            group: spec.group,
+            present: false,
+            value: null,
+            // Not a gap: the protection is delivered, by the header that
+            // replaced this one.
+            status: 'Not Applicable' as ControlStatus,
+            purpose: spec.purpose,
+            weakness: null,
+            recommendation: '',
+            supersededBy: `Content-Security-Policy: frame-ancestors ${frameAncestors}`,
+          }
+        }
         return {
           name: spec.name,
           group: spec.group,
@@ -503,6 +566,7 @@ export async function runHttpEngine(host: string, port: number): Promise<EngineR
           purpose: spec.purpose,
           weakness: null,
           recommendation: spec.recommendation,
+          supersededBy: null,
         }
       }
       const weakness = spec.weakness?.(value) ?? null
@@ -515,6 +579,7 @@ export async function runHttpEngine(host: string, port: number): Promise<EngineR
         purpose: spec.purpose,
         weakness,
         recommendation: weakness ? spec.recommendation : '',
+        supersededBy: null,
       }
     })
 

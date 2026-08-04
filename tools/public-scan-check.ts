@@ -13,6 +13,7 @@
 
 import 'dotenv/config'
 import { assessPublicTarget } from '../src/lib/scanner/public-scan/assess'
+import { supersedesXFrameOptions } from '../src/lib/scanner/public-scan/engines/http-engine'
 import {
   buildScoreComponents,
   computeClassicalScore,
@@ -442,14 +443,19 @@ async function main(): Promise<void> {
     'certificate-transparency': 'certificate-transparency',
     'http-security-headers': 'http-security',
   }
+  // All three of these are "no verdict" states in the seven-state model. A
+  // category is dropped from the score for any of them — `Not Applicable` is
+  // what an OCSP control reports when the certificate advertises no responder
+  // at all, which is a valid modern posture rather than an unmeasured one.
+  const NO_VERDICT = new Set(['Unknown', 'Not Observable', 'Not Applicable'])
   const scoreMismatches = Object.entries(DIRECT_CATEGORY_SOURCE).filter(([categoryKey, findingId]) => {
     const finding = findingByKey.get(findingId)
     const component = componentByKey.get(categoryKey)
     if (!finding || !component) return false
-    return !component.applicable && finding.status !== 'Unknown'
+    return !component.applicable && !NO_VERDICT.has(finding.status)
   })
   check(
-    'directly-sourced categories stay unobservable exactly when their source finding is Unknown',
+    'directly-sourced categories stay unobservable exactly when their source finding has no verdict',
     scoreMismatches.length === 0,
     scoreMismatches.length ? `mismatched: ${scoreMismatches.map(([k]) => k).join(', ')}` : 'aligned',
   )
@@ -536,6 +542,43 @@ async function main(): Promise<void> {
     report.recommendations.filter((rec) => rec.scoreGain === null).every((rec) => rec.id === 'internal-inventory'),
   )
 
+  // The order on screen must agree with the priority badges on screen.
+  const PRIORITY_ORDER: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 }
+  const scoredRecommendations = report.recommendations.filter((rec) => rec.id !== 'internal-inventory')
+  check(
+    'recommendations are ordered by priority, then by modelled gain',
+    scoredRecommendations.every((rec, index) => {
+      if (index === 0) return true
+      const previous = scoredRecommendations[index - 1]
+      const byPriority = PRIORITY_ORDER[previous.priority] - PRIORITY_ORDER[rec.priority]
+      if (byPriority < 0) return true
+      if (byPriority > 0) return false
+      return (previous.scoreGain ?? 0) >= (rec.scoreGain ?? 0)
+    }),
+    scoredRecommendations.map((r) => `${r.priority}+${r.scoreGain}`).join(' > '),
+  )
+
+  // An expired or untrusted certificate is an outage, not a hygiene suggestion.
+  const certificateExtras = report.evidence.certificateExtras
+  check(
+    'an expired or untrusted certificate produces a Critical recommendation',
+    !certificateExtras ||
+      (certificateExtras.daysRemaining > 0 && certificateExtras.chainTrusted) ||
+      report.recommendations.some(
+        (rec) => rec.id === 'certificate-replace' && rec.priority === 'Critical',
+      ),
+    certificateExtras
+      ? `daysRemaining=${certificateExtras.daysRemaining} trusted=${certificateExtras.chainTrusted}`
+      : 'no chain collected',
+  )
+  check(
+    'a healthy certificate never triggers the replace-immediately recommendation',
+    !certificateExtras ||
+      certificateExtras.daysRemaining <= 0 ||
+      !certificateExtras.chainTrusted ||
+      !report.recommendations.some((rec) => rec.id === 'certificate-replace'),
+  )
+
   // Sophia must not introduce metrics that contradict the Executive Summary.
   // Only quoted *metrics* count — a percentage, an "/100" composite, or a score
   // introduced with "score of". Algorithm names (P-256) and protocol versions
@@ -557,6 +600,332 @@ async function main(): Promise<void> {
     'Sophia quotes only metrics that appear in the Executive Summary',
     quotedMetrics.length > 0 && quotedMetrics.every((value) => executiveNumbers.has(value)),
     `narrative metrics=[${quotedMetrics.join(', ')}]`,
+  )
+
+  // ── One fact, one source ─────────────────────────────────────────────────
+  // Each of these caught a real cross-panel contradiction. They exist so the
+  // same class of drift cannot come back silently.
+  console.log('\nSingle-source invariants:')
+
+  // The Cryptographic Intelligence panel and the `cryptographic-algorithms`
+  // score category must be counting the SAME array. They used to be two
+  // independently-derived lists: the score said "7 algorithms observed" beside
+  // a panel that listed four of them.
+  const engineAlgorithms = report.evidence.engines.crypto.data.algorithms
+  check(
+    'Cryptographic Intelligence lists exactly the algorithms the score category counts',
+    report.intelligence.observedAlgorithms.length === engineAlgorithms.length &&
+      report.intelligence.observedAlgorithms.every(
+        (algorithm, index) => algorithm.name === engineAlgorithms[index].name,
+      ),
+    `panel=${report.intelligence.observedAlgorithms.length} engine=${engineAlgorithms.length}`,
+  )
+  check(
+    'the algorithms score category reports the same count it scored',
+    (() => {
+      const component = report.scoreComponents.find((c) => c.key === 'cryptographic-algorithms')
+      if (!component || !component.applicable) return true
+      const stated = Number(component.observed.match(/^(\d+)/)?.[1] ?? -1)
+      return stated === engineAlgorithms.length
+    })(),
+    report.scoreComponents.find((c) => c.key === 'cryptographic-algorithms')?.observed,
+  )
+  check(
+    'every listed algorithm carries the engine classification and its evidence source',
+    report.intelligence.observedAlgorithms.every(
+      (algorithm) => algorithm.classification.length > 0 && algorithm.evidenceSource.length > 0,
+    ),
+  )
+
+  // Forward secrecy must read identically in the Findings table and the Live
+  // Handshake panel. The handshake step used to print the un-caveated basis, so
+  // it claimed "every session key is forward secret" on a report whose findings
+  // said Partial.
+  const fsFinding = report.findings.find((finding) => finding.id === 'forward-secrecy')
+  const fsHandshake = report.handshake.find((step) => step.key === 'key-exchange')
+  check(
+    'Forward Secrecy evidence is identical in Findings and Live Handshake',
+    !report.evidence.tls || fsFinding?.evidence === fsHandshake?.detail,
+    `findings="${fsFinding?.evidence?.slice(0, 60)}…" handshake="${fsHandshake?.detail?.slice(0, 60)}…"`,
+  )
+  check(
+    'a Partial forward-secrecy verdict states the caveat that produced it',
+    report.intelligence.forwardSecrecy !== 'Partial' ||
+      Boolean(fsFinding?.evidence.includes('static-RSA')),
+    `${report.intelligence.forwardSecrecy}: ${fsFinding?.evidence?.slice(0, 80)}`,
+  )
+  check(
+    'the forward-secrecy recommendation is never rationalised by a clean bill of health',
+    (() => {
+      const rec = report.recommendations.find((r) => r.id === 'forward-secrecy')
+      if (!rec) return true
+      // A recommendation to fix forward secrecy must not cite a sentence that
+      // ends at "every session key is forward secret".
+      return !/every session key is forward secret\.$/.test(rec.rationale)
+    })(),
+  )
+
+  // The header tally must be one number. The live hero counted all nine headers
+  // while the report scored the eight non-HSTS ones.
+  check(
+    'the transport-header tally excludes HSTS everywhere it is reported',
+    (() => {
+      const finding = report.findings.find((f) => f.id === 'http-security')
+      const component = report.scoreComponents.find((c) => c.key === 'http-security-headers')
+      if (!finding || !component || !report.evidence.http.reachable) return true
+      const total = report.evidence.http.headers.filter(
+        (h) => h.name !== 'strict-transport-security',
+      ).length
+      return finding.finding.includes(`of ${total}`) && component.observed.includes(`/${total}`)
+    })(),
+    `${report.findings.find((f) => f.id === 'http-security')?.finding}`,
+  )
+
+  // Measurements that cost a real probe must reach the report.
+  check(
+    'the live OCSP responder probe reaches the report evidence',
+    !report.evidence.certificateExtras ||
+      ['reachable', 'unreachable', 'not-advertised', 'not-probed'].includes(
+        report.evidence.certificateExtras.ocspResponderState,
+      ),
+    `${report.evidence.certificateExtras?.ocspResponderState} — ${report.evidence.certificateExtras?.ocspResponderDetail}`,
+  )
+  check(
+    'a certificate advertising a responder has that responder actually probed',
+    !report.evidence.certificateExtras?.ocspUri ||
+      report.evidence.certificateExtras.ocspResponderState !== 'not-probed',
+  )
+  check(
+    'an unreachable responder is escalated above plain "not stapled"',
+    report.evidence.certificateExtras?.ocspResponderState !== 'unreachable' ||
+      report.findings.find((f) => f.id === 'ocsp-stapling')?.status === 'Critical',
+  )
+  check(
+    'standalone ML-KEM groups reach the report and are never counted as hybrid',
+    Array.isArray(report.evidence.keyAgreement.pureKemGroups) &&
+      report.evidence.keyAgreement.pureKemGroups.every(
+        (group) => !report.evidence.keyAgreement.hybridGroups.includes(group),
+      ),
+    `pure=[${report.evidence.keyAgreement.pureKemGroups.join(', ')}] hybrid=[${report.evidence.keyAgreement.hybridGroups.join(', ')}]`,
+  )
+  check(
+    'the Key-Agreement Groups count equals every group actually accepted',
+    report.footprint.metrics.find((m) => m.key === 'groups')?.value ===
+      report.evidence.keyAgreement.hybridGroups.length +
+        report.evidence.keyAgreement.pureKemGroups.length +
+        report.evidence.keyAgreement.classicalGroups.length,
+  )
+
+  // The timeline is this endpoint's story, not a generic explainer.
+  check(
+    'the timeline never names a hybrid group this endpoint did not accept',
+    (() => {
+      const hybridPhase = report.timeline.find((phase) => phase.key === 'hybrid')
+      if (!hybridPhase) return false
+      const named = hybridPhase.description.match(/X25519MLKEM768|SecP\w*MLKEM\d+/g) ?? []
+      return named.every((group) => report.evidence.keyAgreement.hybridGroups.includes(group))
+    })(),
+    report.timeline.find((phase) => phase.key === 'hybrid')?.description,
+  )
+  check(
+    'the timeline does not congratulate an endpoint the grade calls Weak or Critical',
+    (() => {
+      const today = report.timeline.find((phase) => phase.key === 'today')
+      if (!today) return false
+      const weak = ['Weak', 'Critical'].includes(report.executive.gradeLabel)
+      return !weak || !/strong classical cryptography/i.test(today.description)
+    })(),
+    report.timeline.find((phase) => phase.key === 'today')?.description,
+  )
+  check(
+    'externally-sourced horizons are labelled as estimates, not measurements',
+    Boolean(
+      report.timeline
+        .find((phase) => phase.key === 'crqc')
+        ?.description.match(/industry estimate|not a measurement/i),
+    ),
+  )
+
+  // Sophia must agree with the badge and cite only real findings.
+  check(
+    'Sophia posture agrees with the published grade rating',
+    !report.executive.gradeable ||
+      !['Weak', 'Critical', 'Fair'].includes(report.executive.gradeLabel) ||
+      !/strong classical cryptographic hygiene/i.test(report.sophia.narrative),
+    `${report.executive.gradeLabel}: ${report.sophia.headline}`,
+  )
+  check(
+    'Sophia cites only controls that appear in the Findings table',
+    (() => {
+      const controlNames = new Set(report.findings.map((finding) => finding.control))
+      // Anchor on the findings sentence specifically. A looser em-dash match
+      // picks up the score sentence, which also contains one.
+      const cited = report.sophia.narrative.match(
+        /at high severity or above —\s([^.]+?)\./,
+      )
+      if (!cited) return true
+      return cited[1]
+        .split(', ')
+        .every((name) => controlNames.has(name.trim()) || /and \d+ more/.test(name))
+    })(),
+    report.sophia.narrative.match(/at high severity or above —\s([^.]+?)\./)?.[1] ?? 'no findings cited',
+  )
+  check(
+    'Sophia quotes the same top action the Recommendations panel ranks first',
+    (() => {
+      const top = report.recommendations.find((rec) => rec.scoreGain !== null)
+      if (!top) return true
+      return (
+        !report.sophia.narrative.includes('highest-value change') ||
+        report.sophia.narrative.includes(top.title)
+      )
+    })(),
+  )
+
+  // ── No advice the operator cannot act on ─────────────────────────────────
+  // Every check here guards a specific false-positive class.
+  console.log('\nRemediation accuracy:')
+
+  const ocspRecommendation = report.recommendations.find((rec) => rec.id === 'enable-ocsp-stapling')
+  check(
+    'OCSP stapling is only recommended when the certificate advertises a responder',
+    Boolean(report.evidence.certificateExtras?.ocspUri) || !ocspRecommendation,
+    report.evidence.certificateExtras?.ocspUri
+      ? `responder ${report.evidence.certificateExtras.ocspUri}`
+      : 'no responder advertised — recommendation correctly withheld',
+  )
+  check(
+    'a certificate with no OCSP responder scores OCSP as Not Applicable, never as a failure',
+    Boolean(report.evidence.certificateExtras?.ocspUri) ||
+      !report.evidence.certificateExtras ||
+      (report.findings.find((f) => f.id === 'ocsp-stapling')?.status === 'Not Applicable' &&
+        report.scoreComponents.find((c) => c.key === 'ocsp-stapling')?.applicable === false),
+    report.findings.find((f) => f.id === 'ocsp-stapling')?.status,
+  )
+  check(
+    'the no-responder case explains why, rather than reporting a gap',
+    Boolean(report.evidence.certificateExtras?.ocspUri) ||
+      !report.evidence.certificateExtras ||
+      Boolean(
+        report.attackSurface
+          .find((item) => item.key === 'ocsp-stapling')
+          ?.detail.includes('does not advertise an OCSP responder'),
+      ),
+    report.attackSurface.find((item) => item.key === 'ocsp-stapling')?.detail,
+  )
+
+  // X-Frame-Options under a restrictive CSP frame-ancestors.
+  const xfo = report.evidence.http.headers.find((h) => h.name === 'x-frame-options')
+  const csp = report.evidence.http.headers.find((h) => h.name === 'content-security-policy')
+  const frameAncestors = csp?.value?.match(/frame-ancestors\s+([^;]+)/i)?.[1]?.trim() ?? null
+  const restrictiveFrameAncestors = Boolean(frameAncestors && !/(^|\s)\*(\s|$)/.test(frameAncestors))
+  check(
+    'X-Frame-Options is exempt when a restrictive CSP frame-ancestors supersedes it',
+    !report.evidence.http.reachable ||
+      !restrictiveFrameAncestors ||
+      xfo?.present === true ||
+      xfo?.applicable === false,
+    restrictiveFrameAncestors
+      ? `frame-ancestors ${frameAncestors} → xfo applicable=${xfo?.applicable}`
+      : 'no restrictive frame-ancestors — normal rules apply',
+  )
+  check(
+    'a superseded header is never counted in the hardened tally denominator',
+    (() => {
+      if (!report.evidence.http.reachable) return true
+      const counted = report.evidence.http.headers.filter(
+        (h) => h.name !== 'strict-transport-security' && h.applicable !== false,
+      ).length
+      const finding = report.findings.find((f) => f.id === 'http-security')
+      return finding ? finding.finding.includes(`of ${counted}`) : true
+    })(),
+    report.findings.find((f) => f.id === 'http-security')?.finding,
+  )
+  check(
+    'an exempt header names the control that superseded it',
+    report.evidence.http.headers
+      .filter((h) => h.applicable === false)
+      .every((h) => Boolean(h.supersededBy)),
+  )
+  check(
+    'a header is never exempted while frame-ancestors permits any origin',
+    !frameAncestors ||
+      restrictiveFrameAncestors ||
+      report.evidence.http.headers.every((h) => h.applicable !== false),
+  )
+
+  // The live target may not exercise every branch (few sites ship
+  // frame-ancestors WITHOUT X-Frame-Options), so the predicate itself is tested
+  // directly against the cases that matter.
+  const supersessionCases: Array<[string | null, boolean, string]> = [
+    [null, false, 'no CSP at all'],
+    ['default-src https:', false, 'CSP without frame-ancestors'],
+    ["frame-ancestors 'none'", true, "frame-ancestors 'none'"],
+    ["frame-ancestors 'self'", true, "frame-ancestors 'self'"],
+    ["default-src https:; frame-ancestors 'self' https://a.example", true, 'restrictive source list'],
+    ['frame-ancestors *', false, 'wildcard permits any origin'],
+    ['frame-ancestors * https://a.example', false, 'wildcard inside a source list'],
+    ["frame-ancestors 'self'; default-src *", true, 'wildcard in an unrelated directive'],
+  ]
+  const supersessionFailures = supersessionCases.filter(
+    ([csp, expected]) => supersedesXFrameOptions(csp) !== expected,
+  )
+  check(
+    'X-Frame-Options supersession is exact — restrictive frame-ancestors only, never a wildcard',
+    supersessionFailures.length === 0,
+    supersessionFailures.length
+      ? `wrong for: ${supersessionFailures.map(([, , label]) => label).join('; ')}`
+      : `${supersessionCases.length} cases correct`,
+  )
+
+  // HSTS graded on its directives.
+  const hstsAnalysis = report.evidence.engines.http.data.hsts
+  const hstsRecommendation = report.recommendations.find((rec) => rec.id === 'enable-hsts')
+  check(
+    'HSTS is not recommended when max-age is a full year with includeSubDomains',
+    !report.evidence.http.reachable ||
+      !(hstsAnalysis.maxAge >= 31_536_000 && hstsAnalysis.includeSubDomains) ||
+      !hstsRecommendation,
+    `maxAge=${hstsAnalysis.maxAge} includeSubDomains=${hstsAnalysis.includeSubDomains} → ${
+      hstsRecommendation ? 'recommended' : 'correctly withheld'
+    }`,
+  )
+  check(
+    'preload is never demanded of a name the preload list cannot accept',
+    (() => {
+      const ineligible = hstsAnalysis.preloadBlockers.some((b) => /registrable domains/.test(b))
+      if (!ineligible) return true
+      const hstsFinding = report.findings.find((f) => f.id === 'hsts')
+      return !/\bpreload\b/i.test(hstsFinding?.nextStep ?? '')
+    })(),
+    hstsAnalysis.preloadBlockers.join('; ') || 'preload-eligible name',
+  )
+  check(
+    'the HSTS score tracks the directives rather than a pass/fail flag',
+    (() => {
+      if (!report.evidence.http.reachable) return true
+      const component = report.scoreComponents.find((c) => c.key === 'hsts')
+      if (!component?.applicable) return true
+      // A full-year policy with subdomain coverage must outscore a short one.
+      const strong = hstsAnalysis.maxAge >= 31_536_000 && hstsAnalysis.includeSubDomains
+      return strong ? component.score >= 95 : component.score < 95
+    })(),
+    `maxAge=${hstsAnalysis.maxAge} → score ${report.scoreComponents.find((c) => c.key === 'hsts')?.score}`,
+  )
+
+  // Platform-tailored remediation.
+  const detected = report.evidence.engines.http.data.fingerprint
+  const withRemediation = report.recommendations.filter((rec) => rec.remediation)
+  check(
+    'platform remediation is only attached when a platform was actually detected',
+    withRemediation.length === 0 ||
+      Boolean(detected.cdn || detected.reverseProxy || detected.server),
+    `cdn=${detected.cdn} proxy=${detected.reverseProxy} → ${withRemediation.length} tailored`,
+  )
+  check(
+    'every tailored remediation names the platform it applies to',
+    withRemediation.every((rec) => /detected/i.test(rec.remediation ?? '')),
+    withRemediation.map((r) => r.id).join(', ') || 'none tailored',
   )
 
   // ── Public Scan Intelligence Engine modules ──────────────────────────────

@@ -685,6 +685,8 @@ function normalizeWebResult(result: WebScanCompleteResult, startedAt: string): D
       apiSecurityResult: result.apiSecurityResult,
       pqcRecommendations: result.pqcRecommendations,
       riskBreakdown: result.riskBreakdown,
+      riskBreakdownApplicable: result.riskBreakdownApplicable,
+      riskMeasuredWeight: result.riskMeasuredWeight,
       detectionRuleResults: result.detectionRuleResults,
       runtimeHealth: result.runtimeHealth,
       scanConfidence: result.scanConfidence,
@@ -2877,6 +2879,21 @@ function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceM
       qScore: storedSummary.qScore ?? null,
       telemetry: metadata.telemetry || [],
       moduleStates: metadata.moduleStates || [],
+      /**
+       * Per-target evidence, minus the findings array — the same findings are
+       * already returned in full under `findings`, and duplicating them once
+       * per target would double the size of every history response.
+       *
+       * What remains is the measurement metadata the Scanner UI's evidence
+       * panels read (TLS analysis, parsed certificate, cipher breakdown, repo /
+       * Web Crypto / API passes, the weighted risk decomposition and the scan
+       * confidence), so reviewing a past scan shows the same evidence the live
+       * run did instead of an empty panel.
+       */
+      results: (metadata.results || []).map((result: any) => {
+        const { findings: _omitted, ...rest } = result || {}
+        return rest
+      }),
       enterpriseScanner2: metadata.enterpriseScanner2 || null,
       errorLogs: metadata.errors || [],
       summary: storedSummary,

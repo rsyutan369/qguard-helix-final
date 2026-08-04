@@ -252,6 +252,23 @@ export interface WebScanRiskBreakdown {
   pqcReadiness: number
 }
 
+/**
+ * Which risk dimensions were actually measured.
+ *
+ * `WebScanRiskBreakdown` always carries five numbers so the persisted shape
+ * never changes, but a dimension the scan could not observe is excluded from
+ * the weighted score entirely — this map is how consumers tell a measurement
+ * (`true`) from a filler zero (`false`). Rendering an inapplicable dimension as
+ * a posture of 100 is exactly the misreading this exists to prevent.
+ */
+export interface WebScanRiskApplicability {
+  certificateRisk: boolean
+  tlsConfigRisk: boolean
+  cipherSuiteRisk: boolean
+  appCryptoRisk: boolean
+  pqcReadiness: boolean
+}
+
 export interface WebScanRiskScore {
   overallScore: number
   riskLevel: ThreatLevel
@@ -259,6 +276,9 @@ export interface WebScanRiskScore {
   quantumReadinessLevel: QuantumReadinessLevel
   legacyQScore: number
   breakdown: WebScanRiskBreakdown
+  breakdownApplicable: WebScanRiskApplicability
+  /** Sum of the weights that contributed to `overallScore`, out of 100. */
+  measuredWeight: number
 }
 
 export type QuantumReadinessLevel =
@@ -314,6 +334,10 @@ export interface WebScanCompleteResult {
   apiSecurityResult: ApiSecurityResult | null
   pqcRecommendations: PQCMigrationDetail[]
   riskBreakdown: WebScanRiskBreakdown
+  /** Which entries of `riskBreakdown` are measurements rather than filler. */
+  riskBreakdownApplicable?: WebScanRiskApplicability
+  /** Sum of the weights that contributed to the overall score, out of 100. */
+  riskMeasuredWeight?: number
   detectionRuleResults: DetectionRuleResult[]
   runtimeHealth?: unknown
   scanConfidence?: { confidence: number; label: string; factors: string[] }

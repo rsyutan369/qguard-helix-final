@@ -19,7 +19,15 @@
 
 export { QuantumScanHero, type QuantumScanHeroProps } from './QuantumScanHero';
 
-export { QveProvider, useQve, useQveState, QVE_NODE_BLUEPRINTS } from './scan-event-store';
+export {
+  QveProvider,
+  useQve,
+  useQveState,
+  QVE_NODE_BLUEPRINTS,
+  QVE_LEFT_NODES,
+  QVE_RIGHT_NODES,
+  type NodeBlueprint,
+} from './scan-event-store';
 export { useScanEventBridge, type ScanEventBridgeInput } from './use-scan-event-bridge';
 export { reportEvidenceEvents, scanStartedEvent, stageTransitionEvents } from './event-derivation';
 export { useQveBudget, useAdaptiveDpr, type QveBudget, type QveTier } from './performance-manager';
@@ -45,6 +53,7 @@ export {
   QVE_COLOR,
   type QveNode,
   type QveNodeKey,
+  type QvePublicNodeKey,
   type QveNodeState,
   type QveRunState,
   type QveState,

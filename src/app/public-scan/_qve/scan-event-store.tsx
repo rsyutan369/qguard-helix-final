@@ -26,7 +26,7 @@ import {
 
 /* ------------------------------------------------------------- node catalog - */
 
-interface NodeBlueprint {
+export interface NodeBlueprint {
   key: QveNodeKey;
   title: string;
   /** Verdict shown before any evidence exists. */
@@ -94,8 +94,8 @@ function idleNode(blueprint: NodeBlueprint): QveNode {
   };
 }
 
-function idleNodes(): Record<QveNodeKey, QveNode> {
-  return QVE_NODE_BLUEPRINTS.reduce(
+function idleNodes(blueprints: readonly NodeBlueprint[]): Record<QveNodeKey, QveNode> {
+  return blueprints.reduce(
     (accumulator, blueprint) => {
       accumulator[blueprint.key] = idleNode(blueprint);
       return accumulator;
@@ -104,7 +104,7 @@ function idleNodes(): Record<QveNodeKey, QveNode> {
   );
 }
 
-export function initialQveState(): QveState {
+export function initialQveState(blueprints: readonly NodeBlueprint[] = QVE_NODE_BLUEPRINTS): QveState {
   return {
     run: 'idle',
     startedAt: null,
@@ -115,7 +115,7 @@ export function initialQveState(): QveState {
     postQuantumScore: 0,
     quantumDetected: false,
     peakSeverity: 'none',
-    nodes: idleNodes(),
+    nodes: idleNodes(blueprints),
     events: [],
     timeline: [],
     tick: 0,
@@ -191,10 +191,14 @@ const EVENTS_MAX = 160;
 /** Events that carry no node verdict and only belong on the timeline. */
 const LIFECYCLE_TYPES = new Set<ScanEvent['type']>(['SCAN_STARTED', 'SCAN_COMPLETED', 'ERROR']);
 
-export function qveReducer(state: QveState, action: QveAction): QveState {
+export function qveReducer(
+  state: QveState,
+  action: QveAction,
+  blueprints: readonly NodeBlueprint[] = QVE_NODE_BLUEPRINTS,
+): QveState {
   switch (action.type) {
     case 'reset':
-      return initialQveState();
+      return initialQveState(blueprints);
 
     case 'settle': {
       const nodes = { ...state.nodes };
@@ -221,7 +225,7 @@ export function qveReducer(state: QveState, action: QveAction): QveState {
       // first one's verdicts.
       if (event.type === 'SCAN_STARTED') {
         return {
-          ...initialQveState(),
+          ...initialQveState(blueprints),
           run: 'scanning',
           startedAt: event.timestamp,
           asset: event.asset ?? null,
@@ -342,8 +346,27 @@ interface QveStore {
 
 const QveContext = React.createContext<QveStore | null>(null);
 
-export function QveProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = React.useReducer(qveReducer, undefined, initialQveState);
+/**
+ * @param blueprints The node ring this engine instance renders. Defaults to the
+ * six public-edge surfaces so /public-scan mounts unchanged; the authenticated
+ * Dashboard Scanner passes its own estate-discovery ring.
+ */
+export function QveProvider({
+  blueprints = QVE_NODE_BLUEPRINTS,
+  children,
+}: {
+  blueprints?: readonly NodeBlueprint[];
+  children: React.ReactNode;
+}) {
+  // The blueprint set is fixed for the life of a mounted engine — swapping the
+  // ring mid-run would silently discard every verdict already collected — so it
+  // is captured once rather than tracked as a reducer dependency.
+  const pinned = React.useRef(blueprints);
+  const reducer = React.useCallback(
+    (state: QveState, action: QveAction) => qveReducer(state, action, pinned.current),
+    [],
+  );
+  const [state, dispatch] = React.useReducer(reducer, pinned.current, initialQveState);
   const value = React.useMemo(() => ({ state, dispatch }), [state, dispatch]);
   return <QveContext.Provider value={value}>{children}</QveContext.Provider>;
 }

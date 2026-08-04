@@ -16,7 +16,7 @@ import { deriveReadState } from "@/lib/chat-read-state";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { supabase } from "@/lib/supabase";
-import { safeInvoke } from "@/lib/tauri";
+import { safeInvoke, invokeWithTimeout } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
 import { useCall } from "@/components/call/CallProvider";
 import { CallButton } from "@/components/call/CallButton";
@@ -578,6 +578,39 @@ async function withFetchRetry<T>(task: () => Promise<T>, attempts = 3, delayMs =
 
 const DIRECTORY_UNREACHABLE_MESSAGE = "Couldn't reach the directory service. Check your connection and try again in a moment.";
 
+// Safety-net cadence for the open thread's realtime reload, mirroring
+// call-signaling.ts's IDLE_POLL_MS: a slow poll for the window where the
+// WebView's realtime socket has died silently (Android background/screen-off
+// suspend, a Wi-Fi/cellular handoff) without ever firing CHANNEL_ERROR/CLOSED
+// and without a visibilitychange/online transition to catch it. Without this,
+// a message sent into that gap never appears until an unrelated event nudges
+// a reload — which reads to the user as "messages aren't showing up".
+const CHAT_IDLE_POLL_MS = 12_000;
+
+// Upper bound on a single message decrypt round-trip. Generous on purpose: the
+// portable (non-NEON) ML-KEM/ML-DSA build is slower on mobile and every decrypt
+// queues behind the global Rust key-scope mutex, so this must only ever catch a
+// genuine stall, never a merely slow device.
+const DECRYPT_TIMEOUT_MS = 25_000;
+
+// How long the send path may trust its cached recipient-device list before it
+// must re-read the authoritative one.
+//
+// A message is sealed per RECIPIENT DEVICE, so a device missing from that list
+// gets no envelope at all — and no amount of reloading or polling on the peer's
+// side can recover a row that was never written. Only re-sealing (the
+// `syncMissingDeviceEnvelopes` repair) fixes it, and that runs only when the
+// SENDER later re-decrypts the message, so if the sender closes the app the
+// message can stay undelivered indefinitely. Previously the send path refetched
+// only when the cache yielded ZERO devices, so a peer who added a device — or
+// whose registration hadn't reached this client yet (Android suspends the
+// realtime socket while backgrounded) — silently received nothing.
+//
+// A short TTL keeps the burst case fast (rapid consecutive sends still hit the
+// cache, which is what made sends slow before) while bounding how long a send
+// can address a stale device set.
+const DEVICE_LIST_MAX_STALENESS_MS = 20_000;
+
 function mapDeviceTrustState(value: string): TrustedDevice["trust_state"] {
   const normalized = value.toLowerCase();
   if (value === "ThisDevice" || normalized === "this_device") return "ThisDevice";
@@ -941,6 +974,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   );
   const decryptInFlightRef = useRef<Map<string, Promise<DecryptedChatEnvelope>>>(new Map());
   const syncInFlightRef = useRef<Set<string>>(new Set());
+  // When the send path last read the AUTHORITATIVE recipient-device list from
+  // the server, keyed by the recipient set. See DEVICE_LIST_MAX_STALENESS_MS.
+  const deviceListFetchedAtRef = useRef<Map<string, number>>(new Map());
+  // Newest envelope `created_at` the open thread has loaded, used by the idle
+  // catch-up probe to avoid reloading when nothing new exists.
+  const newestEnvelopeAtRef = useRef<string>("");
   const syncedEnvelopeTargetsRef = useRef<Set<string>>(new Set());
   const searchRequestRef = useRef(0);
   const messageLoadSeqRef = useRef(0);
@@ -1636,9 +1675,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           const decryptKey = `${groupId}:${localRow.id}`;
           let decryptedPromise = decryptInFlightRef.current.get(decryptKey);
           if (!decryptedPromise) {
-            decryptedPromise = safeInvoke<DecryptedChatEnvelope>("messaging_receive_encrypted_message", {
+            // Bounded wait: one message decrypt is fixed-size crypto, so it can
+            // never legitimately take this long. Un-timed, a single stalled
+            // round-trip (the global Rust `key_scope` mutex serializes every
+            // key operation) hangs the whole `Promise.all` chunk, so
+            // `hydrateMessageRows` never returns and the load's `finally` never
+            // clears `messagesLoading` — the "Loading encrypted history..."
+            // hang. On timeout the group falls through to the normal decrypt
+            // failure path and renders as a failed bubble instead.
+            decryptedPromise = invokeWithTimeout<DecryptedChatEnvelope>("messaging_receive_encrypted_message", {
               envelope: buildTauriEnvelope(localRow),
-            });
+            }, DECRYPT_TIMEOUT_MS);
             decryptInFlightRef.current.set(decryptKey, decryptedPromise);
             decryptedPromise.finally(() => {
               if (decryptInFlightRef.current.get(decryptKey) === decryptedPromise) {
@@ -1996,6 +2043,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         deleted_at: row.deleted_at ? String(row.deleted_at) : null,
         created_at: String(row.created_at),
       } satisfies MessageEnvelopeRow));
+      // Watermark for the idle catch-up probe: the newest envelope this load
+      // actually saw. The probe compares against it so the 250-row reload only
+      // runs when the server genuinely has something newer.
+      if (conversationForLoad === activeConversationIdRef.current) {
+        newestEnvelopeAtRef.current = rows.reduce(
+          (newest, row) => (row.created_at > newest ? row.created_at : newest),
+          "",
+        );
+      }
       const stateRows = statesResult.error ? [] : (statesResult.data ?? []) as Array<Record<string, unknown>>;
       const userStates = new Map(stateRows.map((row) => [String(row.client_message_id), {
         client_message_id: String(row.client_message_id),
@@ -2086,6 +2142,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     let reloadTimer: number | undefined;
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let resubscribeTimer: number | undefined;
+    let idlePollTimer: number | undefined;
     let attempts = 0;
 
     const scheduleReload = (delayMs = 500) => {
@@ -2147,6 +2204,38 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     document.addEventListener("visibilitychange", onResume);
     window.addEventListener("online", onResume);
 
+    // Belt-and-suspenders catch-up: the channel can look SUBSCRIBED forever
+    // while the underlying socket is actually dead, so this is the only thing
+    // that bounds how long a delivered-but-unseen message stays invisible when
+    // no status change and no visibility/online event ever fires.
+    //
+    // Deliberately a CHEAP probe, not a blind reload: one indexed single-row
+    // read of the newest envelope, and the expensive 250-row reload runs only
+    // when that is actually newer than what the thread already has. A blind
+    // periodic reload would add constant background cost to the very screen
+    // this is meant to make faster.
+    const probeForNewMessages = async () => {
+      if (disposed || document.visibilityState !== "visible") return;
+      try {
+        const { data, error } = await supabase
+          .from("messaging_message_envelopes")
+          .select("created_at")
+          .eq("conversation_id", conversationId)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (error || disposed || conversationId !== activeConversationIdRef.current) return;
+        const newest = data?.[0]?.created_at ? String(data[0].created_at) : "";
+        // Empty watermark means the thread has not completed a load yet; let
+        // that load finish rather than racing another one against it.
+        if (newest && newestEnvelopeAtRef.current && newest > newestEnvelopeAtRef.current) {
+          scheduleReload(0);
+        }
+      } catch {
+        // Offline/transient: the next tick retries. Never throw into the timer.
+      }
+    };
+    idlePollTimer = window.setInterval(() => void probeForNewMessages(), CHAT_IDLE_POLL_MS);
+
     open();
 
     return () => {
@@ -2155,6 +2244,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       window.removeEventListener("online", onResume);
       if (reloadTimer !== undefined) window.clearTimeout(reloadTimer);
       if (resubscribeTimer !== undefined) window.clearTimeout(resubscribeTimer);
+      if (idlePollTimer !== undefined) window.clearInterval(idlePollTimer);
       if (channel) void supabase.removeChannel(channel);
     };
   }, [activeConversationLoadId, loadConversationMessages]);
@@ -3152,23 +3242,37 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (recipientUserIds.length === 0) {
       throw new Error("Open a direct chat with a contact before sending");
     }
-    // Use the already-loaded, realtime-maintained device list so a send never
-    // blocks on a fresh device query (a full network round-trip on the critical
-    // path of every message). Only fall back to an awaited fetch when nothing is
-    // cached yet — e.g. the very first send right after opening the chat.
+    // Use the already-loaded, realtime-maintained device list so a burst of
+    // sends does not each block on a device query (a full network round-trip on
+    // the critical path of every message). But re-read the authoritative list
+    // when the cache is empty OR older than DEVICE_LIST_MAX_STALENESS_MS: a
+    // device missing here never receives an envelope, and the peer cannot
+    // recover a row that was never written for them.
+    const recipientCacheKey = [...recipientUserIds].sort().join(",");
+    const lastFetchedAt = deviceListFetchedAtRef.current.get(recipientCacheKey) ?? 0;
     let deliveryRecipientDevices = selectDeliveryDevicesForUsers(
       recipientDevices,
       recipientUserIds,
       localDeviceId,
     );
-    if (deliveryRecipientDevices.length === 0) {
+    if (
+      deliveryRecipientDevices.length === 0 ||
+      Date.now() - lastFetchedAt > DEVICE_LIST_MAX_STALENESS_MS
+    ) {
       let fetched: TrustedDevice[] = [];
       try {
         fetched = await loadTrustedDevicesForUsers(recipientUserIds);
       } catch {
         fetched = [];
       }
-      deliveryRecipientDevices = selectDeliveryDevicesForUsers(fetched, recipientUserIds, localDeviceId);
+      const fresh = selectDeliveryDevicesForUsers(fetched, recipientUserIds, localDeviceId);
+      // Keep the cached list when the refresh yields nothing (offline, transient
+      // failure) — a stale addressee set still delivers to the devices we know,
+      // whereas an empty one would abort a send that could have succeeded.
+      if (fresh.length > 0) {
+        deliveryRecipientDevices = fresh;
+        deviceListFetchedAtRef.current.set(recipientCacheKey, Date.now());
+      }
     }
     if (deliveryRecipientDevices.length === 0) {
       throw new Error("Recipient device is missing signed PQC prekeys");

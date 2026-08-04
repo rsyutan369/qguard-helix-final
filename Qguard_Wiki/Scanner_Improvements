@@ -1,0 +1,214 @@
+Refactor Dashboard Scanner to Match Public Scan Experience
+
+Thank you for your excellent work so far.
+
+Your next task is to fully refactor and enhance the Dashboard Scanner while preserving all existing backend functionality and scanning capabilities.
+
+Objective
+
+Completely redesign and enhance:
+
+http://localhost:3000/dashboard/scanner
+
+so that it matches the design, user experience, components, workflows, animations, layout, logic, and overall quality of:
+
+http://localhost:3000/public-scan
+
+The Dashboard Scanner should become the authenticated enterprise version of the Public Scan page.
+
+Design Requirements
+
+Replicate the entire visual experience of the Public Scan page, including:
+
+Overall page layout
+Hero section
+Scanner interface
+Component hierarchy
+Cards
+Dashboard widgets
+Status indicators
+Progress animations
+Typography
+Colors
+Icons
+Motion effects
+Loading states
+Empty states
+Hover interactions
+Glassmorphism
+Borders
+Shadows
+Spacing
+Responsive behavior
+Enterprise UI styling
+
+The goal is for both pages to have the same premium design language while serving different user contexts.
+
+The Dashboard Scanner should feel like the authenticated enterprise edition of the Public Scan experience.
+
+Functional Requirements
+
+The redesign must not change or break any existing functionality.
+
+All current scanning workflows must remain fully operational.
+
+Preserve:
+
+Scanner orchestration
+Discovery engines
+TLS analysis
+Certificate analysis
+DNS analysis
+HTTP Security Header analysis
+Cipher suite detection
+Cryptographic inventory
+PQC readiness analysis
+Executive recommendations
+Encryption scoring
+Findings generation
+Asset correlation
+Background processing
+Real-time scan progress
+Streaming updates
+Existing APIs
+Existing hooks
+Existing services
+Existing state management
+
+Only improve the UI/UX and presentation.
+
+Do not rewrite working business logic unless absolutely necessary.
+
+Dashboard-Specific Tabs
+
+The following tabs must remain fully functional and continue using the existing routing and logic:
+
+/dashboard/scanner?tab=history
+/dashboard/scanner?tab=findings
+/dashboard/scanner?tab=agents
+/dashboard/scanner?tab=settings
+
+Do not remove, rename, or break these tabs.
+
+Their functionality should remain unchanged while adopting the same premium design language.
+
+Enterprise Data Integrity
+
+This is extremely important.
+
+The Dashboard Scanner is not a demo scanner.
+
+It is the primary scanning engine used by authenticated users.
+
+Every scan must continue to populate and synchronize data across the platform.
+
+Ensure the scanner continues updating:
+
+/dashboard/assets
+/dashboard/cbom
+/dashboard/crypto-inventory
+/dashboard/findings
+/dashboard/quantum-readiness
+/dashboard/migration-planner
+/dashboard/executive-dashboard
+
+and all other modules that depend on scan results.
+
+All pages must remain synchronized using the latest scan results.
+
+Data Accuracy Requirements
+
+Never generate:
+
+Placeholder data
+Fake scan results
+Simulated assets
+Mock vulnerabilities
+Hardcoded findings
+Fabricated scores
+
+Every displayed result must originate from:
+
+Actual scanner engines
+Real scan evidence
+Live APIs
+Database records
+Authenticated tenant data
+Real-time processing
+
+All displayed information must remain internally consistent across every module.
+
+Performance Requirements
+
+Maintain or improve performance.
+
+Avoid unnecessary:
+
+Re-renders
+Duplicate API requests
+Duplicate state updates
+Memory leaks
+Blocking operations
+
+Optimize:
+
+Lazy loading
+Component rendering
+Data fetching
+Caching
+Skeleton loaders
+Progressive rendering
+Responsiveness
+
+The entire page must be fully responsive.
+
+Optimize for:
+
+Desktop
+Laptop
+Tablet
+Mobile
+
+Maintain enterprise-quality layouts across all screen sizes.
+
+Accessibility
+
+Ensure the page follows modern accessibility best practices:
+
+Proper semantic HTML
+Keyboard navigation
+Focus indicators
+ARIA labels where appropriate
+Sufficient color contrast
+Screen reader compatibility
+Code Quality
+
+Refactor components where beneficial while maintaining compatibility.
+
+Requirements:
+
+Modular architecture
+Reusable components
+Clean TypeScript
+Strong typing
+Consistent naming
+No duplicated UI logic
+No dead code
+No unused imports
+No breaking changes
+
+Follow the existing project architecture and coding standards.
+
+Final Deliverable
+
+The completed Dashboard Scanner should:
+
+Match the Public Scan page visually from top to bottom.
+Preserve all existing scanner logic and backend workflows.
+Continue feeding accurate scan data to every dependent module.
+Maintain real-time synchronization across the platform.
+Be fully responsive, polished, and enterprise-ready.
+Use only real scan data and authenticated tenant information.
+Introduce no regressions or breaking changes.
+
+The end result should feel like the enterprise control center for QGuard Helix, providing the same polished experience as the Public Scan page while retaining the full capabilities required by authenticated users and the rest of the platform.

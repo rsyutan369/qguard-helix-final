@@ -57,20 +57,48 @@ export function resolveKeyExchange(evidence: PublicScanEvidence): string {
 }
 
 /**
+ * Forward secrecy as observed, WITH the caveat that changes the verdict.
+ *
  * TLS 1.3 removes every static key-transport suite from the protocol, so a
- * completed 1.3 handshake *is* proof of forward secrecy regardless of what
- * Node reports for the ephemeral key.
+ * completed 1.3 handshake *is* proof of forward secrecy regardless of what Node
+ * reports for the ephemeral key.
+ *
+ * The caveat lives here rather than in the control so every consumer gets the
+ * same sentence. The Live Handshake panel reads `basis` directly, and while the
+ * caveat was applied only inside the control, the handshake step told the reader
+ * "every session key is forward secret" on the same report where the Findings
+ * table said Partial. One function, one answer.
+ *
+ * `caveated` is exposed separately so a caller can still tell the difference
+ * between "no forward secrecy at all" and "forward secrecy except on the legacy
+ * suites this endpoint also accepts" — they are not the same failure.
  */
-export function resolveForwardSecrecy(evidence: PublicScanEvidence): { enabled: boolean; basis: string } {
+export function resolveForwardSecrecy(evidence: PublicScanEvidence): {
+  enabled: boolean
+  caveated: boolean
+  basis: string
+} {
   const { tls, keyAgreement } = evidence
+  // A static-RSA suite carries no ephemeral key at all, so accepting one means
+  // some negotiable sessions have no forward secrecy however good the default is.
+  const staticRsa = evidence.cipherSuites.some((suite) => suite.category === 'rsa-kex')
+  const caveat =
+    ' However, static-RSA key-transport suites are also accepted, and sessions negotiated with those suites have no forward secrecy at all.'
+
+  const settle = (basis: string) => ({
+    enabled: true,
+    caveated: staticRsa,
+    basis: staticRsa ? `${basis}${caveat}` : basis,
+  })
+
   if (tls?.tlsVersion === 'TLSv1.3' || tls?.supportedProtocols.includes('TLSv1.3')) {
-    return { enabled: true, basis: 'TLS 1.3 mandates ephemeral (EC)DHE — every session key is forward secret.' }
+    return settle('TLS 1.3 mandates ephemeral (EC)DHE — every session key is forward secret.')
   }
-  if (keyAgreement.forwardSecrecy) return { enabled: true, basis: keyAgreement.forwardSecrecyBasis }
+  if (keyAgreement.forwardSecrecy) return settle(keyAgreement.forwardSecrecyBasis)
   if (/ecdhe|dhe|x25519|ffdhe/i.test(tls?.keyExchange ?? '')) {
-    return { enabled: true, basis: `Ephemeral key agreement negotiated: ${tls?.keyExchange}.` }
+    return settle(`Ephemeral key agreement negotiated: ${tls?.keyExchange}.`)
   }
-  return { enabled: false, basis: 'No ephemeral key agreement observed at the edge.' }
+  return { enabled: false, caveated: false, basis: 'No ephemeral key agreement observed at the edge.' }
 }
 
 /** Symmetric key length taken from the negotiated suite name. */
@@ -468,6 +496,7 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
 
   const fs = resolveForwardSecrecy(evidence)
   const kex = resolveKeyExchange(evidence)
+
   states.push(
     control({
       key: 'forward-secrecy',
@@ -476,17 +505,29 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       status: !tls ? 'Unknown' : fs.enabled ? (staticRsa ? 'Warning' : 'Healthy') : 'Critical',
       severity: !tls ? 'LOW' : fs.enabled ? 'SAFE' : 'HIGH',
       value: keyAgreement.hybridGroups.length ? 'Hybrid PQ' : kex.split(' (')[0] || 'Unknown',
-      finding: !tls ? 'Could not be determined' : fs.enabled ? `Enabled (${kex})` : 'Not observed',
+      finding: !tls
+        ? 'Could not be determined'
+        : fs.enabled
+          ? staticRsa
+            ? `Partial — ${kex} on modern suites, none on static RSA`
+            : `Enabled (${kex})`
+          : 'Not observed',
       evidence: fs.basis,
-      businessImpact: fs.enabled
-        ? 'Protects past sessions from later key compromise.'
-        : 'A single server-key compromise decrypts all recorded traffic.',
+      businessImpact: !fs.enabled
+        ? 'A single server-key compromise decrypts all recorded traffic.'
+        : staticRsa
+          ? 'Sessions negotiated with the accepted static-RSA suites can be decrypted later from the server key alone.'
+          : 'Protects past sessions from later key compromise.',
       quantumImpact: keyAgreement.hybridGroups.length
         ? 'Hybrid ML-KEM extends forward secrecy against a future quantum adversary.'
         : 'Classical forward secrecy alone does not stop harvest-now-decrypt-later.',
-      nextStep: keyAgreement.hybridGroups.length
-        ? 'Keep the hybrid group enabled and extend it to internal services.'
-        : 'Migrate to hybrid PQ key exchange (X25519MLKEM768).',
+      nextStep: !fs.enabled
+        ? 'Require ephemeral (EC)DHE on every accepted cipher suite.'
+        : staticRsa
+          ? 'Remove the static-RSA key-transport suites so every accepted suite is ephemeral.'
+          : keyAgreement.hybridGroups.length
+            ? 'Keep the hybrid group enabled and extend it to internal services.'
+            : 'Migrate to hybrid PQ key exchange (X25519MLKEM768).',
       score: tls ? (fs.enabled ? (staticRsa ? 70 : 100) : 0) : null,
       observed: kex,
       detail: fs.basis,
@@ -499,6 +540,10 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
   /* ── Post-quantum key agreement (feeds the PQ score, not the classical) ── */
 
   const hybrid = keyAgreement.hybridGroups
+  // Standalone ML-KEM: real post-quantum key agreement, but with no classical
+  // hedge. It never counts as hybrid deployment — it is stated separately so an
+  // endpoint offering it is not reported as having nothing.
+  const pureKem = keyAgreement.pureKemGroups ?? []
   // Hybrid ML-KEM is only reachable on an endpoint that negotiates TLS 1.3.
   const hybridReachable = evidence.engines?.tls?.data?.hybridProbed ?? true
   states.push(
@@ -513,7 +558,9 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
         ? 'Could not be determined'
         : hybrid.length
           ? hybrid.join(', ')
-          : 'No hybrid PQ group accepted',
+          : pureKem.length
+            ? `Standalone ${pureKem.join(', ')} only — no hybrid group`
+            : 'No hybrid PQ group accepted',
       // When the endpoint has no TLS 1.3, hybrid ML-KEM is not merely absent —
       // it is unreachable, because those groups exist only in the TLS 1.3
       // key_share. Saying so is far more useful than "no group accepted".
@@ -521,7 +568,14 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
         ? 'Named-group probe did not run'
         : !hybridReachable
           ? 'Endpoint does not negotiate TLS 1.3, where ML-KEM groups are defined — hybrid PQ is unreachable until TLS 1.3 is enabled'
-          : `Named-group probe accepted: ${[...hybrid, ...keyAgreement.classicalGroups].join(', ') || 'none'}`,
+          : [
+              `Named-group probe accepted: ${[...hybrid, ...pureKem, ...keyAgreement.classicalGroups].join(', ') || 'none'}`,
+              pureKem.length && !hybrid.length
+                ? `Standalone ML-KEM (${pureKem.join(', ')}) is accepted, but without a classical hedge it is not counted as hybrid deployment.`
+                : '',
+            ]
+              .filter(Boolean)
+              .join(' · '),
       businessImpact: hybrid.length
         ? 'New sessions are already protected against harvest-now-decrypt-later.'
         : 'Traffic captured today can be decrypted once a quantum computer exists.',
@@ -537,9 +591,19 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       score: null,
       weight: 0,
       observed: hybrid.join(', ') || (hybridReachable ? 'none accepted' : 'TLS 1.3 not supported'),
-      detail: hybridReachable
-        ? 'Hybrid ML-KEM groups accepted when offered in isolation under a TLS 1.3 floor'
-        : 'ML-KEM groups exist only in TLS 1.3 key_share; this endpoint does not negotiate TLS 1.3',
+      // States the RESULT, not the method. The previous wording — "Hybrid
+      // ML-KEM groups accepted when offered in isolation under a TLS 1.3
+      // floor" — described how the probe works and read, next to a Fail dot,
+      // as though groups had been accepted.
+      detail: !keyAgreement.probed
+        ? 'Named-group probe did not run, so hybrid support is Unknown'
+        : !hybridReachable
+          ? 'ML-KEM groups exist only in the TLS 1.3 key_share; this endpoint does not negotiate TLS 1.3'
+          : hybrid.length
+            ? `Hybrid ML-KEM accepted: ${hybrid.join(', ')} — each confirmed by offering it in isolation`
+            : pureKem.length
+              ? `Only standalone ML-KEM accepted (${pureKem.join(', ')}); no hybrid ECDHE + ML-KEM group was offered`
+              : 'No hybrid ML-KEM group was accepted when each was offered in isolation',
       inAttackSurface: true,
       isInventory: false,
       inFindings: true,
@@ -549,21 +613,100 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
   /* ── HSTS ──────────────────────────────────────────────────────────────── */
 
   const hsts = http.headers.find((header) => header.name === 'strict-transport-security')
+
+  /**
+   * HSTS graded on its DIRECTIVES, not as a binary.
+   *
+   * The control used to collapse everything into secure / present / absent, so
+   * every non-perfect policy produced the same "Enable HSTS with
+   * includeSubDomains and preload" line — including for endpoints that already
+   * had both. Two things that made that wrong:
+   *
+   *  • `preload` is not a universal best practice. Submission is effectively
+   *    irreversible on browser timescales, and the preload list only accepts
+   *    REGISTRABLE DOMAINS — recommending it for `api.example.com` is advice
+   *    that cannot be followed. `preloadBlockers` already knows this.
+   *  • max-age is a spectrum. A 300-second policy and an 11-month policy are
+   *    materially different risks and deserve different scores.
+   *
+   * `analyzeHsts` already computes max-age, includeSubDomains, preload and
+   * preload eligibility with its blockers; this control now reads them instead
+   * of re-deriving a yes/no.
+   */
+  const hstsDetail = evidence.engines?.http?.data?.hsts
+  const ONE_YEAR = 31_536_000
+  const maxAge = hstsDetail?.maxAge ?? 0
+  const includeSubDomains = hstsDetail?.includeSubDomains ?? false
+  const preloaded = hstsDetail?.preload ?? false
+  // Only suggest preload when the name is actually eligible to be submitted.
+  const preloadPossible =
+    Boolean(hstsDetail) && !hstsDetail!.preloadBlockers.some((blocker) => /registrable domains/.test(blocker))
+
+  const hstsGaps: string[] = []
+  if (maxAge > 0 && maxAge < ONE_YEAR) {
+    hstsGaps.push(`raise max-age to 31536000 (currently ${maxAge}s ≈ ${Math.round(maxAge / 86_400)}d)`)
+  }
+  if (!includeSubDomains) hstsGaps.push('add includeSubDomains')
+  if (!preloaded && preloadPossible && maxAge >= ONE_YEAR && includeSubDomains) {
+    hstsGaps.push('optionally submit to the preload list once you are certain every subdomain is HTTPS-only')
+  }
+
+  // Graduated: absent is a real failure, a short max-age is proportionally
+  // weaker, and a full-year policy with subdomain coverage is a pass whether or
+  // not it is preloaded.
+  const hstsScore = !http.reachable
+    ? null
+    : !hstsDetail?.present
+      ? 0
+      : maxAge >= ONE_YEAR && includeSubDomains
+        ? preloaded
+          ? 100
+          : 95
+        : maxAge >= ONE_YEAR
+          ? 75
+          : maxAge >= 86_400 * 30
+            ? 55
+            : maxAge > 0
+              ? 30
+              : 10
+
+  const hstsHealthy = (hstsScore ?? 0) >= 95
+
   states.push(
     control({
       key: 'hsts',
       control: 'HSTS',
       shortLabel: 'HSTS',
-      status: !http.reachable ? 'Unknown' : hsts?.secure ? 'Healthy' : hsts?.present ? 'Warning' : 'Not Supported',
-      severity: !http.reachable ? 'LOW' : hsts?.secure ? 'SAFE' : hsts?.present ? 'LOW' : 'MEDIUM',
-      value: !http.reachable ? 'Unknown' : hsts?.secure ? 'Pass' : hsts?.present ? 'Warning' : 'Fail',
+      status: !http.reachable
+        ? 'Unknown'
+        : !hstsDetail?.present
+          ? 'Not Supported'
+          : hstsHealthy
+            ? 'Healthy'
+            : 'Warning',
+      severity: !http.reachable
+        ? 'LOW'
+        : !hstsDetail?.present
+          ? 'MEDIUM'
+          : hstsHealthy
+            ? 'SAFE'
+            : maxAge < 86_400 * 30
+              ? 'MEDIUM'
+              : 'LOW',
+      value: !http.reachable
+        ? 'Unknown'
+        : !hstsDetail?.present
+          ? 'Fail'
+          : hstsHealthy
+            ? 'Pass'
+            : 'Partial',
       finding: !http.reachable
         ? 'Could not be determined'
-        : hsts?.secure
-          ? 'Enabled'
-          : hsts?.present
-            ? 'Enabled (max-age below one year)'
-            : 'Not enabled',
+        : !hstsDetail?.present
+          ? 'Not enabled'
+          : hstsHealthy
+            ? `Enforced${preloaded ? ' and preloaded' : ''} · ${Math.round(maxAge / 86_400)}d max-age with includeSubDomains`
+            : `${Math.round(maxAge / 86_400)}d max-age${includeSubDomains ? ' with includeSubDomains' : ', no includeSubDomains'}`,
       evidence: !http.reachable
         ? http.error || 'HTTP origin unreachable'
         : hsts?.value
@@ -571,58 +714,169 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
           : 'Header absent',
       businessImpact: !http.reachable
         ? 'The HTTP origin did not respond, so transport headers could not be read.'
-        : hsts?.secure
-          ? 'Protects against protocol downgrade attacks.'
-          : 'Users can be downgraded to plaintext on first contact.',
+        : !hstsDetail?.present
+          ? 'Users can be downgraded to plaintext on first contact.'
+          : hstsHealthy
+            ? 'Protects against protocol downgrade attacks.'
+            : !includeSubDomains
+              ? 'Subdomains are not covered, so a downgrade path remains on every name below this one.'
+              : 'The policy expires sooner than a year, narrowing the window in which returning users are protected.',
       quantumImpact: 'No direct quantum risk; narrows the downgrade path during a hybrid rollout.',
       nextStep: !http.reachable
         ? 'Re-run the assessment when the origin is reachable.'
-        : hsts?.secure
-          ? 'Continue monitoring.'
-          : 'Enable HSTS with includeSubDomains and preload.',
-      score: !http.reachable ? null : hsts?.secure ? 100 : hsts?.present ? 55 : 0,
+        : !hstsDetail?.present
+          ? 'Send Strict-Transport-Security with max-age=31536000; includeSubDomains.'
+          : hstsGaps.length
+            ? `${hstsGaps[0].charAt(0).toUpperCase()}${hstsGaps[0].slice(1)}.`
+            : 'Continue monitoring.',
+      score: hstsScore,
       observed: hsts?.value || (http.reachable ? 'absent' : 'origin unreachable'),
-      detail: hsts?.secure
-        ? 'Long-lived HSTS policy enforces HTTPS on subsequent visits.'
-        : 'No enforced HTTPS policy at the edge.',
+      detail: !hstsDetail?.present
+        ? 'No enforced HTTPS policy at the edge.'
+        : hstsHealthy
+          ? `Long-lived HSTS policy enforces HTTPS on subsequent visits${preloaded ? ', and the name is submitted for preloading' : ''}.`
+          : hstsGaps.join('; ') || 'HSTS policy present.',
       inAttackSurface: true,
       isInventory: false,
       inFindings: true,
     }),
   )
 
-  /* ── OCSP stapling ─────────────────────────────────────────────────────── */
+  /* ── OCSP stapling + responder liveness ────────────────────────────────── */
+
+  // The scan makes a real request to the advertised responder, so revocation is
+  // assessed on TWO facts rather than one. They are genuinely different:
+  //   stapled          the server hands clients a fresh response itself
+  //   responder alive  clients that have to ask the CA get an answer
+  // A certificate that neither staples NOR has a live responder leaves every
+  // soft-failing client with no revocation checking at all — strictly worse
+  // than "not stapled", and previously reported identically to it.
+  const responderState = certificateExtras?.ocspResponderState ?? 'not-probed'
+  const responderDead = responderState === 'unreachable'
+  /**
+   * NO RESPONDER IS NOT A FAILURE.
+   *
+   * Stapling is impossible without an OCSP responder in the certificate's AIA
+   * extension, and the modern CA trend is deliberately away from OCSP: Let's
+   * Encrypt retired its responders in 2025, and Cloudflare, Google and others
+   * have followed, relying on short-lived certificates plus Certificate
+   * Transparency for the same assurance. Marking those endpoints "Not stapled"
+   * scored a current best practice as a weakness and generated a remediation
+   * step the operator physically cannot perform.
+   *
+   * So the control reports `Not Applicable` — the same "no verdict" state the
+   * model already uses for anything unmeasurable. `score: null` drops the
+   * dimension and redistributes its 5% weight, exactly as it does for an
+   * unqueryable CAA RRset.
+   */
+  const ocspAdvertised = Boolean(certificateExtras?.ocspUri)
+  const ocspApplicable = Boolean(certificateExtras) && ocspAdvertised
+  const shortLived = (certificateExtras?.validityDays ?? 0) > 0 && (certificateExtras?.validityDays ?? 0) <= 100
+  const ctLogged = Boolean(certificateExtras?.signedCertificateTimestamps)
+
+  const noResponderExplanation = [
+    'OCSP stapling is unavailable because the certificate does not advertise an OCSP responder.',
+    shortLived && ctLogged
+      ? `This deployment relies on short-lived certificates (${certificateExtras?.validityDays}-day lifetime) and Certificate Transparency (${certificateExtras?.sctCount} SCTs) instead — a current best practice, not a gap.`
+      : shortLived
+        ? `This deployment relies on short-lived certificates (${certificateExtras?.validityDays}-day lifetime) instead.`
+        : 'Modern deployments may rely on short-lived certificates and Certificate Transparency instead.',
+  ].join(' ')
+
+  const ocspEvidence = !certificateExtras
+    ? 'Certificate probe did not complete'
+    : ocspAdvertised
+      ? `AIA OCSP: ${certificateExtras.ocspUri} — ${certificateExtras.ocspResponderDetail ?? 'responder not probed'}`
+      : // The full explanation goes in `evidence`, not just `detail`: the Findings
+        // table renders evidence as text, whereas `detail` only reaches the
+        // Attack Surface as a hover tooltip. A reader who sees "Not applicable"
+        // has to be told why without hunting for it.
+        noResponderExplanation
 
   states.push(
     control({
       key: 'ocsp-stapling',
       control: 'OCSP Stapling',
       shortLabel: 'OCSP Stapling',
-      status: !certificateExtras ? 'Unknown' : certificateExtras.ocspStapled ? 'Healthy' : 'Warning',
-      severity: !certificateExtras ? 'LOW' : certificateExtras.ocspStapled ? 'SAFE' : 'LOW',
+      status: !certificateExtras
+        ? 'Unknown'
+        : !ocspApplicable
+          ? 'Not Applicable'
+          : certificateExtras.ocspStapled
+            ? 'Healthy'
+            : responderDead
+              ? 'Critical'
+              : 'Warning',
+      severity: !certificateExtras || !ocspApplicable
+        ? 'SAFE'
+        : certificateExtras.ocspStapled
+          ? 'SAFE'
+          : responderDead
+            ? 'HIGH'
+            : 'LOW',
       // Not stapling is a Partial verdict, so the value says so rather than
       // showing a harder "Fail" than the status it carries.
-      value: !certificateExtras ? 'Unknown' : certificateExtras.ocspStapled ? 'Pass' : 'Not stapled',
+      value: !certificateExtras
+        ? 'Unknown'
+        : !ocspApplicable
+          ? 'Not applicable'
+          : certificateExtras.ocspStapled
+            ? 'Pass'
+            : responderDead
+              ? 'No revocation path'
+              : 'Not stapled',
       finding: !certificateExtras
         ? 'Could not be determined'
-        : certificateExtras.ocspStapled
-          ? 'Enabled'
-          : 'Not stapled',
-      evidence: !certificateExtras
-        ? 'Certificate probe did not complete'
-        : certificateExtras.ocspUri
-          ? `AIA OCSP: ${certificateExtras.ocspUri}`
-          : 'No OCSP responder advertised',
-      businessImpact: certificateExtras?.ocspStapled
-        ? 'Improves validation latency and privacy.'
-        : 'Clients must contact the CA, leaking browsing metadata and adding latency.',
-      quantumImpact: 'OCSP responses are classically signed and will need PQ re-anchoring.',
-      nextStep: certificateExtras?.ocspStapled
-        ? 'Continue monitoring.'
-        : 'Enable OCSP stapling at the TLS terminator.',
-      score: !certificateExtras ? null : certificateExtras.ocspStapled ? 100 : 40,
-      observed: certificateExtras?.ocspStapled ? 'stapled' : 'not stapled',
-      detail: 'Revocation status stapled to the handshake',
+        : !ocspApplicable
+          ? 'No OCSP responder advertised'
+          : certificateExtras.ocspStapled
+            ? 'Enabled'
+            : responderDead
+              ? 'Not stapled, and the advertised responder did not answer'
+              : 'Not stapled',
+      evidence: ocspEvidence,
+      businessImpact: !ocspApplicable
+        ? 'No impact — revocation assurance comes from certificate lifetime and CT for this deployment.'
+        : certificateExtras?.ocspStapled
+          ? 'Improves validation latency and privacy.'
+          : responderDead
+            ? 'Neither stapled nor reachable: clients that soft-fail revocation are not checking revocation for this endpoint at all.'
+            : 'Clients must contact the CA, leaking browsing metadata and adding latency.',
+      quantumImpact: ocspApplicable
+        ? 'OCSP responses are classically signed and will need PQ re-anchoring.'
+        : 'No OCSP signing chain to re-anchor for this deployment.',
+      nextStep: !ocspApplicable
+        ? 'No action — stapling is not possible, and is not required, without a responder.'
+        : certificateExtras?.ocspStapled
+          ? 'Continue monitoring.'
+          : responderDead
+            ? 'Enable OCSP stapling and raise the unreachable responder with your CA.'
+            : 'Enable OCSP stapling at the TLS terminator.',
+      // `null` when inapplicable: the weight is redistributed rather than the
+      // endpoint being penalised for a responder its CA no longer operates.
+      score: !ocspApplicable ? null : certificateExtras!.ocspStapled ? 100 : responderDead ? 10 : 40,
+      observed: !certificateExtras
+        ? 'certificate unavailable'
+        : !ocspAdvertised
+          ? 'no responder advertised'
+          : certificateExtras.ocspStapled
+            ? 'stapled'
+            : responderState === 'reachable'
+              ? 'not stapled, responder reachable'
+              : responderDead
+                ? 'not stapled, responder unreachable'
+                : 'not stapled',
+      detail: !certificateExtras
+        ? 'Revocation status stapled to the handshake'
+        : !ocspAdvertised
+          ? noResponderExplanation
+          : certificateExtras.ocspStapled
+            ? 'Revocation response stapled to the handshake — no CA round-trip needed.'
+            : responderDead
+              ? 'No staple, and a live request to the advertised responder went unanswered.'
+              : responderState === 'reachable'
+                ? 'No staple; clients must reach the CA, which answered when probed.'
+                : 'No revocation response stapled to the handshake.',
       inAttackSurface: true,
       isInventory: false,
       inFindings: true,
@@ -717,7 +971,14 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
 
   /* ── HTTP transport headers (aggregate) ────────────────────────────────── */
 
-  const otherHeaders = http.headers.filter((header) => header.name !== 'strict-transport-security')
+  // HSTS is scored as its own control. Headers whose protection is delivered by
+  // another header (X-Frame-Options under a restrictive CSP frame-ancestors)
+  // are dropped from BOTH sides of the ratio — the same "inapplicable is not a
+  // failure" rule the score model uses everywhere else.
+  const otherHeaders = http.headers.filter(
+    (header) => header.name !== 'strict-transport-security' && header.applicable !== false,
+  )
+  const supersededHeaders = http.headers.filter((header) => header.applicable === false)
   const hardened = otherHeaders.filter((header) => header.secure).length
   const missingRequired = otherHeaders.filter((header) => header.required && !header.secure)
 
@@ -739,9 +1000,16 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
         ? `${hardened} of ${otherHeaders.length} transport headers hardened`
         : 'Could not be determined',
       evidence: http.reachable
-        ? missingRequired.length
-          ? `Missing or weak: ${missingRequired.map((header) => header.name).join(', ')}`
-          : 'All assessed transport headers present and hardened'
+        ? [
+            missingRequired.length
+              ? `Missing or weak: ${missingRequired.map((header) => header.name).join(', ')}`
+              : 'All assessed transport headers present and hardened',
+            // The exemption is stated, never silent — a reader must be able to
+            // see why a header they know is absent was not counted against them.
+            ...supersededHeaders.map(
+              (header) => `${header.name} not required — superseded by ${header.supersededBy}`,
+            ),
+          ].join(' · ')
         : http.error || 'HTTP origin unreachable',
       businessImpact: missingRequired.length
         ? 'Missing transport controls widen the in-page attack surface.'
@@ -754,7 +1022,9 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       observed: http.reachable
         ? `${hardened}/${otherHeaders.length} transport headers hardened`
         : 'origin unreachable',
-      detail: 'Transport-layer response headers observed on the public origin',
+      detail: supersededHeaders.length
+        ? `Transport-layer response headers observed on the public origin; ${supersededHeaders.length} header(s) exempt as superseded.`
+        : 'Transport-layer response headers observed on the public origin',
       inAttackSurface: false,
       isInventory: false,
       inFindings: true,

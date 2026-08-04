@@ -541,10 +541,13 @@ export async function runCertificateEngine(
         ? 'Stapled response returned in the handshake'
         : data.ocspUri
           ? 'Responder published, response not stapled'
-          : 'No OCSP responder in the certificate',
+          : // No responder is not a gap: stapling is impossible without one, and
+            // the CAs behind most modern certificates have retired OCSP in
+            // favour of short-lived certificates plus Certificate Transparency.
+            'Not applicable — certificate advertises no OCSP responder',
       status: probe.ocspStapled ? 'pass' : data.ocspUri ? 'warning' : 'info',
       severity: probe.ocspStapled ? 'none' : data.ocspUri ? 'low' : 'info',
-      verdict: probe.ocspStapled ? 'Secure' : data.ocspUri ? 'Not stapled' : 'No responder',
+      verdict: probe.ocspStapled ? 'Secure' : data.ocspUri ? 'Not stapled' : 'Not applicable',
     })
 
     // Live responder liveness — a real request, made only when the certificate

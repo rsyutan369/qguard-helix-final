@@ -781,6 +781,8 @@ export async function executeWebScan(
         apiSecurityResult: apiResult,
         pqcRecommendations,
         riskBreakdown: riskScore.breakdown,
+        riskBreakdownApplicable: riskScore.breakdownApplicable,
+        riskMeasuredWeight: riskScore.measuredWeight,
         detectionRuleResults: ruleResults,
         runtimeHealth,
         scanConfidence,
@@ -850,6 +852,10 @@ export async function executeWebScan(
       apiSecurityResult: apiResult,
       pqcRecommendations,
       riskBreakdown: { certificateRisk: 0, tlsConfigRisk: 0, cipherSuiteRisk: 0, appCryptoRisk: 0, pqcReadiness: 0 },
+      // A failed/partial scan measured nothing — every dimension is explicitly
+      // inapplicable so no consumer reads those zeros as a clean posture.
+      riskBreakdownApplicable: { certificateRisk: false, tlsConfigRisk: false, cipherSuiteRisk: false, appCryptoRisk: false, pqcReadiness: false },
+      riskMeasuredWeight: 0,
       detectionRuleResults: ruleResults,
       runtimeHealth,
     }

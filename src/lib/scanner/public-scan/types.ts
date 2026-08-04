@@ -209,7 +209,21 @@ export interface PublicFinding {
 // ─── Cryptographic intelligence ───────────────────────────────────────────────
 
 export interface CryptoIntelligence {
-  observedAlgorithms: Array<{ name: string; role: string; quantumVulnerable: boolean }>
+  /**
+   * Projection of the Cryptographic Intelligence Engine's algorithm catalogue —
+   * the SAME array the `cryptographic-algorithms` score category counts. This
+   * panel used to build its own, shorter list, so the Encryption Score could
+   * report "7 algorithms observed" beside a panel listing four.
+   */
+  observedAlgorithms: Array<{
+    name: string
+    role: string
+    quantumVulnerable: boolean
+    /** Engine classification: Quantum Safe / Hybrid / Classical / Legacy / Deprecated. */
+    classification: string
+    /** Where the value was read from, e.g. "named-group probe". */
+    evidenceSource: string
+  }>
   keyExchange: string
   forwardSecrecy: 'Enabled' | 'Partial' | 'Not observed'
   quantumVulnerability: 'Vulnerable' | 'Hybrid-protected' | 'Quantum-safe'
@@ -264,6 +278,14 @@ export interface Recommendation {
   /** Plain-English statement of how scoreGain was derived. */
   scoreGainBasis: string
   rationale: string
+  /**
+   * Where and how to make this change on the platform the scan actually
+   * detected — the concrete directive or console path, with the detection
+   * basis attributed. `null` when no platform was identified, or when nothing
+   * accurate can be said for that platform/topic pair: a wrong config snippet
+   * costs the reader a failed change window, so silence is the safer answer.
+   */
+  remediation?: string | null
 }
 
 // ─── Governance (always unknown from a public scan) ───────────────────────────
@@ -343,6 +365,14 @@ export interface DnsEvidence {
 export interface KeyAgreementEvidence {
   probed: boolean
   hybridGroups: string[]
+  /**
+   * Standalone ML-KEM groups accepted — post-quantum key agreement with NO
+   * classical hedge. Reported separately from `hybridGroups` and never merged
+   * into it: the grading model scores hybrid deployment, and a standalone KEM
+   * is a different (and, today, less deployable) posture. The named-group probe
+   * measures these, so the report states them rather than discarding them.
+   */
+  pureKemGroups: string[]
   classicalGroups: string[]
   /** Preferred group description for display, e.g. "X25519MLKEM768". */
   primaryGroup: string | null
@@ -368,6 +398,15 @@ export interface HttpEvidence {
     secure: boolean
     required: boolean
     recommendation: string
+    /**
+     * False when the header is absent but its protection is delivered by
+     * another header (X-Frame-Options superseded by CSP frame-ancestors).
+     * Inapplicable headers are excluded from the hardened tally entirely —
+     * counting them would fail a site for omitting a header browsers ignore.
+     */
+    applicable: boolean
+    /** The superseding control, when `applicable` is false. */
+    supersededBy: string | null
   }>
   error: string | null
 }
@@ -377,6 +416,14 @@ export interface CertificateEvidence {
   sanCount: number
   ocspStapled: boolean
   ocspUri: string | null
+  /**
+   * Whether the advertised OCSP responder actually answered a live request.
+   * `not-advertised` (the certificate never promised revocation) and
+   * `unreachable` (it promised and cannot deliver) are different failures and
+   * are never flattened into one.
+   */
+  ocspResponderState: 'reachable' | 'unreachable' | 'not-advertised' | 'not-probed'
+  ocspResponderDetail: string | null
   mustStaple: boolean
   signedCertificateTimestamps: boolean
   sctCount: number
