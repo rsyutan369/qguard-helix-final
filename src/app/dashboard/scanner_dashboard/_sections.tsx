@@ -514,8 +514,22 @@ const MODULE_STATUS_STATE: Record<string, string> = {
   'No findings': 'pass',
   Running: 'info',
   Queued: 'unknown',
-  Skipped: 'not applicable',
+  Skipped: 'unknown',
   Failed: 'fail',
+};
+
+/**
+ * What the operator reads on the card. "Skipped" is never shown bare — the
+ * scanner's ledger always records WHY a module did not apply, and the label
+ * says so rather than leaving a grey step with no explanation.
+ */
+const MODULE_STATUS_LABEL: Record<string, string> = {
+  Completed: 'Completed',
+  'No findings': 'No findings',
+  Running: 'Running',
+  Queued: 'Pending',
+  Skipped: 'Not applicable',
+  Failed: 'Failed',
 };
 
 /**
@@ -533,13 +547,20 @@ export function ScannerModuleFlow({
   canRetry: boolean;
 }) {
   const done = modules.filter((module) => module.status === 'Completed' || module.status === 'No findings').length;
+  const notApplicable = modules.filter((module) => module.status === 'Skipped').length;
+  const brokenCount = modules.filter((module) => module.status === 'Failed').length;
+  // Coverage is stated against the modules that could apply, the same
+  // denominator the Discovery Workflow rail and Discovery Coverage use.
+  const applicable = modules.length - notApplicable;
 
   return (
     <Panel className="overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.blue}>Module Execution Flow</SectionLabel>
         <span className="font-mono text-[9.5px] uppercase tracking-widest text-slate-600">
-          {modules.length ? `${done}/${modules.length} modules reported` : 'Catalog published when a scan starts'}
+          {modules.length
+            ? `${done}/${applicable || modules.length} reported${notApplicable ? ` · ${notApplicable} n/a` : ''}${brokenCount ? ` · ${brokenCount} failed` : ''}`
+            : 'Catalog published when a scan starts'}
         </span>
       </div>
 
@@ -587,12 +608,24 @@ export function ScannerModuleFlow({
                       {module.name}
                     </p>
                     <div className="mt-1">
-                      <StatusPill status={MODULE_STATUS_STATE[module.status] ?? 'unknown'} label={module.status} />
+                      <StatusPill
+                        status={MODULE_STATUS_STATE[module.status] ?? 'unknown'}
+                        label={MODULE_STATUS_LABEL[module.status] ?? module.status}
+                      />
                     </div>
-                    <p className="mt-auto truncate font-mono text-[9.5px] text-slate-600" title={module.target}>
+                    <p
+                      className="mt-auto truncate font-mono text-[9.5px] text-slate-600"
+                      title={
+                        module.reason
+                          ? `${module.target ?? ''}\n${module.reason}`.trim()
+                          : module.target
+                      }
+                    >
                       {failed
-                        ? (module.error ?? 'module failed')
-                        : `${module.findingsCount} finding${module.findingsCount === 1 ? '' : 's'}`}
+                        ? (module.error ?? module.reason ?? 'module failed')
+                        : module.status === 'Skipped'
+                          ? (module.reason ?? 'not applicable to these targets')
+                          : `${module.findingsCount} finding${module.findingsCount === 1 ? '' : 's'}`}
                     </p>
                     {failed && canRetry && (
                       <button

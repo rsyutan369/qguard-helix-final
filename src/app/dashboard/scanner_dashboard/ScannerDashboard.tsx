@@ -27,8 +27,8 @@ import { useSubscription } from '@/hooks/use-subscription';
 import { tierMeets } from '@/lib/subscription-access';
 import { isOwnerEmail } from '@/lib/admin-access';
 import {
-  Calendar, CheckCircle2, ChevronRight, Copy, Database, Download, Eraser, Eye,
-  FileJson, FileSpreadsheet, Globe, History, Layers, Loader2, Lock, Network, Plus,
+  AlertTriangle, Calendar, CheckCircle2, ChevronRight, Copy, Database, Download, Eraser, Eye,
+  FileJson, FileSpreadsheet, Globe, History, Layers, Loader2, Lock, MinusCircle, Network, Plus,
   RefreshCw, RotateCcw, Search, Server, ShieldAlert, Sparkles, Target, Terminal,
   Trash2, Wifi, XCircle,
 } from 'lucide-react';
@@ -78,6 +78,7 @@ import type {
   HistoryEntry,
   HistoryTimeframe,
   LogEntry,
+  ModuleLedger,
   ModuleState,
   ScanResultRecord,
   ScanStatus,
@@ -801,6 +802,8 @@ export default function ScannerDashboard() {
   const [findings, setFindings] = useState<DefensiveFinding[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [modules, setModules] = useState<ModuleState[]>([]);
+  /** The scanner's own execution ledger for the current run, when one exists. */
+  const [moduleLedger, setModuleLedger] = useState<ModuleLedger | null>(null);
   // Per-target results and the Scanner_2 enterprise pass arrive on the same
   // `scan-complete` frame the summary does. They carry the published risk
   // decomposition, scan confidence, HNDL analysis and migration
@@ -1113,6 +1116,7 @@ export default function ScannerDashboard() {
     setFindings([]);
     setLogs([]);
     setModules([]);
+    setModuleLedger(null);
     setScanResults([]);
     setScanner2(null);
     setProgress(0);
@@ -1204,18 +1208,37 @@ export default function ScannerDashboard() {
 
           if (event.summary) setSummary(event.summary);
           if (Array.isArray(event.moduleStates)) setModules(event.moduleStates);
-          if (event.type === 'scan-complete') {
+          if (event.moduleLedger) setModuleLedger(event.moduleLedger as ModuleLedger);
+
+          /* A run is terminal only when the SCANNER says so.
+             The nested web scan emits its own per-target `scan-complete`, which
+             this reader used to treat as the end of the job — flipping the page
+             to "SCAN COMPLETE" while persistence, the Scanner_2 pass and every
+             posture module were still running, so half the Discovery Workflow
+             rendered as SKIPPED and a partial estate got graded. The backend now
+             namespaces those frames, and this guard is the second lock: the
+             authoritative frame is the one that carries the scan session id. */
+          const isTerminalComplete =
+            event.type === 'scan-complete' && event.status === 'completed' && Boolean(event.scanSessionId);
+          if (isTerminalComplete) {
             setStatus('completed');
             setProgress(100);
             // Land on the full assessment — the enterprise equivalent of the
             // public scan's results stack.
             setActiveTab('setup');
-            await fetchHistory();
+            // Deliberately not awaited: awaiting a REST round-trip inside the
+            // stream reader stalls consumption of frames the backend has
+            // already written.
+            void fetchHistory();
           }
           if (event.type === 'scan-failed') {
             setStatus('failed');
             setError(event.message || 'Scan failed');
-            await fetchHistory();
+            void fetchHistory();
+          }
+          if (event.type === 'scan-cancelled') {
+            setStatus('cancelled');
+            void fetchHistory();
           }
         }
       }
@@ -1841,8 +1864,22 @@ export default function ScannerDashboard() {
 
   const displayedHistory = filterHistoryByTimeframe(history, historyTimeframe);
   const historyMetrics = historyMetricSnapshot(displayedHistory);
-  const currentScanReadiness = summary?.totalFindings
-    ? Math.round(((summary.pqcReady ?? 0) / Math.max(1, summary.totalFindings)) * 100)
+
+  /* ── The assessment's evidence set, chosen ONCE ────────────────────────────
+     Everything on the results surface — hero counters, Executive Summary,
+     Estate Footprint, the findings table — reads from these three bindings, so
+     the page cannot describe a live run in one panel and the tenant estate in
+     the next. `latestHistoryEntry` is hoisted here (rather than defined beside
+     `buildAssessment` further down) precisely so the headline metrics and the
+     assessment resolve the same scan. */
+  const latestHistoryEntry = displayedHistory[0] || history[0] || null;
+  const effectiveSummary = summary ?? latestHistoryEntry?.summary ?? null;
+  const effectiveScanFindings = findings.length > 0
+    ? findings
+    : normalizeDashboardFindings(latestHistoryEntry?.findings);
+
+  const currentScanReadiness = effectiveSummary?.totalFindings
+    ? Math.round(((effectiveSummary.pqcReady ?? 0) / Math.max(1, effectiveSummary.totalFindings)) * 100)
     : 0;
   // Central-intelligence KPIs — computed from the shared cryptographic tables
   // (assets / inventory / exposures / results / vulnerabilities), never a
@@ -1861,16 +1898,19 @@ export default function ScannerDashboard() {
     vulnerableFindings: intelSummary.vulnerableComponents,
     pqcReady: intelSummary.pqcReadyComponents,
   };
-  const dashboardMetrics = status !== 'idle' && summary
+  /* Scan scope when an assessment is in view, estate scope otherwise — the same
+     rule `buildAssessment` applies, so the hero counters and the Estate
+     Footprint panel can never be counting different populations. */
+  const dashboardMetrics = effectiveSummary
     ? {
-        totalAssetsScanned: summary.targetsScanned,
-        vulnerableAssets: summary.vulnerable > 0 ? Math.max(1, summary.targetsScanned) : 0,
-        riskScore: summary.riskScore,
-        criticalFindings: summary.critical,
+        totalAssetsScanned: effectiveSummary.targetsScanned,
+        vulnerableAssets: effectiveSummary.vulnerable > 0 ? Math.max(1, effectiveSummary.targetsScanned) : 0,
+        riskScore: effectiveSummary.riskScore,
+        criticalFindings: effectiveSummary.critical,
         pqcReadiness: currentScanReadiness,
-        totalFindings: summary.totalFindings,
-        vulnerableFindings: summary.vulnerable,
-        pqcReady: summary.pqcReady,
+        totalFindings: effectiveSummary.totalFindings,
+        vulnerableFindings: effectiveSummary.vulnerable,
+        pqcReady: effectiveSummary.pqcReady,
       }
     : intelHasData
       ? intelMetrics
@@ -1884,8 +1924,14 @@ export default function ScannerDashboard() {
         : dashboardMetrics.riskScore > 0
           ? 'Low Risk'
           : 'No Scan Data';
-  const dashboardFindings = findings.length > 0
-    ? findings
+  /* The findings the result panels read.
+     When an assessment is in view these are THAT scan's findings — listing
+     every finding ever recorded beside a per-scan total is what let the
+     Cryptographic Findings table and the Executive Summary disagree by an order
+     of magnitude. With no assessment in view the table falls back to the full
+     recorded set, which is then what the totals describe too. */
+  const dashboardFindings = effectiveSummary
+    ? effectiveScanFindings
     : displayedHistory.flatMap((entry) => normalizeDashboardFindings(entry.findings));
   const dashboardSeverityCounts = {
     critical: dashboardFindings.filter((finding) => finding.threatLevel === 'CRITICAL').length,
@@ -2098,7 +2144,6 @@ export default function ScannerDashboard() {
      snapshot — the same snapshot Assets, CBOM, Exposure and Quantum Readiness
      read — which is what keeps this page tallying with the rest of the
      platform between runs. */
-  const latestHistoryEntry = displayedHistory[0] || history[0] || null;
   const effectiveResults = scanResults.length > 0
     ? scanResults
     : (latestHistoryEntry?.results ?? []);
@@ -2108,7 +2153,7 @@ export default function ScannerDashboard() {
   const assessment = useMemo(
     () => buildAssessment({
       status,
-      summary: summary ?? latestHistoryEntry?.summary ?? null,
+      summary: effectiveSummary,
       findings: dashboardFindings,
       modules: effectiveModules,
       results: effectiveResults,
@@ -2128,16 +2173,19 @@ export default function ScannerDashboard() {
         assets: latestHistoryEntry?.linkedAssetRecords?.length ?? 0,
         exposures: latestHistoryEntry?.linkedExposureNodes?.length ?? 0,
       },
-      provenance: status !== 'idle' && summary
+      provenance: summary
         ? 'Live scan evidence'
-        : intelHasData
-          ? 'Tenant Scanner Intelligence'
-          : 'No evidence yet',
+        : latestHistoryEntry?.summary
+          ? `Recorded scan · ${latestHistoryEntry.target}`
+          : intelHasData
+            ? 'Tenant Scanner Intelligence'
+            : 'No evidence yet',
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       status,
       summary,
+      effectiveSummary,
       dashboardFindings,
       effectiveModules,
       effectiveResults,
@@ -2200,6 +2248,7 @@ export default function ScannerDashboard() {
             error={error}
             targets={targets.map((target) => target.normalized || target.raw)}
             evidenceFindings={dashboardFindings}
+            evidenceModules={effectiveModules}
             results={effectiveResults}
             scanner2={effectiveScanner2}
             counters={{
@@ -2211,6 +2260,11 @@ export default function ScannerDashboard() {
             }}
             hasEvidence={assessment.hasEvidence}
             gradeLabel={assessment.executive.gradeable ? assessment.executive.gradeLabel : null}
+            verdict={{
+              score: assessment.executive.encryptionScore,
+              postQuantumReadiness: assessment.executive.postQuantumReadiness,
+              gradeable: assessment.executive.gradeable,
+            }}
             onStart={() => {
               if (targets.length === 0) {
                 showToast('Add an authorized target to the scan queue first.');
@@ -2243,9 +2297,14 @@ export default function ScannerDashboard() {
             railSlot={
               <>
                 <ScanModuleRail
-                  modules={modules}
-                  progress={progress}
-                  status={status}
+                  /* Reconciled, not live-only: after a reload the rail must
+                     describe the scan the rest of the page is describing,
+                     instead of resetting every surface to Waiting. */
+                  modules={effectiveModules}
+                  progress={isRunning ? progress : effectiveModules.length ? 100 : 0}
+                  status={status === 'idle' && latestHistoryEntry
+                    ? (latestHistoryEntry.status === 'completed' ? 'completed' : 'failed')
+                    : status}
                   isRunning={isRunning}
                 />
 
@@ -3284,28 +3343,69 @@ function ScanModuleRail({
   status: ScanStatus;
   isRunning: boolean;
 }) {
+  const runFinished = status === 'completed' || status === 'failed' || status === 'cancelled';
+
+  /**
+   * Stage state, derived strictly from what the scanner's module ledger reported.
+   *
+   * The previous rule collapsed three very different situations into one grey
+   * "Skipped" chip: a surface that genuinely did not apply, a surface that had
+   * measured most of its modules but was missing one that never reported, and a
+   * run that was cut short. That is why a scan which had read 10 TLS/cipher
+   * findings still announced "Transport & Ciphers · SKIPPED".
+   *
+   * The states are now disjoint and each one means exactly one thing:
+   *   complete   — every module in the surface resolved, at least one measured
+   *   partial    — measured, but a module is still unresolved (a real gap)
+   *   n/a        — every module in the surface legitimately did not apply
+   *   failed     — a module in the surface errored
+   *   running / waiting — the run has not reached this surface yet
+   */
   const stages = SCANNER_NODE_BLUEPRINTS.map((blueprint) => {
     const owned = modules.filter((module) => SCANNER_NODE_MODULES[blueprint.key]?.includes(module.id));
     const done = owned.filter((module) => module.status === 'Completed' || module.status === 'No findings');
+    const notApplicable = owned.filter((module) => module.status === 'Skipped');
     const failed = owned.filter((module) => module.status === 'Failed');
     const running = owned.some((module) => module.status === 'Running');
-    const state: 'waiting' | 'running' | 'complete' | 'failed' | 'skipped' =
+    const unresolved = owned.filter((module) => module.status === 'Queued');
+    const resolved = done.length + notApplicable.length;
+
+    // Some modules measured, some never reported: "complete" would overstate
+    // coverage and "skipped" would erase the work that did happen, so a
+    // finished run with a gap is reported as Partial.
+    const settledState: 'complete' | 'partial' | 'na' | 'waiting' =
+      resolved === owned.length
+        ? (notApplicable.length === owned.length ? 'na' : 'complete')
+        : runFinished
+          ? (done.length > 0 ? 'partial' : 'waiting')
+          : 'waiting';
+
+    const state: 'waiting' | 'running' | 'complete' | 'partial' | 'failed' | 'na' =
       owned.length === 0
         ? 'waiting'
         : failed.length > 0
           ? 'failed'
           : running
             ? 'running'
-            : done.length === owned.length
-              ? 'complete'
-              : 'waiting';
+            : settledState;
+
+    const findingCount = owned.reduce((sum, module) => sum + module.findingsCount, 0);
+    const measuredDenominator = owned.length - notApplicable.length;
     return {
       key: blueprint.key,
       label: blueprint.title,
       state,
       detail: owned.length === 0
         ? 'Awaiting module catalog'
-        : `${done.length}/${owned.length} modules · ${owned.reduce((sum, module) => sum + module.findingsCount, 0)} findings`,
+        : `${done.length}/${measuredDenominator || owned.length} modules${
+            notApplicable.length ? ` · ${notApplicable.length} n/a` : ''
+          }${unresolved.length && runFinished ? ` · ${unresolved.length} unreported` : ''} · ${findingCount} findings`,
+      // Reason lines, verbatim from the backend ledger, shown as the row title so
+      // "n/a" is always answerable.
+      reason: [
+        ...notApplicable.map((module) => `${module.name}: ${module.reason || 'not applicable'}`),
+        ...failed.map((module) => `${module.name}: ${module.error || module.reason || 'failed'}`),
+      ].join('\n'),
     };
   });
 
@@ -3313,8 +3413,9 @@ function ScanModuleRail({
     waiting: { color: ACCENT.slate, label: 'Waiting' },
     running: { color: ACCENT.cyan, label: 'Running' },
     complete: { color: ACCENT.emerald, label: 'Complete' },
+    partial: { color: ACCENT.amber, label: 'Partial' },
     failed: { color: ACCENT.rose, label: 'Failed' },
-    skipped: { color: ACCENT.slate, label: 'Skipped' },
+    na: { color: ACCENT.slate, label: 'Not applicable' },
   } as const;
 
   return (
@@ -3345,6 +3446,10 @@ function ScanModuleRail({
                   <CheckCircle2 className="h-3.5 w-3.5" />
                 ) : stage.state === 'failed' ? (
                   <XCircle className="h-3.5 w-3.5" />
+                ) : stage.state === 'na' ? (
+                  <MinusCircle className="h-3.5 w-3.5" />
+                ) : stage.state === 'partial' ? (
+                  <AlertTriangle className="h-3.5 w-3.5" />
                 ) : (
                   index + 1
                 )}
@@ -3369,9 +3474,19 @@ function ScanModuleRail({
                     {style.label}
                   </span>
                 </div>
-                <p className="truncate text-[11px] text-slate-500" title={stage.detail}>
+                <p
+                  className="truncate text-[11px] text-slate-500"
+                  title={stage.reason ? `${stage.detail}\n\n${stage.reason}` : stage.detail}
+                >
                   {stage.detail}
                 </p>
+                {/* A non-measuring surface always states why, inline — the
+                    operator should never have to guess what "n/a" covered. */}
+                {(stage.state === 'na' || stage.state === 'failed') && stage.reason && (
+                  <p className="mt-0.5 line-clamp-2 text-[10.5px] leading-snug text-slate-600">
+                    {stage.reason.split('\n')[0]}
+                  </p>
+                )}
               </div>
             </li>
           );

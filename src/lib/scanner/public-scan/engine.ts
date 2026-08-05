@@ -22,7 +22,13 @@
 
 import type { CertificateInfo, CipherSuiteDetail, ThreatLevel } from '../web-scanner/types'
 import { buildControlStates, findControl, resolveForwardSecrecy, resolveKeyExchange } from './controls'
-import { buildScoreCategories, CLASSICAL_CATEGORY_KEYS, RISK_ORDER, scoreToGrade } from './grading-model'
+import {
+  buildScoreCategories,
+  CLASSICAL_CATEGORY_KEYS,
+  postQuantumReadinessFromSignals,
+  RISK_ORDER,
+  scoreToGrade,
+} from './grading-model'
 import { detectPlatform, effortFor, remediationFor, type RemediationTopic } from './remediation'
 import type {
   AssessmentScope,
@@ -135,46 +141,29 @@ export function computePostQuantumReadiness(evidence: PublicScanEvidence): {
     isPostQuantumSignature(certificate?.publicKeyAlgorithm) ||
     isPostQuantumSignature(tls?.signatureAlgorithm)
 
-  let score = 0
+  /* The MODEL lives in grading-model so the authenticated Dashboard Scanner
+     scores post-quantum readiness with the identical weights from its own
+     evidence. This function stays responsible for one thing only: turning
+     public-edge evidence into the model's signals. */
+  const model = postQuantumReadinessFromSignals({
+    hybridObserved,
+    pqSignatureObserved,
+    tls13Offered: (tls?.supportedProtocols ?? []).includes('TLSv1.3'),
+    certificateValidityDays: certificateExtras ? certificateExtras.validityDays : null,
+    certificateTransparency: Boolean(certificateExtras?.signedCertificateTimestamps),
+    hstsEnforced: Boolean(
+      evidence.http.headers.find((header) => header.name === 'strict-transport-security')?.secure,
+    ),
+  })
 
-  if (hybridObserved) {
-    score += 55
-    reasons.push(
-      keyAgreement.hybridGroups.length
-        ? `Hybrid post-quantum key agreement accepted: ${keyAgreement.hybridGroups.join(', ')}.`
-        : 'Hybrid post-quantum key agreement negotiated in the TLS handshake.',
-    )
-  } else {
-    reasons.push('No hybrid or post-quantum key agreement offered at the public edge.')
+  // The public surface can name the exact groups it observed; the shared model
+  // states the generic case.
+  if (hybridObserved && keyAgreement.hybridGroups.length) {
+    reasons.push(`Hybrid post-quantum key agreement accepted: ${keyAgreement.hybridGroups.join(', ')}.`)
   }
+  reasons.push(...model.reasons)
 
-  if (pqSignatureObserved) {
-    score += 30
-    reasons.push('Post-quantum signature algorithm present in the served certificate chain.')
-  } else {
-    reasons.push('Certificate chain is signed with classical algorithms only.')
-  }
-
-  // Crypto-agility allowance — capability to move, not readiness itself.
-  const protocols = tls?.supportedProtocols ?? []
-  if (protocols.includes('TLSv1.3')) {
-    score += 12
-    reasons.push('TLS 1.3 is the protocol PQ hybrid groups deploy on — the prerequisite is met.')
-  }
-  if (certificateExtras && certificateExtras.validityDays > 0 && certificateExtras.validityDays <= 100) {
-    score += 8
-    reasons.push('Short-lived automated certificates enable fast algorithm rollover.')
-  }
-  if (certificateExtras?.signedCertificateTimestamps) {
-    score += 3
-    reasons.push('Certificate Transparency participation supports auditable re-issuance.')
-  }
-  if (evidence.http.headers.find((header) => header.name === 'strict-transport-security')?.secure) {
-    score += 3
-    reasons.push('Enforced HTTPS narrows the downgrade path during a hybrid rollout.')
-  }
-
-  return { score: clamp(score), hybridObserved, pqSignatureObserved, reasons }
+  return { score: model.score, hybridObserved, pqSignatureObserved, reasons }
 }
 
 // ─── Executive summary ────────────────────────────────────────────────────────

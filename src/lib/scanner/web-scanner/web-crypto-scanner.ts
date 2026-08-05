@@ -230,6 +230,89 @@ const WEB_CRYPTO_PATTERNS = [
     threatLevel: 'HIGH' as ThreatLevel,
     description: 'TweetNaCl library — Curve25519 key exchange + Ed25519 signatures, quantum-vulnerable',
   },
+
+  // ── Broken digests reachable from the browser ─────────────────────────────
+  {
+    regex: /["']SHA-1["']|crypto\.subtle\.digest\(\s*["']SHA-1["']/g,
+    label: 'SHA-1 Digest',
+    category: 'Hash',
+    algorithm: 'SHA-1',
+    threatLevel: 'CRITICAL' as ThreatLevel,
+    description: 'SHA-1 digest in browser code — collision-broken since SHAttered; migrate to SHA-256',
+  },
+  {
+    regex: /CryptoJS\.(MD5|SHA1)|\bmd5\s*\(/g,
+    label: 'MD5 in Client Code',
+    category: 'Hash',
+    algorithm: 'MD5',
+    threatLevel: 'CRITICAL' as ThreatLevel,
+    description: 'MD5 in browser code — collision-broken; never acceptable for integrity or signatures',
+  },
+  {
+    regex: /["']SHA-256["']|["']SHA-384["']|["']SHA-512["']/g,
+    label: 'SHA-2 Digest',
+    category: 'Hash',
+    algorithm: 'SHA-2',
+    threatLevel: 'SAFE' as ThreatLevel,
+    description: 'SHA-2 digest — Grover halves the margin; SHA-384 or better for long-lived data',
+  },
+  {
+    regex: /["']AES-GCM["']/g,
+    label: 'AES-GCM Mode',
+    category: 'Symmetric',
+    algorithm: 'AES-GCM',
+    threatLevel: 'SAFE' as ThreatLevel,
+    description: 'AES-GCM authenticated encryption — quantum impact limited to Grover',
+  },
+  {
+    regex: /["']AES-CTR["']|["']AES-ECB["']/g,
+    label: 'Unauthenticated AES Mode',
+    category: 'Symmetric',
+    algorithm: 'AES-CTR/ECB',
+    threatLevel: 'HIGH' as ThreatLevel,
+    description: 'Unauthenticated AES mode in browser code — prefer AES-GCM for integrity',
+  },
+
+  /* ── Post-quantum detection ───────────────────────────────────────────────
+     Without these, a front end that had already shipped ML-KEM scored the same
+     as one that had done nothing: the scanner could only ever find classical
+     algorithms, so "no PQC detected" was a foregone conclusion. */
+  {
+    regex: /\bML-?KEM\b|\bKyber\b|kyber(512|768|1024)/gi,
+    label: 'ML-KEM / Kyber (FIPS 203)',
+    category: 'Post-Quantum',
+    algorithm: 'ML-KEM',
+    threatLevel: 'SAFE' as ThreatLevel,
+    description: 'ML-KEM (FIPS 203) key encapsulation in client code — quantum-safe key establishment',
+  },
+  {
+    regex: /\bML-?DSA\b|\bDilithium\b|\bSLH-?DSA\b|SPHINCS\+?|\bFalcon-?(512|1024)\b/gi,
+    label: 'PQC Signature Scheme',
+    category: 'Post-Quantum',
+    algorithm: 'ML-DSA/SLH-DSA/Falcon',
+    threatLevel: 'SAFE' as ThreatLevel,
+    description: 'Post-quantum signature scheme in client code — quantum-safe authentication',
+  },
+  {
+    regex: /liboqs|open-quantum-safe|pqclean|noble-post-quantum/gi,
+    label: 'PQC Library',
+    category: 'Post-Quantum',
+    algorithm: 'PQC Library',
+    threatLevel: 'SAFE' as ThreatLevel,
+    description: 'Post-quantum cryptography library referenced in client code',
+  },
+  {
+    // A hybrid group name is a single token — `X25519MLKEM768` has no word
+    // boundary before "MLKEM", so the ML-KEM pattern above cannot see it. It
+    // gets its own rule so hybrid key agreement is attributed to ML-KEM rather
+    // than to a generic "library" bucket.
+    regex: /X25519MLKEM768|X25519Kyber768|SecP256r1MLKEM768|P256Kyber768/gi,
+    label: 'Hybrid PQC Key Agreement',
+    category: 'Post-Quantum',
+    algorithm: 'Hybrid ML-KEM',
+    threatLevel: 'SAFE' as ThreatLevel,
+    description: 'Hybrid classical+PQC key agreement group — the recommended transport migration posture',
+  },
 ]
 
 /**

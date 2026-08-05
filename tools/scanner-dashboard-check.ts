@@ -59,10 +59,10 @@ const RESULTS: ScanResultRecord[] = [
     targetType: 'https',
     durationMs: 9040,
     status: 'completed',
-    // riskScore is the backend's weighted overall for this target:
-    // 28*.25 + 55*.25 + 35*.20 + 40*.15 + 82*.15 = 46.05 -> 46
-    riskScore: 46,
-    qScore: 54,
+    // riskScore is 100 - the published weighted posture:
+    // (45*18 + 35*15 + 80*12 + 70*12 + 70*10 + 0*8 + 80*5 + 40*5 + 15*3) / 88 = 50.9 -> 51
+    riskScore: 49,
+    qScore: 51,
     tlsVersion: 'TLSv1.3',
     certificateInfo: {
       subject: { CN: 'test.example.org' },
@@ -105,7 +105,24 @@ const RESULTS: ScanResultRecord[] = [
       },
       riskBreakdown: { certificateRisk: 28, tlsConfigRisk: 55, cipherSuiteRisk: 35, appCryptoRisk: 40, pqcReadiness: 82 },
       riskBreakdownApplicable: { certificateRisk: true, tlsConfigRisk: true, cipherSuiteRisk: true, appCryptoRisk: true, pqcReadiness: true },
-      riskMeasuredWeight: 100,
+      // The platform's published twelve-category model, exactly as the scanner
+      // now emits it. Three public-edge probes are inapplicable here because the
+      // authenticated scanner does not perform them.
+      scoreCategories: [
+        { key: 'tls-configuration', label: 'TLS Configuration', weight: 18, score: 45, applicable: true, observed: 'TLSv1.0, TLSv1.2, TLSv1.3' },
+        { key: 'cipher-suites', label: 'Cipher Suites', weight: 15, score: 35, applicable: true, observed: 'TLS_AES_256_GCM_SHA384 · static RSA accepted' },
+        { key: 'certificates', label: 'Certificates', weight: 12, score: 80, applicable: true, observed: 'ECDSA 256 · 334-day lifetime' },
+        { key: 'key-exchange', label: 'Key Exchange', weight: 12, score: 70, applicable: true, observed: 'ECDHE (X25519)' },
+        { key: 'forward-secrecy', label: 'Forward Secrecy', weight: 10, score: 70, applicable: true, observed: 'ECDHE · 1 static-RSA suite(s) still accepted' },
+        { key: 'http-security-headers', label: 'HTTP Security Headers', weight: 8, score: 0, applicable: true, observed: '0/2 transport headers hardened' },
+        { key: 'hsts', label: 'HSTS', weight: 5, score: 80, applicable: true, observed: 'enforced' },
+        { key: 'ocsp-stapling', label: 'OCSP Stapling', weight: 5, score: 0, applicable: false, observed: 'not observable from an authenticated network scan' },
+        { key: 'certificate-transparency', label: 'Certificate Transparency', weight: 3, score: 0, applicable: false, observed: 'not observable from an authenticated network scan' },
+        { key: 'dns-caa', label: 'DNS CAA', weight: 4, score: 0, applicable: false, observed: 'not observable from an authenticated network scan' },
+        { key: 'cryptographic-algorithms', label: 'Cryptographic Algorithms', weight: 5, score: 40, applicable: true, observed: '10 algorithms observed · 4 quantum-safe' },
+        { key: 'post-quantum-readiness', label: 'Post-Quantum Readiness', weight: 3, score: 15, applicable: true, observed: '15% readiness' },
+      ],
+      riskMeasuredWeight: 88,
       scanConfidence: { confidence: 75, label: 'High', factors: ['TLS analysis completed', 'Certificate parsed'] },
     },
   },
@@ -130,8 +147,21 @@ const SCANNER2: EnterpriseScanner2 = {
   ],
 }
 
-function moduleState(id: string, name: string, status: ModuleState['status'], findings = 0): ModuleState {
-  return { id, name, status, target: 'https://test.example.org', startedAt: NOW, completedAt: status === 'Running' ? null : NOW, durationMs: status === 'Running' ? null : 120, findingsCount: findings, error: status === 'Failed' ? 'boom' : null }
+function moduleState(id: string, name: string, status: ModuleState['status'], findings = 0, reason: string | null = null): ModuleState {
+  return {
+    id,
+    name,
+    status,
+    target: 'https://test.example.org',
+    startedAt: NOW,
+    completedAt: status === 'Running' ? null : NOW,
+    durationMs: status === 'Running' ? null : 120,
+    findingsCount: findings,
+    error: status === 'Failed' ? 'boom' : null,
+    // The ledger contract: a Skipped ALWAYS carries the reason it did not apply.
+    reason: status === 'Skipped' ? (reason ?? 'no SSH target was authorized for this run') : reason,
+    notApplicable: status === 'Skipped',
+  }
 }
 
 const MODULES: ModuleState[] = [
@@ -145,18 +175,24 @@ const MODULES: ModuleState[] = [
   moduleState('signature-algorithm-scanner', 'Signature algorithm scanner', 'No findings'),
   moduleState('hash-algorithm-scanner', 'Hash algorithm scanner', 'No findings'),
   moduleState('ssh-host-key-scanner', 'SSH host key scanner', 'Completed', 1),
-  moduleState('jwt-signing-scanner', 'JWT signing algorithm scanner', 'Skipped'),
+  moduleState(
+    'jwt-signing-scanner',
+    'JWT signing algorithm scanner',
+    'Skipped',
+    0,
+    'token and header analysis needs an HTTP endpoint (target types: ssh)',
+  ),
   moduleState('cbom-generator', 'CBOM generator', 'Completed', 4),
   moduleState('risk-scoring-engine', 'Risk scoring engine', 'Completed', 5),
 ]
 
-const ESTATE = { totalAssets: 2, totalFindings: 5, criticalFindings: 1, vulnerableAssets: 2, pqcReadiness: 20, riskScore: 46 }
+const ESTATE = { totalAssets: 2, totalFindings: 5, criticalFindings: 1, vulnerableAssets: 2, pqcReadiness: 20, riskScore: 49 }
 
 const POPULATED: AssessmentInput = {
   status: 'completed',
-  // buildSummary() averages the per-target weighted risk scores, so with one
-  // target the summary risk IS that target's overall (46) and qScore is 54.
-  summary: { targetsScanned: 2, totalFindings: 5, critical: 1, high: 2, medium: 0, low: 1, safe: 1, vulnerable: 4, pqcReady: 1, riskScore: 46, qScore: 54 },
+  // buildSummary() averages the per-target published scores, so with one target
+  // the summary risk IS that target's overall (49) and qScore is 51.
+  summary: { targetsScanned: 2, totalFindings: 5, critical: 1, high: 2, medium: 0, low: 1, safe: 1, vulnerable: 4, pqcReady: 1, riskScore: 49, qScore: 51 },
   findings: FINDINGS,
   modules: MODULES,
   results: RESULTS,
@@ -189,7 +225,7 @@ function verifyPopulated() {
   console.log('\n=== Populated scan — every value traces to evidence ===')
 
   assert(a.hasEvidence === true, 'hasEvidence=true')
-  assert(a.executive.encryptionScore === 54, `Composite score is the backend qScore (${a.executive.encryptionScore})`)
+  assert(a.executive.encryptionScore === 51, `Composite score is the backend qScore (${a.executive.encryptionScore})`)
   assert(a.executive.gradeable === true && a.executive.grade !== '—', `Grade issued: ${a.executive.grade} (${a.executive.gradeLabel})`)
 
   /* The decomposition must reproduce the composite it sits under. The backend's
@@ -197,32 +233,64 @@ function verifyPopulated() {
      decomposition is the weighted mean of the per-target components — the two
      operations commute, so when the summary came from the weighted model these
      are the same number. */
+  assert(a.scoreComponents.length === 12, `All twelve published categories are listed (${a.scoreComponents.length})`)
   const measured = a.scoreComponents.filter((c) => c.score !== null)
-  assert(measured.length === 5, `All 5 published categories measured (${measured.length})`)
-  assert(a.decompositionScore === 54, `Decomposition weighted mean (${a.decompositionScore})`)
+  assert(measured.length === 9, `Nine measured, three public-edge probes excluded (${measured.length})`)
+  const unprobed = a.scoreComponents.filter((c) => c.score === null).map((c) => c.key).sort()
+  assert(
+    unprobed.join(',') === 'certificate-transparency,dns-caa,ocsp-stapling',
+    `The excluded three are the public-edge probes (${unprobed.join(', ')})`,
+  )
+  assert(
+    a.scoreComponents.every((c) => c.score !== null || c.observed.includes('not observable')),
+    'Every excluded category states why it was excluded',
+  )
+  assert(a.decompositionScore === 51, `Decomposition weighted mean over the measured 88 (${a.decompositionScore})`)
   assert(a.decompositionAgrees === true, `Decomposition reconciles with the composite (${a.decompositionScore} vs ${a.executive.encryptionScore})`)
 
   assert(a.executive.confidence === 75, `Confidence read from scanConfidence (${a.executive.confidence})`)
   assert(a.executive.businessRisk === 'High' || a.executive.businessRisk === 'Critical', `Critical finding floors business risk (${a.executive.businessRisk})`)
   assert(a.executive.migrationComplexity === 'High', `Migration complexity from the migration engine (${a.executive.migrationComplexity})`)
-  assert(a.executive.postQuantumReadiness === 20, `PQ readiness = pqcReady/total (${a.executive.postQuantumReadiness}%)`)
-
-  const pfs = a.attackSurface.find((item) => item.key === 'pfs')
   assert(
-    pfs?.value === 'Partial - static RSA accepted' && pfs.status === 'partial',
-    `Forward secrecy downgraded because static-RSA suites are accepted (${pfs?.value})`,
+    a.executive.postQuantumReadiness === 15,
+    `PQ readiness is the published model's category, not the finding share (${a.executive.postQuantumReadiness}%)`,
   )
 
-  const validity = a.attackSurface.find((item) => item.key === 'cert-validity')
-  assert(validity !== undefined && validity.status !== 'unknown', `Certificate validity is reported (${validity?.value})`)
-  const chainTrust = a.attackSurface.find((item) => item.key === 'chain-trust')
-  assert(chainTrust?.value.startsWith('Trusted'), `Chain trust is reported (${chainTrust?.value})`)
-  const certKey = a.attackSurface.find((item) => item.key === 'cert-key')
-  assert(certKey?.value === 'ECDSA 256-bit', `Certificate key is not duplicated (${certKey?.value})`)
-  const headerItem = a.attackSurface.find((item) => item.key === 'headers')
-  assert(headerItem?.value === '1/3 hardened', `Headers read from the probe, not finding rows (${headerItem?.value})`)
+  const surfaceOf = (key: string) => a.attackSurface.find((item) => item.key === key)
+
+  // Every control /public-scan reports must have a row here too.
+  for (const key of [
+    'internet-facing', 'tls-service', 'certificate-chain', 'names-covered', 'tls-version',
+    'cipher', 'chain-trust', 'key-exchange', 'pq-key-agreement', 'hsts', 'ocsp-stapling',
+    'certificate-transparency', 'dns-caa', 'dnssec', 'alpn', 'quantum-risk', 'edge-infrastructure',
+  ]) {
+    assert(surfaceOf(key) !== undefined, `Attack surface reports "${key}"`)
+  }
+
+  assert(surfaceOf('pfs')?.status === 'partial', `Forward secrecy downgraded for accepted static RSA (${surfaceOf('pfs')?.value})`)
+  assert(surfaceOf('cert-validity')?.status !== 'unknown', `Certificate validity is reported (${surfaceOf('cert-validity')?.value})`)
+  assert(surfaceOf('chain-trust')?.value === 'Pass', `Chain trust is reported (${surfaceOf('chain-trust')?.value})`)
+  assert(surfaceOf('cert-key')?.value === 'ECDSA 256-bit', `Certificate key is not duplicated (${surfaceOf('cert-key')?.value})`)
+  // HSTS is scored on its own row, so the header ratio excludes it.
+  assert(surfaceOf('headers')?.value === '0/2 hardened', `Headers read from the probe, HSTS excluded (${surfaceOf('headers')?.value})`)
+  assert(surfaceOf('hsts')?.value === 'Enforced', `HSTS has its own row (${surfaceOf('hsts')?.value})`)
+  assert(surfaceOf('cipher')?.value === 'Static RSA accepted', `Cipher row flags accepted static RSA (${surfaceOf('cipher')?.value})`)
+  assert(surfaceOf('tls-version')?.value === 'TLSv1.3 + legacy', `TLS row flags legacy protocols (${surfaceOf('tls-version')?.value})`)
+  assert(surfaceOf('quantum-risk')?.value === 'High', `Quantum risk from the Scanner_2 assessment (${surfaceOf('quantum-risk')?.value})`)
+
+  // Controls this scanner does not perform must be Not probed - never pass/fail.
+  for (const key of ['ocsp-stapling', 'certificate-transparency', 'dns-caa', 'dnssec', 'alpn', 'edge-infrastructure']) {
+    const row = surfaceOf(key)
+    assert(
+      row?.value === 'Not probed' && row.status === 'unknown',
+      `"${key}" claims no verdict it did not earn (${row?.value})`,
+    )
+  }
   const tlsItem = a.attackSurface.find((item) => item.key === 'tls-version')
-  assert(tlsItem?.value === 'TLSv1.3', `TLS protocol read from the analyzer (${tlsItem?.value})`)
+  assert(
+    tlsItem?.value === 'TLSv1.3 + legacy' && tlsItem.status === 'fail',
+    `TLS row reports the negotiated version AND that legacy protocols are still accepted (${tlsItem?.value})`,
+  )
 
   assert(a.intelligence.keyExchange.includes('ECDHE') && a.intelligence.keyExchange.includes('X25519'), `Key exchange from the TLS analysis (${a.intelligence.keyExchange})`)
   assert(a.intelligence.forwardSecrecy === 'Enabled', `Intelligence forward secrecy agrees with the surface (${a.intelligence.forwardSecrecy})`)
@@ -245,6 +313,165 @@ function verifyPopulated() {
   assert(footprintCbom?.value === 4, `CBOM footprint counted from linked records (${footprintCbom?.value})`)
 
   assert(a.scope.notAnalyzed.some((item) => item.includes('JWT')), 'Skipped module named in "not analyzed"')
+  assert(
+    a.scope.notAnalyzed.some((item) => item.includes('token and header analysis')),
+    `"Not analyzed" carries the scanner's own reason, not a generic caption (${a.scope.notAnalyzed[0]})`,
+  )
+}
+
+/* ---------------------------------------------------------- module ledger -- */
+
+/**
+ * The Discovery Workflow regression suite at the assessment layer.
+ *
+ * These assertions encode the contract the reported bug violated: coverage is
+ * measured against the modules that COULD apply, a run with an unreported
+ * module is not graded, and every non-measuring module explains itself.
+ */
+function verifyModuleLedgerContract() {
+  console.log('\n=== Module ledger — coverage, grading and reasons ===')
+
+  const a = buildAssessment(POPULATED)
+
+  /* 12 of the 13 fixture modules measured; the JWT module is not applicable and
+     is excluded from the denominator rather than counted as a miss. Counting it
+     produced a permanent ~92% ceiling on every scan that legitimately skipped a
+     module. */
+  assert(
+    a.executive.evidenceCoverage === 100,
+    `Not-applicable modules are excluded from coverage, not counted as gaps (${a.executive.evidenceCoverage}%)`,
+  )
+  assert(a.executive.gradeable === true, 'A fully-reported run is gradeable')
+
+  const jwtCoverage = a.coverage.find((item) => item.key === 'identity')
+  assert(jwtCoverage?.status === 'pass', `A surface whose only gap is inapplicable still passes (${jwtCoverage?.status})`)
+  assert(
+    (jwtCoverage?.detail ?? '').includes('not applicable'),
+    `Discovery Coverage names the inapplicable module (${jwtCoverage?.detail})`,
+  )
+  assert(
+    (jwtCoverage?.detail ?? '').includes('1/1 applicable'),
+    `Coverage is stated against applicable modules (${jwtCoverage?.detail})`,
+  )
+
+  /* THE REGRESSION. A run cut short leaves modules at `Queued`. That is an
+     incomplete assessment, and it must NOT be graded — this is exactly the
+     state that produced "SCAN COMPLETE · Grade A · 96%" on a scan that had run
+     six of twenty-three modules. */
+  const truncated = buildAssessment({
+    ...POPULATED,
+    modules: [
+      ...MODULES.slice(0, 4),
+      moduleState('cipher-suite-scanner', 'Cipher suite scanner', 'Queued'),
+      moduleState('key-exchange-scanner', 'Key exchange scanner', 'Queued'),
+      moduleState('certificate-scanner', 'Certificate scanner', 'Queued'),
+    ],
+  })
+  assert(truncated.executive.gradeable === false, 'A run with unreported modules is NOT graded')
+  assert(truncated.executive.grade === '—', `No grade letter is issued (${truncated.executive.grade})`)
+  assert(
+    truncated.executive.gradeLabel === 'Incomplete run',
+    `The headline says why, instead of claiming a rating (${truncated.executive.gradeLabel})`,
+  )
+  assert(
+    truncated.executive.gradeDetail.includes('never reported'),
+    `The detail names the execution gap (${truncated.executive.gradeDetail})`,
+  )
+  assert(
+    truncated.scope.notAnalyzed.some((item) => item.includes('never reported')),
+    'Assessment Scope lists the modules that never reported',
+  )
+  assert(
+    truncated.coverage.some((item) => item.key === 'unreported'),
+    'Discovery Coverage raises an explicit "Unreported modules" row',
+  )
+  assert(
+    truncated.executive.businessRisk === 'Not assessable',
+    `Business risk is withheld on an incomplete run (${truncated.executive.businessRisk})`,
+  )
+
+  /* A surface whose modules ALL legitimately did not apply reports "no coverage
+     to claim" rather than a passing grade on zero measurements. */
+  const repoOnly = buildAssessment({
+    ...POPULATED,
+    modules: [
+      moduleState('target-validation', 'Target Authorization & Validation', 'Completed', 1),
+      moduleState('tls-protocol-scanner', 'TLS protocol scanner', 'Skipped', 0, 'no TLS endpoint was in scope for this run'),
+      moduleState('cipher-suite-scanner', 'Cipher suite scanner', 'Skipped', 0, 'no TLS endpoint was in scope for this run'),
+      moduleState('key-exchange-scanner', 'Key exchange scanner', 'Skipped', 0, 'no TLS endpoint was in scope for this run'),
+    ],
+  })
+  const transportCoverage = repoOnly.coverage.find((item) => item.key === 'transport')
+  assert(
+    transportCoverage?.status === 'unknown',
+    `An entirely inapplicable surface is Unknown, never Pass (${transportCoverage?.status})`,
+  )
+  assert(
+    (transportCoverage?.detail ?? '').includes('no TLS endpoint'),
+    `It states the scanner's reason (${transportCoverage?.detail})`,
+  )
+}
+
+/* -------------------------------------------------- single source of truth -- */
+
+/**
+ * The panels the operator listed must never describe two different
+ * populations. `buildAssessment` picks ONE scope and every number follows it.
+ */
+function verifySingleSourceOfTruth() {
+  console.log('\n=== One evidence scope across every panel ===')
+
+  const a = buildAssessment(POPULATED)
+  const footprint = (key: string) => a.footprint.metrics.find((metric) => metric.key === key)?.value
+
+  // Scan scope: the summary answers every headline, the estate snapshot none.
+  assert(footprint('components') === POPULATED.summary!.totalFindings, `Estate Footprint components = scan total (${footprint('components')})`)
+  assert(footprint('assets') === POPULATED.summary!.targetsScanned, `Estate Footprint assets = targets scanned (${footprint('assets')})`)
+  assert(a.target.count === POPULATED.summary!.targetsScanned, 'Assessment Scope target count comes from the same summary')
+  assert(
+    a.executive.businessRiskDetail.includes(String(POPULATED.summary!.critical)),
+    `Business risk quotes the scan's critical count, not the estate's (${a.executive.businessRiskDetail})`,
+  )
+  assert(
+    a.executive.businessRiskDetail.includes('this assessment'),
+    'The risk statement names the scope it is describing',
+  )
+  assert(
+    a.footprint.exposureLevel.includes(String(POPULATED.summary!.vulnerable)),
+    `Exposure level counts the scan's vulnerable components (${a.footprint.exposureLevel})`,
+  )
+
+  /* Estate scope: with no scan in view EVERY number switches together. The bug
+     was a per-field `summary?.x ?? estate.x` fallback, which let one panel read
+     the scan and the next read the estate. */
+  const estateOnly = buildAssessment({
+    ...POPULATED,
+    status: 'idle',
+    summary: null,
+    results: [],
+    modules: [],
+    estate: { totalAssets: 6, totalFindings: 174, criticalFindings: 106, vulnerableAssets: 6, pqcReadiness: 12, riskScore: 61 },
+  })
+  const estateFootprint = (key: string) => estateOnly.footprint.metrics.find((metric) => metric.key === key)?.value
+  assert(estateFootprint('components') === 174, `Estate scope: components from the snapshot (${estateFootprint('components')})`)
+  assert(estateFootprint('assets') === 6, `Estate scope: assets from the snapshot (${estateFootprint('assets')})`)
+  assert(estateOnly.executive.encryptionScore === 39, `Estate scope: score is 100 - estate risk (${estateOnly.executive.encryptionScore})`)
+  assert(
+    estateOnly.executive.businessRiskDetail.includes('106') && estateOnly.executive.businessRiskDetail.includes('tenant estate'),
+    `Estate scope: risk quotes the estate's critical count and says so (${estateOnly.executive.businessRiskDetail})`,
+  )
+  assert(
+    estateOnly.executive.businessRisk === 'Critical',
+    `Estate scope: 106 criticals cannot yield a benign band (${estateOnly.executive.businessRisk})`,
+  )
+
+  /* The exact contradiction from the report: a Grade A headline beside 106 open
+     critical findings. Whichever scope is in force, the grade and the critical
+     count must come from it. */
+  assert(
+    !(estateOnly.executive.grade === 'A' && estateOnly.executive.businessRiskDetail.includes('106')),
+    'A top grade can never sit beside an estate-scoped critical count',
+  )
 }
 
 function verifyNodeEvidence() {
@@ -303,7 +530,7 @@ function verifyDivergentSummary() {
     summary: { ...POPULATED.summary!, riskScore: 40, qScore: 60 },
   })
   assert(a.executive.encryptionScore === 60, `Composite still the backend qScore (${a.executive.encryptionScore})`)
-  assert(a.decompositionScore === 54, `Decomposition still the weighted model (${a.decompositionScore})`)
+  assert(a.decompositionScore === 51, `Decomposition still the published model (${a.decompositionScore})`)
   assert(a.decompositionAgrees === false, 'Divergence is flagged for the UI to explain')
 }
 
@@ -311,8 +538,8 @@ function verifyDivergentSummary() {
  *  the scan never measured was scored as a PERFECT posture and pulled the
  *  composite up. It must be excluded and its weight redistributed. */
 function verifyUnmeasuredDimensionExcluded() {
-  console.log('\n=== Unmeasured dimension is excluded, not scored 100 ===')
-  const withoutAppCrypto: AssessmentInput = {
+  console.log('\n=== Unmeasured category is excluded, not scored 100 ===')
+  const noHttpEvidence: AssessmentInput = {
     ...POPULATED,
     results: [
       {
@@ -320,21 +547,26 @@ function verifyUnmeasuredDimensionExcluded() {
         metadata: {
           ...RESULTS[0].metadata,
           apiSecurityResult: null,
-          riskBreakdown: { certificateRisk: 60, tlsConfigRisk: 55, cipherSuiteRisk: 75, appCryptoRisk: 0, pqcReadiness: 100 },
-          riskBreakdownApplicable: { certificateRisk: true, tlsConfigRisk: true, cipherSuiteRisk: true, appCryptoRisk: false, pqcReadiness: true },
-          riskMeasuredWeight: 85,
+          // No HTTP response, so headers and HSTS join the three public-edge
+          // probes as inapplicable: 88 - 8 - 5 = 75 of weight remains.
+          scoreCategories: (RESULTS[0].metadata!.scoreCategories ?? []).map((category) =>
+            category.key === 'http-security-headers' || category.key === 'hsts'
+              ? { ...category, score: 0, applicable: false, observed: 'not observable from an authenticated network scan' }
+              : category,
+          ),
+          riskMeasuredWeight: 75,
         },
       },
     ],
   }
-  const a = buildAssessment(withoutAppCrypto)
-  const appCrypto = a.scoreComponents.find((c) => c.key === 'appCryptoRisk')
-  assert(appCrypto?.score === null, `Application Cryptography reports "not measured", not 100 (${appCrypto?.score})`)
-  assert(appCrypto?.observed.startsWith('Not measured'), 'The row states why it was excluded')
-  // (100-60)*25 + (100-55)*25 + (100-75)*20 + (100-100)*15 = 1000+1125+500+0 = 2625 / 85
-  assert(a.decompositionScore === 31, `Weight redistributed over the measured 85 (${a.decompositionScore}, expected 31)`)
+  const a = buildAssessment(noHttpEvidence)
+  const headerCategory = a.scoreComponents.find((c) => c.key === 'http-security-headers')
+  assert(headerCategory?.score === null, `Unprobed headers report "not measured", not 100 (${headerCategory?.score})`)
+  assert(a.scoreComponents.length === 12, 'All twelve categories are still listed')
+  // (45*18 + 35*15 + 80*12 + 70*12 + 70*10 + 40*5 + 15*3) / 75 = 4080/75 = 54.4 -> 54
+  assert(a.decompositionScore === 54, `Weight redistributed over the measured 75 (${a.decompositionScore}, expected 54)`)
   const measuredWeights = a.scoreComponents.filter((c) => c.score !== null).reduce((sum, c) => sum + c.weight, 0)
-  assert(measuredWeights === 85, `Only 85 of 100 weight contributed (${measuredWeights})`)
+  assert(measuredWeights === 75, `Only 75 of 100 weight contributed (${measuredWeights})`)
 }
 
 function verifyEmpty() {
@@ -358,6 +590,8 @@ function verifyEmpty() {
 }
 
 verifyPopulated()
+verifyModuleLedgerContract()
+verifySingleSourceOfTruth()
 verifyNodeEvidence()
 verifyDivergentSummary()
 verifyUnmeasuredDimensionExcluded()

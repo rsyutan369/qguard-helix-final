@@ -5,6 +5,8 @@
 
 // ─── Target Types ─────────────────────────────────────────────────────────────
 
+import type { PublishedScoreCategory } from './published-scoring'
+
 export type WebScanTargetType = 'url' | 'domain' | 'ip' | 'github'
 export type ThreatLevel = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'SAFE'
 
@@ -277,7 +279,13 @@ export interface WebScanRiskScore {
   legacyQScore: number
   breakdown: WebScanRiskBreakdown
   breakdownApplicable: WebScanRiskApplicability
-  /** Sum of the weights that contributed to `overallScore`, out of 100. */
+  /**
+   * The platform's published twelve-category model, which `overallScore` is the
+   * weighted mean of. This is the decomposition users are shown, and the reason
+   * this surface and /public-scan grade the same host the same way.
+   */
+  scoreCategories: PublishedScoreCategory[]
+  /** Sum of the published-category weights that contributed, out of 100. */
   measuredWeight: number
 }
 
@@ -336,7 +344,9 @@ export interface WebScanCompleteResult {
   riskBreakdown: WebScanRiskBreakdown
   /** Which entries of `riskBreakdown` are measurements rather than filler. */
   riskBreakdownApplicable?: WebScanRiskApplicability
-  /** Sum of the weights that contributed to the overall score, out of 100. */
+  /** The published twelve-category decomposition behind the overall score. */
+  scoreCategories?: PublishedScoreCategory[]
+  /** Sum of the published-category weights that contributed, out of 100. */
   riskMeasuredWeight?: number
   detectionRuleResults: DetectionRuleResult[]
   runtimeHealth?: unknown

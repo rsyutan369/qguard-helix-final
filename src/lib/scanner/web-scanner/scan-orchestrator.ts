@@ -21,7 +21,8 @@ import type {
 } from './types'
 import { parseTarget, analyzeTls } from './tls-analyzer'
 import { analyzeCipherSuites } from './cipher-suite-analyzer'
-import { scanGitHubRepo } from './github-scanner'
+import { scanRepository, repositoryProvider } from './repo-scanner'
+import { PROVIDER_LABEL } from './repo-providers'
 import { scanWebCrypto } from './web-crypto-scanner'
 import { scanApiSecurity } from './api-security-scanner'
 import { evaluateDetectionRules } from './detection-rules'
@@ -35,6 +36,37 @@ const TLS_MODULE_TIMEOUT = 45_000 // TLS needs room for primary handshake + prot
 const TLS_MAX_RETRIES = 1
 const MAX_RETRIES = 2 // Retry failed modules up to 2 times
 const RETRY_DELAY = 500 // 500ms between retries
+
+/**
+ * Marker prefix for a module that did not run because it does not apply to the
+ * evidence available, as opposed to one that ran and failed.
+ *
+ * The orchestrator used to signal both conditions through the same free-text
+ * `error` field, and the API layer sniffed the substring "skipped" to decide
+ * which it was. That is why "Transport & Ciphers" and "Certificates & Keys"
+ * reported SKIPPED with no explanation the operator could act on. A module is
+ * now either Completed / No findings / Failed, or explicitly Not applicable
+ * WITH the reason attached — never an unexplained skip.
+ */
+export const NOT_APPLICABLE_PREFIX = 'not-applicable:'
+
+/** Compose the documented not-applicable signal for `moduleComplete`. */
+function notApplicable(reason: string): string {
+  return `${NOT_APPLICABLE_PREFIX} ${reason}`
+}
+
+/**
+ * The repository module's display name, naming the platform actually detected.
+ *
+ * The catalog id stays `github-scanner` — it is the stable routing key into the
+ * module ledger — but the operator sees "GitLab Repository Scanner" when they
+ * scanned GitLab. Reporting every platform as "GitHub" was accurate only for
+ * one of the five now supported.
+ */
+function repoScannerName(target: string): string {
+  const provider = repositoryProvider(target)
+  return provider ? `${PROVIDER_LABEL[provider]} Repository Scanner` : 'Repository Scanner'
+}
 
 // ─── Module Retry Wrapper ───────────────────────────────────────────────────
 
@@ -289,22 +321,6 @@ export async function executeWebScan(
 
           // Generate findings from TLS analysis
           if (tlsResult) {
-            // Key exchange finding
-            if (tlsResult.keyExchange && tlsResult.keyExchange !== 'unknown') {
-              const kexThreat = getKeyExchangeThreat(tlsResult.keyExchange)
-              addFinding({
-                phase: 'tls-handshake',
-                algorithm: tlsResult.keyExchange,
-                location: `TLS Handshake — ${target}`,
-                threatLevel: kexThreat,
-                category: 'Key Exchange',
-                description: getKeyExchangeDescription(tlsResult.keyExchange, kexThreat),
-                recommendation: getKeyExchangeRecommendation(kexThreat),
-                quantumBreakTime: kexThreat === 'SAFE' ? 'N/A' : '~2-8 hours (CRQC)',
-                classicalBreakTime: '> 10^28 years',
-              })
-            }
-
             // TLS version finding
             addFinding({
               phase: 'tls-handshake',
@@ -327,7 +343,7 @@ export async function executeWebScan(
                 addFinding({
                   phase: 'tls-handshake',
                   algorithm: protocolProbe.protocol,
-                  location: `Supported Protocol â€” ${target}`,
+                  location: `Supported Protocol — ${target}`,
                   threatLevel: protocolThreat,
                   category: 'Protocol Support',
                   description: `${protocolProbe.protocol} is supported by the endpoint${protocolProbe.cipherSuite ? ` with ${protocolProbe.cipherSuite}` : ''}`,
@@ -340,28 +356,10 @@ export async function executeWebScan(
               }
             }
 
-            // Certificate info from TLS
+            // Certificate info from TLS. The HNDL timeline is derived from the
+            // key agreement and the certificate key, so it is produced by — and
+            // counted against — the key exchange analyzer below.
             certInfo = tlsResult.peerCertificate
-
-            // HNDL Timeline Analysis (runs after certInfo is assigned)
-            const hndlTimeline = calculateHndlTimeline(
-              tlsResult.keyExchange,
-              certInfo?.publicKeyAlgorithm || '',
-              certInfo?.publicKeySize || 2048
-            )
-            if (hndlTimeline.urgency === 'IMMEDIATE' || hndlTimeline.urgency === 'HIGH') {
-              addFinding({
-                phase: 'tls-handshake',
-                algorithm: `HNDL Risk: ${hndlTimeline.urgency}`,
-                location: `Traffic — ${target}`,
-                threatLevel: hndlTimeline.urgency === 'IMMEDIATE' ? 'CRITICAL' : 'HIGH',
-                category: 'Harvest Now Decrypt Later',
-                description: `${hndlTimeline.dataShelfLife}. Estimated ${hndlTimeline.yearsToQuantumThreat} years until CRQC threat materializes.`,
-                recommendation: 'Deploy hybrid PQC key exchange (X25519Kyber768) immediately to protect data in transit',
-                quantumBreakTime: `~${hndlTimeline.yearsToQuantumThreat} years (estimated)`,
-                classicalBreakTime: '> 10^28 years',
-              })
-            }
           }
           moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, tlsAttempt.error)
         } catch (err) {
@@ -380,6 +378,70 @@ export async function executeWebScan(
           moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, message)
         }
         phaseComplete('tls-handshake', 'TLS Analysis Complete', 30)
+
+        // ─── Phase 3b: Key Exchange & Forward Secrecy ─────────────────
+        // A first-class module rather than a side effect of the TLS pass. It
+        // owns the negotiated key agreement, the named group / ephemeral key
+        // material and the forward-secrecy verdict, so "Key exchange scanner"
+        // has a real producer and can report a real terminal state.
+        phaseStart('key-exchange', 'Key Exchange & Forward Secrecy Analysis', 30)
+        moduleStart('key-exchange-analyzer', 'Key Exchange Analyzer', target, 30)
+        const kexFindingStart = findings.length
+        if (tlsResult && tlsResult.keyExchange && tlsResult.keyExchange !== 'unknown') {
+          const kexThreat = getKeyExchangeThreat(tlsResult.keyExchange)
+          const group = tlsResult.negotiatedCurve
+          const ephemeral = tlsResult.ephemeralKeyType
+            ? `${tlsResult.ephemeralKeyType}${tlsResult.ephemeralKeySize ? ` ${tlsResult.ephemeralKeySize}-bit` : ''}`
+            : null
+          const observed = [
+            group ? `named group ${group}` : null,
+            ephemeral ? `ephemeral ${ephemeral}` : null,
+          ].filter(Boolean).join(', ')
+          addFinding({
+            phase: 'key-exchange',
+            algorithm: tlsResult.keyExchange,
+            location: `TLS Handshake — ${target}`,
+            threatLevel: kexThreat,
+            category: 'Key Exchange',
+            description: `${getKeyExchangeDescription(tlsResult.keyExchange, kexThreat)}${observed ? ` (${observed})` : ''}`,
+            recommendation: getKeyExchangeRecommendation(kexThreat),
+            quantumBreakTime: kexThreat === 'SAFE' ? 'N/A' : '~2-8 hours (CRQC)',
+            classicalBreakTime: '> 10^28 years',
+          })
+
+          // Harvest-Now-Decrypt-Later horizon for this key agreement.
+          const hndlTimeline = calculateHndlTimeline(
+            tlsResult.keyExchange,
+            certInfo?.publicKeyAlgorithm || '',
+            certInfo?.publicKeySize || 2048
+          )
+          if (hndlTimeline.urgency === 'IMMEDIATE' || hndlTimeline.urgency === 'HIGH') {
+            addFinding({
+              phase: 'key-exchange',
+              algorithm: `HNDL Risk: ${hndlTimeline.urgency}`,
+              location: `Traffic — ${target}`,
+              threatLevel: hndlTimeline.urgency === 'IMMEDIATE' ? 'CRITICAL' : 'HIGH',
+              category: 'Key Exchange (Harvest Now Decrypt Later)',
+              description: `${hndlTimeline.dataShelfLife}. Estimated ${hndlTimeline.yearsToQuantumThreat} years until CRQC threat materializes.`,
+              recommendation: 'Deploy hybrid PQC key exchange (X25519Kyber768) immediately to protect data in transit',
+              quantumBreakTime: `~${hndlTimeline.yearsToQuantumThreat} years (estimated)`,
+              classicalBreakTime: '> 10^28 years',
+            })
+          }
+        }
+        moduleComplete(
+          'key-exchange-analyzer',
+          'Key Exchange Analyzer',
+          target,
+          31,
+          findings.length - kexFindingStart,
+          tlsResult
+            ? tlsResult.keyExchange && tlsResult.keyExchange !== 'unknown'
+              ? null
+              : notApplicable('the handshake did not expose a key agreement algorithm this scanner can classify')
+            : notApplicable('key agreement analysis requires a completed TLS handshake')
+        )
+        phaseComplete('key-exchange', 'Key Exchange Analysis Complete', 31)
 
         // ─── Phase 4: Certificate Analysis ────────────────────────────
         phaseStart('cert-analysis', 'Certificate Chain Inspection', 32)
@@ -400,22 +462,6 @@ export async function executeWebScan(
             oid: certInfo.signatureOid || undefined,
           })
 
-          // Signature algorithm finding
-          if (certInfo.signatureAlgorithm && certInfo.signatureAlgorithm !== 'unknown') {
-            addFinding({
-              phase: 'cert-analysis',
-              algorithm: `${certInfo.signatureAlgorithm} (Signature)`,
-              location: `Certificate Signature — ${target}`,
-              threatLevel: getSignatureThreat(certInfo.signatureAlgorithm),
-              category: 'Certificate Signature',
-              description: `Certificate signed with ${certInfo.signatureAlgorithm}`,
-              recommendation: 'Migrate to ML-DSA (FIPS 204) certificate signatures',
-              quantumBreakTime: '~4-8 hours (CRQC)',
-              classicalBreakTime: '> 10^28 years',
-              oid: certInfo.signatureOid || undefined,
-            })
-          }
-
           // Expiry finding
           if (certInfo.isExpired) {
             addFinding({
@@ -431,8 +477,11 @@ export async function executeWebScan(
             })
           }
 
-          // OID-based findings
+          // OID-based findings. Hash OIDs belong to the hash algorithm
+          // analyzer below — one observation, one owning module, so a finding
+          // is never counted against two surfaces.
           for (const oid of certInfo.detectedOids) {
+            if (oid.category === 'hash') continue
             if (oid.quantumVulnerable && oid.category !== 'extension' && oid.category !== 'ca-identifier') {
               addFinding({
                 phase: 'cert-analysis',
@@ -453,11 +502,99 @@ export async function executeWebScan(
           'certificate-parser',
           'Certificate Chain Audit',
           target,
-          44,
+          42,
           findings.length - certFindingStart,
-          certInfo ? null : 'Skipped: certificate metadata unavailable because the TLS handshake did not return a peer certificate'
+          certInfo
+            ? null
+            : notApplicable('certificate metadata was unavailable because the TLS handshake did not return a peer certificate')
         )
-        phaseComplete('cert-analysis', 'Certificate Inspection Complete', 45)
+
+        // ─── Phase 4b: Certificate Signature Algorithms ───────────────
+        // The signature analyzer owns the leaf signature and every distinct
+        // issuer signature in the chain. Previously the leaf signature was
+        // filed under the certificate parser and the catalog's "Signature
+        // algorithm scanner" never reported at all, which is why
+        // "Certificates & Keys" showed 2/3 modules and read SKIPPED.
+        moduleStart('signature-algorithm-analyzer', 'Signature Algorithm Analyzer', target, 43)
+        const signatureFindingStart = findings.length
+        if (certInfo) {
+          if (certInfo.signatureAlgorithm && certInfo.signatureAlgorithm !== 'unknown') {
+            addFinding({
+              phase: 'cert-analysis',
+              algorithm: `${certInfo.signatureAlgorithm} (Signature)`,
+              location: `Certificate Signature — ${target}`,
+              threatLevel: getSignatureThreat(certInfo.signatureAlgorithm),
+              category: 'Certificate Signature',
+              description: `Certificate signed with ${certInfo.signatureAlgorithm}`,
+              recommendation: 'Migrate to ML-DSA (FIPS 204) certificate signatures',
+              quantumBreakTime: '~4-8 hours (CRQC)',
+              classicalBreakTime: '> 10^28 years',
+              oid: certInfo.signatureOid || undefined,
+            })
+          }
+
+          // Issuer signatures in the chain, deduplicated against the leaf: a
+          // quantum-safe leaf signed by an RSA intermediate is still exposed.
+          const seenChainSignatures = new Set([certInfo.signatureAlgorithm])
+          for (const entry of certInfo.chain ?? []) {
+            const algorithm = entry.signatureAlgorithm
+            if (!algorithm || algorithm === 'unknown' || seenChainSignatures.has(algorithm)) continue
+            seenChainSignatures.add(algorithm)
+            addFinding({
+              phase: 'cert-analysis',
+              algorithm: `${algorithm} (Chain Signature)`,
+              location: `Chain — ${entry.subject || entry.issuer || target}`,
+              threatLevel: getSignatureThreat(algorithm),
+              category: 'Certificate Signature',
+              description: `Chain certificate "${entry.subject || 'issuer'}" is signed with ${algorithm}`,
+              recommendation: 'Require a PQC-ready issuing CA (ML-DSA, FIPS 204) for the full chain',
+              quantumBreakTime: '~4-8 hours (CRQC)',
+              classicalBreakTime: '> 10^28 years',
+            })
+          }
+        }
+        moduleComplete(
+          'signature-algorithm-analyzer',
+          'Signature Algorithm Analyzer',
+          target,
+          44,
+          findings.length - signatureFindingStart,
+          certInfo
+            ? null
+            : notApplicable('signature analysis requires a peer certificate, which the TLS handshake did not return')
+        )
+
+        // ─── Phase 4c: Hash Algorithm Analysis ────────────────────────
+        moduleStart('hash-algorithm-analyzer', 'Hash Algorithm Analyzer', target, 45)
+        const hashFindingStart = findings.length
+        if (certInfo) {
+          for (const oid of certInfo.detectedOids) {
+            if (oid.category !== 'hash' || !oid.quantumVulnerable) continue
+            addFinding({
+              phase: 'cert-analysis',
+              algorithm: oid.name,
+              location: `OID ${oid.oid} — ${target}`,
+              threatLevel: oid.quantumThreat === 'classical-broken' ? 'CRITICAL' : oid.quantumThreat === 'shor' ? 'HIGH' : 'MEDIUM',
+              category: 'OID (HASH)',
+              description: oid.description,
+              recommendation: oid.pqcReplacement ? `Migrate to ${oid.pqcReplacement}` : 'Move to SHA-384 or SHA3-384 for Grover margin',
+              quantumBreakTime: oid.quantumThreat === 'grover' ? 'Halved security margin (Grover)' : 'N/A',
+              classicalBreakTime: oid.quantumThreat === 'classical-broken' ? 'Already broken' : '> 10^20 years',
+              oid: oid.oid,
+            })
+          }
+        }
+        moduleComplete(
+          'hash-algorithm-analyzer',
+          'Hash Algorithm Analyzer',
+          target,
+          46,
+          findings.length - hashFindingStart,
+          certInfo
+            ? null
+            : notApplicable('hash analysis reads the certificate signature OIDs, which require a peer certificate')
+        )
+        phaseComplete('cert-analysis', 'Certificate Inspection Complete', 47)
 
         // ─── Phase 5: Cipher Suite Enumeration ────────────────────────
         phaseStart('cipher-enum', 'Cipher Suite Enumeration', 48)
@@ -492,7 +629,7 @@ export async function executeWebScan(
           target,
           54,
           findings.length - cipherFindingStart,
-          tlsResult ? null : 'Skipped: cipher suite enumeration requires a completed TLS handshake'
+          tlsResult ? null : notApplicable('cipher suite enumeration requires a completed TLS handshake')
         )
         phaseComplete('cipher-enum', 'Cipher Suite Analysis Complete', 55)
 
@@ -547,7 +684,7 @@ export async function executeWebScan(
             hostname,
             64,
             findings.length - apiFindingStart,
-            `Skipped: API/header scan unavailable (${(err as Error).message || 'request failed'})`
+            `API/header probe failed: ${(err as Error).message || 'request failed'}`
           )
           // API scan failed — non-critical, continue
         }
@@ -580,7 +717,7 @@ export async function executeWebScan(
               })
             }
           }
-          moduleComplete('web-crypto-scanner', 'Web Crypto Scanner', target, 74, findings.length - webCryptoFindingStart, targetType === 'url' ? null : 'Skipped for non-URL target')
+          moduleComplete('web-crypto-scanner', 'Web Crypto Scanner', target, 74, findings.length - webCryptoFindingStart, targetType === 'url' ? null : notApplicable(`client-side crypto analysis needs a fetchable page; the target is a ${targetType}, not a URL`))
         } catch {
           moduleComplete('web-crypto-scanner', 'Web Crypto Scanner', target, 74, findings.length - webCryptoFindingStart, 'Web crypto scan failed')
           // Web crypto scan failed — non-critical
@@ -601,16 +738,53 @@ export async function executeWebScan(
           })
         }
 
+        // The repository scanner has no repository on a network target. Report
+        // it explicitly so the module ledger has a terminal state for every
+        // catalogued module rather than an unexplained gap.
+        moduleStart('github-scanner', repoScannerName(target), target, 75)
+        moduleComplete(
+          'github-scanner',
+          repoScannerName(target),
+          target,
+          75,
+          0,
+          notApplicable(`repository analysis needs a source repository; the target is a ${targetType}`)
+        )
+
         phaseComplete('deep-scan', 'Deep Scan Complete', 75)
       } else {
         // ─── GitHub Repository Scan Path ──────────────────────────────
+        // Every transport-layer module is inapplicable to a repository URL.
+        // Declaring that up front, with the reason, is what keeps "not
+        // measured" distinguishable from "measured and clean".
+        for (const [moduleId, moduleName] of [
+          ['tls-analyzer', 'TLS Analyzer'],
+          ['key-exchange-analyzer', 'Key Exchange Analyzer'],
+          ['certificate-parser', 'Certificate Chain Audit'],
+          ['signature-algorithm-analyzer', 'Signature Algorithm Analyzer'],
+          ['hash-algorithm-analyzer', 'Hash Algorithm Analyzer'],
+          ['cipher-suite-analyzer', 'Cipher Suite Enumeration'],
+          ['api-security-scanner', 'Security Header & API Scanner'],
+          ['web-crypto-scanner', 'Web Crypto Scanner'],
+        ] as const) {
+          moduleStart(moduleId, moduleName, target, 18)
+          moduleComplete(
+            moduleId,
+            moduleName,
+            target,
+            18,
+            0,
+            notApplicable('a source repository exposes no TLS endpoint to probe')
+          )
+        }
+
         phaseStart('repo-scan', 'Repository Cryptography Analysis', 20)
-        moduleStart('github-scanner', 'GitHub Repository Scanner', target, 20)
+        moduleStart('github-scanner', repoScannerName(target), target, 20)
         const repoFindingStart = findings.length
         try {
           const repoAttempt = await withRetry(
-            () => scanGitHubRepo(target),
-            'GitHub Repository Scanner',
+            () => scanRepository(target),
+            'Repository Scanner',
             1, // Only 1 retry for repo scans (rate limiting)
             30_000 // 30s timeout for repo scans
           )
@@ -653,9 +827,9 @@ export async function executeWebScan(
 
           // repoAttempt.error is null for graceful outcomes, so the module
           // completes rather than being marked FAILED.
-          moduleComplete('github-scanner', 'GitHub Repository Scanner', target, 64, findings.length - repoFindingStart, repoAttempt.error)
+          moduleComplete('github-scanner', repoScannerName(target), target, 64, findings.length - repoFindingStart, repoAttempt.error)
         } catch (err) {
-          moduleComplete('github-scanner', 'GitHub Repository Scanner', target, 64, findings.length - repoFindingStart, (err as Error).message)
+          moduleComplete('github-scanner', repoScannerName(target), target, 64, findings.length - repoFindingStart, (err as Error).message)
           addFinding({
             phase: 'repo-scan',
             algorithm: 'Repository Scan Failed',
@@ -782,6 +956,7 @@ export async function executeWebScan(
         pqcRecommendations,
         riskBreakdown: riskScore.breakdown,
         riskBreakdownApplicable: riskScore.breakdownApplicable,
+        scoreCategories: riskScore.scoreCategories,
         riskMeasuredWeight: riskScore.measuredWeight,
         detectionRuleResults: ruleResults,
         runtimeHealth,

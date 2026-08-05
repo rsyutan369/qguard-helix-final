@@ -32,6 +32,13 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import { useMigrationPlan, type MigrationStrategy } from '@/hooks/use-migration-plan';
+import { useMigrationAssets } from '@/hooks/use-migration-assets';
+import {
+  AssetDossierSkeleton,
+  AssetDossierView,
+  AssetPortfolioOverview,
+  AssetSelectorRail,
+} from './_asset-workspace';
 import { clearMigrationHandoff, readMigrationHandoff, type MigrationHandoff } from '@/app/dashboard/quantum-readiness/_advisor';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import {
@@ -260,6 +267,84 @@ export default function MigrationPlanner() {
     setHandoff(null);
   }, []);
 
+  /* ---- Asset-centric migration workspace ---- */
+  const assetWorkspace = useMigrationAssets();
+  const {
+    portfolio,
+    portfolioLoading,
+    filters,
+    setFilters,
+    selectedId,
+    selectAsset,
+    dossier,
+    position,
+    dossierLoading,
+    changedFields,
+    queue,
+    enqueue,
+    dequeue,
+    reorderQueue,
+    applyRecommendedOrder,
+    sendToLiveMigration,
+    error: assetError,
+    busy: assetBusy,
+  } = assetWorkspace;
+
+  /**
+   * Hands the selected asset(s) to Live Migration through the platform's real
+   * execution pipeline (migration jobs + dispatch bookkeeping), then deep-links
+   * to the plan so Live Migration loads it without any manual re-selection.
+   */
+  const dispatchToLiveMigration = useCallback(
+    async (assets: Array<{ id: string; name: string; type: string; environment: string; owner: string; riskScore: number; priority: string }>) => {
+      if (!assets.length) {
+        setNotice('Select or queue at least one asset before sending it to Live Migration.');
+        return;
+      }
+      setNotice(null);
+      try {
+        const result = await sendToLiveMigration(assets);
+        setNotice(`${assets.length} asset(s) queued for execution — opening Live Migration.`);
+        navigate(result.liveMigrationUrl);
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : 'Unable to send the asset to Live Migration.');
+      }
+    },
+    [navigate, sendToLiveMigration],
+  );
+
+  const dispatchSelected = useCallback(() => {
+    if (!dossier) return;
+    void dispatchToLiveMigration([
+      {
+        id: dossier.id,
+        name: dossier.name,
+        type: dossier.type,
+        environment: dossier.environment,
+        owner: dossier.owner,
+        riskScore: dossier.riskScore,
+        priority: dossier.priority,
+      },
+    ]);
+  }, [dossier, dispatchToLiveMigration]);
+
+  const dispatchQueue = useCallback(() => {
+    const byId = new Map(portfolio.assets.map((asset) => [asset.id, asset]));
+    const assets = queue.entries
+      .map((entry) => byId.get(entry.assetId) || null)
+      .filter((asset): asset is NonNullable<typeof asset> => asset !== null)
+      .map((asset) => ({
+        id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        environment: asset.environment,
+        owner: asset.owner,
+        riskScore: asset.riskScore,
+        priority: asset.priority,
+      }));
+    void dispatchToLiveMigration(assets);
+  }, [dispatchToLiveMigration, portfolio.assets, queue.entries]);
+
   const selectedStrategy = useMemo<MigrationStrategy | undefined>(
     () => plan.strategies.find((s) => s.key === strategyKey) || plan.strategies.find((s) => s.recommended) || plan.strategies[0],
     [plan.strategies, strategyKey],
@@ -320,6 +405,24 @@ export default function MigrationPlanner() {
             <p className="mt-1 max-w-3xl text-sm text-white/58">
               Enterprise Post-Quantum Migration Management — discover, analyze, prioritize, simulate, plan, approve, execute, validate and optimize. Every metric is real, tenant-scoped and mirrors your scanned assets.
             </p>
+            {/* Scope indicator — makes it unambiguous whose numbers are on screen. */}
+            <div className="mt-2 inline-flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px]">
+              <span className="font-black uppercase tracking-wide text-white/40">Scope</span>
+              {dossier && selectedId ? (
+                <>
+                  <span className="font-bold text-cyan-200">{dossier.name}</span>
+                  <span className="text-white/35">·</span>
+                  <span className="text-white/55">{dossier.type}</span>
+                  <span className="text-white/35">·</span>
+                  <span className="text-white/55">{dossier.environment}</span>
+                  <button type="button" onClick={() => selectAsset(null)} className="ml-1 rounded border border-white/12 px-1.5 py-0.5 text-[10px] font-bold text-white/55 transition hover:border-cyan-400/50 hover:text-cyan-200">
+                    Show whole estate
+                  </button>
+                </>
+              ) : (
+                <span className="text-white/55">Whole estate — {integerFmt(portfolio.summary.total)} discovered asset(s). Select an asset on the left to scope every panel to it.</span>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <HeaderButton icon={Radio} active={sseConnected}>{sseConnected ? 'Live' : 'Syncing'}</HeaderButton>
@@ -388,6 +491,61 @@ export default function MigrationPlanner() {
             No assessment evidence found for this tenant. Run a PQC discovery scan to populate the migration plan.
           </div>
         ) : null}
+
+        {assetError ? <div className="rounded-md border border-amber-400/25 bg-amber-400/[0.07] px-4 py-3 text-sm text-amber-100/90">{assetError}</div> : null}
+
+        {/*
+         * Asset-centric workspace. The rail is the selector; the right pane shows
+         * EITHER the selected asset's own migration intelligence (and nothing from
+         * any other asset) OR — when nothing is selected — the portfolio view and
+         * the tenant-wide programme plan.
+         */}
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
+          <AssetSelectorRail
+            assets={portfolio.assets}
+            total={portfolio.total}
+            totalUnfiltered={portfolio.totalUnfiltered}
+            summary={portfolio.summary}
+            environments={portfolio.environments}
+            filters={filters}
+            setFilters={setFilters}
+            selectedId={selectedId}
+            onSelect={selectAsset}
+            onQueue={(id) => void enqueue([id])}
+            loading={portfolioLoading}
+            queue={queue.entries}
+            onDequeue={(id) => void dequeue(id)}
+            onReorder={(ids) => void reorderQueue(ids)}
+            onApplyRecommended={() => void applyRecommendedOrder()}
+            onDispatchQueue={dispatchQueue}
+            busy={assetBusy}
+          />
+
+          <div className="min-w-0 space-y-4">
+            {selectedId ? (
+              dossier && dossier.id === selectedId ? (
+                <AssetDossierView
+                  asset={dossier}
+                  position={position}
+                  loading={dossierLoading}
+                  changedFields={changedFields}
+                  onQueue={() => void enqueue([dossier.id])}
+                  onDispatch={dispatchSelected}
+                  onClear={() => selectAsset(null)}
+                  busy={assetBusy}
+                />
+              ) : (
+                <AssetDossierSkeleton />
+              )
+            ) : (
+              <>
+                <AssetPortfolioOverview
+                  summary={portfolio.summary}
+                  recommendedOrder={portfolio.recommendedOrder}
+                  reconciliation={portfolio.reconciliation}
+                  onSelect={selectAsset}
+                  onQueue={(id) => void enqueue([id])}
+                />
 
         {/* 9-stage workflow */}
         <Panel className="p-5">
@@ -883,6 +1041,11 @@ export default function MigrationPlanner() {
             </button>
           </Panel>
         </section>
+
+              </>
+            )}
+          </div>
+        </div>
 
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-[11px] text-white/35">

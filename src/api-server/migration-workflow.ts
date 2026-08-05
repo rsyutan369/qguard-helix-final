@@ -348,7 +348,9 @@ export async function buildWorkflowState(token: string, userId: string): Promise
     ])
     if (typeof assetHead.count === 'number') assetCount = Math.max(assetCount, assetHead.count)
     if (typeof sessionHead.count === 'number') scanSessions = sessionHead.count
-    plans = planRows.map((p) => ({ id: str(p.id), status: str(p.status) }))
+    // 'migration_queue' rows hold the Migration Planner's asset queue (a working
+    // set, not a submitted plan) — they must never advance the Plan/Approve stages.
+    plans = planRows.map((p) => ({ id: str(p.id), status: str(p.status) })).filter((p) => p.status !== 'migration_queue')
     validations = validationRows.map((v) => ({ status: str(v.status) }))
     certificates = certRows.map((c) => ({ status: str(c.status), level: str(c.level), expiresAt: str(c.expires_at) }))
   }

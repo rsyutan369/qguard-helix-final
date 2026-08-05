@@ -3,6 +3,7 @@
  * Calculates a quantum readiness score (0-100) based on detected vulnerabilities
  */
 
+import { buildPublishedCategories, publishedPostureScore } from './published-scoring'
 import type {
   WebScanRiskApplicability,
   WebScanFinding,
@@ -288,26 +289,42 @@ export function calculateRiskScore(
   }
 
   /**
-   * WEIGHT REDISTRIBUTION — the reason this is not a plain dot product.
+   * THE HEADLINE SCORE COMES FROM THE PLATFORM'S PUBLISHED MODEL.
    *
-   * A dimension the scan could not measure is EXCLUDED and its weight spread
-   * across the dimensions that were measured. It is never scored, because every
-   * possible stand-in value is a lie: 0 claims a perfect posture the scan never
-   * verified, and 50 invents a mediocre one. This is the same rule the platform's
-   * published grading model already applies on the public-scan surface, so a
-   * target assessed on either surface is scored on one methodology.
+   * `breakdown` above is this scanner's own engineering decomposition and stays
+   * exactly as it was — it is what the risk_breakdown column stores and what the
+   * per-dimension diagnostics read. But the number a user is shown, and that
+   * every downstream page aggregates, is now the weighted mean of the twelve
+   * published `SCORE_CATEGORY_DEFS` categories: the same model, same weights and
+   * same grade table that /public-scan grades against.
+   *
+   * Before this, one host scored differently on the two surfaces with no way to
+   * reconcile them. Categories this scanner cannot probe (OCSP stapling,
+   * Certificate Transparency, DNS CAA) are excluded and their weight
+   * redistributed, so the remaining difference between the surfaces is exactly
+   * the evidence one can see and the other cannot — and is itemised per
+   * category rather than buried in a single number.
    */
-  const applicableWeight = (Object.keys(WEIGHTS) as Array<keyof WebScanRiskBreakdown>)
-    .filter((key) => measured[key] !== null)
-    .reduce((sum, key) => sum + WEIGHTS[key], 0)
+  const scoreCategories = buildPublishedCategories({
+    tlsResult,
+    certInfo,
+    apiResult,
+    repoResult,
+    webCryptoResult,
+    ruleResults,
+    findings,
+  })
+  const posture = publishedPostureScore(scoreCategories)
+  const measuredCategoryWeight = scoreCategories
+    .filter((category) => category.applicable)
+    .reduce((sum, category) => sum + category.weight, 0)
 
-  const weightedRisk = (Object.keys(WEIGHTS) as Array<keyof WebScanRiskBreakdown>)
-    .filter((key) => measured[key] !== null)
-    .reduce((sum, key) => sum + (measured[key] as number) * WEIGHTS[key], 0)
+  // Exposure is the inverse of posture. With no category measurable at all the
+  // caller has no evidence, and a 0 exposure (a perfect posture) would be the
+  // very claim this guard exists to prevent.
+  const overallScore = measuredCategoryWeight > 0 ? 100 - posture : 0
 
-  // No dimension measured at all — the caller has no evidence to score, and a 0
-  // exposure (a perfect posture) would be the very claim this guard prevents.
-  const overallScore = applicableWeight > 0 ? Math.round(weightedRisk / applicableWeight) : 0
+  const applicableWeight = measuredCategoryWeight
 
   // `breakdown` keeps its numeric shape for the persisted `risk_breakdown`
   // column and existing consumers; `breakdownApplicable` is what tells them
@@ -339,7 +356,8 @@ export function calculateRiskScore(
     legacyQScore: Math.round(riskExposureToReadinessScore(clampedScore) / 10),
     breakdown,
     breakdownApplicable,
-    /** Sum of the weights that actually contributed, out of 100. */
+    scoreCategories,
+    /** Sum of the published-category weights that contributed, out of 100. */
     measuredWeight: applicableWeight,
   }
 }

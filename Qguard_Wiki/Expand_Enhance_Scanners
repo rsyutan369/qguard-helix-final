@@ -1,0 +1,320 @@
+Expand and Enhance QGuard Helix Scanner Engines with Comprehensive Post-Quantum Cryptographic Discovery
+
+First, please verify our current implementation.
+
+1. Verify Existing Post-Quantum Detection Capabilities
+
+Please review all Scanner Modules and Scanner Engines to determine whether our platform is already capable of detecting Post-Quantum Cryptography (PQC) implementations.
+
+If any capabilities are incomplete, missing, or only partially implemented, please complete and productionize them.
+
+Our scanners should accurately detect and classify, where observable or available through authenticated analysis:
+
+ML-KEM (FIPS 203)
+ML-DSA (FIPS 204)
+SLH-DSA (FIPS 205)
+Hybrid TLS implementations
+X25519 + ML-KEM-768
+X25519 + ML-KEM-1024
+Ed25519 + ML-DSA
+Hybrid certificate chains
+Post-Quantum certificates (where applicable)
+Hybrid key exchange
+Hybrid authentication
+Post-Quantum migration readiness
+Harvest Now, Decrypt Later (HNDL) exposure
+Legacy cryptography requiring migration
+Classical-only cryptographic deployments
+Quantum-safe transport
+Quantum-safe messaging protocols
+Quantum-safe VPN implementations
+Other NIST-standardized or widely adopted PQC algorithms as support evolves
+
+The scanner should accurately distinguish between:
+
+Classical cryptography
+Hybrid cryptography
+Fully Post-Quantum cryptography (where deployed)
+2. Expand Discovery Sources
+
+Please extend the Discovery Engine so it can analyze cryptographic assets from multiple enterprise environments.
+
+Supported discovery sources should include:
+
+Public Internet
+Websites
+Web Applications
+APIs
+Internet-facing services
+Authenticated Enterprise Scanning
+Internal Web Applications
+Internal APIs
+Servers
+Workstations
+Containers
+Databases
+Source Code Platforms
+
+Support scanning of:
+
+GitHub
+GitLab
+Bitbucket
+Azure DevOps Repositories
+Self-hosted Git platforms
+
+Support both:
+
+Authenticated scanning
+Public repository scanning (where applicable)
+3. Local Repository & File Upload Scanning
+
+Allow users to securely upload or analyze local resources.
+
+Supported inputs should include:
+
+Local source code folders
+ZIP archives
+TAR archives
+Individual source files
+Build artifacts
+Configuration files
+Infrastructure-as-Code
+Container images (metadata)
+Software packages
+Dependency manifests
+SBOMs
+CBOMs
+
+The scanner should accurately discover cryptographic implementations even when the code has not yet been deployed.
+
+4. Enterprise Cloud Discovery
+
+Expand discovery capabilities to enterprise cloud environments, including:
+
+AWS
+Microsoft Azure
+Google Cloud Platform
+Oracle Cloud
+DigitalOcean
+IBM Cloud
+Alibaba Cloud
+
+Discover cryptographic usage across:
+
+Compute services
+Storage services
+Managed databases
+Load balancers
+API gateways
+Key Management Services (KMS)
+Secrets Managers
+Certificate Managers
+Identity services
+Serverless workloads
+Managed Kubernetes services
+5. Kubernetes & Container Discovery
+
+Improve support for:
+
+Kubernetes clusters
+Pods
+Nodes
+Services
+Ingress controllers
+Secrets
+ConfigMaps
+Operators
+Helm charts
+Docker containers
+OCI images
+Container registries
+
+Detect:
+
+TLS configuration
+Certificates
+Secrets
+Cryptographic libraries
+Encryption usage
+Key management
+Runtime cryptographic posture
+6. Virtual Machine Discovery
+
+Support discovery across:
+
+VMware
+Hyper-V
+KVM
+Proxmox
+VirtualBox
+Cloud virtual machines
+
+Detect:
+
+TLS configuration
+Installed cryptographic libraries
+Certificate stores
+SSH configuration
+VPN configuration
+Key stores
+PKI assets
+7. Comprehensive Cryptographic Discovery
+
+Enhance the Cryptographic Discovery Engine to identify all cryptographic implementations used throughout an environment.
+
+This includes detection of:
+
+Encryption Algorithms
+AES
+ChaCha20
+Blowfish
+Twofish
+Camellia
+DES
+3DES
+RC2
+RC4
+IDEA
+SM4
+Other symmetric encryption algorithms
+Asymmetric Algorithms
+RSA
+DSA
+Diffie-Hellman
+ECDH
+ECDSA
+Ed25519
+X25519
+X448
+ML-KEM
+ML-DSA
+SLH-DSA
+Other asymmetric algorithms
+Hash Algorithms
+MD5
+SHA-1
+SHA-2 family
+SHA-3 family
+BLAKE2
+BLAKE3
+Whirlpool
+RIPEMD
+SM3
+Other hash functions
+Message Authentication
+HMAC
+CMAC
+GMAC
+Poly1305
+Other MAC algorithms
+Key Derivation
+PBKDF2
+HKDF
+Argon2
+bcrypt
+scrypt
+Other KDF implementations
+TLS & PKI
+TLS versions
+Cipher suites
+Certificate chains
+Signature algorithms
+Key exchange methods
+OCSP
+Certificate Transparency
+HSTS
+ALPN
+SNI
+Mutual TLS
+Hybrid TLS
+Post-Quantum TLS
+8. Dependency & Library Analysis
+
+Improve detection across:
+
+npm
+pnpm
+yarn
+Maven
+Gradle
+NuGet
+Go modules
+Cargo
+PyPI
+Composer
+RubyGems
+Other package ecosystems
+
+Identify:
+
+Cryptographic libraries
+Outdated libraries
+Deprecated algorithms
+Vulnerable dependencies
+PQC-capable libraries
+Migration candidates
+9. Code-Level Cryptographic Intelligence
+
+Analyze source code to identify:
+
+Cryptographic API usage
+Hardcoded keys
+Hardcoded secrets
+Weak randomness
+Deprecated algorithms
+Weak cipher modes
+Insecure key sizes
+Custom cryptography
+Certificate validation issues
+Improper TLS validation
+Cryptographic misuse
+Quantum migration opportunities
+10. Unified Cryptographic Inventory
+
+Generate a centralized inventory of all discovered cryptographic assets.
+
+For each asset, record:
+
+Asset ID
+Asset Type
+Location
+Environment
+Owner
+Algorithms
+Key Exchange
+Certificates
+Key Sizes
+Hash Algorithms
+Libraries
+Dependencies
+PQ Readiness
+Migration Status
+Business Criticality
+Risk Level
+Compliance Status
+Confidence Score
+Supporting Evidence
+
+This inventory should serve as the authoritative source for all downstream modules, including:
+
+Quantum Readiness Assessment Engine™
+Migration Planner
+Migration Sandbox
+Live Migration
+Executive Reports
+Governance Dashboard
+Sophia AI Security Copilot™
+11. Enterprise Architecture Requirements
+
+Ensure the enhanced scanner architecture:
+
+Uses a single source of truth for all discovery data.
+Produces deterministic and evidence-based results.
+Supports authenticated and unauthenticated scanning where appropriate.
+Clearly differentiates between externally observable findings and authenticated internal findings.
+Streams real-time progress and results from the backend to the frontend using properly wired APIs, hooks, queues, and Server-Sent Events (SSE).
+Scales to enterprise environments with thousands of assets while maintaining high performance and reliability.
+Expected Outcome
+
+The completed implementation should transform QGuard Helix into a comprehensive Enterprise Cryptographic Discovery and Post-Quantum Readiness Platform capable of discovering, classifying, and assessing cryptographic implementations across websites, web applications, APIs, source code, repositories, dependencies, cloud environments, containers, Kubernetes clusters, virtual machines, and enterprise infrastructure. All findings should be accurate, evidence-based, synchronized across the platform, and provide actionable guidance for post-quantum migration planning while maintaining the existing premium design, workflows, and enterprise user experience.

@@ -75,6 +75,30 @@ export type ModuleState = {
     safe: number;
   };
   error: string | null;
+  /**
+   * Why a module ended in a non-measuring state, verbatim from the backend.
+   *
+   * The scanner's module ledger never publishes a `Skipped` without one, so the
+   * UI can always answer "skipped because of what?". Optional only because
+   * scans persisted before the ledger existed have no reason recorded.
+   */
+  reason?: string | null;
+  /** True when `Skipped` means "does not apply here", not "was not reached". */
+  notApplicable?: boolean;
+};
+
+/**
+ * The execution ledger the scanner publishes with every terminal frame. It is
+ * the authoritative answer to "did every module report?", and the reason the
+ * dashboard no longer has to infer a module's fate from its absence.
+ */
+export type ModuleLedger = {
+  total: number;
+  measured: number;
+  failed: number;
+  notApplicable: number;
+  unresolved: number;
+  findings: number;
 };
 
 /**
@@ -102,6 +126,20 @@ export type ScanRiskApplicability = {
   cipherSuiteRisk: boolean;
   appCryptoRisk: boolean;
   pqcReadiness: boolean;
+};
+
+/**
+ * One category of the platform's published twelve-category scoring model, as
+ * returned per target by the scanner. This is the SAME model /public-scan grades
+ * against — same keys, same weights, same grade table.
+ */
+export type PublishedScoreCategory = {
+  key: string;
+  label: string;
+  weight: number;
+  score: number;
+  applicable: boolean;
+  observed: string;
 };
 
 export type ScanConfidence = {
@@ -228,6 +266,7 @@ export type ScanResultRecord = {
     pqcRecommendations?: unknown[];
     riskBreakdown?: ScanRiskBreakdown | null;
     riskBreakdownApplicable?: ScanRiskApplicability | null;
+    scoreCategories?: PublishedScoreCategory[] | null;
     riskMeasuredWeight?: number;
     detectionRuleResults?: unknown[];
     runtimeHealth?: unknown;
@@ -309,6 +348,7 @@ export type HistoryEntry = {
   qScore: number | null;
   telemetry: any[];
   moduleStates?: ModuleState[];
+  moduleLedger?: ModuleLedger | null;
   scannerModulesUsed?: string[];
   summary?: ScanSummary | null;
   findings?: DefensiveFinding[];

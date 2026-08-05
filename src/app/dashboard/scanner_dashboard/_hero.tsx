@@ -185,6 +185,13 @@ export interface ScannerHeroProps {
    * reload.
    */
   evidenceFindings: DefensiveFinding[];
+  /**
+   * Module states the node inspector reads. Distinct from `modules` for the
+   * same reason `evidenceFindings` is distinct from `findings`: `modules` is
+   * the live stream the ring animates, this is the reconciled view, so opening
+   * a node card after a reload still shows the real execution states.
+   */
+  evidenceModules: ModuleState[];
   /** Per-target scan records — the evidence the node inspector reads. */
   results: ScanResultRecord[];
   /** The Scanner_2 enterprise pass, when one has been produced. */
@@ -194,6 +201,12 @@ export interface ScannerHeroProps {
   hasEvidence: boolean;
   /** Grade letter + colour once the run settles, for the core's verdict bar. */
   gradeLabel: string | null;
+  /**
+   * The assessment's verdict, so the core settles on the same composite score
+   * and post-quantum readiness the result panels publish. Null before an
+   * assessment exists.
+   */
+  verdict: { score: number; postQuantumReadiness: number; gradeable: boolean } | null;
   /** Target composer (textarea, authorization, queue) rendered under the ring. */
   composerSlot: React.ReactNode;
   /** Workflow rail + platform-sync panel, rendered in the left column. */
@@ -214,11 +227,13 @@ function HeroInner({
   error,
   targets,
   evidenceFindings,
+  evidenceModules,
   results,
   scanner2,
   counters,
   hasEvidence,
   gradeLabel,
+  verdict,
   composerSlot,
   railSlot,
   onStart,
@@ -242,6 +257,7 @@ function HeroInner({
     asset,
     error,
     reducedMotion: !budget.animate,
+    verdict,
   });
 
   /* ── Geometry ──────────────────────────────────────────────────────────── */
@@ -387,13 +403,13 @@ function HeroInner({
         ? buildNodeEvidence(selected, {
             results,
             findings: evidenceFindings,
-            modules,
+            modules: evidenceModules,
             scanner2,
             targets,
             linked: { cbom: counters.cbom, assets: counters.assets, exposures: counters.exposures },
           })
         : null,
-    [selected, results, evidenceFindings, modules, scanner2, targets, counters],
+    [selected, results, evidenceFindings, evidenceModules, scanner2, targets, counters],
   );
 
   const accent = state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan;

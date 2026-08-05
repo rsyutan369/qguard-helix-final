@@ -51,6 +51,96 @@ export const CLASSICAL_CATEGORY_KEYS = SCORE_CATEGORY_DEFS.filter(
   (def) => def.key !== 'cryptographic-algorithms' && def.key !== 'post-quantum-readiness',
 ).map((def) => def.key)
 
+/**
+ * Weighted mean over the categories that were actually measured.
+ *
+ * Inapplicable categories are excluded and their weight redistributed across the
+ * rest — never scored as 0 (a claim the evidence does not support) and never as
+ * 100 (a claim it supports even less). Shared so every surface that grades on
+ * this model aggregates it identically.
+ */
+export function weightedCategoryScore(
+  components: Array<{ score: number; weight: number; applicable: boolean }>,
+): number {
+  const scored = components.filter((component) => component.applicable)
+  const totalWeight = scored.reduce((sum, component) => sum + component.weight, 0)
+  if (!totalWeight) return 0
+  return clamp(scored.reduce((sum, component) => sum + component.score * component.weight, 0) / totalWeight)
+}
+
+// ─── Post-quantum readiness model ────────────────────────────────────────────
+
+/**
+ * Signals the post-quantum readiness model scores. Deliberately primitive
+ * booleans/numbers rather than an evidence object, so the public-edge scanner
+ * and the authenticated estate scanner can both feed it from their own very
+ * different evidence and still land on the SAME number for the same host.
+ */
+export interface PostQuantumSignals {
+  /** A hybrid/PQ key-agreement group was actually negotiated or accepted. */
+  hybridObserved: boolean
+  /** A post-quantum signature algorithm appears in the served chain. */
+  pqSignatureObserved: boolean
+  /** TLS 1.3 is offered — the protocol hybrid groups deploy on. */
+  tls13Offered: boolean
+  /** Leaf certificate lifetime in days, when known. */
+  certificateValidityDays: number | null
+  /** Certificate Transparency participation observed. */
+  certificateTransparency: boolean
+  /** HSTS present AND hardened. */
+  hstsEnforced: boolean
+}
+
+/**
+ * Post-quantum readiness, 0-100. Deliberately conservative: a host scores 0
+ * unless a hybrid/PQ group or PQ signature actually appears. Crypto-agility
+ * signals earn a small "ready to move" allowance — the capability to migrate,
+ * never a readiness claim.
+ *
+ * Weights: hybrid key agreement 55, PQ signature 30, TLS 1.3 12,
+ * short-lived certificates 8, CT 3, enforced HSTS 3.
+ */
+export function postQuantumReadinessFromSignals(signals: PostQuantumSignals): {
+  score: number
+  reasons: string[]
+} {
+  const reasons: string[] = []
+  let score = 0
+
+  if (signals.hybridObserved) {
+    score += 55
+    reasons.push('Hybrid post-quantum key agreement negotiated in the TLS handshake.')
+  } else {
+    reasons.push('No hybrid or post-quantum key agreement offered.')
+  }
+
+  if (signals.pqSignatureObserved) {
+    score += 30
+    reasons.push('Post-quantum signature algorithm present in the served certificate chain.')
+  } else {
+    reasons.push('Certificate chain is signed with classical algorithms only.')
+  }
+
+  if (signals.tls13Offered) {
+    score += 12
+    reasons.push('TLS 1.3 is the protocol PQ hybrid groups deploy on — the prerequisite is met.')
+  }
+  if (signals.certificateValidityDays !== null && signals.certificateValidityDays > 0 && signals.certificateValidityDays <= 100) {
+    score += 8
+    reasons.push('Short-lived automated certificates enable fast algorithm rollover.')
+  }
+  if (signals.certificateTransparency) {
+    score += 3
+    reasons.push('Certificate Transparency participation supports auditable re-issuance.')
+  }
+  if (signals.hstsEnforced) {
+    score += 3
+    reasons.push('Enforced HTTPS narrows the downgrade path during a hybrid rollout.')
+  }
+
+  return { score: clamp(score), reasons }
+}
+
 // ─── Score → Grade mapping ───────────────────────────────────────────────────
 
 export interface GradeRow {

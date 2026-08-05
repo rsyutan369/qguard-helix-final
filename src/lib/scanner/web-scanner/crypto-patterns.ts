@@ -1,9 +1,21 @@
 /**
  * QGuard Web Scanner — Cryptographic Pattern Detection
- * 65 regex patterns for detecting quantum-vulnerable and legacy cryptography in
- * source code, spanning asymmetric (RSA/ECC/DSA/ElGamal), symmetric
- * (AES/3DES/DES/RC4/RC2/Blowfish/IDEA/Twofish/Camellia/SEED/SM4/Salsa20),
- * hashes (MD2/MD4/MD5/SHA-1/RIPEMD/Whirlpool), JWT, TLS/SSH config and key material.
+ *
+ * 125 patterns spanning: asymmetric (RSA/ECC/DSA/DH/ElGamal/SM2), symmetric
+ * (AES/ChaCha20/3DES/DES/RC4/RC2/Blowfish/IDEA/Twofish/Camellia/SEED/SM4/Salsa20),
+ * hashes (MD2/MD4/MD5/SHA-1/SHA-2/SHA-3/BLAKE2/BLAKE3/RIPEMD/Whirlpool/SM3),
+ * MAC (HMAC/CMAC/GMAC/Poly1305), KDF (PBKDF2/HKDF/Argon2/bcrypt/scrypt),
+ * POST-QUANTUM (ML-KEM/ML-DSA/SLH-DSA/Falcon/BIKE/HQC/McEliece/liboqs/hybrid
+ * groups — the only rules that can raise a SAFE asymmetric verdict), dependency
+ * manifests across 7 package ecosystems, JWT, TLS/SSH config and key material.
+ *
+ * Two rule shapes are needed and both matter: algorithm NAMES (`RSA`) and
+ * API-CALL IDIOMS (`createHash('md5')`). Real code overwhelmingly uses the
+ * latter, and matching only the former is why a repository that plainly used
+ * MD5 and RSA once reported zero findings.
+ *
+ * When this count changes, update EXPECTED_WEB_CRYPTO_PATTERNS in
+ * runtime-health.ts or the health check reports 'degraded'.
  */
 
 import type { CryptoPattern } from './types'
@@ -13,7 +25,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
 
   {
     id: 1,
-    regex: /\bRSA\b/,
+    regex: /\bRSA\b/i,
     label: 'RSA Key Generation',
     category: 'RSA',
     algorithm: 'RSA',
@@ -93,7 +105,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 9,
-    regex: /PKCS1/,
+    regex: /PKCS#?1\b/i,
     label: 'PKCS#1 RSA Standard',
     category: 'RSA',
     algorithm: 'RSA (PKCS#1)',
@@ -103,7 +115,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 10,
-    regex: /RSA-OAEP/,
+    regex: /RSA-?OAEP/i,
     label: 'RSA-OAEP Encryption',
     category: 'RSA',
     algorithm: 'RSA-OAEP',
@@ -149,7 +161,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
 
   {
     id: 14,
-    regex: /ECDSA/,
+    regex: /ECDSA/i,
     label: 'ECDSA Signature Algorithm',
     category: 'ECC',
     algorithm: 'ECDSA',
@@ -189,7 +201,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 18,
-    regex: /secp256k1/,
+    regex: /secp256k1/i,
     label: 'secp256k1 Curve (Blockchain)',
     category: 'ECC',
     algorithm: 'secp256k1',
@@ -199,7 +211,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 19,
-    regex: /secp256r1/,
+    regex: /secp256r1|prime256v1/i,
     label: 'secp256r1 / P-256 Curve',
     category: 'ECC',
     algorithm: 'secp256r1 (P-256)',
@@ -209,7 +221,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 20,
-    regex: /secp384r1/,
+    regex: /secp384r1|secp521r1/i,
     label: 'secp384r1 / P-384 Curve',
     category: 'ECC',
     algorithm: 'secp384r1 (P-384)',
@@ -232,7 +244,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 22,
-    regex: /\bMD5\b/,
+    regex: /\bMD5\b/i,
     label: 'MD5 Hash Usage',
     category: 'Hash',
     algorithm: 'MD5',
@@ -242,7 +254,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 23,
-    regex: /SHA1withRSA/,
+    regex: /SHA-?1\s*with\s*(RSA|DSA|ECDSA)/i,
     label: 'SHA-1 with RSA Signature',
     category: 'Hash',
     algorithm: 'SHA1withRSA',
@@ -255,7 +267,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
 
   {
     id: 24,
-    regex: /RS256/,
+    regex: /\bRS(256|384|512)\b|\bPS(256|384|512)\b/i,
     label: 'JWT RSA-SHA256 Signing',
     category: 'JWT',
     algorithm: 'RS256 (RSA-SHA256)',
@@ -265,7 +277,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 25,
-    regex: /ES256/,
+    regex: /\bES(256|384|512)\b|\bEdDSA\b/i,
     label: 'JWT ECDSA-SHA256 Signing',
     category: 'JWT',
     algorithm: 'ES256 (ECDSA-P256)',
@@ -314,7 +326,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
 
   {
     id: 29,
-    regex: /TLS_ECDHE_RSA/,
+    regex: /TLS_ECDHE_(RSA|ECDSA)/i,
     label: 'TLS ECDHE-RSA Cipher Suite',
     category: 'TLS',
     algorithm: 'ECDHE-RSA',
@@ -324,7 +336,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 30,
-    regex: /TLS_RSA_WITH/,
+    regex: /TLS_RSA_WITH/i,
     label: 'TLS RSA Key Exchange Cipher',
     category: 'TLS',
     algorithm: 'RSA Key Exchange',
@@ -357,7 +369,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 33,
-    regex: /crypto\/rsa/,
+    regex: /crypto\/rsa/i,
     label: 'Go crypto/rsa Package',
     category: 'RSA',
     algorithm: 'RSA (Go)',
@@ -367,7 +379,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 34,
-    regex: /crypto\/elliptic/,
+    regex: /crypto\/elliptic/i,
     label: 'Go crypto/elliptic Package',
     category: 'ECC',
     algorithm: 'ECC (Go)',
@@ -629,7 +641,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 58,
-    regex: /\bRC2\b/,
+    regex: /\bRC2\b/i,
     label: 'RC2 Block Cipher',
     category: 'Symmetric',
     algorithm: 'RC2',
@@ -659,7 +671,7 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   },
   {
     id: 61,
-    regex: /\bTwofish\b|\bSalsa20\b|\bCamellia\b|\bSEED\b|\bSM4\b/i,
+    regex: /\bTwofish\b|\bSalsa20\b|\bCamellia\b|\bSM4\b/i,
     label: 'Legacy/Regional Symmetric Cipher',
     category: 'Symmetric',
     algorithm: 'Twofish/Salsa20/Camellia/SEED/SM4',
@@ -703,13 +715,671 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   // ── DSA / ElGamal Asymmetric (Pattern 65) ─────────────────────────────────
   {
     id: 65,
-    regex: /\bDSA\b|DSACryptoServiceProvider|ElGamal|ELGAMAL/,
+    regex: /\bDSA\b|DSACryptoServiceProvider|ElGamal/i,
     label: 'DSA / ElGamal',
     category: 'Asymmetric',
     algorithm: 'DSA/ElGamal',
     threatLevel: 'CRITICAL',
     languages: ['all'],
     description: 'DSA/ElGamal — discrete-log cryptography, breakable by Shor\'s algorithm',
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     API-CALL IDIOMS (66-99)
+
+     The patterns above match algorithm NAMES. Real code rarely writes the name
+     in isolation — it passes a lowercase string to a factory:
+     `createHash('md5')`, `generateKeyPairSync('rsa')`, `hashlib.sha1()`.
+     Those went undetected entirely, which is why scanning a repository that
+     demonstrably used MD5 and RSA reported neither.
+     ═════════════════════════════════════════════════════════════════════════ */
+
+  // ── Node.js / JavaScript runtime crypto ───────────────────────────────────
+  {
+    id: 66,
+    regex: /createHash\(\s*['"`](md5|md4|md2)['"`]/i,
+    label: 'Node.js Broken Hash Construction',
+    category: 'Hash',
+    algorithm: 'MD5',
+    threatLevel: 'CRITICAL',
+    languages: ['javascript', 'typescript'],
+    description: 'createHash("md5") — collision-broken hash in active use; replace with SHA-256 or SHA3-256',
+  },
+  {
+    id: 67,
+    regex: /createHash\(\s*['"`](sha1|sha-1)['"`]/i,
+    label: 'Node.js SHA-1 Construction',
+    category: 'Hash',
+    algorithm: 'SHA-1',
+    threatLevel: 'HIGH',
+    languages: ['javascript', 'typescript'],
+    description: 'createHash("sha1") — collision-broken since SHAttered; migrate to SHA-256/SHA3-256',
+  },
+  {
+    id: 68,
+    regex: /createHash\(\s*['"`](sha256|sha384|sha512|sha3-256|sha3-384|sha3-512)['"`]/i,
+    label: 'Node.js Modern Hash Construction',
+    category: 'Hash',
+    algorithm: 'SHA-2/SHA-3',
+    threatLevel: 'SAFE',
+    languages: ['javascript', 'typescript'],
+    description: 'SHA-2/SHA-3 family — quantum impact limited to Grover (halved margin); SHA-384+ recommended',
+  },
+  {
+    id: 69,
+    regex: /createCipheriv\(\s*['"`](des|des3|des-ede3|des-ede3-cbc|desx|rc2|rc4|bf|blowfish|cast5|idea)/i,
+    label: 'Node.js Legacy Cipher Construction',
+    category: 'Symmetric',
+    algorithm: 'Legacy Symmetric Cipher',
+    threatLevel: 'CRITICAL',
+    languages: ['javascript', 'typescript'],
+    description: 'Legacy/broken block or stream cipher passed to createCipheriv — classically insecure',
+  },
+  {
+    id: 70,
+    regex: /createCipheriv\(\s*['"`]aes-(128|192)-/i,
+    label: 'Node.js AES-128/192',
+    category: 'Symmetric',
+    algorithm: 'AES-128/192',
+    threatLevel: 'MEDIUM',
+    languages: ['javascript', 'typescript'],
+    description: 'AES-128/192 — Grover halves the effective margin; AES-256 is the PQC-recommended baseline',
+  },
+  {
+    id: 71,
+    regex: /createCipheriv\(\s*['"`]aes-256-(gcm|ccm|ocb)/i,
+    label: 'Node.js AES-256 AEAD',
+    category: 'Symmetric',
+    algorithm: 'AES-256-GCM',
+    threatLevel: 'SAFE',
+    languages: ['javascript', 'typescript'],
+    description: 'AES-256 AEAD — 128-bit post-quantum margin under Grover; meets the PQC symmetric baseline',
+  },
+  {
+    id: 72,
+    regex: /['"`]aes-\d{3}-ecb['"`]|['"`]AES\/ECB|Cipher\.getInstance\(\s*["'][^"']*ECB/i,
+    label: 'ECB Mode Usage',
+    category: 'Symmetric',
+    algorithm: 'AES-ECB',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'ECB mode leaks plaintext structure — never semantically secure, regardless of key size',
+  },
+  {
+    id: 73,
+    regex: /generateKeyPair(Sync)?\(\s*['"`](rsa|rsa-pss)['"`]/i,
+    label: 'Node.js RSA Key Generation',
+    category: 'RSA',
+    algorithm: 'RSA',
+    threatLevel: 'CRITICAL',
+    languages: ['javascript', 'typescript'],
+    description: 'RSA keypair generation — recoverable by Shor; migrate to ML-KEM (FIPS 203) / ML-DSA (FIPS 204)',
+  },
+  {
+    id: 74,
+    regex: /generateKeyPair(Sync)?\(\s*['"`](ec|ed25519|ed448|x25519|x448|dsa|dh)['"`]/i,
+    label: 'Node.js ECC/DH Key Generation',
+    category: 'ECC',
+    algorithm: 'ECC/DH',
+    threatLevel: 'CRITICAL',
+    languages: ['javascript', 'typescript'],
+    description: 'Elliptic-curve or finite-field keypair generation — ECDLP/DLP recoverable by Shor',
+  },
+  {
+    id: 75,
+    regex: /createECDH\(|createDiffieHellman\(/i,
+    label: 'Node.js Key Agreement',
+    category: 'Key Exchange',
+    algorithm: 'ECDH/DH',
+    threatLevel: 'CRITICAL',
+    languages: ['javascript', 'typescript'],
+    description: 'Classical key agreement — harvest-now-decrypt-later exposure; deploy a hybrid PQC KEM',
+  },
+  {
+    id: 76,
+    regex: /Math\.random\(\)[^\n]{0,60}(key|token|secret|nonce|iv|salt|password)/i,
+    label: 'Insecure Randomness for Key Material',
+    category: 'Key Management',
+    algorithm: 'Non-CSPRNG',
+    threatLevel: 'CRITICAL',
+    languages: ['javascript', 'typescript'],
+    description: 'Math.random() is not cryptographically secure — use crypto.randomBytes / getRandomValues',
+  },
+
+  // ── Python ────────────────────────────────────────────────────────────────
+  {
+    id: 77,
+    regex: /hashlib\.(md5|md4|sha1)\s*\(/i,
+    label: 'Python Broken Hash',
+    category: 'Hash',
+    algorithm: 'MD5/SHA-1',
+    threatLevel: 'CRITICAL',
+    languages: ['python'],
+    description: 'hashlib.md5/sha1 — collision-broken; migrate to hashlib.sha256 or sha3_256',
+  },
+  {
+    id: 78,
+    regex: /hashlib\.(sha256|sha384|sha512|sha3_256|sha3_384|sha3_512|blake2b)\s*\(/i,
+    label: 'Python Modern Hash',
+    category: 'Hash',
+    algorithm: 'SHA-2/SHA-3',
+    threatLevel: 'SAFE',
+    languages: ['python'],
+    description: 'SHA-2/SHA-3/BLAKE2 — Grover-resistant at 256-bit output; no migration required',
+  },
+  {
+    id: 79,
+    regex: /algorithms\.(TripleDES|Blowfish|ARC4|CAST5|IDEA|SEED)\b/,
+    label: 'Python Legacy Cipher (pyca)',
+    category: 'Symmetric',
+    algorithm: 'Legacy Symmetric Cipher',
+    threatLevel: 'CRITICAL',
+    languages: ['python'],
+    description: 'Deprecated cipher from cryptography.hazmat — classically weak, remove from the estate',
+  },
+  {
+    id: 80,
+    regex: /rsa\.generate_private_key|RSA\.generate\(/i,
+    label: 'Python RSA Key Generation',
+    category: 'RSA',
+    algorithm: 'RSA',
+    threatLevel: 'CRITICAL',
+    languages: ['python'],
+    description: 'RSA private key generation — recoverable by Shor; plan ML-KEM/ML-DSA migration',
+  },
+  {
+    id: 81,
+    regex: /ec\.(SECP256R1|SECP384R1|SECP521R1|SECP256K1)\(|ec\.generate_private_key/,
+    label: 'Python ECC Key Generation',
+    category: 'ECC',
+    algorithm: 'ECDSA/ECDH',
+    threatLevel: 'CRITICAL',
+    languages: ['python'],
+    description: 'NIST/Koblitz curve key generation — ECDLP recoverable by Shor',
+  },
+  {
+    id: 82,
+    regex: /Crypto\.Cipher\s+import\s+(DES|DES3|ARC4|Blowfish|XOR)/,
+    label: 'Python PyCryptodome Legacy Cipher Import',
+    category: 'Symmetric',
+    algorithm: 'Legacy Symmetric Cipher',
+    threatLevel: 'CRITICAL',
+    languages: ['python'],
+    description: 'Legacy cipher imported from PyCryptodome — classically broken primitive',
+  },
+
+  // ── Java / Kotlin / Scala ─────────────────────────────────────────────────
+  {
+    id: 83,
+    regex: /MessageDigest\.getInstance\(\s*["'](MD5|MD2|SHA-?1)["']/i,
+    label: 'Java Broken Digest',
+    category: 'Hash',
+    algorithm: 'MD5/SHA-1',
+    threatLevel: 'CRITICAL',
+    languages: ['java', 'kotlin', 'scala'],
+    description: 'MessageDigest with a collision-broken algorithm — migrate to SHA-256/SHA3-256',
+  },
+  {
+    id: 84,
+    regex: /Cipher\.getInstance\(\s*["'](DES|DESede|RC2|RC4|Blowfish|ARCFOUR)/i,
+    label: 'Java Legacy Cipher',
+    category: 'Symmetric',
+    algorithm: 'Legacy Symmetric Cipher',
+    threatLevel: 'CRITICAL',
+    languages: ['java', 'kotlin', 'scala'],
+    description: 'Legacy JCE cipher — classically insecure; replace with AES-256-GCM',
+  },
+  {
+    id: 85,
+    regex: /KeyPairGenerator\.getInstance\(\s*["'](DSA|DiffieHellman|EdDSA|Ed25519|XDH)["']/i,
+    label: 'Java Classical Keypair Generator',
+    category: 'Asymmetric',
+    algorithm: 'DSA/DH/EdDSA',
+    threatLevel: 'CRITICAL',
+    languages: ['java', 'kotlin', 'scala'],
+    description: 'Discrete-log or curve keypair generation — recoverable by Shor',
+  },
+  {
+    id: 86,
+    regex: /Signature\.getInstance\(\s*["'][^"']*(withRSA|withECDSA|withDSA)/i,
+    label: 'Java Classical Signature',
+    category: 'Signature',
+    algorithm: 'RSA/ECDSA/DSA Signature',
+    threatLevel: 'CRITICAL',
+    languages: ['java', 'kotlin', 'scala'],
+    description: 'Classical signature scheme — migrate to ML-DSA (FIPS 204) or SLH-DSA (FIPS 205)',
+  },
+
+  // ── Go ────────────────────────────────────────────────────────────────────
+  {
+    id: 87,
+    regex: /crypto\/(md5|sha1|des|rc4)\b/i,
+    label: 'Go Broken Crypto Package',
+    category: 'Symmetric',
+    algorithm: 'MD5/SHA-1/DES/RC4',
+    threatLevel: 'CRITICAL',
+    languages: ['go'],
+    description: 'Go standard-library package for a classically broken primitive',
+  },
+  {
+    id: 88,
+    regex: /crypto\/(ecdsa|ed25519|dsa)\b|elliptic\.P(224|256|384|521)\(\)/i,
+    label: 'Go Classical Asymmetric',
+    category: 'ECC',
+    algorithm: 'ECDSA/Ed25519/DSA',
+    threatLevel: 'CRITICAL',
+    languages: ['go'],
+    description: 'Curve or discrete-log cryptography — ECDLP/DLP recoverable by Shor',
+  },
+
+  // ── .NET ──────────────────────────────────────────────────────────────────
+  {
+    id: 89,
+    regex: /MD5\.Create\(\)|SHA1\.Create\(\)|MD5CryptoServiceProvider|SHA1Managed|SHA1CryptoServiceProvider/i,
+    label: '.NET Broken Hash Provider',
+    category: 'Hash',
+    algorithm: 'MD5/SHA-1',
+    threatLevel: 'CRITICAL',
+    languages: ['csharp'],
+    description: 'Collision-broken hash provider — migrate to SHA256/SHA3 managed providers',
+  },
+  {
+    id: 90,
+    regex: /TripleDESCryptoServiceProvider|DESCryptoServiceProvider|RC2CryptoServiceProvider|RijndaelManaged/i,
+    label: '.NET Legacy Cipher Provider',
+    category: 'Symmetric',
+    algorithm: 'Legacy Symmetric Cipher',
+    threatLevel: 'CRITICAL',
+    languages: ['csharp'],
+    description: 'Legacy symmetric provider — replace with AesGcm (AES-256-GCM)',
+  },
+
+  // ── Rust ──────────────────────────────────────────────────────────────────
+  {
+    id: 91,
+    regex: /\b(md5|md-5|sha1)::(Md5|Sha1)\b|use\s+(md5|sha1)::/i,
+    label: 'Rust Broken Hash Crate',
+    category: 'Hash',
+    algorithm: 'MD5/SHA-1',
+    threatLevel: 'CRITICAL',
+    languages: ['rust'],
+    description: 'Collision-broken hash crate in use — migrate to sha2/sha3',
+  },
+  {
+    id: 92,
+    regex: /use\s+(x25519_dalek|k256|p521|secp256k1|ring::signature::(ECDSA|ED25519))/i,
+    label: 'Rust Classical Asymmetric Crate',
+    category: 'ECC',
+    algorithm: 'ECC/EdDSA',
+    threatLevel: 'CRITICAL',
+    languages: ['rust'],
+    description: 'Curve cryptography crate — ECDLP recoverable by Shor',
+  },
+
+  // ── PHP / Ruby / Perl ─────────────────────────────────────────────────────
+  {
+    id: 93,
+    // `\bhash(` anchored: without the boundary this also matched Node's
+    // `createHash('md5')`, filing a JavaScript call under the PHP rule.
+    regex: /\b(md5|sha1)\s*\(\s*\$|\bhash\(\s*['"](md5|sha1)['"]|mcrypt_/i,
+    label: 'PHP Broken Hash / mcrypt',
+    category: 'Hash',
+    algorithm: 'MD5/SHA-1',
+    threatLevel: 'CRITICAL',
+    languages: ['php'],
+    description: 'Broken hash or the removed mcrypt extension — migrate to hash("sha256") / sodium',
+  },
+  {
+    id: 94,
+    regex: /Digest::(MD5|SHA1)\b|OpenSSL::Cipher\.new\(\s*['"](des|rc4|bf)/i,
+    label: 'Ruby Broken Digest / Legacy Cipher',
+    category: 'Hash',
+    algorithm: 'MD5/SHA-1',
+    threatLevel: 'CRITICAL',
+    languages: ['ruby'],
+    description: 'Collision-broken digest or legacy cipher — migrate to Digest::SHA256 / AES-256-GCM',
+  },
+  {
+    id: 95,
+    regex: /OpenSSL::PKey::(RSA|DSA|DH|EC)\b/,
+    label: 'Ruby Classical Key Object',
+    category: 'Asymmetric',
+    algorithm: 'RSA/DSA/DH/EC',
+    threatLevel: 'CRITICAL',
+    languages: ['ruby'],
+    description: 'Classical public-key object — recoverable by Shor; plan a PQC migration',
+  },
+
+  // ── Apple platforms ───────────────────────────────────────────────────────
+  {
+    id: 96,
+    regex: /CC_MD5|CC_SHA1|kCCAlgorithm3DES|kCCAlgorithmDES|kCCAlgorithmRC4/,
+    label: 'Apple CommonCrypto Legacy Primitive',
+    category: 'Symmetric',
+    algorithm: 'MD5/SHA-1/3DES/RC4',
+    threatLevel: 'CRITICAL',
+    languages: ['swift', 'objectivec'],
+    description: 'CommonCrypto legacy primitive — migrate to CryptoKit SHA256 / AES.GCM',
+  },
+
+  // ── Symmetric baseline (named, not constructed) ───────────────────────────
+  {
+    id: 97,
+    regex: /\bAES-?256\b|\bAES_256\b|AES\.GCM|AesGcm|aes256/i,
+    label: 'AES-256',
+    category: 'Symmetric',
+    algorithm: 'AES-256',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'AES-256 — 128-bit security under Grover; the PQC-recommended symmetric baseline',
+  },
+  {
+    id: 98,
+    regex: /\bAES-?128\b|\bAES_128\b|aes128/i,
+    label: 'AES-128',
+    category: 'Symmetric',
+    algorithm: 'AES-128',
+    threatLevel: 'MEDIUM',
+    languages: ['all'],
+    description: 'AES-128 — Grover reduces the margin to 64 bits; step up to AES-256 for long-lived data',
+  },
+  {
+    id: 99,
+    regex: /ChaCha20|XChaCha20|Poly1305/i,
+    label: 'ChaCha20-Poly1305',
+    category: 'Symmetric',
+    algorithm: 'ChaCha20-Poly1305',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'ChaCha20-Poly1305 AEAD — 256-bit key, Grover-resistant; no migration required',
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     POST-QUANTUM DETECTION (100-109)
+
+     The catalogue previously had NO way to recognise post-quantum code, so a
+     repository that had already migrated to ML-KEM scored identically to one
+     that had done nothing. These are the only patterns that can raise a SAFE
+     verdict for asymmetric cryptography.
+     ═════════════════════════════════════════════════════════════════════════ */
+  {
+    id: 100,
+    regex: /\bML-?KEM\b|\bKyber\b|kyber(512|768|1024)|FIPS\s*203/i,
+    label: 'ML-KEM / Kyber (FIPS 203)',
+    category: 'Post-Quantum',
+    algorithm: 'ML-KEM',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'ML-KEM (FIPS 203) key encapsulation — quantum-safe key establishment',
+  },
+  {
+    id: 101,
+    regex: /\bML-?DSA\b|\bDilithium\b|dilithium(2|3|5)|FIPS\s*204/i,
+    label: 'ML-DSA / Dilithium (FIPS 204)',
+    category: 'Post-Quantum',
+    algorithm: 'ML-DSA',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'ML-DSA (FIPS 204) lattice signature — quantum-safe digital signature',
+  },
+  {
+    id: 102,
+    regex: /\bSLH-?DSA\b|SPHINCS\+?|sphincsplus|FIPS\s*205/i,
+    label: 'SLH-DSA / SPHINCS+ (FIPS 205)',
+    category: 'Post-Quantum',
+    algorithm: 'SLH-DSA',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'SLH-DSA (FIPS 205) hash-based signature — quantum-safe, conservative security assumption',
+  },
+  {
+    id: 103,
+    regex: /\bFalcon-?(512|1024)\b|\bBIKE\b|\bHQC\b|Classic\s*McEliece|\bFrodoKEM\b/i,
+    label: 'Alternate PQC Algorithm',
+    category: 'Post-Quantum',
+    algorithm: 'Falcon/BIKE/HQC/McEliece',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'Alternate/round-4 PQC algorithm — quantum-safe; confirm it is an approved profile for your policy',
+  },
+  {
+    id: 104,
+    regex: /liboqs|oqs-provider|open-quantum-safe|pqcrypto|pqclean|\boqs::/i,
+    label: 'Post-Quantum Library',
+    category: 'Post-Quantum',
+    algorithm: 'PQC Library',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'Post-quantum cryptography library in the dependency graph — quantum-safe primitives available',
+  },
+  {
+    id: 105,
+    regex: /X25519MLKEM768|X25519Kyber768|P256Kyber768|SecP256r1MLKEM768|hybrid.{0,12}(kem|kyber|mlkem)/i,
+    label: 'Hybrid PQC Key Agreement',
+    category: 'Post-Quantum',
+    algorithm: 'Hybrid ML-KEM',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'Hybrid classical+PQC key agreement — the recommended migration posture for TLS',
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     DEPENDENCY & MANIFEST DETECTION (110-119)
+
+     "Code & Dependencies" must see the dependency graph, not only call sites.
+     These match manifest entries in package.json, requirements.txt, go.mod,
+     Cargo.toml, pom.xml, Gemfile and composer.json.
+     ═════════════════════════════════════════════════════════════════════════ */
+  {
+    id: 110,
+    regex: /["']?(crypto-js|node-forge|jsrsasign|elliptic|sjcl|bcryptjs|jsonwebtoken|jose|node-rsa|ursa)["']?\s*[:=]\s*["'][\^~>=<\d]/i,
+    label: 'JavaScript Crypto Dependency',
+    category: 'Dependency',
+    algorithm: 'Client/Server Crypto Library',
+    threatLevel: 'HIGH',
+    languages: ['javascript', 'typescript'],
+    description: 'Crypto library declared in package.json — inventory its algorithms for the CBOM',
+  },
+  {
+    id: 111,
+    regex: /^\s*(pycryptodome|pycrypto|cryptography|paramiko|pyopenssl|ecdsa|rsa|pynacl)\s*[=><~!]/im,
+    label: 'Python Crypto Dependency',
+    category: 'Dependency',
+    algorithm: 'Python Crypto Library',
+    threatLevel: 'HIGH',
+    languages: ['python'],
+    description: 'Crypto library pinned in requirements.txt/Pipfile — inventory its algorithms for the CBOM',
+  },
+  {
+    id: 112,
+    regex: /golang\.org\/x\/crypto|github\.com\/(btcsuite|decred)\/[^\s]*secp256k1|github\.com\/cloudflare\/circl/i,
+    label: 'Go Crypto Dependency',
+    category: 'Dependency',
+    algorithm: 'Go Crypto Module',
+    threatLevel: 'HIGH',
+    languages: ['go'],
+    description: 'Crypto module in go.mod — inventory its algorithms for the CBOM',
+  },
+  {
+    id: 113,
+    regex: /^\s*(openssl|rustls|ring|rsa|ed25519-dalek|x25519-dalek|p256|k256|sha1|md-?5|aes-gcm|chacha20poly1305)\s*=/im,
+    label: 'Rust Crypto Dependency',
+    category: 'Dependency',
+    algorithm: 'Rust Crypto Crate',
+    threatLevel: 'HIGH',
+    languages: ['rust'],
+    description: 'Crypto crate in Cargo.toml — inventory its algorithms for the CBOM',
+  },
+  {
+    id: 114,
+    regex: /bcprov-jdk|bcpkix|<artifactId>\s*(bcprov|bcpkix|jose4j|nimbus-jose-jwt|java-jwt)/i,
+    label: 'Java Crypto Dependency',
+    category: 'Dependency',
+    algorithm: 'Java Crypto Library',
+    threatLevel: 'HIGH',
+    languages: ['java', 'kotlin'],
+    description: 'Crypto library in pom.xml/build.gradle — inventory its algorithms for the CBOM',
+  },
+  {
+    id: 115,
+    regex: /gem\s+["'](openssl|bcrypt|jwt|rbnacl)["']|["'](firebase\/php-jwt|paragonie\/sodium_compat|phpseclib\/phpseclib)["']/i,
+    label: 'Ruby/PHP Crypto Dependency',
+    category: 'Dependency',
+    algorithm: 'Crypto Library',
+    threatLevel: 'HIGH',
+    languages: ['ruby', 'php'],
+    description: 'Crypto library in Gemfile/composer.json — inventory its algorithms for the CBOM',
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     TRANSPORT & PROTOCOL CONFIGURATION (120-124)
+     ═════════════════════════════════════════════════════════════════════════ */
+  {
+    id: 120,
+    regex: /(SSLv2|SSLv3|TLSv1(\.0|\.1)?)\b(?!\.[23])/,
+    label: 'Deprecated TLS/SSL Protocol',
+    category: 'Protocol',
+    algorithm: 'SSLv2/SSLv3/TLS 1.0/1.1',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'Deprecated transport protocol configured — classically broken, disable and require TLS 1.3',
+  },
+  {
+    id: 121,
+    regex: /ssh-rsa\b|ssh-dss\b|\bdiffie-hellman-group1-sha1\b|\bdiffie-hellman-group14-sha1\b/i,
+    label: 'Weak SSH Algorithm',
+    category: 'Protocol',
+    algorithm: 'ssh-rsa/ssh-dss',
+    threatLevel: 'HIGH',
+    languages: ['all'],
+    description: 'Weak SSH host key or KEX algorithm — migrate to ed25519 now and a PQC KEX when available',
+  },
+  {
+    id: 122,
+    regex: /InsecureSkipVerify\s*:\s*true|verify\s*=\s*False|rejectUnauthorized\s*:\s*false|CURLOPT_SSL_VERIFYPEER\s*,\s*(0|false)/i,
+    label: 'TLS Verification Disabled',
+    category: 'Protocol',
+    algorithm: 'TLS Trust Bypass',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'Certificate verification disabled — the transport provides no authenticated channel at all',
+  },
+  {
+    id: 123,
+    regex: /-----BEGIN (EC|DSA|OPENSSH|PGP) PRIVATE KEY-----/,
+    label: 'Non-RSA Private Key Block',
+    category: 'Key Management',
+    algorithm: 'EC/DSA/OpenSSH/PGP Private Key',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'Private key material committed to the repository — rotate immediately and move to a KMS',
+  },
+  {
+    id: 124,
+    regex: /-----BEGIN ENCRYPTED PRIVATE KEY-----|-----BEGIN PGP PRIVATE KEY BLOCK-----/,
+    label: 'Encrypted Private Key Block',
+    category: 'Key Management',
+    algorithm: 'Encrypted Private Key',
+    threatLevel: 'HIGH',
+    languages: ['all'],
+    description: 'Encrypted private key in the repository — confirm the passphrase is not also committed',
+  },
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     MESSAGE AUTHENTICATION, KEY DERIVATION & REMAINING HASH FAMILIES (125-133)
+
+     Completes the primitive coverage: a CBOM that lists ciphers and signatures
+     but omits the MAC and KDF in use is not a full cryptographic inventory.
+     ═════════════════════════════════════════════════════════════════════════ */
+  {
+    id: 125,
+    regex: /\bHMAC\b|createHmac\(|hmac\.new\(|HMACSHA(1|256|384|512)|Mac\.getInstance\(/i,
+    label: 'HMAC',
+    category: 'MAC',
+    algorithm: 'HMAC',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'HMAC message authentication — symmetric, Grover-limited; safe when built on SHA-256 or better',
+  },
+  {
+    id: 126,
+    regex: /\bHMAC-?(MD5|SHA-?1)\b|createHmac\(\s*['"`](md5|sha1)['"`]/i,
+    label: 'HMAC over a Broken Hash',
+    category: 'MAC',
+    algorithm: 'HMAC-MD5/SHA-1',
+    threatLevel: 'HIGH',
+    languages: ['all'],
+    description: 'HMAC built on a collision-broken digest — migrate the underlying hash to SHA-256/SHA3-256',
+  },
+  {
+    id: 127,
+    regex: /\bCMAC\b|\bGMAC\b|\bAES-CMAC\b|CipherMac|Poly1305/i,
+    label: 'Block-Cipher MAC',
+    category: 'MAC',
+    algorithm: 'CMAC/GMAC/Poly1305',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'Block-cipher or polynomial MAC — symmetric, quantum impact limited to Grover',
+  },
+  {
+    id: 128,
+    regex: /\bHKDF\b|hkdf_extract|HKDFExpand|Hkdf/i,
+    label: 'HKDF Key Derivation',
+    category: 'KDF',
+    algorithm: 'HKDF',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'HKDF extract-and-expand — the recommended KDF for hybrid PQC key schedules',
+  },
+  {
+    id: 129,
+    regex: /\bPBKDF1\b|\bMD5Crypt\b|\bcrypt\(\s*\$|DES_crypt/i,
+    label: 'Obsolete Password KDF',
+    category: 'KDF',
+    algorithm: 'PBKDF1/crypt',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'Obsolete password derivation — migrate to Argon2id, scrypt or PBKDF2-HMAC-SHA256 with a high work factor',
+  },
+  {
+    id: 130,
+    regex: /\bBLAKE3\b|blake3::|blake3\(/i,
+    label: 'BLAKE3 Hash',
+    category: 'Hash',
+    algorithm: 'BLAKE3',
+    threatLevel: 'SAFE',
+    languages: ['all'],
+    description: 'BLAKE3 — 256-bit output, Grover-resistant; no migration required',
+  },
+  {
+    id: 131,
+    regex: /\bSM3\b|sm3_|SM3Digest/i,
+    label: 'SM3 Hash (GM/T)',
+    category: 'Hash',
+    algorithm: 'SM3',
+    threatLevel: 'MEDIUM',
+    languages: ['all'],
+    description: 'SM3 Chinese national hash — 256-bit; inventory for regional compliance and Grover margin',
+  },
+  {
+    id: 132,
+    regex: /\bSM2\b|sm2_|SM2Engine/i,
+    label: 'SM2 Elliptic Curve (GM/T)',
+    category: 'ECC',
+    algorithm: 'SM2',
+    threatLevel: 'CRITICAL',
+    languages: ['all'],
+    description: 'SM2 Chinese national elliptic curve — ECDLP recoverable by Shor, same exposure as ECDSA',
+  },
+  {
+    id: 133,
+    regex: /<PackageReference\s+Include="(BouncyCastle|System\.Security\.Cryptography|Portable\.BouncyCastle|NSec|Sodium\.Core|jose-jwt|IdentityModel)/i,
+    label: 'NuGet Crypto Dependency',
+    category: 'Dependency',
+    algorithm: '.NET Crypto Package',
+    threatLevel: 'HIGH',
+    languages: ['csharp'],
+    description: 'Crypto package referenced in a .csproj/NuGet manifest — inventory its algorithms for the CBOM',
   },
 ]
 
@@ -727,7 +1397,50 @@ export const SCANNABLE_EXTENSIONS = new Set([
   '.dockerfile', '.tf', '.hcl', '.bicep',
   '.gradle', '.sbt', '.cmake', '.makefile',
   '.nginx', '.apache', '.htaccess',
+  // Dependency manifests and lockfiles. `.txt` (requirements.txt) and `.mod` /
+  // `.sum` (Go modules) were missing, so the dependency graph of a Python or Go
+  // repository was invisible to the "Code & Dependencies" surface.
+  '.txt', '.mod', '.sum', '.lock', '.gemspec', '.cabal', '.nix',
+  '.csproj', '.fsproj', '.vbproj', '.props', '.targets', '.nuspec',
+  // Additional languages that ship cryptography.
+  '.m', '.mm', '.dart', '.ex', '.exs', '.erl', '.clj', '.groovy',
+  '.vb', '.fs', '.jl', '.lua', '.pl', '.pm', '.r', '.sql', '.tfvars',
+  // Additional key/certificate material.
+  '.pub', '.asc', '.gpg', '.der', '.p8', '.jks', '.keystore', '.csr',
 ])
+
+/**
+ * Files with no extension (or a name-only convention) that still carry the
+ * dependency graph. Matched on basename, case-insensitively.
+ *
+ * Without this, `go.mod`, `Gemfile`, `Dockerfile` and `Pipfile` were filtered
+ * out before any pattern ran.
+ */
+export const SCANNABLE_FILENAMES = new Set([
+  'dockerfile', 'containerfile', 'makefile', 'gemfile', 'gemfile.lock',
+  'pipfile', 'pipfile.lock', 'go.mod', 'go.sum', 'cargo.lock',
+  'requirements.txt', 'requirements-dev.txt', 'pyproject.toml', 'setup.py',
+  'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+  'composer.json', 'composer.lock', 'pom.xml', 'build.gradle', 'build.gradle.kts',
+  'packages.config', 'directory.packages.props', 'paket.dependencies',
+  'sshd_config', 'ssh_config', 'nginx.conf', 'httpd.conf', 'openssl.cnf',
+  'known_hosts', 'authorized_keys', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+])
+
+/** True when a repository path should be read and pattern-matched. */
+export function isScannablePath(path: string): boolean {
+  const basename = path.split('/').pop()?.toLowerCase() ?? ''
+  if (!basename) return false
+  if (SCANNABLE_FILENAMES.has(basename)) return true
+  // Dotfiles: `.env`, `.npmrc`, `.htaccess` have no "name" before the dot, so
+  // the whole basename IS the extension. Treating them as extension-less
+  // skipped `.env` — the single most likely place to find committed key
+  // material — before any pattern could run.
+  if (basename.startsWith('.') && SCANNABLE_EXTENSIONS.has(basename)) return true
+  const dot = basename.lastIndexOf('.')
+  if (dot <= 0) return false
+  return SCANNABLE_EXTENSIONS.has(basename.slice(dot))
+}
 
 /**
  * File extensions to prioritize in scanning (most likely to contain crypto code)

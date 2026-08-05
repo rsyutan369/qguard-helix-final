@@ -4,6 +4,20 @@ import { buildScannerIntelligence } from './scanner'
 import { buildSharedResponsibility } from '@/lib/shared-responsibility'
 import { buildOwnershipInputs } from './shared-responsibility-inputs'
 import { collapseCriticalFindings, type RawCriticalFinding } from './critical-findings'
+import {
+  classifyAlgorithm,
+  deriveAssetPostureModel,
+  isInternetFacing,
+  levelFromReadiness,
+  levelFromRisk,
+  severityWeight,
+} from '@/lib/migration/asset-intelligence'
+
+// The per-asset risk/posture derivation, algorithm classification and internet
+// exposure heuristic live in the shared migration intelligence engine so the
+// Migration Planner's per-asset dossiers and these tenant totals can never
+// disagree. Re-exported here because existing modules import them from this file.
+export { isInternetFacing }
 
 /**
  * Quantum Readiness Assessment Engine™ — aggregation router.
@@ -22,11 +36,6 @@ import { collapseCriticalFindings, type RawCriticalFinding } from './critical-fi
 const router = Router()
 
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
-
-const QUANTUM_VULNERABLE_PREFIXES = ['RSA', 'ECC', 'ECDSA', 'ECDH', 'DH', 'DSA', 'ELGAMAL', 'EL-GAMAL']
-const QUANTUM_VULNERABLE_EXACT = ['SHA-1', 'SHA1', 'MD5', '3DES', 'DES', 'RC4']
-const PQC_MARKERS = ['ML-KEM', 'ML-DSA', 'SLH-DSA', 'KYBER', 'DILITHIUM', 'SPHINCS', 'FALCON', 'FRODOKEM', 'BIKE', 'HQC']
-const HYBRID_MARKERS = ['HYBRID', 'X25519+ML-KEM', 'ED25519+ML-DSA', 'X25519MLKEM']
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
   // Header-only auth (Authorization: Bearer). No query-string token fallback —
@@ -56,41 +65,6 @@ function clamp(value: number, min = 0, max = 100): number {
 }
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
-}
-
-function classifyAlgorithm(raw: string): 'vulnerable' | 'pqc' | 'hybrid' | 'unknown' {
-  const algo = raw.toUpperCase().trim()
-  if (!algo) return 'unknown'
-  if (HYBRID_MARKERS.some((m) => algo.includes(m))) return 'hybrid'
-  if (PQC_MARKERS.some((m) => algo.includes(m))) return 'pqc'
-  if (QUANTUM_VULNERABLE_EXACT.includes(algo)) return 'vulnerable'
-  if (QUANTUM_VULNERABLE_PREFIXES.some((p) => algo.startsWith(p))) return 'vulnerable'
-  return 'unknown'
-}
-
-function levelFromRisk(score: number): string {
-  if (score >= 80) return 'Critical'
-  if (score >= 60) return 'High'
-  if (score >= 40) return 'Elevated'
-  if (score >= 20) return 'Moderate'
-  if (score > 0) return 'Low'
-  return 'Minimal'
-}
-function levelFromReadiness(score: number): string {
-  if (score >= 85) return 'Quantum-Ready'
-  if (score >= 65) return 'Advanced'
-  if (score >= 45) return 'Developing'
-  if (score >= 25) return 'Early Stage'
-  if (score > 0) return 'Initial'
-  return 'Not Started'
-}
-function severityWeight(sev: string): number {
-  const s = sev.toLowerCase()
-  if (s.includes('critical')) return 100
-  if (s.includes('high')) return 75
-  if (s.includes('medium') || s.includes('moderate')) return 50
-  if (s.includes('low')) return 25
-  return 10
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -126,23 +100,6 @@ async function exactCount(client: any, table: string, userId: string, refine?: (
   } catch {
     return null
   }
-}
-
-export function isInternetFacing(asset: Record<string, unknown>): boolean {
-  const env = str(asset.environment).toLowerCase()
-  if (['public', 'internet', 'dmz', 'external', 'edge'].some((e) => env.includes(e))) return true
-  const meta = recordOf(asset.metadata)
-  if (meta.internet_facing === true || meta.public === true) return true
-  const exposure = str(meta.exposure || meta.exposure_level).toLowerCase()
-  if (exposure.includes('internet') || exposure.includes('public') || exposure.includes('external')) return true
-  // Domain / website / TLS-endpoint / gateway assets are internet-facing by
-  // nature — a scanned public domain (e.g. "qguardhelix.com") must not read as
-  // internal. Mirror the domain-asset heuristic used for `domainsScanned`.
-  const type = str(asset.type).toLowerCase()
-  if (/web|domain|tls|endpoint|site|host|gateway|cdn|proxy|load|dns|ingress|api/i.test(type)) return true
-  const name = str(asset.name)
-  if (/^https?:\/\//i.test(name) || /\.[a-z]{2,}(?::\d+)?$/i.test(name)) return true
-  return false
 }
 
 /**
@@ -343,45 +300,16 @@ async function computeSnapshot(token: string, userId: string) {
   const vulnerableComponents = vulnerable
   const pqcReadyComponents = pqcReady + hybrid
 
-  // ---- Per-asset risk ---------------------------------------------------
-  const assetRisk = new Map<string, number>()
-  const bumpAsset = (assetId: string, weight: number) => {
-    if (!assetId) return
-    assetRisk.set(assetId, Math.max(assetRisk.get(assetId) || 0, weight))
-  }
-  for (const result of scanResults) bumpAsset(str(result.asset_id), severityWeight(str(result.threat_level)))
-  for (const exposure of cryptoExposures) bumpAsset(str(exposure.asset_id), severityWeight(str(exposure.severity)))
-  for (const item of cryptoInventory) if (item.is_vulnerable === true) bumpAsset(str(item.asset_id), 65)
-  for (const event of runtimeEvents) {
-    if (event.is_legacy === true || event.hndl_risk === true) bumpAsset(str(event.asset_id), Math.max(60, num(event.risk_score)))
-    else if (num(event.risk_score) > 0) bumpAsset(str(event.asset_id), num(event.risk_score))
-  }
-
-  // ---- Asset posture & internet exposure --------------------------------
-  const vulnerableAssetIds = new Set<string>()
-  const pqcAssetIds = new Set<string>()
-  for (const result of scanResults) if (classifyAlgorithm(str(result.algorithm)) === 'vulnerable') vulnerableAssetIds.add(str(result.asset_id))
-  for (const item of cryptoInventory) {
-    if (item.is_vulnerable === true) vulnerableAssetIds.add(str(item.asset_id))
-    if (item.is_quantum_safe === true) pqcAssetIds.add(str(item.asset_id))
-  }
-
-  let pqcReadyAssets = 0
-  let hybridAssets = 0
-  let quantumVulnerableAssets = 0
-  let internetFacing = 0
-  const assetPosture = new Map<string, 'pqc' | 'hybrid' | 'vulnerable'>()
-  for (const asset of assets) {
-    const id = str(asset.id)
-    const isVuln = vulnerableAssetIds.has(id) || (assetRisk.get(id) || 0) >= 50
-    const isPqc = pqcAssetIds.has(id) && !isVuln
-    const posture: 'pqc' | 'hybrid' | 'vulnerable' = isVuln ? 'vulnerable' : isPqc ? 'pqc' : 'hybrid'
-    assetPosture.set(id, posture)
-    if (posture === 'vulnerable') quantumVulnerableAssets += 1
-    else if (posture === 'pqc') pqcReadyAssets += 1
-    else hybridAssets += 1
-    if (isInternetFacing(asset)) internetFacing += 1
-  }
+  // ---- Per-asset risk, posture & internet exposure -----------------------
+  // Derived by the SHARED engine (src/lib/migration/asset-intelligence.ts) that
+  // the Migration Planner's per-asset dossiers also use, so an asset's risk
+  // score and posture are identical on every page of the platform.
+  const postureModel = deriveAssetPostureModel({ assets, scanResults, cryptoExposures, cryptoInventory, runtimeEvents })
+  const { assetRisk, assetPosture } = postureModel
+  let pqcReadyAssets = postureModel.counts.pqcReadyAssets
+  let hybridAssets = postureModel.counts.hybridAssets
+  let quantumVulnerableAssets = postureModel.counts.quantumVulnerableAssets
+  const internetFacing = postureModel.counts.internetFacing
 
   // If no asset-level posture could be derived, fall back to algorithm shares.
   if (assetsAssessed === 0) {

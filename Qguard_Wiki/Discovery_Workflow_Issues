@@ -1,0 +1,331 @@
+Resolve Discovery Workflow Module Execution, Data Synchronization, and Enterprise Scanner Reliability
+
+Please thoroughly investigate, resolve, and refactor the Enterprise Scanner located at:
+
+http://localhost:3000/dashboard/scanner
+
+The current Discovery Workflow has multiple execution and synchronization issues that are causing inaccurate scan results and inconsistent data throughout the platform.
+
+The objective is to make the scanner fully production-ready, ensuring that every scanner module executes successfully, produces accurate results, and serves as the single source of truth for all downstream dashboards, reports, assessments, and migration workflows.
+
+Maintain the existing premium UI/UX, layout, design language, workflows, animations, and user experience. Only improve reliability, data accuracy, synchronization, and enterprise-grade functionality.
+
+Primary Issues
+
+The Discovery Workflow is not executing correctly.
+
+The following modules frequently appear as "Skipped", even when they should execute successfully:
+
+Transport & Ciphers
+Certificates & Keys
+
+In many cases, multiple Discovery Workflow modules are skipped, preventing complete assessments and causing downstream pages to display incomplete or inconsistent information.
+
+Review the attached screenshots for reference.
+
+Root Cause Investigation
+
+Do not simply hide or suppress the "Skipped" status.
+
+Perform a complete investigation to determine why these modules are not executing.
+
+Possible areas to validate include:
+
+Backend scanner execution
+Module orchestration pipeline
+Discovery workflow engine
+Queue processing
+Scanner scheduler
+Worker execution
+API responses
+Missing hooks
+Missing event listeners
+SSE/WebSocket event delivery
+State management
+Backend-to-frontend synchronization
+Timeout handling
+Retry logic
+Error handling
+Race conditions
+Missing dependencies between modules
+
+Every scanner module should execute in the correct order and only be marked as:
+
+Pending
+Running
+Completed
+Failed (with meaningful error details)
+
+A module should never be marked as Skipped unless there is a legitimate and documented reason (for example, the module is not applicable to the selected asset).
+
+Discovery Workflow Execution
+
+Validate and ensure proper execution for all discovery modules, including but not limited to:
+
+Asset Discovery
+Transport & Ciphers
+Certificates & Keys
+Identity & Tokens
+Code & Dependencies
+Quantum Posture
+
+Each module must:
+
+Execute successfully
+Produce accurate findings
+Return validated evidence
+Update progress in real time
+Feed downstream engines automatically
+Single Source of Truth
+
+Implement a canonical data model where all scanner outputs originate from a single authoritative backend source.
+
+Every page must consume the same evidence and assessment records.
+
+There must never be conflicting values between different cards, pages, dashboards, or reports.
+
+All displayed values must remain synchronized across the platform.
+
+Data Consistency Requirements
+
+Ensure complete consistency across all scanner outputs.
+
+The following pages, sections, cards, and panels must always display identical data derived from the same evidence set:
+
+Hero Section
+Overall Scan Score
+Grade
+Progress
+Scan Status
+Discovery Summary
+Hero Cards
+Animated Scan Visualization
+Executive Summary
+
+All metrics must exactly match:
+
+Overall Security Grade
+Business Risk
+Migration Complexity
+Confidence Score
+Post-Quantum Readiness
+Encryption Score
+
+Ensure accurate calculations for:
+
+Classical Encryption Score
+Post-Quantum Readiness Score
+Weighted Score
+Overall Grade
+Category Contributions
+Hide Score Decomposition
+
+Validate all calculations including:
+
+Weight distribution
+Category scores
+Final weighted score
+Supporting evidence
+Mathematical accuracy
+Observed Attack Surface
+
+Ensure all values accurately reflect discovered assets, including:
+
+Internet Exposure
+TLS Services
+Certificate Chains
+Cipher Suites
+Key Exchange
+DNS Security
+HTTP Security
+Quantum Exposure
+Cryptographic Intelligence
+
+Verify that all cryptographic intelligence is accurate, including:
+
+TLS Versions
+Cipher Suites
+Key Exchange
+Certificates
+Signature Algorithms
+Hash Algorithms
+PQ Readiness
+Hybrid TLS
+ML-KEM Detection
+ML-DSA Detection
+Harvest Now, Decrypt Later Exposure
+Module Execution Flow
+
+Ensure:
+
+Proper execution order
+Accurate module status
+Correct execution timestamps
+Accurate progress tracking
+Retry handling
+Failure reporting
+Dependency awareness
+Cryptographic Findings
+
+Every finding must:
+
+Link to supporting evidence
+Include severity
+Include affected assets
+Include remediation guidance
+Include confidence score
+Quantum Exposure Timeline
+
+Ensure the timeline is generated from actual scan evidence rather than placeholder data.
+
+Executive Recommendations
+
+Recommendations must be dynamically generated from actual findings and include:
+
+Priority
+Risk
+Impact
+Recommended remediation
+Migration guidance
+Estate Footprint Counted
+
+Validate all asset counts, including:
+
+Assets
+Hosts
+Domains
+Certificates
+Cryptographic Components
+Services
+Applications
+APIs
+Cloud Resources
+
+These values must match the Discovery engine.
+
+Discovery Coverage
+
+Coverage percentages must accurately reflect:
+
+Modules executed
+Assets scanned
+Assets completed
+Coverage percentage
+Missing evidence
+Pending scans
+Sophia AI Security Copilot™
+
+Sophia must consume the same canonical assessment data.
+
+All explanations, summaries, recommendations, and insights must reference the exact same backend evidence used throughout the platform.
+
+Assessment Scope
+
+Ensure the scope accurately represents:
+
+Selected assets
+Selected domains
+Selected repositories
+Selected cloud environments
+Selected infrastructure
+Scan boundaries
+Completed modules
+Real-Time Enterprise Scanning
+
+Ensure every scanner module performs real-time analysis of the user's actual authorized assets.
+
+When a user initiates a scan:
+
+Execute all configured scanner modules.
+Collect live evidence from the authorized target.
+Aggregate findings into a unified assessment.
+Persist all results to the backend.
+Stream progress updates to the frontend.
+Update all dashboards automatically.
+Trigger downstream engines using the latest evidence.
+Backend Integration
+
+Perform a full audit of all backend integrations.
+
+Verify that all APIs are correctly wired and synchronized.
+
+Ensure proper integration for:
+
+Scanner Engines
+Discovery Engine
+Cryptographic Analysis Engine
+Certificate Engine
+Quantum Readiness Engine
+CBOM Engine
+Asset Inventory
+Findings Database
+Migration Planner
+Live Migration
+Reports
+Governance
+Sophia AI Security Copilot™
+Real-Time Synchronization
+
+Ensure all data flows correctly from backend to frontend.
+
+Verify:
+
+API endpoints
+React Query hooks
+Custom hooks
+State management
+Context providers
+SSE (Server-Sent Events)
+WebSocket updates (if applicable)
+Background jobs
+Queue processing
+Cache invalidation
+Automatic refresh
+Optimistic updates
+Error recovery
+
+The frontend should immediately reflect backend changes without requiring manual page refreshes.
+
+Data Integrity
+
+Implement validation to guarantee:
+
+No duplicated findings
+No missing findings
+No inconsistent values
+No stale cache
+No orphaned records
+No mismatched IDs
+No conflicting scores
+No conflicting timestamps
+
+All calculations should be deterministic and derived from the same canonical dataset.
+
+Performance & Reliability
+
+Optimize the scanner for enterprise-scale environments by ensuring:
+
+Efficient asynchronous execution
+Reliable module orchestration
+Graceful retry handling
+Intelligent timeout management
+High-performance rendering
+Support for large organizations with thousands of assets
+Minimal frontend re-renders
+Stable memory usage
+Comprehensive error logging and diagnostics
+Enterprise Quality Requirements
+
+The completed implementation should provide:
+
+Accurate, evidence-based assessments
+Reliable module execution
+Consistent data across all pages
+Real-time synchronization
+Stable backend-to-frontend communication
+Enterprise-grade reliability
+Production-ready architecture
+Scalable performance
+Premium user experience
+
+Maintain the current premium design, layout, animations, workflows, navigation, and overall user experience while significantly improving execution reliability, data integrity, synchronization, and platform consistency. The scanner should function as the authoritative source of truth for the entire QGuard Helix platform, ensuring every downstream module consumes the same validated evidence and assessment data.

@@ -7,6 +7,7 @@ import {
   ArrowRight,
   BadgeCheck,
   CheckCircle2,
+  Ban,
   Clock3,
   Diamond,
   Download,
@@ -19,11 +20,13 @@ import {
   Pause,
   Play,
   Radio,
+  Rocket,
   RefreshCcw,
   RotateCcw,
   Server,
   ShieldCheck,
   Terminal,
+  Trash2,
   XCircle,
   Zap,
 } from 'lucide-react'
@@ -38,7 +41,7 @@ import { SnapshotManager } from './_snapshots'
 import OrchestrationPanel from './_orchestration'
 import { Archive } from 'lucide-react'
 
-type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused'
+type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused' | 'cancelled'
 
 type LiveMigrationEvent = {
   id: string
@@ -93,9 +96,37 @@ type TimelinePoint = {
   failed: number
 }
 
+/**
+ * Per-asset context handed over by the Migration Planner's asset workspace.
+ * Present when the page was opened via "Send to Live Migration" — it carries the
+ * exact plan, recommendations, dependencies, rollback configuration, approvals
+ * and readiness the operator reviewed in the planner.
+ */
+type PlannerHandoff = {
+  stampedAt?: string
+  stampedBy?: string
+  assets?: Array<{
+    assetId: string
+    name: string
+    type?: string
+    environment?: string
+    owner?: string
+    priority?: string
+    riskScore?: number
+    readinessScore?: number
+    estimatedDowntime?: string
+    successProbabilityPct?: number
+    rollbackStrategy?: { strategy?: string; recoveryObjective?: string }
+    recommendations?: Array<{ title: string }>
+    requiredApprovals?: Array<{ role: string; required: boolean }>
+    dependencies?: unknown[]
+  }>
+}
+
 type LiveMigrationSnapshot = {
   generatedAt: string
   planId: string | null
+  plannerHandoff?: PlannerHandoff | null
   summary: {
     total: number
     running: number
@@ -103,6 +134,7 @@ type LiveMigrationSnapshot = {
     failed: number
     queued: number
     paused: number
+    cancelled: number
     completionRate: number
     waitingForAgent: number
     agentBacked: number
@@ -145,6 +177,7 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
     failed: 0,
     queued: 0,
     paused: 0,
+    cancelled: 0,
     completionRate: 0,
     waitingForAgent: 0,
     agentBacked: 0,
@@ -295,6 +328,8 @@ function statusConfig(status: LiveMigrationStatus) {
       return { icon: XCircle, color: 'text-[#f87171]', ring: 'border-[#f87171]', bar: 'from-[#f87171] to-[#ff7a6f]', label: 'FAILED' }
     case 'paused':
       return { icon: Pause, color: 'text-[#22d3ee]', ring: 'border-[#22d3ee]', bar: 'from-[#22d3ee] to-[#ffb84d]', label: 'PAUSED' }
+    case 'cancelled':
+      return { icon: Ban, color: 'text-white/45', ring: 'border-white/30', bar: 'from-white/35 to-white/15', label: 'CANCELLED' }
     case 'queued':
     default:
       return { icon: Clock3, color: 'text-white/45', ring: 'border-white/35', bar: 'from-white/50 to-white/25', label: 'QUEUED' }
@@ -408,6 +443,11 @@ export default function LiveMigrationOperations() {
   const [realtimeStatus, setRealtimeStatus] = useState('CLOSED')
   const [actionPending, setActionPending] = useState('')
   const [notice, setNotice] = useState('')
+  // Queue curation: operators can withdraw (cancel) or delete (remove) jobs they
+  // queued by mistake. Removal is destructive, so it always goes through an
+  // explicit confirmation that names exactly what will be deleted.
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [confirm, setConfirm] = useState<null | { mode: 'cancel' | 'remove'; ids: string[]; includeCompleted: boolean }>(null)
   const [now, setNow] = useState(new Date())
   const [snapshotsOpen, setSnapshotsOpen] = useState(false)
   const [snapshotFocusAsset, setSnapshotFocusAsset] = useState<string | null>(null)
@@ -537,6 +577,31 @@ export default function LiveMigrationOperations() {
   const selectedNeedsConnector = selectedJobNeedsConnector(selectedJob)
   const filteredJobs = filter === 'all' ? snapshot.jobs : snapshot.jobs.filter((job) => job.status === filter)
 
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const allFilteredSelected = filteredJobs.length > 0 && filteredJobs.every((job) => selectedSet.has(job.id))
+  // A live update (SSE / realtime) can remove jobs another session deleted —
+  // drop them from the selection so bulk actions never target stale ids.
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (!current.length) return current
+      const live = new Set(snapshot.jobs.map((job) => job.id))
+      const next = current.filter((id) => live.has(id))
+      return next.length === current.length ? current : next
+    })
+  }, [snapshot.jobs])
+
+  const toggleJobSelection = useCallback((jobId: string) => {
+    setSelectedIds((current) => (current.includes(jobId) ? current.filter((id) => id !== jobId) : [...current, jobId]))
+  }, [])
+  const toggleAllFiltered = useCallback(() => {
+    setSelectedIds((current) => {
+      const ids = filteredJobs.map((job) => job.id)
+      const everySelected = ids.length > 0 && ids.every((id) => current.includes(id))
+      if (everySelected) return current.filter((id) => !ids.includes(id))
+      return [...new Set([...current, ...ids])]
+    })
+  }, [filteredJobs])
+
   const statSparklines = useMemo(() => ({
     running: snapshot.timeline.map((point) => point.running),
     completed: snapshot.timeline.map((point) => point.completed),
@@ -544,7 +609,7 @@ export default function LiveMigrationOperations() {
     total: snapshot.timeline.map((point) => point.running + point.completed + point.failed),
   }), [snapshot.timeline])
 
-  const runJobAction = useCallback(async (jobId: string, action: 'pause' | 'resume' | 'retry' | 'rollback') => {
+  const runJobAction = useCallback(async (jobId: string, action: 'pause' | 'resume' | 'retry' | 'rollback' | 'cancel') => {
     if (!token) return
     setActionPending(`${jobId}:${action}`)
     setNotice('')
@@ -565,7 +630,7 @@ export default function LiveMigrationOperations() {
     }
   }, [applySnapshot, authHeaders, token])
 
-  const runBulkAction = useCallback(async (action: 'pause' | 'resume' | 'retry') => {
+  const runBulkAction = useCallback(async (action: 'pause' | 'resume' | 'retry' | 'cancel', jobIds?: string[]) => {
     if (!token) return
     setActionPending(`bulk:${action}`)
     setNotice('')
@@ -573,16 +638,52 @@ export default function LiveMigrationOperations() {
       const res = await fetch('/api/v1/migration/jobs/actions', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ action, ...(planId ? { planId } : {}) }),
+        body: JSON.stringify({ action, ...(planId ? { planId } : {}), ...(jobIds?.length ? { jobIds } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
       applySnapshot(json.data?.snapshot)
       setNotice(`${numberFmt(json.data?.affected || 0)} migration job(s) updated.`)
+      if (jobIds?.length) setSelectedIds([])
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Bulk migration action failed.')
     } finally {
       setActionPending('')
+    }
+  }, [applySnapshot, authHeaders, planId, token])
+
+  /**
+   * Deletes migration jobs outright. The server refuses to remove a running job
+   * and (unless explicitly included) a completed one, and reports what it
+   * skipped — so the notice reflects what actually happened, not what was asked.
+   */
+  const removeJobs = useCallback(async (jobIds: string[], includeCompleted: boolean) => {
+    if (!token || !jobIds.length) return
+    setActionPending(`remove:${jobIds.length}`)
+    setNotice('')
+    try {
+      const res = await fetch('/api/v1/migration/jobs/remove', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ jobIds, includeCompleted, ...(planId ? { planId } : {}) }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
+      applySnapshot(json.data?.snapshot)
+      const removed = Number(json.data?.removed || 0)
+      const blocked = (json.data?.blocked || []) as Array<{ name: string; reason: string }>
+      setSelectedIds((current) => current.filter((id) => !(json.data?.removedIds || []).includes(id)))
+      setSelectedJobId((current) => ((json.data?.removedIds || []).includes(current) ? '' : current))
+      setNotice(
+        blocked.length
+          ? `${numberFmt(removed)} job(s) removed. ${blocked.length} kept: ${blocked[0].reason}`
+          : `${numberFmt(removed)} migration job(s) removed from the queue.`,
+      )
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Migration job removal failed.')
+    } finally {
+      setActionPending('')
+      setConfirm(null)
     }
   }, [applySnapshot, authHeaders, planId, token])
 
@@ -830,6 +931,56 @@ export default function LiveMigrationOperations() {
         </div>
       </header>
 
+      {/*
+       * Migration Planner handoff. Rendered when this page was opened via
+       * "Send to Live Migration" — the asset(s), their reviewed plan, rollback
+       * configuration and approvals arrive with the plan, so the operator can
+       * execute without re-selecting anything.
+       */}
+      {snapshot.plannerHandoff?.assets?.length ? (
+        <section className={cn(GLASS, 'p-4')}>
+          <div className="relative z-10">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-[#22d3ee]">
+                <Rocket className="h-4 w-4" />
+                Received from Migration Planner
+                <span className="font-mono text-[10px] normal-case tracking-normal text-white/40">
+                  {snapshot.plannerHandoff.assets.length} asset(s)
+                  {snapshot.plannerHandoff.stampedAt ? ` · ${new Date(snapshot.plannerHandoff.stampedAt).toLocaleString()}` : ''}
+                </span>
+              </div>
+              <Link to="/dashboard/migration-planner" className="text-[10px] font-black uppercase tracking-wider text-white/50 transition hover:text-[#22d3ee]">
+                Back to planner
+              </Link>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {snapshot.plannerHandoff.assets.slice(0, 6).map((asset) => (
+                <div key={asset.assetId} className={cn(INNER, 'p-3')}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs font-bold text-white">{asset.name}</span>
+                    <span className="shrink-0 rounded bg-white/8 px-1.5 py-0.5 text-[9px] font-black uppercase text-white/65">{asset.priority || '—'}</span>
+                  </div>
+                  <div className="mt-0.5 truncate text-[10px] text-white/45">
+                    {asset.type || 'asset'}{asset.environment ? ` · ${asset.environment}` : ''}{asset.owner ? ` · ${asset.owner}` : ''}
+                  </div>
+                  <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-white/45">
+                    <span>Readiness <span className="font-mono text-white/75">{Math.round(asset.readinessScore ?? 0)}</span></span>
+                    <span>Risk <span className="font-mono text-white/75">{Math.round(asset.riskScore ?? 0)}</span></span>
+                    <span>Success <span className="font-mono text-[#34d399]">{Math.round(asset.successProbabilityPct ?? 0)}%</span></span>
+                    <span>Deps <span className="font-mono text-white/75">{asset.dependencies?.length ?? 0}</span></span>
+                    <span className="col-span-2 truncate">Downtime <span className="text-white/70">{asset.estimatedDowntime || '—'}</span></span>
+                    <span className="col-span-2 truncate">Rollback <span className="text-white/70">{asset.rollbackStrategy?.strategy || '—'}</span></span>
+                    <span className="col-span-2 truncate">
+                      Approvals <span className="text-white/70">{(asset.requiredApprovals || []).filter((approval) => approval.required).map((approval) => approval.role).join(', ') || '—'}</span>
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {metricCards.map((metric) => {
           const Icon = metric.icon
@@ -924,6 +1075,7 @@ export default function LiveMigrationOperations() {
                 ['failed', 'Failed', snapshot.summary.failed],
                 ['queued', 'Queued', snapshot.summary.queued],
                 ['paused', 'Paused', snapshot.summary.paused],
+                ['cancelled', 'Cancelled', snapshot.summary.cancelled],
               ].map(([key, label, count]) => (
                 <button
                   key={String(key)}
@@ -939,6 +1091,48 @@ export default function LiveMigrationOperations() {
                   {label} <span className="ml-1 text-[#22d3ee]">{count}</span>
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/*
+            Queue curation toolbar. Cancel withdraws a job but keeps it on the
+            record; Remove deletes it. Both are confirmed before running, and the
+            server independently enforces what may be cancelled or removed.
+          */}
+          <div className="relative z-10 flex flex-wrap items-center gap-2 border-b border-[#22d3ee]/10 px-3 py-2">
+            <label className="inline-flex cursor-pointer items-center gap-2 text-[10px] font-black uppercase tracking-wider text-white/50 transition hover:text-white/80">
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                onChange={toggleAllFiltered}
+                disabled={filteredJobs.length === 0}
+                aria-label="Select all listed migration jobs"
+                className="h-3.5 w-3.5 cursor-pointer accent-[#22d3ee]"
+              />
+              {allFilteredSelected ? 'Clear' : 'Select all'}
+            </label>
+            <span className="text-[10px] font-bold text-white/35">
+              {selectedIds.length ? `${numberFmt(selectedIds.length)} selected` : `${numberFmt(filteredJobs.length)} listed`}
+            </span>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={!selectedIds.length || actionPending.startsWith('bulk:') || actionPending.startsWith('remove:')}
+                onClick={() => setConfirm({ mode: 'cancel', ids: selectedIds, includeCompleted: false })}
+                className="inline-flex items-center gap-1.5 rounded-md border border-white/12 bg-white/[0.03] px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-white/60 transition hover:border-[#22d3ee]/45 hover:text-[#22d3ee] disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <Ban className="h-3 w-3" />
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!selectedIds.length || actionPending.startsWith('remove:')}
+                onClick={() => setConfirm({ mode: 'remove', ids: selectedIds, includeCompleted: false })}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#f87171]/35 bg-[#f87171]/10 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#f87171] transition hover:border-[#f87171]/70 hover:bg-[#f87171]/18 disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <Trash2 className="h-3 w-3" />
+                Remove
+              </button>
             </div>
           </div>
 
@@ -961,22 +1155,43 @@ export default function LiveMigrationOperations() {
               const config = statusConfig(job.status)
               const StatusIcon = config.icon
               const selected = selectedJob?.id === job.id
+              const ticked = selectedSet.has(job.id)
               return (
-                <motion.button
+                // A row is a container, not a <button>: the checkbox and the
+                // per-row remove control are themselves interactive, and nesting
+                // buttons inside a button is invalid.
+                <motion.div
                   key={job.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   initial={{ opacity: 0, x: -12 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: index * 0.025 }}
                   onClick={() => setSelectedJobId(job.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setSelectedJobId(job.id)
+                    }
+                  }}
                   className={cn(
-                    'relative w-full overflow-hidden rounded-lg border p-3 text-left transition',
+                    'group relative w-full cursor-pointer overflow-hidden rounded-lg border p-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#22d3ee]/60',
                     selected
                       ? 'border-[#22d3ee]/70 bg-[#22d3ee]/10 shadow-[0_0_28px_rgba(212,175,55,0.24)]'
-                      : 'border-white/10 bg-white/[0.035] hover:border-[#22d3ee]/35 hover:bg-[#22d3ee]/6',
+                      : ticked
+                        ? 'border-[#22d3ee]/40 bg-[#22d3ee]/[0.06]'
+                        : 'border-white/10 bg-white/[0.035] hover:border-[#22d3ee]/35 hover:bg-[#22d3ee]/6',
                   )}
                 >
                   <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={ticked}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={() => toggleJobSelection(job.id)}
+                      aria-label={`Select migration job for ${job.asset}`}
+                      className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-[#22d3ee]"
+                    />
                     <div className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-full border-2 bg-black/25', config.ring)}>
                       <StatusIcon className={cn('h-5 w-5', config.color, job.status === 'running' && 'animate-spin')} />
                     </div>
@@ -1001,8 +1216,22 @@ export default function LiveMigrationOperations() {
                         <span className="text-[10px] text-white/45">{job.status === 'completed' ? formatShortDate(job.completedAt) : job.eta}</span>
                       </div>
                     </div>
+                    {/* Per-row removal for the common case: one job queued by mistake. */}
+                    <button
+                      type="button"
+                      aria-label={`Remove migration job for ${job.asset}`}
+                      title={job.status === 'running' ? 'Pause or cancel a running job before removing it' : 'Remove from the migration queue'}
+                      disabled={job.status === 'running' || actionPending.startsWith('remove:')}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setConfirm({ mode: 'remove', ids: [job.id], includeCompleted: job.status === 'completed' })
+                      }}
+                      className="shrink-0 self-start rounded-md border border-white/10 p-1.5 text-white/35 opacity-0 transition hover:border-[#f87171]/60 hover:text-[#f87171] focus:opacity-100 focus-visible:ring-2 focus-visible:ring-[#f87171]/50 disabled:cursor-not-allowed disabled:opacity-0 group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
-                </motion.button>
+                </motion.div>
               )
             })}
           </div>
@@ -1061,6 +1290,29 @@ export default function LiveMigrationOperations() {
                         Retry
                       </button>
                     )}
+                    {/* Cancel withdraws this job from execution but keeps it on
+                        the record; Remove deletes it from the queue entirely. */}
+                    {selectedJob.status !== 'completed' && selectedJob.status !== 'cancelled' && (
+                      <button
+                        type="button"
+                        disabled={actionPending === `${selectedJob.id}:cancel`}
+                        onClick={() => setConfirm({ mode: 'cancel', ids: [selectedJob.id], includeCompleted: false })}
+                        className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 transition hover:border-white/35 hover:text-white disabled:opacity-50"
+                      >
+                        <Ban className="h-3.5 w-3.5" />
+                        Cancel
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={selectedJob.status === 'running' || actionPending.startsWith('remove:')}
+                      title={selectedJob.status === 'running' ? 'Pause or cancel a running job before removing it' : 'Remove from the migration queue'}
+                      onClick={() => setConfirm({ mode: 'remove', ids: [selectedJob.id], includeCompleted: selectedJob.status === 'completed' })}
+                      className="inline-flex items-center gap-2 rounded-lg border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#f87171] transition hover:border-[#f87171]/70 hover:bg-[#f87171]/18 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Remove
+                    </button>
                     <button
                       type="button"
                       className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-white/45 transition hover:border-[#22d3ee]/30 hover:text-[#22d3ee]"
@@ -1300,6 +1552,104 @@ export default function LiveMigrationOperations() {
         </div>
         {notice && <div className="mt-2 text-[11px] font-bold text-white/55">{notice}</div>}
       </section>
+
+      {/*
+        Destructive-action confirmation. It names the exact jobs affected and
+        states plainly what cancel vs remove does, so an operator can never
+        delete queued migration work by a single mis-click.
+      */}
+      {confirm && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={confirm.mode === 'remove' ? 'Confirm job removal' : 'Confirm job cancellation'}
+          onClick={() => setConfirm(null)}
+        >
+          <div className={cn(GLASS, 'w-full max-w-lg p-5')} onClick={(event) => event.stopPropagation()}>
+            <div className="relative z-10">
+              <div className="flex items-center gap-3">
+                <div className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-full border-2 bg-black/30',
+                  confirm.mode === 'remove' ? 'border-[#f87171]' : 'border-white/35')}>
+                  {confirm.mode === 'remove'
+                    ? <Trash2 className="h-5 w-5 text-[#f87171]" />
+                    : <Ban className="h-5 w-5 text-white/70" />}
+                </div>
+                <div>
+                  <h2 className="text-sm font-black uppercase tracking-[0.14em] text-white">
+                    {confirm.mode === 'remove' ? 'Remove from migration queue' : 'Cancel migration job'}
+                  </h2>
+                  <p className="mt-0.5 text-[11px] text-white/50">
+                    {confirm.mode === 'remove'
+                      ? 'Deletes the job and its dispatch records. The removal itself is written to the audit trail.'
+                      : 'Withdraws the job from execution. The job stays on the record and can be reviewed later.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 max-h-44 space-y-1.5 overflow-y-auto rounded-lg border border-white/10 bg-black/25 p-3">
+                {snapshot.jobs.filter((job) => confirm.ids.includes(job.id)).map((job) => (
+                  <div key={job.id} className="flex items-center justify-between gap-3 text-[11px]">
+                    <span className="truncate font-bold text-white/85">{job.asset}</span>
+                    <span className={cn('shrink-0 text-[9px] font-black uppercase', statusConfig(job.status).color)}>
+                      {statusConfig(job.status).label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {confirm.mode === 'remove' && snapshot.jobs.some((job) => confirm.ids.includes(job.id) && job.status === 'completed') && (
+                <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border border-[#f87171]/30 bg-[#f87171]/[0.07] p-3 text-[11px] text-white/70">
+                  <input
+                    type="checkbox"
+                    checked={confirm.includeCompleted}
+                    onChange={(event) => setConfirm({ ...confirm, includeCompleted: event.target.checked })}
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-[#f87171]"
+                  />
+                  <span>
+                    Also remove <span className="font-bold text-[#f87171]">completed</span> migrations. These record cryptographic
+                    changes that actually happened and are normally retained as compliance evidence.
+                  </span>
+                </label>
+              )}
+              {confirm.mode === 'remove' && snapshot.jobs.some((job) => confirm.ids.includes(job.id) && job.status === 'running') && (
+                <p className="mt-3 rounded-lg border border-[#22d3ee]/25 bg-[#22d3ee]/[0.07] p-3 text-[11px] text-white/70">
+                  Running jobs in this selection will be kept — pause or cancel them first.
+                </p>
+              )}
+
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirm(null)}
+                  className="rounded-lg border border-white/12 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 transition hover:border-white/30 hover:text-white"
+                >
+                  Keep jobs
+                </button>
+                <button
+                  type="button"
+                  disabled={actionPending.startsWith('remove:') || actionPending.startsWith('bulk:')}
+                  onClick={() => {
+                    if (confirm.mode === 'remove') void removeJobs(confirm.ids, confirm.includeCompleted)
+                    else { void runBulkAction('cancel', confirm.ids); setConfirm(null) }
+                  }}
+                  className={cn(
+                    'inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-[10px] font-black uppercase tracking-wider transition disabled:opacity-50',
+                    confirm.mode === 'remove'
+                      ? 'border-[#f87171]/55 bg-[#f87171]/15 text-[#f87171] hover:bg-[#f87171]/25'
+                      : 'border-white/25 bg-white/[0.06] text-white hover:bg-white/[0.12]',
+                  )}
+                >
+                  {confirm.mode === 'remove' ? <Trash2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
+                  {confirm.mode === 'remove'
+                    ? `Remove ${numberFmt(confirm.ids.length)} job${confirm.ids.length === 1 ? '' : 's'}`
+                    : `Cancel ${numberFmt(confirm.ids.length)} job${confirm.ids.length === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

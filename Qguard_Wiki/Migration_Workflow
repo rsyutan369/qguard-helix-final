@@ -1,0 +1,258 @@
+Implement Enterprise Asset-Based Migration Planning Workflow
+
+Please enhance and Improve the Migration Planner page located at:
+
+http://localhost:3000/dashboard/migration-planner
+
+to support a complete Asset-Centric Migration Planning workflow suitable for enterprise environments.
+
+The objective is to allow organizations to manage, review, prioritize, and migrate each discovered asset independently while maintaining complete consistency across the entire QGuard Helix platform.
+
+Primary Objectives
+
+Instead of displaying a single combined migration plan for all discovered assets, implement an Asset Selection system that allows users to review and migrate each asset individually.
+
+This will significantly improve usability for organizations with dozens or hundreds of assets while preventing confusion regarding which assets require migration first.
+
+1. Asset Selection Panel
+
+Create a premium Enterprise Asset Selector positioned on the left side (or another appropriate location) of the Migration Planner.
+
+Each discovered asset should appear as an individual selectable item.
+
+Each asset card should display at minimum:
+
+Asset Name
+Asset Type
+Hostname / Domain / IP
+Environment
+Production
+Development
+Staging
+Testing
+Overall Quantum Readiness Score
+Migration Priority
+Business Criticality
+Risk Level
+Migration Status
+Estimated Migration Time
+Current Cryptographic Posture
+
+Example:
+
+Web Server
+portal.company.com
+
+Quantum Readiness:
+72%
+
+Priority:
+Critical
+
+Business Criticality:
+High
+
+Migration Status:
+Not Started
+
+Risk:
+Harvest Now Exposure
+
+The selected asset should be visually highlighted.
+
+Only one asset should be active at a time (unless multi-select is implemented in a future release).
+
+2. Asset-Specific Migration Details
+
+When an asset is selected, the entire Migration Planner should automatically update to display only the data for the selected asset.
+
+Every panel, card, chart, recommendation, timeline, dependency graph, and migration analysis must refresh based on that specific asset.
+
+Examples include:
+
+Migration Readiness
+Current Algorithms
+Quantum Vulnerabilities
+PQC Recommendations
+Migration Timeline
+Risk Analysis
+Business Impact
+Compatibility Analysis
+Dependencies
+Estimated Downtime
+Rollback Strategy
+Required Approvals
+Success Probability
+Compliance Impact
+
+No information from other assets should appear while another asset is selected.
+
+3. Complete Data Consistency
+
+Ensure all displayed information originates from the same canonical asset record.
+
+All pages must reference identical data to eliminate inconsistencies.
+
+The following modules must always remain synchronized:
+
+Discovery
+Assets Inventory
+Public Scanner
+Internal Scanner
+Quantum Readiness Assessment
+Migration Planner
+Migration Sandbox
+Live Migration
+Executive Reports
+Governance Dashboard
+Sophia AI Security Copilot™
+
+The selected asset should display identical values across every module, including:
+
+Asset ID
+Cryptographic Inventory
+Risk Score
+Readiness Score
+Priority
+Algorithms
+Certificates
+TLS Configuration
+Dependencies
+Migration Status
+Recommendations
+
+There must never be conflicting values between different pages.
+
+Implement a single source of truth using the existing backend APIs and database.
+
+4. Send Selected Asset to Live Migration
+
+After reviewing an asset, users should be able to initiate migration directly from the Migration Planner.
+
+Add a prominent Enterprise CTA such as:
+
+"Send to Live Migration"
+
+or
+
+"Queue for Migration"
+
+When clicked:
+
+Pass the selected Asset ID
+Pass the current migration plan
+Pass remediation recommendations
+Pass validation results
+Pass migration priority
+Pass dependencies
+Pass rollback configuration
+Pass readiness status
+
+Navigate to:
+
+http://localhost:3000/dashboard/live-migration
+
+The Live Migration page should automatically load the selected asset and prepare it for execution.
+
+No manual re-selection should be required.
+
+5. Migration Queue Support
+
+Implement a migration queue.
+
+Users should be able to:
+
+Queue multiple assets
+Remove assets from queue
+Reorder migration sequence
+Prioritize critical assets
+Review migration order before execution
+
+Each queued asset should display:
+
+Priority
+Estimated Duration
+Current Status
+Readiness
+Dependencies
+Validation State
+6. Intelligent Asset Prioritization
+
+Automatically recommend migration order using risk intelligence.
+
+Suggested factors include:
+
+Harvest Now, Decrypt Later exposure
+Business Criticality
+Internet Exposure
+Legacy Cryptography
+Unsupported Algorithms
+Regulatory Requirements
+Customer Impact
+Certificate Expiration
+Dependency Complexity
+Migration Success Confidence
+
+Display recommendations such as:
+
+"Recommended Migration Order"
+
+or
+
+"Highest Priority Assets"
+
+7. Enterprise Navigation Experience
+
+Switching between assets should feel instant.
+
+When selecting another asset:
+
+Smooth animations
+Skeleton loading where appropriate
+No unnecessary page reloads
+Preserve scroll position
+Preserve expanded panels where applicable
+
+The experience should resemble modern enterprise platforms such as Microsoft Defender, Wiz, Prisma Cloud, CrowdStrike Falcon, and Palo Alto Cortex.
+
+8. Live Synchronization
+
+If scanners or assessments update an asset while the user is viewing it:
+
+Automatically refresh affected data
+Preserve the current asset selection
+Highlight updated values
+Avoid disrupting the user's workflow
+
+Support real-time synchronization where available.
+
+9. Enterprise UI/UX
+
+Design the interface with a premium enterprise appearance.
+
+Requirements include:
+
+Clean, modern layout
+Responsive design
+Smooth transitions
+Professional typography
+Consistent spacing
+Dark and Light theme compatibility
+Accessibility support
+High-performance rendering for organizations managing hundreds or thousands of assets
+10. Technical Requirements
+Use the existing backend APIs and database as the single source of truth.
+Avoid duplicate or inconsistent state across pages.
+Ensure all calculations, scores, migration plans, and recommendations are generated from the selected asset only.
+Maintain full data integrity between Discovery, Assessment, Migration Planner, Sandbox, Live Migration, Reporting, Governance, and Sophia AI Security Copilot™.
+Optimize for scalability, supporting large enterprise environments with thousands of managed assets while maintaining excellent performance.
+Expected Outcome
+
+The Migration Planner should evolve into a true enterprise asset-centric orchestration platform, enabling users to:
+
+Select any discovered asset.
+View accurate, asset-specific migration intelligence.
+Understand migration priority and readiness.
+Seamlessly queue or send the asset to Live Migration.
+Maintain complete consistency across all QGuard Helix modules.
+Deliver a polished, enterprise-grade experience comparable to leading cybersecurity and cloud security platforms.

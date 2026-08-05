@@ -3,6 +3,7 @@ import net from 'node:net'
 import { getToken, getServerUser, createAuthClient, getServiceClient } from '@/lib/supabase-server'
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
+import { repositoryProvider } from '@/lib/scanner/web-scanner/repo-scanner'
 import type {
   CertificateInfo,
   SSEEvent,
@@ -25,13 +26,24 @@ import { calculateQuantumReadiness, getMigrationRecommendation } from '@/lib/sca
 import { buildEvidenceForTarget, buildRemediationModel } from '@/lib/scanner/scanner_2/remediation-model'
 import type { ClassicalAlgorithm, QuantumThreatLevel, QuantumThreatType } from '@/types/quantum.types'
 import type { ScanFinding, ScanTarget, ScanTargetType } from '@/types/scanner.types'
+/* The module execution ledger — module catalog, web→catalog routing, finding
+   ownership, outcome classification and target applicability. Isolated from
+   Express/Supabase so `tools/scanner-module-ledger-check.ts` can prove its
+   invariants offline. See that file for the defects these rules fix. */
+import {
+  SCANNER_MODULE_CATALOG,
+  classifyModuleOutcome,
+  mapWebModule,
+  moduleApplicability,
+  moduleIdForFinding,
+  type ScannerModuleStatus,
+} from './scanner-module-ledger'
 
 const router = Router()
 
 type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled'
 type DefensiveTargetType = WebScanTargetType | 'ssh'
 type PersistenceMode = 'database' | 'memory' | 'none'
-type ScannerModuleStatus = 'Queued' | 'Running' | 'Completed' | 'Failed' | 'Skipped' | 'No findings'
 
 interface AuthorizedTarget {
   raw: string
@@ -184,32 +196,17 @@ interface ScannerModuleState {
     safe: number
   }
   error: string | null
+  /**
+   * Why a module ended in a non-measuring state.
+   *
+   * `Skipped` is only ever emitted together with a reason — the module ledger
+   * refuses to publish an unexplained skip. Consumers render this verbatim, so
+   * it must read as an operator-facing sentence, not an internal code.
+   */
+  reason: string | null
+  /** True when `Skipped` means "does not apply here", not "was not reached". */
+  notApplicable: boolean
 }
-
-const SCANNER_MODULE_CATALOG: Array<{ id: string; name: string }> = [
-  { id: 'target-validation', name: 'Target Authorization & Validation' },
-  { id: 'tls-protocol-scanner', name: 'TLS protocol scanner' },
-  { id: 'certificate-scanner', name: 'Certificate scanner' },
-  { id: 'cipher-suite-scanner', name: 'Cipher suite scanner' },
-  { id: 'key-exchange-scanner', name: 'Key exchange scanner' },
-  { id: 'signature-algorithm-scanner', name: 'Signature algorithm scanner' },
-  { id: 'hash-algorithm-scanner', name: 'Hash algorithm scanner' },
-  { id: 'ssh-host-key-scanner', name: 'SSH host key scanner' },
-  { id: 'jwt-signing-scanner', name: 'JWT signing algorithm scanner' },
-  { id: 'dependency-crypto-scanner', name: 'Dependency crypto scanner' },
-  { id: 'cbom-generator', name: 'CBOM generator' },
-  { id: 'scanner2-module-registry', name: 'Scanner_2 module registry' },
-  { id: 'scanner2-fingerprint-matcher', name: 'Scanner_2 fingerprint matcher' },
-  { id: 'scanner2-detection-rules', name: 'Scanner_2 detection rules engine' },
-  { id: 'scanner2-hndl-analyzer', name: 'Scanner_2 HNDL analyzer' },
-  { id: 'scanner2-correlation-engine', name: 'Scanner_2 correlation engine' },
-  { id: 'scanner2-pqc-migration-engine', name: 'Scanner_2 PQC migration engine' },
-  { id: 'scanner2-risk-qscore-engine', name: 'Scanner_2 risk/Q-score engine' },
-  { id: 'risk-scoring-engine', name: 'Risk scoring engine' },
-  { id: 'crypto-exposure-graph-builder', name: 'Crypto exposure graph builder' },
-  { id: 'asset-inventory-synchronizer', name: 'Asset inventory synchronizer' },
-  { id: 'audit-history-logger', name: 'Audit/history logger' },
-]
 
 type ActiveScannerJobState = {
   cancelled: boolean
@@ -289,6 +286,8 @@ function createModuleStates(): ScannerModuleState[] {
     findingsCount: 0,
     severityCounts: { critical: 0, high: 0, medium: 0, low: 0, safe: 0 },
     error: null,
+    reason: null,
+    notApplicable: false,
   }))
 }
 
@@ -300,45 +299,6 @@ function countFindingSeverities(findings: DefensiveFinding[]) {
     low: findings.filter((finding) => finding.threatLevel === 'LOW').length,
     safe: findings.filter((finding) => finding.threatLevel === 'SAFE').length,
   }
-}
-
-function mapWebModule(moduleId?: unknown, moduleName?: unknown, phase?: unknown) {
-  const id = String(moduleId || '').toLowerCase()
-  const name = String(moduleName || '').toLowerCase()
-  const p = String(phase || '').toLowerCase()
-  if (id.includes('target-parser') || p.includes('dns')) return 'target-validation'
-  if (id.includes('tls') || name.includes('tls') || p.includes('tls')) return 'tls-protocol-scanner'
-  if (id.includes('certificate') || name.includes('certificate') || p.includes('cert')) return 'certificate-scanner'
-  if (id.includes('cipher') || name.includes('cipher') || p.includes('cipher')) return 'cipher-suite-scanner'
-  if (name.includes('key exchange') || p.includes('handshake')) return 'key-exchange-scanner'
-  if (name.includes('signature')) return 'signature-algorithm-scanner'
-  if (name.includes('hash')) return 'hash-algorithm-scanner'
-  if (id.includes('api-security') || name.includes('api')) return 'jwt-signing-scanner'
-  if (id.includes('web-crypto') || id.includes('github') || name.includes('repository') || p.includes('repo')) return 'dependency-crypto-scanner'
-  if (id.includes('detection-rules')) return 'hash-algorithm-scanner'
-  if (id.includes('risk-scoring')) return 'risk-scoring-engine'
-  if (id.includes('pqc-recommendations')) return 'risk-scoring-engine'
-  if (id.includes('report')) return 'audit-history-logger'
-  return null
-}
-
-function moduleIdForFinding(finding: DefensiveFinding) {
-  const category = finding.category.toLowerCase()
-  const method = finding.detectionMethod.toLowerCase()
-  const algorithm = finding.algorithm.toLowerCase()
-  if (category.includes('ssh')) return 'ssh-host-key-scanner'
-  if (category.includes('certificate')) {
-    if (algorithm.includes('sha') || algorithm.includes('md5')) return 'hash-algorithm-scanner'
-    if (algorithm.includes('signature')) return 'signature-algorithm-scanner'
-    return 'certificate-scanner'
-  }
-  if (category.includes('cipher')) return 'cipher-suite-scanner'
-  if (category.includes('key exchange') || category.includes('hndl')) return 'key-exchange-scanner'
-  if (category.includes('hash') || algorithm.includes('sha') || algorithm.includes('md5')) return 'hash-algorithm-scanner'
-  if (category.includes('api') || algorithm.includes('jwt')) return 'jwt-signing-scanner'
-  if (category.includes('source') || category.includes('web crypto') || category.includes('repository') || category.includes('dependency') || method.includes('repo') || method.includes('deep')) return 'dependency-crypto-scanner'
-  if (category.includes('protocol')) return 'tls-protocol-scanner'
-  return 'risk-scoring-engine'
 }
 
 function terminalSeverity(threatLevel: ThreatLevel) {
@@ -574,9 +534,14 @@ function normalizeTarget(raw: string): { ok: true; target: AuthorizedTarget } | 
     return { ok: false, message: `Target "${raw}" is private/reserved. Use a verified internal scanner agent for private assets.` }
   }
 
-  const isGithub = /^https?:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i.test(validated.normalized)
+  /* Any supported source-code platform routes to the repository scan path, not
+     just github.com: GitLab, Bitbucket, Azure DevOps, GitHub Enterprise and
+     self-hosted Gitea/Forgejo all parse to a provider-qualified reference.
+     `repositoryProvider` returns null for an ordinary website, so a normal
+     domain is unaffected. */
+  const isRepository = repositoryProvider(validated.normalized) !== null
   const port = validated.port || 443
-  const targetType: DefensiveTargetType = isGithub
+  const targetType: DefensiveTargetType = isRepository
     ? 'github'
     : validated.type === 'url'
       ? 'url'
@@ -593,7 +558,7 @@ function normalizeTarget(raw: string): { ok: true; target: AuthorizedTarget } | 
       port,
       type: port === 22 ? 'ssh' : targetType,
       displayName: validated.host,
-      protocol: port === 22 ? 'ssh' : isGithub ? 'git' : validated.protocol === 'http' ? 'http' : 'https',
+      protocol: port === 22 ? 'ssh' : isRepository ? 'git' : validated.protocol === 'http' ? 'http' : 'https',
     },
   }
 }
@@ -686,6 +651,7 @@ function normalizeWebResult(result: WebScanCompleteResult, startedAt: string): D
       pqcRecommendations: result.pqcRecommendations,
       riskBreakdown: result.riskBreakdown,
       riskBreakdownApplicable: result.riskBreakdownApplicable,
+      scoreCategories: result.scoreCategories,
       riskMeasuredWeight: result.riskMeasuredWeight,
       detectionRuleResults: result.detectionRuleResults,
       runtimeHealth: result.runtimeHealth,
@@ -1814,12 +1780,33 @@ router.get('/stream', async (req, res) => {
   ) => {
     const state = moduleStates.find((module) => module.id === moduleId)
     if (!state) return
+
+    /* A measurement is never downgraded to "not applicable".
+       Module states are per RUN, not per target, so in a mixed queue
+       (example.com + a GitHub repo) the repository pass would otherwise mark
+       the TLS, certificate and cipher modules inapplicable and erase evidence
+       the earlier target had already produced. Measured beats not-applicable,
+       whatever order the queue happens to run in. */
+    const alreadyMeasured = state.status === 'Completed' || state.status === 'No findings'
+    if (alreadyMeasured && patch.status === 'Skipped') return
+
     const now = new Date().toISOString()
     if (patch.status === 'Running' && !state.startedAt) state.startedAt = now
     Object.assign(state, patch)
+    // INVARIANT: a module may only report `Skipped` with a documented reason.
+    // Anything else is a bug in the caller, and it must be visible as one
+    // rather than reaching the operator as an unexplained grey step.
+    if (state.status === 'Skipped' && !state.reason) {
+      state.reason = 'Reported as skipped without a documented reason — treat as unverified coverage.'
+    }
+    if (state.status !== 'Skipped') state.notApplicable = false
     if (patch.status && ['Completed', 'Failed', 'Skipped', 'No findings'].includes(patch.status)) {
       state.completedAt = patch.completedAt || now
       if (state.startedAt) state.durationMs = Math.max(0, Date.parse(state.completedAt) - Date.parse(state.startedAt))
+      else {
+        state.startedAt = state.startedAt || now
+        state.durationMs = state.durationMs ?? 0
+      }
     }
     emit({
       type: 'module-state',
@@ -1832,14 +1819,33 @@ router.get('/stream', async (req, res) => {
     })
   }
 
-  const emitFinding = (finding: DefensiveFinding, summary: ReturnType<typeof buildSummary>) => {
+  /**
+   * Run-scoped ledger of which module owns which finding.
+   *
+   * The live counter used to be recomputed from `results`, which is only
+   * appended once a TARGET finishes — so during the first target every module
+   * card reset to "1 finding" on each new observation and only became correct
+   * after the run. The ledger is the single place a per-module count comes
+   * from, for the live stream and for the persisted module states alike, which
+   * is what makes the per-module numbers add up to the Executive Summary total.
+   */
+  const moduleFindingLedger = new Map<string, DefensiveFinding[]>()
+  const creditFinding = (finding: DefensiveFinding): string => {
     const moduleId = moduleIdForFinding(finding)
+    const bucket = moduleFindingLedger.get(moduleId) ?? []
+    bucket.push(finding)
+    moduleFindingLedger.set(moduleId, bucket)
     const state = moduleStates.find((module) => module.id === moduleId)
     if (state) {
-      const relatedFindings = results.flatMap((result) => result.findings).concat(finding).filter((item) => moduleIdForFinding(item) === moduleId)
-      state.findingsCount = relatedFindings.length
-      state.severityCounts = countFindingSeverities(relatedFindings)
+      state.findingsCount = bucket.length
+      state.severityCounts = countFindingSeverities(bucket)
     }
+    return moduleId
+  }
+
+  const emitFinding = (finding: DefensiveFinding, summary: ReturnType<typeof buildSummary>) => {
+    const moduleId = creditFinding(finding)
+    const state = moduleStates.find((module) => module.id === moduleId)
     emit({
       type: 'finding-detected',
       status: 'running',
@@ -1851,6 +1857,57 @@ router.get('/stream', async (req, res) => {
       message: `${terminalSeverity(finding.threatLevel)}: ${finding.algorithm} detected on ${finding.location}`,
     })
   }
+
+  /**
+   * Close the module ledger before any terminal frame leaves this router.
+   *
+   * GUARANTEE: when the client receives `scan-complete`, `scan-failed` or
+   * `scan-cancelled`, NO module is still `Queued` or `Running`. Every module
+   * carries one of Completed / No findings / Failed / Skipped, and a `Skipped`
+   * always carries the reason it did not apply.
+   *
+   * This is the fix for the class of bug where "Transport & Ciphers" and
+   * "Certificates & Keys" — and on a truncated run almost every surface —
+   * rendered as SKIPPED: the dashboard was inferring a state for modules the
+   * backend had simply never spoken about. The backend now always speaks.
+   */
+  const closeModuleLedger = (abortReason: string | null) => {
+    const applicability = moduleApplicability(normalized)
+    for (const module of moduleStates) {
+      if (module.status !== 'Queued' && module.status !== 'Running') continue
+
+      const notApplicableReason = applicability[module.id]
+      if (notApplicableReason && module.status === 'Queued') {
+        updateModule(
+          module.id,
+          { status: 'Skipped', reason: notApplicableReason, notApplicable: true, error: null },
+          `${module.name}: not applicable — ${notApplicableReason}`,
+        )
+        continue
+      }
+
+      // Applicable, but never reported. That is a real execution gap and is
+      // reported as one — never quietly downgraded to "skipped".
+      const failure = abortReason
+        ? `Scan ended before this module reported: ${abortReason}`
+        : 'Module did not report a terminal state before the run finished'
+      updateModule(
+        module.id,
+        { status: 'Failed', error: failure, reason: failure, notApplicable: false },
+        `${module.name} failed: ${failure}`,
+      )
+    }
+  }
+
+  /** Machine-readable execution ledger, published with every terminal frame. */
+  const summarizeModuleLedger = () => ({
+    total: moduleStates.length,
+    measured: moduleStates.filter((module) => module.status === 'Completed' || module.status === 'No findings').length,
+    failed: moduleStates.filter((module) => module.status === 'Failed').length,
+    notApplicable: moduleStates.filter((module) => module.status === 'Skipped').length,
+    unresolved: moduleStates.filter((module) => module.status === 'Queued' || module.status === 'Running').length,
+    findings: moduleStates.reduce((sum, module) => sum + module.findingsCount, 0),
+  })
 
   req.on('close', () => {
     const state = activeJobs.get(jobId)
@@ -1886,7 +1943,8 @@ router.get('/stream', async (req, res) => {
       const target = normalized[index]
       const state = activeJobs.get(jobId)
       if (state?.cancelled) {
-        emit({ type: 'scan-cancelled', status: 'cancelled', progress: Math.round((index / normalized.length) * 100), message: 'Scan cancellation requested by user' })
+        closeModuleLedger('cancelled by operator')
+        emit({ type: 'scan-cancelled', status: 'cancelled', progress: Math.round((index / normalized.length) * 100), message: 'Scan cancellation requested by user', moduleStates, moduleLedger: summarizeModuleLedger() })
         await updateSession(client, session.id, user.id, { status: 'cancelled', completed_at: new Date().toISOString(), metadata: { targets: normalized, telemetry, moduleStates, results, errors } }, session.mode)
         res.end()
         return
@@ -1899,8 +1957,14 @@ router.get('/stream', async (req, res) => {
       const targetStart = new Date().toISOString()
       if (target.type === 'ssh') {
         updateModule('ssh-host-key-scanner', { status: 'Running', target: target.normalized }, 'SSH host key scanner running')
-        ;['tls-protocol-scanner', 'certificate-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner', 'jwt-signing-scanner', 'dependency-crypto-scanner'].forEach((moduleId) => {
-          updateModule(moduleId, { status: 'Skipped', target: target.normalized }, `${SCANNER_MODULE_CATALOG.find((module) => module.id === moduleId)?.name || moduleId} skipped for SSH target`)
+        ;['tls-protocol-scanner', 'certificate-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner', 'crypto-detection-rules', 'jwt-signing-scanner', 'dependency-crypto-scanner'].forEach((moduleId) => {
+          const moduleName = SCANNER_MODULE_CATALOG.find((module) => module.id === moduleId)?.name || moduleId
+          const reason = `an SSH endpoint exposes host keys, not a TLS/HTTP surface — ${target.normalized} is out of scope for this module`
+          updateModule(
+            moduleId,
+            { status: 'Skipped', target: target.normalized, reason, notApplicable: true, error: null },
+            `${moduleName}: not applicable — ${reason}`,
+          )
         })
         result = await scanSshMetadata(target, (event) => {
           const eventProgress = typeof event.progress === 'number' ? event.progress : 20
@@ -1916,7 +1980,17 @@ router.get('/stream', async (req, res) => {
           emitFinding(finding, buildLiveSummary(results, result.findings))
         }
       } else {
-        updateModule('ssh-host-key-scanner', { status: 'Skipped', target: target.normalized }, 'SSH host key scanner skipped for non-SSH target')
+        updateModule(
+          'ssh-host-key-scanner',
+          {
+            status: 'Skipped',
+            target: target.normalized,
+            reason: `${target.normalized} is a ${target.type} target, which exposes no SSH host key to read`,
+            notApplicable: true,
+            error: null,
+          },
+          `SSH host key scanner: not applicable — ${target.normalized} is a ${target.type} target`,
+        )
         result = normalizeWebResult(
           await executeWebScan(targetToScannerInput(target), target.type as WebScanTargetType, (event: SSEEvent) => {
             const eventProgress = typeof event.progress === 'number' ? event.progress : 10
@@ -1928,48 +2002,74 @@ router.get('/stream', async (req, res) => {
             if (canonicalModuleId && event.type === 'module-complete') {
               const errorText = typeof event.error === 'string' ? event.error : null
               const findingCount = typeof event.findingCount === 'number' ? event.findingCount : 0
-              const moduleStatus: ScannerModuleStatus = errorText?.toLowerCase().includes('skipped')
-                ? 'Skipped'
-                : errorText && !errorText.toLowerCase().includes('unavailable') && findingCount === 0
-                  ? 'Failed'
-                  : findingCount === 0
-                    ? 'No findings'
-                    : 'Completed'
-              const moduleError = moduleStatus === 'Failed' ? errorText : null
+              const disposition = classifyModuleOutcome(errorText, findingCount)
+              const catalogName = SCANNER_MODULE_CATALOG.find((module) => module.id === canonicalModuleId)?.name || String(event.moduleName || canonicalModuleId)
               updateModule(canonicalModuleId, {
-                status: moduleStatus,
+                status: disposition.status,
                 target: target.normalized,
                 findingsCount: findingCount,
-                error: moduleError,
-              }, `${SCANNER_MODULE_CATALOG.find((module) => module.id === canonicalModuleId)?.name || event.moduleName}: ${moduleStatus}`)
+                error: disposition.error,
+                reason: disposition.reason,
+                notApplicable: disposition.notApplicable,
+              }, `${catalogName}: ${disposition.status === 'Skipped' ? `not applicable — ${disposition.reason}` : disposition.status}`)
             }
             const normalizedFinding = event.finding ? normalizeWebFinding(event.finding as WebScanFinding, { certificateInfo: null } as WebScanCompleteResult) : undefined
             if (normalizedFinding) emitFinding(normalizedFinding, buildLiveSummary(results, [normalizedFinding]))
+            /* The nested web scan publishes its OWN `scan-start` / `scan-complete`
+               for each target. Forwarding those verbatim made the client believe
+               the whole job had finished the moment the first target's web pass
+               ended — before persistence, the Scanner_2 pass and every posture
+               module had run. The dashboard then flipped to "SCAN COMPLETE",
+               treated every module that had not yet reported as skipped, and
+               graded a partial estate. Only THIS router may declare the job
+               terminal, so per-target lifecycle frames are namespaced. */
+            const forwardedType = event.type === 'scan-complete'
+              ? 'target-scan-complete'
+              : event.type === 'scan-start'
+                ? 'target-scan-start'
+                : event.type === 'error'
+                  ? 'target-scan-error'
+                  : event.type
             emit({
               ...event,
-              type: event.type,
-              status: event.type === 'scan-complete' ? 'analyzing' : 'running',
+              type: forwardedType,
+              status: 'running',
               target: target.normalized,
-              progress: Math.round(baseProgress + eventProgress / normalized.length),
+              // 98-100 is reserved for this router's own finalization, so a
+              // per-target frame can never paint a full bar mid-run.
+              progress: Math.min(97, Math.round(baseProgress + eventProgress / normalized.length)),
               message,
               finding: normalizedFinding,
             })
           }),
           targetStart
         )
-        const groupedByModule = new Map<string, DefensiveFinding[]>()
+        /* Reconcile every module against the ledger of findings it actually
+           owns. This is what guarantees the per-module counts on the discovery
+           cards sum to the total in the Executive Summary: the count a module
+           displays and the count of findings routed to it are the same number,
+           read from one place. */
         for (const finding of result.findings) {
           const moduleId = moduleIdForFinding(finding)
-          groupedByModule.set(moduleId, [...(groupedByModule.get(moduleId) || []), finding])
+          const bucket = moduleFindingLedger.get(moduleId) ?? []
+          if (!bucket.some((item) => item.id === finding.id)) {
+            bucket.push(finding)
+            moduleFindingLedger.set(moduleId, bucket)
+          }
         }
-        for (const [moduleId, moduleFindings] of groupedByModule) {
+        for (const [moduleId, moduleFindings] of moduleFindingLedger) {
           const current = moduleStates.find((module) => module.id === moduleId)
-          if (!current || current.status === 'Failed') continue
+          if (!current || current.status === 'Failed' || moduleFindings.length === 0) continue
           updateModule(moduleId, {
-            status: moduleFindings.length > 0 ? 'Completed' : 'No findings',
-            target: target.normalized,
+            // A module that produced evidence demonstrably applied, so a stale
+            // not-applicable verdict is cleared rather than left contradicting
+            // its own findings.
+            status: 'Completed',
+            target: current.target || target.normalized,
             findingsCount: moduleFindings.length,
             severityCounts: countFindingSeverities(moduleFindings),
+            reason: null,
+            notApplicable: false,
           }, `${current.name}: ${moduleFindings.length} finding(s) synchronized`)
         }
       }
@@ -2026,6 +2126,16 @@ router.get('/stream', async (req, res) => {
       findingsCount: enterpriseScanner2.quantumRiskScore.totalFindings,
     }, `Scanner_2 risk/Q-score calculated: readiness ${enterpriseScanner2.quantumReadiness.score}/100`)
 
+    updateModule('risk-scoring-engine', {
+      status: 'Completed',
+      findingsCount: summary.totalFindings,
+      severityCounts: { critical: summary.critical, high: summary.high, medium: summary.medium, low: summary.low, safe: summary.safe },
+    }, 'Risk scoring engine completed')
+
+    // Close the ledger BEFORE persistence, so the module states written to
+    // history are the same terminal states the client is about to receive.
+    closeModuleLedger(null)
+
     await updateSession(client, session.id, user.id, {
       status: 'completed',
       progress: 100,
@@ -2038,7 +2148,10 @@ router.get('/stream', async (req, res) => {
         targets: normalized,
         telemetry,
         moduleStates,
-        scannerModulesUsed: moduleStates.filter((module) => module.status !== 'Queued' && module.status !== 'Skipped').map((module) => module.name),
+        // Only modules that produced a measurement count as "used": a module
+        // that did not apply, or that failed, must not inflate coverage.
+        scannerModulesUsed: moduleStates.filter((module) => module.status === 'Completed' || module.status === 'No findings').map((module) => module.name),
+        moduleLedger: summarizeModuleLedger(),
         enterpriseScanner2,
         errors,
         summary,
@@ -2049,22 +2162,33 @@ router.get('/stream', async (req, res) => {
       },
     }, session.mode)
 
-    updateModule('risk-scoring-engine', { status: 'Completed', findingsCount: summary.totalFindings, severityCounts: { critical: summary.critical, high: summary.high, medium: summary.medium, low: summary.low, safe: summary.safe } }, 'Risk scoring engine completed')
-    emit({ type: 'risk-score-calculated', status: 'completed', progress: 99, message: `Risk score calculated: ${summary.riskScore}/100`, summary, enterpriseScanner2, moduleStates })
-    emit({ type: 'scan-complete', status: 'completed', progress: 100, scanSessionId: session.id, persistence: session.mode, message: 'Authorized cryptographic inventory scan completed', summary, results, enterpriseScanner2, moduleStates, linkedAssetIds, linkedCbomIds, linkedExposureIds })
+    emit({ type: 'risk-score-calculated', status: 'analyzing', progress: 99, message: `Risk score calculated: ${summary.riskScore}/100`, summary, enterpriseScanner2, moduleStates })
+    emit({ type: 'scan-complete', status: 'completed', progress: 100, scanSessionId: session.id, persistence: session.mode, message: 'Authorized cryptographic inventory scan completed', summary, results, enterpriseScanner2, moduleStates, moduleLedger: summarizeModuleLedger(), linkedAssetIds, linkedCbomIds, linkedExposureIds })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Scanner failure'
     errors.push(message)
-    const runningModule = moduleStates.find((module) => module.status === 'Running')
-    if (runningModule) updateModule(runningModule.id, { status: 'Failed', error: message }, `${runningModule.name} failed: ${message}`)
+    for (const runningModule of moduleStates.filter((module) => module.status === 'Running')) {
+      updateModule(runningModule.id, { status: 'Failed', error: message, reason: message }, `${runningModule.name} failed: ${message}`)
+    }
+    closeModuleLedger(message)
     if (session) {
       await updateSession(client, session.id, user.id, {
         status: 'failed',
         completed_at: new Date().toISOString(),
-        metadata: { targets: normalized, telemetry, moduleStates, errors, results, linkedAssetIds, linkedCbomIds, linkedExposureIds },
+        metadata: {
+          targets: normalized,
+          telemetry,
+          moduleStates,
+          scannerModulesUsed: moduleStates.filter((module) => module.status === 'Completed' || module.status === 'No findings').map((module) => module.name),
+          errors,
+          results,
+          linkedAssetIds,
+          linkedCbomIds,
+          linkedExposureIds,
+        },
       }, session.mode)
     }
-    emit({ type: 'scan-failed', status: 'failed', progress: 100, message, errors, moduleStates })
+    emit({ type: 'scan-failed', status: 'failed', progress: 100, message, errors, moduleStates, moduleLedger: summarizeModuleLedger() })
   } finally {
     activeJobs.delete(jobId)
     res.end()
@@ -2872,7 +2996,7 @@ function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceM
       durationMs: started && completed ? Date.parse(completed) - Date.parse(started) : null,
       status: session.status,
       detectedComponents,
-      scannerModulesUsed: metadata.scannerModulesUsed || (metadata.moduleStates || []).filter((module: any) => module.status !== 'Queued' && module.status !== 'Skipped').map((module: any) => module.name),
+      scannerModulesUsed: metadata.scannerModulesUsed || (metadata.moduleStates || []).filter((module: any) => module.status === 'Completed' || module.status === 'No findings').map((module: any) => module.name),
       vulnerableFindings,
       pqcReadyFindings,
       riskScore: storedSummary.riskScore ?? null,
@@ -3078,7 +3202,7 @@ function mergeActiveScannerJobs(userId: string, historyPayload: { mode: Persiste
       durationMs: Date.now() - Date.parse(job.startedAt),
       status: job.status || 'running',
       detectedComponents: Number(summary.totalFindings ?? activeFindings.length ?? 0),
-      scannerModulesUsed: job.moduleStates.filter((module) => module.status !== 'Queued' && module.status !== 'Skipped').map((module) => module.name),
+      scannerModulesUsed: job.moduleStates.filter((module) => module.status === 'Completed' || module.status === 'No findings').map((module) => module.name),
       vulnerableFindings: Number(summary.vulnerable ?? summary.vulnerableFindings ?? activeFindings.filter((finding: DefensiveFinding) => finding.threatLevel !== 'SAFE').length),
       pqcReadyFindings: Number(summary.pqcReady ?? summary.pqcReadyFindings ?? activeFindings.filter((finding: DefensiveFinding) => finding.threatLevel === 'SAFE').length),
       riskScore: summary.riskScore ?? null,

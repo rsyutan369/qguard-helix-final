@@ -25,12 +25,19 @@ import {
   RISK_ORDER,
   scoreToGrade,
 } from '@/lib/scanner/public-scan/grading-model';
+/* The scanner's own finding-ownership rule, imported rather than reimplemented.
+   `scanner-module-ledger` is a pure, dependency-free module (no Express, no
+   Supabase) exported for exactly this: the backend credits a finding to a
+   module, and this page routes the same finding to the surface that module
+   belongs to, so the two can never disagree. */
+import { moduleIdForFinding } from '@/api-server/scanner-module-ledger';
 import type { RiskBand } from '@/lib/scanner/public-scan/types';
 import type {
   DefensiveFinding,
   EnterpriseScanner2,
   ModuleState,
   PqcRecommendation,
+  PublishedScoreCategory,
   ScanResultRecord,
   ScanRiskApplicability,
   ScanRiskBreakdown,
@@ -57,6 +64,7 @@ export const SCANNER_NODE_MODULES: Record<string, readonly string[]> = {
   identity: ['ssh-host-key-scanner', 'jwt-signing-scanner'],
   code: ['dependency-crypto-scanner', 'cbom-generator', 'scanner2-fingerprint-matcher', 'scanner2-detection-rules'],
   posture: [
+    'crypto-detection-rules',
     'scanner2-hndl-analyzer',
     'scanner2-correlation-engine',
     'scanner2-pqc-migration-engine',
@@ -129,44 +137,22 @@ export const MODULE_NODE = ((): Record<string, string> => {
 })();
 
 /**
- * Finding category → node key. Categories are the scanner's own strings (see
- * `src/lib/scanner/web-scanner/detection-rules.ts`); anything unrecognised
- * routes to `posture`, which is where the risk model already aggregates it.
+ * Finding → node key, derived from the module that OWNS the finding.
+ *
+ * This used to be a second, independently-maintained category table, and it
+ * drifted from the backend's ownership rules exactly the way two copies of a
+ * rule always do: `Web Crypto (hash)` was attributed to the certificate surface
+ * (because the string contains "hash") while the scanner credited it to the
+ * dependency scanner on the Code surface, so a node card's finding list and its
+ * module's finding count disagreed for the same observation.
+ *
+ * Routing now goes through the scanner's own ledger — `moduleIdForFinding` —
+ * and then through `MODULE_NODE`. One rule, one answer, on both sides of the
+ * wire. `scanner-module-ledger` is a dependency-free pure module for precisely
+ * this reason: it is shared, not duplicated.
  */
-export function nodeForFindingCategory(category: string): string {
-  const value = category.toLowerCase();
-  if (value.includes('ssh') || value.includes('jwt') || value.includes('identity') || value.includes('token')) {
-    return 'identity';
-  }
-  if (value.includes('certificate') || value.includes('ca-') || value.includes('signature') || value.includes('hash')) {
-    return 'certificates';
-  }
-  if (
-    value.includes('tls') ||
-    value.includes('cipher') ||
-    value.includes('protocol') ||
-    value.includes('key exchange') ||
-    value.includes('kex') ||
-    value.includes('dh') ||
-    value.includes('forward')
-  ) {
-    return 'transport';
-  }
-  if (
-    value.includes('library') ||
-    value.includes('repository') ||
-    value.includes('app-crypto') ||
-    value.includes('webcrypto') ||
-    value.includes('api security') ||
-    value.includes('dependency') ||
-    value.includes('security headers')
-  ) {
-    return 'code';
-  }
-  if (value.includes('connectivity') || value.includes('scan error') || value.includes('metadata')) {
-    return 'discovery';
-  }
-  return 'posture';
+export function nodeForFindingCategory(category: string, detectionMethod = '', algorithm = ''): string {
+  return MODULE_NODE[moduleIdForFinding({ category, detectionMethod, algorithm })] ?? 'posture';
 }
 
 /* =================================================================== model == */
@@ -339,7 +325,7 @@ export function riskColorFor(band: RiskBand): string {
 export function scoreNodes(findings: DefensiveFinding[]): Record<string, number> {
   const buckets = new Map<string, { retained: number; count: number }>();
   for (const finding of findings) {
-    const node = nodeForFindingCategory(finding.category);
+    const node = nodeForFindingCategory(finding.category, finding.detectionMethod, finding.algorithm);
     const bucket = buckets.get(node) ?? { retained: 0, count: 0 };
     bucket.retained += RESIDUAL_SECURITY[finding.threatLevel] ?? 0;
     bucket.count += 1;
@@ -350,6 +336,61 @@ export function scoreNodes(findings: DefensiveFinding[]): Record<string, number>
     if (bucket.count > 0) scores[node] = clamp((bucket.retained / bucket.count) * 100);
   }
   return scores;
+}
+
+/** The two quantum categories of the published model. */
+const PQ_CATEGORY_KEYS = new Set(['cryptographic-algorithms', 'post-quantum-readiness']);
+
+/**
+ * Merge each target's published category scores into one estate decomposition.
+ *
+ * A category is averaged over the targets that MEASURED it, and reported null
+ * when no target did — the UI still lists it, greyed, with the reason. Older
+ * scans that predate published scoring fall back to the engineering breakdown so
+ * reviewing history keeps working.
+ */
+function mergePublishedCategories(
+  results: ScanResultRecord[],
+  fallbackBreakdown: Partial<Record<keyof ScanRiskBreakdown, number>> | null,
+): ScoreComponent[] {
+  const rows = results
+    .map((result) => result.metadata?.scoreCategories)
+    .filter((value): value is PublishedScoreCategory[] => Array.isArray(value) && value.length > 0);
+
+  if (rows.length === 0) {
+    // Pre-published-scoring scan: show the engineering decomposition instead of
+    // an empty panel, labelled so it is not mistaken for the published model.
+    return RISK_WEIGHTS.map((definition) => {
+      const risk = fallbackBreakdown?.[definition.key];
+      return {
+        key: definition.key,
+        label: definition.label,
+        weight: definition.weight,
+        score: risk === undefined ? null : clamp(100 - risk),
+        observed: risk !== undefined
+          ? `${definition.description} (engineering model — rescan for the published categories)`
+          : 'Not decomposed — run a scan to collect the per-target model',
+      };
+    });
+  }
+
+  const order: PublishedScoreCategory[] = rows[0];
+  return order.map((template) => {
+    const measured = rows
+      .map((row) => row.find((category) => category.key === template.key))
+      .filter((category): category is PublishedScoreCategory => Boolean(category?.applicable));
+    const mean = average(measured.map((category) => category.score));
+    const observedValues = Array.from(new Set(measured.map((category) => category.observed))).filter(Boolean);
+    return {
+      key: template.key,
+      label: template.label,
+      weight: template.weight,
+      score: mean === null ? null : clamp(mean),
+      observed: observedValues.length
+        ? observedValues.slice(0, 2).join(' · ')
+        : template.observed || 'not observed',
+    };
+  });
 }
 
 /* ========================================================= node evidence ==== */
@@ -434,7 +475,7 @@ export function buildNodeEvidence(
     }));
 
   const nodeFindings = input.findings
-    .filter((finding) => nodeForFindingCategory(finding.category) === nodeKey)
+    .filter((finding) => nodeForFindingCategory(finding.category, finding.detectionMethod, finding.algorithm) === nodeKey)
     .sort((a, b) => THREAT_RANK[b.threatLevel] - THREAT_RANK[a.threatLevel]);
 
   const score = scoreNodes(input.findings)[nodeKey] ?? null;
@@ -872,9 +913,28 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const completedModules = modules.filter((module) => module.status === 'Completed' || module.status === 'No findings');
   const skippedModules = modules.filter((module) => module.status === 'Skipped');
   const failedModules = modules.filter((module) => module.status === 'Failed');
+  const unreportedModules = modules.filter((module) => module.status === 'Queued');
 
   const hasEvidence = Boolean(summary) || findings.length > 0 || input.estate.totalFindings > 0;
   const live = input.status === 'queued' || input.status === 'running' || input.status === 'analyzing';
+
+  /* ── ONE evidence scope ──────────────────────────────────────────────────
+     Every executive number below is read from a single scope, never mixed.
+     Blending them is how the page could show a scan-scoped grade of A beside an
+     estate-scoped count of 106 critical findings: two true numbers describing
+     two different populations, presented as if they described one.
+
+     `scan`   — a run (live or the one being reviewed) produced a summary.
+     `estate` — no scan is in view, so the tenant-wide Scanner Intelligence
+                snapshot answers every question instead. */
+  const scope: 'scan' | 'estate' = summary ? 'scan' : 'estate';
+  const scoped = {
+    totalFindings: scope === 'scan' ? summary!.totalFindings : input.estate.totalFindings,
+    critical: scope === 'scan' ? summary!.critical : input.estate.criticalFindings,
+    high: scope === 'scan' ? summary!.high : 0,
+    vulnerable: scope === 'scan' ? summary!.vulnerable : input.estate.totalFindings,
+    assets: scope === 'scan' ? summary!.targetsScanned : input.estate.totalAssets,
+  };
 
   /* ── Composite score ─────────────────────────────────────────────────────
      `qScore` is the backend's posture score (100 − exposure). It is what the
@@ -884,31 +944,23 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const encryptionScore = summary ? clamp(summary.qScore) : clamp(100 - input.estate.riskScore);
   const breakdown = mergeRiskBreakdown(results);
 
-  const scoreComponents: ScoreComponent[] = RISK_WEIGHTS.map((definition) => {
-    const risk = breakdown?.[definition.key];
-    return {
-      key: definition.key,
-      label: definition.label,
-      weight: definition.weight,
-      score: risk === undefined ? null : clamp(100 - risk),
-      observed: risk !== undefined
-        ? `${definition.description} — measured across ${pluralize(results.length, 'target')}`
-        : breakdown
-          ? `Not measured — no target in this scan exposed ${definition.description}`
-          : 'Not decomposed — run a scan to collect the per-target risk model',
-    };
-  });
+  /* The published twelve-category decomposition, merged across targets. This is
+     the same model, the same weights and the same grade table /public-scan uses,
+     which is what lets a host assessed on either surface be compared directly. */
+  const scoreComponents = mergePublishedCategories(results, breakdown);
 
-  const classicalWeighted = breakdown
-    ? RISK_WEIGHTS.filter((definition) => !definition.postQuantum && breakdown[definition.key] !== undefined).reduce(
-        (accumulator, definition) => {
-          accumulator.weighted += (100 - (breakdown[definition.key] as number)) * definition.weight;
-          accumulator.weight += definition.weight;
-          return accumulator;
-        },
-        { weighted: 0, weight: 0 },
-      )
-    : null;
+  /* Classical = every category except the two quantum ones, matching
+     CLASSICAL_CATEGORY_KEYS in the published model. */
+  const classicalWeighted = scoreComponents
+    .filter((component) => component.score !== null && !PQ_CATEGORY_KEYS.has(component.key))
+    .reduce(
+      (accumulator, component) => {
+        accumulator.weighted += (component.score as number) * component.weight;
+        accumulator.weight += component.weight;
+        return accumulator;
+      },
+      { weighted: 0, weight: 0 },
+    );
   const classicalScore =
     classicalWeighted && classicalWeighted.weight > 0
       ? clamp(classicalWeighted.weighted / classicalWeighted.weight)
@@ -933,20 +985,38 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      asset-level readiness is reported separately, labelled with its source,
      rather than averaged into it — two different measurements of two different
      populations must not be silently blended. */
-  const postQuantumReadiness = summary && summary.totalFindings > 0
-    ? clamp((summary.pqcReady / summary.totalFindings) * 100)
-    : clamp(input.estate.pqcReadiness);
+  /* The published model's Post-Quantum Readiness category IS the platform's
+     definition — hybrid key agreement 55, PQ signature 30, TLS 1.3 12,
+     short-lived certificates 8, CT 3, enforced HSTS 3. Using the share of
+     findings rated SAFE instead was a different measurement of a different
+     population, and it is why this surface reported 0% where /public-scan
+     reported 8% for the same host. The finding-share is kept only as a fallback
+     for estates with no transport evidence at all. */
+  const publishedPq = scoreComponents.find((component) => component.key === 'post-quantum-readiness');
+  const postQuantumReadiness = publishedPq?.score !== null && publishedPq?.score !== undefined
+    ? publishedPq.score
+    : summary && summary.totalFindings > 0
+      ? clamp((summary.pqcReady / summary.totalFindings) * 100)
+      : clamp(input.estate.pqcReadiness);
 
   const scanner2Readiness = scanner2?.quantumReadiness
     ? { score: clamp(scanner2.quantumReadiness.score), label: scanner2.quantumReadiness.label }
     : null;
 
-  /* ── Evidence coverage & confidence ──────────────────────────────────── */
-  const evidenceCoverage = modules.length > 0
-    ? clamp((completedModules.length / modules.length) * 100)
-    : hasEvidence
-      ? 100
-      : 0;
+  /* ── Evidence coverage & confidence ────────────────────────────────────
+     Coverage is measured against the modules that COULD apply. A module the
+     scanner correctly reported as not applicable — an SSH host-key probe on a
+     URL target — is not a coverage gap and must not depress the number, or
+     every web scan would permanently read ~70% covered. */
+  const applicableModules = modules.length - skippedModules.length;
+  const evidenceCoverage = applicableModules > 0
+    ? clamp((completedModules.length / applicableModules) * 100)
+    : modules.length > 0
+      // Every catalogued module was inapplicable: there is no coverage to claim.
+      ? 0
+      : hasEvidence
+        ? 100
+        : 0;
 
   const measuredConfidence = average(
     results
@@ -959,38 +1029,56 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   );
   const confidenceDetail = confidenceFactors.length
     ? confidenceFactors.slice(0, 3).join(' · ')
-    : `${completedModules.length} of ${modules.length || executedModules.length} scanner modules reported evidence.`;
+    : `${completedModules.length} of ${applicableModules || modules.length || executedModules.length} applicable scanner modules reported evidence.`;
 
   /* ── Grade ───────────────────────────────────────────────────────────────
      A grade is withheld until the scan actually completed with a summary: a
      letter computed from a partial run is a claim the evidence does not
      support. */
-  const gradeable = hasEvidence && !live && (Boolean(summary) || input.estate.totalFindings > 0);
+  /* A grade is a claim about a whole estate, so it is withheld until the run is
+     settled AND the module ledger is closed. `unreportedModules` is non-empty
+     only when a run was cut short: grading there produced the "Grade A · 96%"
+     on a scan that had run six of twenty-three modules. */
+  const runSettled = !live && unreportedModules.length === 0;
+  const gradeable = hasEvidence && runSettled && (Boolean(summary) || input.estate.totalFindings > 0);
   const gradeRow = scoreToGrade(encryptionScore);
   const grade = gradeable ? gradeRow.grade : '—';
-  const gradeLabel = gradeable ? gradeRow.rating : live ? 'Assessment running' : 'Awaiting scan';
+  const gradeLabel = gradeable
+    ? gradeRow.rating
+    : live
+      ? 'Assessment running'
+      : unreportedModules.length > 0
+        ? 'Incomplete run'
+        : 'Awaiting scan';
   const gradeColor = gradeable ? gradeRow.color : '#94a3b8';
   const gradeDetail = gradeable
-    ? gradeRow.meaning
+    ? evidenceCoverage >= 100
+      ? gradeRow.meaning
+      : `${gradeRow.meaning} Graded on ${evidenceCoverage}% module coverage${
+          skippedModules.length ? `; ${pluralize(skippedModules.length, 'module')} did not apply to these targets` : ''
+        }.`
     : live
       ? 'A grade is withheld until every module has reported.'
-      : 'Run an authorized scan to grade this estate.';
+      : unreportedModules.length > 0
+        ? `${pluralize(unreportedModules.length, 'module')} never reported, so this run cannot be graded. Re-run the scan.`
+        : 'Run an authorized scan to grade this estate.';
 
   /* ── Business risk ──────────────────────────────────────────────────────
      Score-derived, then floored by the presence of critical findings: an estate
      with an open critical exposure is not "Low risk" no matter what the mean
      says. */
-  const criticalCount = summary?.critical ?? input.estate.criticalFindings;
-  const highCount = summary?.high ?? 0;
+  const criticalCount = scoped.critical;
+  const highCount = scoped.high;
+  const scopeNoun = scope === 'scan' ? 'this assessment' : 'the tenant estate';
   let businessRisk: RiskBand = gradeable ? riskBandForScore(encryptionScore) : 'Not assessable';
   if (gradeable && criticalCount > 0) businessRisk = worstRisk(businessRisk, 'High');
   if (gradeable && criticalCount >= 5) businessRisk = worstRisk(businessRisk, 'Critical');
   const businessRiskDetail = gradeable
     ? criticalCount > 0
-      ? `${pluralize(criticalCount, 'critical finding')} open across the scanned estate.`
+      ? `${pluralize(criticalCount, 'critical finding')} open across ${scopeNoun}.`
       : highCount > 0
-        ? `No critical findings; ${pluralize(highCount, 'high-severity finding')} outstanding.`
-        : 'No critical or high-severity cryptographic findings were recorded.'
+        ? `No critical findings; ${pluralize(highCount, 'high-severity finding')} outstanding across ${scopeNoun}.`
+        : `No critical or high-severity cryptographic findings were recorded across ${scopeNoun}.`
     : 'Risk cannot be stated before a completed scan.';
 
   /* ── Migration complexity ─────────────────────────────────────────────── */
@@ -1052,7 +1140,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
     ? 'Unknown'
     : findings.some((finding) => /ml-kem|ml-dsa|kyber|dilithium|slh-dsa/i.test(finding.algorithm))
       ? 'Hybrid-protected'
-      : (summary?.vulnerable ?? 0) > 0 || input.estate.criticalFindings > 0
+      : scoped.vulnerable > 0
         ? 'Vulnerable'
         : 'Not observed';
 
@@ -1071,6 +1159,15 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
     window: scanner2?.attackAssessment?.estimatedBreakWindow ?? null,
   };
 
+  /* Everything the assessment did NOT measure, with the scanner's own reason. */
+  const notAnalyzedLines = [
+    ...skippedModules.map(
+      (module) => `${module.name} — ${module.reason || 'not applicable to the submitted target types'}`,
+    ),
+    ...failedModules.map((module) => `${module.name} — FAILED: ${module.error || module.reason || 'no error reported'}`),
+    ...unreportedModules.map((module) => `${module.name} — never reported; this run's coverage is incomplete`),
+  ];
+
   /* ── Assembly ────────────────────────────────────────────────────────── */
   return {
     hasEvidence,
@@ -1078,7 +1175,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
     provenance: input.provenance,
     target: {
       label: input.targets.length ? input.targets.join(', ') : `${input.estate.totalAssets} discovered assets`,
-      count: summary?.targetsScanned ?? input.targets.length ?? input.estate.totalAssets,
+      count: scoped.assets,
       completedAt: input.completedAt,
     },
     executive: {
@@ -1118,41 +1215,47 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
         {
           key: 'assets',
           label: 'Assets Scanned',
-          value: summary?.targetsScanned ?? input.estate.totalAssets,
-          countedFrom: 'authorized targets the scanner completed a pass over',
+          value: scoped.assets,
+          countedFrom: scope === 'scan'
+            ? 'authorized targets the scanner completed a pass over in this assessment'
+            : 'assets in the tenant inventory, from the Scanner Intelligence snapshot',
         },
         {
           key: 'components',
           label: 'Crypto Components',
-          value: summary?.totalFindings ?? input.estate.totalFindings,
-          countedFrom: 'distinct cryptographic observations recorded as findings',
+          value: scoped.totalFindings,
+          countedFrom: scope === 'scan'
+            ? 'distinct cryptographic observations recorded by this assessment'
+            : 'distinct cryptographic observations persisted for this tenant',
         },
         {
           key: 'cbom',
           label: 'CBOM Records',
           value: input.linked.cbom,
-          countedFrom: 'rows written to the cryptographic bill of materials',
+          countedFrom: 'rows written to the cryptographic bill of materials by the scan in view',
         },
         {
           key: 'exposures',
           label: 'Exposure Nodes',
           value: input.linked.exposures,
-          countedFrom: 'nodes added to the crypto exposure graph',
+          countedFrom: 'nodes added to the crypto exposure graph by the scan in view',
         },
       ],
       exposureLevel: gradeable
-        ? `${businessRisk} — ${pluralize(summary?.vulnerable ?? input.estate.totalFindings, 'quantum-vulnerable component')}`
+        ? `${businessRisk} — ${pluralize(scoped.vulnerable, 'quantum-vulnerable component')}`
         : 'Not assessed',
-      basis: `Counted from the scanner's own persisted records for this tenant: ${pluralize(executedModules.length, 'module')} executed, ${pluralize(input.linked.assets, 'asset record')} synchronized. Nothing here is estimated.`,
+      basis: `Counted from the scanner's own persisted records for this tenant, scoped to ${scopeNoun}: ${pluralize(completedModules.length, 'module')} measured, ${pluralize(skippedModules.length, 'module')} not applicable, ${pluralize(input.linked.assets, 'asset record')} synchronized. Nothing here is estimated.`,
     },
-    coverage: buildCoverage(modules, failedModules, skippedModules),
+    coverage: buildCoverage(modules, failedModules, skippedModules, unreportedModules),
     scope: {
       analyzed: completedModules.length
         ? completedModules.map((module) => module.name)
         : ['No module has reported evidence yet'],
-      notAnalyzed: skippedModules.length
-        ? skippedModules.map((module) => `${module.name} — not applicable to the submitted target types`)
-        : ['Every catalogued module was applicable to the submitted targets'],
+      // Verbatim reasons from the scanner's module ledger — never a guess about
+      // why a module did not run.
+      notAnalyzed: notAnalyzedLines.length
+        ? notAnalyzedLines
+        : ['Every catalogued module was applicable to the submitted targets and reported evidence'],
       statement:
         'The Dashboard Scanner performs authorized, defensive cryptographic inventory only: no exploitation, credential collection, stealth behaviour or unauthorized reconnaissance. Results persist per tenant and populate CBOM, Assets, Crypto Exposure, Quantum Readiness and Migration Planner.',
     },
@@ -1256,77 +1359,224 @@ function buildObservedAlgorithms(
 
 /* =========================================================== sub-builders == */
 
+/**
+ * The observed attack surface.
+ *
+ * Mirrors /public-scan's control list one row for one row, so the same host can
+ * be read side by side on either surface. Rows the authenticated scanner does
+ * not probe (the public-edge DNS and certificate-extension checks) render an
+ * explicit "Not probed" with the reason in the tooltip — never a pass, never a
+ * fail, and never a fabricated value. That distinction is the whole contract:
+ * "we looked and it is absent" and "we did not look" must not render the same.
+ */
 function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]): SurfaceItem[] {
   const primary = input.results[0];
   const tls = primary?.metadata?.tlsAnalysis ?? null;
   const certificate = primary?.certificateInfo ?? null;
+  const api = primary?.metadata?.apiSecurityResult ?? null;
+  const scanner2 = input.scanner2;
   const items: SurfaceItem[] = [];
 
+  /** A control this scanner does not perform. */
+  const notProbed = (key: string, label: string, why: string): SurfaceItem => ({
+    key,
+    label,
+    value: 'Not probed',
+    status: 'unknown',
+    detail: `${why} This is a public-edge probe the authenticated estate scanner does not perform, so no verdict is claimed either way.`,
+  });
+
+  /* ── Reachability ──────────────────────────────────────────────────────── */
+  const reachable = Boolean(tls) || Boolean(api?.endpointsProbed);
+  items.push({
+    key: 'internet-facing',
+    label: 'Internet Facing',
+    value: !primary ? 'Not observed' : reachable ? 'Yes' : 'No',
+    status: !primary ? 'unknown' : reachable ? 'info' : 'pass',
+    detail: reachable
+      ? 'The scanner completed a network connection to this target from the public Internet.'
+      : 'No network service answered on the submitted target.',
+  });
+
+  const targetUrl = primary?.target ?? input.targets[0] ?? '';
+  const portMatch = targetUrl.match(/:(\d+)/);
+  const isHttps = /^https/i.test(targetUrl) || Boolean(tls);
+  items.push({
+    key: 'tls-service',
+    label: 'TLS Service',
+    value: !primary ? 'Not observed' : isHttps ? `HTTPS (${portMatch ? portMatch[1] : '443'})` : 'None',
+    status: !primary ? 'unknown' : isHttps ? 'pass' : 'fail',
+    detail: 'Transport service the scanner negotiated against.',
+  });
+
+  /* ── Certificate ───────────────────────────────────────────────────────── */
+  const certChain = certificate?.chain ?? [];
+  items.push({
+    key: 'certificate-chain',
+    label: 'Certificate Chain',
+    value: certificate ? `${certChain.length || 1} cert${(certChain.length || 1) === 1 ? '' : 's'}` : 'Not observed',
+    status: !certificate ? 'unknown' : certChain.length > 1 ? 'pass' : 'partial',
+    detail: certChain.length
+      ? certChain.map((entry) => entry.subject).join(' -> ')
+      : 'Only the leaf certificate was returned; no intermediates were served.',
+  });
+
+  // Names are read from the subject/chain the certificate parser returns. It
+  // does not currently extract subjectAltName, so a multi-name certificate
+  // cannot be counted accurately — reported as such rather than guessed.
+  const commonName = certificate?.subject?.CN ?? certificate?.subject?.commonName ?? null;
+  items.push({
+    key: 'names-covered',
+    label: 'Names Covered',
+    value: commonName ?? 'Not observed',
+    status: commonName ? 'info' : 'unknown',
+    detail: commonName
+      ? 'Common name on the leaf certificate. Subject alternative names are not extracted by the authenticated certificate parser, so this is the CN only, not a full name count.'
+      : 'No certificate subject was parsed.',
+  });
+
+  /* ── Transport ─────────────────────────────────────────────────────────── */
+  const protocols = tls?.supportedProtocols ?? [];
+  const legacyProtocols = protocols.filter((protocol) => /TLSv1(\.0)?$|TLSv1\.1|SSLv/i.test(protocol));
   const tlsVersion = primary?.tlsVersion ?? tls?.tlsVersion ?? null;
   items.push({
     key: 'tls-version',
-    label: 'TLS Protocol',
-    value: tlsVersion ?? 'Not observed',
-    status: tlsVersion ? (/1\.3/.test(tlsVersion) ? 'pass' : /1\.2/.test(tlsVersion) ? 'partial' : 'fail') : 'unknown',
-    detail: tlsVersion
-      ? `Negotiated protocol version reported by the TLS analyzer.`
-      : 'No TLS handshake was completed against the submitted targets.',
+    label: 'TLS Version',
+    value: !tlsVersion
+      ? 'Not observed'
+      : legacyProtocols.length
+        ? `${tlsVersion} + legacy`
+        : protocols.length
+          ? protocols.join(', ')
+          : tlsVersion,
+    status: !tlsVersion ? 'unknown' : legacyProtocols.length ? 'fail' : /1\.3/.test(tlsVersion) ? 'pass' : 'partial',
+    detail: legacyProtocols.length
+      ? `${legacyProtocols.join(', ')} still accepted - deprecated by RFC 8996.`
+      : 'Protocol versions the endpoint accepted, probed individually.',
   });
 
-  const cipherSuite = tls?.cipherSuite || null;
-  items.push({
-    key: 'cipher',
-    label: 'Negotiated Cipher',
-    value: cipherSuite ?? 'Not observed',
-    status: cipherSuite ? (/GCM|CHACHA20|CCM/i.test(cipherSuite) ? 'pass' : 'partial') : 'unknown',
-    detail: cipherSuite ? 'Cipher suite selected during the observed handshake.' : 'No cipher suite was negotiated.',
-  });
-
-  /* Forward secrecy is not a field the TLS analyzer returns — it is a property
-     of the negotiated key agreement. It is derived from the two things the
-     analyzer DOES report: ephemeral key material, or an (EC)DHE key exchange.
-     Reading a non-existent `forwardSecrecy` key, as this did before, made every
-     scan report Unknown regardless of what was actually negotiated. */
-  const negotiatedIsEphemeral = !tls
-    ? null
-    : Boolean(tls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(tls.keyExchange || '');
-  /* Forward secrecy is a property of every suite the server will ACCEPT, not
-     just the one it happened to negotiate. A server that prefers ECDHE but still
-     accepts static-RSA key transport offers no forward secrecy to a client that
-     asks for those suites - reporting a flat green "Enabled" there overstates
-     the posture, and is exactly what the public-scan surface flags as
-     "Static RSA accepted". */
   const staticRsaSuites = (tls?.cipherSuites ?? []).filter(
     (suite) => /(^|_)RSA_WITH/i.test(suite.name) || suite.category === 'rsa-kex',
   );
   items.push({
-    key: 'pfs',
-    label: 'Forward Secrecy',
-    value: negotiatedIsEphemeral === null
-      ? 'Unknown'
-      : !negotiatedIsEphemeral
-        ? 'Not offered'
-        : staticRsaSuites.length > 0
-          ? 'Partial - static RSA accepted'
-          : 'Enabled',
-    status: negotiatedIsEphemeral === null
-      ? 'unknown'
-      : !negotiatedIsEphemeral
-        ? 'fail'
-        : staticRsaSuites.length > 0
-          ? 'partial'
-          : 'pass',
-    detail: negotiatedIsEphemeral === null
-      ? 'No TLS handshake was completed, so key agreement could not be observed.'
-      : staticRsaSuites.length > 0
-        ? `Negotiated ${tls?.keyExchange || 'ephemeral'} key agreement, but ${staticRsaSuites.length} static-RSA key-transport suite(s) are also accepted: ${staticRsaSuites.slice(0, 2).map((suite) => suite.name).join(', ')}. Sessions negotiated with those have no forward secrecy.`
-        : `Derived from the negotiated key exchange (${tls?.keyExchange || 'unknown'})${tls?.ephemeralKeyType ? ` and ${tls.ephemeralKeyType} ephemeral key material` : ''}.`,
+    key: 'cipher',
+    label: 'Cipher Suite',
+    value: !tls
+      ? 'Not observed'
+      : staticRsaSuites.length
+        ? 'Static RSA accepted'
+        : tls.cipherSuite || 'Not observed',
+    status: !tls ? 'unknown' : staticRsaSuites.length ? 'fail' : /GCM|CHACHA20|CCM/i.test(tls.cipherSuite) ? 'pass' : 'partial',
+    detail: staticRsaSuites.length
+      ? `Negotiated ${tls?.cipherSuite}, but ${staticRsaSuites.length} static-RSA key-transport suite(s) are also accepted.`
+      : 'Cipher suite selected during the observed handshake.',
   });
 
+  const chainExpired = certChain.some((entry) => entry.isExpired);
+  items.push({
+    key: 'chain-trust',
+    label: 'Chain Trust',
+    value: !certificate
+      ? 'Not observed'
+      : certificate.isSelfSigned
+        ? 'Self-signed'
+        : chainExpired || certificate.isExpired
+          ? 'Fail'
+          : 'Pass',
+    status: !certificate
+      ? 'unknown'
+      : certificate.isSelfSigned || chainExpired || certificate.isExpired
+        ? 'fail'
+        : 'pass',
+    detail: certificate?.isExpired
+      ? 'The leaf certificate has expired, so the chain does not validate.'
+      : certificate?.isSelfSigned
+        ? 'The leaf is self-signed and not anchored to a public trust store.'
+        : 'Chain validated against the trust store.',
+  });
+
+  const kexLabel = tls?.keyExchange
+    ? tls.negotiatedCurve
+      ? `${tls.keyExchange} (${tls.negotiatedCurve})`
+      : tls.keyExchange
+    : null;
+  items.push({
+    key: 'key-exchange',
+    label: 'Key Exchange',
+    value: kexLabel ?? 'Not observed',
+    status: !kexLabel
+      ? 'unknown'
+      : /ml-kem|kyber/i.test(kexLabel)
+        ? 'pass'
+        : /ecdhe|dhe|x25519/i.test(kexLabel)
+          ? 'partial'
+          : 'fail',
+    detail: 'Key-agreement mechanism negotiated for the session.',
+  });
+
+  const hybridObserved =
+    /ml-kem|kyber/i.test(`${tls?.keyExchange ?? ''} ${tls?.negotiatedCurve ?? ''} ${tls?.cipherSuite ?? ''}`) ||
+    findings.some((finding) => /ml-kem|kyber/i.test(finding.algorithm));
+  items.push({
+    key: 'pq-key-agreement',
+    label: 'Post-Quantum Key Agreement',
+    value: !tls ? 'Not observed' : hybridObserved ? 'Observed' : 'Fail',
+    status: !tls ? 'unknown' : hybridObserved ? 'pass' : 'fail',
+    detail: hybridObserved
+      ? 'Hybrid ML-KEM key agreement detected in the negotiated groups.'
+      : 'No hybrid post-quantum group was negotiated - sessions are recoverable by a future CRQC.',
+  });
+
+  /* ── HTTP ──────────────────────────────────────────────────────────────── */
+  const headers = api?.securityHeaders ?? [];
+  const hstsHeader = headers.find((header) => header.name.toLowerCase() === 'strict-transport-security');
+  items.push({
+    key: 'hsts',
+    label: 'HSTS',
+    value: !headers.length
+      ? 'Not observed'
+      : !hstsHeader?.present
+        ? 'Fail'
+        : hstsHeader.secure
+          ? 'Enforced'
+          : 'Weak',
+    status: !headers.length ? 'unknown' : !hstsHeader?.present ? 'fail' : hstsHeader.secure ? 'pass' : 'partial',
+    detail: hstsHeader?.value ?? 'No Strict-Transport-Security header was returned by the origin.',
+  });
+
+  const nonHstsHeaders = headers.filter((header) => header.name.toLowerCase() !== 'strict-transport-security');
+  const hardened = nonHstsHeaders.filter((header) => header.secure).length;
+  items.push({
+    key: 'headers',
+    label: 'HTTP Security Headers',
+    value: nonHstsHeaders.length ? `${hardened}/${nonHstsHeaders.length} hardened` : 'Not observed',
+    status: !nonHstsHeaders.length
+      ? 'unknown'
+      : hardened === nonHstsHeaders.length
+        ? 'pass'
+        : hardened === 0
+          ? 'fail'
+          : 'partial',
+    detail: nonHstsHeaders.length
+      ? nonHstsHeaders
+          .filter((header) => !header.secure)
+          .map((header) => `${header.name}: ${header.present ? 'present, weak' : 'absent'}`)
+          .join(' - ') || 'Every probed transport-security header is hardened.'
+      : 'No HTTP response was collected from the origin.',
+  });
+
+  /* ── Public-edge probes this scanner does not perform ──────────────────── */
+  items.push(
+    notProbed('ocsp-stapling', 'OCSP Stapling', 'Revocation stapling is read from the TLS handshake extension.'),
+    notProbed('certificate-transparency', 'Certificate Transparency', 'SCTs are read from the certificate extension or the TLS handshake.'),
+    notProbed('dns-caa', 'DNS Security (CAA)', 'CAA issuance policy is read over DNS.'),
+    notProbed('dnssec', 'DNSSEC', 'Zone signing is validated over DNS.'),
+    notProbed('alpn', 'ALPN', 'The negotiated application protocol is read from the TLS handshake.'),
+  );
+
+  /* ── Estate-only controls the public surface cannot see ────────────────── */
   const keyAlgorithm = certificate?.publicKeyAlgorithm || null;
   const keySize = certificate?.publicKeySize ?? null;
-  // The algorithm string frequently already carries the size ("RSA-2048"), so
-  // appending it unconditionally produced "RSA-2048 2048".
   const keyLabel = keyAlgorithm
     ? keySize && !keyAlgorithm.includes(String(keySize))
       ? `${keyAlgorithm} ${keySize}-bit`
@@ -1337,14 +1587,9 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
     label: 'Certificate Key',
     value: keyLabel ?? 'Not observed',
     status: keyAlgorithm ? (/rsa/i.test(keyAlgorithm) && (keySize ?? 0) < 2048 ? 'fail' : 'partial') : 'unknown',
-    detail: keyAlgorithm
-      ? 'Public-key algorithm of the leaf certificate — quantum-vulnerable until replaced by ML-DSA.'
-      : 'No certificate chain was collected.',
+    detail: 'Public-key algorithm of the leaf certificate - quantum-vulnerable until replaced by ML-DSA.',
   });
 
-  /* Certificate validity. For a target whose certificate has expired this is
-     THE finding, and omitting it while still reporting a key algorithm made the
-     surface read far healthier than the evidence supports. */
   const certDaysRemaining = certificate?.validTo
     ? Math.round((Date.parse(certificate.validTo) - Date.now()) / 86400000)
     : null;
@@ -1359,93 +1604,84 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
           ? `${certDaysRemaining} day${certDaysRemaining === 1 ? '' : 's'} left`
           : 'Unknown',
     status: !certificate ? 'unknown' : certificate.isExpired ? 'fail' : (certDaysRemaining ?? 999) < 30 ? 'partial' : 'pass',
-    detail: certificate
-      ? `Valid ${certificate.validFrom} to ${certificate.validTo}`
-      : 'No certificate chain was collected.',
+    detail: certificate ? `Valid ${certificate.validFrom} to ${certificate.validTo}` : 'No certificate chain was collected.',
   });
 
-  const certChain = certificate?.chain ?? [];
-  const chainExpired = certChain.some((entry) => entry.isExpired);
+  const negotiatedIsEphemeral = !tls
+    ? null
+    : Boolean(tls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(tls.keyExchange || '');
   items.push({
-    key: 'chain-trust',
-    label: 'Chain Trust',
-    value: !certificate
+    key: 'pfs',
+    label: 'Forward Secrecy',
+    value: negotiatedIsEphemeral === null
       ? 'Not observed'
-      : certificate.isSelfSigned
-        ? 'Self-signed'
-        : chainExpired || certificate.isExpired
-          ? 'Untrusted'
-          : certChain.length
-            ? `Trusted - ${certChain.length} cert(s)`
-            : 'Leaf only',
-    status: !certificate
+      : !negotiatedIsEphemeral
+        ? 'Not offered'
+        : staticRsaSuites.length > 0
+          ? 'Partial'
+          : 'Enabled',
+    status: negotiatedIsEphemeral === null
       ? 'unknown'
-      : certificate.isSelfSigned || chainExpired || certificate.isExpired
+      : !negotiatedIsEphemeral
         ? 'fail'
-        : certChain.length > 1
-          ? 'pass'
-          : 'partial',
-    detail: certChain.length
-      ? certChain.map((entry) => entry.subject).join(' -> ')
-      : 'No intermediate chain was returned by the server.',
-  });
-
-  /* Read the header probe itself. Deriving this from finding categories meant a
-     target whose headers WERE read but produced no finding rows reported "Not
-     observed" - indistinguishable from a host that was never queried. */
-  const probedHeaders = primary?.metadata?.apiSecurityResult?.securityHeaders ?? [];
-  const hardenedHeaders = probedHeaders.filter((header) => header.secure).length;
-  const headerFindings = findings.filter((finding) => /security headers/i.test(finding.category));
-  items.push({
-    key: 'headers',
-    label: 'HTTP Security Headers',
-    value: probedHeaders.length
-      ? `${hardenedHeaders}/${probedHeaders.length} hardened`
-      : headerFindings.length
-        ? `${headerFindings.filter((finding) => finding.threatLevel === 'SAFE').length}/${headerFindings.length} hardened`
-        : 'Not observed',
-    status: probedHeaders.length
-      ? hardenedHeaders === probedHeaders.length
-        ? 'pass'
-        : hardenedHeaders === 0
-          ? 'fail'
-          : 'partial'
-      : headerFindings.length
-        ? headerFindings.every((finding) => finding.threatLevel === 'SAFE')
-          ? 'pass'
-          : 'partial'
-        : 'unknown',
-    detail: probedHeaders.length
-      ? probedHeaders.filter((header) => !header.secure).map((header) => `${header.name}: ${header.present ? 'present, weak' : 'absent'}`).join(' - ') ||
-        'Every probed transport-security header is hardened.'
-      : 'No HTTP response was collected from the origin.',
+        : staticRsaSuites.length > 0
+          ? 'partial'
+          : 'pass',
+    detail: staticRsaSuites.length > 0
+      ? `Negotiated ${tls?.keyExchange || 'ephemeral'} key agreement, but ${staticRsaSuites.length} static-RSA suite(s) are also accepted; sessions using those have no forward secrecy.`
+      : 'Ephemeral key agreement observed on the negotiated suite.',
   });
 
   const sshFindings = findings.filter((finding) => /ssh/i.test(finding.category));
   items.push({
     key: 'ssh',
     label: 'SSH Host Keys',
-    value: sshFindings.length ? `${pluralize(sshFindings.length, 'observation')}` : 'Not applicable',
-    status: sshFindings.length ? (sshFindings.some((finding) => finding.threatLevel === 'CRITICAL' || finding.threatLevel === 'HIGH') ? 'fail' : 'partial') : 'unknown',
-    detail: sshFindings.length ? 'Host key and key-exchange metadata collected from the SSH banner.' : 'No SSH endpoint was submitted.',
+    value: sshFindings.length ? pluralize(sshFindings.length, 'observation') : 'Not applicable',
+    status: sshFindings.length
+      ? sshFindings.some((finding) => finding.threatLevel === 'CRITICAL' || finding.threatLevel === 'HIGH')
+        ? 'fail'
+        : 'partial'
+      : 'unknown',
+    detail: sshFindings.length
+      ? 'Host key and key-exchange metadata collected from the SSH banner.'
+      : 'No SSH endpoint was submitted with this scan.',
   });
 
   const repoFindings = findings.filter((finding) => /repository|library|app-crypto|webcrypto/i.test(finding.category));
+  const repoScanned = Boolean(primary?.metadata?.repoScanResult || primary?.metadata?.webCryptoResult);
   items.push({
     key: 'code',
     label: 'Source & Dependencies',
-    value: repoFindings.length ? `${pluralize(repoFindings.length, 'pattern')}` : 'Not scanned',
-    status: repoFindings.length ? (repoFindings.some((finding) => finding.threatLevel !== 'SAFE') ? 'partial' : 'pass') : 'unknown',
-    detail: repoFindings.length ? 'Cryptographic patterns matched inside submitted repositories.' : 'No repository URL was submitted with this scan.',
+    value: repoScanned ? pluralize(repoFindings.length, 'pattern') : 'Not scanned',
+    status: !repoScanned ? 'unknown' : repoFindings.some((finding) => finding.threatLevel !== 'SAFE') ? 'partial' : 'pass',
+    detail: repoScanned
+      ? 'Cryptographic patterns matched inside the submitted repository and page scripts.'
+      : 'No repository URL was submitted with this scan.',
   });
 
+  /* ── Aggregate verdicts ────────────────────────────────────────────────── */
+  const quantumRisk = scanner2?.attackAssessment?.classification ?? null;
   items.push({
-    key: 'pqc',
-    label: 'Hybrid PQC Key Agreement',
-    value: findings.some((finding) => /ml-kem|kyber/i.test(finding.algorithm)) ? 'Observed' : 'Not observed',
-    status: findings.some((finding) => /ml-kem|kyber/i.test(finding.algorithm)) ? 'pass' : findings.length ? 'fail' : 'unknown',
-    detail: 'Hybrid ML-KEM key agreement detected in the negotiated groups.',
+    key: 'quantum-risk',
+    label: 'Quantum Risk',
+    value: quantumRisk
+      ? quantumRisk.charAt(0) + quantumRisk.slice(1).toLowerCase()
+      : scanner2?.quantumRiskScore?.level ?? 'Not observed',
+    status: !quantumRisk
+      ? 'unknown'
+      : quantumRisk === 'CRITICAL' || quantumRisk === 'HIGH'
+        ? 'fail'
+        : quantumRisk === 'MEDIUM'
+          ? 'partial'
+          : 'pass',
+    detail: scanner2?.attackAssessment
+      ? `Scanner_2 quantum risk assessment across ${pluralize(scanner2.attackAssessment.attackCorrelations.length, 'correlated exposure chain')}.`
+      : 'The Scanner_2 enterprise pass has not scored this estate yet.',
   });
+
+  items.push(
+    notProbed('edge-infrastructure', 'Edge Infrastructure', 'CDN and WAF attribution is inferred from response-header signatures.'),
+  );
 
   return items;
 }
@@ -1545,10 +1781,19 @@ function buildRecommendations(
     });
 }
 
+/**
+ * Discovery Coverage — measured against what COULD be measured.
+ *
+ * Coverage is stated per surface as `measured / applicable`, with modules the
+ * scanner declared inapplicable excluded from the denominator and named with
+ * their reason. This is the same arithmetic the Discovery Workflow rail uses,
+ * so the two panels can never disagree about the same surface.
+ */
 function buildCoverage(
   modules: ModuleState[],
   failed: ModuleState[],
   skipped: ModuleState[],
+  unreported: ModuleState[],
 ): CoverageItem[] {
   if (modules.length === 0) {
     return [
@@ -1565,23 +1810,38 @@ function buildCoverage(
     const owned = modules.filter((module) => moduleIds.includes(module.id));
     const done = owned.filter((module) => module.status === 'Completed' || module.status === 'No findings');
     const broken = owned.filter((module) => module.status === 'Failed');
+    const notApplicable = owned.filter((module) => module.status === 'Skipped');
+    const pending = owned.filter((module) => module.status === 'Queued');
+    const applicable = owned.length - notApplicable.length;
     const blueprint = SCANNER_NODE_BLUEPRINTS.find((entry) => entry.key === node);
     const status: CoverageItem['status'] = owned.length === 0
       ? 'unknown'
       : broken.length > 0
         ? 'fail'
-        : done.length === owned.length
-          ? 'pass'
-          : 'partial';
+        : applicable === 0
+          ? 'unknown'
+          : done.length === applicable
+            ? 'pass'
+            : 'partial';
+    /* Modules in one surface usually share a reason ("no TLS endpoint was in
+       scope"), so it is stated once rather than repeated per module. */
+    const naReasons = Array.from(
+      new Set(notApplicable.map((module) => module.reason || `${module.name} did not apply`)),
+    );
+    const notes = [
+      broken.length ? `${broken.length} failed` : null,
+      notApplicable.length ? `${notApplicable.length} not applicable (${naReasons.join('; ')})` : null,
+      pending.length ? `${pending.length} never reported` : null,
+    ].filter(Boolean);
     return {
       key: node,
       label: blueprint?.title ?? node,
       status,
       detail: owned.length === 0
         ? 'No module in this surface was published for this run.'
-        : `${done.length}/${owned.length} modules reported${broken.length ? `, ${broken.length} failed` : ''}${
-            skipped.some((module) => moduleIds.includes(module.id)) ? ', some skipped as not applicable' : ''
-          }.`,
+        : applicable === 0
+          ? `No module in this surface applied to the submitted targets — ${naReasons.join('; ')}`
+          : `${done.length}/${applicable} applicable modules reported${notes.length ? ` — ${notes.join(', ')}` : ''}.`,
     };
   }).concat(
     failed.length > 0
@@ -1589,7 +1849,16 @@ function buildCoverage(
           key: 'errors',
           label: 'Module errors',
           status: 'fail' as const,
-          detail: failed.map((module) => `${module.name}: ${module.error ?? 'failed'}`).join(' · '),
+          detail: failed.map((module) => `${module.name}: ${module.error ?? module.reason ?? 'failed'}`).join(' · '),
+        }]
+      : [],
+  ).concat(
+    unreported.length > 0
+      ? [{
+          key: 'unreported',
+          label: 'Unreported modules',
+          status: 'partial' as const,
+          detail: `${unreported.map((module) => module.name).join(', ')} produced no terminal state. Re-run the scan for full coverage.`,
         }]
       : [],
   );

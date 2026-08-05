@@ -94,9 +94,11 @@ function moduleEvent(module: ModuleState, progress: number): ScanEvent | null {
   const line = module.status === 'Running'
     ? `${module.name} running`
     : module.status === 'Skipped'
-      ? `${module.name} not applicable`
+      // The reason is the whole point of the state — a bare "not applicable"
+      // is exactly what the operator complained about.
+      ? `${module.name} not applicable: ${module.reason ?? 'no reason recorded'}`
       : module.status === 'Failed'
-        ? (module.error ?? `${module.name} failed`)
+        ? (module.error ?? module.reason ?? `${module.name} failed`)
         : `${module.name}: ${module.findingsCount} finding${module.findingsCount === 1 ? '' : 's'}`;
 
   const running = module.status === 'Running';
@@ -141,7 +143,7 @@ function findingEvent(finding: DefensiveFinding, progress: number): ScanEvent {
     id: nextId(`finding-${finding.id}`),
     type: 'FINDING',
     timestamp: Date.now(),
-    category: nodeForFindingCategory(finding.category),
+    category: nodeForFindingCategory(finding.category, finding.detectionMethod, finding.algorithm),
     status: STATUS_FOR_THREAT[finding.threatLevel],
     progress,
     severity: SEVERITY_FOR_THREAT[finding.threatLevel],
@@ -169,6 +171,17 @@ export interface DashboardScanBridgeInput {
   error: string | null;
   /** True when heavy motion is disabled — drains the queue immediately. */
   reducedMotion: boolean;
+  /**
+   * The verdict the assessment reached, so the hero core settles on the SAME
+   * numbers the Executive Summary and Encryption Score panels publish.
+   *
+   * The bridge used to derive its own: `summary.qScore` for the score (which
+   * happens to agree) and `pqcReady / totalFindings` for post-quantum readiness
+   * (which does not — that is a share of findings, while the platform's PQ
+   * readiness is the published category score). The hero and the panel below it
+   * could therefore print two different post-quantum percentages for one scan.
+   */
+  verdict: { score: number; postQuantumReadiness: number; gradeable: boolean } | null;
 }
 
 export function useDashboardScanBridge({
@@ -180,6 +193,7 @@ export function useDashboardScanBridge({
   asset,
   error,
   reducedMotion,
+  verdict,
 }: DashboardScanBridgeInput): void {
   const { state, dispatch } = useQve();
 
@@ -266,14 +280,23 @@ export function useDashboardScanBridge({
       /* Reconcile before closing the run. A module whose terminal frame never
          reached the client — a dropped SSE chunk, or a cancelled run — would
          otherwise leave its node card spinning indefinitely after the scan is
-         demonstrably over. Each one is settled explicitly from the state it was
-         actually left in, so the ring always agrees with the run status. */
+         demonstrably over.
+
+         The backend closes its own ledger before every terminal frame, so this
+         should now be empty on a healthy run. When it is not, the module is
+         reported as FAILED with the reason, never as "not applicable": a module
+         that was mid-flight when the stream died did not decline to run, and
+         painting it the same grey as a genuine n/a is precisely the conflation
+         that made a working scan read "Transport & Ciphers · SKIPPED". */
       const unresolved = latestModules.current
-        .filter((module) => module.status === 'Running')
+        .filter((module) => module.status === 'Running' || module.status === 'Queued')
         .map((module) => {
           previousStatuses.current.set(module.id, module.status);
+          const reason = failed
+            ? (status === 'cancelled' ? 'Scan cancelled before this module reported' : 'Scan failed before this module reported')
+            : 'Scan stream ended before this module reported a result';
           return moduleEvent(
-            { ...module, status: failed ? 'Failed' : 'Skipped', error: module.error ?? (failed ? 'Scan ended before this module reported' : null) },
+            { ...module, status: 'Failed', error: module.error ?? reason, reason: module.reason ?? reason },
             progress,
           );
         })
@@ -335,12 +358,17 @@ export function useDashboardScanBridge({
     // core that is still showing Standby, which is a verdict the visualization
     // did not earn.
     if (state.run === 'idle') return;
+    // An ungradeable run (a module ledger that never closed) gets no verdict —
+    // the core keeps its live state rather than certifying a partial estate.
+    if (verdict && !verdict.gradeable) return;
     settled.current = true;
-    const score = Math.max(0, Math.min(100, Math.round(summary.qScore)));
+    const score = Math.max(0, Math.min(100, Math.round(verdict ? verdict.score : summary.qScore)));
     const grade = scoreToGrade(score);
-    const postQuantum = summary.totalFindings > 0
-      ? Math.round((summary.pqcReady / summary.totalFindings) * 100)
-      : 0;
+    const postQuantum = verdict
+      ? Math.max(0, Math.min(100, Math.round(verdict.postQuantumReadiness)))
+      : summary.totalFindings > 0
+        ? Math.round((summary.pqcReady / summary.totalFindings) * 100)
+        : 0;
     dispatch({
       type: 'settle',
       grade: grade.grade,
@@ -349,5 +377,5 @@ export function useDashboardScanBridge({
       postQuantumScore: postQuantum,
       nodeScores: scoreNodes(findings),
     });
-  }, [summary, status, findings, state.run, dispatch]);
+  }, [summary, status, findings, state.run, dispatch, verdict]);
 }

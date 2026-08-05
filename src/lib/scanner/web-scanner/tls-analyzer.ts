@@ -185,7 +185,8 @@ function formatSocketError(err: Error & { code?: string; errors?: unknown[] }): 
 
 function extractKeyExchange(
   cipherName: string,
-  ephemeralKey: ReturnType<tls.TLSSocket['getEphemeralKeyInfo']>
+  ephemeralKey: ReturnType<tls.TLSSocket['getEphemeralKeyInfo']>,
+  protocol = ''
 ): { keyExchange: string; ephemeralKeyType: string | null; ephemeralKeySize: number | null; negotiatedCurve: string | null } {
   let keyExchange = 'unknown'
   let ephemeralKeyType: string | null = null
@@ -202,18 +203,32 @@ function extractKeyExchange(
       keyExchange = `ECDHE ${ek.name || ''} (${ek.size}-bit)`.trim()
     } else if (ek.type === 'DH') {
       keyExchange = `DHE (${ek.size}-bit)`
+    } else if (ek.type === 'X25519' || ek.type === 'X448') {
+      negotiatedCurve = ek.name || ek.type
+      keyExchange = `ECDHE ${negotiatedCurve}${ek.size ? ` (${ek.size}-bit)` : ''}`
     } else if (ek.type) {
       keyExchange = `${ek.type} (${ek.size}-bit)`
     }
   }
 
   if (keyExchange === 'unknown') {
+    // TLS 1.2 and below name the key agreement in the suite itself.
     if (cipherName.includes('TLS_RSA_WITH') || cipherName.startsWith('RSA-')) {
       keyExchange = 'RSA'
     } else if (cipherName.includes('ECDHE')) {
       keyExchange = 'ECDHE'
     } else if (cipherName.includes('DHE')) {
       keyExchange = 'DHE'
+    } else if (protocol === 'TLSv1.3') {
+      /* TLS 1.3 suite names carry no key-exchange token (TLS_AES_256_GCM_SHA384),
+         and Node's getEphemeralKeyInfo() returns {} on some builds — which left
+         this reading "unknown" for every modern endpoint. RFC 8446 permits only
+         ephemeral (EC)DHE key establishment for the standard handshake modes, so
+         the agreement IS known even when the group name is not: this is a
+         protocol guarantee, not an inference. The group stays null and renders
+         as unreported rather than being invented. */
+      keyExchange = 'ECDHE (TLS 1.3 key_share)'
+      ephemeralKeyType = ephemeralKeyType || 'ECDHE'
     }
   }
 
@@ -250,7 +265,7 @@ function connectTls(
           const cipher = socket.getCipher()
           const cipherName = normalizeCipherName(cipher)
           const ephemeralKey = socket.getEphemeralKeyInfo()
-          const keyInfo = extractKeyExchange(cipherName, ephemeralKey)
+          const keyInfo = extractKeyExchange(cipherName, ephemeralKey, protocol)
           const peerCert = socket.getPeerCertificate(true)
 
           let certInfo = null

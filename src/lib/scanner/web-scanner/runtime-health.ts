@@ -50,7 +50,8 @@ export interface ScannerRuntimeHealth {
 
 const EXPECTED_WEB_MODULES = 9
 const EXPECTED_WEB_DETECTION_RULES = 51
-const EXPECTED_WEB_CRYPTO_PATTERNS = 65
+// Bump whenever CRYPTO_PATTERNS changes, or the health check reports 'degraded'.
+const EXPECTED_WEB_CRYPTO_PATTERNS = 125
 const EXPECTED_ENTERPRISE_MODULES = 28
 const EXPECTED_ENTERPRISE_DETECTION_RULES = 40
 const EXPECTED_CRYPTO_FINGERPRINTS = 70

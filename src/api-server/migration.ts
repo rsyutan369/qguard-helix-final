@@ -13,7 +13,7 @@ type AuthenticatedRequest = Request & {
   token?: string
 }
 
-type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused'
+type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused' | 'cancelled'
 
 type LiveMigrationEvent = {
   id: string
@@ -239,7 +239,10 @@ function normalizeStatus(status: unknown): LiveMigrationStatus {
   if (['completed', 'complete', 'done', 'success', 'successful'].includes(value)) return 'completed'
   if (['failed', 'error', 'errored'].includes(value)) return 'failed'
   if (['running', 'in_progress', 'migrating', 'executing'].includes(value)) return 'running'
-  if (['paused', 'cancelled', 'canceled', 'rollback_requested', 'rolled_back'].includes(value)) return 'paused'
+  // Cancelled is its own terminal state — folding it into "paused" made an
+  // operator-cancelled job look resumable and skewed the paused count.
+  if (['cancelled', 'canceled'].includes(value)) return 'cancelled'
+  if (['paused', 'rollback_requested', 'rolled_back'].includes(value)) return 'paused'
   return 'queued'
 }
 
@@ -771,6 +774,10 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     if (!executionBacked && rowStatus === 'completed' && validationStatusFromRows(jobValidationRows, metadata) === 'pending') status = 'queued'
     if (rowStatus === 'failed') status = 'failed'
     if (rowStatus === 'paused') status = 'paused'
+    // An operator cancellation is a decision recorded on the job row itself, so
+    // it must win over whatever the agent/execution row last reported —
+    // otherwise a cancelled job keeps displaying as queued.
+    if (rowStatus === 'cancelled') status = 'cancelled'
     const progressSource = executionBacked ? executionRow?.progress ?? executorState.progress ?? row.progress : 0
     const progress = clampProgress(progressSource, status)
     const logs = eventsByJob.get(row.id) || []
@@ -886,6 +893,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     failed: jobs.filter((job) => job.status === 'failed').length,
     queued: jobs.filter((job) => job.status === 'queued').length,
     paused: jobs.filter((job) => job.status === 'paused').length,
+    cancelled: jobs.filter((job) => job.status === 'cancelled').length,
     completionRate: total ? Math.round((jobs.filter((job) => job.status === 'completed').length / total) * 100) : 0,
     waitingForAgent: jobs.filter((job) => job.status === 'queued' && !job.executionBacked && !job.isSandbox).length,
     agentBacked: jobs.filter((job) => job.executionBacked).length,
@@ -901,9 +909,27 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     standardLabel: 'NIST SP 800-208 | NIST SP 800-57 Rev. 5',
   }
 
+  // Asset handoff context stamped by the Migration Planner's asset workspace
+  // (POST /api/v1/migration-planner/plans/:planId/context). Carries the exact
+  // per-asset plan, recommendations, dependencies, rollback configuration,
+  // approvals and readiness the operator reviewed, so Live Migration opens
+  // prepared for execution without any manual re-selection.
+  let plannerHandoff: Record<string, unknown> | null = null
+  if (planId) {
+    const planRows = await liveRows('migration_plans', () => client
+      .from('migration_plans')
+      .select('id, status, metadata, updated_at')
+      .eq('user_id', userId)
+      .eq('id', planId)
+      .limit(1)).catch(() => [])
+    const context = asRecord(asRecord(planRows?.[0]?.metadata).migrationContext)
+    if (Array.isArray(context.assets) && context.assets.length) plannerHandoff = context
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     planId: planId || null,
+    plannerHandoff,
     summary,
     jobs,
     timeline: buildTimeline(jobs),
@@ -2156,6 +2182,19 @@ function actionUpdate(action: string, metadata: Record<string, unknown>, nextSta
   if (action === 'resume') return { status: 'queued', updated_at: now, metadata: { ...nextMetadata, execution: { ...asRecord(nextMetadata.execution), agentDispatchStatus: 'queued_for_agent', sequenceState: 'waiting_for_agent' } } }
   if (action === 'retry') return { status: 'queued', progress: 0, updated_at: now, metadata: { ...nextMetadata, execution: { ...asRecord(nextMetadata.execution), agentDispatchStatus: 'queued_for_agent', sequenceState: 'waiting_for_agent' } } }
   if (action === 'rollback') return { status: 'rollback_requested', updated_at: now, metadata: nextMetadata }
+  // Cancel withdraws the job from execution but KEEPS the row, so the decision
+  // stays auditable. Removal (which deletes the row) is a separate action.
+  if (action === 'cancel') {
+    return {
+      status: 'cancelled',
+      updated_at: now,
+      metadata: {
+        ...nextMetadata,
+        cancelledAt: now,
+        execution: { ...asRecord(nextMetadata.execution), agentDispatchStatus: 'cancelled', sequenceState: 'cancelled' },
+      },
+    }
+  }
   if (nextStatus) return { status: nextStatus, updated_at: now, metadata: nextMetadata }
   return { updated_at: now, metadata: nextMetadata }
 }
@@ -2166,6 +2205,8 @@ function actionMessage(action: string, jobName: string) {
   if (action === 'resume') return `Operator re-queued migration job ${jobName} for agent execution.`
   if (action === 'retry') return `Operator re-queued failed migration job ${jobName} for agent execution.`
   if (action === 'rollback') return `Operator requested rollback for migration job ${jobName}.`
+  if (action === 'cancel') return `Operator cancelled migration job ${jobName}; it was withdrawn from the execution queue.`
+  if (action === 'remove') return `Operator removed migration job ${jobName} from the migration queue.`
   if (action === 'approve_next_phase') return `Operator approved the next migration phase for agent execution on ${jobName}.`
   return `Operator action ${action} recorded for migration job ${jobName}.`
 }
@@ -3301,7 +3342,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const action = String(req.body?.action || '').toLowerCase()
-  if (!['pause', 'resume', 'retry', 'rollback'].includes(action)) {
+  if (!['pause', 'resume', 'retry', 'rollback', 'cancel'].includes(action)) {
     return res.status(400).json({ error: { code: 'INVALID_ACTION', message: 'Unsupported migration action' } })
   }
 
@@ -3314,6 +3355,14 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
 
   if (readError || !job) {
     return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration job not found' } })
+  }
+
+  // A completed migration is a compliance record of a real cryptographic change —
+  // it cannot be "cancelled" after the fact.
+  if (action === 'cancel' && normalizeStatus(job.status) === 'completed') {
+    return res.status(409).json({
+      error: { code: 'JOB_ALREADY_COMPLETED', message: 'This migration already completed and cannot be cancelled. Use rollback to revert the change.' },
+    })
   }
 
   const { error: updateError } = await client
@@ -3345,20 +3394,35 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
     pause: ['running', 'in_progress', 'IN_PROGRESS'],
     resume: ['paused', 'pending', 'queued', 'PLANNED'],
     retry: ['failed', 'FAILED'],
+    // Cancel withdraws everything not yet executed. Completed jobs are excluded:
+    // they record a cryptographic change that actually happened.
+    cancel: ['pending', 'queued', 'PLANNED', 'paused', 'running', 'in_progress', 'IN_PROGRESS', 'failed', 'FAILED'],
   }
 
   if (!scopes[action]) {
     return res.status(400).json({ error: { code: 'INVALID_ACTION', message: 'Unsupported bulk migration action' } })
   }
 
-  const { data: jobs, error: readError } = await client
+  // An explicit selection (operator ticked specific rows) narrows the action to
+  // exactly those jobs; without one the action applies to every job in scope.
+  const selectedIds = Array.isArray(req.body?.jobIds)
+    ? (req.body.jobIds as unknown[]).map((id) => String(id)).filter(Boolean)
+    : null
+
+  let query = client
     .from('migration_jobs')
     .select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, created_at, updated_at')
     .eq('user_id', req.user!.id)
     .in('status', scopes[action])
+  if (selectedIds && selectedIds.length) query = query.in('id', selectedIds.slice(0, 500))
+
+  const { data: jobs, error: readError } = await query
 
   if (readError) {
     return res.status(500).json({ error: { code: 'READ_FAILED', message: 'Failed to read migration jobs' } })
+  }
+  if (selectedIds && !selectedIds.length) {
+    return res.status(400).json({ error: { code: 'NO_SELECTION', message: 'Select at least one migration job.' } })
   }
 
   const scopedJobs = (jobs || []).filter((job: any) => matchesPlanId(job, planId))
@@ -3387,6 +3451,171 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
 
   const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
   return res.json({ data: { action, affected: ids.length, snapshot } })
+})
+
+/* ------------------------------------------------------------------ */
+/* Migration queue removal                                             */
+/*                                                                     */
+/* Cancel (above) withdraws a job but keeps the row for audit. Remove  */
+/* deletes it outright — for jobs queued by mistake. Two safety rules  */
+/* are enforced server-side, never only in the UI:                     */
+/*   • a RUNNING job cannot be removed (pause or cancel it first);     */
+/*   • a COMPLETED job records a real cryptographic change and is only */
+/*     removed when the caller explicitly opts in.                     */
+/* Every removal writes an audit event BEFORE the row disappears, with */
+/* migration_id NULL so the record survives the delete.                */
+/* ------------------------------------------------------------------ */
+
+const JOB_CHILD_TABLES = ['execution_queues', 'orchestration_jobs', 'deployment_packages', 'migration_tasks'] as const
+
+function removalBlockReason(job: any, includeCompleted: boolean): string | null {
+  const status = normalizeStatus(job?.status)
+  if (status === 'running') return 'Job is currently running — pause or cancel it before removing.'
+  if (status === 'completed' && !includeCompleted) return 'Completed migrations are retained as compliance evidence.'
+  return null
+}
+
+async function removeMigrationJobs(client: any, userId: string, jobs: any[]) {
+  if (!jobs.length) return { removed: [] as string[] }
+  const ids = jobs.map((job) => String(job.id))
+  const now = new Date().toISOString()
+
+  // Audit first: once the job row is gone the event can no longer reference it,
+  // so the removal record is written with a null migration_id and the job
+  // identity preserved in metadata.
+  const auditRows = jobs.map((job) => ({
+    user_id: userId,
+    migration_id: null,
+    event_type: 'operator-remove',
+    severity: 'warning',
+    message: actionMessage('remove', job.name || job.id),
+    metadata: {
+      action: 'remove',
+      removedJobId: job.id,
+      assetId: job.asset_id || null,
+      assetName: asRecord(job.metadata).assetName || job.name || null,
+      previousStatus: job.status || null,
+      planId: pickString(asRecord(job.metadata), ['planId']) || null,
+      removedAt: now,
+    },
+    created_at: now,
+  }))
+  const { error: auditError } = await client.from('migration_events').insert(auditRows)
+  if (auditError && !isMissingTable(auditError)) {
+    console.warn('[migration-live] removal audit insert failed:', auditError.message)
+  }
+
+  // Dispatch bookkeeping carries FKs to migration_jobs — clear it before the job.
+  for (const table of JOB_CHILD_TABLES) {
+    const { error } = await client.from(table).delete().eq('user_id', userId).in('migration_job_id', ids)
+    if (error && !isMissingTable(error) && !isSchemaShapeError(error)) {
+      console.warn(`[migration-live] ${table} cleanup failed during removal:`, error.message)
+    }
+  }
+  // Events keyed to the job would dangle (or block the delete via FK); the
+  // operator-remove audit rows written above are keyed on metadata instead.
+  const { error: eventError } = await client.from('migration_events').delete().eq('user_id', userId).in('migration_id', ids)
+  if (eventError && !isMissingTable(eventError)) {
+    console.warn('[migration-live] job event cleanup failed during removal:', eventError.message)
+  }
+
+  const { error } = await client.from('migration_jobs').delete().eq('user_id', userId).in('id', ids)
+  if (error) throw new Error(error.message || 'Failed to remove migration jobs')
+  return { removed: ids }
+}
+
+/** Removes one or many migration jobs. Body: { jobIds?, scope?, planId?, includeCompleted? } */
+router.post('/jobs/remove', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const planId = typeof req.body?.planId === 'string' && req.body.planId.trim() ? req.body.planId.trim() : null
+  const includeCompleted = req.body?.includeCompleted === true
+  const scope = String(req.body?.scope || '').toLowerCase()
+  const jobIds = Array.isArray(req.body?.jobIds)
+    ? (req.body.jobIds as unknown[]).map((id) => String(id)).filter(Boolean).slice(0, 500)
+    : []
+
+  if (!jobIds.length && !scope) {
+    return res.status(400).json({ error: { code: 'NO_SELECTION', message: 'Select at least one migration job, or supply a scope.' } })
+  }
+
+  let query = client
+    .from('migration_jobs')
+    .select('id, asset_id, name, job_type, status, metadata, created_at, updated_at')
+    .eq('user_id', req.user!.id)
+  if (jobIds.length) query = query.in('id', jobIds)
+
+  const { data: rows, error: readError } = await query
+  if (readError) {
+    return res.status(500).json({ error: { code: 'READ_FAILED', message: 'Failed to read migration jobs' } })
+  }
+
+  const scopeStatuses: Record<string, LiveMigrationStatus[]> = {
+    all: ['queued', 'paused', 'failed', 'cancelled', 'completed'],
+    queued: ['queued'],
+    paused: ['paused'],
+    failed: ['failed'],
+    cancelled: ['cancelled'],
+    completed: ['completed'],
+  }
+  const candidates = (rows || [])
+    .filter((job: any) => matchesPlanId(job, planId))
+    .filter((job: any) => (jobIds.length ? true : (scopeStatuses[scope] || []).includes(normalizeStatus(job.status))))
+
+  const blocked = candidates
+    .map((job: any) => ({ job, reason: removalBlockReason(job, includeCompleted) }))
+    .filter((entry: any) => entry.reason)
+  const removable = candidates.filter((job: any) => !removalBlockReason(job, includeCompleted))
+
+  try {
+    await removeMigrationJobs(client, req.user!.id, removable)
+  } catch (error) {
+    return res.status(500).json({ error: { code: 'REMOVE_FAILED', message: error instanceof Error ? error.message : 'Failed to remove migration jobs' } })
+  }
+
+  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
+  return res.json({
+    data: {
+      action: 'remove',
+      removed: removable.length,
+      removedIds: removable.map((job: any) => String(job.id)),
+      blocked: blocked.map((entry: any) => ({ id: String(entry.job.id), name: entry.job.name || entry.job.id, reason: entry.reason })),
+      snapshot,
+    },
+  })
+})
+
+/** Removes a single migration job. */
+router.delete('/jobs/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const client = clientFor(req)
+  if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+
+  const includeCompleted = req.query.includeCompleted === 'true' || req.body?.includeCompleted === true
+  const { data: job, error: readError } = await client
+    .from('migration_jobs')
+    .select('id, asset_id, name, job_type, status, metadata, created_at, updated_at')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user!.id)
+    .single()
+
+  if (readError || !job) {
+    return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration job not found' } })
+  }
+
+  const blockReason = removalBlockReason(job, includeCompleted)
+  if (blockReason) {
+    return res.status(409).json({ error: { code: 'REMOVE_BLOCKED', message: blockReason } })
+  }
+
+  try {
+    await removeMigrationJobs(client, req.user!.id, [job])
+  } catch (error) {
+    return res.status(500).json({ error: { code: 'REMOVE_FAILED', message: error instanceof Error ? error.message : 'Failed to remove migration job' } })
+  }
+
+  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+  return res.json({ data: { action: 'remove', removed: 1, removedIds: [String(job.id)], blocked: [], snapshot } })
 })
 
 export default router

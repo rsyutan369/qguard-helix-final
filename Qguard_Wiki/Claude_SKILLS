@@ -1,0 +1,279 @@
+Create and Continuously Expand QGuard Helix Claude Skills Knowledge Base
+
+Please create a comprehensive set of Claude Skills for the QGuard Helix Platform.
+
+The purpose of these Skills is to capture our accumulated engineering knowledge, architectural decisions, best practices, recurring issues, proven solutions, and implementation patterns so they can be automatically reused across the entire project.
+
+These Skills should become the long-term knowledge base for QGuard Helix, allowing Claude to consistently build upon previous work instead of solving the same problems repeatedly.
+
+Primary Objective
+
+Convert our previous discussions, implementation work, debugging sessions, architecture decisions, bug fixes, optimizations, and best practices into reusable Claude Skills.
+
+Each Skill should represent a specific area of expertise or responsibility and include:
+
+Best practices
+Architecture guidelines
+Coding standards
+Common implementation patterns
+Previously resolved issues
+Root causes
+Proven fixes
+Lessons learned
+Validation checklists
+Performance recommendations
+Security recommendations
+Enterprise design principles
+Future improvement opportunities
+
+The goal is to ensure future development remains consistent, scalable, and aligned with the QGuard Helix architecture.
+
+Capture Previous Work
+
+Review our previous implementation history and convert it into structured Skills.
+
+This includes, but is not limited to:
+
+Architecture
+Platform architecture
+System design
+Microservices
+Module communication
+Single Source of Truth architecture
+Backend orchestration
+Data synchronization
+Multi-tenant architecture
+Enterprise scalability
+Scanner Engines
+
+Capture knowledge for:
+
+Discovery Engine
+Cryptographic Discovery
+Public Scanner
+Authenticated Scanner
+Quantum Readiness Engine
+CBOM Generation
+Asset Discovery
+Cryptographic Inventory
+Scanner orchestration
+Module execution
+Evidence collection
+Post-Quantum Cryptography
+
+Document everything related to:
+
+PQC detection
+Hybrid TLS
+ML-KEM
+ML-DSA
+SLH-DSA
+Quantum Readiness
+Harvest Now, Decrypt Later
+Migration planning
+Cryptographic inventory
+Algorithm classification
+Migration recommendations
+UI/UX
+
+Include guidance for:
+
+Enterprise dashboards
+Premium UI design
+Animation standards
+Card layouts
+Responsive design
+Data visualization
+User workflows
+Accessibility
+Performance optimization
+Backend
+
+Document best practices for:
+
+API architecture
+FastAPI services
+Express services
+Database access
+Supabase integration
+Queue processing
+Background workers
+Server-Sent Events (SSE)
+WebSockets (where applicable)
+Error handling
+Retry logic
+Logging
+Monitoring
+Frontend
+
+Capture implementation standards for:
+
+React
+Next.js
+TypeScript
+Tailwind CSS
+State management
+React Query
+Hooks
+Context providers
+Component architecture
+Performance optimization
+Data Integrity
+
+Create Skills that ensure:
+
+Single Source of Truth
+No duplicated data
+No inconsistent values
+Proper synchronization
+Canonical data models
+Deterministic calculations
+Backend/frontend consistency
+Real-time updates
+Reports & Analytics
+
+Include guidance for:
+
+Executive Reports
+Risk scoring
+Quantum Readiness scoring
+Assessment calculations
+Evidence generation
+Recommendations
+Dashboards
+Visualizations
+Migration Platform
+
+Capture implementation knowledge for:
+
+Migration Planner
+Migration Sandbox
+Live Migration
+Asset prioritization
+Migration orchestration
+Validation
+Rollback planning
+Dependency analysis
+AI & Sophia
+
+Document best practices for:
+
+Sophia AI Security Copilot™
+AI insights
+Recommendation generation
+Context awareness
+Data consistency
+Backend integration
+Capture Previous Issues & Fixes
+
+Every significant issue we have previously identified and resolved should become a reusable Skill.
+
+Each Skill should include:
+
+Problem
+
+A clear description of the issue.
+
+Example:
+
+Discovery modules marked as "Skipped"
+Data mismatches between dashboards
+Broken synchronization
+Incorrect score calculations
+Missing backend hooks
+SSE failures
+UI inconsistencies
+Root Cause
+
+Explain why the issue occurred.
+
+Examples:
+
+Incorrect API mapping
+Missing backend event
+Invalid state management
+Duplicate calculations
+Missing synchronization
+Race conditions
+Incorrect dependency order
+Solution
+
+Document the proven implementation that resolved the issue.
+
+Include:
+
+Code patterns
+Architecture improvements
+Validation logic
+Error handling
+Testing strategy
+Prevention Checklist
+
+Include a checklist that prevents the same issue from occurring again.
+
+Continuous Knowledge Growth
+
+These Skills should not remain static.
+
+They should continuously evolve as the QGuard Helix platform grows.
+
+For every future interaction, development task, feature implementation, bug fix, architecture improvement, optimization, or enhancement:
+
+Identify reusable knowledge.
+Determine whether an existing Skill should be updated.
+If the knowledge is new, create a new Skill.
+Improve existing Skills with newly learned best practices.
+Expand implementation guidelines where appropriate.
+Record lessons learned from debugging and production issues.
+Update validation checklists and architectural guidance.
+
+This ensures the knowledge base becomes progressively more comprehensive and valuable over time.
+
+Skill Organization
+
+Organize the Skills into logical categories, for example:
+
+QGuard Helix Skills
+│
+├── Architecture
+├── Enterprise UI & UX
+├── Frontend Engineering
+├── Backend Engineering
+├── Scanner Engines
+├── Discovery Engine
+├── Cryptographic Discovery
+├── Post-Quantum Cryptography
+├── Quantum Readiness Assessment
+├── Asset Inventory
+├── CBOM Generation
+├── Migration Planner
+├── Migration Sandbox
+├── Live Migration
+├── Executive Reports
+├── Governance
+├── Sophia AI Security Copilot™
+├── Data Integrity
+├── Performance Optimization
+├── Security Best Practices
+├── Testing & Validation
+├── Debugging & Root Cause Analysis
+├── Common Issues & Proven Fixes
+└── Development Standards
+
+Each Skill should be modular, reusable, and easy to maintain.
+
+Enterprise Requirements
+
+All Skills should:
+
+Follow enterprise software engineering best practices.
+Promote clean, maintainable, and scalable architecture.
+Encourage code reuse and consistency.
+Prioritize security, reliability, and performance.
+Enforce a Single Source of Truth across the platform.
+Include validation and testing guidance.
+Preserve consistent UI/UX and architectural patterns.
+Be suitable for long-term production development.
+Expected Outcome
+
+The result should be a comprehensive, continuously evolving QGuard Helix Claude Skills Knowledge Base that captures the collective engineering knowledge of the project. Every resolved issue, architectural decision, implementation pattern, optimization, and future enhancement should become reusable institutional knowledge, ensuring that Claude consistently builds upon previous work, avoids repeating past mistakes, maintains platform consistency, and accelerates the development of an enterprise-grade, production-ready QGuard Helix platform.
