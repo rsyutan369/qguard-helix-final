@@ -480,3 +480,16 @@ Enable trusted decision-making for:
 * Trust Fabric Analysis
 * PQC Migration
 * Continuous Cryptographic Governance
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-scanner-orchestration`
+- `qguard-source-discovery`
+- `qguard-crypto-detection`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

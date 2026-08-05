@@ -218,9 +218,56 @@ function analyzeOidcConfig(config: Record<string, unknown>): ApiSecurityFinding[
 }
 
 /**
+ * Response headers read by the edge HTTP engine, offered as a fallback.
+ *
+ * WHY A FALLBACK IS NEEDED
+ * ------------------------
+ * `probeFetch` uses Node's `fetch()`, which enforces certificate validation and
+ * refuses to connect over an expired, self-signed or untrusted chain. Those are
+ * exactly the targets whose headers matter most, and the refusal made every
+ * header render "Not observed" on the dashboard for a reason that had nothing
+ * to do with the target's headers. The edge engine reads the same response over
+ * a permissive agent (no body, no credential, chain verdict captured separately
+ * by the certificate engine), so its observation is used when fetch is blocked.
+ *
+ * This is a fallback, not a replacement: when `fetch` succeeds the live response
+ * is authoritative, because it also carries cookies and the endpoint probes.
+ */
+export interface EdgeHeaderObservation {
+  reachable: boolean
+  headers: Array<{ name: string; value: string | null; present: boolean; status: string }>
+  server: string | null
+  poweredBy: string | null
+}
+
+/** Map the edge engine's header verdicts onto this scanner's header shape. */
+function headersFromEdge(edge: EdgeHeaderObservation): SecurityHeader[] {
+  return SECURITY_HEADERS.map((spec) => {
+    const observed = edge.headers.find((header) => header.name === spec.name)
+    const present = Boolean(observed?.present)
+    return {
+      name: spec.name,
+      value: observed?.value ?? null,
+      present,
+      // The edge engine grades each header against the same OWASP guidance this
+      // scanner does; `Healthy` is its "configured and adequate" verdict.
+      secure: present && observed?.status === 'Healthy',
+      recommendation: present
+        ? observed?.status === 'Healthy'
+          ? ''
+          : `Strengthen ${spec.name} configuration`
+        : spec.recommendation,
+    }
+  })
+}
+
+/**
  * Scan a target's API endpoints for security and cryptographic issues
  */
-export async function scanApiSecurity(hostname: string): Promise<ApiSecurityResult> {
+export async function scanApiSecurity(
+  hostname: string,
+  edge?: EdgeHeaderObservation | null,
+): Promise<ApiSecurityResult> {
   const securityHeaders: SecurityHeader[] = []
   const apiFindings: ApiSecurityFinding[] = []
   let endpointsProbed = 0
@@ -229,6 +276,45 @@ export async function scanApiSecurity(hostname: string): Promise<ApiSecurityResu
 
   // Step 1: Probe the main page and collect security headers
   const mainResponse = await probeFetch(baseUrl, 'GET')
+  if (!mainResponse && edge?.reachable) {
+    // fetch() was blocked by the chain, but the origin demonstrably answered.
+    // Report what was actually read rather than an unmeasured blank.
+    endpointsProbed++
+    const headers = headersFromEdge(edge)
+    securityHeaders.push(...headers)
+
+    const hsts = headers.find((header) => header.name === 'strict-transport-security')
+    if (!hsts?.present) {
+      apiFindings.push({
+        endpoint: '/',
+        findingType: 'Missing HSTS',
+        algorithm: 'HSTS',
+        threatLevel: 'MEDIUM',
+        description: 'Strict-Transport-Security header missing — increases protocol downgrade attack surface',
+        recommendation: 'Enable HSTS with includeSubDomains and preload',
+      })
+    }
+    if (edge.server) {
+      apiFindings.push({
+        endpoint: '/',
+        findingType: 'Server Header Disclosure',
+        algorithm: 'Information Disclosure',
+        threatLevel: 'LOW',
+        description: `Server header exposes: "${edge.server}" — aids reconnaissance`,
+        recommendation: 'Remove or minimize server header information',
+      })
+    }
+    if (edge.poweredBy) {
+      apiFindings.push({
+        endpoint: '/',
+        findingType: 'X-Powered-By Disclosure',
+        algorithm: 'Information Disclosure',
+        threatLevel: 'LOW',
+        description: `X-Powered-By header exposes: "${edge.poweredBy}" — reveals technology stack`,
+        recommendation: 'Remove X-Powered-By header to reduce reconnaissance surface',
+      })
+    }
+  }
   if (mainResponse) {
     endpointsProbed++
     const headers = analyzeSecurityHeaders(mainResponse)

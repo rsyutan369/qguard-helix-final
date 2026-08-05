@@ -1,0 +1,292 @@
+Improve Detection Accuracy for Observed Attack Surface & Cryptographic Intelligence
+
+Please review, enhance, and resolve the detection logic for the Observed Attack Surface and Cryptographic Intelligence panels on:
+
+http://localhost:3000/dashboard/scanner
+
+The goal is to ensure that every result displayed is generated from actual scan evidence and accurately reflects the cryptographic posture of the user's scanned asset in real time.
+
+Please maintain the existing premium UI/UX, layout, animations, workflows, and user experience while improving the detection engine, backend logic, evidence collection, calculations, and frontend synchronization.
+
+1. Improve Post-Quantum Key Agreement Detection
+
+Please review the detection logic for:
+
+Observed Attack Surface → Post-Quantum Key Agreement
+
+Current Issue
+
+When scanning cloudflare.com, the result displays:
+
+Observed
+
+This is too generic and does not accurately represent the negotiated transport security.
+
+Expected Behavior
+
+If the scanner successfully verifies that the TLS handshake negotiated a hybrid post-quantum key exchange (for example, X25519MLKEM768 or another supported hybrid group), the status should clearly indicate that.
+
+Examples:
+
+Pass
+
+or
+
+Applied
+
+or
+
+Hybrid PQ Active
+
+or
+
+Hybrid TLS Enabled
+
+The panel should also display supporting evidence, such as:
+
+Negotiated TLS Version
+Negotiated Key Exchange Group
+Hybrid Algorithm
+Classical Algorithm
+PQ Algorithm
+Detection Confidence
+
+Do not use "Observed" when the scanner has sufficient evidence to determine the actual state.
+
+2. Improve Quantum Vulnerability Assessment
+
+Please review the logic for:
+
+Cryptographic Intelligence → Quantum Vulnerability
+
+Current Issue
+
+When scanning:
+
+expired.badssl.com
+
+the panel displays:
+
+Hybrid-Protected
+
+This appears incorrect.
+
+Expected Behavior
+
+The Quantum Vulnerability assessment must be based on actual scan evidence.
+
+Examples:
+
+If the target:
+
+uses legacy TLS
+uses classical key exchange only
+does not negotiate hybrid PQC
+uses weak or deprecated cryptography
+contains expired certificates
+presents insecure cryptographic configurations
+
+then the status should indicate an increased level of quantum exposure.
+
+Possible statuses include:
+
+Vulnerable
+High Risk
+Classical Only
+Hybrid Protected
+Quantum Ready
+Quantum Safe
+
+The displayed status must always correspond to the evidence collected during the scan.
+
+3. Resolve "Not Observed" / "Not Probed" Results
+
+Several items within Observed Attack Surface frequently appear as:
+
+Not Observed
+Not Probed
+
+even when the information should be obtainable from the scanned asset.
+
+Please investigate and resolve the root cause.
+
+Specifically review:
+
+HSTS
+HTTP Security Headers
+OCSP Stapling
+Certificate Transparency (CT)
+DNS Security (CAA)
+DNSSEC
+ALPN
+Edge Infrastructure
+4. Improve Detection Logic
+
+Each item should perform the appropriate protocol-specific validation instead of returning generic placeholder values.
+
+For example:
+
+HSTS
+
+Detect and report:
+
+Enabled
+Missing
+Invalid
+Max-Age
+IncludeSubDomains
+Preload
+HTTP Security Headers
+
+Analyze and report headers such as:
+
+Content-Security-Policy
+Strict-Transport-Security
+X-Frame-Options
+X-Content-Type-Options
+Referrer-Policy
+Permissions-Policy
+Cross-Origin-* headers
+
+Display:
+
+Pass
+Warning
+Missing
+
+with supporting evidence.
+
+OCSP Stapling
+
+Determine whether:
+
+Supported
+Enabled
+Missing
+Not Supported
+
+Provide evidence from the TLS handshake.
+
+Certificate Transparency
+
+Verify:
+
+SCT Presence
+SCT Count
+Embedded SCTs
+OCSP SCTs
+Validity
+DNS Security (CAA)
+
+Query authoritative DNS records.
+
+Display:
+
+Present
+Missing
+Misconfigured
+DNSSEC
+
+Verify:
+
+Signed
+Unsigned
+Bogus
+Validation Failed
+ALPN
+
+Detect negotiated protocols, for example:
+
+HTTP/1.1
+HTTP/2
+HTTP/3
+h2
+h3
+Edge Infrastructure
+
+Identify infrastructure where possible, such as:
+
+Cloudflare
+Akamai
+Fastly
+AWS CloudFront
+Azure Front Door
+Google Cloud CDN
+NGINX
+HAProxy
+Envoy
+Other observable edge platforms
+
+Only report values that can be reasonably determined from publicly observable evidence or authenticated scans. If evidence is genuinely unavailable, clearly indicate that it could not be determined rather than relying on placeholder values.
+
+5. Evidence-Based Detection
+
+Every value shown in these panels must originate from actual scan evidence.
+
+Do not rely on:
+
+Hardcoded values
+Placeholder text
+Mock data
+Static responses
+Cached demo content
+
+Instead:
+
+Perform live analysis
+Validate findings
+Store evidence
+Compute results
+Display verified output
+6. Data Consistency
+
+Ensure all values remain synchronized across:
+
+Hero Section
+Observed Attack Surface
+Cryptographic Intelligence
+Executive Summary
+Encryption Score
+Cryptographic Findings
+Executive Recommendations
+Discovery Workflow
+Reports
+Governance Dashboard
+Migration Planner
+Sophia AI Security Copilot™
+
+Every component should consume the same canonical assessment data to eliminate inconsistencies.
+
+7. Backend Integration
+
+Review and validate:
+
+Scanner engines
+TLS analysis engine
+Certificate analysis
+DNS analysis
+HTTP header analysis
+PQC detection engine
+Asset inventory
+Backend APIs
+React hooks
+State management
+Server-Sent Events (SSE)
+Real-time synchronization
+
+Ensure all backend services are correctly wired to the frontend and update automatically as scan results become available.
+
+8. Enterprise Quality Requirements
+
+The completed implementation should:
+
+Produce accurate, evidence-based results.
+Differentiate between public observations and authenticated findings.
+Eliminate incorrect "Not Observed" and "Not Probed" statuses when evidence is available.
+Clearly distinguish between Pass, Warning, Fail, Not Supported, Not Configured, and Unable to Determine.
+Improve post-quantum detection accuracy.
+Improve quantum vulnerability classification.
+Maintain a single source of truth across the platform.
+Preserve the existing premium design, workflows, animations, and user experience.
+
+The final result should be a production-ready, enterprise-grade cryptographic assessment engine that consistently generates accurate, real-time findings based on the actual assets scanned by the user.

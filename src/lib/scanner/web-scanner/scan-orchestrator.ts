@@ -20,6 +20,7 @@ import type {
   WebScanRiskBreakdown,
 } from './types'
 import { parseTarget, analyzeTls } from './tls-analyzer'
+import { collectEdgeIntelligence, type EdgeIntelligence } from './edge-intelligence'
 import { analyzeCipherSuites } from './cipher-suite-analyzer'
 import { scanRepository, repositoryProvider } from './repo-scanner'
 import { PROVIDER_LABEL } from './repo-providers'
@@ -30,9 +31,26 @@ import { calculateRiskScore, calculateNistComplianceScore, calculateConfidenceSc
 import { generatePqcRecommendations } from './pqc-recommendations'
 import { getScannerRuntimeHealth } from './runtime-health'
 
-const SCAN_TIMEOUT = 120_000 // 120 seconds max for enterprise scans
+/**
+ * Wall-clock ceiling for one target.
+ *
+ * Raised from 120s when the public-edge intelligence phase was added. That
+ * phase is dominated by named-group probing, which is deliberately sequential
+ * and paced: firing thirty concurrent handshakes at a stranger's edge trips the
+ * per-IP connection limits of every CDN, and a throttled RST is
+ * indistinguishable from "group not supported" — a false negative on the single
+ * measurement this scanner exists to make. Buying that accuracy costs seconds,
+ * and the budget reflects it rather than truncating the scan mid-probe.
+ */
+const SCAN_TIMEOUT = 210_000
 const MODULE_TIMEOUT = 15_000 // 15 seconds per individual module
 const TLS_MODULE_TIMEOUT = 45_000 // TLS needs room for primary handshake + protocol/cipher probes
+/**
+ * Ceiling for the whole edge phase: TLS enumeration + named groups + session +
+ * certificate chain/OCSP + DNS + HTTP. The TLS engine enforces its own 40s
+ * budget for group probing, so this is the outer guard, not the pacing control.
+ */
+const EDGE_MODULE_TIMEOUT = 110_000
 const TLS_MAX_RETRIES = 1
 const MAX_RETRIES = 2 // Retry failed modules up to 2 times
 const RETRY_DELAY = 500 // 500ms between retries
@@ -184,6 +202,7 @@ export async function executeWebScan(
   let cipherSuiteBreakdown: CipherSuiteDetail[] = []
   let ruleResults: DetectionRuleResult[] = []
   let pqcRecommendations: PQCMigrationDetail[] = []
+  let edgeIntelligence: EdgeIntelligence | null = null
   const runtimeHealth = getScannerRuntimeHealth()
 
   // Helper to emit events
@@ -244,6 +263,191 @@ export async function executeWebScan(
     })
   }
 
+  /**
+   * Close out the four edge modules against the evidence bundle.
+   *
+   * FINDING OWNERSHIP
+   * -----------------
+   * Each module emits only the claims NOTHING ELSE emits, so a single
+   * observation is never counted twice across the assessment:
+   *
+   *  • The post-quantum prober emits only the POSITIVE result. The negative —
+   *    "no hybrid group accepted" — is already owned by detection rules
+   *    PQC-001/002/003, which now read this same measurement. Publishing it
+   *    here as well would double the penalty for one fact.
+   *  • Revocation and transparency emit OCSP and SCT findings, which no other
+   *    module produces.
+   *  • DNS security emits CAA and DNSSEC findings, which no other module
+   *    produces.
+   *  • Edge attribution emits none: naming a CDN is context, not a defect.
+   *
+   * A module with nothing to report ends `No findings` — a measured terminal
+   * state — and a module whose evidence never arrived ends with the reason
+   * attached, never silently.
+   */
+  function emitEdgeModuleStates(
+    edge: EdgeIntelligence | null,
+    edgeError: string | null,
+    hostname: string,
+    port: number,
+  ) {
+    const unavailable = edgeError
+      ? `public-edge probing did not complete: ${edgeError}`
+      : 'the public-edge intelligence engine returned no evidence for this target'
+
+    /* ── DNS security: CAA + DNSSEC ─────────────────────────────────────── */
+    const dnsFindingStart = findings.length
+    if (edge?.dns.probed) {
+      if (edge.dns.caaQueryable && !edge.dns.caaPresent) {
+        addFinding({
+          phase: 'edge-intelligence',
+          algorithm: 'No CAA Issuance Policy',
+          location: `DNS — ${hostname}`,
+          threatLevel: 'LOW',
+          category: 'DNS Security',
+          description: `No CAA record is published for ${edge.dns.caaAtName || hostname}, so any public CA may issue a certificate for this name. Answered authoritatively via ${edge.dns.caaSource || 'DNS'}.`,
+          recommendation: 'Publish a CAA record naming the authorized issuers, and add an iodef contact for violation reports.',
+          quantumBreakTime: 'N/A',
+          classicalBreakTime: 'N/A',
+        })
+      }
+      if (edge.dns.dnssecQueryable && !edge.dns.dnssecSigned) {
+        addFinding({
+          phase: 'edge-intelligence',
+          algorithm: 'Zone Not DNSSEC-Signed',
+          location: `DNS — ${hostname}`,
+          threatLevel: 'LOW',
+          category: 'DNS Security',
+          description:
+            'No DNSKEY record was returned for the zone, so DNS answers for this name are not origin-authenticated and can be spoofed on the resolution path.',
+          recommendation: 'Sign the zone with DNSSEC and publish the DS record at the parent.',
+          quantumBreakTime: 'N/A',
+          classicalBreakTime: 'N/A',
+        })
+      }
+    }
+    moduleComplete(
+      'dns-security-analyzer',
+      'DNS Security Analyzer',
+      hostname,
+      14,
+      findings.length - dnsFindingStart,
+      edge?.dns.probed
+        ? null
+        : notApplicable(`CAA and DNSSEC could not be read — ${edge ? edge.dns.error || 'no resolver answered for this name' : unavailable}`),
+    )
+
+    /* ── Post-quantum key agreement ─────────────────────────────────────── */
+    const pqFindingStart = findings.length
+    if (edge?.pqKeyAgreement.probed && edge.pqKeyAgreement.state === 'pass') {
+      const pq = edge.pqKeyAgreement
+      addFinding({
+        phase: 'edge-intelligence',
+        algorithm: pq.postQuantumComponent || 'ML-KEM',
+        location: `TLS key_share — ${hostname}:${port}`,
+        threatLevel: 'SAFE',
+        category: 'Post-Quantum Key Agreement',
+        description: `Hybrid post-quantum key agreement is applied: ${pq.primaryGroup} accepted when offered in isolation under a TLS 1.3 floor across ${pq.handshakes} handshake(s). ${pq.classicalComponent} protects the session classically; ${pq.postQuantumComponent} defeats harvest-now-decrypt-later.`,
+        recommendation: 'No action required for key establishment. Extend the same hybrid posture to internal services and plan the ML-DSA certificate migration.',
+        quantumBreakTime: 'Not recoverable by Shor',
+        classicalBreakTime: '> 10^28 years',
+      })
+    } else if (edge?.pqKeyAgreement.probed && edge.pqKeyAgreement.pureKemGroups.length) {
+      addFinding({
+        phase: 'edge-intelligence',
+        algorithm: edge.pqKeyAgreement.kemParameterSets.join(', ') || 'ML-KEM',
+        location: `TLS key_share — ${hostname}:${port}`,
+        threatLevel: 'LOW',
+        category: 'Post-Quantum Key Agreement',
+        description: `Standalone ML-KEM accepted (${edge.pqKeyAgreement.pureKemGroups.join(', ')}) with no classical hedge. Post-quantum key agreement is in use, but a break in ML-KEM would leave nothing underneath it.`,
+        recommendation: 'Prefer the hybrid X25519MLKEM768 group so a future ML-KEM weakness cannot strip the session of all protection.',
+        quantumBreakTime: 'Not recoverable by Shor',
+        classicalBreakTime: 'No classical hedge',
+      })
+    }
+    moduleComplete(
+      'pq-key-agreement-analyzer',
+      'Post-Quantum Key Agreement Prober',
+      `${hostname}:${port}`,
+      15,
+      findings.length - pqFindingStart,
+      edge?.pqKeyAgreement.probed
+        ? null
+        : notApplicable(`named-group probing requires a completed TLS handshake — ${edge ? edge.transport.error || 'no handshake completed' : unavailable}`),
+    )
+
+    /* ── Revocation & transparency: OCSP + SCT ──────────────────────────── */
+    const revocationFindingStart = findings.length
+    if (edge?.certificate.probed) {
+      const cert = edge.certificate
+      if (cert.mustStaple && !cert.ocspStapled) {
+        addFinding({
+          phase: 'edge-intelligence',
+          algorithm: 'Must-Staple Violated',
+          location: `Certificate — ${hostname}`,
+          threatLevel: 'HIGH',
+          category: 'Certificate Revocation',
+          description:
+            'The certificate carries the OCSP must-staple extension but the server did not staple a response. Conforming clients are required to hard-fail this connection.',
+          recommendation: 'Enable OCSP stapling on the terminating server, or reissue without the must-staple extension.',
+          quantumBreakTime: 'N/A',
+          classicalBreakTime: 'N/A',
+        })
+      } else if (!cert.ocspStapled) {
+        addFinding({
+          phase: 'edge-intelligence',
+          algorithm: 'No OCSP Stapling',
+          location: `Certificate — ${hostname}`,
+          threatLevel: 'LOW',
+          category: 'Certificate Revocation',
+          description:
+            cert.ocspResponderState === 'not-advertised'
+              ? 'No OCSP response was stapled to the handshake and the certificate advertises no OCSP responder, so clients have no online revocation path at all.'
+              : `No OCSP response was stapled to the handshake. Revocation checking falls back to a client-side fetch of ${cert.ocspUri || 'the advertised responder'}, which leaks browsing metadata and is soft-failed by most clients (responder state: ${cert.ocspResponderState}).`,
+          recommendation: 'Enable OCSP stapling so revocation status is delivered in the handshake.',
+          quantumBreakTime: 'N/A',
+          classicalBreakTime: 'N/A',
+        })
+      }
+      if (!cert.sctPresent) {
+        addFinding({
+          phase: 'edge-intelligence',
+          algorithm: 'No Certificate Transparency SCTs',
+          location: `Certificate — ${hostname}`,
+          threatLevel: 'MEDIUM',
+          category: 'Certificate Transparency',
+          description:
+            'No Signed Certificate Timestamps were found in the certificate, the TLS handshake or a stapled OCSP response. Misissuance for this name would not be publicly auditable, and Chrome rejects publicly-trusted certificates without SCTs.',
+          recommendation: 'Obtain the certificate from a CA that submits to Certificate Transparency logs and embeds SCTs.',
+          quantumBreakTime: 'N/A',
+          classicalBreakTime: 'N/A',
+        })
+      }
+    }
+    moduleComplete(
+      'revocation-transparency-analyzer',
+      'Revocation & Transparency Analyzer',
+      `${hostname}:${port}`,
+      16,
+      findings.length - revocationFindingStart,
+      edge?.certificate.probed
+        ? null
+        : notApplicable(`OCSP and SCT extraction requires a served certificate chain — ${edge ? edge.certificate.error || 'no chain was returned' : unavailable}`),
+    )
+
+    /* ── Edge attribution ───────────────────────────────────────────────── */
+    moduleComplete(
+      'edge-infrastructure-analyzer',
+      'Edge Infrastructure Analyzer',
+      hostname,
+      17,
+      0,
+      edge?.http.reachable
+        ? null
+        : notApplicable(`CDN, WAF and proxy attribution is read from response headers — ${edge ? edge.http.error || 'the origin did not answer over HTTPS' : unavailable}`),
+    )
+  }
+
   const isGitHub = targetType === 'github'
 
   try {
@@ -283,26 +487,61 @@ export async function executeWebScan(
       phaseComplete('initializing', 'Scanner Engine Initialized', 10)
 
       if (!isGitHub) {
-        // ─── Phase 2: DNS Resolution ──────────────────────────────────
-        phaseStart('dns-resolution', 'DNS Resolution & Target Validation', 12)
-        // DNS resolution happens inside TLS analyzer
-        phaseComplete('dns-resolution', 'Target Validated', 15)
+        // ─── Phase 2: Public Edge Intelligence ────────────────────────
+        // One probe pass over the public edge, shared by every control that
+        // follows. This is the SAME engine bundle /public-scan runs — DNS
+        // (with a DNS-over-HTTPS fallback so CAA and DNSSEC answer on networks
+        // that block UDP/53), HTTP over a permissive agent (so headers are
+        // readable on an expired or untrusted chain), the TLS engine including
+        // per-group post-quantum probing, and the certificate engine including
+        // OCSP and SCT extraction.
+        //
+        // Its handshake is reused as this scan's TLS evidence below rather than
+        // re-running `analyzeTls`, which would double the socket count against
+        // the target for an identical answer.
+        phaseStart('edge-intelligence', 'Public Edge Intelligence', 12)
+        moduleStart('dns-security-analyzer', 'DNS Security Analyzer', hostname, 12)
+        moduleStart('pq-key-agreement-analyzer', 'Post-Quantum Key Agreement Prober', `${hostname}:${port}`, 12)
+        moduleStart('revocation-transparency-analyzer', 'Revocation & Transparency Analyzer', `${hostname}:${port}`, 12)
+        moduleStart('edge-infrastructure-analyzer', 'Edge Infrastructure Analyzer', hostname, 12)
+
+        const edgeAttempt = await withRetry(
+          () => collectEdgeIntelligence(hostname, port),
+          'Public Edge Intelligence Engine',
+          0, // the engines retry their own transient failures internally
+          EDGE_MODULE_TIMEOUT,
+        )
+        edgeIntelligence = edgeAttempt.result?.intelligence ?? null
+        const edgeHandshake = edgeAttempt.result?.handshake ?? null
+        const edgeError = edgeAttempt.error
+
+        emitEdgeModuleStates(edgeIntelligence, edgeError, hostname, port)
+        phaseComplete('edge-intelligence', 'Public Edge Intelligence Complete', 17)
 
         // ─── Phase 3: TLS Handshake Analysis ──────────────────────────
         phaseStart('tls-handshake', 'TLS Handshake Analysis', 18)
         moduleStart('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 18)
         const tlsFindingStart = findings.length
         try {
-          const tlsAttempt = await withRetry(
-            () => analyzeTls(hostname, port),
-            'TLS Analyzer',
-            TLS_MAX_RETRIES,
-            TLS_MODULE_TIMEOUT
-          )
+          /* The edge phase already completed the full protocol and cipher
+             enumeration. Re-running it would open another dozen sockets at the
+             target for an answer already in hand — so it is reused, and the
+             direct call survives only as the fallback for an edge phase that
+             timed out or was never reached. */
+          const tlsAttempt = edgeHandshake
+            ? { result: edgeHandshake, attempts: 1, error: null as string | null }
+            : await withRetry(
+                () => analyzeTls(hostname, port),
+                'TLS Analyzer',
+                TLS_MAX_RETRIES,
+                TLS_MODULE_TIMEOUT
+              )
           tlsResult = tlsAttempt.result
 
           if (!tlsResult) {
-            throw new Error(tlsAttempt.error || 'TLS Analyzer completed without handshake metadata')
+            throw new Error(
+              tlsAttempt.error || edgeError || 'TLS Analyzer completed without handshake metadata'
+            )
           }
 
           if (tlsAttempt.attempts > 1 && tlsResult) {
@@ -639,7 +878,24 @@ export async function executeWebScan(
         const apiFindingStart = findings.length
         try {
           const apiAttempt = await withRetry(
-            () => scanApiSecurity(hostname),
+            /* The edge observation is passed as a fallback because this scanner
+               reads headers with Node's `fetch()`, which refuses to connect over
+               an untrusted chain — the exact targets whose headers matter most.
+               Without it, expired.badssl.com produced an empty header set and
+               the dashboard rendered "Not observed" for headers the origin had
+               plainly sent. */
+            () =>
+              scanApiSecurity(
+                hostname,
+                edgeIntelligence
+                  ? {
+                      reachable: edgeIntelligence.http.reachable,
+                      headers: edgeIntelligence.http.headers,
+                      server: edgeIntelligence.http.fingerprint.server,
+                      poweredBy: edgeIntelligence.http.fingerprint.poweredBy,
+                    }
+                  : null,
+              ),
             'API Security Scanner'
           )
           apiResult = apiAttempt.result
@@ -766,6 +1022,10 @@ export async function executeWebScan(
           ['cipher-suite-analyzer', 'Cipher Suite Enumeration'],
           ['api-security-scanner', 'Security Header & API Scanner'],
           ['web-crypto-scanner', 'Web Crypto Scanner'],
+          ['dns-security-analyzer', 'DNS Security Analyzer'],
+          ['pq-key-agreement-analyzer', 'Post-Quantum Key Agreement Prober'],
+          ['revocation-transparency-analyzer', 'Revocation & Transparency Analyzer'],
+          ['edge-infrastructure-analyzer', 'Edge Infrastructure Analyzer'],
         ] as const) {
           moduleStart(moduleId, moduleName, target, 18)
           moduleComplete(
@@ -856,6 +1116,7 @@ export async function executeWebScan(
         apiResult,
         repoResult,
         webCryptoResult,
+        edgeIntelligence,
       })
 
       // Add rule-triggered findings
@@ -961,6 +1222,7 @@ export async function executeWebScan(
         detectionRuleResults: ruleResults,
         runtimeHealth,
         scanConfidence,
+        edgeIntelligence,
       }
 
       moduleComplete('report-generator', 'Structured Report Generator', target, 100, findings.length)
@@ -1033,6 +1295,10 @@ export async function executeWebScan(
       riskMeasuredWeight: 0,
       detectionRuleResults: ruleResults,
       runtimeHealth,
+      // Whatever the edge phase managed to observe before the scan aborted is
+      // still real evidence and is preserved, so a truncated run degrades to
+      // partial coverage rather than to a blank surface.
+      edgeIntelligence,
     }
 
     emit({

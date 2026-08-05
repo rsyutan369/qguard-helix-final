@@ -689,3 +689,15 @@ Provide complete visibility into trust relationships, dependency chains, ecosyst
 Enable safe modernization, resilient operations, informed migration decisions, and evidence-based trust governance across the enterprise.
 
 Ensure QGuard Helix becomes the authoritative Trust Fabric platform for post-quantum transformation and cyber resilience.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-data-integrity`
+- `qguard-architecture`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

@@ -641,3 +641,15 @@ Board-level identity transformation readiness.
 Provide complete identity visibility, trust intelligence, token governance, and quantum-safe identity modernization readiness.
 
 Enable organizations to confidently transform authentication, authorization, machine identities, and trust infrastructures for the post-quantum era through PQAuth™.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-pqc-detection`
+- `qguard-security-practices`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

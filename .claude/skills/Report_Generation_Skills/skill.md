@@ -1,4 +1,11 @@
-# Report-Generation.skills.md
+---
+name: report-generation
+description: Enterprise report generation standards for QGuard Helix — report structure, executive and technical sections, evidence presentation, scoring narrative and export formats. Use when generating, extending or correcting any platform report.
+priority: high
+owner: qguard-helix
+category: Enterprise Reporting
+version: 2.0
+---
 
 # QGuard Helix™ Enterprise Report Generation Skills
 
@@ -627,3 +634,15 @@ Every page must help executives understand:
 The report is not merely documentation.
 
 It is a decision-support instrument for enterprise quantum readiness.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-reporting-analytics`
+- `qguard-data-integrity`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

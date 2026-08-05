@@ -707,3 +707,15 @@ Users should always know:
 * Whether it has been fixed
 
 Enable faster decisions, better remediation, lower cognitive load, and stronger operational outcomes across the platform.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-enterprise-ux`
+- `qguard-frontend-engineering`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

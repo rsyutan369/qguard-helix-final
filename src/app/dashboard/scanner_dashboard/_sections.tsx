@@ -355,33 +355,105 @@ const SURFACE_COLOR: Record<string, string> = {
   unknown: ACCENT.slate,
 };
 
+/**
+ * One control row.
+ *
+ * Rows carrying evidence are expandable. That is not decoration: a one-word
+ * verdict like "Applied" is only auditable if the operator can see the
+ * negotiated protocol, the group, both halves of the hybrid construction and
+ * how many handshakes confirmed it — without leaving the panel. Rows with no
+ * evidence stay inert and look identical when closed, so the list keeps its
+ * rhythm instead of sprouting affordances that lead nowhere.
+ */
+function SurfaceRow({ item }: { item: ScannerAssessment['attackSurface'][number] }) {
+  const [open, setOpen] = React.useState(false);
+  const evidence = item.evidence ?? [];
+  const expandable = evidence.length > 0;
+
+  const head = (
+    <>
+      <span className="flex min-w-0 shrink items-center gap-2.5">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: SURFACE_COLOR[item.status] }} />
+        <span className="truncate text-[13px] text-slate-300">{item.label}</span>
+        {expandable && (
+          <ChevronDown
+            className={cn(
+              'h-3 w-3 shrink-0 text-slate-600 transition-transform duration-200',
+              open && 'rotate-180 text-slate-400',
+            )}
+          />
+        )}
+      </span>
+      {/* The value is capped rather than `shrink-0`: a long cipher-suite name
+          would otherwise refuse to shrink and squeeze the label out of the row
+          entirely. */}
+      <span
+        className="min-w-0 max-w-[58%] truncate text-right text-[13px] font-bold"
+        style={{ color: SURFACE_COLOR[item.status] }}
+        title={item.value}
+      >
+        {item.value}
+      </span>
+    </>
+  );
+
+  return (
+    <li title={expandable ? undefined : item.detail}>
+      {expandable ? (
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          className="flex w-full items-center justify-between gap-3 px-5 py-2.5 text-left transition-colors hover:bg-white/[0.03]"
+        >
+          {head}
+        </button>
+      ) : (
+        <div className="flex items-center justify-between gap-3 px-5 py-2.5">{head}</div>
+      )}
+
+      {expandable && open && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.18, ease: 'easeOut' }}
+          className="overflow-hidden"
+        >
+          <div className="border-t border-white/[0.04] bg-black/20 px-5 py-3">
+            <p className="text-[11.5px] leading-relaxed text-slate-400">{item.detail}</p>
+            <dl className="mt-2.5 space-y-1.5">
+              {evidence.map((entry) => (
+                <div key={entry.label} className="flex items-start justify-between gap-3">
+                  <dt className="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-slate-600">
+                    {entry.label}
+                  </dt>
+                  <dd className="min-w-0 break-words text-right font-mono text-[11px] text-slate-300">{entry.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </motion.div>
+      )}
+    </li>
+  );
+}
+
 export function ScannerAttackSurface({ assessment }: { assessment: ScannerAssessment }) {
+  const measured = assessment.attackSurface.filter((item) => item.status !== 'unknown').length;
   return (
     <Panel className="h-full overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.blue}>Observed Attack Surface</SectionLabel>
+        {/* Coverage, stated up front. A panel of verdicts is only as good as the
+            share of controls that were actually measured, so that share is not
+            left for the reader to count. */}
+        <span className="shrink-0 font-mono text-[10px] text-slate-600">
+          {measured}/{assessment.attackSurface.length} measured
+        </span>
       </div>
       <ul className="divide-y divide-white/[0.05]">
         {assessment.attackSurface.map((item) => (
-          <li key={item.key} className="flex items-center justify-between gap-3 px-5 py-2.5" title={item.detail}>
-            <span className="flex min-w-0 shrink items-center gap-2.5">
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: SURFACE_COLOR[item.status] }}
-              />
-              <span className="truncate text-[13px] text-slate-300">{item.label}</span>
-            </span>
-            {/* The value is capped rather than `shrink-0`: a long cipher-suite
-                name would otherwise refuse to shrink and squeeze the label out
-                of the row entirely. */}
-            <span
-              className="min-w-0 max-w-[58%] truncate text-right text-[13px] font-bold"
-              style={{ color: SURFACE_COLOR[item.status] }}
-              title={item.value}
-            >
-              {item.value}
-            </span>
-          </li>
+          <SurfaceRow key={item.key} item={item} />
         ))}
       </ul>
     </Panel>
@@ -389,6 +461,40 @@ export function ScannerAttackSurface({ assessment }: { assessment: ScannerAssess
 }
 
 /* ==================================================== crypto intelligence == */
+
+/**
+ * Colour per quantum-exposure verdict.
+ *
+ * The vocabulary widened when the verdict stopped being a two-way regex over
+ * finding titles and became a classification over measured evidence, so the
+ * colour table is explicit rather than a chain of ternaries that silently
+ * painted every unrecognised value emerald — which is how "Not observed" used
+ * to render as if it were a pass.
+ */
+const QUANTUM_VULNERABILITY_COLOR: Record<string, string> = {
+  'Quantum-safe': ACCENT.emerald,
+  'Hybrid-protected': ACCENT.cyan,
+  'Classical only': ACCENT.amber,
+  'High Risk': ACCENT.amber,
+  Vulnerable: ACCENT.rose,
+  Unknown: ACCENT.slate,
+  'Not observed': ACCENT.slate,
+};
+
+/** Impact bands from the Quantum Risk Engine, in the platform's risk palette. */
+const RISK_IMPACT_COLOR: Record<string, string> = {
+  Low: ACCENT.emerald,
+  Medium: ACCENT.amber,
+  High: ACCENT.amber,
+  Critical: ACCENT.rose,
+};
+
+const QUANTUM_VULNERABILITY_PREFIX: Record<string, string> = {
+  'Quantum-safe': '✦ ',
+  'Hybrid-protected': '✦ ',
+  'High Risk': '▲ ',
+  Vulnerable: '▲ ',
+};
 
 export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerAssessment }) {
   const { intelligence } = assessment;
@@ -442,24 +548,27 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
               {intelligence.forwardSecrecy === 'Enabled' ? '✦ Enabled' : intelligence.forwardSecrecy}
             </dd>
           </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-slate-400">Quantum Vulnerability</dt>
+          <div className="flex items-start justify-between gap-3">
+            <dt className="shrink-0 text-slate-400" title={intelligence.quantumVulnerabilityReason}>
+              Quantum Vulnerability
+            </dt>
             <dd
-              className="font-bold"
-              style={{
-                color:
-                  intelligence.quantumVulnerability === 'Vulnerable'
-                    ? ACCENT.rose
-                    : intelligence.quantumVulnerability === 'Hybrid-protected'
-                      ? ACCENT.cyan
-                      : intelligence.quantumVulnerability === 'Unknown'
-                        ? ACCENT.slate
-                        : ACCENT.emerald,
-              }}
+              className="min-w-0 text-right font-bold"
+              style={{ color: QUANTUM_VULNERABILITY_COLOR[intelligence.quantumVulnerability] ?? ACCENT.slate }}
+              title={intelligence.quantumVulnerabilityReason}
             >
-              {intelligence.quantumVulnerability === 'Vulnerable' ? '▲ Vulnerable' : intelligence.quantumVulnerability}
+              {QUANTUM_VULNERABILITY_PREFIX[intelligence.quantumVulnerability] ?? ''}
+              {intelligence.quantumVulnerability}
             </dd>
           </div>
+          {/* The verdict never stands alone. A one-word exposure rating that the
+              reader cannot trace is exactly how "Hybrid-protected" survived for
+              months on an endpoint with an expired certificate and no
+              post-quantum anything — so the engine's reason is printed with it,
+              not hidden behind a tooltip the reader has to discover. */}
+          <p className="pt-0.5 text-[11px] leading-relaxed text-slate-500">
+            {intelligence.quantumVulnerabilityReason}
+          </p>
           {intelligence.scanner2Readiness && (
             <div className="flex items-center justify-between gap-3">
               <dt className="text-slate-400" title="Asset-level readiness reported by the Scanner_2 migration engine — a different population from the component-level headline above, so it is reported separately rather than blended into it.">
@@ -472,6 +581,62 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
           )}
         </dl>
 
+        {/* Measured post-quantum readiness for the scanned endpoint, with the
+            reasons the engine used to arrive at it. Deliberately separate from
+            the Scanner_2 asset-readiness figure above: that one counts assets
+            across the estate, this one grades the endpoint in front of you, and
+            blending two different populations into one percentage is how a
+            readiness number stops meaning anything. */}
+        {intelligence.postQuantumReadiness && (
+          <div className="border-t border-white/[0.06] pt-3">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-semibold text-slate-500">Endpoint PQ Readiness</span>
+              <span className="font-bold" style={{ color: scoreColor(intelligence.postQuantumReadiness.score) }}>
+                {intelligence.postQuantumReadiness.score}%
+              </span>
+            </div>
+            <Meter
+              value={intelligence.postQuantumReadiness.score}
+              color={scoreColor(intelligence.postQuantumReadiness.score)}
+              className="mt-1.5"
+            />
+            {intelligence.postQuantumReadiness.reasons.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {intelligence.postQuantumReadiness.reasons.slice(0, 4).map((reason) => (
+                  <li key={reason} className="flex items-start gap-1.5 text-[11px] leading-relaxed text-slate-500">
+                    <span className="mt-[5px] h-1 w-1 shrink-0 rounded-full bg-slate-600" />
+                    <span className="min-w-0">{reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {intelligence.quantumRiskFactors.length > 0 && (
+          <div className="border-t border-white/[0.06] pt-3">
+            <p className="text-[11px] font-semibold text-slate-500">Quantum Risk Factors</p>
+            <ul className="mt-2 space-y-2">
+              {intelligence.quantumRiskFactors.map((factor) => (
+                <li key={factor.factor} title={factor.explanation}>
+                  <div className="flex items-center justify-between gap-2 text-[12px]">
+                    <span className="truncate text-slate-300">{factor.factor}</span>
+                    <span
+                      className="shrink-0 text-[10px] font-black uppercase tracking-wide"
+                      style={{ color: RISK_IMPACT_COLOR[factor.impact] ?? ACCENT.slate }}
+                    >
+                      {factor.impact}
+                    </span>
+                  </div>
+                  <p className="truncate font-mono text-[10.5px] text-slate-600" title={factor.observed}>
+                    {factor.observed}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <div className="border-t border-white/[0.06] pt-3">
           <p className="text-[11px] font-semibold text-slate-500">PQ Migration Targets</p>
           {intelligence.migrationTargets.length === 0 ? (
@@ -480,8 +645,12 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
             </p>
           ) : (
             <ul className="mt-2 space-y-1.5">
+              {/* Keyed on target AND the primitive it replaces. One PQ algorithm
+                  legitimately replaces several classical ones — ML-KEM-768 stands
+                  in for RSA-2048, RSA-1024 and ECC-P256 alike — so the name alone
+                  collides, and React was dropping rows it considered duplicates. */}
               {intelligence.migrationTargets.map((target) => (
-                <li key={target.name} className="flex items-start gap-2 text-[13px]">
+                <li key={`${target.name}::${target.replaces}`} className="flex items-start gap-2 text-[13px]">
                   <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
                   <span className="min-w-0">
                     <span className="font-mono font-bold text-slate-100">{target.name}</span>

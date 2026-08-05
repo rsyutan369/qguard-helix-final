@@ -42,12 +42,21 @@ export type ScannerModuleStatus = 'Queued' | 'Running' | 'Completed' | 'Failed' 
 /** The catalogued modules, in execution order. */
 export const SCANNER_MODULE_CATALOG: Array<{ id: string; name: string }> = [
   { id: 'target-validation', name: 'Target Authorization & Validation' },
+  { id: 'dns-security-scanner', name: 'DNS security scanner (CAA/DNSSEC)' },
   { id: 'tls-protocol-scanner', name: 'TLS protocol scanner' },
   { id: 'certificate-scanner', name: 'Certificate scanner' },
   { id: 'cipher-suite-scanner', name: 'Cipher suite scanner' },
   { id: 'key-exchange-scanner', name: 'Key exchange scanner' },
+  /* Named-group probing is its OWN module, not a footnote of the key-exchange
+     scanner. It answers a different question (which groups the endpoint will
+     accept, each offered in isolation) with a different method and a different
+     cost — dozens of extra handshakes — so it needs its own terminal state and
+     its own reason when it cannot run. */
+  { id: 'pq-key-agreement-scanner', name: 'Post-quantum key agreement prober' },
   { id: 'signature-algorithm-scanner', name: 'Signature algorithm scanner' },
   { id: 'hash-algorithm-scanner', name: 'Hash algorithm scanner' },
+  { id: 'revocation-transparency-scanner', name: 'Revocation & transparency scanner (OCSP/CT)' },
+  { id: 'edge-infrastructure-scanner', name: 'Edge infrastructure scanner' },
   { id: 'ssh-host-key-scanner', name: 'SSH host key scanner' },
   { id: 'jwt-signing-scanner', name: 'JWT signing algorithm scanner' },
   { id: 'dependency-crypto-scanner', name: 'Dependency crypto scanner' },
@@ -77,6 +86,10 @@ export const CATALOG_MODULE_IDS: ReadonlySet<string> = new Set(SCANNER_MODULE_CA
  */
 export const WEB_MODULE_TO_CATALOG: Record<string, string> = {
   'target-parser': 'target-validation',
+  'dns-security-analyzer': 'dns-security-scanner',
+  'pq-key-agreement-analyzer': 'pq-key-agreement-scanner',
+  'revocation-transparency-analyzer': 'revocation-transparency-scanner',
+  'edge-infrastructure-analyzer': 'edge-infrastructure-scanner',
   'tls-analyzer': 'tls-protocol-scanner',
   'key-exchange-analyzer': 'key-exchange-scanner',
   'certificate-parser': 'certificate-scanner',
@@ -146,6 +159,19 @@ export function moduleIdForFinding(finding: { category: string; detectionMethod:
     return 'dependency-crypto-scanner'
   }
   if (category.includes('rule (')) return 'crypto-detection-rules'
+
+  /* Public-edge categories are claimed BEFORE the generic algorithm-class tests
+     below, because their names collide with them: "Certificate Revocation" and
+     "Certificate Transparency" both contain "certificate" and would otherwise
+     be filed under the chain parser, and "Post-Quantum Key Agreement" would
+     fall through to the risk engine's catch-all. A finding must be owned by the
+     module that produced it or the per-module counts stop summing to the
+     assessment total. */
+  if (category.includes('post-quantum key agreement')) return 'pq-key-agreement-scanner'
+  if (category.includes('revocation') || category.includes('transparency')) {
+    return 'revocation-transparency-scanner'
+  }
+  if (category.includes('dns')) return 'dns-security-scanner'
 
   if (category.includes('signature')) return 'signature-algorithm-scanner'
   if (category === 'oid (hash)' || category.includes('hash')) return 'hash-algorithm-scanner'
@@ -222,11 +248,15 @@ export function moduleApplicability(targets: Array<{ type: string }>): Record<st
       'certificate-scanner',
       'cipher-suite-scanner',
       'key-exchange-scanner',
+      'pq-key-agreement-scanner',
       'signature-algorithm-scanner',
       'hash-algorithm-scanner',
+      'revocation-transparency-scanner',
     ]) {
       reasons[moduleId] = transportReason
     }
+    reasons['dns-security-scanner'] = `no resolvable host was in scope for this run (target types: ${typeList})`
+    reasons['edge-infrastructure-scanner'] = `no HTTP origin was in scope for this run (target types: ${typeList})`
   }
   if (!hasSsh) reasons['ssh-host-key-scanner'] = `no SSH target was authorized for this run (target types: ${typeList})`
   if (!hasNetwork) reasons['jwt-signing-scanner'] = `token and header analysis needs an HTTP endpoint (target types: ${typeList})`

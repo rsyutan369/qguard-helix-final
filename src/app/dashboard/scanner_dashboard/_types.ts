@@ -8,6 +8,15 @@
  * `/api/v1/scanner/history` — nothing here is invented client-side.
  */
 
+/* The public-edge evidence shape is IMPORTED, not mirrored.
+   Every other evidence type in this file is a hand-maintained copy of a backend
+   shape, and that is exactly how they drift. `edge-intelligence-model` is the
+   isomorphic half of the engine — pure types and pure derivations, no sockets —
+   so the browser gets the real contract instead of a copy of it. */
+import type { EdgeIntelligence } from '@/lib/scanner/web-scanner/edge-intelligence-model';
+
+export type { EdgeIntelligence };
+
 export type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled';
 
 export type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history' | 'agents' | 'settings';
@@ -271,6 +280,12 @@ export type ScanResultRecord = {
     detectionRuleResults?: unknown[];
     runtimeHealth?: unknown;
     scanConfidence?: ScanConfidence | null;
+    /**
+     * Measured public-edge surface. Absent on repository targets (no public
+     * edge) and on scans persisted before this engine existed — consumers MUST
+     * treat `undefined` as "not measured", never as a negative verdict.
+     */
+    edgeIntelligence?: EdgeIntelligence | null;
   } | null;
 };
 

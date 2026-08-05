@@ -143,6 +143,21 @@ export const HYBRID_GROUP_KEM: Record<string, string> = {
   SecP384r1MLKEM1024: 'ML-KEM-1024',
 }
 
+/**
+ * The two halves of each hybrid group, named separately.
+ *
+ * A hybrid group is a COMBINATION, and a report that prints only the registry
+ * name ("X25519MLKEM768") makes the reader decode it. Both components are named
+ * so the evidence line can state what protects the session classically and what
+ * protects it against a CRQC — they are different guarantees with different
+ * failure modes, and collapsing them loses the whole point of hybrid.
+ */
+export const HYBRID_GROUP_COMPONENTS: Record<string, { classical: string; postQuantum: string }> = {
+  X25519MLKEM768: { classical: 'X25519 (Curve25519 ECDHE)', postQuantum: 'ML-KEM-768 (FIPS 203)' },
+  SecP256r1MLKEM768: { classical: 'secp256r1 / P-256 ECDHE', postQuantum: 'ML-KEM-768 (FIPS 203)' },
+  SecP384r1MLKEM1024: { classical: 'secp384r1 / P-384 ECDHE', postQuantum: 'ML-KEM-1024 (FIPS 203)' },
+}
+
 export const GROUP_LABELS: Record<string, string> = {
   X25519MLKEM768: 'X25519 + ML-KEM-768 (hybrid)',
   SecP256r1MLKEM768: 'P-256 + ML-KEM-768 (hybrid)',

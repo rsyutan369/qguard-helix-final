@@ -31,9 +31,15 @@ import {
    module, and this page routes the same finding to the surface that module
    belongs to, so the two can never disagree. */
 import { moduleIdForFinding } from '@/api-server/scanner-module-ledger';
+/* The edge attribution line is DERIVED, not re-derived. `edge-intelligence-model`
+   is the isomorphic half of the edge engine (pure functions, no sockets), so the
+   dashboard and the scanner phrase "behind Cloudflare" from one implementation
+   instead of two that can drift. */
+import { describeEdgeInfrastructure } from '@/lib/scanner/web-scanner/edge-intelligence-model';
 import type { RiskBand } from '@/lib/scanner/public-scan/types';
 import type {
   DefensiveFinding,
+  EdgeIntelligence,
   EnterpriseScanner2,
   ModuleState,
   PqcRecommendation,
@@ -58,9 +64,20 @@ const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
  * happen.
  */
 export const SCANNER_NODE_MODULES: Record<string, readonly string[]> = {
-  discovery: ['target-validation', 'asset-inventory-synchronizer', 'scanner2-module-registry'],
-  transport: ['tls-protocol-scanner', 'cipher-suite-scanner', 'key-exchange-scanner'],
-  certificates: ['certificate-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner'],
+  discovery: [
+    'target-validation',
+    'dns-security-scanner',
+    'edge-infrastructure-scanner',
+    'asset-inventory-synchronizer',
+    'scanner2-module-registry',
+  ],
+  transport: ['tls-protocol-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'pq-key-agreement-scanner'],
+  certificates: [
+    'certificate-scanner',
+    'signature-algorithm-scanner',
+    'hash-algorithm-scanner',
+    'revocation-transparency-scanner',
+  ],
   identity: ['ssh-host-key-scanner', 'jwt-signing-scanner'],
   code: ['dependency-crypto-scanner', 'cbom-generator', 'scanner2-fingerprint-matcher', 'scanner2-detection-rules'],
   posture: [
@@ -174,6 +191,16 @@ export interface SurfaceItem {
   value: string;
   status: 'pass' | 'fail' | 'partial' | 'info' | 'unknown';
   detail: string;
+  /**
+   * The observations behind the verdict, shown verbatim when the row is opened.
+   *
+   * A one-word verdict is only trustworthy if the operator can see what
+   * produced it. "Applied" for post-quantum key agreement means nothing without
+   * the negotiated protocol, the group, both halves of the hybrid construction
+   * and how many handshakes confirmed it — so those travel WITH the verdict
+   * rather than living in a separate report the reader has to go and find.
+   */
+  evidence?: Array<{ label: string; value: string }>;
 }
 
 export interface TimelinePhase {
@@ -255,6 +282,15 @@ export interface ScannerAssessment {
     keyExchange: string;
     forwardSecrecy: string;
     quantumVulnerability: string;
+    /** Why that verdict, in the engine's own words. Never a generic caption. */
+    quantumVulnerabilityReason: string;
+    /**
+     * Measured post-quantum readiness for the scanned endpoint, and the
+     * evidence behind it. Null when no public-edge measurement is attached.
+     */
+    postQuantumReadiness: { score: number; reasons: string[] } | null;
+    /** The Quantum Risk Engine's per-primitive explanation of the verdict. */
+    quantumRiskFactors: Array<{ factor: string; observed: string; impact: string; explanation: string }>;
     migrationTargets: Array<{ name: string; standard: string; replaces: string }>;
     confidence: number;
     scanner2Readiness: { score: number; label: string } | null;
@@ -1108,47 +1144,98 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      renders `unknown`, never `fail`. */
   const attackSurface = buildAttackSurface(input, findings);
 
-  /* ── Cryptographic intelligence ─────────────────────────────────────── */
-  const observedAlgorithms = buildObservedAlgorithms(results, findings);
+  /* ── Cryptographic intelligence ───────────────────────────────────────── */
+  const edge = results[0]?.metadata?.edgeIntelligence ?? null;
+  const observedAlgorithms = buildObservedAlgorithms(results, findings, edge);
 
-  // The negotiated key agreement is a direct measurement when the TLS analyzer
-  // reached the target; findings are only the fallback for targets it did not
-  // (a repository URL, say), never a substitute for it.
+  // The negotiated key agreement is a direct measurement when the edge engine
+  // reached the target. It is preferred over the raw handshake because Node
+  // never reports the TLS 1.3 group — only the named-group probe knows it — so
+  // this is the difference between "ECDHE (TLS 1.3 key_share)" and the actual
+  // group. Findings are the last resort, for targets with no transport at all
+  // (a repository URL), never a substitute for a measurement.
   const negotiatedTls = results[0]?.metadata?.tlsAnalysis ?? null;
   const keyExchangeFindings = findings.filter((finding) =>
-    /key exchange|kex|ecdhe|dhe|x25519|ml-kem|kyber/i.test(`${finding.category} ${finding.algorithm}`),
+    /key exchange|key agreement|kex|ecdhe|dhe|x25519|ml-kem|kyber/i.test(`${finding.category} ${finding.algorithm}`),
   );
-  const keyExchange = negotiatedTls?.keyExchange
-    ? negotiatedTls.negotiatedCurve
-      ? `${negotiatedTls.keyExchange} (${negotiatedTls.negotiatedCurve})`
-      : negotiatedTls.keyExchange
-    : keyExchangeFindings.length
-      ? Array.from(new Set(keyExchangeFindings.map((finding) => finding.algorithm))).slice(0, 3).join(', ')
-      : 'Not observed';
+  const keyExchange = edge?.transport.keyExchange && edge.transport.keyExchange !== 'unknown'
+    ? edge.transport.keyExchange
+    : negotiatedTls?.keyExchange
+      ? negotiatedTls.negotiatedCurve
+        ? `${negotiatedTls.keyExchange} (${negotiatedTls.negotiatedCurve})`
+        : negotiatedTls.keyExchange
+      : keyExchangeFindings.length
+        ? Array.from(new Set(keyExchangeFindings.map((finding) => finding.algorithm))).slice(0, 3).join(', ')
+        : 'Not observed';
 
-  const forwardSecrecy = negotiatedTls
-    ? Boolean(negotiatedTls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(negotiatedTls.keyExchange || '')
-      ? 'Enabled'
-      : 'Not offered'
-    : keyExchangeFindings.length
-      ? keyExchangeFindings.some((finding) => /ecdhe|dhe|x25519/i.test(finding.algorithm))
+  const forwardSecrecy = edge?.quantum.forwardSecrecy
+    ? edge.quantum.forwardSecrecy
+    : negotiatedTls
+      ? Boolean(negotiatedTls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(negotiatedTls.keyExchange || '')
         ? 'Enabled'
         : 'Not offered'
-      : 'Unknown';
+      : keyExchangeFindings.length
+        ? keyExchangeFindings.some((finding) => /ecdhe|dhe|x25519/i.test(finding.algorithm))
+          ? 'Enabled'
+          : 'Not offered'
+        : 'Unknown';
 
-  const quantumVulnerability = !hasEvidence
-    ? 'Unknown'
-    : findings.some((finding) => /ml-kem|ml-dsa|kyber|dilithium|slh-dsa/i.test(finding.algorithm))
-      ? 'Hybrid-protected'
+  /* Quantum vulnerability — from transport evidence, never from finding titles.
+     ------------------------------------------------------------------------
+     This previously read: "does ANY finding's algorithm string match
+     /ml-kem|ml-dsa|kyber|dilithium|slh-dsa/? then Hybrid-protected". Every
+     recommendation this scanner produces contains one of those strings —
+     "Migrate to ML-KEM-768", "Enable X25519Kyber768 hybrid key exchange" — so
+     the estate was declared hybrid-protected precisely BECAUSE the scan had
+     recommended hybrid protection. expired.badssl.com, which is TLS 1.2-only
+     with an expired chain and static RSA accepted, reported "Hybrid-protected"
+     for exactly that reason.
+
+     The verdict is now the edge engine's, computed from the named-group probe
+     and the parsed certificate chain — the same classification /public-scan
+     publishes, so one host cannot be graded differently on the two surfaces. */
+  const quantumVulnerability = edge
+    ? edge.quantum.vulnerability
+    : !hasEvidence
+      ? 'Unknown'
       : scoped.vulnerable > 0
         ? 'Vulnerable'
         : 'Not observed';
+  const quantumVulnerabilityReason = edge
+    ? edge.quantum.vulnerabilityReason
+    : !hasEvidence
+      ? 'No cryptographic evidence has been recorded for this view yet.'
+      : 'Derived from persisted finding severities; no public-edge measurement is attached to this scan.';
 
-  const migrationTargets = recommendations.slice(0, 5).map((recommendation) => ({
-    name: recommendation.recommendedPQC,
-    standard: recommendation.nistStandard,
-    replaces: recommendation.classicalAlgorithm,
-  }));
+  /* Migration targets: the edge engine's, when it measured the endpoint, because
+     those name the primitive actually observed. The Scanner_2 migration engine
+     supplies the estate-wide list otherwise. */
+  const rawMigrationTargets = edge?.quantum.migrationTargets.length
+    ? edge.quantum.migrationTargets.map((target) => ({
+        name: target.name,
+        standard: target.standard,
+        replaces: target.replaces,
+      }))
+    : recommendations.map((recommendation) => ({
+        name: recommendation.recommendedPQC,
+        standard: recommendation.nistStandard,
+        replaces: recommendation.classicalAlgorithm,
+      }));
+  /* De-duplicated on the PAIR, not the name.
+     One post-quantum algorithm legitimately replaces several classical ones —
+     ML-KEM-768 stands in for RSA-2048, RSA-1024 and ECC-P256 alike — so those
+     are distinct, useful rows and are kept. What must not survive is the same
+     (target, replaces) pair arriving twice from two engines, which is a
+     duplicate of one fact. */
+  const seenTargets = new Set<string>();
+  const migrationTargets = rawMigrationTargets
+    .filter((target) => {
+      const identity = `${target.name}::${target.replaces}`;
+      if (seenTargets.has(identity)) return false;
+      seenTargets.add(identity);
+      return true;
+    })
+    .slice(0, 5);
 
   /* ── Timeline & HNDL ─────────────────────────────────────────────────── */
   const hndlRisks = scanner2?.hndlRisks ?? [];
@@ -1204,6 +1291,11 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
       keyExchange,
       forwardSecrecy,
       quantumVulnerability,
+      quantumVulnerabilityReason,
+      postQuantumReadiness: edge
+        ? { score: edge.quantum.postQuantumReadiness, reasons: edge.quantum.readinessReasons }
+        : null,
+      quantumRiskFactors: edge?.quantum.riskFactors ?? [],
       migrationTargets,
       confidence,
       scanner2Readiness,
@@ -1283,12 +1375,17 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
 function buildObservedAlgorithms(
   results: ScanResultRecord[],
   findings: DefensiveFinding[],
+  edge: EdgeIntelligence | null,
 ): Array<{ name: string; role: string; quantumVulnerable: boolean; count: number }> {
   /* Ordered by algorithm CLASS, not by severity. Ranking by vulnerability first
      pushed every symmetric and protocol entry past the display cap, so the panel
      showed eight flavours of "recoverable by Shor" and none of the AES/hash
      material that is also part of the observed posture. */
   const RANK = {
+    /* The measured post-quantum primitive leads the list when one exists. An
+       operator scanning a hybrid endpoint should not have to scroll past eight
+       classical entries to find the one algorithm that changes their risk. */
+    postQuantum: -1,
     certificateKey: 0,
     certificateSignature: 1,
     keyAgreement: 2,
@@ -1313,6 +1410,17 @@ function buildObservedAlgorithms(
     }
     observed.set(clean, { role, quantumVulnerable, count: 1, rank });
   };
+
+  /* Measured post-quantum key encapsulation.
+     The TLS analyzer cannot see this: TLS 1.3 negotiates the group in the
+     key_share extension, which Node does not expose, so a hybrid endpoint's
+     ML-KEM never appeared in this list no matter how plainly it was deployed.
+     The named-group probe is the only source, and it is authoritative. */
+  if (edge?.pqKeyAgreement.probed) {
+    for (const parameterSet of edge.pqKeyAgreement.kemParameterSets) {
+      add(parameterSet, 'Key encapsulation - not recoverable by Shor', false, RANK.postQuantum);
+    }
+  }
 
   for (const result of results) {
     const tls = result.metadata?.tlsAnalysis ?? null;
@@ -1363,27 +1471,51 @@ function buildObservedAlgorithms(
  * The observed attack surface.
  *
  * Mirrors /public-scan's control list one row for one row, so the same host can
- * be read side by side on either surface. Rows the authenticated scanner does
- * not probe (the public-edge DNS and certificate-extension checks) render an
- * explicit "Not probed" with the reason in the tooltip — never a pass, never a
- * fail, and never a fabricated value. That distinction is the whole contract:
- * "we looked and it is absent" and "we did not look" must not render the same.
+ * be read side by side on either surface — and since both now consume the SAME
+ * engine bundle, the two cannot disagree about one host.
+ *
+ * HOW THE "NOT PROBED" ROWS WERE FIXED
+ * ------------------------------------
+ * Eight controls used to render a flat "Not probed": OCSP stapling, Certificate
+ * Transparency, CAA, DNSSEC, ALPN and edge attribution, plus HSTS and the
+ * header tally reading "Not observed". That was honest at the time — the
+ * authenticated orchestrator genuinely did not perform those probes — but
+ * "honest about a gap" is not the same as "measured", and the gap had no reason
+ * to exist: /public-scan had run every one of those probes for months.
+ *
+ * The orchestrator now runs that engine bundle per target and persists the
+ * result as `metadata.edgeIntelligence`. Each row below reads its own measured
+ * field, so a verdict is a verdict and an absence is stated as one.
+ *
+ * The contract that made those rows safe still holds and is now enforced per
+ * control rather than per surface: a control whose evidence is genuinely
+ * missing renders `unknown` with the engine's own reason attached. "We looked
+ * and it is absent" and "we could not look" must never render the same.
  */
 function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]): SurfaceItem[] {
   const primary = input.results[0];
   const tls = primary?.metadata?.tlsAnalysis ?? null;
   const certificate = primary?.certificateInfo ?? null;
   const api = primary?.metadata?.apiSecurityResult ?? null;
+  const edge = primary?.metadata?.edgeIntelligence ?? null;
   const scanner2 = input.scanner2;
   const items: SurfaceItem[] = [];
 
-  /** A control this scanner does not perform. */
-  const notProbed = (key: string, label: string, why: string): SurfaceItem => ({
+  /**
+   * A control whose evidence never arrived.
+   *
+   * Reserved for two cases only: a scan persisted before the edge engine
+   * existed, and an edge phase that could not complete. Both are genuine
+   * "not measured", and the reason says which.
+   */
+  const unmeasured = (key: string, label: string, why: string): SurfaceItem => ({
     key,
     label,
-    value: 'Not probed',
+    value: 'Not measured',
     status: 'unknown',
-    detail: `${why} This is a public-edge probe the authenticated estate scanner does not perform, so no verdict is claimed either way.`,
+    detail: edge
+      ? why
+      : `${why} No public-edge evidence is attached to this scan — either the target has no public edge, or this record predates the edge intelligence engine. Re-run the scan to measure it.`,
   });
 
   /* ── Reachability ──────────────────────────────────────────────────────── */
@@ -1421,18 +1553,47 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       : 'Only the leaf certificate was returned; no intermediates were served.',
   });
 
-  // Names are read from the subject/chain the certificate parser returns. It
-  // does not currently extract subjectAltName, so a multi-name certificate
-  // cannot be counted accurately — reported as such rather than guessed.
+  /* Names covered.
+     This used to print the CN alone with a caveat that SANs "are not extracted
+     by the authenticated certificate parser". They are now — the edge
+     certificate engine parses the subjectAltName extension — so the row states
+     the real coverage instead of apologising for a single name. */
   const commonName = certificate?.subject?.CN ?? certificate?.subject?.commonName ?? null;
+  const sans = edge?.certificate.subjectAltNames ?? [];
+  const sanCount = edge?.certificate.sanCount ?? 0;
   items.push({
     key: 'names-covered',
     label: 'Names Covered',
-    value: commonName ?? 'Not observed',
-    status: commonName ? 'info' : 'unknown',
-    detail: commonName
-      ? 'Common name on the leaf certificate. Subject alternative names are not extracted by the authenticated certificate parser, so this is the CN only, not a full name count.'
-      : 'No certificate subject was parsed.',
+    value: sanCount
+      ? sanCount === 1
+        ? sans[0] ?? commonName ?? '1 name'
+        : `${pluralize(sanCount, 'name')}`
+      : commonName ?? 'Not observed',
+    status: sanCount || commonName ? 'info' : 'unknown',
+    detail: sanCount
+      ? `Subject alternative names on the leaf certificate${edge?.certificate.isWildcard ? ' (wildcard coverage present)' : ''}.`
+      : commonName
+        ? 'Common name on the leaf certificate; no subjectAltName extension was parsed from the served chain.'
+        : 'No certificate subject was parsed.',
+    evidence: sanCount
+      ? [
+          { label: 'Common name', value: commonName ?? 'not set' },
+          {
+            label: `Subject alternative names (${sanCount})`,
+            value: sans.length < sanCount ? `${sans.join(', ')} … +${sanCount - sans.length} more` : sans.join(', '),
+          },
+          { label: 'Wildcard', value: edge?.certificate.isWildcard ? 'yes' : 'no' },
+          {
+            label: 'Hostname match',
+            value:
+              edge?.certificate.hostnameMatches === null || edge?.certificate.hostnameMatches === undefined
+                ? 'not evaluated'
+                : edge.certificate.hostnameMatches
+                  ? 'the scanned name is covered'
+                  : 'the scanned name is NOT covered by this certificate',
+          },
+        ]
+      : undefined,
   });
 
   /* ── Transport ─────────────────────────────────────────────────────────── */
@@ -1472,34 +1633,62 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       : 'Cipher suite selected during the observed handshake.',
   });
 
+  /* Chain trust.
+     The edge certificate engine performs a real trust-store validation and
+     returns the OpenSSL reason on failure, which is strictly better evidence
+     than inferring "fail" from the expiry flag alone. Local flags remain the
+     fallback so this row still renders on records predating that engine. */
   const chainExpired = certChain.some((entry) => entry.isExpired);
+  const chainTrusted = edge?.certificate.chainTrusted ?? null;
+  const localTrustFail = Boolean(certificate?.isSelfSigned || chainExpired || certificate?.isExpired);
   items.push({
     key: 'chain-trust',
     label: 'Chain Trust',
-    value: !certificate
+    value: !certificate && chainTrusted === null
       ? 'Not observed'
-      : certificate.isSelfSigned
-        ? 'Self-signed'
-        : chainExpired || certificate.isExpired
+      : chainTrusted === true
+        ? 'Pass'
+        : chainTrusted === false
           ? 'Fail'
-          : 'Pass',
-    status: !certificate
+          : certificate?.isSelfSigned
+            ? 'Self-signed'
+            : localTrustFail
+              ? 'Fail'
+              : 'Pass',
+    status: !certificate && chainTrusted === null
       ? 'unknown'
-      : certificate.isSelfSigned || chainExpired || certificate.isExpired
+      : chainTrusted === false || localTrustFail
         ? 'fail'
         : 'pass',
-    detail: certificate?.isExpired
-      ? 'The leaf certificate has expired, so the chain does not validate.'
-      : certificate?.isSelfSigned
-        ? 'The leaf is self-signed and not anchored to a public trust store.'
-        : 'Chain validated against the trust store.',
+    detail: edge?.certificate.trustError
+      ? `Chain validation failed against the public trust store: ${edge.certificate.trustError}`
+      : chainTrusted === true
+        ? 'Chain validated against the public trust store.'
+        : certificate?.isExpired
+          ? 'The leaf certificate has expired, so the chain does not validate.'
+          : certificate?.isSelfSigned
+            ? 'The leaf is self-signed and not anchored to a public trust store.'
+            : 'Chain validated against the trust store.',
+    evidence: edge?.certificate.probed
+      ? [
+          { label: 'Trust-store verdict', value: chainTrusted === null ? 'not evaluated' : chainTrusted ? 'trusted' : 'NOT trusted' },
+          { label: 'Reason', value: edge.certificate.trustError ?? 'no validation error reported' },
+          { label: 'Chain depth', value: `${edge.certificate.chainDepth} certificate(s) served` },
+        ]
+      : undefined,
   });
 
-  const kexLabel = tls?.keyExchange
-    ? tls.negotiatedCurve
-      ? `${tls.keyExchange} (${tls.negotiatedCurve})`
-      : tls.keyExchange
-    : null;
+  /* Key exchange.
+     The named-group probe is the only way to learn the TLS 1.3 group — Node
+     never exposes it, which is why this row used to read "ECDHE (TLS 1.3
+     key_share)" with no group at all on every modern endpoint. */
+  const kexLabel = edge?.transport.keyExchange && edge.transport.keyExchange !== 'unknown'
+    ? edge.transport.keyExchange
+    : tls?.keyExchange
+      ? tls.negotiatedCurve
+        ? `${tls.keyExchange} (${tls.negotiatedCurve})`
+        : tls.keyExchange
+      : null;
   items.push({
     key: 'key-exchange',
     label: 'Key Exchange',
@@ -1511,68 +1700,299 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
         : /ecdhe|dhe|x25519/i.test(kexLabel)
           ? 'partial'
           : 'fail',
-    detail: 'Key-agreement mechanism negotiated for the session.',
+    detail: edge?.transport.keyExchange
+      ? 'Key agreement for the session, with the named group confirmed by offering each group in isolation.'
+      : 'Key-agreement mechanism negotiated for the session.',
   });
 
-  const hybridObserved =
-    /ml-kem|kyber/i.test(`${tls?.keyExchange ?? ''} ${tls?.negotiatedCurve ?? ''} ${tls?.cipherSuite ?? ''}`) ||
-    findings.some((finding) => /ml-kem|kyber/i.test(finding.algorithm));
-  items.push({
-    key: 'pq-key-agreement',
-    label: 'Post-Quantum Key Agreement',
-    value: !tls ? 'Not observed' : hybridObserved ? 'Observed' : 'Fail',
-    status: !tls ? 'unknown' : hybridObserved ? 'pass' : 'fail',
-    detail: hybridObserved
-      ? 'Hybrid ML-KEM key agreement detected in the negotiated groups.'
-      : 'No hybrid post-quantum group was negotiated - sessions are recoverable by a future CRQC.',
-  });
+  /* Post-quantum key agreement — a MEASUREMENT, not an inference.
+     The old row tested whether the strings "ml-kem" or "kyber" appeared in the
+     negotiated suite name, the curve name, or ANY finding title. The first two
+     can never contain them (TLS 1.3 suite names carry no key-exchange token and
+     Node returns no group), and the third matched the scanner's own
+     recommendations — so the row printed a hedging "Observed" that was
+     simultaneously unable to confirm a real hybrid endpoint like Cloudflare and
+     able to claim one for an endpoint with no post-quantum support at all.
+     It now reports the named-group probe's verdict, with its evidence. */
+  if (edge?.pqKeyAgreement) {
+    const pq = edge.pqKeyAgreement;
+    items.push({
+      key: 'pq-key-agreement',
+      label: 'Post-Quantum Key Agreement',
+      value: pq.value,
+      status: pq.state,
+      detail: pq.detail,
+      evidence: pq.evidence,
+    });
+  } else {
+    items.push(
+      unmeasured(
+        'pq-key-agreement',
+        'Post-Quantum Key Agreement',
+        'Hybrid ML-KEM support is established by offering each named group in isolation under a TLS 1.3 floor.',
+      ),
+    );
+  }
 
-  /* ── HTTP ──────────────────────────────────────────────────────────────── */
+  /* ── HTTP ──────────────────────────────────────────────────────────────────
+     Both header rows previously read the api-security scanner's output, which
+     collects headers with Node's `fetch()` — and `fetch()` refuses to connect
+     over an expired, self-signed or untrusted chain. On exactly the targets
+     whose headers matter most (expired.badssl.com being the canonical case)
+     that returned an empty set, and the rows rendered "Not observed" for
+     headers the origin had plainly sent. The edge engine reads the same
+     response over a permissive agent, so it is the primary source here and the
+     api scanner is the fallback. */
   const headers = api?.securityHeaders ?? [];
+  const edgeHsts = edge?.http.hsts ?? null;
   const hstsHeader = headers.find((header) => header.name.toLowerCase() === 'strict-transport-security');
-  items.push({
-    key: 'hsts',
-    label: 'HSTS',
-    value: !headers.length
-      ? 'Not observed'
-      : !hstsHeader?.present
-        ? 'Fail'
-        : hstsHeader.secure
-          ? 'Enforced'
-          : 'Weak',
-    status: !headers.length ? 'unknown' : !hstsHeader?.present ? 'fail' : hstsHeader.secure ? 'pass' : 'partial',
-    detail: hstsHeader?.value ?? 'No Strict-Transport-Security header was returned by the origin.',
-  });
 
-  const nonHstsHeaders = headers.filter((header) => header.name.toLowerCase() !== 'strict-transport-security');
-  const hardened = nonHstsHeaders.filter((header) => header.secure).length;
-  items.push({
-    key: 'headers',
-    label: 'HTTP Security Headers',
-    value: nonHstsHeaders.length ? `${hardened}/${nonHstsHeaders.length} hardened` : 'Not observed',
-    status: !nonHstsHeaders.length
-      ? 'unknown'
-      : hardened === nonHstsHeaders.length
-        ? 'pass'
-        : hardened === 0
-          ? 'fail'
-          : 'partial',
-    detail: nonHstsHeaders.length
-      ? nonHstsHeaders
-          .filter((header) => !header.secure)
-          .map((header) => `${header.name}: ${header.present ? 'present, weak' : 'absent'}`)
-          .join(' - ') || 'Every probed transport-security header is hardened.'
-      : 'No HTTP response was collected from the origin.',
-  });
+  if (edgeHsts && edge?.http.reachable) {
+    const enforced = edgeHsts.status === 'Healthy';
+    items.push({
+      key: 'hsts',
+      label: 'HSTS',
+      value: !edgeHsts.present ? 'Missing' : enforced ? 'Enforced' : 'Weak',
+      status: !edgeHsts.present ? 'fail' : enforced ? 'pass' : 'partial',
+      detail: !edgeHsts.present
+        ? 'The origin returned no Strict-Transport-Security header, so a first visit over plain HTTP is strippable.'
+        : `Strict-Transport-Security: ${edgeHsts.raw}`,
+      evidence: [
+        { label: 'Header', value: edgeHsts.raw ?? 'absent' },
+        {
+          label: 'max-age',
+          value: edgeHsts.maxAge === null
+            ? 'not set'
+            : `${edgeHsts.maxAge}s (${Math.round(edgeHsts.maxAge / 86400)} days)${edgeHsts.maxAge < 31_536_000 ? ' — below the one-year recommendation' : ''}`,
+        },
+        { label: 'includeSubDomains', value: edgeHsts.includeSubDomains ? 'set' : 'not set' },
+        { label: 'preload', value: edgeHsts.preload ? 'set' : 'not set' },
+        {
+          label: 'Preload eligible',
+          value: edgeHsts.preloadEligible
+            ? 'yes — meets the hstspreload.org submission requirements'
+            : edgeHsts.preloadBlockers.length
+              ? `no — ${edgeHsts.preloadBlockers.join('; ')}`
+              : 'no',
+        },
+      ],
+    });
+  } else if (headers.length) {
+    items.push({
+      key: 'hsts',
+      label: 'HSTS',
+      value: !hstsHeader?.present ? 'Missing' : hstsHeader.secure ? 'Enforced' : 'Weak',
+      status: !hstsHeader?.present ? 'fail' : hstsHeader.secure ? 'pass' : 'partial',
+      detail: hstsHeader?.value ?? 'No Strict-Transport-Security header was returned by the origin.',
+    });
+  } else {
+    items.push(
+      unmeasured(
+        'hsts',
+        'HSTS',
+        edge && !edge.http.reachable
+          ? `The origin did not answer over HTTPS (${edge.http.error ?? 'no response'}), so no header could be read. This is not the same as an absent header.`
+          : 'HSTS is read from the origin\'s HTTPS response headers.',
+      ),
+    );
+  }
 
-  /* ── Public-edge probes this scanner does not perform ──────────────────── */
-  items.push(
-    notProbed('ocsp-stapling', 'OCSP Stapling', 'Revocation stapling is read from the TLS handshake extension.'),
-    notProbed('certificate-transparency', 'Certificate Transparency', 'SCTs are read from the certificate extension or the TLS handshake.'),
-    notProbed('dns-caa', 'DNS Security (CAA)', 'CAA issuance policy is read over DNS.'),
-    notProbed('dnssec', 'DNSSEC', 'Zone signing is validated over DNS.'),
-    notProbed('alpn', 'ALPN', 'The negotiated application protocol is read from the TLS handshake.'),
+  const edgeTransportHeaders = (edge?.http.headers ?? []).filter(
+    (header) => header.name !== 'strict-transport-security' && header.status !== 'Not Applicable',
   );
+  const nonHstsHeaders = headers.filter((header) => header.name.toLowerCase() !== 'strict-transport-security');
+
+  if (edge?.http.reachable && edge.http.applicableCount > 0) {
+    const hardened = edge.http.hardenedCount;
+    const applicable = edge.http.applicableCount;
+    const weak = edgeTransportHeaders.filter((header) => header.status !== 'Healthy');
+    items.push({
+      key: 'headers',
+      label: 'HTTP Security Headers',
+      value: `${hardened}/${applicable} hardened`,
+      status: hardened === applicable ? 'pass' : hardened === 0 ? 'fail' : 'partial',
+      detail: weak.length
+        ? weak
+            .map((header) => `${header.name}: ${header.present ? header.weakness || 'present, weak' : 'absent'}`)
+            .join(' · ')
+        : 'Every applicable transport-security header is hardened.',
+      evidence: edgeTransportHeaders.map((header) => ({
+        label: header.name,
+        value: header.supersededBy
+          ? `not required — superseded by ${header.supersededBy}`
+          : header.present
+            ? `${header.status}${header.weakness ? ` — ${header.weakness}` : ''}${header.value ? ` · ${header.value}` : ''}`
+            : 'absent',
+      })),
+    });
+  } else if (nonHstsHeaders.length) {
+    const hardened = nonHstsHeaders.filter((header) => header.secure).length;
+    items.push({
+      key: 'headers',
+      label: 'HTTP Security Headers',
+      value: `${hardened}/${nonHstsHeaders.length} hardened`,
+      status: hardened === nonHstsHeaders.length ? 'pass' : hardened === 0 ? 'fail' : 'partial',
+      detail: nonHstsHeaders
+        .filter((header) => !header.secure)
+        .map((header) => `${header.name}: ${header.present ? 'present, weak' : 'absent'}`)
+        .join(' · ') || 'Every probed transport-security header is hardened.',
+    });
+  } else {
+    items.push(
+      unmeasured(
+        'headers',
+        'HTTP Security Headers',
+        edge && !edge.http.reachable
+          ? `The origin did not answer over HTTPS (${edge.http.error ?? 'no response'}), so no response headers were collected.`
+          : 'Transport-security headers are read from the origin\'s HTTPS response.',
+      ),
+    );
+  }
+
+  /* ── Public-edge controls ──────────────────────────────────────────────────
+     Every row below used to be a flat "Not probed". They are now measured by
+     the same engines /public-scan uses, and each states its own evidence. */
+
+  /* OCSP stapling. `not-advertised` and `unreachable` are different failures
+     and are never flattened: one is a certificate that never promised
+     revocation checking, the other is one that promised it and cannot deliver. */
+  if (edge?.certificate.probed) {
+    const cert = edge.certificate;
+    items.push({
+      key: 'ocsp-stapling',
+      label: 'OCSP Stapling',
+      value: cert.ocspStapled ? 'Enabled' : cert.mustStaple ? 'Must-staple violated' : 'Not stapled',
+      status: cert.ocspStapled ? 'pass' : cert.mustStaple ? 'fail' : 'partial',
+      detail: cert.ocspStapled
+        ? 'A stapled OCSP response was delivered in the handshake, so clients learn revocation status without contacting the CA.'
+        : cert.mustStaple
+          ? 'The certificate carries the must-staple extension but no response was stapled — conforming clients are required to hard-fail this connection.'
+          : `No OCSP response was stapled. Revocation checking falls back to a client-side fetch, which leaks browsing metadata and is soft-failed by most clients (responder: ${cert.ocspResponderState}).`,
+      evidence: [
+        { label: 'Stapled in handshake', value: cert.ocspStapled ? 'yes' : 'no' },
+        { label: 'Responder state', value: `${cert.ocspResponderState}${cert.ocspResponderDetail ? ` — ${cert.ocspResponderDetail}` : ''}` },
+        { label: 'Responder URI', value: cert.ocspUri ?? 'none advertised in the certificate' },
+        { label: 'Must-staple', value: cert.mustStaple ? 'required by the certificate' : 'not required' },
+        { label: 'CRL distribution points', value: cert.crlDistributionPoints.join(', ') || 'none published' },
+      ],
+    });
+  } else {
+    items.push(
+      unmeasured('ocsp-stapling', 'OCSP Stapling', 'Revocation stapling is read from the TLS handshake extension.'),
+    );
+  }
+
+  /* Certificate Transparency. */
+  if (edge?.certificate.probed) {
+    const cert = edge.certificate;
+    items.push({
+      key: 'certificate-transparency',
+      label: 'Certificate Transparency',
+      value: cert.sctPresent ? `${pluralize(cert.sctCount, 'SCT')}` : 'No SCTs',
+      status: cert.sctPresent ? (cert.sctCount >= 2 ? 'pass' : 'partial') : 'fail',
+      detail: cert.sctPresent
+        ? `${cert.sctCount} Signed Certificate Timestamp(s) present, so issuance for this name is publicly auditable.${cert.sctCount < 2 ? ' Chrome requires at least two SCTs from independent logs for publicly-trusted certificates.' : ''}`
+        : 'No Signed Certificate Timestamps were found in the certificate, the handshake or a stapled OCSP response — misissuance for this name would not be publicly auditable.',
+      evidence: [
+        { label: 'SCTs present', value: cert.sctPresent ? 'yes' : 'no' },
+        { label: 'SCT count', value: String(cert.sctCount) },
+        {
+          label: 'Sources checked',
+          value: 'certificate extension (1.3.6.1.4.1.11129.2.4.2), TLS handshake extension, stapled OCSP response',
+        },
+      ],
+    });
+  } else {
+    items.push(
+      unmeasured(
+        'certificate-transparency',
+        'Certificate Transparency',
+        'SCTs are read from the certificate extension, the TLS handshake or a stapled OCSP response.',
+      ),
+    );
+  }
+
+  /* DNS CAA. `caaQueryable` is what separates "no policy published" from "no
+     resolver answered" — the distinction UDP/53 blocking used to destroy, which
+     is why the DNS engine falls back to DNS-over-HTTPS before reporting either. */
+  if (edge?.dns.caaQueryable) {
+    const dns = edge.dns;
+    items.push({
+      key: 'dns-caa',
+      label: 'DNS Security (CAA)',
+      value: dns.caaPresent ? `Present (${dns.caaRecords.length})` : 'Missing',
+      status: dns.caaPresent ? 'pass' : 'partial',
+      detail: dns.caaPresent
+        ? `A CAA issuance policy restricts which CAs may issue for ${dns.caaAtName}.`
+        : `No CAA record is published for ${dns.caaAtName || edge.host}, so any public CA may issue a certificate for this name. This is a measured absence — the resolver returned an authoritative answer.`,
+      evidence: [
+        { label: 'Records', value: dns.caaRecords.join(' | ') || 'none published' },
+        { label: 'Checked at', value: dns.caaAtName ?? edge.host },
+        { label: 'Resolver', value: dns.caaSource ?? 'unknown' },
+      ],
+    });
+  } else {
+    items.push(
+      unmeasured(
+        'dns-caa',
+        'DNS Security (CAA)',
+        'CAA issuance policy is read over DNS; no resolver returned an authoritative answer for this name over UDP/53 or DNS-over-HTTPS.',
+      ),
+    );
+  }
+
+  /* DNSSEC. Zone signing and resolver validation are separate facts: DNSKEY
+     presence proves the zone is signed, the AD bit proves a validating resolver
+     actually verified the chain. */
+  if (edge?.dns.dnssecQueryable) {
+    const dns = edge.dns;
+    items.push({
+      key: 'dnssec',
+      label: 'DNSSEC',
+      value: dns.dnssecSigned ? (dns.dnssecValidated ? 'Signed & validated' : 'Signed') : 'Unsigned',
+      status: dns.dnssecSigned ? (dns.dnssecValidated ? 'pass' : 'partial') : 'partial',
+      detail: dns.dnssecSigned
+        ? dns.dnssecValidated
+          ? 'The zone publishes DNSKEY records and a validating resolver verified the chain of trust (AD bit set).'
+          : 'The zone publishes DNSKEY records, but the resolver did not return the AD bit, so the chain of trust to the parent was not confirmed.'
+        : 'No DNSKEY record was returned for the zone, so DNS answers for this name are not origin-authenticated and can be spoofed on the resolution path.',
+      evidence: [
+        { label: 'Zone signed (DNSKEY)', value: dns.dnssecSigned ? 'yes' : 'no' },
+        { label: 'Resolver-validated (AD bit)', value: dns.dnssecValidated ? 'yes' : 'no' },
+        { label: 'Transport', value: dns.transports.join(', ') || dns.resolvedVia },
+      ],
+    });
+  } else {
+    items.push(
+      unmeasured('dnssec', 'DNSSEC', 'Zone signing is established by querying DNSKEY over DNS-over-HTTPS.'),
+    );
+  }
+
+  /* ALPN. A completed handshake that negotiates no protocol is a MEASURED
+     absence (the server declined our offer) and must not read the same as a
+     handshake that never happened. */
+  if (edge?.transport.alpnProbed) {
+    const transport = edge.transport;
+    items.push({
+      key: 'alpn',
+      label: 'ALPN',
+      value: transport.alpn ? (transport.alpn === 'h2' ? 'h2 (HTTP/2)' : transport.alpn) : 'Not negotiated',
+      status: transport.alpn ? 'pass' : 'partial',
+      detail: transport.alpn
+        ? `The endpoint selected ${transport.alpn} from the offered protocol list during the TLS handshake.`
+        : 'The endpoint completed the handshake without selecting an application protocol from the offered list, so the connection falls back to HTTP/1.1 by convention.',
+      evidence: [
+        { label: 'Negotiated', value: transport.alpn ?? 'none selected' },
+        { label: 'Offered', value: transport.alpnOffered.join(', ') },
+        { label: 'HTTP/2', value: transport.http2 ? 'supported' : 'not negotiated' },
+        { label: 'HTTP version observed on the origin', value: edge.http.httpVersion ?? 'not observed' },
+      ],
+    });
+  } else {
+    items.push(
+      unmeasured('alpn', 'ALPN', 'The negotiated application protocol is read from the TLS handshake ALPN extension.'),
+    );
+  }
 
   /* ── Estate-only controls the public surface cannot see ────────────────── */
   const keyAlgorithm = certificate?.publicKeyAlgorithm || null;
@@ -1607,9 +2027,18 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
     detail: certificate ? `Valid ${certificate.validFrom} to ${certificate.validTo}` : 'No certificate chain was collected.',
   });
 
-  const negotiatedIsEphemeral = !tls
-    ? null
-    : Boolean(tls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(tls.keyExchange || '');
+  /* Forward secrecy.
+     TLS 1.3 removes every static key-transport suite from the protocol, so a
+     completed 1.3 handshake IS proof of forward secrecy regardless of what Node
+     reports for the ephemeral key (it returns `{}` for 1.3). The edge engine
+     encodes that reasoning and returns the basis it used, so the row can state
+     WHY rather than asserting a flag. */
+  const edgeStaticRsa = edge?.transport.staticRsaAccepted ?? staticRsaSuites.length > 0;
+  const negotiatedIsEphemeral = edge?.transport
+    ? edge.transport.forwardSecrecy
+    : !tls
+      ? null
+      : Boolean(tls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(tls.keyExchange || '');
   items.push({
     key: 'pfs',
     label: 'Forward Secrecy',
@@ -1617,19 +2046,27 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       ? 'Not observed'
       : !negotiatedIsEphemeral
         ? 'Not offered'
-        : staticRsaSuites.length > 0
+        : edgeStaticRsa
           ? 'Partial'
           : 'Enabled',
     status: negotiatedIsEphemeral === null
       ? 'unknown'
       : !negotiatedIsEphemeral
         ? 'fail'
-        : staticRsaSuites.length > 0
+        : edgeStaticRsa
           ? 'partial'
           : 'pass',
-    detail: staticRsaSuites.length > 0
-      ? `Negotiated ${tls?.keyExchange || 'ephemeral'} key agreement, but ${staticRsaSuites.length} static-RSA suite(s) are also accepted; sessions using those have no forward secrecy.`
-      : 'Ephemeral key agreement observed on the negotiated suite.',
+    detail: edgeStaticRsa
+      ? `${edge?.transport.forwardSecrecyBasis ?? 'Ephemeral key agreement observed on the negotiated suite.'} However, static-RSA key-transport suite(s) are also accepted; sessions negotiated on those have no forward secrecy at all.`
+      : edge?.transport.forwardSecrecyBasis ?? 'Ephemeral key agreement observed on the negotiated suite.',
+    evidence: edge?.transport
+      ? [
+          { label: 'Basis', value: edge.transport.forwardSecrecyBasis },
+          { label: 'Static RSA key transport accepted', value: edgeStaticRsa ? 'yes' : 'no' },
+          { label: 'Session tickets', value: edge.transport.sessionTickets === null ? 'not observed' : edge.transport.sessionTickets ? 'issued' : 'not issued' },
+          { label: 'Session resumption honoured', value: edge.transport.sessionReuse === null ? 'not tested' : edge.transport.sessionReuse ? 'yes' : 'no' },
+        ]
+      : undefined,
   });
 
   const sshFindings = findings.filter((finding) => /ssh/i.test(finding.category));
@@ -1679,9 +2116,29 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       : 'The Scanner_2 enterprise pass has not scored this estate yet.',
   });
 
-  items.push(
-    notProbed('edge-infrastructure', 'Edge Infrastructure', 'CDN and WAF attribution is inferred from response-header signatures.'),
-  );
+  /* Edge attribution.
+     A host behind no CDN is a REAL answer ("Origin-served") and must not render
+     the same as a host whose headers were never read — which is exactly what
+     the old flat "Not probed" did to both. */
+  if (edge) {
+    const infrastructure = describeEdgeInfrastructure(edge);
+    items.push({
+      key: 'edge-infrastructure',
+      label: 'Edge Infrastructure',
+      value: infrastructure.value,
+      status: infrastructure.state,
+      detail: infrastructure.detail,
+      evidence: infrastructure.evidence.length ? infrastructure.evidence : undefined,
+    });
+  } else {
+    items.push(
+      unmeasured(
+        'edge-infrastructure',
+        'Edge Infrastructure',
+        'CDN, WAF, cloud and reverse-proxy attribution is read from response-header signatures.',
+      ),
+    );
+  }
 
   return items;
 }

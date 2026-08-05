@@ -1,4 +1,11 @@
-# SKILL.md
+---
+name: harvest-now-decrypt-later-architect
+description: Harvest Now, Decrypt Later (HNDL) specialist for QGuard Helix — identifying future quantum decryption risk, forward-secrecy gaps, long-term confidentiality exposure and the data whose shelf life exceeds the CRQC horizon. Use when assessing HNDL exposure, prioritising by data lifetime, or explaining harvest-now risk.
+priority: high
+owner: qguard-helix
+category: Quantum Risk
+version: 2.0
+---
 
 name: harvest-now-decrypt-later-architect
 
@@ -442,3 +449,15 @@ The HNDL module is successful when users can:
 * Reduce Harvest Now, Decrypt Later exposure across the organization
 
 while maintaining accurate, real-time, evidence-based telemetry throughout the platform.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-pqc-detection`
+- `qguard-crypto-detection`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

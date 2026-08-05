@@ -591,3 +591,15 @@ Answer these questions instantly:
 10. Can leadership prove readiness with evidence?
 
 Success means every TLS handshake, certificate, protocol, key exchange, encryption event, and PQC migration activity is observable, measurable, explainable, and actionable across the entire QGuard Helix platform.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-backend-engineering`
+- `qguard-performance`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

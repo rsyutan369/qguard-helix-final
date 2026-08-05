@@ -6,6 +6,10 @@
 // ─── Target Types ─────────────────────────────────────────────────────────────
 
 import type { PublishedScoreCategory } from './published-scoring'
+/* Type-only, so no runtime cycle is created: `edge-intelligence` imports
+   `TlsAnalysisResult` back from here, and both sides are erased at compile
+   time. The shape lives beside the engine that produces it. */
+import type { EdgeIntelligence } from './edge-intelligence'
 
 export type WebScanTargetType = 'url' | 'domain' | 'ip' | 'github'
 export type ThreatLevel = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'SAFE'
@@ -219,6 +223,18 @@ export interface DetectionContext {
   apiResult: ApiSecurityResult | null
   repoResult: GitRepoScanResult | null
   webCryptoResult: WebCryptoScanResult | null
+  /**
+   * Measured public-edge evidence, when the target has a public edge.
+   *
+   * The post-quantum rules previously tested `tlsResult.cipherSuite.includes
+   * ('Kyber')`. That can never be true: TLS 1.3 suite names carry no
+   * key-exchange token (`TLS_AES_256_GCM_SHA384`) and Node does not expose the
+   * negotiated group, so PQC-001/002/003 fired on every endpoint on Earth —
+   * including the ones that genuinely negotiate X25519MLKEM768. Rules that
+   * assert something about post-quantum support must read the named-group
+   * measurement, and must return null when it is absent rather than guess.
+   */
+  edgeIntelligence?: EdgeIntelligence | null
 }
 
 export interface DetectionRuleResult {
@@ -351,6 +367,16 @@ export interface WebScanCompleteResult {
   detectionRuleResults: DetectionRuleResult[]
   runtimeHealth?: unknown
   scanConfidence?: { confidence: number; label: string; factors: string[] }
+  /**
+   * The public-edge evidence bundle: post-quantum named-group probing, ALPN,
+   * OCSP stapling, Certificate Transparency, CAA, DNSSEC, transport-security
+   * headers and edge attribution.
+   *
+   * Absent for target types with no public edge (a repository URL), and absent
+   * on scans persisted before this engine existed — consumers must treat
+   * `undefined` as "not measured", never as a negative verdict.
+   */
+  edgeIntelligence?: EdgeIntelligence | null
 }
 
 // ─── SSE Event Types ──────────────────────────────────────────────────────────

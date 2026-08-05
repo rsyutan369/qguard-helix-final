@@ -1,4 +1,11 @@
-# AI-Executive-Advisor.skills.md
+---
+name: ai-executive-advisor
+description: Executive and board-level communication for QGuard Helix — translating cryptographic and quantum risk into business impact, investment justification, program status and decision-ready narrative. Use when producing executive summaries, board reporting or business-risk framing of technical findings.
+priority: high
+owner: qguard-helix
+category: Executive Intelligence
+version: 2.0
+---
 
 # QGuard Helix™ AI Executive Advisor™ Skills
 
@@ -716,3 +723,15 @@ Instead, it should answer:
 • What executive decisions are needed today?
 
 The AI Executive Advisor™ is the strategic voice of QGuard Helix, providing trusted board-level guidance that bridges cybersecurity, business strategy, governance, and post-quantum transformation.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-reporting-analytics`
+- `qguard-data-integrity`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

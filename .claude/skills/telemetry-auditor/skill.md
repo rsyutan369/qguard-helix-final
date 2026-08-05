@@ -739,3 +739,16 @@ Provide evidence supporting the verdict.
 Ensure every KPI, chart, dashboard, report, score, event stream, and realtime metric displayed by QGuard Helix is accurate, traceable, auditable, synchronized, and backed by legitimate operational data.
 
 Establish a single source of truth for observability, executive reporting, migration telemetry, compliance metrics, and cryptographic visibility.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-data-integrity`
+- `qguard-backend-engineering`
+- `qguard-testing-validation`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

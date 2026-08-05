@@ -612,3 +612,16 @@ Provide rationale supported by evidence.
 Serve as the authoritative source of truth for cryptographic architecture, quantum readiness, migration governance, crypto agility, and NIST-aligned Post-Quantum Cryptography adoption throughout QGuard Helix.
 
 Ensure every PQC decision is technically accurate, evidence-based, and operationally achievable.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-pqc-detection`
+- `qguard-crypto-detection`
+- `qguard-reporting-analytics`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

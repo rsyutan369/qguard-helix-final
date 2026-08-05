@@ -11,6 +11,36 @@ import type {
   ThreatLevel,
 } from './types'
 
+/**
+ * Has this scan actually OBSERVED post-quantum cryptography?
+ *
+ * The rules that ask this used to scan finding titles for "ML-KEM" / "Kyber" /
+ * "ML-DSA". Every recommendation-shaped finding this scanner produces contains
+ * one of those strings — "Migrate to ML-KEM-768", "Enable X25519Kyber768
+ * hybrid key exchange" — so the test answered "yes, PQC is deployed" precisely
+ * because the scan had recommended deploying it. That inversion is what let an
+ * endpoint with an expired certificate, TLS 1.2 only and static RSA accepted be
+ * reported as hybrid-protected.
+ *
+ * Evidence now means evidence: an accepted named group, or a post-quantum
+ * signature parsed out of the served certificate chain. Source-code and
+ * dependency observations count too — a repository that imports liboqs has
+ * genuinely adopted PQC even though it exposes no TLS endpoint — but only when
+ * they came from a pattern match, never from a recommendation string.
+ */
+function hasObservedPqc(ctx: DetectionContext): boolean {
+  const edge = ctx.edgeIntelligence
+  if (edge?.quantum.hybridObserved || edge?.quantum.pqSignatureObserved) return true
+  if (edge?.pqKeyAgreement.pureKemGroups.length) return true
+
+  const pqcPattern = /ml[-_ ]?kem|ml[-_ ]?dsa|slh[-_ ]?dsa|kyber|dilithium|sphincs|falcon|liboqs/i
+  const codePatterns = [
+    ...(ctx.repoResult?.patterns ?? []),
+    ...(ctx.webCryptoResult?.patterns ?? []),
+  ]
+  return codePatterns.some((pattern) => pqcPattern.test(pattern.algorithm))
+}
+
 // ─── Detection Rules Database ───────────────────────────────────────────────
 
 export const DETECTION_RULES: DetectionRule[] = [
@@ -545,23 +575,38 @@ export const DETECTION_RULES: DetectionRule[] = [
 
   // ── PQC Readiness Rules (6 rules) ─────────────────────────────────────────
 
+  /*
+   * PQC-001 / 002 / 003 are asserted from the NAMED-GROUP MEASUREMENT, never
+   * from suite-name substrings.
+   *
+   * These three rules used to test `tls.cipherSuite.includes('Kyber')` and
+   * `tls.keyExchange.includes('ML-KEM')`. Neither string can ever appear: a TLS
+   * 1.3 suite name is `TLS_AES_256_GCM_SHA384` with no key-exchange token at
+   * all, and Node's `getEphemeralKeyInfo()` returns `{}` for TLS 1.3, so the
+   * negotiated group never reaches `keyExchange` either. The rules therefore
+   * fired unconditionally — publishing "No hybrid TLS · HIGH" against endpoints
+   * that demonstrably negotiate X25519MLKEM768, and PQC-003 fired on literally
+   * every TLS target because it never even checked.
+   *
+   * They now read `edgeIntelligence`, where each hybrid group was offered in
+   * isolation under a TLS 1.3 floor and re-sampled for agreement. When that
+   * measurement is absent the rules return null: "we did not probe" must never
+   * be published as "they do not support it".
+   */
   {
     id: 'PQC-001',
     name: 'No PQC Cipher Suites',
     category: 'pqc-readiness',
     severity: 'HIGH',
-    description: 'No post-quantum cipher suites detected',
-    remediation: 'Enable PQC hybrid cipher suites (X25519Kyber768)',
+    description: 'No post-quantum key establishment offered on the negotiated transport',
+    remediation: 'Enable the hybrid X25519MLKEM768 group on TLS 1.3',
     evaluate: (ctx) => {
-      const tls = ctx.tlsResult
-      if (!tls) return null
-      const hasPqc = tls.cipherSuite.includes('Kyber') || tls.cipherSuite.includes('ML-KEM')
-      if (!hasPqc) {
-        return makeResult('PQC-001', 'No PQC Cipher Suites', 'pqc-readiness', 'HIGH',
-          'No post-quantum cipher suites detected in TLS configuration',
-          'Enable hybrid PQC cipher suites: X25519Kyber768 + TLS 1.3')
-      }
-      return null
+      const edge = ctx.edgeIntelligence
+      if (!ctx.tlsResult || !edge?.pqKeyAgreement.probed) return null
+      if (edge.quantum.hybridObserved || edge.pqKeyAgreement.pureKemGroups.length) return null
+      return makeResult('PQC-001', 'No PQC Cipher Suites', 'pqc-readiness', 'HIGH',
+        `No post-quantum key establishment accepted: every ML-KEM group was offered in isolation and refused across ${edge.pqKeyAgreement.handshakes} handshake(s)`,
+        'Enable hybrid PQC key establishment: X25519MLKEM768 on TLS 1.3')
     },
   },
   {
@@ -572,15 +617,14 @@ export const DETECTION_RULES: DetectionRule[] = [
     description: 'Server does not support hybrid classical + PQC key exchange',
     remediation: 'Deploy hybrid TLS configuration with ML-KEM + X25519',
     evaluate: (ctx) => {
-      const tls = ctx.tlsResult
-      if (!tls) return null
-      const hasHybrid = tls.keyExchange.includes('Kyber') || tls.keyExchange.includes('ML-KEM')
-      if (!hasHybrid) {
-        return makeResult('PQC-002', 'No Hybrid TLS', 'pqc-readiness', 'HIGH',
-          'No hybrid (classical + PQC) key exchange support detected',
-          'Deploy hybrid TLS: ML-KEM-768 + X25519 for backward-compatible quantum safety')
-      }
-      return null
+      const edge = ctx.edgeIntelligence
+      if (!ctx.tlsResult || !edge?.pqKeyAgreement.probed) return null
+      if (edge.quantum.hybridObserved) return null
+      return makeResult('PQC-002', 'No Hybrid TLS', 'pqc-readiness', 'HIGH',
+        edge.pqKeyAgreement.hybridProbed
+          ? 'No hybrid (classical + PQC) key exchange accepted when each hybrid group was offered in isolation'
+          : 'Hybrid key exchange is not possible: the endpoint does not negotiate TLS 1.3, where hybrid ML-KEM groups are defined',
+        'Deploy hybrid TLS: ML-KEM-768 + X25519 for backward-compatible quantum safety')
     },
   },
   {
@@ -588,13 +632,14 @@ export const DETECTION_RULES: DetectionRule[] = [
     name: 'No ML-KEM Support',
     category: 'pqc-readiness',
     severity: 'MEDIUM',
-    description: 'ML-KEM (Kyber) key encapsulation not supported',
+    description: 'ML-KEM key encapsulation not supported',
     remediation: 'Enable ML-KEM-768 in TLS configuration',
     evaluate: (ctx) => {
-      const tls = ctx.tlsResult
-      if (!tls) return null
+      const edge = ctx.edgeIntelligence
+      if (!ctx.tlsResult || !edge?.pqKeyAgreement.probed) return null
+      if (edge.pqKeyAgreement.kemParameterSets.length) return null
       return makeResult('PQC-003', 'No ML-KEM Support', 'pqc-readiness', 'MEDIUM',
-        'ML-KEM (Kyber) key encapsulation not detected — server is not PQC-ready',
+        'ML-KEM key encapsulation not accepted on any probed named group — server is not PQC-ready',
         'Enable ML-KEM-768 (FIPS 203) in server TLS configuration')
     },
   },
@@ -648,9 +693,7 @@ export const DETECTION_RULES: DetectionRule[] = [
     evaluate: (ctx) => {
       // This rule triggers when quantum-vulnerable algorithms are found but no PQC indicators exist
       const hasVulnAlgs = ctx.findings.some(f => f.threatLevel === 'CRITICAL' || f.threatLevel === 'HIGH')
-      const hasPqcIndicators = ctx.findings.some(f =>
-        f.algorithm.includes('ML-KEM') || f.algorithm.includes('ML-DSA') || f.algorithm.includes('Kyber')
-      )
+      const hasPqcIndicators = hasObservedPqc(ctx)
       if (hasVulnAlgs && !hasPqcIndicators) {
         return makeResult('PQC-006', 'No PQC Migration Strategy', 'pqc-readiness', 'MEDIUM',
           'Quantum-vulnerable algorithms detected with no PQC migration indicators',
@@ -989,9 +1032,7 @@ export const DETECTION_RULES: DetectionRule[] = [
     remediation: 'Develop and begin executing PQC migration roadmap',
     evaluate: (ctx) => {
       const hasAnyVuln = ctx.findings.some(f => f.threatLevel === 'CRITICAL' || f.threatLevel === 'HIGH')
-      const hasPqc = ctx.findings.some(f =>
-        f.algorithm.includes('ML-KEM') || f.algorithm.includes('Kyber') || f.algorithm.includes('ML-DSA')
-      )
+      const hasPqc = hasObservedPqc(ctx)
       if (hasAnyVuln && !hasPqc) {
         return makeResult('NIST-002', 'NIST PQC Deadline', 'pqc-readiness', 'MEDIUM',
           'NIST recommends complete PQC migration by 2035 — quantum-vulnerable algorithms detected with no PQC adoption',

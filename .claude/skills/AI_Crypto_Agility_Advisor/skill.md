@@ -1,4 +1,11 @@
-# AI-Crypto-Agility-Advisor.skills.md
+---
+name: ai-crypto-agility-advisor
+description: Crypto-agility assessment for QGuard Helix — evaluating how quickly an estate can swap algorithms, identifying hardcoded cryptography, agility blockers, abstraction gaps and rotation readiness. Use when assessing crypto-agility maturity, planning algorithm swaps or reviewing cryptographic abstraction layers.
+priority: high
+owner: qguard-helix
+category: Crypto Agility
+version: 2.0
+---
 
 # QGuard Helix™ AI Crypto Agility Advisor™
 
@@ -799,3 +806,15 @@ Crypto Agility is not simply replacing RSA with post-quantum algorithms.
 It is building an enterprise cryptographic ecosystem that can continuously adapt to new standards, emerging threats, regulatory requirements, and technological evolution without disrupting business operations.
 
 The AI Crypto Agility Advisor™ is the strategic modernization engine of QGuard Helix, enabling organizations to achieve sustainable, standards-based, and future-ready cryptographic resilience through continuous crypto agility.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-pqc-detection`
+- `qguard-crypto-detection`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

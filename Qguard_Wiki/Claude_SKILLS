@@ -3,7 +3,6 @@ Create and Continuously Expand QGuard Helix Claude Skills Knowledge Base
 Please create a comprehensive set of Claude Skills for the QGuard Helix Platform.
 
 The purpose of these Skills is to capture our accumulated engineering knowledge, architectural decisions, best practices, recurring issues, proven solutions, and implementation patterns so they can be automatically reused across the entire project.
-
 These Skills should become the long-term knowledge base for QGuard Helix, allowing Claude to consistently build upon previous work instead of solving the same problems repeatedly.
 
 Primary Objective

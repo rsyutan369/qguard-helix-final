@@ -638,3 +638,15 @@ Leadership view of key governance maturity.
 Provide complete visibility, governance, lifecycle management, crypto-agility, and post-quantum readiness for all cryptographic keys across the enterprise.
 
 Enable trusted cryptographic operations, regulatory compliance, and secure migration to quantum-safe key infrastructures.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-security-practices`
+- `qguard-pqc-detection`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

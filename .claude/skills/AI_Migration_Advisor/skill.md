@@ -1,4 +1,11 @@
-# AI-Migration-Advisor.skills.md
+---
+name: ai-migration-advisor
+description: Post-quantum migration advisory for QGuard Helix — sequencing, prioritisation, effort estimation, dependency-aware planning and risk-managed cutover guidance. Use when advising on migration strategy, ordering remediation work or estimating migration complexity.
+priority: high
+owner: qguard-helix
+category: Artificial Intelligence
+version: 2.0
+---
 
 # QGuard Helix™ AI Migration Advisor™ Skills
 
@@ -712,3 +719,14 @@ What business value will it deliver?
 What quantum risk will it eliminate?
 
 The AI Migration Advisor™ must function as a trusted enterprise transformation consultant for post-quantum cryptography, enabling organizations to execute secure, measurable, and strategically aligned migrations toward a quantum-safe future.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-migration-platform`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

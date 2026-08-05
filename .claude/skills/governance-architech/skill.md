@@ -578,3 +578,15 @@ Prioritized governance improvements.
 Provide continuous, evidence-based governance, audit readiness, regulatory alignment, and cryptographic compliance across the enterprise.
 
 Enable trusted compliance reporting, audit success, and post-quantum governance readiness.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-reporting-analytics`
+- `qguard-security-practices`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

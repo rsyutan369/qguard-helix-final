@@ -836,3 +836,15 @@ Answer these questions instantly:
 10. Can the organization safely migrate to post-quantum cryptography?
 
 Success means every trust relationship, dependency, vendor, certificate chain, API integration, cloud dependency, and supply-chain risk is continuously visible, measurable, validated, and migration-ready across the entire QGuard Helix ecosystem.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-source-discovery`
+- `qguard-crypto-detection`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

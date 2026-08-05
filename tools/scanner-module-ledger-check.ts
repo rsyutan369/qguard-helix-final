@@ -50,6 +50,10 @@ function assert(condition: boolean, label: string) {
  */
 const ORCHESTRATOR_MODULE_IDS = [
   'target-parser',
+  'dns-security-analyzer',
+  'pq-key-agreement-analyzer',
+  'revocation-transparency-analyzer',
+  'edge-infrastructure-analyzer',
   'tls-analyzer',
   'key-exchange-analyzer',
   'certificate-parser',

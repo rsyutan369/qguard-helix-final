@@ -1,4 +1,11 @@
-# AI-Compliance-Advisor.skills.md
+---
+name: ai-compliance-advisor
+description: Regulatory and compliance intelligence for QGuard Helix — mapping cryptographic findings to NIST, FIPS, ISO, PCI DSS, HIPAA, GDPR and sector controls, evidence for audit readiness, and compliance gap analysis. Use when working on compliance status, control mapping, regulatory reporting or audit evidence.
+priority: high
+owner: qguard-helix
+category: Governance
+version: 2.0
+---
 
 # QGuard Helix™ AI Compliance Advisor™ Skills
 
@@ -679,3 +686,14 @@ It should answer:
 • How prepared are we for future post-quantum regulatory requirements?
 
 The AI Compliance Advisor™ serves as the trusted governance and regulatory intelligence engine of QGuard Helix, ensuring every recommendation is evidence-based, standards-aligned, auditable, and actionable.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-reporting-analytics`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

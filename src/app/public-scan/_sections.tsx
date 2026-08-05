@@ -464,8 +464,11 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
         <div className="border-t border-white/[0.06] pt-3">
           <p className="text-[11px] font-semibold text-slate-500">Estimated PQ Migration Targets</p>
           <ul className="mt-2 space-y-1.5">
+            {/* Keyed on target AND the primitive it replaces: one PQ algorithm
+                legitimately replaces several classical ones, so the name alone
+                collides and React drops the rows it considers duplicates. */}
             {intelligence.migrationTargets.map((target) => (
-              <li key={target.name} className="flex items-start gap-2 text-[13px]">
+              <li key={`${target.name}::${target.replaces}`} className="flex items-start gap-2 text-[13px]">
                 <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
                 <span>
                   <span className="font-mono font-bold text-slate-100">{target.name}</span>

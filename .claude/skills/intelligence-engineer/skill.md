@@ -608,3 +608,15 @@ Prioritized actions.
 Executive Summary
 
 Strategic intelligence assessment.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-data-integrity`
+- `qguard-reporting-analytics`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

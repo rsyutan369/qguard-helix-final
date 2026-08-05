@@ -1,4 +1,11 @@
-# AI-Cryptography-Advisor.skills.md
+---
+name: ai-cryptography-advisor
+description: Applied cryptography guidance for QGuard Helix — algorithm selection, key sizes, cipher modes, padding, randomness, protocol configuration and correct use of primitives. Use when choosing or reviewing a cryptographic algorithm, explaining a cryptographic finding, or judging whether an implementation is sound.
+priority: high
+owner: qguard-helix
+category: Cryptography
+version: 2.0
+---
 
 # QGuard Helix™ AI Cryptography Advisor™ Skills
 
@@ -709,3 +716,15 @@ It should answer:
 • How do we achieve crypto agility?
 
 The AI Cryptography Advisor™ is the trusted cryptographic authority within QGuard Helix, providing standards-based, evidence-driven, and enterprise-ready guidance for secure cryptographic modernization and post-quantum transformation.
+
+---
+
+## Engineering knowledge base
+
+This skill defines *what* to assess. For *how this codebase implements it* —
+file locations, proven patterns, and issues already resolved — load:
+
+- `qguard-crypto-detection`
+- `qguard-pqc-detection`
+- `qguard-common-issues-fixes` — check the symptom before debugging
+- `qguard-knowledge-base` — index, and how to record new knowledge

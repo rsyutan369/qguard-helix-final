@@ -656,6 +656,12 @@ function normalizeWebResult(result: WebScanCompleteResult, startedAt: string): D
       detectionRuleResults: result.detectionRuleResults,
       runtimeHealth: result.runtimeHealth,
       scanConfidence: result.scanConfidence,
+      /* The measured public-edge surface: post-quantum named groups, ALPN,
+         OCSP, SCTs, CAA, DNSSEC, transport headers and edge attribution. This
+         is what lets the dashboard's Observed Attack Surface report verdicts
+         instead of "Not probed", and it persists with the scan so a history
+         entry renders exactly what the live run did. */
+      edgeIntelligence: result.edgeIntelligence ?? null,
     },
   }
 }
@@ -1957,7 +1963,7 @@ router.get('/stream', async (req, res) => {
       const targetStart = new Date().toISOString()
       if (target.type === 'ssh') {
         updateModule('ssh-host-key-scanner', { status: 'Running', target: target.normalized }, 'SSH host key scanner running')
-        ;['tls-protocol-scanner', 'certificate-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner', 'crypto-detection-rules', 'jwt-signing-scanner', 'dependency-crypto-scanner'].forEach((moduleId) => {
+        ;['tls-protocol-scanner', 'certificate-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'pq-key-agreement-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner', 'revocation-transparency-scanner', 'dns-security-scanner', 'edge-infrastructure-scanner', 'crypto-detection-rules', 'jwt-signing-scanner', 'dependency-crypto-scanner'].forEach((moduleId) => {
           const moduleName = SCANNER_MODULE_CATALOG.find((module) => module.id === moduleId)?.name || moduleId
           const reason = `an SSH endpoint exposes host keys, not a TLS/HTTP surface — ${target.normalized} is out of scope for this module`
           updateModule(
