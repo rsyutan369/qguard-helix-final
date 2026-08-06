@@ -26,13 +26,24 @@ const router = Router()
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
 /**
- * Raised from 45s. Named-group enumeration is now strictly sequential and
- * re-samples every group for agreement, which is deliberately slower than the
- * old two-at-a-time batching — accuracy over speed. The group phase carries its
- * own 26s internal budget, so this is a backstop for the rest of the pipeline
- * rather than the thing that normally bounds a scan.
+ * Two budgets, and the difference between them is the point.
+ *
+ * `SCAN_BUDGET_MS` is what the ENGINES are told they have. They treat it as a
+ * degrade-by time: when it expires they return what they measured and mark the
+ * rest inconclusive, so the visitor always gets a report with its limits stated.
+ * A healthy endpoint finishes in 3-6s and never comes near it.
+ *
+ * `SCAN_TIMEOUT_MS` is a backstop for a bug, not a scanning strategy. It exists
+ * only so a wedged promise cannot hold a connection open forever. Reaching it
+ * means something is wrong with the scanner, not with the target.
+ *
+ * The previous single 75s timeout was both at once, which is why a slow endpoint
+ * produced a 75-second wait ending in an error: the engines had no idea a
+ * deadline existed, ran past it, and the race rejected everything they had
+ * already measured.
  */
-const SCAN_TIMEOUT_MS = 75_000
+const SCAN_BUDGET_MS = 45_000
+const SCAN_TIMEOUT_MS = 90_000
 const CACHE_TTL_MS = 10 * 60 * 1000
 /**
  * The streaming endpoint serves cached results for far less time than the
@@ -216,6 +227,7 @@ async function runScan(
         port: target.port,
         onStage,
         onObservation,
+        budgetMs: SCAN_BUDGET_MS,
       }),
       new Promise<never>((_resolve, reject) =>
         setTimeout(() => reject(new Error('Assessment exceeded the public scan time budget.')), SCAN_TIMEOUT_MS),
@@ -258,6 +270,7 @@ router.get('/capabilities', (_req, res) => {
       ],
       limits: {
         scansPerMinutePerClient: RATE_LIMIT_MAX_SCANS,
+        scanBudgetSeconds: SCAN_BUDGET_MS / 1000,
         scanTimeoutSeconds: SCAN_TIMEOUT_MS / 1000,
         cacheTtlSeconds: CACHE_TTL_MS / 1000,
         supportedPorts: [...ALLOWED_PORTS],

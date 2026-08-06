@@ -124,6 +124,17 @@ export interface ScanObservation {
   verdict?: string
   /** True when this observation is post-quantum evidence. */
   postQuantum?: boolean
+  /**
+   * Real completion counts for a phase that makes many measurements.
+   *
+   * The named-group phase performs dozens of handshakes inside ONE workflow
+   * stage. Without this the UI can only show that stage as "running" for its
+   * whole duration, which reads as a stall even when evidence is arriving every
+   * few hundred milliseconds. These are counts of work actually finished — never
+   * a timer, never an estimate — so a bar driven by them cannot get ahead of the
+   * scan or sit still while it is working.
+   */
+  progress?: { done: number; total: number }
   /** Epoch ms at which the measurement completed. */
   at: number
 }

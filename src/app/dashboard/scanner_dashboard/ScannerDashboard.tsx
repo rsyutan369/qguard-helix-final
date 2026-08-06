@@ -40,7 +40,6 @@ import {
 } from '@/lib/scanner/asset-validator';
 import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
-import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import AgentCollectorConsole from '@/components/agent-collector/AgentCollectorConsole';
 import AgentSettingsConsole from '@/components/agent-collector/AgentSettingsConsole';
 import {
@@ -57,6 +56,12 @@ import {
 } from '@/components/quantum-scan/ui';
 import { ScannerHero } from './_hero';
 import { buildAssessment, SCANNER_NODE_BLUEPRINTS, SCANNER_NODE_MODULES } from './_intel';
+import {
+  clearScannerSession,
+  loadScannerSession,
+  restoreStatus,
+  saveScannerSession,
+} from './_session';
 import {
   ScannerAttackSurface,
   ScannerCoverage,
@@ -894,6 +899,13 @@ export default function ScannerDashboard() {
   );
   const abortRef = useRef<AbortController | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+  /* Bumped by "New Scan" — the hero watches it and wipes the visualization
+     engine, which owns state this component cannot reach into. */
+  const [heroResetSignal, setHeroResetSignal] = useState(0);
+  /** True once the persisted session has been restored (or found absent). */
+  const sessionRestored = useRef(false);
+  /** Scroll offset from the restored session, applied after the first paint. */
+  const pendingScrollY = useRef<number | null>(null);
 
   useEffect(() => {
     setAgentForm((current) => {
@@ -1087,6 +1099,139 @@ export default function ScannerDashboard() {
     if (!terminalPaused && terminalPinned) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs.length, terminalPaused, terminalPinned]);
 
+  /* ── Session restore ───────────────────────────────────────────────────────
+     Runs once per signed-in user, before the first checkpoint can be written.
+     Everything here came from the scanner; nothing is reconstructed. */
+  useEffect(() => {
+    if (!user?.id || sessionRestored.current) return;
+    const snapshot = loadScannerSession(user.id);
+    sessionRestored.current = true;
+    if (!snapshot) return;
+
+    setStatus(restoreStatus(snapshot));
+    setProgress(snapshot.progress);
+    setJobId(snapshot.jobId);
+    setScanStartedAt(snapshot.scanStartedAt);
+    setSummary(snapshot.summary);
+    setFindings(snapshot.findings);
+    setModules(snapshot.modules);
+    setModuleLedger(snapshot.moduleLedger);
+    setScanResults(snapshot.scanResults);
+    setScanner2(snapshot.scanner2);
+    setLogs(snapshot.logs);
+    setError(snapshot.error);
+    setTargets(snapshot.targets as ValidatedAsset[]);
+    setAuthorizationAccepted(snapshot.authorizationAccepted);
+    setInputText(snapshot.inputText);
+    setSevFilter(snapshot.sevFilter);
+    setSearchQ(snapshot.searchQ);
+    setExpandedFinding(snapshot.expandedFinding);
+    setHistoryTimeframe(snapshot.historyTimeframe);
+    setSelectedHistoryId(snapshot.selectedHistoryId);
+    setTerminalPaused(snapshot.terminalPaused);
+    setTerminalPinned(snapshot.terminalPinned);
+    // A deep-link (?tab=) is the user's more recent intent than the checkpoint.
+    if (!requestedTab) setActiveTab(snapshot.activeTab);
+    pendingScrollY.current = snapshot.scrollY;
+
+    /* A run that was still streaming when the page was left kept running on
+       the server; only the client stopped listening. Say so, and pull the
+       authoritative record rather than inventing an outcome. */
+    if (snapshot.wasStreaming) {
+      setLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toISOString(),
+          level: 'WARN',
+          message:
+            'Live telemetry stream was detached when this page was reloaded. The scan continues on the server — its completed record appears in History.',
+        },
+      ]);
+      void fetchHistory();
+    }
+    // Restore is a one-shot bound to the signed-in user.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  /* Restore the scroll offset once the restored content has been laid out. */
+  useEffect(() => {
+    if (pendingScrollY.current === null) return;
+    const target = pendingScrollY.current;
+    pendingScrollY.current = null;
+    if (target <= 0) return;
+    const frame = window.requestAnimationFrame(() => window.scrollTo({ top: target }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [status, findings.length]);
+
+  /* ── Session checkpoint ────────────────────────────────────────────────────
+     Written on every material change so leaving the page — by navigation, by
+     reload, or by closing the laptop — never costs the assessment on screen. */
+  useEffect(() => {
+    if (!user?.id || !sessionRestored.current) return;
+    const hasSomethingToKeep =
+      status !== 'idle' ||
+      findings.length > 0 ||
+      modules.length > 0 ||
+      targets.length > 0 ||
+      logs.length > 0 ||
+      Boolean(summary);
+    if (!hasSomethingToKeep) return;
+
+    saveScannerSession(user.id, {
+      status,
+      progress,
+      jobId,
+      scanStartedAt,
+      summary,
+      findings,
+      modules,
+      moduleLedger,
+      scanResults,
+      scanner2,
+      logs,
+      error,
+      wasStreaming: isRunning,
+      targets,
+      authorizationAccepted,
+      inputText,
+      activeTab,
+      sevFilter,
+      searchQ,
+      expandedFinding,
+      historyTimeframe,
+      selectedHistoryId,
+      terminalPaused,
+      terminalPinned,
+      scrollY: typeof window === 'undefined' ? 0 : window.scrollY,
+    });
+  }, [
+    user?.id,
+    status,
+    progress,
+    jobId,
+    scanStartedAt,
+    summary,
+    findings,
+    modules,
+    moduleLedger,
+    scanResults,
+    scanner2,
+    logs,
+    error,
+    isRunning,
+    targets,
+    authorizationAccepted,
+    inputText,
+    activeTab,
+    sevFilter,
+    searchQ,
+    expandedFinding,
+    historyTimeframe,
+    selectedHistoryId,
+    terminalPaused,
+    terminalPinned,
+  ]);
+
   const handleParseInput = () => {
     const parsed = parseAssetInput(inputText);
     const valid = parsed.filter((item) => item.valid);
@@ -1267,6 +1412,71 @@ export default function ScannerDashboard() {
     }
     setStatus('cancelled');
   }, [jobId, session?.access_token]);
+
+  /**
+   * New Scan — a controlled application reset.
+   *
+   * Returns the scanner to its ready-to-scan state without a browser refresh:
+   * every derived surface on the page reads from the state cleared here, so the
+   * hero cards, Discovery Workflow rail, Executive Summary, findings, charts,
+   * timeline, recommendations, telemetry and progress all reset together. The
+   * visualization engine holds its own reducer state, which `heroResetSignal`
+   * clears.
+   *
+   * Deliberately NON-DESTRUCTIVE to evidence: every scan is already persisted
+   * server-side, so the assessment being cleared remains in History and in
+   * CBOM / Assets / Exposure. This clears a view, not a record.
+   */
+  const handleNewScan = useCallback(() => {
+    if (isRunning) {
+      showToast('Stop the running scan before starting a new assessment.');
+      return;
+    }
+
+    setSummary(null);
+    setFindings([]);
+    setModules([]);
+    setModuleLedger(null);
+    setScanResults([]);
+    setScanner2(null);
+    setLogs([]);
+    setProgress(0);
+    setJobId(null);
+    setError(null);
+    setScanStartedAt(null);
+    setStatus('idle');
+
+    // Queue + composer
+    setTargets([]);
+    setInputText('');
+    setAuthorizationAccepted(false);
+
+    // Review state — filters, expansions, selections, terminal
+    setSevFilter(null);
+    setSearchQ('');
+    setExpandedFinding(null);
+    setSelectedHistoryId(null);
+    setExpandedHistoryFinding(null);
+    setHistoryFindingSearch('');
+    setHistorySeverityFilter(null);
+    setTerminalPaused(false);
+    setTerminalPinned(false);
+    setCopiedLogs(false);
+
+    // The visualization engine's own reducer.
+    setHeroResetSignal((signal) => signal + 1);
+
+    // The checkpoint must go too, or the next mount restores what was cleared.
+    clearScannerSession(user?.id);
+
+    setActiveTab('setup');
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('tab');
+    setSearchParams(nextParams, { replace: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    showToast('Scanner reset. Previous results remain available in History.');
+  }, [isRunning, searchParams, setSearchParams, showToast, user?.id]);
 
   const handleCopyLogs = useCallback(async () => {
     const text = serializeLogs(logs);
@@ -2236,9 +2446,7 @@ export default function ScannerDashboard() {
           scroll inside their own containers, and nothing may push the page
           sideways on a phone. */}
       <div className="relative z-10 mx-auto max-w-[92rem] overflow-x-clip px-3 pb-16 pt-4 sm:px-5 sm:pt-6">
-        <WorkflowRail activeStage="discovery" />
-
-        <div className="mt-5">
+        <div>
           <ScannerHero
             status={status}
             progress={progress}
@@ -2280,6 +2488,8 @@ export default function ScannerDashboard() {
               void handleCancel();
               showToast('Scan terminated by operator.');
             }}
+            onNewScan={handleNewScan}
+            resetSignal={heroResetSignal}
             canStart={targets.length > 0 && authorizationAccepted && Boolean(session?.access_token)}
             composerSlot={
               <TargetComposer

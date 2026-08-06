@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   canUseFallbackSupabase,
   getSupabaseClient,
@@ -22,6 +22,43 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 function toAuthError(error: unknown, fallbackMessage: string): Error {
   return error instanceof Error ? error : new Error(fallbackMessage);
+}
+
+/**
+ * Is this the same signed-in session, in every way the application cares about?
+ *
+ * supabase-js re-emits `onAuthStateChange` whenever the tab becomes visible
+ * again — it re-reads storage and revalidates the token on `visibilitychange` —
+ * and it hands back a NEWLY CONSTRUCTED session object even when nothing about
+ * the session changed. Feeding that object straight into `setSession` /
+ * `setUser` gave every consumer of `useAuth()` a new `user` identity on every
+ * alt-tab, which is what made `useSubscription` re-run, flip itself back to
+ * `loading`, and make `DashboardLayout` swap `<Outlet/>` for its loading shell —
+ * unmounting the whole page the user was looking at, mid-scan.
+ *
+ * Comparing by value keeps the identity stable across those no-op events while
+ * still propagating a real sign-in, sign-out or token rotation.
+ */
+function isSameSession(a: Session | null, b: Session | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.access_token === b.access_token &&
+    a.refresh_token === b.refresh_token &&
+    a.expires_at === b.expires_at &&
+    a.user?.id === b.user?.id
+  );
+}
+
+function isSameUser(a: User | null, b: User | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.email === b.email &&
+    a.updated_at === b.updated_at &&
+    a.role === b.role
+  );
 }
 
 async function withAuthTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
@@ -80,8 +117,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
 
       const { data: { subscription } } = client.auth.onAuthStateChange((_event, nextSession) => {
-        setSession(nextSession);
-        setUser(nextSession?.user ?? null);
+        // Value-compared, not assigned blind — see `isSameSession`. A tab
+        // regaining focus must not re-identify the user to the whole tree.
+        const nextUser = nextSession?.user ?? null;
+        setSession((current) => (isSameSession(current, nextSession) ? current : nextSession));
+        setUser((current) => (isSameUser(current, nextUser) ? current : nextUser));
         setLoading(false);
       });
       unsubscribe = () => subscription.unsubscribe();
@@ -232,11 +272,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   };
 
-  return (
-    <AuthContext.Provider value={{ user, session, loading, signIn, signUp, signInWithGoogle, signOut }}>
-      {children}
-    </AuthContext.Provider>
+  /* Memoized so a re-render of the provider that changed nothing does not hand
+     every consumer a new context object. Combined with the value-comparison in
+     `onAuthStateChange`, an alt-tab now produces no state change at all. */
+  const value = useMemo(
+    () => ({ user, session, loading, signIn, signUp, signInWithGoogle, signOut }),
+    // The auth actions are stable in behaviour and recreated each render only
+    // because they are plain closures; identity churn on them is what the
+    // consumers must not see.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user, session, loading],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

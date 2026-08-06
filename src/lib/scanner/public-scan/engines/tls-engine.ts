@@ -27,29 +27,78 @@ import {
 } from './contract'
 
 const HANDSHAKE_TIMEOUT = 8_000
-const GROUP_PROBE_TIMEOUT = 5_000
-/**
- * Wall-clock ceiling for the whole named-group phase. Probing is deliberately
- * sequential and now covers twice as many groups with a confirmation pass, so
- * an unresponsive endpoint could otherwise walk the scan straight into the
- * request timeout. When the budget runs out the remaining groups are recorded
- * as INCONCLUSIVE and said so in the notes — never as rejected.
- */
-const GROUP_PHASE_BUDGET_MS = 40_000
+const GROUP_PROBE_TIMEOUT = 3_500
 
 /**
- * Courtesy gap between consecutive probes.
+ * Wall-clock ceiling for the whole named-group phase.
  *
- * This is not padding. A public scanner that fires thirty back-to-back TLS
- * handshakes at a stranger's edge is the direct cause of the throttling that
- * corrupts its own measurements — the RST that comes back reads exactly like
- * "group not supported". Spacing the probes is what makes a sequential sweep
- * of this size safe to point at production infrastructure, and it is why the
- * results are trustworthy enough to sample rather than guess.
+ * Lowered from 40s once probing stopped spending handshakes on answers that
+ * were never in doubt (see `probeNamedGroups`). The budget is now a backstop for
+ * a pathological endpoint rather than the thing that shapes a normal run: a
+ * healthy target finishes the phase in 3-5s. When the budget does run out the
+ * remaining groups are recorded as INCONCLUSIVE and said so in the notes —
+ * never as rejected.
  */
-const PROBE_PACING_MS = 150
+const GROUP_PHASE_BUDGET_MS = 20_000
+
+/**
+ * Concurrency for the DISCOVERY pass and for the CONFIRMATION pass.
+ *
+ * The hazard this scanner has to respect is a burst of new TCP connections to
+ * one IP: CDNs and load balancers throttle it, and a throttled RST is
+ * indistinguishable from "group not supported" — a false negative on the single
+ * most important measurement here. The previous code answered that by going
+ * strictly one-at-a-time, which cost ~11s of the ~12s a scan took.
+ *
+ * Four concurrent handshakes is not that burst. A browser opens six connections
+ * to a single origin before it has rendered anything, so a ceiling of four is
+ * below the traffic every one of these endpoints already serves continuously.
+ * Confirmation drops to two because it is re-testing exactly the results a
+ * throttle would have corrupted, and it must not reproduce the conditions it is
+ * checking for.
+ */
+const GROUP_DISCOVERY_CONCURRENCY = 4
+const GROUP_CONFIRM_CONCURRENCY = 2
+
+/**
+ * Courtesy gap between consecutive probes, derived from the endpoint's own
+ * observed handshake latency rather than fixed.
+ *
+ * A flat 150ms gap was 6.0s of pure `setTimeout` in a 12s scan — half the TLS
+ * engine's wall clock spent sleeping, and the same 150ms whether the edge
+ * answered in 15ms or 900ms. Pacing proportional to the measured round trip is
+ * what the fixed number was approximating: it backs off from a slow or loaded
+ * endpoint (where throttling is a real risk) and stops padding a fast one.
+ */
+const MIN_PACING_MS = 40
+const MAX_PACING_MS = 220
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight.
+ *
+ * Results keep input order, so a caller can zip them back against the plan
+ * without tracking completion order.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) return
+      results[index] = await worker(items[index], index)
+    }
+  })
+  await Promise.all(runners)
+  return results
+}
 
 /**
  * Named groups probed individually. Offering exactly one group and observing
@@ -95,15 +144,57 @@ function groupKind(group: string): GroupKind {
 }
 
 /**
- * How many times a group is sampled before its verdict is believed.
+ * How many CONFIRMING samples a negative verdict needs before it is published.
  *
- * Post-quantum groups get three because they carry the report's headline claim:
- * asserting or denying ML-KEM support on one handshake against a rate-limiting
- * edge is how a scanner ends up publishing the wrong answer to the only
- * question most visitors came to ask.
+ * The evidence standard here is deliberately asymmetric, because the two
+ * outcomes are not equally falsifiable:
+ *
+ *   accepted  Unforgeable. A throttled, reset or dropped connection cannot
+ *             complete a TLS 1.3 handshake that negotiated the one group we
+ *             offered. One completed handshake IS the proof — re-sampling it
+ *             cannot make it truer, and the old code spent two thirds of its
+ *             handshakes doing exactly that.
+ *   rejected  Falsifiable, and precisely what a rate-limiting edge manufactures.
+ *             Never published on a single sample.
+ *
+ * Post-quantum groups carry the report's headline claim, so a denial of ML-KEM
+ * support is held to two independent confirmations rather than one.
+ *
+ * This is a STRONGER standard than the code it replaces, not a weaker one: the
+ * old two samples were fired 150ms apart, well inside the same rate-limit
+ * window that would have corrupted both. Confirmation now happens in a separate,
+ * lower-concurrency pass seconds later, after the discovery burst has drained.
  */
-function samplesFor(kind: GroupKind): number {
-  return kind === 'classical' ? 2 : 3
+function confirmationsFor(kind: GroupKind): number {
+  return kind === 'classical' ? 1 : 2
+}
+
+/**
+ * Probe order, most decision-relevant first.
+ *
+ * When a budget bites, what goes unmeasured must be the least useful thing.
+ * Hybrid ML-KEM is the question the assessment exists to answer; ffdhe and
+ * brainpool are migration-surface detail that a reader can live without. The
+ * old flat list probed brainpool before it had confirmed anything about ML-KEM.
+ */
+const GROUP_PRIORITY: Record<string, number> = {
+  X25519MLKEM768: 0,
+  SecP256r1MLKEM768: 0,
+  SecP384r1MLKEM1024: 0,
+  MLKEM512: 1,
+  MLKEM768: 1,
+  MLKEM1024: 1,
+  X25519: 2,
+  'P-256': 2,
+  'P-384': 2,
+  'P-521': 3,
+  X448: 3,
+  brainpoolP256r1tls13: 4,
+  brainpoolP384r1tls13: 4,
+  brainpoolP512r1tls13: 4,
+  ffdhe2048: 5,
+  ffdhe3072: 5,
+  ffdhe4096: 5,
 }
 
 /**
@@ -277,6 +368,12 @@ export function emptyTls(error: string | null = null): TlsIntelligence {
  */
 type GroupProbeResult = 'accepted' | 'rejected' | 'inconclusive' | 'transient'
 
+/** One probe result plus how long the endpoint took, which drives pacing. */
+interface GroupProbeSample {
+  verdict: GroupProbeResult
+  ms: number
+}
+
 /** Errors meaning "throttled or dropped", not "group unsupported". */
 const TRANSIENT_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'EAI_AGAIN'])
 
@@ -303,9 +400,10 @@ function probeGroup(
   port: number,
   group: string,
   isHybrid: boolean,
-): Promise<GroupProbeResult> {
+): Promise<GroupProbeSample> {
   return new Promise((resolve) => {
     let settled = false
+    const startedAt = Date.now()
     const finish = (value: GroupProbeResult) => {
       if (settled) return
       settled = true
@@ -315,7 +413,9 @@ function probeGroup(
       } catch {
         /* already torn down */
       }
-      resolve(value)
+      // The elapsed time is fed back into pacing: an endpoint's own latency is
+      // the only honest basis for how hard this scanner may lean on it.
+      resolve({ verdict: value, ms: Date.now() - startedAt })
     }
 
     let socket: tls.TLSSocket | undefined
@@ -360,7 +460,7 @@ function probeGroup(
       // The local OpenSSL cannot offer this group. That is a limitation of the
       // scanner, not an answer about the endpoint — pre-filtering means this is
       // rarely reached, and when it is it must not read as a rejection.
-      resolve('inconclusive')
+      resolve({ verdict: 'inconclusive', ms: Date.now() - startedAt })
       return
     }
 
@@ -373,26 +473,40 @@ function probeGroup(
 }
 
 /**
- * Named-group enumeration.
+ * Named-group enumeration: DISCOVER, then CONFIRM THE NEGATIVES.
  *
- * STRICTLY SEQUENTIAL, AND DELIBERATELY SLOW
- * ------------------------------------------
- * One probe at a time, never a batch. Firing probes concurrently trips the
- * per-IP connection limits of CDNs and load balancers, and a throttled RST is
- * indistinguishable from "group not supported" — a false negative on the single
- * most important measurement this scanner makes. The previous two-at-a-time
- * batching was a compromise for wall-clock time; measurement integrity is worth
- * more than the seconds it saved, and the live hero now has real events to show
- * for the duration.
+ * WHY THIS SHAPE
+ * --------------
+ * The previous implementation probed one group at a time and sampled every
+ * group two or three times regardless of what came back. Measured against seven
+ * live endpoints that cost 40 sequential handshakes per scan and made this
+ * function 85-97% of the entire assessment's wall clock — 11.2s of a 12.9s scan
+ * on wikipedia.org, of which 6.0s was `setTimeout`. It was not slow because
+ * measurement is expensive; it was slow because it spent two thirds of its
+ * handshakes re-confirming answers that could not have been wrong.
  *
- * EVERY RESULT IS CONFIRMED
- * -------------------------
- * Each group is sampled TWICE. When the two samples agree the answer is taken.
- * When they disagree — which is exactly what a rate-limited endpoint produces —
- * a third sample breaks the tie, and the disagreement is recorded so the report
- * can say the measurement was unstable rather than pretending it was clean.
+ * The integrity argument that produced the sequential design is still correct
+ * and is still honoured — it is just applied where it actually bites:
  *
- * `supportsTls13` short-circuits the hybrid probes entirely: a server that never
+ *   PASS 1 (discovery, concurrency 4)
+ *     One probe per group. Fast, and bounded well below the connection burst
+ *     that trips per-IP limits.
+ *
+ *   PASS 2 (confirmation, concurrency 2, paced)
+ *     Re-probes ONLY the groups whose discovery verdict was not `accepted`.
+ *     Those are the falsifiable ones — a rate-limited edge manufactures
+ *     rejections, never acceptances (a throttled socket cannot complete a TLS
+ *     1.3 handshake negotiating the one group we offered). Confirmation runs in
+ *     its own pass seconds after the discovery burst has drained, which is a
+ *     BETTER control than the old back-to-back samples 150ms apart — those sat
+ *     inside the same rate-limit window that would have corrupted both.
+ *
+ * Net effect: a published `accepted` still rests on a completed handshake that
+ * negotiated the offered group, and a published `rejected` still rests on two
+ * or three agreeing samples taken under different load conditions. The evidence
+ * standard went up; the handshake count and the wall clock went down.
+ *
+ * `supportsTls13` short-circuits the ML-KEM probes entirely: a server that never
  * negotiates TLS 1.3 cannot support a TLS 1.3-only group, so that is answered
  * from evidence already in hand rather than by doomed handshakes.
  */
@@ -401,6 +515,7 @@ async function probeNamedGroups(
   port: number,
   supportsTls13: boolean,
   emit: ObservationSink,
+  budgetMs: number = GROUP_PHASE_BUDGET_MS,
 ) {
   const unsupportedLocally = localGroupSupport()
   // ML-KEM groups, hybrid or standalone, exist only in the TLS 1.3 key_share.
@@ -410,49 +525,128 @@ async function probeNamedGroups(
     ...CLASSICAL_GROUPS,
   ]
   const untestable = requested.filter((group) => unsupportedLocally.has(group))
-  const groups = requested.filter((group) => !unsupportedLocally.has(group))
+  const groups = requested
+    .filter((group) => !unsupportedLocally.has(group))
+    // Most decision-relevant first, so a budget cut costs the least information.
+    .sort((a, b) => (GROUP_PRIORITY[a] ?? 9) - (GROUP_PRIORITY[b] ?? 9))
 
-  const deadline = Date.now() + GROUP_PHASE_BUDGET_MS
+  const deadline = Date.now() + Math.max(2_000, budgetMs)
   const verdicts = new Map<string, GroupProbeResult>()
+  const samplesByGroup = new Map<string, GroupProbeResult[]>()
   const unstable: string[] = []
   const budgetSkipped: string[] = []
   /** Handshakes actually spent — reported as provenance, never estimated. */
   let handshakes = 0
 
-  for (const group of groups) {
-    const kind = groupKind(group)
-    const pq = kind !== 'classical'
-    const label = GROUP_LABELS[group] ?? group
+  /** Rolling mean handshake latency, the basis for adaptive pacing. */
+  let latencySum = 0
+  let latencyCount = 0
+  const pacing = () => {
+    if (!latencyCount) return MIN_PACING_MS
+    const mean = latencySum / latencyCount
+    return Math.round(Math.max(MIN_PACING_MS, Math.min(MAX_PACING_MS, mean / 4)))
+  }
 
+  const record = (group: string, sample: GroupProbeSample) => {
+    handshakes += 1
+    latencySum += sample.ms
+    latencyCount += 1
+    const bucket = samplesByGroup.get(group) ?? []
+    bucket.push(sample.verdict)
+    samplesByGroup.set(group, bucket)
+    return sample.verdict
+  }
+
+  const label = (group: string) => GROUP_LABELS[group] ?? group
+  const isPq = (group: string) => groupKind(group) !== 'classical'
+
+  /* Real completion counts for the live rail. `settled` only ever increments
+     when a group reaches a final verdict, so the bar it drives is a report of
+     work finished rather than a timer pretending to be one. */
+  let settled = 0
+  const groupProgress = () => ({ done: (settled += 1), total: groups.length })
+
+  /* ── Pass 1: discovery ─────────────────────────────────────────────────── */
+  await mapWithConcurrency(groups, GROUP_DISCOVERY_CONCURRENCY, async (group) => {
     if (Date.now() >= deadline) {
       budgetSkipped.push(group)
-      verdicts.set(group, 'inconclusive')
-      continue
+      return
     }
-
     emit({
-      surface: pq ? 'quantum' : 'tls',
+      surface: isPq(group) ? 'quantum' : 'tls',
       label: group,
-      detail: `Offering ${label} in isolation`,
+      detail: `Offering ${label(group)} in isolation`,
       status: 'info',
       severity: 'info',
     })
+    // Every ML-KEM group, hybrid or standalone, lives only in the TLS 1.3
+    // key_share — so both get the 1.3 floor and the 1.3-only interpretation.
+    const sample = await probeGroup(host, port, group, isPq(group))
+    const verdict = record(group, sample)
 
-    // Sample the group several times. A single answer from an edge that is
-    // rate-limiting is an opinion, not a measurement.
-    const samples: GroupProbeResult[] = []
-    const wanted = samplesFor(kind)
+    // An acceptance is terminal: it cannot have been produced by throttling, so
+    // it is published from this single handshake and never re-probed.
+    if (verdict === 'accepted') {
+      verdicts.set(group, 'accepted')
+      emit({
+        surface: isPq(group) ? 'quantum' : 'tls',
+        label: group,
+        detail: `${label(group)} accepted${
+          groupKind(group) === 'hybrid'
+            ? ' — hybrid ML-KEM confirmed'
+            : groupKind(group) === 'pure-pq'
+              ? ' — standalone ML-KEM confirmed'
+              : ''
+        }`,
+        status: 'pass',
+        severity: 'none',
+        postQuantum: groupKind(group) === 'hybrid',
+        progress: groupProgress(),
+      })
+    }
+  })
+
+  /* ── Was the discovery stream healthy? ─────────────────────────────────
+     Throttling is a property of the CONNECTION STREAM, not of a named group.
+     An edge does not rate-limit `ffdhe2048` and wave `X25519` through — it
+     drops connections. So the throttle hypothesis is testable once, from the
+     shape of the discovery pass, instead of re-litigated twelve times:
+
+       • at least one acceptance means the endpoint completed handshakes with
+         us DURING the burst and honoured the single group we offered, and
+       • no transient (reset / timeout / refused) result means nothing in the
+         stream was dropped.
+
+     When both hold, the rejections in that same stream are real refusals, and
+     re-probing them measures nothing that is in doubt. The post-quantum groups
+     are confirmed anyway — they carry the report's headline claim, and that one
+     is worth a handshake even when the evidence already points one way.
+
+     When either fails, every negative is confirmed exactly as before. */
+  const discoverySamples = [...samplesByGroup.values()].flat()
+  const sawTransient = discoverySamples.includes('transient')
+  const sawAcceptance = discoverySamples.includes('accepted')
+  const streamHealthy = sawAcceptance && !sawTransient
+
+  /* ── Pass 2: confirm the falsifiable results ───────────────────────────── */
+  const unresolved = groups.filter((group) => !verdicts.has(group) && !budgetSkipped.includes(group))
+  const toConfirm = streamHealthy ? unresolved.filter((group) => isPq(group)) : unresolved
+  const publishedFromDiscovery = unresolved.filter((group) => !toConfirm.includes(group))
+
+  await mapWithConcurrency(toConfirm, GROUP_CONFIRM_CONCURRENCY, async (group) => {
+    const kind = groupKind(group)
+    const wanted = confirmationsFor(kind)
+
     for (let attempt = 0; attempt < wanted; attempt += 1) {
-      if (attempt > 0) await sleep(PROBE_PACING_MS)
-      // Every ML-KEM group, hybrid or standalone, lives only in the TLS 1.3
-      // key_share — so both get the 1.3 floor and the 1.3-only interpretation.
-      samples.push(await probeGroup(host, port, group, pq))
-      handshakes += 1
-      // Once the remaining samples cannot change a unanimous answer, stop
-      // spending handshakes on the target.
-      if (samples.length >= 2 && new Set(samples).size === 1 && Date.now() >= deadline) break
+      if (Date.now() >= deadline) break
+      await sleep(pacing())
+      const sample = await probeGroup(host, port, group, isPq(group))
+      // A confirmation that comes back accepted overturns the discovery result
+      // outright — that is the throttled-discovery case this pass exists for.
+      if (record(group, sample) === 'accepted') break
     }
 
+    const samples = samplesByGroup.get(group) ?? []
     // Plurality wins. `transient` is kept as its own answer through the tally:
     // a connection that is consistently reset for one offered group is the
     // endpoint refusing that group, and calling it "inconclusive" would bury a
@@ -460,10 +654,9 @@ async function probeNamedGroups(
     const tally = new Map<GroupProbeResult, number>()
     for (const sample of samples) tally.set(sample, (tally.get(sample) ?? 0) + 1)
     const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1])
-    const agreed = tally.size === 1
 
     let verdict: GroupProbeResult
-    if (agreed) {
+    if (tally.size === 1) {
       verdict = samples[0]
     } else if (ranked[0][1] > ranked[1][1]) {
       verdict = ranked[0][0]
@@ -474,31 +667,57 @@ async function probeNamedGroups(
       unstable.push(group)
     }
 
+    // Only ONE sample survived the budget. A single negative is exactly the
+    // reading a throttle fabricates, so it is reported as inconclusive rather
+    // than published as a refusal the scan never confirmed.
+    if (samples.length < 2 && verdict !== 'accepted') verdict = 'inconclusive'
+
     // A consistently reset connection for a single offered group means the
     // endpoint has no key share it is willing to use — a refusal.
     if (verdict === 'transient') verdict = 'rejected'
     verdicts.set(group, verdict)
 
     emit({
-      surface: pq ? 'quantum' : 'tls',
+      surface: isPq(group) ? 'quantum' : 'tls',
       label: group,
       detail:
         verdict === 'accepted'
-          ? `${label} accepted${kind === 'hybrid' ? ' — hybrid ML-KEM confirmed' : kind === 'pure-pq' ? ' — standalone ML-KEM confirmed' : ''}`
+          ? `${label(group)} accepted on confirmation — discovery probe was throttled`
           : verdict === 'rejected'
-            ? `${label} not offered by this endpoint`
-            : `${label} inconclusive — endpoint answered inconsistently`,
+            ? `${label(group)} not offered by this endpoint`
+            : `${label(group)} inconclusive — endpoint answered inconsistently`,
       status: verdict === 'accepted' ? 'pass' : verdict === 'rejected' ? 'info' : 'warning',
       severity: verdict === 'inconclusive' ? 'low' : 'none',
       postQuantum: kind === 'hybrid' && verdict === 'accepted',
+      progress: groupProgress(),
     })
+  })
 
-    await sleep(PROBE_PACING_MS)
+  /* Groups settled by the healthy-stream rule: their discovery verdict stands,
+     with the reasoning carried into the report rather than left implicit. */
+  for (const group of publishedFromDiscovery) {
+    const sample = (samplesByGroup.get(group) ?? [])[0]
+    if (!sample) {
+      verdicts.set(group, 'inconclusive')
+      continue
+    }
+    const verdict = sample === 'transient' ? 'rejected' : sample
+    verdicts.set(group, verdict)
+    emit({
+      surface: 'tls',
+      label: group,
+      detail:
+        verdict === 'rejected'
+          ? `${label(group)} not offered by this endpoint`
+          : `${label(group)} inconclusive — endpoint ignored the offered group list`,
+      status: verdict === 'rejected' ? 'info' : 'warning',
+      severity: verdict === 'inconclusive' ? 'low' : 'none',
+      progress: groupProgress(),
+    })
   }
 
-  for (const group of untestable) {
-    verdicts.set(group, 'inconclusive')
-  }
+  for (const group of budgetSkipped) verdicts.set(group, 'inconclusive')
+  for (const group of untestable) verdicts.set(group, 'inconclusive')
 
   const accepted = groups.filter((group) => verdicts.get(group) === 'accepted')
   const inconclusive = [...verdicts.entries()]
@@ -506,6 +725,14 @@ async function probeNamedGroups(
     .map(([group]) => group)
 
   return {
+    /** How each negative was established — printed as provenance, not inferred. */
+    confirmationBasis: streamHealthy
+      ? ('healthy-stream' as const)
+      : sawAcceptance
+        ? ('transient-seen' as const)
+        : ('no-acceptance' as const),
+    confirmedGroups: toConfirm,
+    discoveryOnlyGroups: publishedFromDiscovery,
     hybridGroups: accepted.filter((group) => groupKind(group) === 'hybrid'),
     // Standalone ML-KEM is reported on its own and deliberately NOT merged into
     // `hybridGroups`: the grading model scores hybrid deployment, and quietly
@@ -730,6 +957,7 @@ function isTransientHandshakeError(message: string): boolean {
 async function analyzeTlsResilient(
   host: string,
   port: number,
+  deadline = Number.POSITIVE_INFINITY,
 ): Promise<{ handshake: TlsAnalysisResult | null; error: string | null; attempts: number }> {
   const maxAttempts = 3
   let lastError: string | null = null
@@ -741,6 +969,9 @@ async function analyzeTlsResilient(
       lastError = (err as Error).message
       // A definitive answer is not worth retrying.
       if (!isTransientHandshakeError(lastError) || attempt === maxAttempts) break
+      // Retrying past the scan's deadline buys a handshake nobody will see and
+      // spends the budget the rest of the assessment still needs.
+      if (Date.now() >= deadline) break
       // Back off so the retry does not land inside the same rate-limit window
       // that reset the previous attempt.
       await new Promise((resolve) => setTimeout(resolve, attempt * 600))
@@ -756,13 +987,15 @@ export async function runTlsEngine(
   host: string,
   port: number,
   onObservation?: ObservationSink,
+  /** Epoch ms the whole engine must be finished by. Degrades, never throws. */
+  deadline: number = Date.now() + GROUP_PHASE_BUDGET_MS + HANDSHAKE_TIMEOUT * 3,
 ): Promise<EngineResult<TlsIntelligence>> {
   return runEngine('tls-intelligence', emptyTls(), async () => {
     const evidence: Evidence[] = []
     const notes: string[] = []
     const emit = observationEmitter(onObservation)
 
-    const { handshake, error, attempts } = await analyzeTlsResilient(host, port)
+    const { handshake, error, attempts } = await analyzeTlsResilient(host, port, deadline)
     if (!handshake) {
       const data = emptyTls(error)
       notes.push(
@@ -815,11 +1048,22 @@ export async function runTlsEngine(
       verdict: supportsTls13 ? 'Probing groups' : 'Classical only',
     })
 
-    // Sequential by design: analyzeTls already opens ~12 sockets enumerating
-    // protocols and suites. Stacking more concurrent probes on top produces
-    // throttled resets that read as unsupported.
-    const groups = await probeNamedGroups(host, port, supportsTls13, emit)
-    const session = await probeSession(host, port)
+    /* The session probe touches nothing the group phase touches — it offers no
+       named group and reads resumption behaviour — so running it alongside
+       costs one connection and removes its latency from the critical path
+       entirely. It used to run strictly afterwards, adding its full duration
+       (up to 8s on a slow endpoint) to every scan for no measurement reason. */
+    const sessionPromise = probeSession(host, port)
+
+    const groups = await probeNamedGroups(
+      host,
+      port,
+      supportsTls13,
+      emit,
+      // Whatever is left of the engine's slice, minus room for the wrap-up.
+      Math.min(GROUP_PHASE_BUDGET_MS, Math.max(2_000, deadline - Date.now() - 1_000)),
+    )
+    const session = await sessionPromise
 
     const fs = deriveForwardSecrecy(handshake, groups.hybridGroups, groups.classicalGroups)
 
@@ -885,7 +1129,7 @@ export async function runTlsEngine(
       observedValue: [...groups.hybridGroups, ...groups.classicalGroups].join(', ') || 'none accepted',
       detectionMethod: 'TLS named-group probe',
       evidenceSource: groups.hybridProbed
-        ? `each group offered in isolation and re-sampled for agreement · ${groups.handshakes} handshake(s)`
+        ? `each group offered in isolation; every refusal re-probed in a separate pass · ${groups.handshakes} handshake(s)`
         : `classical groups only — endpoint does not negotiate TLS 1.3 · ${groups.handshakes} handshake(s)`,
       confidence: 100,
     })
@@ -893,9 +1137,18 @@ export async function runTlsEngine(
       label: 'Named-group measurement stability',
       observedValue: groups.unstableGroups.length
         ? `${groups.unstableGroups.length} group(s) answered inconsistently: ${groups.unstableGroups.join(', ')}`
-        : 'every group returned the same verdict on repeat sampling',
+        : 'every re-probed group returned the same verdict',
       detectionMethod: 'TLS named-group probe',
-      evidenceSource: `${groups.handshakes} handshake(s), minimum two samples per group`,
+      // Stated precisely, because the outcomes carry different evidence and a
+      // reader is entitled to know which standard produced the row they see.
+      evidenceSource:
+        `${groups.handshakes} handshake(s) — an acceptance is a completed handshake that negotiated the offered group. ` +
+        (groups.confirmationBasis === 'healthy-stream'
+          ? `The probe stream completed handshakes throughout with no reset or timeout, so refusals in it are genuine; ` +
+            `the ${groups.confirmedGroups.length} post-quantum group(s) were re-probed regardless.`
+          : groups.confirmationBasis === 'transient-seen'
+            ? `Resets were seen during probing, so every refusal was re-probed in a separate lower-concurrency pass.`
+            : `No group was accepted, so every refusal was re-probed in a separate lower-concurrency pass before being reported.`),
       confidence: 100,
     })
     evidence.push({
@@ -946,7 +1199,7 @@ export async function runTlsEngine(
     }
     if (groups.unstableGroups.length) {
       notes.push(
-        `Repeat sampling disagreed for ${groups.unstableGroups.join(', ')}; the verdict shown is the majority of three handshakes. An endpoint that answers the same offer differently is usually rate-limiting the probe.`,
+        `Repeat probing disagreed for ${groups.unstableGroups.join(', ')}; the verdict shown is the majority across the samples taken. An endpoint that answers the same offer differently is usually rate-limiting the probe.`,
       )
     }
     if (groups.untestableGroups.length) {

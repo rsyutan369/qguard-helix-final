@@ -9,6 +9,7 @@ import Checkout from './pages/Checkout';
 import PostQuantumMigrationPlatform from './pages/PostQuantumMigrationPlatform';
 import QuantumTrustGovernanceCenter from './pages/QuantumTrustGovernanceCenter';
 import PqcSolutions from './pages/PqcSolutions';
+import QguardHelixFeatures from './pages/QguardHelixFeatures';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
@@ -139,6 +140,9 @@ export default function App() {
           <Route path="/post-quantum-migration-platform" element={<PostQuantumMigrationPlatform />} />
           <Route path="/quantum-trust-governance-center" element={<QuantumTrustGovernanceCenter />} />
           <Route path="/pqc-solutions" element={<PqcSolutions />} />
+          {/* Platform features showcase — Qguard_Wiki/Qguard_Helix_Features_Page */}
+          <Route path="/qguard-helix-features" element={<QguardHelixFeatures />} />
+          <Route path="/features" element={<Navigate to="/qguard-helix-features" replace />} />
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/subscription/thank-you" element={<SubscriptionThankYou />} />
           <Route path="/verify-report" element={<VerifyReport />} />

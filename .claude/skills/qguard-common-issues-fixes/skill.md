@@ -276,6 +276,99 @@ Express router, not the Next route file.
 
 ---
 
+## 11. A card's label says "Secure" while its colour says critical
+
+**Symptom.** A hero node card on `/dashboard/scanner` reads **Secure** in red.
+Quantum Posture reads **Critical** on an endpoint with live hybrid PQ.
+
+**Root cause.** Two independent aggregations of one surface, rendered together.
+`QveNode.verdict` was whatever module reported LAST (`moduleEvent()` in
+`_qve-bridge.ts` wrote `details.verdict` per module, and a surface is fed by up
+to eight), while the accent came from `beamColor(node)` — driven by
+`node.severity`, the worst severity of ANY event routed there. A transport
+surface that had already collected four static-RSA suites read "Secure" because
+its last module happened to be clean.
+
+**Solution.** `resolveNodeVerdict(node)` in `src/app/public-scan/_qve/types.ts`
+is the ONE classifier; `beamColor` delegates to it, and the card label, badge
+icon, border, meter and both node inspectors read the same result. The bridge no
+longer emits a per-module verdict; the surface-specific phrase survives as muted
+context under the state, never as the coloured headline.
+
+**Prevention checklist**
+
+- [ ] A displayed status word and the colour it is painted in come from ONE
+      function of ONE input — never two derivations of the same evidence.
+- [ ] A free-text phrase from a derivation is never rendered in a semantic
+      colour; only a resolved state is.
+- [ ] `tools/scanner-hero-cards-check.ts` sweeps the whole node state space
+      (924 combinations) for label/colour contradictions. Extend it, don't
+      spot-check.
+
+---
+
+## 12. A hybrid post-quantum endpoint is scored as classical-only
+
+**Symptom.** Cloudflare (live `X25519MLKEM768`) reports HIGH "ECDHE (TLS 1.3
+key_share)", HIGH "HNDL Risk", TLS-003 and HNDL-001 — and Quantum Posture
+Critical.
+
+**Root cause.** `tls.getEphemeralKeyInfo()` returns an EMPTY object for a TLS
+1.3 handshake, so `tlsResult.keyExchange` degrades to the literal string
+`"ECDHE (TLS 1.3 key_share)"` on *every* modern endpoint regardless of the group
+negotiated, and `negotiatedCurve` is null. Every consumer that substring-tested
+that label — `getKeyExchangeThreat`, `calculateHndlTimeline`, TLS-003, HNDL-001,
+HNDL-003 — therefore concluded "classical ECDHE" even though the edge phase had
+already proven the hybrid group by offering each named group in isolation.
+
+**Solution.** Read `edgeIntelligence.pqKeyAgreement` (measured), not the socket
+label. `measuredKemApplied(ctx)` in `detection-rules.ts` is the shared predicate;
+`calculateHndlTimeline` takes a `kemApplied` argument; the orchestrator emits
+`[SAFE] X25519MLKEM768` and suppresses the transport HNDL finding when the KEM
+is applied. Certificate/signature exposure is untouched — a hybrid key agreement
+does nothing for a classical certificate.
+
+**Prevention checklist**
+
+- [ ] Never infer a negotiated TLS 1.3 group from a Node socket property.
+      Node exposes none; only the named-group probe knows.
+- [ ] A PQC assertion reads measured evidence, never a finding title or a
+      key-exchange label (recommendation strings contain "ML-KEM" too).
+- [ ] Every suppression has a NEGATIVE control proving it still fires on a
+      classical endpoint AND on an unprobed one.
+- [ ] Verify against a known-hybrid host: `node -e` with
+      `tls.connect({groups:'X25519MLKEM768'})` is the ground truth.
+
+---
+
+## 13. Every dashboard page reloads when the browser tab regains focus
+
+**Symptom.** Switch browser tab or window, come back, and the page you were on
+re-mounts from scratch — an in-progress scan's results vanish.
+
+**Root cause.** A three-step chain. supabase-js re-emits `onAuthStateChange` on
+`visibilitychange` with a NEWLY CONSTRUCTED session object even when nothing
+changed → `auth-context` assigned it straight into `setSession`/`setUser`, giving
+every consumer a new `user` identity → `useSubscription`'s `load` callback (keyed
+on the user OBJECT) changed identity, and its effect unconditionally set
+`loading: true` → `DashboardLayout:280` renders `<DashboardShell/>` instead of
+`<Outlet/>` while `subscription.loading`, unmounting the entire page.
+
+**Solution.** `isSameSession`/`isSameUser` value-comparison in `auth-context.tsx`
+plus a memoized context value; `useSubscription` keys on `user?.id` and tracks
+`resolvedFor` so `loading` means "never resolved for this user", not "a refresh
+is in flight".
+
+**Prevention checklist**
+
+- [ ] Never derive a hook dependency from a Supabase `user`/`session` OBJECT.
+      Use `user?.id` / `access_token` — primitives.
+- [ ] A background refresh never sets a `loading` flag that gates a route's
+      children. Distinguish "first resolution" from "revalidating".
+- [ ] Any provider whose value gates rendering is memoized.
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

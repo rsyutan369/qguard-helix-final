@@ -498,6 +498,17 @@ export function buildNodeEvidence(
   const repo = primary?.metadata?.repoScanResult ?? null;
   const webCrypto = primary?.metadata?.webCryptoResult ?? null;
   const scanner2 = input.scanner2;
+  /* The public-edge measurement. This is where the answers the raw socket
+     cannot give live: Node's `getEphemeralKeyInfo()` is empty for a TLS 1.3
+     handshake, so `tls.negotiatedCurve` is null and `tls.keyExchange` degrades
+     to "ECDHE (TLS 1.3 key_share)" on every modern endpoint. The edge engine
+     resolved the real group by offering each named group in isolation, and the
+     panels below read THAT rather than printing "Not observed" over evidence
+     the scanner holds. */
+  const edge = primary?.metadata?.edgeIntelligence ?? null;
+  const pq = edge?.pqKeyAgreement ?? null;
+  const edgeTransport = edge?.transport ?? null;
+  const edgeCert = edge?.certificate ?? null;
 
   const moduleIds = SCANNER_NODE_MODULES[nodeKey] ?? [];
   const modules = input.modules
@@ -556,111 +567,243 @@ export function buildNodeEvidence(
     }
 
     case 'transport': {
-      if (!tls) break;
-      const supported = tls.supportedProtocols ?? [];
-      const legacy = supported.filter((protocol) => /1\.0|1\.1|SSLv/i.test(protocol));
-      const suites = tls.cipherSuites ?? [];
+      if (!tls && !edgeTransport) break;
+      // Protocol acceptance is answered by whichever engine probed it. The edge
+      // engine probes every version individually; the socket only ever knows
+      // the one it negotiated.
+      const supported = (edgeTransport?.supportedProtocols?.length
+        ? edgeTransport.supportedProtocols
+        : tls?.supportedProtocols) ?? [];
+      const legacy = edgeTransport?.legacyProtocols?.length
+        ? edgeTransport.legacyProtocols
+        : supported.filter((protocol) => /1\.0|1\.1|SSLv/i.test(protocol));
+      const negotiated = tls?.tlsVersion || edgeTransport?.negotiatedProtocol || '';
+      const suites = tls?.cipherSuites ?? [];
       const vulnerableSuites = suites.filter((suite) => suite.quantumVulnerable).length;
+      const staticRsa = suites.filter((suite) => /^RSA$/i.test(suite.keyExchange ?? ''));
+      const hybridApplied = Boolean(pq?.probed && pq.state === 'pass' && pq.hybridGroups.length > 0);
+      const pureKem = Boolean(pq?.probed && !hybridApplied && pq.pureKemGroups.length > 0);
+
       rows.push(
         {
           label: 'Negotiated protocol',
-          value: tls.tlsVersion || 'Not observed',
-          tone: /1\.3/.test(tls.tlsVersion) ? TONE_PASS : /1\.2/.test(tls.tlsVersion) ? TONE_WARN : TONE_FAIL,
+          value: negotiated || 'Not observed',
+          tone: /1\.3/.test(negotiated) ? TONE_PASS : /1\.2/.test(negotiated) ? TONE_WARN : TONE_FAIL,
           detail: 'Protocol version selected during the observed handshake',
         },
         {
           label: 'Protocols accepted',
-          value: supported.length ? supported.join(' / ') : 'Not observed',
-          tone: legacy.length > 0 ? TONE_FAIL : TONE_PASS,
+          value: supported.length ? supported.join(' / ') : 'Not probed',
+          tone: legacy.length > 0 ? TONE_FAIL : supported.length ? TONE_PASS : TONE_MUTED,
           detail: legacy.length
             ? `${legacy.join(', ')} still accepted — deprecated by RFC 8996`
-            : 'Each version probed individually',
+            : supported.length
+              ? 'Each version was probed individually — anything absent was refused'
+              : 'No per-version probe completed for this target',
+        },
+        /* Key agreement is the MEASURED group, not the socket's label. This row
+           is the one that used to read "ECDHE (TLS 1.3 key_share)" on an
+           endpoint running X25519MLKEM768. */
+        {
+          label: 'Key agreement',
+          value: hybridApplied
+            ? `${pq?.primaryGroup} (hybrid)`
+            : pureKem
+              ? `${pq?.pureKemGroups.join(', ')} (no classical hedge)`
+              : tls?.keyExchange || edgeTransport?.keyExchange || 'Not observed',
+          tone: hybridApplied || pureKem ? TONE_PQ : TONE_WARN,
+          detail: hybridApplied
+            ? `${pq?.classicalComponent} + ${pq?.postQuantumComponent}, accepted when offered in isolation under a TLS 1.3 floor across ${pq?.handshakes} handshake(s) · confidence ${pq?.confidence}%`
+            : pq?.hybridProbed
+              ? `Every hybrid ML-KEM group was offered in isolation and refused across ${pq.handshakes} handshake(s)`
+              : 'Key-agreement mechanism used by the negotiated connection',
+        },
+        {
+          label: 'Post-quantum key agreement',
+          value: pq?.probed ? pq.value : 'Not probed',
+          tone: hybridApplied ? TONE_PQ : pureKem ? TONE_WARN : pq?.probed ? TONE_FAIL : TONE_MUTED,
+          detail: pq?.detail ?? 'Named-group probing requires a completed TLS handshake',
+        },
+        {
+          label: 'Forward secrecy',
+          value: edgeTransport
+            ? edgeTransport.forwardSecrecy
+              ? 'Yes'
+              : 'No'
+            : tls?.ephemeralKeyType
+              ? 'Yes'
+              : 'Not observed',
+          tone: edgeTransport ? (edgeTransport.forwardSecrecy ? TONE_PASS : TONE_FAIL) : TONE_MUTED,
+          detail: edgeTransport?.forwardSecrecyBasis ?? 'Ephemeral key material — present means forward secrecy',
         },
         {
           label: 'Cipher suite',
-          value: tls.cipherSuite || 'Not observed',
-          tone: /GCM|CHACHA20|CCM/i.test(tls.cipherSuite) ? TONE_PASS : TONE_WARN,
+          value: tls?.cipherSuite || edgeTransport?.negotiatedCipher || 'Not observed',
+          tone: /GCM|CHACHA20|CCM/i.test(tls?.cipherSuite ?? '') ? TONE_PASS : TONE_WARN,
           detail: 'Suite selected on the negotiated connection',
         },
         {
           label: 'Suites enumerated',
-          value: suites.length ? `${suites.length} offered · ${vulnerableSuites} quantum-vulnerable` : '—',
+          value: suites.length ? `${suites.length} accepted · ${vulnerableSuites} quantum-vulnerable` : '—',
           tone: vulnerableSuites > 0 ? TONE_WARN : undefined,
-          detail: 'Full offered-suite enumeration from the cipher scanner',
+          detail: suites.length
+            ? `Each suite was offered alone and accepted by the endpoint: ${suites.map((suite) => suite.standardName ?? suite.name).join(', ')}`
+            : 'Full offered-suite enumeration from the cipher scanner',
+        },
+        /* Static-RSA acceptance is the single most consequential thing on this
+           surface and was previously buried in the suite list: a suite with RSA
+           key exchange has NO forward secrecy, so recorded traffic is
+           retroactively decryptable the moment the server key is broken —
+           which the hybrid group does nothing to prevent. */
+        {
+          label: 'Static RSA accepted',
+          value: staticRsa.length
+            ? `Yes · ${staticRsa.length} suite(s)`
+            : edgeTransport
+              ? edgeTransport.staticRsaAccepted
+                ? 'Yes'
+                : 'No'
+              : suites.length
+                ? 'No'
+                : 'Not probed',
+          tone:
+            staticRsa.length || edgeTransport?.staticRsaAccepted
+              ? TONE_FAIL
+              : suites.length || edgeTransport
+                ? TONE_PASS
+                : TONE_MUTED,
+          detail: staticRsa.length
+            ? `${staticRsa.map((suite) => suite.standardName ?? suite.name).join(', ')} — no forward secrecy: sessions using these suites are retroactively decryptable and are NOT covered by any hybrid key agreement`
+            : 'RSA key exchange offers no forward secrecy and must be disabled',
         },
         {
-          label: 'Key exchange',
-          value: tls.keyExchange || 'Not observed',
-          tone: /ml-kem|kyber/i.test(tls.keyExchange || '') ? TONE_PQ : TONE_WARN,
-          detail: 'Key-agreement mechanism used by the negotiated suite',
-        },
-        {
-          label: 'Named curve',
-          value: tls.negotiatedCurve || 'Not observed',
-          detail: 'Elliptic curve or hybrid group agreed during key exchange',
-        },
-        {
-          label: 'Ephemeral key',
-          value: tls.ephemeralKeyType
-            ? `${tls.ephemeralKeyType}${tls.ephemeralKeySize ? ` ${tls.ephemeralKeySize}` : ''}`
-            : 'Not observed',
-          tone: tls.ephemeralKeyType ? TONE_PASS : TONE_MUTED,
-          detail: 'Ephemeral key material — present means forward secrecy',
+          label: 'ALPN',
+          value: edgeTransport?.alpnProbed ? (edgeTransport.alpn ?? 'None negotiated') : 'Not probed',
+          tone: edgeTransport?.alpn ? TONE_PASS : TONE_MUTED,
+          detail: edgeTransport?.alpnOffered?.length
+            ? `Offered: ${edgeTransport.alpnOffered.join(', ')}`
+            : 'Application protocols negotiated in the handshake',
         },
       );
       break;
     }
 
     case 'certificates': {
-      if (!certificate) break;
-      const remaining = daysUntil(certificate.validTo);
-      const chain = certificate.chain ?? [];
-      rows.push(
-        {
-          label: 'Public key',
-          value: `${certificate.publicKeyAlgorithm}${certificate.publicKeySize ? ` ${certificate.publicKeySize}` : ''}`,
-          tone: /rsa/i.test(certificate.publicKeyAlgorithm) && certificate.publicKeySize < 2048 ? TONE_FAIL : TONE_WARN,
-          detail: 'Leaf certificate key — quantum-vulnerable until replaced by ML-DSA',
-        },
-        {
-          label: 'Signature algorithm',
-          value: certificate.signatureAlgorithm || 'Unknown',
-          tone: /sha-?1|md5/i.test(certificate.signatureAlgorithm || '') ? TONE_FAIL : TONE_WARN,
-          detail: 'Algorithm the issuing CA signed this certificate with',
-        },
-        {
-          label: 'Issuer',
-          value: certificateName(certificate.issuer) ?? 'Unknown',
-          detail: 'Certificate authority that issued the leaf',
-        },
-        {
-          label: 'Subject',
-          value: certificateName(certificate.subject) ?? 'Unknown',
-          detail: 'Distinguished name the certificate was issued to',
-        },
-        {
-          label: 'Validity',
-          value: remaining === null
-            ? 'Unknown'
-            : certificate.isExpired
-              ? 'Expired'
-              : `${remaining} day${remaining === 1 ? '' : 's'} remaining`,
-          tone: certificate.isExpired ? TONE_FAIL : (remaining ?? 0) < 30 ? TONE_WARN : TONE_PASS,
-          detail: `Valid ${certificate.validFrom} → ${certificate.validTo}`,
-        },
-        {
-          label: 'Chain',
-          value: chain.length ? `${chain.length} certificate(s)` : 'Not collected',
-          tone: chain.some((entry) => entry.isExpired) ? TONE_FAIL : chain.length ? TONE_PASS : TONE_MUTED,
-          detail: chain.map((entry) => entry.subject).join(' → ') || 'No chain returned',
-        },
-        {
+      if (!certificate && !edgeCert?.probed) break;
+      const remaining = certificate ? daysUntil(certificate.validTo) : (edgeCert?.daysRemaining ?? null);
+      const chain = certificate?.chain ?? [];
+      const isPqSignature = /ml-dsa|dilithium|slh-dsa|sphincs|falcon/i.test(
+        `${certificate?.signatureAlgorithm ?? ''} ${certificate?.publicKeyAlgorithm ?? ''}`,
+      );
+
+      if (certificate) {
+        rows.push(
+          {
+            label: 'Public key',
+            value: `${certificate.publicKeyAlgorithm}${certificate.publicKeySize ? ` ${certificate.publicKeySize}` : ''}`,
+            tone: isPqSignature
+              ? TONE_PQ
+              : /rsa/i.test(certificate.publicKeyAlgorithm) && certificate.publicKeySize < 2048
+                ? TONE_FAIL
+                : TONE_WARN,
+            detail: isPqSignature
+              ? 'Post-quantum certificate key'
+              : 'Leaf certificate key — classically sound but recoverable by Shor, until replaced by ML-DSA (FIPS 204)',
+          },
+          {
+            label: 'Signature algorithm',
+            value: certificate.signatureAlgorithm || 'Unknown',
+            tone: /sha-?1|md5/i.test(certificate.signatureAlgorithm || '')
+              ? TONE_FAIL
+              : isPqSignature
+                ? TONE_PQ
+                : TONE_WARN,
+            detail: 'Algorithm the issuing CA signed this certificate with',
+          },
+          {
+            label: 'Issuer',
+            value: certificateName(certificate.issuer) ?? 'Unknown',
+            detail: 'Certificate authority that issued the leaf',
+          },
+          {
+            label: 'Subject',
+            value: certificateName(certificate.subject) ?? 'Unknown',
+            detail: 'Distinguished name the certificate was issued to',
+          },
+        );
+      }
+
+      rows.push({
+        label: 'Validity',
+        value: remaining === null
+          ? 'Unknown'
+          : certificate?.isExpired || remaining < 0
+            ? 'Expired'
+            : `${remaining} day${remaining === 1 ? '' : 's'} remaining`,
+        tone: certificate?.isExpired || (remaining ?? 0) < 0 ? TONE_FAIL : (remaining ?? 0) < 30 ? TONE_WARN : TONE_PASS,
+        detail: certificate ? `Valid ${certificate.validFrom} → ${certificate.validTo}` : 'Remaining lifetime of the served leaf',
+      });
+
+      /* Chain TRUST is a measurement the parsed certificate cannot make — it
+         needs a validated handshake against a trust store, which is what the
+         edge engine performs. "3 certificates returned" and "3 certificates
+         that chain to a trusted root" are different statements. */
+      rows.push({
+        label: 'Chain',
+        value: edgeCert?.probed
+          ? `${edgeCert.chainDepth} certificate(s) · ${edgeCert.chainTrusted === null ? 'trust unknown' : edgeCert.chainTrusted ? 'trusted' : 'UNTRUSTED'}`
+          : chain.length
+            ? `${chain.length} certificate(s)`
+            : 'Not collected',
+        tone:
+          edgeCert?.probed && edgeCert.chainTrusted === false
+            ? TONE_FAIL
+            : chain.some((entry) => entry.isExpired)
+              ? TONE_FAIL
+              : edgeCert?.chainTrusted || chain.length
+                ? TONE_PASS
+                : TONE_MUTED,
+        detail:
+          edgeCert?.trustError ||
+          chain.map((entry) => entry.subject).join(' → ') ||
+          'Chain presented by the endpoint and validated against the public trust store',
+      });
+
+      if (edgeCert?.probed) {
+        rows.push(
+          {
+            label: 'Hostname match',
+            value: edgeCert.hostnameMatches === null ? 'Unknown' : edgeCert.hostnameMatches ? 'Yes' : 'NO',
+            tone: edgeCert.hostnameMatches === false ? TONE_FAIL : edgeCert.hostnameMatches ? TONE_PASS : TONE_MUTED,
+            detail: edgeCert.subjectAltNames.length
+              ? `${edgeCert.sanCount} SAN(s): ${edgeCert.subjectAltNames.slice(0, 4).join(', ')}${edgeCert.sanCount > 4 ? ' …' : ''}`
+              : 'No subject alternative names were parsed',
+          },
+          {
+            label: 'OCSP stapling',
+            value: edgeCert.ocspStapled ? 'Stapled' : edgeCert.mustStaple ? 'MUST-STAPLE VIOLATED' : 'Not stapled',
+            tone: edgeCert.ocspStapled ? TONE_PASS : edgeCert.mustStaple ? TONE_FAIL : TONE_WARN,
+            detail: edgeCert.ocspResponderDetail ?? `Responder state: ${edgeCert.ocspResponderState}`,
+          },
+          {
+            label: 'Certificate Transparency',
+            value: edgeCert.sctPresent ? `${edgeCert.sctCount} SCT(s)` : 'No SCTs found',
+            tone: edgeCert.sctPresent ? TONE_PASS : TONE_WARN,
+            detail: edgeCert.sctPresent
+              ? 'Misissuance for this name would be publicly auditable'
+              : 'No Signed Certificate Timestamps in the certificate, handshake or stapled OCSP response',
+          },
+        );
+      }
+
+      if (certificate) {
+        rows.push({
           label: 'Self-signed',
           value: certificate.isSelfSigned ? 'Yes' : 'No',
           tone: certificate.isSelfSigned ? TONE_FAIL : TONE_PASS,
           detail: 'A self-signed leaf is not anchored to a public trust store',
-        },
-      );
+        });
+      }
       break;
     }
 
@@ -768,7 +911,60 @@ export function buildNodeEvidence(
       const risk = scanner2?.quantumRiskScore ?? null;
       const attack = scanner2?.attackAssessment ?? null;
       const hndl = scanner2?.hndlRisks ?? [];
-      if (!readiness && !risk && !attack && hndl.length === 0) break;
+      const quantum = edge?.quantum ?? null;
+      const hybridApplied = Boolean(pq?.probed && pq.state === 'pass' && pq.hybridGroups.length > 0);
+      if (!readiness && !risk && !attack && hndl.length === 0 && !quantum && !pq?.probed) break;
+
+      /* The measured post-quantum posture leads, because it is the one thing on
+         this surface that was DIRECTLY observed rather than modelled. An
+         endpoint running hybrid ML-KEM key agreement is not "Critical" on the
+         strength of a modelled break window, and a panel that opened with the
+         model said exactly that. */
+      if (pq?.probed) {
+        rows.push({
+          label: 'PQ key agreement',
+          value: pq.value,
+          tone: hybridApplied ? TONE_PQ : pq.pureKemGroups.length ? TONE_WARN : TONE_FAIL,
+          detail: pq.detail,
+        });
+        if (hybridApplied) {
+          rows.push({
+            label: 'Hybrid construction',
+            value: `${pq.classicalComponent} + ${pq.postQuantumComponent}`,
+            tone: TONE_PQ,
+            detail: `${pq.primaryGroup} accepted in isolation across ${pq.handshakes} handshake(s) · confidence ${pq.confidence}%. Session secrets on this channel are not recoverable by Shor.`,
+          });
+        }
+      }
+      if (quantum) {
+        rows.push(
+          {
+            label: 'Signature posture',
+            value: quantum.pqSignatureObserved ? 'Post-quantum signature observed' : 'Classical signatures',
+            tone: quantum.pqSignatureObserved ? TONE_PQ : TONE_WARN,
+            detail: quantum.pqSignatureObserved
+              ? 'A post-quantum signature was parsed from the served certificate chain'
+              : 'Certificate authentication remains classical — ML-DSA (FIPS 204) is the migration target. Signature exposure is forgery-at-break, not harvest-now.',
+          },
+          {
+            label: 'Measured PQ readiness',
+            value: `${Math.round(quantum.postQuantumReadiness)}%`,
+            tone: quantum.postQuantumReadiness >= 60 ? TONE_PASS : quantum.postQuantumReadiness >= 35 ? TONE_WARN : TONE_FAIL,
+            detail: quantum.readinessReasons.slice(0, 3).join(' · ') || 'Measured from the observed edge surface',
+          },
+          {
+            label: 'Quantum vulnerability',
+            value: quantum.vulnerability,
+            tone:
+              quantum.quantumRisk === 'Low'
+                ? TONE_PASS
+                : quantum.quantumRisk === 'Medium'
+                  ? TONE_WARN
+                  : TONE_FAIL,
+            detail: quantum.vulnerabilityReason,
+          },
+        );
+      }
       if (readiness) {
         rows.push({
           label: 'Quantum readiness',
@@ -796,9 +992,13 @@ export function buildNodeEvidence(
         const immediate = hndl.filter((item) => item.urgencyLevel === 'immediate').length;
         rows.push({
           label: 'Harvest-now exposure',
-          value: `${hndl.length} asset(s) · ${immediate} immediate`,
-          tone: immediate > 0 ? TONE_FAIL : TONE_WARN,
-          detail: Array.from(new Set(hndl.map((item) => item.algorithm))).slice(0, 4).join(', '),
+          value: hybridApplied
+            ? `${hndl.length} asset(s) · key agreement protected`
+            : `${hndl.length} asset(s) · ${immediate} immediate`,
+          tone: hybridApplied ? TONE_WARN : immediate > 0 ? TONE_FAIL : TONE_WARN,
+          detail: hybridApplied
+            ? `Transport key agreement is hybrid post-quantum, so recorded sessions are NOT decryptable by a future CRQC. The remaining exposure is signature and stored-data, not traffic: ${Array.from(new Set(hndl.map((item) => item.algorithm))).slice(0, 4).join(', ')}`
+            : Array.from(new Set(hndl.map((item) => item.algorithm))).slice(0, 4).join(', '),
         });
       }
       if (attack) {

@@ -75,22 +75,6 @@ function moduleEvent(module: ModuleState, progress: number): ScanEvent | null {
             ? 'warning'
             : 'pass';
 
-  const verdict = module.status === 'Running'
-    ? 'Scanning'
-    : module.status === 'Failed'
-      ? 'Failed'
-      : module.status === 'Skipped'
-        ? 'Not applicable'
-        : module.status === 'No findings'
-          ? 'Clean'
-          : severity === 'critical'
-            ? 'Critical'
-            : severity === 'high'
-              ? 'At risk'
-              : severity === 'medium'
-                ? 'Review'
-                : 'Secure';
-
   const line = module.status === 'Running'
     ? `${module.name} running`
     : module.status === 'Skipped'
@@ -114,7 +98,15 @@ function moduleEvent(module: ModuleState, progress: number): ScanEvent | null {
     finding: line,
     asset: module.target,
     details: {
-      verdict,
+      /* Deliberately NO per-module verdict.
+         A node card shows ONE surface, and a surface is fed by up to eight
+         modules. Writing each module's own verdict into the node meant the card
+         showed whichever module reported LAST — so a transport surface that had
+         already collected four static-RSA cipher suites read "Secure" because
+         its final module happened to be clean, while the accent colour (derived
+         from peak severity) was red. The card's verdict is now resolved from
+         the node's accumulated evidence by `resolveNodeVerdict`, which is the
+         same function that produces the colour. */
       nodeLine: running ? null : line,
       nodeProgress: running ? 45 : 100,
       timelineLabel: line,

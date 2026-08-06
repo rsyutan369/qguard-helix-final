@@ -33,6 +33,8 @@ export interface PublicScanObservation {
   /** Headline word for the surface. Only primary observations carry one. */
   verdict?: string;
   postQuantum?: boolean;
+  /** Real completion counts inside a multi-measurement phase. Never a timer. */
+  progress?: { done: number; total: number };
   at: number;
 }
 
@@ -72,6 +74,8 @@ export function usePublicScan(): UsePublicScanResult {
   const [error, setError] = useState<string | null>(null);
   const [observations, setObservations] = useState<PublicScanObservation[]>([]);
   const sourceRef = useRef<EventSource | null>(null);
+  /** Monotonic floor for the reported progress. Cleared at the start of a run. */
+  const progressFloor = useRef(0);
 
   const closeStream = useCallback(() => {
     sourceRef.current?.close();
@@ -82,6 +86,7 @@ export function usePublicScan(): UsePublicScanResult {
 
   const reset = useCallback(() => {
     closeStream();
+    progressFloor.current = 0;
     setState('idle');
     setStages(initialStages());
     setReport(null);
@@ -99,6 +104,7 @@ export function usePublicScan(): UsePublicScanResult {
       }
 
       closeStream();
+      progressFloor.current = 0;
       setState('scanning');
       setStages(initialStages());
       setReport(null);
@@ -168,9 +174,61 @@ export function usePublicScan(): UsePublicScanResult {
     [closeStream],
   );
 
-  const done = stages.filter((stage) => stage.state === 'complete' || stage.state === 'failed').length;
-  const running = stages.some((stage) => stage.state === 'running') ? 0.5 : 0;
-  const progress = Math.round(((done + running) / stages.length) * 100);
+  /*
+   * Progress weighted by how much work each stage actually is.
+   *
+   * Counting the six stages equally made the bar jump to 33%, sit there for the
+   * whole TLS phase — which is most of a scan — and then finish in one step. The
+   * weights below are the measured shares of a real assessment, and the TLS
+   * stage additionally advances WITHIN itself from the named-group completion
+   * counts the engine streams. Every input is work already finished, so the bar
+   * can neither run ahead of the scanner nor freeze while it is measuring.
+   */
+  const STAGE_WEIGHT: Record<PublicScanStageKey, number> = {
+    dns: 10,
+    tls: 55,
+    certificate: 10,
+    headers: 10,
+    quantum: 10,
+    report: 5,
+  };
+
+  const latestGroupProgress = (() => {
+    for (let index = observations.length - 1; index >= 0; index -= 1) {
+      const candidate = observations[index].progress;
+      if (candidate && candidate.total > 0) return candidate;
+    }
+    return null;
+  })();
+
+  const totalWeight = Object.values(STAGE_WEIGHT).reduce((sum, weight) => sum + weight, 0);
+  const earned = stages.reduce((sum, stage) => {
+    const weight = STAGE_WEIGHT[stage.key] ?? 0;
+    if (stage.state === 'complete' || stage.state === 'failed') return sum + weight;
+    if (stage.state !== 'running') return sum;
+    // A running stage contributes what it has actually measured. Only the TLS
+    // stage reports sub-progress; the rest are short enough that a half-credit
+    // placeholder is honest about the uncertainty.
+    if (stage.key !== 'tls') return sum + weight * 0.5;
+    /* The TLS stage is more than half the assessment and reports its own real
+       sub-progress once group probing starts. Before that only the protocol and
+       cipher enumeration has finished, so it claims a small fixed share — a 0.5
+       placeholder here asserted half the longest stage was done before a single
+       group had been offered, and the bar then fell backwards when the true
+       count arrived. */
+    return sum + weight * (latestGroupProgress
+      ? Math.max(0.1, Math.min(0.97, latestGroupProgress.done / latestGroupProgress.total))
+      : 0.1);
+  }, 0);
+  const computed = Math.min(100, Math.round((earned / totalWeight) * 100));
+  /* A progress bar that moves backwards reads as a fault in the scanner even
+     when every number behind it is honest — a stage flipping from a placeholder
+     to its real sub-progress can legitimately lower a weighted estimate. The
+     reported value therefore only ever climbs within a run; `scan()` and
+     `reset()` clear the floor. */
+  if (state === 'complete') progressFloor.current = 100;
+  else if (state === 'scanning' && computed > progressFloor.current) progressFloor.current = computed;
+  const progress = state === 'scanning' || state === 'complete' ? progressFloor.current : computed;
 
   return { state, stages, report, error, progress, observations, scan, reset };
 }

@@ -49,6 +49,13 @@ export interface AssessOptions {
    * separate facts over several seconds inside a single stage.
    */
   onObservation?: ObservationSink
+  /**
+   * Wall-clock budget for the measurement phase. The engines DEGRADE when it
+   * expires — unmeasured groups become inconclusive and the report says so —
+   * rather than the assessment throwing. A visitor gets a partial answer with
+   * its limits stated, never a spinner that ends in an error.
+   */
+  budgetMs?: number
   signal?: AbortSignal
 }
 
@@ -189,6 +196,7 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
       if (key) emit(stage(key, ok ? 'complete' : 'failed', detail))
     },
     onObservation: options.onObservation,
+    budgetMs: options.budgetMs,
   })
 
   const evidence = toReportEvidence(bundle)

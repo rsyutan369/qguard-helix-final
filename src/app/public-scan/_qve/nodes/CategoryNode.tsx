@@ -28,13 +28,14 @@ import {
   KeyRound,
   Loader2,
   Lock,
+  MinusCircle,
   Radar,
   ShieldCheck,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { beamColor, type QveNode, type QveNodeKey } from '../types';
+import { resolveNodeVerdict, type QveNode, type QveNodeKey, type QveResolvedVerdict } from '../types';
 
 /**
  * Icon per node key. Open-ended because the node ring is supplied by whoever
@@ -70,37 +71,50 @@ export interface CategoryNodeProps {
   animate: boolean;
 }
 
-function StatusBadge({ node, color }: { node: QveNode; color: string }) {
+/**
+ * The badge is keyed off the SAME resolved verdict the label and the accent
+ * colour use, so a card can never show a green tick beside the word "Critical".
+ */
+function StatusBadge({ verdict }: { verdict: QveResolvedVerdict }) {
   const shared = 'grid h-5 w-5 shrink-0 place-items-center rounded-full';
-  if (node.state === 'scanning') {
-    return (
-      <span className={shared} style={{ backgroundColor: `${color}1f`, color }}>
-        <Loader2 className="h-3 w-3 animate-spin" />
-      </span>
-    );
+  const color = verdict.color;
+
+  switch (verdict.key) {
+    case 'scanning':
+      return (
+        <span className={shared} style={{ backgroundColor: `${color}1f`, color }}>
+          <Loader2 className="h-3 w-3 animate-spin" />
+        </span>
+      );
+    case 'secure':
+      return (
+        <span className={cn(shared, 'ring-1')} style={{ backgroundColor: `${color}1f`, color, boxShadow: `inset 0 0 0 1px ${color}66` }}>
+          <Check className="h-3 w-3" strokeWidth={3} />
+        </span>
+      );
+    case 'review':
+    case 'at-risk':
+      return (
+        <span className={shared} style={{ backgroundColor: `${color}1f`, color, boxShadow: `inset 0 0 0 1px ${color}66` }}>
+          <AlertTriangle className="h-3 w-3" />
+        </span>
+      );
+    case 'critical':
+    case 'failed':
+      return (
+        <span className={shared} style={{ backgroundColor: `${color}22`, color, boxShadow: `inset 0 0 0 1px ${color}77` }}>
+          <XCircle className="h-3 w-3" />
+        </span>
+      );
+    case 'unmeasured':
+      return (
+        <span className={cn(shared, 'bg-white/[0.04] text-slate-500')} title="Measured nothing — not a pass">
+          <MinusCircle className="h-3 w-3" />
+        </span>
+      );
+    default:
+      return <span className={cn(shared, 'bg-white/[0.04] text-slate-600')}>—</span>;
   }
-  if (node.state === 'pass') {
-    return (
-      <span className={cn(shared, 'ring-1')} style={{ backgroundColor: `${color}1f`, color, boxShadow: `inset 0 0 0 1px ${color}66` }}>
-        <Check className="h-3 w-3" strokeWidth={3} />
-      </span>
-    );
-  }
-  if (node.state === 'warning') {
-    return (
-      <span className={shared} style={{ backgroundColor: `${color}1f`, color, boxShadow: `inset 0 0 0 1px ${color}66` }}>
-        <AlertTriangle className="h-3 w-3" />
-      </span>
-    );
-  }
-  if (node.state === 'critical' || node.state === 'failed') {
-    return (
-      <span className={shared} style={{ backgroundColor: `${color}22`, color, boxShadow: `inset 0 0 0 1px ${color}77` }}>
-        <XCircle className="h-3 w-3" />
-      </span>
-    );
-  }
-  return <span className={cn(shared, 'bg-white/[0.04] text-slate-600')}>—</span>;
 }
 
 export const CategoryNode = React.memo(function CategoryNode({
@@ -113,9 +127,19 @@ export const CategoryNode = React.memo(function CategoryNode({
 }: CategoryNodeProps) {
   const reduce = useReducedMotion();
   const Icon = NODE_ICON[node.key] ?? Radar;
-  const color = beamColor(node);
+  /* ONE resolved state drives the label, the accent, the badge, the border, the
+     progress sweep and the beam tap. There is deliberately no second source. */
+  const verdict = resolveNodeVerdict(node);
+  const color = verdict.color;
   const live = node.state !== 'idle';
-  const alert = node.state === 'critical' || node.state === 'failed';
+  const alert = verdict.alert;
+  /* The surface-specific phrase the derivation produced ("Legacy exposed",
+     "Untrusted chain", "Hybrid PQ") is real information and is kept — but as
+     muted context under the state, never as the coloured headline, because an
+     arbitrary phrase cannot be guaranteed to agree with the accent it is
+     painted in. That guarantee is the whole point of `resolveNodeVerdict`. */
+  const context =
+    node.hasEvidence && node.verdict && node.verdict !== verdict.label ? node.verdict : null;
   const reference = React.useRef<HTMLButtonElement>(null);
 
   React.useEffect(() => {
@@ -142,7 +166,8 @@ export const CategoryNode = React.memo(function CategoryNode({
       onClick={() => onSelect(node.key)}
       aria-pressed={selected}
       // The card is the accessible name for everything the beam animates.
-      aria-label={`${node.title}: ${node.verdict}. ${node.lines.join('. ')}`}
+      aria-label={`${node.title}: ${verdict.label}.${context ? ` ${context}.` : ''} ${node.lines.join('. ')}`}
+      title={verdict.basis}
       animate={shake}
       className={cn(
         'group relative w-full overflow-hidden rounded-xl border px-3 py-2.5 text-left transition-colors duration-300',
@@ -172,14 +197,14 @@ export const CategoryNode = React.memo(function CategoryNode({
           className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border"
           style={{ borderColor: `${color}44`, backgroundColor: `${color}12`, color }}
           animate={
-            motionEnabled && node.state === 'scanning'
+            motionEnabled && verdict.key === 'scanning'
               ? { rotate: 360 }
-              : motionEnabled && node.state === 'pass'
+              : motionEnabled && verdict.key === 'secure'
                 ? { scale: [1, 1.12, 1] }
                 : { rotate: 0, scale: 1 }
           }
           transition={
-            node.state === 'scanning'
+            verdict.key === 'scanning'
               ? { duration: 3.2, repeat: Infinity, ease: 'linear' }
               : { duration: 1.8, repeat: Infinity, repeatDelay: 2.4 }
           }
@@ -192,11 +217,23 @@ export const CategoryNode = React.memo(function CategoryNode({
             <p className="truncate font-mono text-[10px] font-bold uppercase tracking-[0.13em] text-slate-200">
               {node.title}
             </p>
-            <StatusBadge node={node} color={color} />
+            <StatusBadge verdict={verdict} />
           </div>
-          <p className="mt-0.5 truncate text-[11.5px] font-bold" style={{ color: live ? color : '#64748b' }}>
-            {node.verdict}
+          <p className="mt-0.5 flex items-baseline gap-1.5 text-[11.5px] font-bold">
+            <span className="truncate" style={{ color: live ? color : '#64748b' }}>
+              {verdict.label}
+            </span>
+            {node.score !== null && node.hasEvidence && (
+              <span className="shrink-0 font-mono text-[9.5px] font-bold tabular-nums" style={{ color: live ? color : '#64748b' }}>
+                {node.score}
+              </span>
+            )}
           </p>
+          {context && (
+            <p className="truncate text-[10px] leading-snug text-slate-400" title={context}>
+              {context}
+            </p>
+          )}
           <div className="mt-0.5 space-y-[1px]">
             {node.lines.slice(0, 2).map((line) => (
               <p key={line} className="truncate text-[10.5px] leading-snug text-slate-500" title={line}>

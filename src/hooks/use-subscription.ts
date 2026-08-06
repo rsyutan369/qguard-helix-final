@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import {
@@ -45,10 +45,19 @@ const EMPTY: SubscriptionState = {
 
 export function useSubscription(): SubscriptionState & { refresh: () => Promise<void> } {
   const { user } = useAuth();
+  /* Keyed on the user ID, never the user OBJECT.
+     `DashboardLayout` renders its loading shell instead of `<Outlet/>` while
+     this hook reports `loading`, so anything that makes the hook restart
+     unmounts the entire page. Depending on the object identity did exactly
+     that on every browser-tab switch. */
+  const userId = user?.id ?? null;
   const [state, setState] = useState<SubscriptionState>(EMPTY);
+  /** The user whose entitlement `state` describes — drives the loading gate. */
+  const resolvedFor = useRef<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!user) {
+    if (!userId) {
+      resolvedFor.current = null;
       setState({ ...EMPTY, loading: false });
       return;
     }
@@ -56,12 +65,13 @@ export function useSubscription(): SubscriptionState & { refresh: () => Promise<
       const { data: sub } = await supabase
         .from('billing_subscriptions')
         .select('plan,status,billing_cycle,auto_renew,cancel_at_period_end,renewal_date,provider,provider_subscription_id,updated_at')
-        .eq('user_id', user.id)
+        .eq('user_id', userId)
         .order('updated_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (sub) {
+        resolvedFor.current = userId;
         setState({
           tier: normalizeTier(sub.plan),
           status: sub.status ?? null,
@@ -81,9 +91,10 @@ export function useSubscription(): SubscriptionState & { refresh: () => Promise<
       const { data: profile } = await supabase
         .from('profiles')
         .select('tier')
-        .eq('id', user.id)
+        .eq('id', userId)
         .maybeSingle();
       const tier = normalizeTier(profile?.tier);
+      resolvedFor.current = userId;
       setState({
         ...EMPTY,
         tier,
@@ -94,34 +105,42 @@ export function useSubscription(): SubscriptionState & { refresh: () => Promise<
         loading: false,
       });
     } catch {
+      resolvedFor.current = userId;
       setState({ ...EMPTY, loading: false });
     }
-  }, [user]);
+  }, [userId]);
 
   useEffect(() => {
-    setState((s) => ({ ...s, loading: true }));
+    /* `loading` means "this user's entitlement has never been resolved", NOT
+       "a refresh is in flight". A background re-read must not blank the
+       dashboard: `DashboardLayout` renders its loading shell in place of
+       `<Outlet/>` while this is true, so flipping it on every refresh
+       destroyed and rebuilt every page under it — losing in-progress work. */
+    if (resolvedFor.current !== userId) {
+      setState((current) => (current.loading ? current : { ...current, loading: true }));
+    }
     void load();
-  }, [load]);
+  }, [load, userId]);
 
   // Live updates when the subscription changes (activation, cancel, switch).
   useEffect(() => {
-    if (!user) return;
+    if (!userId) return;
     // Topic must be unique PER HOOK INSTANCE: supabase.channel() returns the
     // existing channel for a duplicate topic, and .on() after .subscribe()
     // throws — two components using this hook on one page (DashboardLayout +
     // ScannerDashboard) would crash the whole tree to a blank screen.
     const channel = supabase
-      .channel(`subscription-access-${user.id}-${nextChannelSeq++}`)
+      .channel(`subscription-access-${userId}-${nextChannelSeq++}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'billing_subscriptions', filter: `user_id=eq.${user.id}` },
+        { event: '*', schema: 'public', table: 'billing_subscriptions', filter: `user_id=eq.${userId}` },
         () => void load(),
       )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, load]);
+  }, [userId, load]);
 
   return { ...state, refresh: load };
 }

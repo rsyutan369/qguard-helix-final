@@ -34,23 +34,30 @@ import { getScannerRuntimeHealth } from './runtime-health'
 /**
  * Wall-clock ceiling for one target.
  *
- * Raised from 120s when the public-edge intelligence phase was added. That
- * phase is dominated by named-group probing, which is deliberately sequential
- * and paced: firing thirty concurrent handshakes at a stranger's edge trips the
- * per-IP connection limits of every CDN, and a throttled RST is
- * indistinguishable from "group not supported" — a false negative on the single
- * measurement this scanner exists to make. Buying that accuracy costs seconds,
- * and the budget reflects it rather than truncating the scan mid-probe.
+ * Lowered from 210s once the edge phase stopped being the bottleneck. Named-group
+ * probing used to spend 40 sequential handshakes with a fixed 150ms gap between
+ * each, which made that one phase 85-97% of a scan; it now discovers
+ * concurrently and re-probes only the falsifiable results (see the TLS engine),
+ * and a healthy target finishes the whole edge pass in 3-6s. This is a backstop
+ * for a pathological endpoint, not the shape of a normal scan.
  */
-const SCAN_TIMEOUT = 210_000
+const SCAN_TIMEOUT = 120_000
 const MODULE_TIMEOUT = 15_000 // 15 seconds per individual module
 const TLS_MODULE_TIMEOUT = 45_000 // TLS needs room for primary handshake + protocol/cipher probes
 /**
- * Ceiling for the whole edge phase: TLS enumeration + named groups + session +
- * certificate chain/OCSP + DNS + HTTP. The TLS engine enforces its own 40s
- * budget for group probing, so this is the outer guard, not the pacing control.
+ * Outer guard for the whole edge phase: TLS enumeration + named groups +
+ * session + certificate chain/OCSP + DNS + HTTP. The engines carry their own
+ * DEGRADE-BY budget (`EDGE_BUDGET_MS`, or a per-target share handed down by a
+ * multi-target run) and return partial evidence when it expires, so this fires
+ * only if one of them wedges — never as part of a normal scan.
  */
-const EDGE_MODULE_TIMEOUT = 110_000
+const EDGE_MODULE_TIMEOUT = 60_000
+
+/**
+ * Default degrade-by budget for one target's edge probing when the caller does
+ * not divide a run budget across a queue.
+ */
+export const EDGE_BUDGET_MS = 45_000
 const TLS_MAX_RETRIES = 1
 const MAX_RETRIES = 2 // Retry failed modules up to 2 times
 const RETRY_DELAY = 500 // 500ms between retries
@@ -136,11 +143,20 @@ async function withRetry<T>(
 
 /**
  * Calculate HNDL (Harvest Now, Decrypt Later) risk timeline
+ *
+ * `kemApplied` is the MEASURED verdict from the edge engine's named-group
+ * probing, not a substring test on the key-exchange label. Node's
+ * `getEphemeralKeyInfo()` returns an empty object for a TLS 1.3 handshake, so
+ * the label degrades to the generic "ECDHE (TLS 1.3 key_share)" on every modern
+ * endpoint — including ones that negotiated a hybrid ML-KEM group. Deciding
+ * harvest-now exposure from that string reported endpoints with live hybrid PQ
+ * key agreement as fully harvestable.
  */
 function calculateHndlTimeline(
   keyExchange: string,
   certAlg: string,
-  keySize: number
+  keySize: number,
+  kemApplied = false
 ): { yearsToQuantumThreat: number; dataShelfLife: string; urgency: 'IMMEDIATE' | 'HIGH' | 'MEDIUM' | 'LOW' } {
   // Estimate years until CRQC can break the algorithm
   let yearsToBreak = 15 // default conservative estimate
@@ -156,8 +172,8 @@ function calculateHndlTimeline(
     yearsToBreak = 8 // ECC is more efficient for quantum attacks
   }
 
-  if (keyExchange.includes('Kyber') || keyExchange.includes('ML-KEM')) {
-    yearsToBreak = 50 // PQC is safe for foreseeable future
+  if (kemApplied || keyExchange.includes('Kyber') || keyExchange.includes('ML-KEM')) {
+    yearsToBreak = 50 // session secrets are not recoverable by Shor
   }
 
   let urgency: 'IMMEDIATE' | 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW'
@@ -187,7 +203,13 @@ function calculateHndlTimeline(
 export async function executeWebScan(
   target: string,
   targetType: WebScanTargetType,
-  onEvent: (event: SSEEvent) => void
+  onEvent: (event: SSEEvent) => void,
+  /**
+   * Degrade-by budget for this target's edge probing. A queue of assets divides
+   * the run's budget across its targets and passes each one its share, so the
+   * total stays predictable however many assets were submitted.
+   */
+  edgeBudgetMs: number = EDGE_BUDGET_MS
 ): Promise<WebScanCompleteResult> {
   const scanId = crypto.randomUUID()
   const startTime = Date.now()
@@ -506,10 +528,12 @@ export async function executeWebScan(
         moduleStart('edge-infrastructure-analyzer', 'Edge Infrastructure Analyzer', hostname, 12)
 
         const edgeAttempt = await withRetry(
-          () => collectEdgeIntelligence(hostname, port),
+          () => collectEdgeIntelligence(hostname, port, undefined, edgeBudgetMs),
           'Public Edge Intelligence Engine',
           0, // the engines retry their own transient failures internally
-          EDGE_MODULE_TIMEOUT,
+          // Never below the engines' own degrade-by budget, or the outer guard
+          // would kill a scan that was about to return its partial evidence.
+          Math.max(EDGE_MODULE_TIMEOUT, edgeBudgetMs + 15_000),
         )
         edgeIntelligence = edgeAttempt.result?.intelligence ?? null
         const edgeHandshake = edgeAttempt.result?.handshake ?? null
@@ -626,35 +650,107 @@ export async function executeWebScan(
         phaseStart('key-exchange', 'Key Exchange & Forward Secrecy Analysis', 30)
         moduleStart('key-exchange-analyzer', 'Key Exchange Analyzer', target, 30)
         const kexFindingStart = findings.length
+        /* The negotiated key agreement is what the EDGE ENGINE MEASURED, never
+           what the socket happened to be able to name.
+
+           `tlsResult.keyExchange` is derived from `getEphemeralKeyInfo()`,
+           which Node returns EMPTY for a TLS 1.3 handshake — so on every modern
+           endpoint the label degrades to the generic "ECDHE (TLS 1.3
+           key_share)" whether the group was P-256 or X25519MLKEM768. The edge
+           phase above already resolved the real group by offering each named
+           group in isolation under a TLS 1.3 floor, across dozens of
+           handshakes, and that measurement is authoritative here.
+
+           Reading the label instead of the measurement is what reported
+           endpoints with live hybrid post-quantum key agreement — Cloudflare
+           among them — as classical-only, HIGH severity, harvest-now exposed. */
+        const pqAgreement = edgeIntelligence?.pqKeyAgreement ?? null
+        const hybridApplied = Boolean(
+          pqAgreement?.probed && pqAgreement.state === 'pass' && pqAgreement.hybridGroups.length > 0,
+        )
+        const pureKemApplied = Boolean(
+          pqAgreement?.probed && !hybridApplied && pqAgreement.pureKemGroups.length > 0,
+        )
+        const kemApplied = hybridApplied || pureKemApplied
+
         if (tlsResult && tlsResult.keyExchange && tlsResult.keyExchange !== 'unknown') {
-          const kexThreat = getKeyExchangeThreat(tlsResult.keyExchange)
-          const group = tlsResult.negotiatedCurve
+          // The measured group outranks the socket label; `negotiatedCurve` is
+          // the fallback for a scan whose edge phase never completed.
+          const group = pqAgreement?.primaryGroup ?? tlsResult.negotiatedCurve
           const ephemeral = tlsResult.ephemeralKeyType
             ? `${tlsResult.ephemeralKeyType}${tlsResult.ephemeralKeySize ? ` ${tlsResult.ephemeralKeySize}-bit` : ''}`
             : null
           const observed = [
             group ? `named group ${group}` : null,
             ephemeral ? `ephemeral ${ephemeral}` : null,
+            kemApplied && pqAgreement?.handshakes ? `confirmed across ${pqAgreement.handshakes} handshake(s)` : null,
           ].filter(Boolean).join(', ')
-          addFinding({
-            phase: 'key-exchange',
-            algorithm: tlsResult.keyExchange,
-            location: `TLS Handshake — ${target}`,
-            threatLevel: kexThreat,
-            category: 'Key Exchange',
-            description: `${getKeyExchangeDescription(tlsResult.keyExchange, kexThreat)}${observed ? ` (${observed})` : ''}`,
-            recommendation: getKeyExchangeRecommendation(kexThreat),
-            quantumBreakTime: kexThreat === 'SAFE' ? 'N/A' : '~2-8 hours (CRQC)',
-            classicalBreakTime: '> 10^28 years',
-          })
 
-          // Harvest-Now-Decrypt-Later horizon for this key agreement.
+          if (hybridApplied && pqAgreement) {
+            addFinding({
+              phase: 'key-exchange',
+              algorithm: pqAgreement.primaryGroup || 'Hybrid ML-KEM',
+              location: `TLS Handshake — ${target}`,
+              threatLevel: 'SAFE',
+              category: 'Key Exchange',
+              description:
+                `Hybrid post-quantum key agreement is applied. ${pqAgreement.classicalComponent || 'The classical half'} protects the session classically and ` +
+                `${pqAgreement.postQuantumComponent || 'ML-KEM'} makes the session secret unrecoverable by Shor's algorithm` +
+                `${observed ? ` (${observed})` : ''}.`,
+              recommendation:
+                'No action required for key establishment. Extend the same hybrid posture to internal services and plan the ML-DSA (FIPS 204) certificate migration.',
+              quantumBreakTime: 'Not recoverable by Shor',
+              classicalBreakTime: '> 10^28 years',
+            })
+          } else if (pureKemApplied && pqAgreement) {
+            addFinding({
+              phase: 'key-exchange',
+              algorithm: pqAgreement.pureKemGroups[0] || 'ML-KEM',
+              location: `TLS Handshake — ${target}`,
+              threatLevel: 'LOW',
+              category: 'Key Exchange',
+              description:
+                `Standalone ML-KEM key agreement is applied (${pqAgreement.pureKemGroups.join(', ')}) with no classical hedge. ` +
+                `Post-quantum key agreement IS in use, but a future weakness in ML-KEM would leave nothing underneath it${observed ? ` (${observed})` : ''}.`,
+              recommendation:
+                'Prefer the hybrid X25519MLKEM768 group so a future ML-KEM weakness cannot strip the session of all protection.',
+              quantumBreakTime: 'Not recoverable by Shor',
+              classicalBreakTime: 'No classical hedge',
+            })
+          } else {
+            const kexThreat = getKeyExchangeThreat(tlsResult.keyExchange)
+            addFinding({
+              phase: 'key-exchange',
+              algorithm: tlsResult.keyExchange,
+              location: `TLS Handshake — ${target}`,
+              threatLevel: kexThreat,
+              category: 'Key Exchange',
+              description: `${getKeyExchangeDescription(tlsResult.keyExchange, kexThreat)}${observed ? ` (${observed})` : ''}${
+                pqAgreement?.hybridProbed
+                  ? `. Every hybrid ML-KEM group was offered in isolation and refused across ${pqAgreement.handshakes} handshake(s)`
+                  : ''
+              }`,
+              recommendation: getKeyExchangeRecommendation(kexThreat),
+              quantumBreakTime: kexThreat === 'SAFE' ? 'N/A' : '~2-8 hours (CRQC)',
+              classicalBreakTime: '> 10^28 years',
+            })
+          }
+
+          /* Harvest-Now-Decrypt-Later horizon for this key agreement.
+
+             Suppressed outright when post-quantum key agreement is MEASURED as
+             applied: the session secret of a hybrid handshake is not derivable
+             from recorded ciphertext by a CRQC, so there is no harvest-now
+             exposure on this channel to report. Certificate and signature
+             exposure is a separate surface and is still reported by the
+             certificate modules. */
           const hndlTimeline = calculateHndlTimeline(
             tlsResult.keyExchange,
             certInfo?.publicKeyAlgorithm || '',
-            certInfo?.publicKeySize || 2048
+            certInfo?.publicKeySize || 2048,
+            kemApplied,
           )
-          if (hndlTimeline.urgency === 'IMMEDIATE' || hndlTimeline.urgency === 'HIGH') {
+          if (!kemApplied && (hndlTimeline.urgency === 'IMMEDIATE' || hndlTimeline.urgency === 'HIGH')) {
             addFinding({
               phase: 'key-exchange',
               algorithm: `HNDL Risk: ${hndlTimeline.urgency}`,
@@ -662,7 +758,8 @@ export async function executeWebScan(
               threatLevel: hndlTimeline.urgency === 'IMMEDIATE' ? 'CRITICAL' : 'HIGH',
               category: 'Key Exchange (Harvest Now Decrypt Later)',
               description: `${hndlTimeline.dataShelfLife}. Estimated ${hndlTimeline.yearsToQuantumThreat} years until CRQC threat materializes.`,
-              recommendation: 'Deploy hybrid PQC key exchange (X25519Kyber768) immediately to protect data in transit',
+              recommendation:
+                'Deploy hybrid post-quantum key exchange (X25519MLKEM768 — ML-KEM-768, FIPS 203) to protect data in transit against harvest-now-decrypt-later.',
               quantumBreakTime: `~${hndlTimeline.yearsToQuantumThreat} years (estimated)`,
               classicalBreakTime: '> 10^28 years',
             })
@@ -1359,8 +1456,11 @@ function getKeyExchangeDescription(kex: string, threat: ThreatLevel): string {
 }
 
 function getKeyExchangeRecommendation(threat: ThreatLevel): string {
-  if (threat === 'SAFE') return 'No action required — PQC key exchange is active'
-  return 'Enable X25519Kyber768 hybrid key exchange for post-quantum resistance'
+  if (threat === 'SAFE') return 'No action required — post-quantum key agreement is active'
+  // X25519Kyber768 was the pre-standardisation draft name. The standardised
+  // group is X25519MLKEM768 (ML-KEM-768, FIPS 203) and that is what operators
+  // have to enable today, so that is what the recommendation must say.
+  return 'Enable the X25519MLKEM768 hybrid key exchange group (ML-KEM-768, FIPS 203) for post-quantum resistance'
 }
 
 function getTlsVersionThreat(version: string): ThreatLevel {

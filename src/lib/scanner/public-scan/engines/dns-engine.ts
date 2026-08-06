@@ -238,7 +238,60 @@ async function caaViaDoh(name: string): Promise<{ records: CaaRecord[]; resolver
 
 // ─── System resolver helpers ──────────────────────────────────────────────────
 
+/**
+ * Does the system stub resolver answer RECORD-TYPE queries on this host at all?
+ *
+ * `dns.lookup()` (getaddrinfo) works essentially everywhere, but `resolve4`,
+ * `resolveCaa`, `resolveTxt` and friends go out on UDP/53, which a large share
+ * of corporate networks, container runtimes and consumer ISPs refuse outright.
+ * Measured on a network that blocks it, every one of those calls still costs
+ * real latency before failing — `resolve6` alone took 3.26s to return
+ * ECONNREFUSED, and the engine made seven such calls per scan.
+ *
+ * Whether UDP/53 is reachable is a property of the SCANNER'S network, not of the
+ * target, so it is answered once and reused. The result is re-tested
+ * periodically because a runtime can be moved onto a network that does allow it.
+ */
+const RESOLVER_PROBE_TTL_MS = 5 * 60 * 1000
+let systemResolverState: { usable: boolean; checkedAt: number } | null = null
+
+/** Codes meaning "the transport is unavailable", not "the name has no records". */
+const RESOLVER_DEAD_CODES = new Set(['ECONNREFUSED', 'ETIMEOUT', 'ETIMEDOUT', 'ESERVFAIL', 'ECANCELLED'])
+
+function noteResolverOutcome(err: unknown): void {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code ?? ''
+  if (!RESOLVER_DEAD_CODES.has(code)) return
+  systemResolverState = { usable: false, checkedAt: Date.now() }
+}
+
+function systemResolverUsable(): boolean {
+  if (!systemResolverState) return true
+  if (Date.now() - systemResolverState.checkedAt > RESOLVER_PROBE_TTL_MS) {
+    systemResolverState = null
+    return true
+  }
+  return systemResolverState.usable
+}
+
+/** `resolveX` that reports transport death and resolves to a fallback. */
+async function viaSystemResolver<T>(query: () => Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
+  if (!systemResolverUsable()) return fallback
+  try {
+    return await withTimeout(
+      query().catch((err) => {
+        noteResolverOutcome(err)
+        throw err
+      }),
+      Math.max(0, timeoutMs),
+      fallback,
+    )
+  } catch {
+    return fallback
+  }
+}
+
 async function systemCaa(name: string): Promise<{ records: CaaRecord[]; authoritative: boolean }> {
+  if (!systemResolverUsable()) return { records: [], authoritative: false }
   try {
     const records = await dnsPromises.resolveCaa(name)
     return {
@@ -257,6 +310,7 @@ async function systemCaa(name: string): Promise<{ records: CaaRecord[]; authorit
         .filter((record): record is CaaRecord => record !== null),
     }
   } catch (err) {
+    noteResolverOutcome(err)
     const code = (err as NodeJS.ErrnoException).code
     // ENODATA / ENOTFOUND are authoritative "no CAA published" answers.
     return { records: [], authoritative: code === 'ENODATA' || code === 'ENOTFOUND' }
@@ -265,11 +319,22 @@ async function systemCaa(name: string): Promise<{ records: CaaRecord[]; authorit
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
-export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntelligence>> {
+export async function runDnsEngine(
+  host: string,
+  /**
+   * Wall-clock ceiling. The addresses and CAA policy are load-bearing for the
+   * assessment; nameservers, MX, SPF/DMARC and DKIM selectors are context. When
+   * the budget runs short the context is skipped and said so, rather than
+   * letting a slow resolver chain hold the whole scan open.
+   */
+  budgetMs = 8_000,
+): Promise<EngineResult<DnsIntelligence>> {
   return runEngine('dns-intelligence', emptyDns(host), async () => {
     const data = emptyDns(host)
     const evidence: Evidence[] = []
     const notes: string[] = []
+    const deadline = Date.now() + Math.max(3_000, budgetMs)
+    const remaining = () => deadline - Date.now()
 
     if (net.isIP(host)) {
       // A literal IP has no DNS surface to assess.
@@ -292,10 +357,21 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
       /* resolver configuration is best-effort */
     }
 
-    // ── Addresses: system resolver, then DoH, then the OS stub resolver ──────
-    const [v4, v6] = await Promise.all([
-      withTimeout(dnsPromises.resolve4(host), DNS_TIMEOUT, [] as string[]),
-      withTimeout(dnsPromises.resolve6(host), DNS_TIMEOUT, [] as string[]),
+    /* ── Addresses ────────────────────────────────────────────────────────
+       The authoritative A/AAAA queries and the OS stub resolver are raced
+       rather than tried in series. `lookup()` uses getaddrinfo and answers on
+       networks where UDP/53 is blocked — precisely the case where the record
+       queries are slowest — so waiting for them to fail first added their full
+       latency to every scan for an answer the stub already had. Authoritative
+       records still WIN when they arrive; the stub is only the fallback. */
+    const [v4, v6, looked] = await Promise.all([
+      viaSystemResolver(() => dnsPromises.resolve4(host), [] as string[], DNS_TIMEOUT),
+      viaSystemResolver(() => dnsPromises.resolve6(host), [] as string[], DNS_TIMEOUT),
+      withTimeout(
+        dnsPromises.lookup(host, { all: true }),
+        DNS_TIMEOUT,
+        [] as Array<{ address: string; family: number }>,
+      ),
     ])
     data.systemResolverAvailable = v4.length > 0 || v6.length > 0
     data.ipv4 = v4
@@ -305,7 +381,17 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
       data.resolvedVia = v4.length ? 'A' : 'AAAA'
     }
 
-    if (!data.systemResolverAvailable) {
+    if (!data.systemResolverAvailable && looked.length) {
+      data.ipv4 = looked.filter((entry) => entry.family === 4).map((entry) => entry.address)
+      data.ipv6 = looked.filter((entry) => entry.family === 6).map((entry) => entry.address)
+      data.transports.push('OS stub resolver')
+      data.resolvedVia = 'os-resolver'
+      notes.push('Record-type DNS queries were unavailable; addresses came from the OS stub resolver.')
+    }
+
+    // DoH is the last resort for addresses — it costs a full HTTPS round trip
+    // and only matters when neither local transport answered at all.
+    if (!data.ipv4.length && !data.ipv6.length) {
       const [a, aaaa] = await Promise.all([doh(host, RR.A), doh(host, RR.AAAA)])
       if (a || aaaa) {
         data.dohAvailable = true
@@ -315,21 +401,6 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
         data.cname = (a?.Answer ?? []).filter((x) => x.type === RR.CNAME).map((x) => x.data)
         data.resolvedVia = data.ipv4.length ? 'A (DoH)' : data.ipv6.length ? 'AAAA (DoH)' : 'none'
         notes.push('System resolver refused record-type queries; answered over DNS-over-HTTPS.')
-      }
-    }
-
-    if (!data.ipv4.length && !data.ipv6.length) {
-      const looked = await withTimeout(
-        dnsPromises.lookup(host, { all: true }),
-        DNS_TIMEOUT,
-        [] as Array<{ address: string; family: number }>,
-      )
-      if (looked.length) {
-        data.ipv4 = looked.filter((entry) => entry.family === 4).map((entry) => entry.address)
-        data.ipv6 = looked.filter((entry) => entry.family === 6).map((entry) => entry.address)
-        data.transports.push('OS stub resolver')
-        data.resolvedVia = 'os-resolver'
-        notes.push('Only the OS stub resolver answered; record-type detail is limited.')
       }
     }
 
@@ -351,10 +422,19 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
     // Issuance is checked at the name and inherited up the tree, so both are
     // queried before concluding "no policy".
     for (const name of [host, apex].filter((value, index, all) => all.indexOf(value) === index)) {
-      const viaSystem = await withTimeout(systemCaa(name), DNS_TIMEOUT, {
-        records: [] as CaaRecord[],
-        authoritative: false,
-      })
+      if (remaining() <= 0) break
+      /* The system resolver and DoH are raced rather than tried in series. They
+         are independent transports answering the same question, and the loop
+         runs for up to two names — four sequential waits of 4-5s each was up to
+         18s of the DNS engine's wall clock spent waiting for a fallback that
+         the faster transport had usually already answered. */
+      const [viaSystem, viaDohRaced] = await Promise.all([
+        withTimeout(systemCaa(name), Math.min(DNS_TIMEOUT, Math.max(0, remaining())), {
+          records: [] as CaaRecord[],
+          authoritative: false,
+        }),
+        withTimeout(caaViaDoh(name), Math.min(DOH_TIMEOUT, Math.max(0, remaining())), null),
+      ])
       if (viaSystem.authoritative) {
         data.caaQueryable = true
         data.caaSource = 'system resolver'
@@ -366,7 +446,7 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
         continue
       }
 
-      const viaDoh = await withTimeout(caaViaDoh(name), DOH_TIMEOUT, null)
+      const viaDoh = viaDohRaced
       if (viaDoh) {
         data.caaQueryable = true
         data.dohAvailable = true
@@ -397,26 +477,38 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
     }
 
     // ── Supporting records (best-effort; absence is never a failure) ─────────
+    // Everything below is context, not a control, so each query is capped at
+    // whatever budget is actually left. `withTimeout` resolves to the fallback
+    // rather than rejecting, so a starved query degrades to "not observed".
+    const supportingBudget = () => Math.max(0, Math.min(DOH_TIMEOUT, remaining()))
     const [ns, mx, txt, soa, apexTxt, dmarcTxt, dnskey] = await Promise.all([
-      withTimeout(dnsPromises.resolveNs(apex), DNS_TIMEOUT, [] as string[]),
-      withTimeout(dnsPromises.resolveMx(apex), DNS_TIMEOUT, [] as Array<{ priority: number; exchange: string }>),
-      withTimeout(dnsPromises.resolveTxt(host), DNS_TIMEOUT, [] as string[][]),
-      withTimeout(doh(apex, RR.SOA), DOH_TIMEOUT, null),
-      withTimeout(doh(apex, RR.TXT), DOH_TIMEOUT, null),
-      withTimeout(doh(`_dmarc.${apex}`, RR.TXT), DOH_TIMEOUT, null),
-      withTimeout(doh(apex, RR.DNSKEY), DOH_TIMEOUT, null),
+      viaSystemResolver(() => dnsPromises.resolveNs(apex), [] as string[], Math.min(DNS_TIMEOUT, supportingBudget())),
+      viaSystemResolver(() => dnsPromises.resolveMx(apex), [] as Array<{ priority: number; exchange: string }>, Math.min(DNS_TIMEOUT, supportingBudget())),
+      viaSystemResolver(() => dnsPromises.resolveTxt(host), [] as string[][], Math.min(DNS_TIMEOUT, supportingBudget())),
+      withTimeout(doh(apex, RR.SOA), supportingBudget(), null),
+      withTimeout(doh(apex, RR.TXT), supportingBudget(), null),
+      withTimeout(doh(`_dmarc.${apex}`, RR.TXT), supportingBudget(), null),
+      withTimeout(doh(apex, RR.DNSKEY), supportingBudget(), null),
+    ])
+
+    /* The NS and MX DoH fallbacks used to be two more SEQUENTIAL awaits after
+       the batch above. They are independent of each other, so they run together
+       — and only when the primary query actually came back empty. */
+    const [nsFallback, mxFallback] = await Promise.all([
+      ns.length || remaining() <= 0 ? null : withTimeout(doh(apex, RR.NS), supportingBudget(), null),
+      mx.length || remaining() <= 0 ? null : withTimeout(doh(apex, RR.MX), supportingBudget(), null),
     ])
 
     data.nameservers = ns.length
       ? ns.slice(0, 8)
-      : ((await withTimeout(doh(apex, RR.NS), DOH_TIMEOUT, null))?.Answer ?? [])
+      : (nsFallback?.Answer ?? [])
           .filter((answer) => answer.type === RR.NS)
           .map((answer) => answer.data.replace(/\.$/, ''))
           .slice(0, 8)
 
     data.mailExchangers = mx.length
       ? mx.slice(0, 8)
-      : ((await withTimeout(doh(apex, RR.MX), DOH_TIMEOUT, null))?.Answer ?? [])
+      : (mxFallback?.Answer ?? [])
           .filter((answer) => answer.type === RR.MX)
           .map((answer) => {
             const [priority, exchange] = answer.data.split(/\s+/)
@@ -443,17 +535,28 @@ export async function runDnsEngine(host: string): Promise<EngineResult<DnsIntell
 
     // DKIM selectors are per-sender and cannot be enumerated blind; probe the
     // handful of well-known defaults and report only what actually answers.
-    const dkimSelectors = ['default', 'google', 'selector1', 'selector2', 'k1', 'mail']
-    const dkimResults = await Promise.all(
-      dkimSelectors.map(async (selector) => {
-        const response = await withTimeout(doh(`${selector}._domainkey.${apex}`, RR.TXT), DOH_TIMEOUT, null)
-        const found = (response?.Answer ?? []).some(
-          (answer) => answer.type === RR.TXT && /v=DKIM1/i.test(answer.data),
-        )
-        return found ? selector : null
-      }),
-    )
-    data.dkimSelectorsFound = dkimResults.filter((selector): selector is string => selector !== null)
+    // Six more DoH round trips for a field no control reads — skipped outright
+    // once the budget is spent, and the note says so rather than implying the
+    // domain publishes none.
+    if (remaining() > 1_500) {
+      const dkimSelectors = ['default', 'google', 'selector1', 'selector2', 'k1', 'mail']
+      const dkimResults = await Promise.all(
+        dkimSelectors.map(async (selector) => {
+          const response = await withTimeout(
+            doh(`${selector}._domainkey.${apex}`, RR.TXT),
+            Math.max(0, Math.min(DOH_TIMEOUT, remaining())),
+            null,
+          )
+          const found = (response?.Answer ?? []).some(
+            (answer) => answer.type === RR.TXT && /v=DKIM1/i.test(answer.data),
+          )
+          return found ? selector : null
+        }),
+      )
+      data.dkimSelectorsFound = dkimResults.filter((selector): selector is string => selector !== null)
+    } else {
+      notes.push('DKIM selector discovery was skipped to stay inside the DNS time budget; no claim is made either way.')
+    }
 
     // DNSSEC: DNSKEY presence proves the zone is signed; the AD bit proves a
     // validating resolver actually verified the chain.

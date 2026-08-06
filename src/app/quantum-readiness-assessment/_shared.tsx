@@ -70,6 +70,7 @@ export function CountUp({
   prefix = '',
   suffix = '',
   duration = 1500,
+  grouping = true,
   className,
 }: {
   value: number;
@@ -77,6 +78,8 @@ export function CountUp({
   prefix?: string;
   suffix?: string;
   duration?: number;
+  /** Thousands separators. Turn off for values that are not quantities (years). */
+  grouping?: boolean;
   className?: string;
 }) {
   const ref = React.useRef<HTMLSpanElement>(null);
@@ -104,8 +107,12 @@ export function CountUp({
 
   const formatted =
     decimals > 0
-      ? display.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
-      : Math.round(display).toLocaleString('en-US');
+      ? display.toLocaleString('en-US', {
+          minimumFractionDigits: decimals,
+          maximumFractionDigits: decimals,
+          useGrouping: grouping,
+        })
+      : Math.round(display).toLocaleString('en-US', { useGrouping: grouping });
 
   return (
     <span ref={ref} className={className}>

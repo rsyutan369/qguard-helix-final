@@ -28,6 +28,26 @@ import type {
  * genuinely adopted PQC even though it exposes no TLS endpoint — but only when
  * they came from a pattern match, never from a recommendation string.
  */
+/**
+ * Has post-quantum KEY AGREEMENT been measured as applied on this endpoint?
+ *
+ * Narrower than {@link hasObservedPqc}, and deliberately so: this answers only
+ * "are the session secrets on this channel out of Shor's reach?", which is the
+ * question the transport and harvest-now rules actually ask. A repository that
+ * imports liboqs has observed PQC but has not protected this handshake.
+ *
+ * The answer comes from the edge engine's named-group probing — each hybrid
+ * group offered in isolation under a TLS 1.3 floor — never from a substring
+ * test on `tlsResult.keyExchange`, which Node reports as the generic "ECDHE
+ * (TLS 1.3 key_share)" for every TLS 1.3 handshake regardless of the group.
+ */
+function measuredKemApplied(ctx: DetectionContext): boolean {
+  const pq = ctx.edgeIntelligence?.pqKeyAgreement
+  if (!pq?.probed) return false
+  if (pq.state === 'pass' && pq.hybridGroups.length > 0) return true
+  return pq.pureKemGroups.length > 0
+}
+
 function hasObservedPqc(ctx: DetectionContext): boolean {
   const edge = ctx.edgeIntelligence
   if (edge?.quantum.hybridObserved || edge?.quantum.pqSignatureObserved) return true
@@ -234,18 +254,27 @@ export const DETECTION_RULES: DetectionRule[] = [
   },
   {
     id: 'TLS-003',
-    name: 'ECDHE Key Exchange Detected',
+    name: 'Classical-Only Key Exchange',
     category: 'tls-config',
     severity: 'HIGH',
-    description: 'ECDHE key exchange is quantum-vulnerable via Shor\'s algorithm',
-    remediation: 'Enable X25519Kyber768 hybrid key exchange',
+    description: 'Key agreement rests on ECDHE/DHE alone — recoverable by Shor\'s algorithm',
+    remediation: 'Enable the X25519MLKEM768 hybrid key exchange group (ML-KEM-768, FIPS 203)',
     evaluate: (ctx) => {
       const tls = ctx.tlsResult
       if (!tls) return null
+      /* An ECDHE half inside a MEASURED hybrid group is the design, not a
+         defect: X25519MLKEM768 is X25519 *and* ML-KEM-768, and the session
+         secret is unrecoverable by Shor as long as the ML-KEM half holds.
+
+         This rule used to substring-test `tls.keyExchange`, which Node reports
+         as the generic "ECDHE (TLS 1.3 key_share)" for every TLS 1.3 handshake
+         because `getEphemeralKeyInfo()` is empty there — so it fired HIGH on
+         endpoints whose hybrid group the edge engine had just proven live. */
+      if (measuredKemApplied(ctx)) return null
       if (tls.keyExchange.includes('ECDHE') || tls.keyExchange.includes('ECDH')) {
-        return makeResult('TLS-003', 'ECDHE Key Exchange', 'tls-config', 'HIGH',
-          `ECDHE key exchange detected (${tls.keyExchange}) — quantum-vulnerable via Shor\'s`,
-          'Enable X25519Kyber768 hybrid key exchange for quantum resistance')
+        return makeResult('TLS-003', 'Classical-Only Key Exchange', 'tls-config', 'HIGH',
+          `Key agreement is classical only (${tls.keyExchange}) — no hybrid ML-KEM group was accepted, so the session secret is recoverable by a CRQC from recorded traffic`,
+          'Enable the X25519MLKEM768 hybrid key exchange group (ML-KEM-768, FIPS 203) for quantum resistance')
       }
       return null
     },
@@ -715,14 +744,18 @@ export const DETECTION_RULES: DetectionRule[] = [
     evaluate: (ctx) => {
       const tls = ctx.tlsResult
       if (!tls) return null
-      // HNDL applies when key exchange is quantum-vulnerable
+      /* Harvest-now exposure is a property of the KEY AGREEMENT, and the only
+         trustworthy statement about it is the edge engine's measurement.
+
+         The old test — "does the key-exchange label mention Kyber/ML-KEM?" —
+         could never be true for a real TLS 1.3 endpoint, because Node reports
+         the label as "ECDHE (TLS 1.3 key_share)" whatever group was used. Every
+         hybrid-protected endpoint was therefore reported as harvestable. */
+      if (measuredKemApplied(ctx)) return null
       if (tls.keyExchange.includes('ECDHE') || tls.keyExchange.includes('DHE') || tls.keyExchange.includes('RSA')) {
-        const hasHybrid = tls.keyExchange.includes('Kyber') || tls.keyExchange.includes('ML-KEM')
-        if (!hasHybrid) {
-          return makeResult('HNDL-001', 'HNDL Exposure', 'long-term-quantum-risk', 'HIGH',
-            'Traffic encrypted with quantum-vulnerable key exchange — harvest-now-decrypt-later risk',
-            'Deploy hybrid PQC key exchange immediately for data with long-term confidentiality needs')
-        }
+        return makeResult('HNDL-001', 'HNDL Exposure', 'long-term-quantum-risk', 'HIGH',
+          'Traffic encrypted with quantum-vulnerable key exchange — harvest-now-decrypt-later risk',
+          'Deploy hybrid PQC key exchange (X25519MLKEM768) immediately for data with long-term confidentiality needs')
       }
       return null
     },
@@ -752,8 +785,13 @@ export const DETECTION_RULES: DetectionRule[] = [
     description: 'System uses only classical cryptography with no hybrid PQC protection',
     remediation: 'Implement hybrid classical + PQC cryptography',
     evaluate: (ctx) => {
+      /* "No hybrid crypto anywhere" is an evidence question, so it is answered
+         from evidence. A finding-title scan misses the standardised group names
+         entirely — X25519MLKEM768 contains neither "ML-KEM" nor "Kyber" — which
+         left this rule firing on endpoints running hybrid key agreement. */
+      if (hasObservedPqc(ctx) || measuredKemApplied(ctx)) return null
       const allClassical = ctx.findings.every(f =>
-        !f.algorithm.includes('ML-KEM') && !f.algorithm.includes('Kyber') && !f.algorithm.includes('ML-DSA')
+        !/ml[-_ ]?kem|ml[-_ ]?dsa|slh[-_ ]?dsa|kyber|dilithium|sphincs|falcon/i.test(f.algorithm)
       )
       if (allClassical && ctx.findings.length > 0) {
         return makeResult('HNDL-003', 'No Hybrid Crypto', 'long-term-quantum-risk', 'MEDIUM',

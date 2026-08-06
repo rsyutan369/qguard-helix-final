@@ -2838,6 +2838,12 @@ export default function App() {
                 <span className="homepage-nav__menu-kicker">Solution Suites</span>
                 {[
                   {
+                    title: 'QGuard Helix Features',
+                    description: 'The full platform showcase — all fifteen modules, what each one does, and the business value it delivers.',
+                    href: '/qguard-helix-features',
+                    icon: Sparkles
+                  },
+                  {
                     title: 'PQC Solutions',
                     description: 'The six problems that stall every PQC migration — hidden trust, shadow crypto, unmanaged keys — solved in one platform.',
                     href: '/pqc-solutions',

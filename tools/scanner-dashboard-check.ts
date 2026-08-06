@@ -278,12 +278,19 @@ function verifyPopulated() {
   assert(surfaceOf('tls-version')?.value === 'TLSv1.3 + legacy', `TLS row flags legacy protocols (${surfaceOf('tls-version')?.value})`)
   assert(surfaceOf('quantum-risk')?.value === 'High', `Quantum risk from the Scanner_2 assessment (${surfaceOf('quantum-risk')?.value})`)
 
-  // Controls this scanner does not perform must be Not probed - never pass/fail.
+  /* Controls with no evidence attached must claim no verdict — never pass or
+     fail. Asserted on the CONTRACT (status is `unknown`, the value is an
+     explicit non-verdict, and the row says why) rather than on one exact
+     string: this fixture carries no `edgeIntelligence`, and the phrasing for
+     that case is "Not measured" while an edge phase that ran but could not
+     reach a control reports "Not probed". Pinning the literal made the check
+     fail on a wording change that did not weaken the contract at all. */
+  const NON_VERDICTS = ['Not probed', 'Not measured', 'Unknown']
   for (const key of ['ocsp-stapling', 'certificate-transparency', 'dns-caa', 'dnssec', 'alpn', 'edge-infrastructure']) {
     const row = surfaceOf(key)
     assert(
-      row?.value === 'Not probed' && row.status === 'unknown',
-      `"${key}" claims no verdict it did not earn (${row?.value})`,
+      row?.status === 'unknown' && NON_VERDICTS.includes(row.value) && Boolean(row.detail),
+      `"${key}" claims no verdict it did not earn (${row?.value} / ${row?.status})`,
     )
   }
   const tlsItem = a.attackSurface.find((item) => item.key === 'tls-version')
@@ -482,7 +489,21 @@ function verifyNodeEvidence() {
   assert(transport.rows.some((r) => r.label === 'Negotiated protocol' && r.value === 'TLSv1.3'), 'transport: negotiated protocol')
   assert(transport.rows.some((r) => r.label === 'Protocols accepted' && r.value.includes('TLSv1.0')), 'transport: legacy protocol surfaced')
   assert(transport.rows.some((r) => r.label === 'Suites enumerated' && r.value.includes('1 quantum-vulnerable')), 'transport: quantum-vulnerable suite counted')
-  assert(transport.rows.some((r) => r.label === 'Ephemeral key' && r.value.includes('X25519')), 'transport: ephemeral key')
+  /* Forward secrecy replaced the raw "Ephemeral key" readout: the presence of
+     ephemeral key material is the mechanism, forward secrecy is the security
+     property, and the panel must state the property. */
+  assert(transport.rows.some((r) => r.label === 'Forward secrecy'), 'transport: forward secrecy is stated')
+  /* The key-agreement row must exist and must never be silently absent — this
+     is the row that used to print "ECDHE (TLS 1.3 key_share)" over a measured
+     hybrid ML-KEM group. */
+  assert(transport.rows.some((r) => r.label === 'Key agreement'), 'transport: key agreement is stated')
+  assert(
+    transport.rows.some((r) => r.label === 'Post-quantum key agreement'),
+    'transport: post-quantum key agreement has its own row',
+  )
+  /* Static-RSA acceptance is the one transport fact a hybrid key agreement does
+     NOT mitigate, so it is stated explicitly rather than left in a suite list. */
+  assert(transport.rows.some((r) => r.label === 'Static RSA accepted'), 'transport: static RSA acceptance is stated')
   assert(transport.modules.length === 3, `transport: 3 modules attributed (${transport.modules.length})`)
 
   const certificates = buildNodeEvidence('certificates', base)

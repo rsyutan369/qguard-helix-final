@@ -227,6 +227,25 @@ type ActiveScannerJobState = {
 
 const activeJobs = new Map<string, ActiveScannerJobState>()
 
+/**
+ * How long a whole authorized scan run may spend probing, and the floor/ceiling
+ * for any single target's share of it.
+ *
+ * Targets are scanned SEQUENTIALLY on purpose — the module ledger is per-run, so
+ * interleaving module-start/complete frames from several targets at once would
+ * make the live module cards flicker between assets and would break the
+ * "measured beats not-applicable" ordering the ledger depends on. Sequential
+ * execution keeps that contract; a divided budget keeps the wall clock
+ * predictable regardless of how many assets were submitted.
+ *
+ * Each target is handed `remaining budget / remaining targets`, clamped. A
+ * single asset therefore gets the full per-target ceiling and a queue of
+ * twenty-five degrades evenly instead of the first few consuming everything.
+ */
+const RUN_PROBE_BUDGET_MS = 240_000
+const TARGET_BUDGET_MIN_MS = 8_000
+const TARGET_BUDGET_MAX_MS = 45_000
+
 const memoryStore = (() => {
   const g = globalThis as typeof globalThis & {
     __qguard_authorized_scanner_store__?: {
@@ -1945,6 +1964,11 @@ router.get('/stream', async (req, res) => {
     updateModule('scanner2-module-registry', { status: 'Running' }, 'Scanner_2 module registry loading')
     updateModule('scanner2-module-registry', { status: 'Completed', findingsCount: SCAN_MODULES.length }, `${SCAN_MODULES.length} scanner_2 module definitions loaded for capability matching`)
 
+    /* Clock for the run-level probe budget. Started here rather than at request
+       time so authorization and session creation are not billed against the
+       time the targets get to be measured in. */
+    const runProbeStartedAt = Date.now()
+
     for (let index = 0; index < normalized.length; index++) {
       const target = normalized[index]
       const state = activeJobs.get(jobId)
@@ -1997,6 +2021,19 @@ router.get('/stream', async (req, res) => {
           },
           `SSH host key scanner: not applicable — ${target.normalized} is a ${target.type} target`,
         )
+        /* This target's share of the run budget. Recomputed each iteration so
+           targets that finished early hand their unspent time to the ones
+           still queued, instead of every target getting a fixed slice. */
+        const targetsLeft = normalized.length - index
+        const targetBudgetMs = Math.round(
+          Math.max(
+            TARGET_BUDGET_MIN_MS,
+            Math.min(
+              TARGET_BUDGET_MAX_MS,
+              Math.max(0, RUN_PROBE_BUDGET_MS - (Date.now() - runProbeStartedAt)) / Math.max(1, targetsLeft),
+            ),
+          ),
+        )
         result = normalizeWebResult(
           await executeWebScan(targetToScannerInput(target), target.type as WebScanTargetType, (event: SSEEvent) => {
             const eventProgress = typeof event.progress === 'number' ? event.progress : 10
@@ -2047,7 +2084,7 @@ router.get('/stream', async (req, res) => {
               message,
               finding: normalizedFinding,
             })
-          }),
+          }, targetBudgetMs),
           targetStart
         )
         /* Reconcile every module against the ledger of findings it actually

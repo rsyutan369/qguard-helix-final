@@ -1,0 +1,289 @@
+Resolve Scanner Hero Cards, Status Accuracy, Session Persistence, and New Scan Workflow
+
+Please review, improve, and resolve the issues within the Enterprise Scanner located at:
+
+http://localhost:3000/dashboard/scanner
+
+The objective is to ensure that all scanner modules, status indicators, colors, labels, scores, and workflows accurately reflect the actual scan evidence while maintaining a consistent, enterprise-grade user experience.
+
+Maintain the existing design, layout, animations, workflows, scanning logic, and features. Focus on improving accuracy, consistency, state management, and usability without changing the current user experience.
+
+1. Resolve Status, Labels, and Color Inconsistencies
+
+Please review the following Hero Scanner cards:
+
+Transport & Ciphers
+Certificates & Keys
+Quantum Posture
+
+Currently, these cards display inconsistent information.
+
+Current Issue
+
+For example:
+
+The card label displays "Secure"
+However, the card border, icon, and accent color are red, which typically indicates a critical or failed state.
+
+This creates conflicting information for users and makes it difficult to determine the actual security posture.
+
+Expected Behavior
+
+Each card should have a single, consistent security state.
+
+The following elements must always match:
+
+Status label
+Icon
+Border color
+Accent color
+Severity badge
+Summary text
+Risk level
+Detailed findings
+Overall score
+
+For example:
+
+Secure
+Green accent
+Green border
+Green icon
+"Secure" label
+Warning
+Yellow/Amber accent
+Warning icon
+Appropriate label
+Critical
+Red accent
+Red icon
+"Critical" label
+
+There should never be combinations such as:
+
+Secure + Red
+Critical + Green
+Pass + Red
+Failed + Green
+
+All visual indicators must represent the same evaluated state.
+
+2. Review Quantum Posture Detection Logic
+
+Please thoroughly review the detection logic for the Quantum Posture card.
+
+Current Observation
+
+When scanning:
+
+www.cloudflare.com
+
+the Quantum Posture is displayed as:
+
+Critical
+
+Please verify whether this classification is actually supported by the collected scan evidence.
+
+The classification should be derived from:
+
+Negotiated TLS version
+Negotiated key exchange
+Hybrid TLS support
+ML-KEM detection
+PQC readiness
+Harvest Now, Decrypt Later exposure
+Certificate algorithms
+Signature algorithms
+Publicly observable evidence
+Authenticated evidence (when available)
+
+If Cloudflare negotiates a hybrid post-quantum TLS connection for the scan, the scanner should not classify the target as Critical unless there are separate evidence-based findings that justify that severity.
+
+The classification should accurately represent the overall quantum security posture rather than relying on a single factor.
+
+3. Validate Transport & Ciphers
+
+Review the complete Transport & Ciphers engine.
+
+Ensure it correctly evaluates:
+
+TLS versions
+Cipher suites
+Key exchange
+Forward secrecy
+ALPN
+Hybrid TLS
+PQ key agreement
+Supported protocol versions
+Deprecated protocol support
+Negotiated handshake
+
+The displayed severity must match the actual findings.
+
+4. Validate Certificates & Keys
+
+Review the Certificates & Keys engine.
+
+Ensure it accurately evaluates:
+
+Certificate chain
+Trust
+Expiration
+Signature algorithm
+Public key algorithm
+Key size
+Certificate Transparency
+OCSP
+Revocation
+Hybrid certificates (where applicable)
+
+The displayed status and color must match the actual certificate assessment.
+
+5. Ensure Evidence-Based Classification
+
+All Hero cards should derive their severity from the complete evidence collected during the scan.
+
+Avoid assigning severity based on a single finding.
+
+Instead, calculate the overall module status using all relevant evidence and the platform's scoring model.
+
+Each card should clearly distinguish between:
+
+Pass
+Secure
+Warning
+At Risk
+Critical
+Failed
+Unknown
+Unable to Determine
+Not Applicable
+
+Each classification should include supporting evidence.
+
+6. Add a "New Scan" / "Clear Scan" Workflow
+
+Add a dedicated action allowing users to begin a completely new assessment without manually refreshing the browser.
+
+Suggested button labels:
+
+New Scan
+Scan Another Asset
+Clear Scan
+Start New Assessment
+Expected Behavior
+
+When the user starts a new scan:
+
+Clear the previous scan results.
+Clear the Discovery Workflow.
+Reset Hero cards.
+Reset Executive Summary.
+Reset Findings.
+Reset Charts.
+Reset Timelines.
+Reset Recommendations.
+Reset Progress.
+Reset Scan Queue (if appropriate).
+Reset temporary frontend state.
+
+The scanner should return to its initial "ready to scan" state.
+
+This should be a controlled application reset rather than requiring a full browser refresh.
+
+7. Preserve Scanner Session State
+
+Currently, when users:
+
+switch browser tabs,
+switch browser windows,
+navigate to another dashboard page,
+return to the Scanner,
+
+the Scanner reloads and the current scan state is lost.
+
+This negatively impacts usability.
+
+Expected Behavior
+
+The scanner should preserve the active scan session until the user explicitly clears it or starts a new assessment.
+
+Persist the following:
+
+Current scan
+Discovery Workflow progress
+Findings
+Hero cards
+Charts
+Recommendations
+Selected assets
+Active tabs
+Expanded panels
+Scroll position
+Filters
+Scan progress
+Assessment results
+
+The page should restore exactly as the user left it.
+
+8. Session Persistence
+
+Implement enterprise-grade session persistence.
+
+Possible approaches include:
+
+React Query cache
+Zustand/Redux persistence
+Local Storage
+Session Storage
+IndexedDB
+Backend session persistence
+Automatic state restoration
+
+Choose the most appropriate architecture for long-running enterprise assessments.
+
+The objective is that users never lose scan progress simply because they switched tabs or navigated elsewhere in the application.
+
+9. Backend Synchronization
+
+Ensure the scanner remains synchronized with the backend.
+
+Verify:
+
+APIs
+React hooks
+State management
+Queue processing
+Server-Sent Events (SSE)
+Background workers
+Cache invalidation
+Automatic updates
+Error recovery
+
+The frontend should restore state without unnecessarily restarting the scan.
+
+10. Enterprise UX Requirements
+
+Maintain the current premium interface while improving usability.
+
+The scanner should feel similar to enterprise platforms where users can:
+
+Leave the page.
+Return later.
+Continue reviewing results.
+Start a new assessment only when they choose.
+
+The experience should be seamless, reliable, and professional.
+
+Expected Outcome
+
+The completed implementation should provide:
+
+Accurate, evidence-based security classifications.
+Consistent labels, colors, icons, and severity indicators across all Hero cards.
+Correct Quantum Posture assessments based on actual scan evidence.
+Reliable Transport & Ciphers and Certificates & Keys evaluations.
+A dedicated New Scan / Clear Scan workflow that safely resets the scanner.
+Persistent scanner sessions that survive page navigation, browser tab changes, and window switches until the user explicitly starts a new scan.
+Fully synchronized backend and frontend state with a single source of truth.
+A production-ready, enterprise-grade scanning experience that maintains the existing design, workflows, features, and scanning logic while significantly improving reliability, accuracy, and user experience.

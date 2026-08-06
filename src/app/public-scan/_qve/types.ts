@@ -94,7 +94,15 @@ export type QveNodeKey = string;
 /** The six public-edge node keys, for modules that speak specifically to them. */
 export type QvePublicNodeKey = 'dns' | 'tls' | 'certificate' | 'headers' | 'ocsp' | 'quantum';
 
-export type QveNodeState = 'idle' | 'scanning' | 'pass' | 'warning' | 'critical' | 'failed';
+/**
+ * `unmeasured` is a SETTLED state, not a transitional one: the modules behind
+ * the surface reported and explicitly declined to measure it — an SSH probe
+ * against a target with no SSH endpoint, a repository scanner with no
+ * repository. It exists because such a module's event carries `status: 'info'`,
+ * which previously fell through to `scanning` and left the card spinning for
+ * the rest of the session on a scan that had demonstrably finished.
+ */
+export type QveNodeState = 'idle' | 'scanning' | 'unmeasured' | 'pass' | 'warning' | 'critical' | 'failed';
 
 export interface QveNode {
   key: QveNodeKey;
@@ -188,6 +196,13 @@ export const QVE_COLOR = {
   scanning: '#38bdf8',
   pass: '#34d399',
   warning: '#fbbf24',
+  /**
+   * HIGH severity. Distinct from `critical` on purpose: "at risk" and
+   * "critical" are different verdicts and must not share a colour, or the card
+   * cannot tell an operator which surface to open first. Matches the HIGH tone
+   * the findings lists already use.
+   */
+  high: '#fb923c',
   critical: '#f43f5e',
   quantum: '#a78bfa',
   idle: '#64748b',
@@ -244,34 +259,149 @@ export function bandForScore(score: number): QveGradeBand {
   return 'critical';
 }
 
+/* ------------------------------------------------------------ node verdict - */
+
+/**
+ * The canonical security state of a node. ONE value, from which the label, the
+ * accent colour, the badge icon, the border and the meter are all derived.
+ */
+export type QveVerdictKey =
+  | 'idle'
+  | 'scanning'
+  | 'unmeasured'
+  | 'failed'
+  | 'critical'
+  | 'at-risk'
+  | 'review'
+  | 'secure';
+
+export interface QveResolvedVerdict {
+  key: QveVerdictKey;
+  /** The word rendered in {@link color}. Never contradicts it. */
+  label: string;
+  color: string;
+  /** True when the state warrants alert chrome (shake, spark, red/orange). */
+  alert: boolean;
+  /** Why this state was assigned — shown as the card's tooltip. */
+  basis: string;
+}
+
+/**
+ * Resolve a node's ONE security state.
+ *
+ * This exists because the card used to carry two independent aggregations of
+ * the same surface and render them side by side. `node.verdict` was whatever
+ * the LAST module routed to the node happened to say, while the accent colour
+ * came from `node.severity`, the worst severity of ANY event ever routed there.
+ * A transport surface whose final module reported clean while four static-RSA
+ * cipher suites had already landed rendered the word "Secure" in critical red.
+ *
+ * The ladder, in order:
+ *
+ *  1. Lifecycle first — idle, scanning and failed are states of the RUN, and no
+ *     amount of evidence changes what they mean.
+ *
+ *  2. A settled node with no evidence is `unmeasured`, not a pass. "Nothing was
+ *     measured here" and "everything measured here was clean" are different
+ *     answers and must never share a colour.
+ *
+ *  3. Peak observed severity sets the class. CRITICAL → Critical, HIGH → At
+ *     Risk, MEDIUM → Review. The worst thing actually observed about a surface
+ *     is the thing an operator has to see first, and unlike an average it
+ *     cannot be diluted by counting one fact several ways.
+ *
+ *  4. Below MEDIUM the measured BAND decides, so a clean-but-dated surface
+ *     reads Good/Fair rather than a flat green. The band's colour and its label
+ *     come from the same table, so they cannot disagree either.
+ *
+ *  5. Otherwise: Secure.
+ *
+ * The band can refine a non-alert verdict but can never manufacture an alert
+ * one: the score is a mean over findings, and a mean over a surface that
+ * restates one certificate five ways is not evidence of five problems.
+ */
+export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
+  if (node.state === 'idle') {
+    return { key: 'idle', label: node.verdict || 'Standby', color: QVE_COLOR.idle, alert: false, basis: 'No evidence collected for this surface yet.' };
+  }
+  if (node.state === 'scanning') {
+    return { key: 'scanning', label: 'Scanning', color: QVE_COLOR.scanning, alert: false, basis: 'This surface is being measured now.' };
+  }
+  if (node.state === 'failed') {
+    return { key: 'failed', label: 'Failed', color: QVE_COLOR.critical, alert: true, basis: 'A module behind this surface did not complete, so the surface is unassessed.' };
+  }
+  /* A module that declined to measure this surface reported a reason, and the
+     reason is the point — "not applicable" is a measured answer, but it is not
+     a pass and must never be painted like one. */
+  if (node.state === 'unmeasured') {
+    return {
+      key: 'unmeasured',
+      label: 'Not applicable',
+      color: QVE_COLOR.idle,
+      alert: false,
+      basis:
+        node.lines[0] ??
+        'The modules behind this surface reported that it does not apply to the submitted targets. This is not a pass.',
+    };
+  }
+  if (!node.hasEvidence) {
+    return {
+      key: 'unmeasured',
+      label: 'Not measured',
+      color: QVE_COLOR.idle,
+      alert: false,
+      basis: 'The modules behind this surface reported, but the target exposed nothing here to measure. This is not a pass.',
+    };
+  }
+
+  const scored = node.score !== null ? ` Measured posture ${node.score}/100.` : '';
+
+  if (node.severity === 'critical') {
+    return { key: 'critical', label: 'Critical', color: QVE_COLOR.critical, alert: true, basis: `At least one CRITICAL finding was observed on this surface.${scored}` };
+  }
+  if (node.severity === 'high') {
+    return { key: 'at-risk', label: 'At Risk', color: QVE_COLOR.high, alert: true, basis: `The most severe finding on this surface is HIGH.${scored}` };
+  }
+  if (node.severity === 'medium' || node.state === 'warning') {
+    return { key: 'review', label: 'Review', color: QVE_COLOR.warning, alert: false, basis: `The most severe finding on this surface is MEDIUM.${scored}` };
+  }
+  if (node.band) {
+    /* The band refines a calm verdict; it cannot manufacture an alarming one.
+       Nothing above LOW was observed here, so the surface must not be labelled
+       Critical on the strength of an average — the score is a mean over
+       findings, and a mean over a surface that restates one certificate five
+       ways is not evidence of five problems. A degraded aggregate with no
+       severe finding is a Review, and says so. */
+    const alarmingBand = node.band === 'critical' || node.band === 'weak';
+    if (alarmingBand) {
+      return {
+        key: 'review',
+        label: 'Review',
+        color: QVE_COLOR.warning,
+        alert: false,
+        basis: `No finding above LOW was observed, but the aggregate posture is ${QVE_BAND_LABEL[node.band].toLowerCase()}.${scored}`,
+      };
+    }
+    return {
+      key: 'secure',
+      label: QVE_BAND_LABEL[node.band],
+      color: QVE_BAND_COLOR[node.band],
+      alert: false,
+      basis: `No finding above LOW was observed on this surface.${scored}`,
+    };
+  }
+  return { key: 'secure', label: 'Secure', color: QVE_COLOR.pass, alert: false, basis: `No finding above LOW was observed on this surface.${scored}` };
+}
+
 /**
  * The colour a node's beam, ring and chrome carry.
  *
- * Order matters, and it is an escalation ladder:
- *
- *  1. A HIGH or CRITICAL severity observation wins outright. A node that scores
- *     88 but is serving an untrusted chain is red, not green — the worst thing
- *     observed about a surface is the thing an operator has to see first.
- *
- *  2. Otherwise the MEASURED BAND decides, once the node has been scored. This
- *     deliberately outranks the node's lifecycle state. The lifecycle status is
- *     a coarse per-observation heuristic (an HTTP surface with under half its
- *     headers hardened is flagged `critical` while it is being read); the band
- *     is a weighted aggregate of the published grading model. Letting the
- *     heuristic win painted a surface scoring 62 — a Fair C — in the same red
- *     as one scoring 12, which is precisely the kind of colour that stops
- *     meaning anything.
- *
- *  3. Before a score exists, the lifecycle state is all there is.
+ * Delegates to {@link resolveNodeVerdict} rather than running its own ladder:
+ * the colour and the word beside it are the same function of the same input, so
+ * "Secure" can never be painted red.
  */
 export function beamColor(node: QveNode): string {
-  if (isAlertSeverity(node.severity)) return QVE_COLOR.critical;
-  if (node.band && node.hasEvidence) return QVE_BAND_COLOR[node.band];
-  if (node.state === 'critical' || node.state === 'failed') return QVE_COLOR.critical;
-  if (node.state === 'warning') return QVE_COLOR.warning;
-  if (node.state === 'pass') return QVE_COLOR.pass;
-  if (node.state === 'scanning') return QVE_COLOR.scanning;
-  return QVE_COLOR.idle;
+  return resolveNodeVerdict(node).color;
 }
 
 /** Quantum-wave colour ramp, keyed off the published grade letter. */

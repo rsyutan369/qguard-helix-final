@@ -22,6 +22,9 @@ seconds and can be re-run by anyone.
 ```
 tools/scanner-module-ledger-check.ts   ledger routing, producers, closure, partition
 tools/scanner-dashboard-check.ts       assessment derivations, single-scope contract
+tools/scanner-hero-cards-check.ts      hero card label/colour consistency (exhaustive
+                                       sweep of the node state space) + measured-hybrid
+                                       PQ honesty, with classical/unprobed negative controls
 tools/crypto-detection-check.ts        catalog structure, 8-language controls, false positives
 tools/repo-provider-check.ts           platform parsing, misclassification guards
 tools/public-scan-check.ts             public engine invariants

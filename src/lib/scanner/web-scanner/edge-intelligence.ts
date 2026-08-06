@@ -286,9 +286,15 @@ export async function collectEdgeIntelligence(
   host: string,
   port: number,
   onObservation?: ObservationSink,
+  /**
+   * Wall-clock budget for this target's edge probing. A multi-target run
+   * divides its own budget across the queue and passes each target its share,
+   * so twenty-five assets cannot compound into a scan nobody waits for.
+   */
+  budgetMs?: number,
 ): Promise<EdgeIntelligenceResult> {
   const startedAt = Date.now()
-  const bundle = await runScanEngines({ host, port, onObservation })
+  const bundle = await runScanEngines({ host, port, onObservation, budgetMs })
 
   const tls = bundle.tls.data
   const cert = bundle.certificate.data

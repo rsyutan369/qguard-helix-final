@@ -19,7 +19,7 @@ import React from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { beamColor, type QveNode } from '@/app/public-scan/_qve';
+import { resolveNodeVerdict, type QveNode } from '@/app/public-scan/_qve';
 import { Meter } from '@/components/quantum-scan/ui';
 import type { NodeEvidence } from './_intel';
 
@@ -50,6 +50,9 @@ export interface ScannerNodeInspectorProps {
 export function ScannerNodeInspector({ node, evidence, onClose, animate }: ScannerNodeInspectorProps) {
   const reduce = useReducedMotion();
   const motionEnabled = animate && !reduce;
+  /* The panel resolves the SAME verdict the card it opened from resolved, so
+     the headline, the posture number and the meter are one state. */
+  const verdict = node ? resolveNodeVerdict(node) : null;
 
   // Escape closes — the panel is a transient HUD, not a route.
   React.useEffect(() => {
@@ -63,7 +66,7 @@ export function ScannerNodeInspector({ node, evidence, onClose, animate }: Scann
 
   return (
     <AnimatePresence>
-      {node && (
+      {node && verdict && (
         <motion.div
           initial={motionEnabled ? { opacity: 0, y: 10, scale: 0.98 } : false}
           animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -82,15 +85,18 @@ export function ScannerNodeInspector({ node, evidence, onClose, animate }: Scann
               <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.2em] text-cyan-400/80">
                 {node.title}
               </p>
-              <p className="mt-0.5 text-[13px] font-black" style={{ color: beamColor(node) }}>
-                {node.verdict}
+              <p className="mt-0.5 text-[13px] font-black" style={{ color: verdict.color }} title={verdict.basis}>
+                {verdict.label}
               </p>
+              {node.hasEvidence && node.verdict && node.verdict !== verdict.label && (
+                <p className="text-[10.5px] leading-snug text-slate-400">{node.verdict}</p>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {evidence?.score !== null && evidence !== null && (
                 <span className="text-right">
                   <span className="block font-mono text-[9px] uppercase tracking-widest text-slate-600">Posture</span>
-                  <span className="block text-[13px] font-black tabular-nums" style={{ color: beamColor(node) }}>
+                  <span className="block text-[13px] font-black tabular-nums" style={{ color: verdict.color }}>
                     {evidence.score}
                   </span>
                 </span>
@@ -107,7 +113,7 @@ export function ScannerNodeInspector({ node, evidence, onClose, animate }: Scann
           </div>
 
           {evidence && evidence.score !== null && (
-            <Meter value={evidence.score} color={beamColor(node)} className="mt-2.5 h-1" />
+            <Meter value={evidence.score} color={verdict.color} className="mt-2.5 h-1" />
           )}
 
           <div className="mt-3 space-y-3">

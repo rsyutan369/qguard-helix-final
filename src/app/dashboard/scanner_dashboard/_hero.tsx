@@ -27,6 +27,7 @@ import {
   Pause,
   Play,
   Radar,
+  RotateCcw,
   Server,
   ShieldCheck,
   Volume2,
@@ -47,9 +48,9 @@ import {
   ScanTimeline,
   beamColor,
   isAlertSeverity,
+  useQve,
   useQveAudio,
   useQveBudget,
-  useQveState,
   type BeamAnchor,
   type BeamPath,
   type BeamTarget,
@@ -214,6 +215,18 @@ export interface ScannerHeroProps {
   onStart: () => void;
   onCancel: () => void;
   canStart: boolean;
+  /**
+   * Clears the page and starts a fresh assessment. The hero owns the button
+   * because the visualization band is visible from every tab, so "New Scan" is
+   * reachable wherever the operator happens to be reviewing.
+   */
+  onNewScan: () => void;
+  /**
+   * Incremented by the page's New Scan action. The engine's reducer state is
+   * private to the provider below, so an external reset has to arrive as a
+   * signal the hero can observe rather than as a method the page can call.
+   */
+  resetSignal: number;
 }
 
 /* ---------------------------------------------------------------------- inner - */
@@ -239,11 +252,13 @@ function HeroInner({
   onStart,
   onCancel,
   canStart,
+  onNewScan,
+  resetSignal,
 }: ScannerHeroProps) {
   const budget = useQveBudget();
   const wide = useIsWide();
   const audio = useQveAudio();
-  const state = useQveState();
+  const { state, dispatch } = useQve();
 
   const asset = targets.length ? targets.join(', ') : 'authorized estate';
   const isRunning = status === 'queued' || status === 'running' || status === 'analyzing';
@@ -394,6 +409,20 @@ function HeroInner({
     (key: QveNodeKey) => setSelected((current) => (current === key ? null : key)),
     [],
   );
+
+  /* External reset — "New Scan" clears the page, and the engine's node
+     verdicts, timeline and score ring have to go with it, or the hero would
+     keep certifying an estate the rest of the page no longer shows. The engine
+     state lives in the provider's reducer, so the page signals rather than
+     reaches in. */
+  const seenReset = React.useRef(resetSignal);
+  React.useEffect(() => {
+    if (seenReset.current === resetSignal) return;
+    seenReset.current = resetSignal;
+    setSelected(null);
+    consumed.current = 0;
+    dispatch({ type: 'reset' });
+  }, [resetSignal, dispatch]);
 
   /* Per-node evidence for the open card, derived only when a card is open so a
      closed inspector costs nothing during a live scan. */
@@ -622,6 +651,20 @@ function HeroInner({
                   className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-500 px-5 py-2 text-[13px] font-black text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Play className="h-4 w-4" /> Start Authorized Scan
+                </button>
+              )}
+              {/* New Scan lives beside the run control and is reachable from
+                  every tab, because the visualization band is always on screen.
+                  Offered only when there is something to clear — an already
+                  empty scanner has nothing to reset. */}
+              {!isRunning && (hasEvidence || targets.length > 0 || state.run !== 'idle') && (
+                <button
+                  type="button"
+                  onClick={onNewScan}
+                  title="Clear this assessment and return the scanner to its ready state. Results stay in History."
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/[0.07] px-4 py-2 text-[13px] font-black text-cyan-300 transition-colors hover:border-cyan-400/55 hover:bg-cyan-400/[0.14]"
+                >
+                  <RotateCcw className="h-4 w-4" /> New Scan
                 </button>
               )}
               {isRunning && (

@@ -62,6 +62,17 @@ export interface ScanEvidenceBundle {
   totalMs: number
 }
 
+/**
+ * Total wall-clock the engine bundle is allowed, when a caller does not say.
+ *
+ * This is a DEGRADE-BY deadline, not a kill switch: engines that run out of
+ * budget return what they measured and mark the rest inconclusive, so a slow
+ * endpoint yields a partial assessment rather than an error page. The value is
+ * set so the assessment stays inside the caller's own request timeout with room
+ * to compose and send the report.
+ */
+export const DEFAULT_SCAN_BUDGET_MS = 45_000
+
 export interface OrchestratorOptions {
   host: string
   port: number
@@ -71,17 +82,27 @@ export interface OrchestratorOptions {
   onObservation?: ObservationSink
   /** Called when an engine begins, so the rail reflects real start times. */
   onEngineStart?: (engine: string) => void
+  /**
+   * Wall-clock ceiling for the whole bundle. Engines degrade gracefully when it
+   * expires — they never throw, so the report is always composable.
+   */
+  budgetMs?: number
 }
 
 export async function runScanEngines(options: OrchestratorOptions): Promise<ScanEvidenceBundle> {
   const { host, port, onEngine, onEngineStart } = options
   const startedAt = Date.now()
+  const deadline = startedAt + (options.budgetMs ?? DEFAULT_SCAN_BUDGET_MS)
   const emit = observationEmitter(options.onObservation)
 
   // DNS and HTTP touch different infrastructure than the TLS probes, so they
   // run alongside the TLS chain without competing for the same connection pool.
   onEngineStart?.('dns-intelligence')
-  const dnsPromise = runDnsEngine(host).then((result) => {
+  /* DNS gets a slice of the budget rather than the whole thing. It runs beside
+     TLS and so is normally free, but it fans out to two DoH resolvers across a
+     dozen record types and was measured at 11.6s on one run — the moment TLS
+     got faster it would have become the critical path itself. */
+  const dnsPromise = runDnsEngine(host, Math.min(8_000, deadline - Date.now())).then((result) => {
     onEngine?.(
       'dns-intelligence',
       result.ok,
@@ -149,7 +170,10 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
   })
 
   onEngineStart?.('tls-intelligence')
-  const tlsResult = await runTlsEngine(host, port, options.onObservation)
+  /* TLS is the critical path and the reason the bundle has a budget at all, so
+     it is handed everything left after reserving a slice for the certificate
+     and crypto engines that must still run after it. */
+  const tlsResult = await runTlsEngine(host, port, options.onObservation, deadline - 6_000)
   onEngine?.(
     'tls-intelligence',
     tlsResult.ok,

@@ -25,7 +25,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { ArrowRight, Award, Clock, KeyRound, ScrollText, ShieldCheck, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
-import { beamColor, QVE_COLOR, type QveNode, type QveNodeKey } from '../types';
+import { resolveNodeVerdict, QVE_COLOR, type QveNode, type QveNodeKey } from '../types';
 
 export interface NodeInspectorProps {
   node: QveNode | null;
@@ -337,9 +337,14 @@ export function NodeInspector({ node, report, onClose, animate }: NodeInspectorP
               <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.2em] text-cyan-400/80">
                 {node.title}
               </p>
-              <p className="mt-0.5 text-[13px] font-black" style={{ color: beamColor(node) }}>
-                {node.verdict}
+              {/* Same resolver the card uses — the panel and the card it
+                  opened from can never state different verdicts. */}
+              <p className="mt-0.5 text-[13px] font-black" style={{ color: resolveNodeVerdict(node).color }} title={resolveNodeVerdict(node).basis}>
+                {resolveNodeVerdict(node).label}
               </p>
+              {node.hasEvidence && node.verdict && node.verdict !== resolveNodeVerdict(node).label && (
+                <p className="text-[10.5px] leading-snug text-slate-400">{node.verdict}</p>
+              )}
             </div>
             <button
               type="button"

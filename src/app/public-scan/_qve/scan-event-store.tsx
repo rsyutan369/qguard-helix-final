@@ -165,19 +165,33 @@ function nodeStateFor(status: ScanEvent['status']): QveNodeState {
       return 'critical';
     case 'failed':
       return 'failed';
+    /* An informational observation is NOT a running one. This used to fall
+       through to `scanning`, which was harmless on a surface that later
+       settled, and permanent on one that never did: a module that declines to
+       measure ("no SSH endpoint was in scope") emits exactly this status, so
+       Identity & Tokens and Code & Dependencies kept a spinner and the word
+       "Scanning" for the whole session of a finished scan. */
+    case 'info':
+      return 'unmeasured';
     default:
       return 'scanning';
   }
 }
 
 /**
- * A node never regresses from a settled verdict back to `scanning` because a
- * later informational event was routed to it — evidence events arrive after the
- * lifecycle event that completed the node, and flickering the card back to a
- * spinner would misreport the scan.
+ * A node never regresses from a settled verdict because a later, weaker event
+ * was routed to it — evidence events arrive after the lifecycle event that
+ * completed the node, and flickering the card back to a spinner, or down to
+ * "not applicable", would misreport the scan.
  */
 function mergeNodeState(current: QveNodeState, incoming: QveNodeState): QveNodeState {
-  const settled: QveNodeState[] = ['pass', 'warning', 'critical', 'failed'];
+  /* `unmeasured` is the weakest settled state: it may only claim a surface no
+     module has spoken for yet. One module declining to measure a surface says
+     nothing about the seven others that feed it. */
+  if (incoming === 'unmeasured') {
+    return current === 'idle' || current === 'scanning' ? 'unmeasured' : current;
+  }
+  const settled: QveNodeState[] = ['pass', 'warning', 'critical', 'failed', 'unmeasured'];
   if (settled.includes(current) && incoming === 'scanning') return current;
   // Once a node is critical or failed, an informational pass must not hide it.
   if ((current === 'critical' || current === 'failed') && incoming === 'pass') return current;
@@ -278,7 +292,16 @@ export function qveReducer(
           nodes[event.category] = {
             ...current,
             state: mergeNodeState(current.state, incomingState),
-            verdict: typeof event.details?.verdict === 'string' ? event.details.verdict : current.verdict,
+            /* A node that settles WITHOUT a phrase of its own drops the idle
+               legend rather than keeping it. Carrying "Standby" (or a stale
+               "Scanning" from the phase before) into a settled card put a word
+               under the verdict that described a moment that had passed. */
+            verdict:
+              typeof event.details?.verdict === 'string'
+                ? event.details.verdict
+                : settled && !current.hasEvidence
+                  ? ''
+                  : current.verdict,
             hasEvidence: current.hasEvidence || (settled && Boolean(line)),
             lines,
             progress:

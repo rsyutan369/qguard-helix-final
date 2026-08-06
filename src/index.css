@@ -861,12 +861,22 @@
   background-size: 44px 44px, 44px 44px, auto;
 }
 
-.qguard-home--light section:not(.hero-shell) {
+/*
+ * Light-theme section overrides for the marketing surfaces.
+ *
+ * Two opt-outs exist:
+ *   .hero-shell        — the homepage hero (also carries its own layout styles).
+ *   .qguard-dark-stage — any section that is deliberately DARK (cinematic video
+ *                        stages, full-bleed image CTAs). Opting out keeps the
+ *                        section's own light-on-dark colours instead of having
+ *                        them rewritten to the light palette.
+ */
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) {
   color: #0f172a;
   border-color: rgba(15, 23, 42, 0.12) !important;
 }
 
-.qguard-home--light section:not(.hero-shell):not(#core-capabilities-section):not(#pricing):not(#mitigation-roadblocks-section):not(#roadmap) {
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage):not(#core-capabilities-section):not(#pricing):not(#mitigation-roadblocks-section):not(#roadmap) {
   background:
     radial-gradient(circle at 76% 20%, rgba(0, 197, 235, 0.085), transparent 24rem),
     radial-gradient(circle at 18% 78%, rgba(16, 185, 129, 0.075), transparent 22rem),
@@ -876,76 +886,76 @@
   background-size: auto, auto, 44px 44px, 44px 44px, auto !important;
 }
 
-.qguard-home--light section:not(.hero-shell) h1,
-.qguard-home--light section:not(.hero-shell) h2,
-.qguard-home--light section:not(.hero-shell) h3,
-.qguard-home--light section:not(.hero-shell) h4,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) h1,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) h2,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) h3,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) h4,
 .qguard-home--light footer h2 {
   color: #090d16 !important;
   text-shadow: none !important;
 }
 
-.qguard-home--light section:not(.hero-shell) p,
-.qguard-home--light section:not(.hero-shell) li,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) p,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) li,
 .qguard-home--light footer p {
   color: #475569;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="text-white"] {
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="text-white"] {
   color: #0f172a !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="text-white/"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="text-white/"],
 .qguard-home--light footer [class*="text-white/"] {
   color: #475569 !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="text-muted-foreground"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="text-muted-foreground"],
 .qguard-home--light footer [class*="text-muted-foreground"] {
   color: #64748b !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="text-gold"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="text-gold"],
 .qguard-home--light footer [class*="text-gold"],
-.qguard-home--light section:not(.hero-shell) [class*="hover:text-gold"]:hover,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="hover:text-gold"]:hover,
 .qguard-home--light footer [class*="hover:text-gold"]:hover {
   color: #00a8d6 !important;
 }
 
-.qguard-home--light section:not(.hero-shell) .gold-glow,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .gold-glow,
 .qguard-home--light footer .gold-glow {
   text-shadow: 0 0 20px rgba(0, 197, 235, 0.18) !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="via-gold"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="via-gold"],
 .qguard-home--light footer [class*="via-gold"] {
   --tw-gradient-via: #00c5eb var(--tw-gradient-via-position) !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="bg-gold"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="bg-gold"],
 .qguard-home--light footer [class*="bg-gold"] {
   background-color: #00c5eb !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="border-gold"],
-.qguard-home--light section:not(.hero-shell) [class*="border-white/"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="border-gold"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="border-white/"],
 .qguard-home--light footer [class*="border-gold"],
 .qguard-home--light footer [class*="border-white/"] {
   border-color: rgba(9, 13, 22, 0.18) !important;
 }
 
-.qguard-home--light section:not(.hero-shell) [class*="bg-cyber-black"],
-.qguard-home--light section:not(.hero-shell) [class*="bg-cyber-navy"],
-.qguard-home--light section:not(.hero-shell) [class*="bg-black"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="bg-cyber-black"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="bg-cyber-navy"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="bg-black"],
 .qguard-home--light footer [class*="bg-cyber-black"],
 .qguard-home--light footer [class*="bg-cyber-navy"],
 .qguard-home--light footer [class*="bg-black"] {
   background-color: rgba(255, 255, 255, 0.88) !important;
 }
 
-.qguard-home--light section:not(.hero-shell) .glass-panel,
-.qguard-home--light section:not(.hero-shell) .quantum-border,
-.qguard-home--light section:not(.hero-shell) [class*="backdrop-blur"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .glass-panel,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .quantum-border,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="backdrop-blur"],
 .qguard-home--light footer [class*="backdrop-blur"] {
   border-color: rgba(9, 13, 22, 0.18) !important;
   background:
@@ -954,17 +964,17 @@
   box-shadow: 5px 5px 0 rgba(9, 13, 22, 0.88), 0 22px 48px rgba(15, 23, 42, 0.08) !important;
 }
 
-.qguard-home--light section:not(.hero-shell) .rounded-2xl,
-.qguard-home--light section:not(.hero-shell) .rounded-xl,
-.qguard-home--light section:not(.hero-shell) .rounded-lg,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .rounded-2xl,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .rounded-xl,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .rounded-lg,
 .qguard-home--light footer .rounded-xl,
 .qguard-home--light footer .rounded-lg {
   border-radius: 0.35rem !important;
 }
 
-.qguard-home--light section:not(.hero-shell) .Card,
-.qguard-home--light section:not(.hero-shell) [class*="shadow-[0_20px_80px"],
-.qguard-home--light section:not(.hero-shell) [class*="shadow-[0_30px_120px"] {
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) .Card,
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="shadow-[0_20px_80px"],
+.qguard-home--light section:not(.hero-shell):not(.qguard-dark-stage) [class*="shadow-[0_30px_120px"] {
   box-shadow: 5px 5px 0 rgba(9, 13, 22, 0.88), 0 22px 48px rgba(15, 23, 42, 0.08) !important;
 }
 
