@@ -22,12 +22,18 @@
  *   npx tsx tools/scanner-hero-cards-check.ts
  */
 import {
+  bandForScore,
+  contrastRatio,
+  hexToRgb,
+  readableOnDark,
   resolveNodeVerdict,
   QVE_COLOR,
   type QveNode,
   type QveNodeState,
   type ScanEventSeverity,
 } from '../src/app/public-scan/_qve/types'
+import { RISK_COLOR, SCORE_GRADE_TABLE, scoreToGrade } from '../src/lib/scanner/public-scan/grading-model'
+import type { RiskBand } from '../src/lib/scanner/public-scan/types'
 import { evaluateDetectionRules } from '../src/lib/scanner/web-scanner/detection-rules'
 import type { DetectionContext } from '../src/lib/scanner/web-scanner/types'
 
@@ -47,15 +53,40 @@ const NODE_STATES: QveNodeState[] = ['idle', 'scanning', 'unmeasured', 'pass', '
 const SEVERITIES: ScanEventSeverity[] = ['none', 'info', 'low', 'medium', 'high', 'critical']
 const SCORES: Array<number | null> = [null, 0, 12, 25, 49, 55, 62, 78, 88, 97, 100]
 
-/** Colours that promise the operator nothing is wrong. */
-const REASSURING = new Set<string>([QVE_COLOR.pass, '#34d399', '#22d3ee'])
-/** Colours that demand attention. */
-const ALARMING = new Set<string>([QVE_COLOR.critical, QVE_COLOR.high, QVE_COLOR.warning])
+/**
+ * Risk band implied by a colour, DERIVED from the published tables rather than
+ * hand-listed. A hard-coded hex set silently stops testing the thing it is for
+ * the moment the palette moves — which is exactly how the cards came to paint a
+ * grade-F surface amber while this file still reported green.
+ */
+const RISK_OF_COLOR = new Map<string, RiskBand>()
+const noteColor = (color: string, band: RiskBand) => {
+  // Both the published hex and the hero's legibility-raised version of it, or
+  // the sweep below would recognise none of the colours the cards actually
+  // render and would silently pass by testing nothing.
+  if (!RISK_OF_COLOR.has(color)) RISK_OF_COLOR.set(color, band)
+  const onDark = readableOnDark(color)
+  if (!RISK_OF_COLOR.has(onDark)) RISK_OF_COLOR.set(onDark, band)
+}
+for (const row of SCORE_GRADE_TABLE) noteColor(row.color, row.riskLevel)
+for (const [band, color] of Object.entries(RISK_COLOR)) noteColor(color, band as RiskBand)
+
+const isReassuringColor = (color: string) => {
+  const risk = RISK_OF_COLOR.get(color)
+  return risk === 'Very Low' || risk === 'Low' || color === QVE_COLOR.pass
+}
+const isAlarmingColor = (color: string) => {
+  const risk = RISK_OF_COLOR.get(color)
+  return risk === 'High' || risk === 'Critical' || color === QVE_COLOR.critical
+}
 
 /** Words that promise the operator nothing is wrong. */
-const REASSURING_LABELS = new Set(['Secure', 'Elite', 'Excellent', 'Good', 'Fair'])
+const REASSURING_LABELS = new Set(['Secure', 'Elite', 'Excellent', 'Good'])
 /** Words that demand attention. */
-const ALARMING_LABELS = new Set(['Critical', 'At Risk', 'Review', 'Failed', 'Weak'])
+const ALARMING_LABELS = new Set(['Critical', 'At Risk', 'Failed', 'Weak'])
+/* "Fair" and "Review" are deliberately in NEITHER set: the published model puts
+   them at Moderate/Elevated risk, which is neither a promise nor an alarm, and
+   forcing them into one made the test assert a claim the grading table does not. */
 
 function makeNode(state: QveNodeState, severity: ScanEventSeverity, score: number | null, hasEvidence: boolean): QveNode {
   return {
@@ -72,17 +103,11 @@ function makeNode(state: QveNodeState, severity: ScanEventSeverity, score: numbe
     postQuantum: false,
     hasEvidence,
     score,
-    band: score === null ? null : bandFor(score),
+    // Derived from the module under test rather than a second copy of the
+    // thresholds — a duplicated ladder here would let the two drift apart and
+    // still report green.
+    band: score === null ? null : bandForScore(score),
   }
-}
-
-function bandFor(score: number) {
-  if (score >= 95) return 'elite' as const
-  if (score >= 85) return 'excellent' as const
-  if (score >= 75) return 'good' as const
-  if (score >= 60) return 'fair' as const
-  if (score >= 50) return 'weak' as const
-  return 'critical' as const
 }
 
 console.log('\n=== 1. Hero card state consistency (exhaustive) ===')
@@ -102,8 +127,8 @@ for (const state of NODE_STATES) {
 
         const reassuringWord = REASSURING_LABELS.has(verdict.label)
         const alarmingWord = ALARMING_LABELS.has(verdict.label)
-        const reassuringColor = REASSURING.has(verdict.color)
-        const alarmingColor = ALARMING.has(verdict.color)
+        const reassuringColor = isReassuringColor(verdict.color)
+        const alarmingColor = isAlarmingColor(verdict.color)
 
         if (reassuringWord && alarmingColor) {
           contradictions.push(`"${verdict.label}" in alarming ${verdict.color} (state=${state} sev=${severity} score=${score} evidence=${hasEvidence})`)
@@ -126,15 +151,19 @@ assert(contradictions.length === 0, `no label/colour contradiction in any combin
    surface whose accumulated evidence is critical. */
 const reportedBug = resolveNodeVerdict(makeNode('pass', 'critical', 12, true))
 assert(reportedBug.label === 'Critical', `a surface with CRITICAL evidence is labelled "Critical", not its last module's word (got "${reportedBug.label}")`)
-assert(reportedBug.color === QVE_COLOR.critical, 'and is coloured critical')
+assert(isAlarmingColor(reportedBug.color), 'and is coloured critical')
 assert(reportedBug.alert === true, 'and carries alert chrome')
 
-/* HIGH must be distinguishable from CRITICAL — "At Risk" is a different
-   verdict and the guidelines require a distinct state. */
-const high = resolveNodeVerdict(makeNode('pass', 'high', 25, true))
-const critical = resolveNodeVerdict(makeNode('pass', 'critical', 25, true))
+/* HIGH must be distinguishable from CRITICAL — "At Risk" is a different verdict
+   and the guidelines require a distinct state.
+   Asserted on a surface whose SCORE is strong, because that is where severity is
+   the only differentiator. On a surface already measured at grade F the two
+   correctly converge: both are Critical, and the published model is what says
+   so — see the score-alignment block below. */
+const high = resolveNodeVerdict(makeNode('pass', 'high', 92, true))
+const critical = resolveNodeVerdict(makeNode('pass', 'critical', 92, true))
 assert(high.label === 'At Risk', `HIGH evidence reads "At Risk" (got "${high.label}")`)
-assert(high.color === QVE_COLOR.high, 'At Risk uses the HIGH tone')
+assert(isAlarmingColor(high.color), 'At Risk uses an alarming tone')
 // Compared against the resolver's own output for a CRITICAL node rather than
 // against the colour constant, so this stays a runtime check instead of a
 // comparison TypeScript can discharge from the literal types.
@@ -144,11 +173,11 @@ assert(high.label !== critical.label, 'and verbally distinct from Critical')
 /* "Measured nothing" must never be painted as a pass. */
 const unmeasured = resolveNodeVerdict(makeNode('pass', 'none', null, false))
 assert(unmeasured.label === 'Not measured', `a settled surface with no evidence reads "Not measured" (got "${unmeasured.label}")`)
-assert(!REASSURING.has(unmeasured.color), 'and is NOT painted the same green as a measured pass')
+assert(!isReassuringColor(unmeasured.color), 'and is NOT painted the same green as a measured pass')
 
 /* A genuinely clean surface still reads clean. */
 const clean = resolveNodeVerdict(makeNode('pass', 'low', 97, true))
-assert(!ALARMING.has(clean.color), `a clean measured surface is not alarmed (label="${clean.label}")`)
+assert(!isAlarmingColor(clean.color), `a clean measured surface is not alarmed (label="${clean.label}")`)
 assert(REASSURING_LABELS.has(clean.label), 'and carries a reassuring word')
 
 /* Lifecycle states outrank evidence. */
@@ -162,30 +191,61 @@ assert(resolveNodeVerdict(makeNode('idle', 'none', null, false)).color === QVE_C
 const declined = resolveNodeVerdict(makeNode('unmeasured', 'info', null, true))
 assert(declined.label === 'Not applicable', `a declined surface reads "Not applicable" (got "${declined.label}")`)
 assert(declined.label !== 'Scanning', 'and never keeps a spinner after the scan settles')
-assert(!REASSURING.has(declined.color), 'and is not painted as a pass')
+assert(!isReassuringColor(declined.color), 'and is not painted as a pass')
 
-/* The band may refine a calm verdict but must never manufacture an ALARM
-   verdict: the score is a mean, and a mean over a surface that restates one
-   certificate five times is not evidence of five problems. A degraded
-   aggregate is a Review — amber, honest, and not a claim of severity that no
-   finding supports. Asserted over every band, not one example. */
-const ALARM_VERDICTS = new Set(['Critical', 'At Risk', 'Failed'])
-const fabricated = SCORES.filter((score) => score !== null).filter((score) => {
+/* ── The card must agree with "How the Grading Works" ──────────────────────
+   This block replaces an earlier contract that capped a degraded aggregate at an
+   amber "Review". That rule was written to stop a mean over duplicated findings
+   from manufacturing alarm, but it also meant a surface MEASURED at 8/100 —
+   grade F, Critical, dark red in the published table — rendered as an amber
+   Review card with an amber beam. A published model the product ships a
+   reference sheet for cannot be contradicted by the cards beside it.
+
+   The replacement contract: a scored surface carries the published RATING for
+   its score and that grade's own COLOUR, and severity may only ESCALATE it. */
+const SCORE_ALIGNMENT_SAMPLES = [0, 12, 25, 49, 55, 62, 68, 72, 78, 82, 88, 92, 96, 99]
+const misaligned = SCORE_ALIGNMENT_SAMPLES.filter((score) => {
   const verdict = resolveNodeVerdict(makeNode('pass', 'low', score, true))
-  return ALARM_VERDICTS.has(verdict.label)
+  const grade = scoreToGrade(score)
+  // `readableOnDark` raises the published colour's luminance for the dark hero
+  // and touches nothing else, so the card colour must be exactly that transform
+  // of the grade's own colour — never an independently chosen one.
+  return verdict.label !== grade.rating || verdict.color !== readableOnDark(grade.color)
 })
 assert(
-  fabricated.length === 0,
-  `no aggregate score fabricates an alarm verdict without a finding to support it${fabricated.length ? ` — scores ${fabricated.join(', ')}` : ''}`,
+  misaligned.length === 0,
+  `a scored surface carries its published rating and grade colour${misaligned.length ? ` — mismatched at ${misaligned.join(', ')}` : ''}`,
 )
+
+/* The specific regression the user reported. */
+const gradeF = resolveNodeVerdict(makeNode('pass', 'medium', 8, true))
+assert(gradeF.label === 'Critical', `a surface measured at 8/100 reads "Critical", not "Review" (got "${gradeF.label}")`)
+assert(isAlarmingColor(gradeF.color), 'and is painted an alarming colour, not amber')
+assert(gradeF.color === readableOnDark(scoreToGrade(8).color), 'and that colour is the published grade-F colour, made legible on the hero')
 assert(
-  resolveNodeVerdict(makeNode('pass', 'low', 12, true)).label === 'Review',
-  'a degraded aggregate with no severe finding reads "Review"',
+  contrastRatio(hexToRgb(gradeF.color), [7, 13, 27]) >= 4.5,
+  'and the verdict label clears the 4.5:1 contrast floor on the card',
 )
-assert(
-  resolveNodeVerdict(makeNode('pass', 'low', 12, true)).color === QVE_COLOR.warning,
-  'and is amber, neither green nor red',
-)
+
+/* Severity may only ever escalate a scored verdict — never soften it. A card
+   that reads calmer than EITHER its own score or its worst finding is the whole
+   class of bug this file exists to catch. */
+/* Ranked on the RATING ladder rather than via the colour, because two grades can
+   legitimately share a colour (C and C- are both #f97316 at different risk
+   levels) — a colour→risk lookup is lossy and would report a false failure. */
+const SEVERITY_RANK: Record<string, number> = { Elite: 0, Excellent: 1, Good: 2, Fair: 3, Review: 3, Weak: 4, 'At Risk': 4, Critical: 5 }
+const softened: string[] = []
+for (const score of SCORE_ALIGNMENT_SAMPLES) {
+  const scoreRating = scoreToGrade(score).rating
+  for (const severity of ['none', 'low', 'medium', 'high', 'critical'] as ScanEventSeverity[]) {
+    const verdict = resolveNodeVerdict(makeNode('pass', severity, score, true))
+    const shown = SEVERITY_RANK[verdict.label]
+    if (shown !== undefined && shown < SEVERITY_RANK[scoreRating]) {
+      softened.push(`score ${score} (${scoreRating}) shown as "${verdict.label}" with severity ${severity}`)
+    }
+  }
+}
+assert(softened.length === 0, `severity never softens a scored verdict${softened.length ? ` — ${softened.slice(0, 3).join(' | ')}` : ''}`)
 
 /* ═══════════════════════ 2. post-quantum honesty ═══════════════════════════ */
 

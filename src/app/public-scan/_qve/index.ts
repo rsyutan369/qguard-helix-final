@@ -46,6 +46,8 @@ export { ScanTicker, ScanTimeline } from './timeline/ScanTimeline';
 export { InfrastructureStrip, buildInfraTiles, type InfraTile } from './strip/InfrastructureStrip';
 
 export {
+  bandColorForScore,
+  bandForScore,
   beamColor,
   gradeWaveColors,
   isAlertSeverity,
