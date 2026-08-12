@@ -142,19 +142,33 @@ async function resolveAndValidate(hostname: string): Promise<string[]> {
   return Array.from(new Set(addresses))
 }
 
+/**
+ * Try each resolved address in turn until one completes a handshake.
+ *
+ * `deadline` bounds the WHOLE sweep, not each address. Without it a name with
+ * four A records behind a filtered port cost `4 × timeoutMs` — 60 seconds at the
+ * default — and the caller had no way to cap it. Each attempt is now given only
+ * what is left, so a dual-stack or multi-homed host cannot multiply the budget
+ * by its own record count.
+ */
 async function connectTlsAny(
   hostname: string,
   port: number,
   options: Partial<tls.ConnectionOptions>,
   timeoutMs: number,
-  connectHosts: string[]
+  connectHosts: string[],
+  deadline = Number.POSITIVE_INFINITY
 ): Promise<{ result: TlsAnalysisResult; connectHost: string }> {
   let lastError: Error | null = null
 
   for (const connectHost of connectHosts) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      throw lastError || new Error(`TLS connection to ${hostname}:${port} ran out of time budget`)
+    }
     try {
       return {
-        result: await connectTls(hostname, port, options, timeoutMs, connectHost),
+        result: await connectTls(hostname, port, options, Math.min(timeoutMs, remaining), connectHost),
         connectHost,
       }
     } catch (err) {
@@ -392,12 +406,29 @@ async function enumerateTls12CipherSuites(hostname: string, port: number, connec
   })
 }
 
+export interface TlsAnalysisOptions {
+  /**
+   * Ceiling for the PRIMARY handshake, per address. Defaults to
+   * CONNECTION_TIMEOUT. A caller working inside a scan budget should pass the
+   * smaller of its own remaining time and the default.
+   */
+  handshakeTimeoutMs?: number
+  /**
+   * Epoch-ms the primary handshake sweep must be finished by, across all
+   * resolved addresses. Only bounds the primary connection: the protocol and
+   * cipher probes that follow are already capped at PROBE_TIMEOUT each and only
+   * run once the endpoint has proven it answers.
+   */
+  deadline?: number
+}
+
 /**
  * Perform a TLS handshake and extract cryptographic metadata
  */
 export async function analyzeTls(
   hostname: string,
-  port: number = 443
+  port: number = 443,
+  options: TlsAnalysisOptions = {}
 ): Promise<TlsAnalysisResult> {
   // Resolve and validate target
   const connectHosts = await resolveAndValidate(hostname)
@@ -409,8 +440,9 @@ export async function analyzeTls(
       minVersion: 'TLSv1' as tls.SecureVersion,
       ciphers: 'DEFAULT:@SECLEVEL=0',
     },
-    CONNECTION_TIMEOUT,
-    connectHosts
+    Math.max(1_000, options.handshakeTimeoutMs ?? CONNECTION_TIMEOUT),
+    connectHosts,
+    options.deadline ?? Number.POSITIVE_INFINITY
   )
   const primary = primaryConnection.result
   const connectHost = primaryConnection.connectHost

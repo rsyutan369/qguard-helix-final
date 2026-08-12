@@ -83,14 +83,26 @@ export function ExecutiveSummary({ report }: { report: PublicScanReport }) {
         </button>
       ),
     },
+    /* Every branch here is gated on the readiness having been MEASURED. The
+       unconditional version rendered "0% · Limited PQ readiness · Plan migration
+       soon — no hybrid key agreement offered" for endpoints where no handshake
+       ever completed: a percentage, a rating and a recommendation, none of which
+       rested on an observation. */
     {
       label: 'Post-Quantum Readiness',
-      big: `${executive.postQuantumReadiness}%`,
-      sub: executive.postQuantumReadiness >= 60 ? 'Hybrid observed' : 'Limited PQ readiness',
+      big: executive.postQuantumReadiness === null ? '—' : `${executive.postQuantumReadiness}%`,
+      sub:
+        executive.postQuantumReadiness === null
+          ? 'Not measured'
+          : executive.postQuantumReadiness >= 60
+            ? 'Hybrid observed'
+            : 'Limited PQ readiness',
       detail:
-        executive.postQuantumReadiness >= 60
-          ? 'Hybrid ML-KEM key agreement accepted at the edge.'
-          : 'Plan migration soon — no hybrid key agreement offered.',
+        executive.postQuantumReadiness === null
+          ? 'Named key-agreement groups could not be offered, so readiness was not scored.'
+          : executive.postQuantumReadiness >= 60
+            ? 'Hybrid ML-KEM key agreement accepted at the edge.'
+            : 'Plan migration soon — no hybrid key agreement offered.',
       ring: executive.postQuantumReadiness,
       color: scoreColor(executive.postQuantumReadiness),
     },
@@ -205,7 +217,12 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
     .filter((component) => component.key !== 'cryptographic-algorithms' && component.key !== 'post-quantum-readiness')
     .reduce((sum, component) => sum + component.weight, 0);
   const pqWeight = scoreComponents.find((component) => component.key === 'post-quantum-readiness')?.weight ?? 0;
-  const classicalRating = scoreToGrade(executive.classicalScore);
+  /* `scoreToGrade` answers "what rating does THIS score earn". There is no score
+     to rate when the assessment is not gradeable, so the rating word is withheld
+     rather than defaulted — a "Critical" label under a withheld grade is the
+     report contradicting itself in the space of two panels. */
+  const classicalRating = executive.classicalScore === null ? null : scoreToGrade(executive.classicalScore);
+  const pqMeasured = executive.postQuantumReadiness !== null;
 
   return (
     <Panel className="flex h-full flex-col overflow-hidden">
@@ -224,10 +241,17 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
             value={executive.classicalScore}
             className="mt-2 block text-5xl font-black tracking-tight"
           />
-          <p className="mt-1 text-xs font-semibold" style={{ color: classicalRating.color }}>
-            {classicalRating.rating}
+          <p
+            className="mt-1 text-xs font-semibold"
+            style={{ color: classicalRating?.color ?? ACCENT.slate }}
+          >
+            {classicalRating?.rating ?? 'Not measured'}
           </p>
-          <Meter value={executive.classicalScore} color={classicalRating.color} className="mx-auto mt-3 max-w-[9rem] sm:mx-0" />
+          <Meter
+            value={executive.classicalScore}
+            color={classicalRating?.color}
+            className="mx-auto mt-3 max-w-[9rem] sm:mx-0"
+          />
           <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
             {classicalWeight}% of the weighted model
           </p>
@@ -258,7 +282,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
             className="mt-1 text-xs font-semibold"
             style={{ color: scoreColor(executive.postQuantumReadiness) }}
           >
-            {executive.postQuantumReadiness >= 60 ? 'Hybrid ready' : 'Limited'}
+            {!pqMeasured ? 'Not measured' : executive.postQuantumReadiness! >= 60 ? 'Hybrid ready' : 'Limited'}
           </p>
           <Meter
             value={executive.postQuantumReadiness}
@@ -294,13 +318,26 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
         })}
       </div>
 
+      {/* This sentence used to be a two-way branch on two numbers, so a scan that
+          measured neither still produced "Classical encryption needs hardening,
+          but limited post-quantum readiness for future migration." — a verdict on
+          both axes from no evidence on either. */}
       <p className="mt-auto px-5 pb-4 pt-5 text-center text-[13px] leading-relaxed text-slate-400">
-        {executive.classicalScore >= 70
-          ? 'Strong classical encryption today,'
-          : 'Classical encryption needs hardening,'}{' '}
-        {executive.postQuantumReadiness >= 60
-          ? 'with hybrid post-quantum key agreement already in place.'
-          : 'but limited post-quantum readiness for future migration.'}
+        {executive.classicalScore === null && !pqMeasured
+          ? 'Neither classical encryption nor post-quantum readiness could be scored — the endpoint produced no cryptographic evidence to assess.'
+          : `${
+              executive.classicalScore === null
+                ? 'Classical encryption was not scored,'
+                : executive.classicalScore >= 70
+                  ? 'Strong classical encryption today,'
+                  : 'Classical encryption needs hardening,'
+            } ${
+              !pqMeasured
+                ? 'and post-quantum readiness was not measured at the edge.'
+                : executive.postQuantumReadiness! >= 60
+                  ? 'with hybrid post-quantum key agreement already in place.'
+                  : 'but limited post-quantum readiness for future migration.'
+            }`}
       </p>
 
       {/* Auditability: the composite is never a black box. */}
@@ -448,21 +485,42 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
             <dd
               className="font-bold"
               style={{
+                // `Unknown` is slate. Every other branch of this ternary is a
+                // measured verdict; painting an unmeasured one emerald (the old
+                // fallthrough) would have reported "quantum-safe" colouring for
+                // an endpoint nothing was learned about.
                 color:
                   intelligence.quantumVulnerability === 'Vulnerable'
                     ? ACCENT.rose
                     : intelligence.quantumVulnerability === 'Hybrid-protected'
                       ? ACCENT.cyan
-                      : ACCENT.emerald,
+                      : intelligence.quantumVulnerability === 'Unknown'
+                        ? ACCENT.slate
+                        : ACCENT.emerald,
               }}
             >
               {intelligence.quantumVulnerability === 'Vulnerable' ? '▲ Vulnerable' : intelligence.quantumVulnerability}
             </dd>
           </div>
         </dl>
+        {intelligence.quantumVulnerability === 'Unknown' && (
+          <p className="mt-2 text-[11.5px] leading-snug text-slate-500">
+            {intelligence.quantumVulnerabilityReason}
+          </p>
+        )}
 
         <div className="border-t border-white/[0.06] pt-3">
           <p className="text-[11px] font-semibold text-slate-500">Estimated PQ Migration Targets</p>
+          {/* An empty list is now possible and is the correct output when nothing
+              was observed. It used to be impossible: the builder appended
+              "Sustain hybrid deployment" whenever the list came out empty, which
+              recommended maintaining a hybrid group on endpoints where no
+              handshake had happened at all. */}
+          {!intelligence.migrationTargets.length && (
+            <p className="mt-2 text-[13px] text-slate-500">
+              No migration target can be named — no cryptographic primitive was observed at this endpoint.
+            </p>
+          )}
           <ul className="mt-2 space-y-1.5">
             {/* Keyed on target AND the primitive it replaces: one PQ algorithm
                 legitimately replaces several classical ones, so the name alone

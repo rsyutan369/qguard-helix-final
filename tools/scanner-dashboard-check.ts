@@ -19,7 +19,8 @@
 import {
   buildAssessment,
   buildNodeEvidence,
-  scoreNodes,
+  scoreNodesFromCategories,
+  SCANNER_NODE_CATEGORIES,
   SCANNER_NODE_BLUEPRINTS,
   type AssessmentInput,
 } from '../src/app/dashboard/scanner_dashboard/_intel'
@@ -483,7 +484,12 @@ function verifySingleSourceOfTruth() {
 
 function verifyNodeEvidence() {
   console.log('\n=== Node evidence — real measurements per surface ===')
-  const base = { results: RESULTS, findings: FINDINGS, modules: MODULES, scanner2: SCANNER2, targets: POPULATED.targets, linked: POPULATED.linked }
+  /* The decomposition the surface scores are projected from — the SAME array the
+     Encryption Score panel renders, taken from the assessment rather than
+     rebuilt, because rebuilding it is precisely how the cards and the gauge
+     drifted apart. */
+  const scoreComponents = buildAssessment(POPULATED).scoreComponents
+  const base = { results: RESULTS, findings: FINDINGS, modules: MODULES, scanner2: SCANNER2, targets: POPULATED.targets, linked: POPULATED.linked, scoreComponents }
 
   const transport = buildNodeEvidence('transport', base)
   assert(transport.rows.some((r) => r.label === 'Negotiated protocol' && r.value === 'TLSv1.3'), 'transport: negotiated protocol')
@@ -517,7 +523,13 @@ function verifyNodeEvidence() {
   assert(code.rows.some((r) => r.label === 'API endpoints probed' && r.value === '6'), 'code: endpoints probed')
 
   const posture = buildNodeEvidence('posture', base)
-  assert(posture.rows.some((r) => r.label === 'Quantum readiness' && r.value.startsWith('20%')), 'posture: Scanner_2 readiness')
+  /* The label must NAME its source and population. This card carries up to three
+     "readiness"-shaped numbers over different populations, and labelling them all
+     "Quantum readiness" is what made the panel look self-contradictory. */
+  assert(
+    posture.rows.some((r) => r.label === 'Asset readiness · Scanner_2' && r.value.startsWith('20%')),
+    'posture: Scanner_2 asset readiness names its source and population',
+  )
   assert(posture.rows.some((r) => r.label === 'Break window' && r.value === '2030–2035'), 'posture: break window')
   assert(posture.rows.some((r) => r.label === 'Harvest-now exposure' && r.value.includes('1 immediate')), 'posture: HNDL urgency')
 
@@ -527,10 +539,45 @@ function verifyNodeEvidence() {
   const discovery = buildNodeEvidence('discovery', base)
   assert(discovery.rows.some((r) => r.label === 'Scan duration' && r.value === '9.0 s'), 'discovery: real scan duration')
 
-  // Node posture scores must exist only where findings were routed.
-  const scores = scoreNodes(FINDINGS)
+  /* Surface scores are a PROJECTION of the published decomposition, so they exist
+     exactly where that model has an applicable category — never wherever findings
+     happened to land. */
+  const scores = scoreNodesFromCategories(scoreComponents)
   assert(scores.transport !== undefined && scores.certificates !== undefined, 'node scores exist for measured surfaces')
-  assert(scores.posture === undefined, 'no node score invented for a surface with no findings')
+  assert(
+    scores.identity === undefined,
+    `identity has no published category, so it must carry no posture score (${scores.identity})`,
+  )
+  assert(
+    identity.scoreBasis.includes('no category for this surface'),
+    'identity states WHY it is unscored rather than showing a blank',
+  )
+
+  /* THE CONTRADICTION THIS WHOLE MODEL EXISTS TO PREVENT.
+     Every surface score must be reproducible from the same weighted categories
+     that produced the composite, so a card can never grade a run differently
+     from the gauge it surrounds. */
+  const componentsByKey = new Map(scoreComponents.map((component) => [component.key, component]))
+  for (const [node, categories] of Object.entries(SCANNER_NODE_CATEGORIES)) {
+    const measured = categories
+      .map((key) => componentsByKey.get(key))
+      .filter((component) => component && component.score !== null)
+    if (measured.length === 0) {
+      assert(scores[node] === undefined, `${node}: no measured category ⇒ no score (${scores[node]})`)
+      continue
+    }
+    const weight = measured.reduce((sum, c) => sum + c!.weight, 0)
+    const expected = Math.round(measured.reduce((sum, c) => sum + c!.score! * c!.weight, 0) / weight)
+    assert(scores[node] === expected, `${node}: score is the published weighted mean (${scores[node]} vs ${expected})`)
+  }
+
+  /* Each published category belongs to exactly one surface: no measurement is
+     counted twice across cards, and none is silently dropped. */
+  const mapped = Object.values(SCANNER_NODE_CATEGORIES).flat()
+  assert(new Set(mapped).size === mapped.length, 'no published category is claimed by two surfaces')
+  for (const component of scoreComponents) {
+    assert(mapped.includes(component.key), `published category "${component.key}" is claimed by a surface`)
+  }
 
   // Every blueprint key must be routable — a card with no module mapping would
   // never light up.
@@ -605,7 +652,7 @@ function verifyEmpty() {
   assert(a.hndl.window === null, 'No break window modelled without evidence')
   assert(a.decompositionScore === null, 'No decomposition score without a measured model')
 
-  const evidence = buildNodeEvidence('transport', { results: [], findings: [], modules: [], scanner2: null, targets: [], linked: { cbom: 0, assets: 0, exposures: 0 } })
+  const evidence = buildNodeEvidence('transport', { results: [], findings: [], modules: [], scanner2: null, targets: [], linked: { cbom: 0, assets: 0, exposures: 0 }, scoreComponents: a.scoreComponents })
   assert(evidence.rows.length === 0 && evidence.emptyReason !== null, 'Node panel states why it is empty')
   assert(evidence.score === null, 'No node score without measurements')
 }

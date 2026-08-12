@@ -147,14 +147,27 @@ export function moduleIdForFinding(finding: { category: string; detectionMethod:
      (hash)", "Source Code (signature)". They must be claimed before the
      algorithm-class tests below, or "Web Crypto (hash)" is filed under the
      certificate hash analyzer — an observation from a JavaScript bundle
-     attributed to the TLS certificate chain. */
+     attributed to the TLS certificate chain.
+
+     `detectionMethod` here is the PHASE the finding was emitted in, which is a
+     statement about pipeline position, not provenance. A `method.includes('deep')`
+     clause used to live in this list and it routed the AES-256-GCM cipher-suite
+     observation — emitted during the `deep-scan` phase — onto the Code &
+     Dependencies surface. Being the only finding there, and SAFE, it scored that
+     surface 100/100 "Elite" on a target whose source code had never been read.
+     Every genuine code finding is already claimed by its category above, so the
+     phase test bought nothing and cost the surface its meaning.
+
+     A `method.includes('repo')` clause went the same way, and for a sharper
+     reason: the phase name "report-generation" CONTAINS "repo", so every finding
+     emitted while the report was being composed was also filed under the code
+     scanner. Ownership is decided by what a finding IS, never by when it was
+     produced — which is why nothing below reads `detectionMethod`. */
   if (
     category.includes('source code') ||
     category.includes('web crypto') ||
     category.includes('repository') ||
-    category.includes('dependency') ||
-    method.includes('repo') ||
-    method.includes('deep')
+    category.includes('dependency')
   ) {
     return 'dependency-crypto-scanner'
   }

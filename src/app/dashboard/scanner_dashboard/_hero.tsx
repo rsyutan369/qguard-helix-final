@@ -64,6 +64,7 @@ import {
   SCANNER_LEFT_NODES,
   SCANNER_NODE_BLUEPRINTS,
   SCANNER_RIGHT_NODES,
+  type ScoreComponent,
 } from './_intel';
 import { ScannerNodeInspector } from './_node-inspector';
 import { useDashboardScanBridge } from './_qve-bridge';
@@ -207,7 +208,20 @@ export interface ScannerHeroProps {
    * and post-quantum readiness the result panels publish. Null before an
    * assessment exists.
    */
-  verdict: { score: number; postQuantumReadiness: number; gradeable: boolean } | null;
+  verdict: {
+    score: number;
+    postQuantumReadiness: number;
+    gradeable: boolean;
+    nodeScores: Record<string, number>;
+  } | null;
+  /**
+   * The assessment's published category decomposition.
+   *
+   * The node inspector states which categories and weights produced a surface's
+   * score, so an operator can trace the number rather than trust it. It is the
+   * SAME array the Encryption Score panel renders — never a second derivation.
+   */
+  scoreComponents: ScoreComponent[];
   /** Target composer (textarea, authorization, queue) rendered under the ring. */
   composerSlot: React.ReactNode;
   /** Workflow rail + platform-sync panel, rendered in the left column. */
@@ -247,6 +261,7 @@ function HeroInner({
   hasEvidence,
   gradeLabel,
   verdict,
+  scoreComponents,
   composerSlot,
   railSlot,
   onStart,
@@ -436,9 +451,10 @@ function HeroInner({
             scanner2,
             targets,
             linked: { cbom: counters.cbom, assets: counters.assets, exposures: counters.exposures },
+            scoreComponents,
           })
         : null,
-    [selected, results, evidenceFindings, evidenceModules, scanner2, targets, counters],
+    [selected, results, evidenceFindings, evidenceModules, scanner2, targets, counters, scoreComponents],
   );
 
   const accent = state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan;

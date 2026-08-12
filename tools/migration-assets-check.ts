@@ -83,7 +83,15 @@ const inputs = {
   runtimeEvents,
   relationships,
   migrationJobs,
-  validationLogs: [{ id: 'v1', migration_job_id: 'j1', status: 'passed', created_at: '2026-08-02T01:00:00Z' }] as Row[],
+  // migration_validation_logs' real FK column is migration_id — the planner
+  // used to ask PostgREST for asset_id/migration_job_id, which do not exist, so
+  // the whole query was rejected (42703) and every validation signal was lost.
+  // Row v1 pins the real column; v2 pins that legacy/agent-written shapes still
+  // resolve, so the reader can never silently drop one of the two.
+  validationLogs: [
+    { id: 'v1', migration_id: 'j1', status: 'passed', created_at: '2026-08-02T01:00:00Z' },
+    { id: 'v2', migration_job_id: 'j1', status: 'passed', created_at: '2026-08-02T02:00:00Z' },
+  ] as Row[],
   complianceEvidence: [] as Row[],
   queuedAssetIds: ['a2'],
   now: Date.parse('2026-08-04T00:00:00Z'),
@@ -179,7 +187,7 @@ function main() {
   assert(a2Cancelled.migrationStatus === 'Not Started', 'an asset whose only job was cancelled reads Not Started', a2Cancelled.migrationStatus)
   assert(a2Cancelled.migrationProgressPct === 0, 'cancelled work contributes no migration progress', String(a2Cancelled.migrationProgressPct))
   assert(/cancelled/i.test(a2Cancelled.migrationStatusDetail), 'the cancellation is stated in the status detail', a2Cancelled.migrationStatusDetail)
-  assert(a2.validation.records === 1, 'validation logs resolve through the asset job ids', String(a2.validation.records))
+  assert(a2.validation.records === 2, 'validation logs resolve through the asset job ids via BOTH migration_id and migration_job_id', String(a2.validation.records))
   assert(a2.validation.validated === true, 'a passing validation record marks the asset validated')
   assert(a1.validation.validated === false && a1.validation.cutoverBlocked === false,
     'an asset with no validation record is NOT claimed validated, and is not falsely blocked either',

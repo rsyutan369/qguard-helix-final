@@ -10,6 +10,8 @@ import harvestNowRoutes from './harvest-now'
 import quantumCertificationRoutes, { certificateVerificationRouter } from './quantum-certification'
 import quantumRemediationRoutes from './quantum-remediation'
 import migrationWorkflowRoutes from './migration-workflow'
+import cryptoAgilityRoutes from './crypto-agility'
+import externalTrustRoutes from './external-trust'
 import migrationIntelligenceRoutes from './migration-intelligence'
 import tlsTelemetryRoutes from './tls-telemetry'
 import pkiVisibilityRoutes from './pki-visibility'
@@ -776,6 +778,8 @@ export function createApiServer() {
   app.use('/api/v1/quantum-certification', quantumCertificationRoutes)
   app.use('/api/v1/quantum-remediation', quantumRemediationRoutes)
   app.use('/api/v1/migration-workflow', migrationWorkflowRoutes)
+  app.use('/api/v1/crypto-agility', cryptoAgilityRoutes)
+  app.use('/api/v1/external-trust', externalTrustRoutes)
   app.use('/api/v1/migration-intelligence', migrationIntelligenceRoutes)
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
   app.use('/api/v1/dashboard/tls-orchestrator', tlsTelemetryRoutes)

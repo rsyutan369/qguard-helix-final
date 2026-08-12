@@ -31,7 +31,6 @@ import MigrationIntelligencePage from './app/dashboard/migration-intelligence/pa
 import PqcOnboardingPage from './app/dashboard/pqc-onboarding/page';
 import CbomExplorer from './app/dashboard/cbom_explorer/page';
 import MigrationTimeline from './app/dashboard/migration_timeline/page';
-import MigrationPhases from './app/dashboard/migration_phases/page';
 import ComplianceDashboard from './app/dashboard/compliance_dashboard/page';
 import LiveMigrationOps from './app/dashboard/live_migration_ops/page';
 import DriftDetection from './app/dashboard/drift_detection/page';
@@ -177,8 +176,6 @@ export default function App() {
           <Route path="timeline" element={<MigrationTimeline />} />
           <Route path="migration-timeline" element={<MigrationTimeline />} />
           <Route path="migration_timeline" element={<MigrationTimeline />} />
-          <Route path="migration-phases" element={<MigrationPhases />} />
-          <Route path="migration_phases" element={<MigrationPhases />} />
 
           <Route path="compliance" element={<ComplianceDashboard />} />
           <Route path="compliance_dashboard" element={<ComplianceDashboard />} />

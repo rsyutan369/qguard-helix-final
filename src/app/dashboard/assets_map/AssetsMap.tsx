@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { useMigrationWorkflow } from '@/hooks/use-migration-workflow';
+import { useQuantumReadiness } from '@/app/dashboard/quantum-readiness/_shared';
 
 type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
 type ExportFormat = 'csv' | 'json' | 'pdf';
@@ -186,7 +187,14 @@ function vulnerableComponents(asset: AssetRecord) {
   const inventory = Array.isArray(asset.cryptoInventory)
     ? asset.cryptoInventory.filter((item) => Boolean(item.is_vulnerable && !item.is_quantum_safe))
     : [];
-  if (inventory.length > 0) return mergeVulnerabilityItems(inventory);
+  // `cryptoInventory` arrives ALREADY grouped, and the backend's
+  // `asset.vulnerableCount` — which the tenant-wide headline sums — is exactly
+  // this filter over that grouping. Re-merging here (on a narrower key that
+  // drops the component name) would silently collapse rows the backend counted
+  // separately, so the per-row count and the headline would drift apart.
+  if (inventory.length > 0) {
+    return [...inventory].sort((a, b) => itemSeverityRank(b) - itemSeverityRank(a) || itemTimestamp(b) - itemTimestamp(a));
+  }
   // Tenants whose scans produced only finding-level rows (no grouped inventory)
   // still get a real, component-granular count by merging those raw findings.
   const explicit = Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : [];
@@ -256,22 +264,34 @@ function remediationHref(asset: AssetRecord, item: CryptoInventoryItem) {
   return `${remediationRouteFor(item)}?${params.toString()}`;
 }
 
+/**
+ * The asset's risk band — a PROJECTION of its risk score, not a second opinion.
+ *
+ * This used to be the worst severity found across the asset's components, taken
+ * as the max against the score band. That is a different aggregation of the same
+ * evidence, and the two disagreed on screen: an asset scoring 23/100 (rendered
+ * in green, band "Low") was filtered and badged as CRITICAL because one of its
+ * 23 components carried a critical exposure level. A displayed band and the
+ * number it sits beside must come from ONE derivation of ONE input.
+ *
+ * The worst component severity is still real and still shown — as its own
+ * labelled figure (`worstComponentSeverity`), never as the asset's band.
+ */
 function assetRiskLevel(asset: AssetRecord): RiskLevel {
+  return normalizeRiskLevel(asset.riskLevel) || riskLevelFromScore(Number(asset.riskScore || 0));
+}
+
+/** Highest exposure level recorded on any of the asset's components. */
+function worstComponentSeverity(asset: AssetRecord): RiskLevel | null {
   const inventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory : [];
-  const hasVulnerableComponent = inventory.some((item) => Boolean(item.is_vulnerable && !item.is_quantum_safe));
-  const levels = [
-    riskLevelFromScore(Number(asset.riskScore || 0)),
-    normalizeRiskLevel(asset.riskLevel),
-    hasVulnerableComponent ? 'medium' as RiskLevel : null,
-    ...inventory.map((item) => (
-      normalizeRiskLevel(item.exposure_level) ||
-      normalizeRiskLevel(item.metadata?.severity) ||
-      normalizeRiskLevel(item.metadata?.threatLevel) ||
-      normalizeRiskLevel(item.metadata?.riskSeverity) ||
-      (item.is_vulnerable ? 'medium' : null)
-    )),
-  ];
-  return highestRiskLevel(levels);
+  const levels = inventory.map((item) => (
+    normalizeRiskLevel(item.exposure_level) ||
+    normalizeRiskLevel(item.metadata?.severity) ||
+    normalizeRiskLevel(item.metadata?.threatLevel) ||
+    normalizeRiskLevel(item.metadata?.riskSeverity) ||
+    (item.is_vulnerable ? ('medium' as RiskLevel) : null)
+  )).filter(Boolean) as RiskLevel[];
+  return levels.length === 0 ? null : highestRiskLevel(levels);
 }
 
 function exportFileName(format: ExportFormat) {
@@ -492,6 +512,19 @@ export default function AssetsMap() {
   // headline never disagrees with the rest of the platform.
   const summary = data.summary;
   const severityCounts = data.severityCounts;
+  // The header claimed "Reconciled with Quantum Readiness Engine" without ever
+  // reading it, and labelled the component PQC-ready share "Quantum Readiness" —
+  // the name the QR Engine's composite score carries on every other page, with a
+  // different value. The QR snapshot is now actually read, so the two figures
+  // appear side by side under their own names instead of one borrowing the
+  // other's label.
+  const qr = useQuantumReadiness();
+  const qrHasData = qr.snapshot.hasData;
+  const qrResolved = qr.state === 'success';
+  // Findings graded on the severity ladder. `totalFindings` also counts SAFE
+  // observations, so quoting it above a bar chart of critical/high/medium/low
+  // showed a total the bars could never add up to.
+  const gradedFindings = severityCounts.critical + severityCounts.high + severityCounts.medium + severityCounts.low;
   const [searchQuery, setSearchQuery] = useState('');
   const [riskFilter, setRiskFilter] = useState<RiskLevel | null>(null);
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
@@ -594,9 +627,26 @@ export default function AssetsMap() {
               <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
               {connected ? 'Live Telemetry' : 'Cached'}
             </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/25 bg-cyan-500/8 px-2 py-0.5 text-cyan-600 dark:border-cyan-400/25 dark:text-cyan-300">
-              <Shield className="h-3 w-3" /> Reconciled with Quantum Readiness Engine
-            </span>
+            {(() => {
+              const inSync = qrHasData &&
+                Number(qr.snapshot.inventory.cryptoComponents) === Number(summary.totalComponents) &&
+                Number(qr.snapshot.inventory.vulnerableComponents) === Number(summary.vulnerableComponents);
+              const label = !qrResolved ? 'Awaiting Quantum Readiness Engine'
+                : !qrHasData ? 'No QR assessment evidence'
+                  : inSync ? 'Reconciled with Quantum Readiness Engine'
+                    : 'Diverged from Quantum Readiness Engine';
+              const tone = inSync ? 'border-cyan-500/25 bg-cyan-500/8 text-cyan-600 dark:border-cyan-400/25 dark:text-cyan-300'
+                : qrHasData ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                  : 'border-slate-300/60 bg-slate-100/60 text-slate-500 dark:border-white/12 dark:bg-white/[0.03] dark:text-white/40';
+              return (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${tone}`}
+                  title={qrHasData ? `QR Engine: ${qr.snapshot.inventory.cryptoComponents} components · ${qr.snapshot.inventory.vulnerableComponents} vulnerable` : undefined}
+                >
+                  <Shield className="h-3 w-3" /> {label}
+                </span>
+              );
+            })()}
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
@@ -681,10 +731,12 @@ export default function AssetsMap() {
             icon: Shield,
           },
           {
-            label: 'PQC Readiness',
-            value: `${summary.pqcReadiness}%`,
-            sub: `Q-Score ${summary.qScore}/100`,
-            color: 'text-emerald-600 dark:text-green-400',
+            label: 'Quantum Readiness (QR Engine)',
+            value: qrHasData ? `${qr.snapshot.scores.quantumReadiness}/100` : '—',
+            sub: qrHasData
+              ? `${qr.snapshot.scores.quantumReadinessLevel} · risk ${qr.snapshot.scores.quantumRisk}/100`
+              : qrResolved ? 'No assessment evidence yet' : 'Awaiting assessment',
+            color: qrHasData ? 'text-emerald-600 dark:text-green-400' : 'text-slate-400 dark:text-white/35',
             icon: Shield,
           },
         ].map((item) => (
@@ -706,7 +758,7 @@ export default function AssetsMap() {
       <div className={GLASS_PANEL_CLASSES + ' p-5'}>
         <div className="relative z-10 grid gap-6 lg:grid-cols-[1.1fr_1.3fr_1.3fr]">
           <div>
-            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Quantum Readiness</div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">PQC Component Coverage</div>
             <div className="mt-2 flex items-end gap-2">
               <span className="text-4xl font-black text-emerald-600 dark:text-green-400">{summary.pqcReadiness}%</span>
               <span className="mb-1 text-[10px] font-mono text-slate-500 dark:text-white/35">of {summary.totalComponents} components</span>
@@ -739,8 +791,13 @@ export default function AssetsMap() {
 
           <div>
             <div className="flex items-center justify-between">
-              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Detection Severity</div>
-              <span className="text-[10px] font-mono text-slate-500 dark:text-white/32">{summary.totalFindings} signals</span>
+              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Finding Severity</div>
+              <span
+                className="text-[10px] font-mono text-slate-500 dark:text-white/32"
+                title={`${summary.totalFindings} de-duplicated findings in total, ${severityCounts.safe} graded Safe`}
+              >
+                {gradedFindings} graded
+              </span>
             </div>
             <div className="mt-3 space-y-2">
               {([
@@ -887,9 +944,9 @@ export default function AssetsMap() {
                             <div className="text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-white/58">
                               vulnerable of {cryptoInventory.length}
                             </div>
-                            <div className="mt-1 truncate text-[10px] font-mono text-slate-500 dark:text-white/32">
+                            <div className="mt-1 truncate text-[10px] font-mono text-slate-500 dark:text-white/32" title="Raw detection rows backing these components, before de-duplication">
                               {signalCount > 0
-                                ? `${signalCount} detection signal${signalCount === 1 ? '' : 's'}`
+                                ? `${signalCount} raw detection row${signalCount === 1 ? '' : 's'}`
                                 : `${cryptoInventory.length} observed component${cryptoInventory.length === 1 ? '' : 's'}`}
                             </div>
                             {vulnerable.length > 0 && (
@@ -951,8 +1008,16 @@ export default function AssetsMap() {
                       <td className="border-y border-slate-200/80 p-4 text-[10px] font-mono text-slate-500 dark:border-white/8 dark:text-white/42">{formatDate(asset.lastScanned)}</td>
                       <td className="rounded-r-xl border-y border-r border-slate-200/80 p-4 dark:border-white/8">
                         <div className="flex items-center gap-2">
-                          <button type="button" className="inline-flex items-center gap-1 rounded-md border border-gold/25 bg-gold/10 px-2 py-1 text-[10px] font-black uppercase text-gold transition hover:border-gold/60">
-                            <Eye className="h-3 w-3" /> Details
+                          <button
+                            type="button"
+                            aria-expanded={isExpanded}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setExpandedAssetId(isExpanded ? null : asset.id);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-gold/25 bg-gold/10 px-2 py-1 text-[10px] font-black uppercase text-gold transition hover:border-gold/60"
+                          >
+                            <Eye className="h-3 w-3" /> {isExpanded ? 'Hide' : 'Details'}
                           </button>
                           <a onClick={(event) => event.stopPropagation()} href="/dashboard/cbom" className="text-[10px] font-black uppercase text-gold hover:underline">CBOM</a>
                           <a onClick={(event) => event.stopPropagation()} href="/dashboard/scanner" className="text-[10px] font-black uppercase text-slate-500 hover:text-gold dark:text-white/40">Rescan</a>
@@ -971,9 +1036,20 @@ export default function AssetsMap() {
                                     <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">Asset Profile</div>
                                     <div className="mt-1 text-lg font-black text-slate-950 dark:text-white">{asset.name}</div>
                                   </div>
-                                  <span className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase ${severityClasses(assetRiskLevel(asset), vulnerable.length > 0)}`}>
-                                    {labelize(assetRiskLevel(asset))}
-                                  </span>
+                                  <div className="flex shrink-0 flex-col items-end gap-1">
+                                    <span className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase ${severityClasses(assetRiskLevel(asset), vulnerable.length > 0)}`}>
+                                      Asset risk: {labelize(assetRiskLevel(asset))}
+                                    </span>
+                                    {(() => {
+                                      const worst = worstComponentSeverity(asset);
+                                      if (!worst) return null;
+                                      return (
+                                        <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase ${severityClasses(worst, true)}`}>
+                                          Worst component: {labelize(worst)}
+                                        </span>
+                                      );
+                                    })()}
+                                  </div>
                                 </div>
                                 <div className="grid gap-3 text-xs">
                                   {[

@@ -17,8 +17,12 @@ import type { CertificationDashboard, EligibilityResult, QuantumTrustCertificate
 
 export type LoadState = 'loading' | 'success' | 'error';
 
+/** Upper bound for a certificate lifecycle action before the UI reports failure. */
+const ACTION_TIMEOUT_MS = 120_000;
+
 export const EMPTY_ELIGIBILITY: EligibilityResult = {
   eligible: false,
+  issuable: false,
   evaluatedAt: '',
   hasData: false,
   requiredTotal: 0,
@@ -206,11 +210,19 @@ export function useQuantumCertification() {
     async (path: string, body?: unknown): Promise<ActionResult> => {
       if (!token) return { ok: false, message: 'Not authenticated' };
       setBusy(true);
+      // A lifecycle action must never leave the button spinning forever. Issue
+      // is the slowest call in the engine (full evidence rebuild + ML-DSA-65
+      // signing, and a cold server module graph on the first call after a
+      // restart), so the budget is generous — but it is finite, and a timeout
+      // surfaces a real error instead of an indefinite "Issuing…".
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), ACTION_TIMEOUT_MS);
       try {
         const response = await fetch(`/api/v1/quantum-certification${path}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -221,11 +233,21 @@ export function useQuantumCertification() {
             eligibility: payload?.error?.eligibility,
           };
         }
-        await refresh();
+        // The certificate is already issued and persisted at this point, so the
+        // dashboard refresh must not hold the button hostage — it runs in the
+        // background and the caller reports success immediately.
+        void refresh();
         return { ok: true, certificate: payload.data };
       } catch (err) {
+        if (controller.signal.aborted) {
+          return {
+            ok: false,
+            message: `The server did not respond within ${Math.round(ACTION_TIMEOUT_MS / 1000)}s. The certificate may still have been issued — refresh before retrying.`,
+          };
+        }
         return { ok: false, message: err instanceof Error ? err.message : 'Request failed' };
       } finally {
+        clearTimeout(timeout);
         setBusy(false);
       }
     },

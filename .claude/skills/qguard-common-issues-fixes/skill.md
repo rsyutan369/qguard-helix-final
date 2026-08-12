@@ -369,6 +369,918 @@ is in flight".
 
 ---
 
+## 14. A hybrid post-quantum endpoint's surface cards all read "Critical" under a "Fair" headline
+
+**Symptom.** `/dashboard/scanner` on a live `X25519MLKEM768` endpoint: composite
+**71 · C+ · Fair**, but Transport & Ciphers **Critical 39**, Certificates & Keys
+**Critical 25**, Quantum Posture **Critical 32** — while the Quantum Posture card
+itself reads "PQ key agreement: Applied", "Quantum vulnerability: Hybrid-protected"
+and "Measured PQ readiness: 81%". The Transport card reads "Post-quantum key
+agreement: Applied" two rows above "8 accepted · 8 quantum-vulnerable".
+
+**Root causes — four, each independently sufficient:**
+
+1. **The measured key agreement never reached the scoring model.**
+   `calculateRiskScore(...)` was called WITHOUT `edgeIntelligence`, so
+   `buildPublishedCategories` fell back to `tlsResult.keyExchange` — the literal
+   `"ECDHE (TLS 1.3 key_share)"` Node reports for every TLS 1.3 handshake. That
+   scored the hybrid endpoint as classical three times over: `keyExchange()` gave
+   70 instead of 100, `postQuantumReadinessFromSignals({hybridObserved:false})`
+   forfeited the 55-point allowance, and `cryptographicAlgorithms()` counted the
+   hybrid group as quantum-vulnerable. This is issue #12's root cause recurring in
+   a module the original fix did not reach.
+2. **The hero cards ran a SECOND scoring model.** `scoreNodes(findings)` was a
+   residual-severity mean (SAFE 1.0 → CRITICAL 0) over the finding list, while the
+   gauge ran the published weighted categories. One scan, two models, two verdicts.
+   Worse, it was computed independently in THREE places (`buildAssessment`,
+   `_qve-bridge` settle, `buildNodeEvidence`).
+3. **One certificate produced five HIGH findings for two facts.**
+   `certInfo.detectedOids` contains `ecPublicKey`, `secp256r1 (P-256)` and
+   `ecdsa-with-SHA256` — all restatements of the key and signature already reported
+   by the dedicated findings. `(5×0.15 + 0.75)/6 = 0.25` → exactly the 25 on screen.
+4. **The cipher-suite database is static.** TLS 1.3 rows are hardcoded
+   `quantumVulnerable: true, MEDIUM` because a TLS 1.3 suite name carries no
+   key-exchange token; `analyzeCipherSuites` took no group argument.
+
+Plus a standards error the audit surfaced: `ecPublicKey`, `secp256r1` and
+`rsaEncryption` recommended **ML-KEM** — a KEM — as the replacement for a
+*certificate* key.
+
+**Solution.**
+
+- `measuredKeyAgreement(edge)` / `measuredKemApplied(edge)` in
+  `edge-intelligence-model.ts` — ONE reading of the named-group probe, consumed by
+  `detection-rules`, `published-scoring` and `cipher-suite-analyzer`.
+- `edgeIntelligence` threaded through `calculateRiskScore` →
+  `buildPublishedCategories`. OCSP/CT/DNS-CAA became genuinely measurable and are
+  now scored rather than permanently `applicable: false`.
+- `SCANNER_NODE_CATEGORIES` + `scoreNodesFromCategories()` in the dashboard's
+  `_intel.ts`: surface scores are a PROJECTION of the same decomposition the gauge
+  uses. Computed once in `buildAssessment` and passed to the bridge and inspector.
+  `identity` maps to `[]` — the published model has no SSH/JWT category, so that
+  card is honestly unscored rather than given an averaged stand-in.
+- `leafRestatedOids(cert)` in `certificate-parser.ts` (backed by new
+  `publicKeyOid` / `publicKeyCurveOid` fields) suppresses restatements at source.
+- `OidClassification.role` + `pqcReplacementFor(oid, usage)`: FIPS 203 for key
+  establishment, FIPS 204 for authentication, resolved by the role the call site
+  OBSERVED.
+
+Live result on the same endpoint: composite 71 → **77 (B-)**, Transport
+39 → **74**, Certificates 25 → **73**, Posture 32 → **76**; certificate findings
+6 → 3. Static-RSA suites stayed **CRITICAL** and Forward Secrecy stayed capped at
+70 — the genuine exposure is now what drives the transport score.
+
+**Prevention checklist**
+
+- [ ] A surface/card score is a PROJECTION of the headline model, never a second
+      aggregation of the same evidence. If re-aggregating the cards by their own
+      weights does not reproduce the composite, they are two models.
+- [ ] Derive a value ONCE and pass it down. Three call sites computing "the same"
+      number is three chances to drift.
+- [ ] Never read a PQ verdict from a socket property or a finding title —
+      `measuredKeyAgreement()` is the only reading (issues #11, #12, and this one).
+- [ ] A posture score is never a mean over an evidence list: adding a probe that
+      emits more rows must not lower the posture of the surface it probed.
+- [ ] Every suppression gets a NEGATIVE control. Hybrid must NOT soften static-RSA
+      or TLS 1.2 suites — ML-KEM lives only in the TLS 1.3 key_share.
+- [ ] ML-KEM is key establishment ONLY. Any recommendation pairing it with
+      "certificate"/"signature" is a defect.
+- [ ] A metric that cannot vary carries no information. If a card must read
+      Critical for every host on the internet, the model is wrong, not the host.
+- [ ] Run `tools/scanner-scoring-check.ts` (37 assertions, positive + negative)
+      and `tools/scanner-dashboard-check.ts`.
+
+---
+
+## 15. Dashboards render empty and the server logs "canceling statement due to statement timeout"
+
+**Problem**
+
+Many pages show zeros or empty states, and the API server logs bursts of:
+
+```
+Dashboard telemetry pqc_scan_sessions query skipped: canceling statement due to statement timeout
+Quantum readiness pqc_scan_results query skipped: canceling statement due to statement timeout
+Dashboard telemetry crypto_inventory query skipped: canceling statement due to statement timeout
+```
+
+The obvious reading — "the tables have grown too big, we need indexes" — is wrong
+and sends you to `scale-indexes.sql` for nothing. `pqc_scan_sessions` held **32
+rows** when this fired.
+
+**Root Cause**
+
+Row **size**, not row **count**. The scanner writes its entire payload into
+`pqc_scan_sessions.metadata`: the buffered SSE event log, the full `results`
+array, `enterpriseScanner2`, `moduleStates`. Measured: **419KB average per row,
+853KB worst, 13.9MB across 32 sessions.**
+
+Eighteen call sites across twelve routers selected that column — `dashboard.ts`
+alone had nine — and most never read it. Every one of them transferred 13.9MB
+per request. Measured against the real database:
+
+| concurrent requests | with `metadata` | without |
+|---|---|---|
+| 1 | 2 600–4 900 ms | 165 ms |
+| 4 | 19 959 ms | 306 ms |
+| 8 | 106 213 ms | 254 ms |
+| 12 | 112 206 ms | 252 ms |
+
+Against the `authenticated` role's statement timeout the queries are cancelled,
+`safeRows` swallows the error and returns `[]`, and the page renders empty. The
+saturation also starves unrelated queries, which is why `crypto_inventory` and
+`pqc_scan_results` time out as collateral damage — chasing *those* tables is a
+dead end.
+
+Inside the event log, the weight was duplication: `finding` 2685KB, `result`
+1659KB, `module` 613KB, `moduleStates` 520KB, `metrics` 414KB, `modules` +
+`moduleCatalog` 524KB — all already stored once elsewhere in the same record,
+or in `pqc_scan_results`.
+
+**Solution**
+
+- Read side: dropped `metadata` from the fourteen call sites that never read it;
+  narrowed the three HNDL sites to `results:metadata->results` and
+  `trust-center-dashboard.ts` to `mt:metadata->>target` (PostgREST JSON-path
+  projection). Twelve-way fan-out went **112 206 ms → 1 092 ms**.
+- Write side: `src/lib/scanner/session-payload.ts` — `persistableTelemetry()`
+  strips duplicated keys from each stored event, reduces `module` to
+  `{id,name,status}` (history renders `event.module?.name`), and caps the log at
+  1000 events with an explicit `telemetry-truncated` marker. Applied at all
+  three persistence points in `scanner.ts`. Live SSE is untouched.
+- Existing rows: `tools/compact-scan-session-telemetry.ts` (dry run by default,
+  `--apply` to write) — 13.11MB → 6.67MB.
+
+**Prevention Checklist**
+
+- [ ] A statement timeout on a small table means row SIZE or contention. Check
+      payload bytes before touching indexes: `count=exact` was 345ms on this
+      table while the same query WITH `metadata` took 4 956ms.
+- [ ] Never `select('*')` or select a JSONB blob in a polled/aggregating route.
+      Name the columns; if you need one key, project it (`alias:col->key`).
+- [ ] Before adding a JSONB column to a select list, grep whether the handler
+      actually reads it. Fourteen of eighteen call sites here did not.
+- [ ] Never store in a row something the same row already stores, or that a
+      relational table owns. Findings belong to `pqc_scan_results`.
+- [ ] Anything append-only that is persisted needs a ceiling, and trimming must
+      announce itself — a truncated log must never look complete.
+- [ ] `safeRows`-style helpers hide this class of failure. An empty dashboard
+      plus a `query skipped` warning is a FAILED query, not "no data".
+- [ ] Run `tools/scan-session-payload-check.ts` (18 assertions, positive +
+      negative) and `tools/migration-assets-check.ts`.
+
+---
+
+## 16. A whole table's worth of evidence silently disappears from a dashboard
+
+**Problem**
+
+`/dashboard/migration-planner` showed no validation evidence at all, with:
+
+```
+[migration-planner] migration_validation_logs query skipped: column migration_validation_logs.asset_id does not exist
+```
+
+**Root Cause**
+
+`migration-planner.ts` asked for `id, asset_id, migration_job_id, status,
+created_at`. `migration_validation_logs` has neither `asset_id` nor
+`migration_job_id` — its only FK is `migration_id → migration_jobs(id)`, which
+is exactly what `agent-scanner.ts` writes. PostgREST rejects the **whole**
+query on one unknown column (42703), so a single wrong column name cost every
+row in the table, not just that field.
+
+**Solution**
+
+Query `id, migration_id, status, created_at`; `asset-intelligence.ts` now groups
+by `migration_id || migration_job_id || job_id` so agent-written and legacy rows
+both resolve. Pinned by two fixture rows in `tools/migration-assets-check.ts`.
+
+**Prevention Checklist**
+
+- [ ] PostgREST is all-or-nothing on the select list. One bad column = zero rows,
+      reported as a warning, not an error — it looks like "no data".
+- [ ] Check the column against `supabase/dashboard-schema.sql` AND against the
+      writer. Reader and writer disagreeing on a FK name is the recurring shape.
+- [ ] Confirm the fix by running the select against the database, not by reading
+      the schema file — the deployed table is the authority.
+
+---
+
+## 17. Users log in fine but every plan is gone — "no subscription" after rotating Supabase credentials
+
+**Problem**
+
+After pointing `.env` at a different Supabase project (or restoring one), existing
+users authenticate normally but the dashboard shows the `<UpgradeRequired
+variant="no-subscription">` screen, and Starter accounts land on `StarterDashboard`
+regardless of the plan they used to have. Nothing in the gating code changed.
+
+**Root Cause**
+
+Entitlement is **data, not code**. `use-subscription.ts` and
+`api-server/subscription-guard.ts` both read a `billing_subscriptions` row keyed by
+`user_id`, and user IDs are per-project. A new project starts with an empty
+`billing_subscriptions` table, so every lookup falls through to the
+`profiles.tier` branch — which deliberately refuses to trust a paid tier without a
+subscription row (`status: 'incomplete'`, `isActive: false`). The gate is working
+exactly as designed; the rows are simply absent.
+
+Two follow-on traps in a fresh project:
+
+- Only users who re-registered exist in `auth.users`. `tools/seed-test-subscriptions.ts`
+  reports `SKIP … not registered yet` for the rest and cannot create them.
+- `zachmatthew369@gmail.com` (owner) **cannot** be recreated through `/register` —
+  `api-server/auth.ts` returns `EMAIL_NOT_ALLOWED` for `isOwnerEmail` as
+  anti-squatting. Provision it from the Supabase dashboard or via service-role
+  `auth.admin.createUser`.
+
+**Solution**
+
+Re-seed, do not re-code: `npx tsx tools/seed-test-subscriptions.ts` (idempotent,
+service-role, upserts on the `user_id` unique index and sets `profiles.tier`).
+Confirm the base schema migrations reached the new project first — the base
+`plan` CHECK is `('Starter','Pro','Elite')` and **`Basic` only exists after
+`supabase/paypal-subscription-migration.sql`**, so a Basic seed fails with a check
+violation on a half-migrated project. Probe for `paypal_webhook_events` to tell
+whether that migration ran.
+
+**Prevention Checklist**
+
+- [ ] Treat any Supabase URL/key change as a data migration, not a config edit.
+      Auth users, `billing_subscriptions`, and `profiles.tier` are all per-project.
+- [ ] Verify through the *frontend's* path, not the service-role client — the
+      service key bypasses RLS and will read rows the app cannot. Mint a real user
+      session without a password: `admin.auth.admin.generateLink({type:'magiclink',
+      email})` → `anonClient.auth.verifyOtp({token_hash: link.properties.hashed_token,
+      type:'magiclink'})`, then run the exact `use-subscription.ts` select. This is
+      the only check that proves RLS policies made it into the new project.
+- [ ] Check the `plan` CHECK constraint before seeding a tier the base schema
+      never had.
+- [ ] `billing_subscriptions` must be in the `supabase_realtime` publication or
+      plan changes will not go live without a reload (`billing-subscription-schema.sql`
+      adds it conditionally — it only runs if that file was applied).
+
+---
+
+## 18. A score reads "23/100" beside a band that says "Critical"
+
+**Problem**
+
+`/dashboard/summary` reported `quantumRiskScore: 232` with `riskBand: 'Critical'`,
+while `/dashboard/executive`'s `quantum-risk` KPI reported `75/100 (High)` for the
+same estate at the same moment. The posture panel rendered **"Quantum Risk Score
+23 /100"** directly above **"Risk Band: Critical"** — a reassuring number under an
+alarming label.
+
+**Root Cause**
+
+Three compounding faults on one value:
+
+1. The composite in `buildDashboardSummaryFallback` was
+   `readiness*0.45 + coverage*0.2 + (100-pressure)*0.35` — a **higher-better
+   posture** measure — but was published as `quantumRiskScore`, a risk name.
+   The name inverted the meaning.
+2. It was scaled `*10` onto a private **0–1000** range with its own band ladder
+   (`>=850 Quantum Ready … else Critical`), colliding with the platform's
+   canonical 0–100 `RISK_BANDS` and with the executive KPI's 0–100 lower-better
+   scale.
+3. The frontend "converted" it by **guessing**:
+   `riskTo100 = score > 100 ? score / 10 : score`. So 232 became 23, and a
+   higher-better number was rendered on a lower-better meter.
+
+Each layer looked locally reasonable, which is why it survived: the API had a
+self-consistent band table, and the frontend had a plausible-looking normaliser.
+
+A second defect in the same payload: `newVulnerableAssets` returned
+`currentFindings`, a raw signal count, so one asset with 98 recent findings
+reported "98 new vulnerable assets" beside "1 vulnerable asset".
+
+**Solution**
+
+Publish both measures under their real names on the canonical scales, banded by
+the shared tables in `asset-intelligence.ts`:
+`quantumRiskScore` (0–100 lower-better, `riskBandFor`), `quantumReadinessScore`
+(0–100 higher-better, `levelFromReadiness`), plus `hasBaseline` so an unmeasured
+estate renders `--` instead of a 0 that reads as perfect on a lower-better scale.
+Delete the frontend's scale guess and read the field directly. Give every risk
+signal the `subject` it was observed on — keyed exactly like `vulnerableSubjects`
+— so `newVulnerableAssets` counts distinct subjects and is a strict subset of
+`vulnerableAssetsCount`; the old signal count moved to `newFindings`.
+Summary risk and the executive KPI now both read **74 (High)**.
+Pinned by `tools/dashboard-summary-check.ts`.
+
+**Prevention Checklist**
+
+- [ ] A field name states a DIRECTION. `*Risk*` must be lower-better and
+      `*Readiness*` higher-better. A composite built from `(100 - pressure)` is a
+      readiness measure however it is named.
+- [ ] Never normalise a scale by inspecting the value
+      (`x > 100 ? x / 10 : x`). If a consumer cannot tell 0–100 from 0–1000
+      without guessing, the producer is publishing the wrong contract.
+- [ ] Bands come from `RISK_BANDS` / `levelFromReadiness` in
+      `src/lib/migration/asset-intelligence.ts`. A local band ladder is a
+      duplicate rule that WILL drift (rule 5).
+- [ ] A field ending in `Assets` counts distinct subjects; one ending in
+      `Findings` counts signals. Assert `newX <= totalX` — the subset relation is
+      what catches a count/subject mix-up.
+- [ ] Compare the payload against the OTHER endpoint describing the same
+      population before believing it. Two numbers for one estate that disagree in
+      SCALE or DIRECTION are a defect even when each is internally consistent.
+- [ ] Check the render site is reachable before claiming a visual fix —
+      `TelemetryFeatures.tsx` turned out to have zero importers.
+
+---
+
+---
+
+## 19. A page goes BLACK and BLANK the moment a write action succeeds
+
+**Problem**
+
+`/dashboard/hybrid-crypto-lab` → build an experiment → **Run Experiment** → the
+entire application disappears, leaving a bare dark background. No error, no
+message. The POST succeeded (201) and the row was written — only the render
+died. The user's URL ends in `#`, because the "Create Experiment" call to action
+in the empty state was `href: '#'` and went nowhere.
+
+**Root Cause**
+
+Two shapes for one concept. `hybrid_crypto_experiments` rows are projected into
+the camelCase domain record `ExperimentRecord` by a mapper inside
+`buildExternalTrustIntelligence` — but **only on the read path**. The write path
+returned the raw snake_case row straight from `.insert(...).select('*')` (and,
+in the not-provisioned branch, the raw `record` object it had just built).
+
+So a freshly-run experiment had `execution_mode` / `duration_ms` /
+`payload.target`, while the UI read `executionMode` / `durationMs` /
+`target`. Two fields rendered the string `undefined`; the third,
+`result.target.label` at `HybridCryptoLab.tsx:444`, threw
+`TypeError: Cannot read properties of undefined (reading 'label')` **during
+render**. There is no error boundary above the dashboard routes, so React
+unmounted the whole tree — the "black blank screen" is the page background with
+nothing left on it.
+
+Two things kept it invisible:
+
+- `setResult(payload.experiment as never)` — the cast erased the exact type
+  error that would have named this bug at compile time.
+- The UI read `result.result?.checks` / `.findings` / `.basis`, which happen to
+  work on the raw row (it has a `result` JSONB column). Half the view was
+  written against the row and half against the record, so neither shape was
+  obviously wrong.
+
+**Solution**
+
+- `toExperimentRecord(row, now?)` exported from
+  `src/lib/ecosystem/external-trust-intelligence.ts` is now the ONE row→record
+  projection. `buildExternalTrustIntelligence` calls it; both branches of
+  `POST /lab/experiments` call it. Verified live: the read path and the write
+  path return byte-identical key sets.
+- The UI reads the record (`result.checks`, `result.findings`, `result.basis`,
+  `result.durationMs`, `result.executionMode`) and the `as never` cast is gone,
+  so the contract is now enforced by `tsc`.
+- The extracted mapper also stopped fabricating: the old fallback hardcoded
+  `port: 443`, `environment: 'unknown'`, `vendorId: null`, `assetId: null` for a
+  row with no `payload`. It now reads the real `target_port` / `environment` /
+  `vendor_id` / `asset_id` columns.
+- `PageErrorBoundary` in `_components/external-trust/_shared.tsx` wraps all four
+  suite pages: a render fault now shows a stated error with a retry, and is
+  bounded to the page instead of blanking the application.
+- `EmptyState`'s `cta` takes `href` **or** `onClick` (a union that makes
+  `href: '#'` unrepresentable). "Create Experiment" now opens the builder at
+  step 1; a filter matching nothing gets its own empty state instead of a bare
+  table header.
+
+**Prevention Checklist**
+
+- [ ] A write endpoint returns the SAME projected shape its read endpoint
+      returns. Never return a raw `.select('*')` row to a UI that consumes a
+      mapped domain type — assert the two key sets are equal in a check tool.
+- [ ] Row→domain mapping lives in ONE exported function. An inline `.map()`
+      inside an aggregate builder is invisible to the write path that needs it.
+- [ ] `as never` / `as unknown as T` on an API response is a defect waiting to
+      happen; it silences precisely the mismatch you need reported. If a cast
+      seems necessary, the contract is wrong.
+- [ ] A component must read one shape. Reading `x.result.checks` (row) beside
+      `x.target.label` (record) in the same view means nobody knows which
+      contract applies.
+- [ ] Any route whose render can throw needs a boundary above it, or one bad
+      field takes down the entire application and reports nothing.
+- [ ] `href="#"` is never a call to action. In-page actions are `<button>`.
+- [ ] Reproduce a "blank screen" by RUNNING the action against the live API and
+      printing the response keys — the shape mismatch is invisible in the source
+      when a cast hides it. `tools/external-trust-check.ts` §12 pins it offline.
+
+---
+
+## 20. Finding counts are ~4× too high, and one finding is listed twice in a row
+
+**Problem**
+
+`/dashboard/cbom` → Vulnerabilities showed `TLS_RSA_WITH_AES_256_CBC_SHA ·
+www.cloudflare.com · Critical` **twice consecutively**, "FINDINGS 255" and
+"CRITICAL SIGNALS 47" for a two-asset tenant holding 66 cryptographic
+components. The Assets page repeated the inflation ("255 signals", CRITICAL 47),
+the QR Engine's `riskDistribution` mirrored it, and the workflow rail read
+"47 critical · 251 findings".
+
+**Root Cause**
+
+The scanner persists every detection to `pqc_scan_results`, `crypto_exposures`
+and `crypto_inventory`, AND keeps it in the scan session's own findings array.
+Those are four STORAGE VIEWS of one observation. `mergeScannerFindings` keyed on
+
+```ts
+[finding.source, finding.algorithm, finding.location, finding.category, finding.evidence]
+```
+
+— and `source` is precisely the field guaranteed to differ between them. So the
+dedupe key contained the very dimension that distinguishes duplicates. `category`
+was no better: the same cipher suite is filed as `"rsa"` (crypto_exposures),
+`"Cipher Suite"` (pqc_scan_results) and `"algorithm"` (crypto_inventory).
+`location` differs too — the session copy writes `"Cipher Suite — https://host/"`
+and rule-derived findings write their rule id (`"Detection Rule TLS-008"`) with
+no target in it at all.
+
+Measured on the live tenant: **255 findings for 66 real observations**, `maxObs`
+5. Because `quantum-readiness.ts` copies `intel.severityCounts` into
+`riskDistribution`, the inflation propagated to the QR risk score and every
+consumer of it.
+
+**Solution**
+
+`src/lib/scanner/finding-identity.ts` — pure and dependency-free (same
+discipline as `scanner-module-ledger.ts`) so the rule is testable offline and
+shared rather than reimplemented. Identity is a property of the OBSERVATION:
+
+```ts
+findingIdentityKey = [algorithm, findingSubject(f), detectionMethod].join('|')
+```
+
+`normalizeFindingSubject()` reduces all four location shapes to a bare host and
+returns `''` for anything that is not one, so `computeScannerIntelligence` must
+stamp `scanTarget` on both history findings (`entry.target`) and asset findings
+(`asset.url || asset.domain || asset.name`) for rule-derived rows to resolve. A
+`detectionMethod` that is really a table name is neutralised via
+`FINDING_STORAGE_SOURCES`. Strongest severity wins; `richerText()` keeps the
+most specific description/evidence/recommendation from ANY merged copy, because
+the highest-severity copy is usually the terse `crypto_exposures` row while the
+session copy holds the analyst explanation. The merged record carries
+`observations` and `sources`.
+
+Live result: **255 → 66 findings**, critical 47 → 13, and the deduped finding
+count now equals the CBOM component count with `62` non-safe — matching
+`quantumVulnerableComponents: 62` derived by a completely independent grouping.
+That agreement is the evidence the merge is right rather than over-collapsed.
+
+**Prevention Checklist**
+
+- [ ] A dedupe key must never contain the field that distinguishes the copies —
+      `source`, `category` and raw `location` all identify the WRITER, not the
+      observation. Key on what was found, where, and how it was measured.
+- [ ] Before trusting a finding total, group the list by a semantic key and
+      compare. `distinctBy(algorithm, host) << total` is the signature.
+- [ ] Cross-check the finding count against an independently-derived count of
+      the same universe (here: grouped `crypto_inventory` components). Two
+      unrelated groupings agreeing is strong evidence; disagreeing is the bug.
+- [ ] A merge that loses text is a merge that loses evidence. Take max severity
+      but richest narrative.
+- [ ] `severityCounts` is copied wholesale into `quantum-readiness.ts`
+      (`riskDistribution`) and from there into `migration-workflow.ts`. Any
+      change to the finding list moves the QR risk score — verify all three.
+- [ ] Run `tools/scanner-finding-identity-check.ts` (39 assertions, positive +
+      negative), plus `tools/scanner-dashboard-check.ts` and
+      `tools/dashboard-summary-check.ts`.
+
+---
+
+## 21. A 66-component estate reports "At Risk 100" and "At Risk 100%"
+
+**Problem**
+
+`/dashboard/cbom` Overview: "CRYPTO COMPONENTS 66" beside "AT RISK 100", and a
+readiness legend reading **PQC Ready 6.1% · In Progress 0% · Not PQC Ready
+93.9% · At Risk 100%** — four rows that look like a partition and sum to 200%.
+Three more panels on the page repeated the number.
+
+**Root Cause**
+
+```ts
+const atRisk = entries.filter((e) => e.isVulnerable && riskRank(e.riskSeverity) >= 2).length
+             + Number(data.summary.criticalFindings || 0)   // 53 + 47 = 100
+```
+
+A COMPONENT count added to a FINDING count. Both operands were correct; the
+addition was a category error, and `percent()` then clamped the result to 100%
+so it looked like a plausible catastrophe instead of an overflow.
+
+Three neighbouring scope faults on the same page:
+
+- `totalComponents = stats.totalComponents || entries.length` (and the same for
+  `pqcReady` / `vulnerableComponents`) — a per-field `||` between two different
+  populations, i.e. a scope decision in disguise (rule 2).
+- `notPqcReady = total - pqcReady - inProgress` where `inProgress` came from the
+  raw rows and `total` from the grouped stats, so the three did not partition.
+- The Algorithm Distribution donut summed only its **top 6** slices and labelled
+  that "Total": 12 stood in for 66, and every percentage used the wrong
+  denominator (2 of 66 rendered as 16.7%).
+
+**Solution**
+
+One scope decision (`hasComponentStats`) that every component field follows;
+`pqcReady + inProgress + notPqcReady === totalComponents` by construction;
+`atRiskComponents` is component-scope and rendered as an explicit SUBSET of Not
+PQC Ready, with `criticalFindings` shown separately under its own name. The
+donut's denominator is the whole measured population with an explicit
+`Other (N more)` slice.
+
+**Prevention Checklist**
+
+- [ ] Never `+` two counts unless they count the same kind of thing. If one is
+      named `*Components` and the other `*Findings`, the sum is meaningless.
+- [ ] Any count rendered as a percentage of a universe must be assertable as
+      `≤ universe`. `percent()` clamping to 100 HIDES this class of bug.
+- [ ] Legend rows that read as a partition must sum to 100%. A subset row is
+      labelled as one and separated by a rule.
+- [ ] A chart's denominator is the population, never the visible top-N. Show the
+      remainder as its own slice.
+- [ ] See rule 2 in `qguard-data-integrity`; pinned by
+      `tools/scanner-finding-identity-check.ts` §5–6.
+
+---
+
+## 22. An asset scoring 23/100 in green is filtered and badged CRITICAL
+
+**Problem**
+
+`/dashboard/assets`: the risk filter chips read `CRITICAL 2 · HIGH 0 · MEDIUM 0
+· LOW 0` while the table showed those same two assets at **23/100** (emerald)
+and **55/100** (amber), and the expanded panel badged the 23/100 asset
+"CRITICAL".
+
+**Root Cause**
+
+Two aggregations of one concept rendered together — the same shape as issues #11
+and #14. `assetRiskLevel()` took the MAX over the score band, the backend's
+`riskLevel`, and the exposure level of **every component**; one critical
+component among 23 therefore made the whole asset critical, while the number
+next to it was the backend's composite `riskScore`.
+
+Alongside it, three presentation faults:
+
+- The header badge read "Reconciled with Quantum Readiness Engine" on a page
+  that never called the QR API.
+- The PQC-ready component share was labelled **"Quantum Readiness"** — the name
+  the QR composite carries everywhere else, with a different value (6% vs 21).
+- "255 signals" sat above severity bars summing to 251: `totalFindings` counts
+  SAFE findings, the bars do not.
+
+**Solution**
+
+`assetRiskLevel()` is now a PROJECTION of the risk score
+(`normalizeRiskLevel(asset.riskLevel) || riskLevelFromScore(asset.riskScore)`).
+The worst component severity is still real and still shown — as its own labelled
+chip (`worstComponentSeverity`), never as the asset's band. `useQuantumReadiness`
+is actually consumed, so the badge states match / diverged / awaiting / no
+evidence from a real comparison, and the two readiness figures appear under
+their own names ("Quantum Readiness (QR Engine)" vs "PQC Component Coverage").
+The severity panel quotes `gradedFindings` (critical+high+medium+low), which is
+what the bars add up to.
+
+Also: `vulnerableComponents()` stopped re-merging `cryptoInventory` on a
+narrower key than the backend grouped by — the per-row counts now sum to the
+headline exactly (19 + 43 = 62) instead of relying on a coincidence.
+
+**Prevention Checklist**
+
+- [ ] A band shown next to a score is a function OF that score. Worst-of-children
+      is a different measure and needs a different label and its own slot.
+- [ ] A badge that claims cross-module agreement must read the other module. If
+      the page cannot call it, delete the claim.
+- [ ] Two figures that share a name across pages must share a value. If they are
+      genuinely different measures, rename one.
+- [ ] A total quoted above a breakdown must equal the breakdown's sum, or the
+      difference must be stated (here: SAFE findings).
+- [ ] When the backend already publishes a count, read it — do not recompute it
+      client-side on a different key.
+
+---
+
+## 23. A page reports "Risk Score 0/100" while the QR Engine reports 75/High
+
+**Problem**
+
+`/dashboard/migration-sandbox` Overview rendered **"Readiness Scores: 6/100 PQC
+Ready · 0/100 Risk Score · 39/100 Compliance"**, the Validation tab rendered the
+same value as **"Security 0/100"**, and Sophia's AI Insights showed **"Risk
+Score 0%"** — for a tenant the Quantum Readiness Engine scored **75/100 High**.
+The same page also reported **22 critical / 50 high exposures** where CBOM,
+Assets, the QR Engine and the workflow rail all said **13 / 30**.
+
+**Root Cause**
+
+Three faults, each independently sufficient:
+
+1. **A posture score published under a risk name.**
+   `riskScore = 100 - (critical*15 + high*8 + expiringCerts*5 + openVulns*3 + …)`
+   is HIGHER-is-better. It was rendered beside PQC-readiness and compliance
+   (both higher-better) *and* named like the platform's canonical
+   lower-better `quantumRiskScore`. This is issue #18 recurring in another module.
+2. **It could not vary.** Seven critical exposures alone exhaust the 100 points,
+   so the metric reads 0 for every real estate. A metric that cannot vary
+   carries no information.
+3. **Severity counts were summed across three storage views.**
+   `criticalExposures = crypto_exposures.critical + pqc_scan_results.critical +
+   scanner_alerts.critical`, and `openVulns = vulnerabilities + scanner_alerts`
+   counted the alerts a *second* time on the same page. See issue #20 — these
+   tables hold the same observations.
+
+Plus: `pqcReadiness` fell back to `completedJobs / totalJobs` when there was no
+inventory — a migration-job completion rate published as cryptographic
+readiness, so a tenant with one finished job and no CBOM would read
+"PQC Readiness 100%".
+
+**Solution**
+
+- `riskScoreFromLoad(load, halfLife)` in `src/lib/migration/asset-intelligence.ts`
+  (beside `RISK_BANDS`, so check tools need not import the Express router):
+  `100 * (1 - e^(-load/60))` — strictly increasing, asymptotic, never pegs.
+  Verified: a 13-critical/30-high estate scores 73, a 50/100 estate 99.
+- `sandbox.ts` prefers the QR Engine's `scores.quantumRisk` via the exported
+  `buildSnapshot`, publishing `quantumRiskScore` (0–100, lower-better),
+  `quantumRiskLevel` from `riskBandFor`, and `quantumRiskSource` so a reader can
+  tell which computation answered. NOT `scannerIntel.summary.riskScore` — that
+  is the scanner's per-asset risk MEAN (39 here), a different measurement that
+  merely shares the scale.
+- Severity counts come from `buildScannerIntelligence().severityCounts`, with
+  `dedupeGradedObservations()` in `src/lib/scanner/finding-identity.ts` as a
+  same-unit fallback. `scanner_alerts` no longer double-count into `openVulns`.
+- `ScoreGauge` takes `number | null` plus `lowerBetter`; null renders "—".
+
+**Prevention Checklist**
+
+- [ ] A field named `*Risk*` is lower-better; `*Readiness*`/`*Score*` in a
+      confidence row is higher-better. `100 - penalties` is a POSTURE measure
+      however it is named (issue #18).
+- [ ] Before shipping a scored metric, evaluate it at a realistic estate AND at
+      10× that. If both give the same number, the model is wrong.
+- [ ] Never sum severity counts across `crypto_exposures` + `pqc_scan_results` +
+      `scanner_alerts` — they are storage views of one observation set (#20).
+- [ ] Check no table feeds two different counters on the same page.
+- [ ] A fallback must measure the SAME THING. Job completion rate is not
+      readiness; the scanner's asset-risk mean is not the QR quantum risk.
+- [ ] Run `tools/scanner-finding-identity-check.ts` §7–8 and
+      `tools/sandbox-twin-check.ts`.
+
+---
+
+## 24. An unrehearsed rollback reports "0%" and a perfect "RPO 0m"
+
+**Problem**
+
+`/dashboard/migration-sandbox` → Rollback, with zero simulations ever run:
+**ROLLBACK SUCCESS 0%**, **RPO 0m**, **SNAPSHOT COVERAGE 0%** — and the
+restoration checklist showed "Policy restoration ✗" beside the text *"Crypto-policy
+state is recorded in each snapshot entry."*, and "Trust chain restoration ✓"
+beside *"Trust chain evidence limited — PKI restore partially verified."*
+
+**Root Cause**
+
+`buildRollbackAnalysis` returned `successProbabilityPct: 0` and
+`rpoMinutes: 0` when `sandboxSims.length === 0`, while setting
+`available: sandboxSims.length > 0 || assets > 0` — so the UI treated an
+unmeasured analysis as available and rendered its placeholder zeros as
+measurements. **0% confidence is indistinguishable from a rehearsal that failed
+every time, and RPO 0m is the BEST possible recovery point objective** — the
+unmeasured state rendered as the ideal one.
+
+The checklist `detail` strings were written for the covered case only and
+emitted unconditionally, so three of six rows asserted the opposite of their own
+`covered` flag.
+
+A fourth, related fault: `predictFailures` scored `certificate_failure` from
+`expiring + nonPqc` over `certs.length`. Every pre-migration tenant has 100%
+classical certificates, so the ratio is always 1.0 and the prediction read
+**88% for everyone** — and it was the single blocker holding the approval gate.
+Its `affectedAssets` came from the `expiring` subset only, so a count of 2
+rendered with an empty asset list.
+
+**Solution**
+
+`assessed` flag; `successProbabilityPct` / `snapshotCoveragePct` / `rpoMinutes` /
+`rtoMinutes` / `downtimePredictionMin` are `number | null`, and every render site
+prints "Not assessed". The approval gate still FAILS without a rehearsal — but
+as an unmet gate, not as a 0% measurement. Each checklist `detail` is now a
+ternary on its own `covered` value. `certificate_failure` is driven by expiring
+certificates (a real replacement hazard); classical certificates became
+`certificate_replacement_scope`, explicitly labelled *"expected pre-migration
+state, not a detected fault"*, at a bounded 36%. Overall failure probability
+47% → 17%.
+
+**Prevention Checklist**
+
+- [ ] For any metric where 0 is the IDEAL value (RPO, downtime, error count,
+      risk), unmeasured must be `null` — never 0. This is the inverse of the
+      usual trap and is easy to miss.
+- [ ] An `available`/`ready` flag must be gated on the thing actually being
+      measured, not on some other evidence existing.
+- [ ] A `detail`/`reason` string must be a function of the flag it sits beside.
+      Unconditional copy next to a conditional flag WILL contradict it.
+- [ ] A probability whose denominator is "all of X" reads ~100% whenever the
+      condition is universal. Ask: what does this predict for a tenant that has
+      not started? If the answer is "the same as everyone", it is not a prediction.
+- [ ] An affected-asset list must be built from the same rows as its count.
+- [ ] `tools/sandbox-twin-check.ts` pins all of this (null rollback figures,
+      the covered/detail agreement sweep, auto-rollback readiness).
+
+---
+
+## 25. One dashboard rebuilds a 1.5s payload once per client per SSE tick
+
+**Problem**
+
+`/api/v1/sandbox/snapshot` had no cache while `/stream` rebuilt it every 8s PER
+CONNECTED CLIENT. Measured on a two-asset tenant: five concurrent callers took
+**2365ms of wall clock** because each ran its own full build — a 14-table tenant
+load plus the entire twin assembly. Cost scales with
+(open dashboards × SSE ticks × estate size).
+
+`buildScannerIntelligence` and the QR `buildSnapshot` had both had the
+short-TTL single-flight treatment for exactly this reason; the sandbox was the
+one hot path that never got it.
+
+**Root Cause**
+
+Not an oversight so much as a hazard: `buildSandboxPayload` calls
+`advanceSandboxJobs` — a MUTATION — at the top, so it looks uncacheable.
+
+It is cacheable, because simulation progress is derived from elapsed time
+(`(elapsed / duration) * 100`), not incremented per call. Running the engine
+less often changes WHEN a row is written, never how fast a simulation
+completes. It also already carried a 2.5s per-tenant throttle, and the
+background scheduler is a 15s floor.
+
+**Solution**
+
+`getSandboxSnapshot()` — per-tenant, 5s TTL, single-flight (concurrent callers
+await the same in-flight promise). Read routes (`/snapshot`, `/stream`,
+`/export`) go through it; the four mutating routes go through
+`buildSandboxPayloadOrNull`, which **invalidates first** so an operator action
+never returns a pre-mutation payload. `advanceSandboxJobs` now returns
+`advancedUsers`, and the scheduler drops exactly those tenants' snapshots so
+live progress is never hidden behind the TTL.
+
+Measured after: warm hit **3ms**, five concurrent callers share **one**
+computation (`distinctGeneratedAt === 1`).
+
+Second, subtler fix in the same change: the snapshot had begun awaiting the QR
+assessment outright. QR costs ~1s cold and blocking on it put an entire
+assessment in the sandbox's first-paint path. It is now bounded
+(`QR_SNAPSHOT_DEADLINE_MS`), and — importantly — a missed deadline is
+distinguished from "QR has no evidence": the former yields `null`
+(renders "—"), the latter falls back to the locally derived score. Collapsing
+the two would have published a divergent risk number for a few seconds and then
+jumped, which is the exact divergence issue #23 fixed.
+
+**Prevention Checklist**
+
+- [ ] A mutation inside a build function does NOT make it uncacheable. Ask
+      whether the mutation is time-derived/idempotent — if so, cache it and
+      document why. If not, split read from write.
+- [ ] Any route an SSE stream polls needs single-flight, or its cost multiplies
+      by connected clients.
+- [ ] Every mutating route must invalidate before rebuilding, or operator
+      actions look like no-ops. Grep: each `router.post` in the file must reach
+      the invalidating helper.
+- [ ] A background engine that writes behind the cache must invalidate the
+      tenants it touched, or its changes sit invisible for the TTL.
+- [ ] Never `await` another module's cold snapshot on a first-paint path without
+      a deadline — and make "timed out" a DIFFERENT state from "no data".
+- [ ] Prove sharing with a deterministic marker (`generatedAt`), not wall clock.
+      Timing a shared build also times whatever dependency caches happened to be
+      cold, so it is a noisy proxy for the thing you actually mean.
+- [ ] `tools/sandbox-latency-probe.ts` asserts all of this;
+      `PROBE_MUTATE=1` additionally exercises the invalidate-on-write path and
+      cleans up after itself.
+
+---
+
+## 26. A scan takes 60+ seconds and ends in four red FAILED stages
+
+**Problem**
+
+`/public-scan` against an endpoint whose port 443 does not answer:
+
+```
+DNS Resolution          COMPLETE     1 address(es), CAA unknown
+TLS Handshake           FAILED       TLS connection timeout after 15000ms
+Certificate Collection  FAILED       Certificate probe timed out
+Security Header Analysis FAILED      origin unreachable
+Quantum Assessment      FAILED       PQ readiness 0% · quantum risk Low
+Executive Report        COMPLETE     Assessment ready in 61.3s
+```
+
+Reproduced exactly with `smtp.gmail.com:443` (resolves publicly, silently drops
+TCP/443) — measured **66.7s**. Four red crosses read as "this endpoint failed
+four security controls"; the truth is that nothing answered, so nothing was
+measured. The one stage marked FAILED even quoted a computed readiness and a
+reassuring risk level.
+
+**Root Cause**
+
+Six independent faults, and the first is the one that produced the other five:
+
+1. **No reachability preflight.** Every engine discovered the dead port on its
+   own and paid its own timeout: `analyzeTlsResilient` retried the primary
+   handshake 3× at 15s (its `isTransientHandshakeError` matches `/timeout/i`, and
+   the deadline was checked *after* each attempt, so every attempt started with
+   the full ceiling however little budget remained), then the certificate engine
+   spent 16s and the HTTP engine 8s more. `connectTlsAny` additionally multiplied
+   the primary timeout by the resolved address count.
+2. **`computeQuantumRisk` returned `'Low'` for an empty factor list.**
+   `factors.length ? Math.max(...) : 0` → score 0 → level `Low`. An endpoint that
+   refused every connection was published at the LOWEST quantum risk on the scale.
+3. **`emptyBundle` published `quantumRisk: 'Critical'`, score 100** for the same
+   no-evidence condition — two contradictory fabrications for one state.
+4. **The rail detail was unconditional.** `onEngine('cryptographic-intelligence',
+   ok, \`PQ readiness ${…}% · quantum risk ${…}\`)` printed computed values even
+   when `ok` was false, and `ok` was `algorithms.length > 0` — so "no catalogue"
+   rendered as a failed module quoting a score.
+5. **`0` published for unmeasured scores.** `encryptionScore` / `classicalScore` /
+   `postQuantumReadiness` were `number`, so the grade was correctly withheld
+   (`N/A · Insufficient evidence`) while its own inputs rendered as `0` with the
+   gauge pointing at 0 and its legend reading *Critical*.
+6. **Copy asserting facts about an unprobed target**: `quantumVulnerability:
+   'Vulnerable'` ("No hybrid key agreement offered" — we never asked); a
+   `Sustain hybrid deployment` migration target from the `if (!migrationTargets
+   .length)` fallback; and a harvest-now timeline built around the literal string
+   `"unknown"` ("Sessions harvested today become readable once unknown is
+   broken").
+
+**Solution**
+
+- `engines/reachability-engine.ts` — one SSRF-contained TCP connect classifying
+  `open | refused | filtered | unreachable | blocked | unresolved`. `filtered`
+  (silence) is the only falsifiable verdict and is confirmed with a second probe;
+  everything else answered and is definitive on one sample. It also supplies the
+  real `tcpConnectMs` the Handshake panel used to report as "not measured".
+- `runScanEngines` runs it FIRST and, when the port does not answer, returns
+  `unreachableBundle(...)`: TLS/certificate/HTTP become `unmeasuredResult(...)`
+  (new `EngineResult.unmeasured` flag) all quoting one shared reason. DNS still
+  runs — it distinguishes "wrong DNS" from "dead service".
+- `PublicScanStageState` gained `'unavailable'`, rendered amber "NOT MEASURED"
+  with a dash, never a red cross. `cachedStages` replays the same states.
+- `notAssessedCrypto(reason)` is the single representation of "not assessed":
+  `quantumRisk`, `quantumRiskScore` and `postQuantumReadiness` are `null` and
+  `assessed: false` carries the reason. `computePostQuantumReadiness` returns
+  `measured`.
+- Executive scores are `number | null`; `CountUp` / `Meter` / `Gauge` / `scoreColor`
+  render "—", a dashed track, a scale with no pointer, and slate.
+- `analyzeTls(host, port, { handshakeTimeoutMs, deadline })`; the resilient wrapper
+  checks the budget BEFORE each attempt and sizes it from what is left.
+- **Bonus root cause found while verifying**: `vite.config.ts`'s `isApiSourceFile`
+  only matched `src/api-server/`, so the cached `apiApp` kept serving engine code
+  imported at boot — editing anything under `src/lib/` changed nothing at runtime.
+  Now matches `src/lib/` and `src/services/` too.
+
+Result: **66.7s → 8.4s**, four `unavailable` stages, every score withheld.
+`expired.badssl.com` still grades **F/Critical** with 3 CRITICAL findings
+(negative control), `cloudflare.com` still **C+ / PQ 81% / hybrid detected**.
+
+**Prevention Checklist**
+
+- [ ] Establish a shared prerequisite ONCE. If N engines each independently
+      discover the same failure, the scan pays N timeouts and produces N
+      differently-worded excuses for one fact.
+- [ ] A retry policy must check its budget BEFORE the attempt and size the
+      attempt from what remains. Checking afterwards overruns by one full timeout.
+- [ ] Never retry a deterministic negative. A timeout on a filtered port is the
+      most reproducible result there is.
+- [ ] `factors.length ? … : 0` on a risk scale means "no evidence" scores as
+      "best case". Return `null` and make consumers branch.
+- [ ] Grep for a second representation of the same empty state before adding one —
+      `emptyBundle` said Critical while `computeQuantumRisk` said Low.
+- [ ] A stage detail string must be a function of the stage's own outcome. An
+      unconditional template beside a conditional state WILL contradict it (#24).
+- [ ] Withholding a grade but publishing its inputs is not a partial fix. If the
+      composite is `null`, so are the numbers it was computed from.
+- [ ] `failed` and `unavailable` are different claims. A module that never ran has
+      accused the target of nothing.
+- [ ] Any copy naming an algorithm must be gated on having OBSERVED one. Search
+      the rendered strings for the literal word "unknown" appearing mid-sentence.
+- [ ] `net.connect`/`tls.connect` SKIP a custom `lookup` when the host is an IP
+      literal — `checkHostSyntax` is required as well, or loopback and cloud
+      metadata are reachable. `tools/public-scan-check.ts` asserts this; it caught
+      exactly this hole in the new engine.
+- [ ] Verify against BOTH a filtered port and a reachable-but-broken host. The
+      second is what proves the fast-fail did not silence real findings.
+- [ ] `npx tsx tools/public-scan-check.ts <host>` — 139 invariants, including the
+      full unreachable-endpoint contract (override the filtered target with
+      `PROBE_UNREACHABLE_HOST`).
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

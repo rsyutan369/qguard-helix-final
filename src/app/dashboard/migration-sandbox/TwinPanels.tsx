@@ -582,7 +582,7 @@ export function TopologyTab({ detail, loading, error, reload }: {
                         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: h.color, boxShadow: `0 0 8px ${h.color}88` }} />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-[11px] font-bold text-white/75">{asset.name}</div>
-                          <div className="truncate text-[9px] text-white/30">{asset.component} · {asset.criticality}</div>
+                          <div className="truncate text-[9px] text-white/30">{asset.component} · business criticality: {asset.criticality}</div>
                         </div>
                       </div>
                     )

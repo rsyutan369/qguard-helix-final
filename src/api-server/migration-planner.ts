@@ -456,7 +456,11 @@ async function computePortfolio(token: string, userId: string): Promise<AssetPor
     rows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, key_exchange_algorithm, cipher_suite, protocol, severity, risk_score, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(4000)),
     rows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(3000)),
     rows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, progress, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
-    rows(client, 'migration_validation_logs', (q) => q.select('id, asset_id, migration_job_id, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(600)),
+    // migration_validation_logs is job-scoped, not asset-scoped: its only FK is
+    // migration_id -> migration_jobs(id). Selecting asset_id/migration_job_id
+    // made PostgREST reject the whole query (42703), so the planner silently
+    // lost every validation signal. Ask for the columns that actually exist.
+    rows(client, 'migration_validation_logs', (q) => q.select('id, migration_id, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(600)),
     rows(client, 'compliance_evidence', (q) => q.select('id, asset_id, framework, control_id, status, description, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(800)),
     readQueue(client, userId),
   ])
@@ -476,7 +480,12 @@ async function computePortfolio(token: string, userId: string): Promise<AssetPor
   })
 }
 
-async function buildPortfolio(token: string, userId: string, force = false): Promise<AssetPortfolio> {
+/**
+ * Exported so sibling modules (Crypto Agility) can consume the SAME cached
+ * per-asset dossiers instead of re-fetching and re-deriving the tenant's
+ * evidence. Sharing the cache is what keeps asset facts identical across pages.
+ */
+export async function buildPortfolio(token: string, userId: string, force = false): Promise<AssetPortfolio> {
   const cached = portfolioCache.get(userId)
   if (!force && cached && Date.now() - cached.at < PORTFOLIO_TTL_MS) return cached.promise
   const promise = computePortfolio(token, userId)

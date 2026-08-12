@@ -242,6 +242,33 @@ export default function VerifyCertificate() {
                   </div>
                 </div>
 
+                {/* A verified signature proves AUTHENTICITY, not that the estate
+                    is quantum-safe. Anyone reading this page must be able to
+                    tell a measured baseline from a certification. */}
+                {result.certified === false ? (
+                  <div className="mb-5 rounded-lg border border-amber-400/30 bg-amber-400/[0.07] px-4 py-3">
+                    <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-amber-300">
+                      <ShieldAlert className="h-4 w-4" /> Baseline attestation — not a certification
+                    </div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-white/60">
+                      This is an authentic, signed record of a completed Quantum Readiness Assessment. It states the
+                      cryptographic posture that was <strong>measured</strong> — it does <strong>not</strong> attest that
+                      the organization is quantum-safe. {result.criteriaMet} of {result.criteriaTotal} certification
+                      criteria were met at issuance. Quantum Trust Certified™ status begins at Silver.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mb-5 rounded-lg border border-emerald-400/30 bg-emerald-400/[0.07] px-4 py-3">
+                    <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wide text-emerald-300">
+                      <BadgeCheck className="h-4 w-4" /> Quantum Trust Certified™
+                    </div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-white/60">
+                      All {result.criteriaTotal || 10} required certification criteria were met by measured evidence at
+                      issuance, and continuous monitoring re-validates this certificate on every assessment.
+                    </p>
+                  </div>
+                )}
+
                 {/* Integrity + signature */}
                 <div className="mb-5 grid gap-3 sm:grid-cols-2">
                   <div className={`flex items-center gap-2.5 rounded-lg border px-4 py-3 ${integrityOk ? 'border-emerald-400/30 bg-emerald-400/[0.06]' : 'border-red-400/30 bg-red-400/[0.06]'}`}>

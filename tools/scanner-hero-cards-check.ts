@@ -193,6 +193,32 @@ assert(declined.label === 'Not applicable', `a declined surface reads "Not appli
 assert(declined.label !== 'Scanning', 'and never keeps a spinner after the scan settles')
 assert(!isReassuringColor(declined.color), 'and is not painted as a pass')
 
+/* "Not applicable" and "could not be measured" are different answers, and the
+   difference must come from a TYPED field.
+   An unreachable endpoint labelled "Not applicable" tells the operator their
+   transport security was out of scope. The first attempt at this read the label
+   off `node.verdict` — which is an engine PHRASE, so a surface whose last
+   observation said "Secure" was labelled "Secure" in grey. `makeNode` sets
+   `verdict: 'Secure'` deliberately, so the assertion below fails if anyone
+   reintroduces that shortcut (see issue #11). */
+const unreachableSurface = resolveNodeVerdict({
+  ...makeNode('unmeasured', 'info', null, true),
+  unmeasuredReason: 'not-measured',
+})
+assert(
+  unreachableSurface.label === 'Not measured',
+  `an unreachable surface reads "Not measured", not "Not applicable" (got "${unreachableSurface.label}")`,
+)
+assert(
+  unreachableSurface.label !== 'Secure',
+  'and the label is NEVER read from node.verdict — that field is a free-text engine phrase',
+)
+assert(
+  unreachableSurface.color === declined.color,
+  'both unmeasured reasons paint the same idle grey, so label and colour cannot disagree',
+)
+assert(!unreachableSurface.alert, 'an unmeasured surface never alerts — nothing was found to alert about')
+
 /* ── The card must agree with "How the Grading Works" ──────────────────────
    This block replaces an earlier contract that capped a degraded aggregate at an
    amber "Review". That rule was written to stop a mean over duplicated findings

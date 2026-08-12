@@ -305,7 +305,6 @@ Modules:
 
 * Migration Planner
 * Migration Timeline
-* Migration Phases
 * Live Migration Ops
 * Crypto Agility Engine
 * PQC Orchestration

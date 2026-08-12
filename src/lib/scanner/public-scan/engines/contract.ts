@@ -170,6 +170,37 @@ export interface EngineResult<T> {
   /** Populated only when the engine could not run at all. */
   error: string | null
   durationMs: number
+  /**
+   * True when the engine was NOT RUN because a precondition failed — in
+   * practice, because the assessed port never accepted a TCP connection.
+   *
+   * This is not the same thing as `ok: false`, and the difference is the whole
+   * point of the status vocabulary above. `ok: false` means the engine ran and
+   * could not reach a conclusion. `unmeasured` means it never got the chance,
+   * so there is nothing to report about the target at all — and the rail must
+   * say "unavailable", not "failed", or the report accuses an endpoint of
+   * failing controls that were never tested.
+   */
+  unmeasured?: boolean
+}
+
+/**
+ * Result envelope for an engine that was skipped because its precondition
+ * failed. Carries the reason so every downstream control can quote the SAME
+ * explanation rather than inventing its own.
+ */
+export function unmeasuredResult<T>(engine: string, data: T, reason: string): EngineResult<T> {
+  return {
+    engine,
+    data,
+    ok: false,
+    confidence: 0,
+    evidence: [],
+    notes: [reason],
+    error: reason,
+    durationMs: 0,
+    unmeasured: true,
+  }
 }
 
 export function emptyResult<T>(engine: string, data: T, error: string | null = null): EngineResult<T> {

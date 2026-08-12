@@ -291,7 +291,13 @@ function evidenceFor(key: QveNodeKey, report: PublicScanReport): EvidenceRow[] {
           tone: keyAgreement.hybridGroups.length ? QVE_COLOR.quantum : QVE_COLOR.warning,
         },
         { label: 'Classical groups', value: keyAgreement.classicalGroups.join(', ') || 'not observable' },
-        { label: 'PQ readiness', value: `${report.executive.postQuantumReadiness}%` },
+        {
+          label: 'PQ readiness',
+          value:
+            report.executive.postQuantumReadiness === null
+              ? 'not measured'
+              : `${report.executive.postQuantumReadiness}%`,
+        },
         { label: 'Exposure', value: report.intelligence.quantumVulnerability },
         { label: 'Migration target', value: report.intelligence.migrationTargets.map((target) => target.name).slice(0, 2).join(', ') || '—' },
       ];

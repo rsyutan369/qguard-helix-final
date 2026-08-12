@@ -138,6 +138,22 @@ export interface QveNode {
    */
   hasEvidence: boolean;
   /**
+   * WHY this surface is unmeasured, when it is. A resolved state, deliberately
+   * not free text.
+   *
+   * `state: 'unmeasured'` covers two answers the platform's own status
+   * vocabulary keeps apart: `not-applicable` (a module reported and the control
+   * is irrelevant to this target) and `not-measured` (the probe never ran — the
+   * port did not answer). Telling an operator their unreachable endpoint's
+   * transport security is "Not applicable" says it was out of scope.
+   *
+   * It is a typed enum rather than a label read off `node.verdict` because
+   * `verdict` is an engine PHRASE: a surface whose last observation said
+   * "Secure" would otherwise be labelled "Secure" in grey, which is exactly the
+   * defect `tools/scanner-hero-cards-check.ts` exists to catch.
+   */
+  unmeasuredReason?: 'not-applicable' | 'not-measured';
+  /**
    * This node's own 0-100 score, as a weight-respecting aggregate of the
    * published grading model's categories that belong to it (see
    * `NODE_SCORE_CATEGORIES`). Null until the report lands — a node has no score
@@ -172,10 +188,15 @@ export interface QveState {
   /** Grade letter once the report lands, else null. */
   grade: string | null;
   gradeColor: string | null;
-  /** Composite encryption score 0-100 driving the score ring. */
-  score: number;
-  /** Post-quantum readiness 0-100. */
-  postQuantumScore: number;
+  /**
+   * Composite encryption score 0-100 driving the score ring.
+   *
+   * Null when the report withheld it (coverage below the gradeable floor). The
+   * core readout renders "—" rather than a number the assessment did not earn.
+   */
+  score: number | null;
+  /** Post-quantum readiness 0-100; null when the probe never ran. */
+  postQuantumScore: number | null;
   /** True once hybrid ML-KEM / ML-DSA evidence has been observed. */
   quantumDetected: boolean;
   /** Highest severity seen in this run — drives the core's alert state. */
@@ -470,16 +491,25 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
   }
   /* A module that declined to measure this surface reported a reason, and the
      reason is the point — "not applicable" is a measured answer, but it is not
-     a pass and must never be painted like one. */
+     a pass and must never be painted like one.
+
+     The label switches on the TYPED {@link QveNode.unmeasuredReason}, never on
+     `node.verdict`: that field is an engine phrase, and a surface whose last
+     observation said "Secure" would otherwise be labelled "Secure" in grey. Both
+     branches paint the same idle grey and neither alerts, so the two labels can
+     never disagree with the colour. */
   if (node.state === 'unmeasured') {
+    const notMeasured = node.unmeasuredReason === 'not-measured';
     return {
       key: 'unmeasured',
-      label: 'Not applicable',
+      label: notMeasured ? 'Not measured' : 'Not applicable',
       color: QVE_COLOR.idle,
       alert: false,
       basis:
         node.lines[0] ??
-        'The modules behind this surface reported that it does not apply to the submitted targets. This is not a pass.',
+        (notMeasured
+          ? 'This surface could not be measured — the endpoint produced no evidence for it. This is not a pass.'
+          : 'The modules behind this surface reported that it does not apply to the submitted targets. This is not a pass.'),
     };
   }
   if (!node.hasEvidence) {

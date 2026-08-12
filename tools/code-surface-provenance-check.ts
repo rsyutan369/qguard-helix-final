@@ -12,7 +12,7 @@
 import { executeWebScan } from '../src/lib/scanner/web-scanner/scan-orchestrator'
 import { scanWebCrypto } from '../src/lib/scanner/web-scanner/web-crypto-scanner'
 import { moduleIdForFinding } from '../src/api-server/scanner-module-ledger'
-import { nodeForFindingCategory, scoreNodes } from '../src/app/dashboard/scanner_dashboard/_intel'
+import { nodeForFindingCategory, scoreNodesFromCategories } from '../src/app/dashboard/scanner_dashboard/_intel'
 import type { WebScanTargetType } from '../src/lib/scanner/web-scanner/types'
 import type { DefensiveFinding } from '../src/app/dashboard/scanner_dashboard/_types'
 
@@ -79,8 +79,21 @@ async function main() {
     console.log(`       owner   : ${moduleIdForFinding(finding as any)}`)
   }
 
-  /* 3. The score the card shows for that surface. */
-  const nodeScores = scoreNodes(findings)
+  /* 3. The score the card shows for that surface.
+        Projected from the run's own published category decomposition — the same
+        model the composite score uses — not from a mean over the finding list.
+        A surface whose categories were all unmeasurable reports no score at all,
+        which is the point: the old finding-mean gave this card "Elite 100" on a
+        target whose source code had never been read. */
+  const nodeScores = scoreNodesFromCategories(
+    (result.scoreCategories ?? []).map((category) => ({
+      key: category.key,
+      label: category.label,
+      weight: category.weight,
+      score: category.applicable ? category.score : null,
+      observed: category.observed,
+    })),
+  )
   console.log(`\n3. Node score the hero card renders for "code": ${nodeScores.code ?? '(no score — not measured)'}`)
 
   /* 4. Was any of it actually application code? */

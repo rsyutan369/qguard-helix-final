@@ -393,11 +393,37 @@ export function predictFailures(bundle: TwinBundle, graph: ReturnType<typeof bui
     `${expired.length} certificate(s) already past not_after in scanned certificate inventory.`,
     'Rotate expired certificates before executing any migration wave.', 1.4)
 
+  /**
+   * Certificate replacement risk.
+   *
+   * This used to count `expiring + nonPqc` against `certs.length`, so a tenant
+   * whose certificates are all classical — i.e. EVERY tenant that has not yet
+   * migrated — scored ratio 1.0 and read "88% probability of certificate
+   * replacement failure". Being non-PQC is the REASON to migrate, not evidence
+   * the migration will fail; a prediction that reads ~88% for everyone carries
+   * no information and, here, was the single blocker holding the approval gate.
+   *
+   * Failure risk now comes from certificates that are expiring during the change
+   * window (a real replacement hazard). The non-PQC count is migration SCOPE and
+   * is reported as such, contributing only a small bounded increment. The
+   * affected-asset list is built from the same rows the count came from — it
+   * previously listed only the expiring subset, so a count of 2 rendered with an
+   * empty asset list.
+   */
   const expiring = certs.filter((c) => c.is_expiring_soon && !expired.includes(c))
-  push('certificate_failure', 'Certificate replacement failures during migration window', expiring.length + certs.filter((c) => c.is_quantum_safe === false).length, Math.max(1, certs.length), 'high',
+  const nonPqcCerts = certs.filter((c) => c.is_quantum_safe === false)
+  push('certificate_failure', 'Certificate replacement failures during migration window', expiring.length, Math.max(1, certs.length), 'high',
     expiring.map((c) => str(c.asset_id)).filter(Boolean),
-    `${expiring.length} expiring and ${certs.filter((c) => c.is_quantum_safe === false).length} non-PQC certificate(s) in inventory.`,
+    `${expiring.length} certificate(s) expiring during the migration window; ${nonPqcCerts.length} classical certificate(s) in replacement scope.`,
     'Pre-stage ML-DSA / hybrid replacement certificates and validate chains in the twin first.')
+  if (expiring.length === 0 && nonPqcCerts.length > 0) {
+    // Scope, not a failure prediction — stated at a low, bounded probability so
+    // it appears in planning without masquerading as a blocker.
+    push('certificate_replacement_scope', 'Classical certificates require reissuance under ML-DSA', nonPqcCerts.length, Math.max(1, certs.length), 'medium',
+      nonPqcCerts.map((c) => str(c.asset_id)).filter(Boolean),
+      `${nonPqcCerts.length} of ${certs.length} certificate(s) are classical and must be reissued — expected pre-migration state, not a detected fault.`,
+      'Size the PKI reissuance wave and validate ML-DSA chain building in the twin before the cutover window.', 0.25)
+  }
 
   const inv = bundle.inventory || []
   const legacyTls = inv.filter((i) => /tls\s*1\.0|tls\s*1\.1|tlsv1\.0|tlsv1\.1|ssl\s*3|sslv3/.test(`${lower(i.protocol)} ${lower(i.name)}`))
@@ -627,28 +653,85 @@ export function buildRollbackAnalysis(bundle: TwinBundle, predictions: ReturnTyp
   const assets = (bundle.assets || []).length
   const criticalAssets = (bundle.assets || []).filter((a) => lower(a.criticality) === 'critical').length
 
-  const snapshotCoveragePct = sandboxSims.length > 0 ? clampPct((withSnapshots.length / sandboxSims.length) * 100) : 0
-  const successProbabilityPct = sandboxSims.length === 0
-    ? 0
-    : clampPct(58 + snapshotCoveragePct * 0.3 + rolledBack * 4 - failed * 6 - predictions.overallFailureProbabilityPct * 0.1, 5, 98)
+  // Rollback confidence is DEMONSTRATED by rehearsal. With no simulation there
+  // is nothing to measure, and `0%` would be indistinguishable from a rehearsal
+  // that failed every time — so it stays null and the UI reads "Not assessed".
+  // Same for RPO: `0m` is the BEST possible recovery point objective, which is
+  // exactly the wrong thing to show for an unmeasured one.
+  const assessed = sandboxSims.length > 0
+  const snapshotCoveragePct = assessed ? clampPct((withSnapshots.length / sandboxSims.length) * 100) : null
+  const successProbabilityPct = assessed
+    ? clampPct(58 + (snapshotCoveragePct ?? 0) * 0.3 + rolledBack * 4 - failed * 6 - predictions.overallFailureProbabilityPct * 0.1, 5, 98)
+    : null
 
-  const rtoMinutes = assets === 0 ? 0 : Math.round(4 + Math.min(assets, 200) * 0.35 + criticalAssets * 1.5)
-  const rpoMinutes = withSnapshots.length > 0 ? 5 : sandboxSims.length > 0 ? 15 : 0
-  const downtimePredictionMin = assets === 0 ? 0 : Math.round(rtoMinutes * (predictions.overallFailureProbabilityPct / 100) + (failed > 0 ? 6 : 0))
+  const rtoMinutes = assets === 0 ? null : Math.round(4 + Math.min(assets, 200) * 0.35 + criticalAssets * 1.5)
+  const rpoMinutes = withSnapshots.length > 0 ? 5 : assessed ? 15 : null
+  const downtimePredictionMin = assets === 0 ? null : Math.round((rtoMinutes ?? 0) * (predictions.overallFailureProbabilityPct / 100) + (failed > 0 ? 6 : 0))
 
   const certCount = (bundle.certificates || []).length
   const relCount = (bundle.relationships || []).length
+  const hasKeyInventory = (bundle.inventory || []).some((i) => /key/.test(lower(i.item_type) + lower(i.name)))
+  const hasSecretInventory = (bundle.inventory || []).some((i) => /secret|token|credential/.test(lower(i.item_type) + lower(i.name)))
+  // Every `detail` must be TRUE for the `covered` value beside it. Several of
+  // these used to state the covered case unconditionally, so an uncovered row
+  // read "Crypto-policy state is recorded in each snapshot entry." next to a
+  // failed checkmark.
   const restorationChecklist = [
-    { id: 'certificates', label: 'Certificate restoration', covered: certCount > 0, detail: certCount > 0 ? `${certCount} certificate metadata record(s) captured in twin snapshots.` : 'No certificate inventory yet — restore path unverified.' },
-    { id: 'keys', label: 'Key material restoration', covered: (bundle.inventory || []).some((i) => /key/.test(lower(i.item_type) + lower(i.name))), detail: 'Key inventory metadata is snapshot-tracked; production key values are never copied into the twin.' },
-    { id: 'configuration', label: 'Configuration restoration', covered: sandboxSims.length > 0, detail: sandboxSims.length > 0 ? 'Simulation snapshots capture configuration state for restore rehearsal.' : 'Run a simulation to capture configuration checkpoints.' },
-    { id: 'policies', label: 'Policy restoration', covered: sandboxSims.length > 0, detail: 'Crypto-policy state is recorded in each snapshot entry.' },
-    { id: 'trust_chains', label: 'Trust chain restoration', covered: relCount > 0 || certCount > 0, detail: relCount > 0 ? `${relCount} trust relationship(s) available for chain rebuild.` : 'Trust chain evidence limited — PKI restore partially verified.' },
-    { id: 'secrets', label: 'Secrets metadata restoration', covered: (bundle.inventory || []).some((i) => /secret|token|credential/.test(lower(i.item_type) + lower(i.name))), detail: 'Secrets are restored by reference/metadata only — values never enter the sandbox.' },
+    {
+      id: 'certificates',
+      label: 'Certificate restoration',
+      covered: certCount > 0,
+      detail: certCount > 0
+        ? `${certCount} certificate metadata record(s) captured in twin snapshots.`
+        : 'No certificate inventory yet — restore path unverified.',
+    },
+    {
+      id: 'keys',
+      label: 'Key material restoration',
+      covered: hasKeyInventory,
+      detail: hasKeyInventory
+        ? 'Key inventory metadata is snapshot-tracked; production key values are never copied into the twin.'
+        : 'No key-management records discovered yet — key restore path unverified.',
+    },
+    {
+      id: 'configuration',
+      label: 'Configuration restoration',
+      covered: assessed,
+      detail: assessed
+        ? 'Simulation snapshots capture configuration state for restore rehearsal.'
+        : 'Run a simulation to capture configuration checkpoints.',
+    },
+    {
+      id: 'policies',
+      label: 'Policy restoration',
+      covered: assessed,
+      detail: assessed
+        ? 'Crypto-policy state is recorded in each snapshot entry.'
+        : 'Policy state is only recorded inside a snapshot — run a simulation to capture it.',
+    },
+    {
+      id: 'trust_chains',
+      label: 'Trust chain restoration',
+      covered: relCount > 0,
+      detail: relCount > 0
+        ? `${relCount} trust relationship(s) available for chain rebuild.`
+        : certCount > 0
+          ? 'Certificate metadata is captured but no trust relationships are mapped — chain rebuild is unverified.'
+          : 'No certificate or relationship evidence — chain rebuild is unverified.',
+    },
+    {
+      id: 'secrets',
+      label: 'Secrets metadata restoration',
+      covered: hasSecretInventory,
+      detail: hasSecretInventory
+        ? 'Secrets are restored by reference/metadata only — values never enter the sandbox.'
+        : 'No secret/token/credential records discovered yet — nothing to restore by reference.',
+    },
   ]
 
   return {
     available: sandboxSims.length > 0 || assets > 0,
+    assessed,
     successProbabilityPct,
     snapshotCoveragePct,
     simulationsWithSnapshots: withSnapshots.length,
@@ -656,7 +739,7 @@ export function buildRollbackAnalysis(bundle: TwinBundle, predictions: ReturnTyp
     rtoMinutes,
     rpoMinutes,
     downtimePredictionMin,
-    automaticRollbackReady: snapshotCoveragePct >= 50 && failed === 0,
+    automaticRollbackReady: assessed && (snapshotCoveragePct ?? 0) >= 50 && failed === 0,
     restorationChecklist,
     history: { rolledBackWorkflows: rolledBack, failedWorkflows: failed },
     note: 'RTO/RPO are twin-derived planning figures from your real asset counts, snapshot coverage, and failure history — validate against production runbooks before change approval.',
@@ -689,7 +772,7 @@ export function buildSophiaAdvisor(
   benchmark: ReturnType<typeof buildPerformanceBenchmark>,
   rollback: ReturnType<typeof buildRollbackAnalysis>,
   impact: ReturnType<typeof buildBusinessImpact>,
-  context: { pqcReadiness: number; riskScore: number; complianceScore: number }
+  context: { pqcReadiness: number; quantumRiskScore: number | null; complianceScore: number }
 ) {
   const workflows = bundle.workflows || []
   const sims = workflows.filter((w) => w.isSandbox)
@@ -752,7 +835,7 @@ export function buildSophiaAdvisor(
 
   const executiveSummary = !hasData
     ? 'No discovered assets or crypto inventory yet — connect scanners and run discovery to activate the migration sandbox digital twin.'
-    : `Digital twin of ${twin.summary.totalNodes} asset(s) at ${twin.summary.fidelityPct}% fidelity. Migration confidence ${migrationConfidencePct}%, compatibility ${compatibilityScorePct}%, rollback confidence ${rollbackConfidencePct}%. ${blockers.length > 0 ? `${blockers.length} blocker(s) require remediation before production approval.` : failed > 0 ? 'Failed simulations must be retried before approval.' : completed > 0 ? `${completed} simulation(s) completed validation — evidence supports controlled production planning.` : 'Run simulations to convert twin analysis into approval-grade evidence.'} Predicted failure probability ${predictions.overallFailureProbabilityPct}% across ${predictions.predictions.length} evidence-backed prediction categories.`
+    : `Digital twin of ${twin.summary.totalNodes} asset(s) at ${twin.summary.fidelityPct}% fidelity. Migration confidence ${migrationConfidencePct}%, compatibility ${compatibilityScorePct}%, rollback confidence ${rollbackConfidencePct === null ? 'not yet assessed' : `${rollbackConfidencePct}%`}. ${blockers.length > 0 ? `${blockers.length} blocker(s) require remediation before production approval.` : failed > 0 ? 'Failed simulations must be retried before approval.' : completed > 0 ? `${completed} simulation(s) completed validation — evidence supports controlled production planning.` : 'Run simulations to convert twin analysis into approval-grade evidence.'} Predicted failure probability ${predictions.overallFailureProbabilityPct}% across ${predictions.predictions.length} evidence-backed prediction categories.`
 
   const narrative = !hasData ? [] : [
     `The twin covers ${twin.summary.nodesWithEvidence}/${twin.summary.totalNodes} assets with real crypto evidence (${twin.summary.coveragePct}% coverage), ${twin.summary.trustRelationships} trust relationship(s), and ${twin.summary.runtimeSignalsSampled} runtime signal(s).`,
@@ -771,7 +854,12 @@ export function buildSophiaAdvisor(
     verdict,
     migrationConfidencePct,
     compatibilityScorePct,
-    riskScorePct: context.riskScore,
+    // Canonical quantum risk: 0-100, LOWER IS BETTER, or null when the estate
+    // has produced no risk evidence. Previously this carried sandbox.ts's
+    // `100 - penalties` posture score, which saturated to 0 and was rendered as
+    // "Security 0/100" on the Validation tab and "Risk Score 0" on Overview
+    // while the QR Engine reported 75/High for the same tenant.
+    quantumRiskScore: context.quantumRiskScore,
     rollbackConfidencePct,
     aiConfidencePct,
     recommendedSequence,
@@ -820,7 +908,16 @@ export function buildApprovalGate(
   const gate = (id: string, label: string, value: string, status: 'pass' | 'warn' | 'fail') => ({ id, label, value, status })
   const gates = [
     gate('migration_confidence', 'Migration Confidence', `${sophia.migrationConfidencePct}%`, sophia.migrationConfidencePct >= 70 ? 'pass' : sophia.migrationConfidencePct >= 45 ? 'warn' : 'fail'),
-    gate('rollback_confidence', 'Rollback Confidence', `${rollback.successProbabilityPct}%`, rollback.successProbabilityPct >= 70 ? 'pass' : rollback.successProbabilityPct >= 45 ? 'warn' : 'fail'),
+    // An unrehearsed rollback is not a 0% rollback — it is an unmet gate with
+    // nothing measured. Both block approval, but only one of them is a number.
+    gate(
+      'rollback_confidence',
+      'Rollback Confidence',
+      rollback.successProbabilityPct === null ? 'Not assessed' : `${rollback.successProbabilityPct}%`,
+      rollback.successProbabilityPct === null ? 'fail'
+        : rollback.successProbabilityPct >= 70 ? 'pass'
+          : rollback.successProbabilityPct >= 45 ? 'warn' : 'fail',
+    ),
     gate('business_risk', 'Business Risk', `${predictions.overallFailureProbabilityPct}% failure probability`, predictions.overallFailureProbabilityPct <= 25 ? 'pass' : predictions.overallFailureProbabilityPct <= 50 ? 'warn' : 'fail'),
     gate('downtime', 'Predicted Downtime', `${rollback.downtimePredictionMin} min`, rollback.downtimePredictionMin <= 5 ? 'pass' : rollback.downtimePredictionMin <= 20 ? 'warn' : 'fail'),
     gate('compliance', 'Compliance Posture', `${complianceScore}%`, complianceScore >= 75 ? 'pass' : complianceScore >= 55 ? 'warn' : 'fail'),
@@ -970,7 +1067,7 @@ export function buildTelemetryFrame(bundle: TwinBundle) {
    AGGREGATE ASSEMBLER — one call used by the sandbox snapshot builder
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export function assembleTwinIntelligence(bundle: TwinBundle, context: { pqcReadiness: number; riskScore: number; complianceScore: number }) {
+export function assembleTwinIntelligence(bundle: TwinBundle, context: { pqcReadiness: number; quantumRiskScore: number | null; complianceScore: number }) {
   const twin = buildDigitalTwin(bundle)
   const graph = buildDependencyGraph(bundle)
   const topology = buildTopology(twin)

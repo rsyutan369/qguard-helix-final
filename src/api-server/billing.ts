@@ -535,7 +535,7 @@ async function buildUsage(client: SupabaseClient, userId: string, subscription: 
   ] = await Promise.all([
     safeRows(client, 'billing_usage_events', (q) => q.select('metric_key, quantity, source, created_at').eq('user_id', userId).gte('created_at', start).order('created_at', { ascending: true }).limit(10000)),
     safeCount(client, 'pqc_scan_sessions', (q) => q.eq('user_id', userId).gte('created_at', start)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, metadata, target_scope, created_at').eq('user_id', userId).gte('created_at', start).limit(1000)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, target_scope, created_at').eq('user_id', userId).gte('created_at', start).limit(1000)),
     safeCount(client, 'scanner_agents', (q) => q.eq('user_id', userId).eq('status', 'active')),
     safeRows(client, 'vault_files', (q) => q.select('id, original_size, encrypted_size, size, file_size, metadata, uploaded_at, created_at').eq('user_id', userId).or('is_deleted.is.null,is_deleted.eq.false').limit(5000)),
     safeCount(client, 'vault_files', (q) => q.eq('user_id', userId).or('is_deleted.is.null,is_deleted.eq.false')),

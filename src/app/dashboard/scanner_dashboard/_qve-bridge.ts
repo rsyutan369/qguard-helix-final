@@ -18,7 +18,7 @@ import React from 'react';
 import { useQve } from '@/app/public-scan/_qve';
 import type { ScanEvent, ScanEventSeverity, ScanEventStatus } from '@/app/public-scan/_qve';
 import { scoreToGrade } from '@/lib/scanner/public-scan/grading-model';
-import { MODULE_NODE, nodeForFindingCategory, scoreNodes } from './_intel';
+import { MODULE_NODE, nodeForFindingCategory } from './_intel';
 import type { DefensiveFinding, ModuleState, ScanStatus, ScanSummary, ThreatLevel } from './_types';
 
 /** Milliseconds between released events. Matches the public hero's cadence. */
@@ -173,7 +173,20 @@ export interface DashboardScanBridgeInput {
    * readiness is the published category score). The hero and the panel below it
    * could therefore print two different post-quantum percentages for one scan.
    */
-  verdict: { score: number; postQuantumReadiness: number; gradeable: boolean } | null;
+  verdict: {
+    score: number;
+    postQuantumReadiness: number;
+    gradeable: boolean;
+    /**
+     * Per-surface posture, projected from the assessment's published category
+     * decomposition. Supplied rather than derived here for the same reason the
+     * composite score is: the bridge used to run `scoreNodes(findings)` — a
+     * severity mean over the finding list — which is a different model from the
+     * one behind `score`, so the hero cards and the gauge they surround could
+     * (and did) describe one scan with two incompatible verdicts.
+     */
+    nodeScores: Record<string, number>;
+  } | null;
 }
 
 export function useDashboardScanBridge({
@@ -367,7 +380,7 @@ export function useDashboardScanBridge({
       gradeColor: grade.color,
       score,
       postQuantumScore: postQuantum,
-      nodeScores: scoreNodes(findings),
+      nodeScores: verdict?.nodeScores ?? {},
     });
   }, [summary, status, findings, state.run, dispatch, verdict]);
 }

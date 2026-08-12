@@ -6,6 +6,7 @@ import {
   ShieldCheck, Lightbulb,
 } from 'lucide-react';
 import { useCopilot } from '@/hooks/use-copilot';
+import { ASK_SOPHIA_EVENT, type AskSophiaDetail } from '@/lib/sophia-bridge';
 import { SophiaMessage } from './SophiaMessage';
 import { SophiaAvatar } from './SophiaAvatar';
 
@@ -55,6 +56,25 @@ export function SophiaCopilot() {
     setInput('');
     void sendMessage(value);
   };
+
+  // Any dashboard page can hand Sophia a question via askSophia() — the dock
+  // opens and answers from the authenticated tenant's own data. While a stream
+  // is in flight the question is staged in the composer instead of being
+  // dropped, so an "Ask Sophia" click is never a no-op.
+  const streamingActive = streaming.active;
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<AskSophiaDetail>).detail;
+      const question = detail?.question?.trim();
+      if (!question) return;
+      const full = detail.context ? `${question}\n\nContext: ${detail.context}` : question;
+      setOpen(true);
+      if (streamingActive) setInput(full);
+      else void sendMessage(full);
+    };
+    window.addEventListener(ASK_SOPHIA_EVENT, handler);
+    return () => window.removeEventListener(ASK_SOPHIA_EVENT, handler);
+  }, [sendMessage, streamingActive]);
 
   const toggleVoice = () => {
     const Recognition = getSpeechRecognition();

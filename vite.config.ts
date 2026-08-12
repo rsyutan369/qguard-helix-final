@@ -124,10 +124,34 @@ export default defineConfig(({mode}) => {
           let apiApp: any = null
           let apiAppPromise: Promise<any> | null = null
 
+          /**
+           * Which edits must drop the cached API app.
+           *
+           * `src/api-server/` alone was NOT enough, and the gap was expensive: the
+           * routers are thin wrappers over the engines in `src/lib/` (the whole
+           * public-scan scanner, the web-scanner, the migration and reporting
+           * engines), and those are loaded once through `tsImport` and then held
+           * on `apiApp`. Editing an engine therefore changed nothing at runtime —
+           * the page reloaded, the frontend hot-updated, and the API kept
+           * answering from the module tree it had imported at boot. The symptom
+           * is indistinguishable from "my fix doesn't work", which is the worst
+           * possible failure mode for a dev loop.
+           *
+           * `src/lib` and `src/services` are included because the API server
+           * imports them; `src/app` and `src/components` are not, because those
+           * are client-only and would drop the app on every UI keystroke. The
+           * reset is lazy (the next request re-imports), so a false positive here
+           * costs one cold import, while a false negative costs a debugging
+           * session.
+           */
+          const API_SOURCE_PREFIXES = ['src/api-server/', 'src/lib/', 'src/services/']
+
           const isApiSourceFile = (file: string) => {
             const normalizedFile = file.replace(/\\/g, '/')
             const normalizedRoot = rootDir.replace(/\\/g, '/')
-            return normalizedFile.startsWith(`${normalizedRoot}/src/api-server/`)
+            if (!normalizedFile.startsWith(`${normalizedRoot}/`)) return false
+            const relative = normalizedFile.slice(normalizedRoot.length + 1)
+            return API_SOURCE_PREFIXES.some((prefix) => relative.startsWith(prefix))
           }
 
           const resetApiServer = () => {

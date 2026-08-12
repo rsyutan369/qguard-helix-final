@@ -1,10 +1,19 @@
 import { supabase } from '@/lib/supabase';
 
 export interface DashboardSummary {
+  /** Canonical 0–100, LOWER-better. */
   quantumRiskScore: number;
   riskBand: string;
+  /** Canonical 0–100, HIGHER-better posture composite. */
+  quantumReadinessScore: number;
+  readinessBand: string;
+  /** False = nothing measured yet; render "No baseline", never the 0. */
+  hasBaseline: boolean;
   vulnerableAssetsCount: number;
+  /** Distinct subjects with a risk signal in the last 7 days. */
   newVulnerableAssets: number;
+  /** Raw signal count for the same window. */
+  newFindings: number;
   totalCbomItems: number;
   activeMigrations: number;
   failedMigrations: number;
@@ -19,6 +28,15 @@ export interface DashboardSummary {
   monitoringStatus: string;
 }
 
+export interface ExposureNodeEvidence {
+  findings: number;
+  exposures: number;
+  components: number;
+  runtime: number;
+  openVulnerabilities: number;
+  expiringCertificates: number;
+}
+
 export interface ExposureNode {
   id: string;
   name: string;
@@ -26,7 +44,17 @@ export interface ExposureNode {
   environment: string;
   criticality: string;
   status: string;
+  /** Canonical 0–100 score from the shared asset-intelligence engine. */
   riskScore: number;
+  riskLevel: string;
+  /** False when no scanner evidence exists — do not render the score. */
+  assessed: boolean;
+  posture: 'pqc' | 'hybrid' | 'vulnerable';
+  postureLabel: string;
+  internetFacing: boolean;
+  evidence: ExposureNodeEvidence;
+  /** Band colour resolved server-side from the canonical RISK_BANDS table. */
+  color: string;
 }
 
 export interface ExposureEdge {
@@ -79,8 +107,13 @@ async function apiRequest<T>(path: string): Promise<T> {
 const EMPTY_SUMMARY: DashboardSummary = {
   quantumRiskScore: 0,
   riskBand: 'Unknown',
+  quantumReadinessScore: 0,
+  readinessBand: 'Unknown',
+  // An unreachable API is NOT a measured estate — never let the 0s read as a pass.
+  hasBaseline: false,
   vulnerableAssetsCount: 0,
   newVulnerableAssets: 0,
+  newFindings: 0,
   totalCbomItems: 0,
   activeMigrations: 0,
   failedMigrations: 0,

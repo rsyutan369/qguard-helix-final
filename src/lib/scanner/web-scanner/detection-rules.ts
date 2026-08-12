@@ -10,6 +10,7 @@ import type {
   DetectionRuleCategory,
   ThreatLevel,
 } from './types'
+import { measuredKemApplied as measuredKemAppliedForEdge } from './edge-intelligence-model'
 
 /**
  * Has this scan actually OBSERVED post-quantum cryptography?
@@ -36,16 +37,14 @@ import type {
  * question the transport and harvest-now rules actually ask. A repository that
  * imports liboqs has observed PQC but has not protected this handshake.
  *
- * The answer comes from the edge engine's named-group probing — each hybrid
- * group offered in isolation under a TLS 1.3 floor — never from a substring
- * test on `tlsResult.keyExchange`, which Node reports as the generic "ECDHE
- * (TLS 1.3 key_share)" for every TLS 1.3 handshake regardless of the group.
+ * The reading itself now lives in `edge-intelligence-model`, alongside the
+ * bundle it interprets, because the published scoring model and the cipher-suite
+ * analyzer need the same answer. Two copies of "is this endpoint hybrid?" is how
+ * a scan came to suppress the transport HNDL finding while still scoring the key
+ * exchange as classical.
  */
 function measuredKemApplied(ctx: DetectionContext): boolean {
-  const pq = ctx.edgeIntelligence?.pqKeyAgreement
-  if (!pq?.probed) return false
-  if (pq.state === 'pass' && pq.hybridGroups.length > 0) return true
-  return pq.pureKemGroups.length > 0
+  return measuredKemAppliedForEdge(ctx.edgeIntelligence)
 }
 
 function hasObservedPqc(ctx: DetectionContext): boolean {
@@ -72,14 +71,14 @@ export const DETECTION_RULES: DetectionRule[] = [
     category: 'certificate-risk',
     severity: 'CRITICAL',
     description: 'RSA-1024 certificate key — breakable in minutes by quantum computer',
-    remediation: 'Immediately replace with ML-KEM-768 hybrid certificate or minimum RSA-4096',
+    remediation: 'Immediately replace the certificate with ML-DSA-65 (FIPS 204); RSA-4096 only as a stopgap',
     evaluate: (ctx) => {
       const cert = ctx.certInfo
       if (!cert) return null
       if (cert.publicKeyAlgorithm.includes('RSA') && cert.publicKeySize <= 1024) {
         return makeResult('CERT-001', 'RSA-1024 Certificate Detected', 'certificate-risk', 'CRITICAL',
           `Certificate uses RSA-${cert.publicKeySize} — breakable in minutes by CRQC`,
-          'Immediately replace with ML-KEM-768 hybrid certificate')
+          'Immediately replace the certificate with ML-DSA-65 (FIPS 204); RSA-4096 only as a stopgap')
       }
       return null
     },
@@ -90,14 +89,14 @@ export const DETECTION_RULES: DetectionRule[] = [
     category: 'certificate-risk',
     severity: 'HIGH',
     description: 'RSA-2048 certificate — vulnerable to Shor\'s algorithm',
-    remediation: 'Migrate to ML-KEM-768 hybrid TLS or post-quantum certificate',
+    remediation: 'Migrate the certificate to ML-DSA-65 (FIPS 204); pair with an ML-KEM-768 hybrid key agreement on the transport',
     evaluate: (ctx) => {
       const cert = ctx.certInfo
       if (!cert) return null
       if (cert.publicKeyAlgorithm.includes('RSA') && cert.publicKeySize === 2048) {
         return makeResult('CERT-002', 'RSA-2048 Certificate Detected', 'certificate-risk', 'HIGH',
           'Certificate uses RSA-2048 — will be broken by quantum computers (hours on CRQC)',
-          'Deploy hybrid ML-KEM-768 + RSA certificate for post-quantum transition')
+          'Migrate the certificate to ML-DSA-65 (FIPS 204) and enable an X25519+ML-KEM-768 hybrid key agreement on the transport')
       }
       return null
     },
@@ -893,7 +892,7 @@ export const DETECTION_RULES: DetectionRule[] = [
       if (cert.publicKeyAlgorithm.includes('RSA') && cert.publicKeySize >= 4096) {
         return makeResult('CERT-010', 'RSA-4096 Certificate', 'certificate-risk', 'HIGH',
           `RSA-${cert.publicKeySize} — larger key size does NOT protect against quantum computers`,
-          'Migrate to ML-KEM-768 (FIPS 203) or ML-DSA-65 (FIPS 204) hybrid certificates')
+          'Migrate certificates to ML-DSA-65 (FIPS 204) and key agreement to ML-KEM-768 (FIPS 203)')
       }
       return null
     },

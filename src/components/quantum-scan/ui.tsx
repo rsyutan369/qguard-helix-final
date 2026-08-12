@@ -24,8 +24,17 @@ export const ACCENT = {
   slate: '#94a3b8',
 } as const;
 
-/** Maps a 0-100 score onto the platform's risk ramp. */
-export function scoreColor(score: number): string {
+/**
+ * Maps a 0-100 score onto the platform's risk ramp.
+ *
+ * `null` means the dimension was never measured and is painted slate — NOT the
+ * rose that a 0 would get. An unmeasured control rendered in the failure colour
+ * is a fabricated verdict, and on this ramp the two are only one falsy value
+ * apart, so the null case is handled here rather than at each of the ~20 call
+ * sites.
+ */
+export function scoreColor(score: number | null | undefined): string {
+  if (score === null || score === undefined || Number.isNaN(score)) return ACCENT.slate;
   if (score >= 85) return ACCENT.emerald;
   if (score >= 70) return ACCENT.cyan;
   if (score >= 50) return ACCENT.amber;
@@ -133,13 +142,20 @@ export function CountUp({
   prefix = '',
   duration = 1400,
   className,
+  nullLabel = '—',
 }: {
-  value: number;
+  /**
+   * `null` renders `nullLabel` instead of a number. Animating up to 0 for an
+   * unmeasured dimension is the most convincing possible way to present a
+   * fabricated value: the count-up motion itself implies a measurement.
+   */
+  value: number | null;
   decimals?: number;
   suffix?: string;
   prefix?: string;
   duration?: number;
   className?: string;
+  nullLabel?: string;
 }) {
   const ref = React.useRef<HTMLSpanElement>(null);
   const inView = useInView(ref, { once: true, margin: '-40px' });
@@ -147,7 +163,7 @@ export function CountUp({
   const [display, setDisplay] = React.useState(0);
 
   React.useEffect(() => {
-    if (!inView) return;
+    if (!inView || value === null) return;
     if (reduce) {
       setDisplay(value);
       return;
@@ -162,6 +178,14 @@ export function CountUp({
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [inView, value, duration, reduce]);
+
+  if (value === null) {
+    return (
+      <span ref={ref} className={className}>
+        {nullLabel}
+      </span>
+    );
+  }
 
   return (
     <span ref={ref} className={className}>
@@ -344,7 +368,8 @@ export function Gauge({
   bandColor,
   bands = GAUGE_BANDS,
 }: {
-  value: number;
+  /** `null` withholds the reading entirely — see `unmeasured` below. */
+  value: number | null;
   size?: number;
   /** Band name shown under the value, e.g. "Strong". */
   band?: string;
@@ -355,7 +380,16 @@ export function Gauge({
    * rating text it displays. */
   bands?: ReadonlyArray<{ from: number; to: number; color: string }>;
 }) {
-  const clamped = Math.max(0, Math.min(100, value));
+  /**
+   * `value === null` means the score was withheld. The reference arc and its
+   * scale still render — they are the published grade table and are useful
+   * context — but the pointer, the band marker and the numeric readout are
+   * suppressed, because a gauge pointing at 0 IS an assertion. This surface used
+   * to publish "N/A · Insufficient evidence" in the badge while the gauge beside
+   * it swung to 0 and its legend read "Critical" for the same assessment.
+   */
+  const unmeasured = value === null;
+  const clamped = Math.max(0, Math.min(100, value ?? 0));
 
   // Layout: arc above the hub, numeric scale outside the arc, readout below.
   const cx = size / 2;
@@ -380,7 +414,7 @@ export function Gauge({
 
   // Cap the pointer short of the arc so tip and track stay visually distinct.
   const needleLength = radius - stroke - 12;
-  const valueColor = bandColor ?? scoreColor(clamped);
+  const valueColor = unmeasured ? ACCENT.slate : (bandColor ?? scoreColor(clamped));
 
   /** Degrees: 180° = 0 score (left), 0° = 100 score (right). */
   const degFor = (score: number) => 180 - (score / 100) * 180;
@@ -467,22 +501,28 @@ export function Gauge({
         })}
 
         {/* Marker on the band the score actually lands in. */}
-        <circle
-          cx={markerX}
-          cy={markerY}
-          r={4.5}
-          fill="#e2e8f0"
-          stroke={valueColor}
-          strokeWidth={2.5}
-          opacity={inView ? 1 : 0}
-          style={{ transition: 'opacity 400ms ease-out 900ms' }}
-        />
+        {!unmeasured && (
+          <circle
+            cx={markerX}
+            cy={markerY}
+            r={4.5}
+            fill="#e2e8f0"
+            stroke={valueColor}
+            strokeWidth={2.5}
+            opacity={inView ? 1 : 0}
+            style={{ transition: 'opacity 400ms ease-out 900ms' }}
+          />
+        )}
 
         {/* SVG rotate() about an explicit pivot — the hub — so the pointer
-            cannot drift regardless of how the browser resolves transform-box. */}
-        <g transform={`rotate(${rotation.toFixed(3)} ${cx} ${cy})`}>
-          <path d={pointer} fill="#f1f5f9" filter="url(#gauge-pointer-glow)" />
-        </g>
+            cannot drift regardless of how the browser resolves transform-box.
+            Suppressed entirely when there is no score: a pointer resting at the
+            left stop is not a neutral position, it is a reading of zero. */}
+        {!unmeasured && (
+          <g transform={`rotate(${rotation.toFixed(3)} ${cx} ${cy})`}>
+            <path d={pointer} fill="#f1f5f9" filter="url(#gauge-pointer-glow)" />
+          </g>
+        )}
 
         {/* Hub, drawn after the pointer so the pivot reads as a cap over it. */}
         <circle cx={cx} cy={cy} r={11} fill="#0b1220" stroke="rgba(226,232,240,0.22)" strokeWidth={1.5} />
@@ -491,9 +531,12 @@ export function Gauge({
 
       {/* Readout in the reserved band below the hub — never under the sweep. */}
       <div className="absolute inset-x-0 text-center" style={{ top: readoutTop }}>
-        <p className="font-black leading-none tracking-tighter text-white" style={{ fontSize: size * 0.155 }}>
-          <CountUp value={clamped} />
-          <span className="ml-1 align-super text-[0.42em] font-bold text-slate-500">/100</span>
+        <p
+          className="font-black leading-none tracking-tighter"
+          style={{ fontSize: size * 0.155, color: unmeasured ? ACCENT.slate : '#ffffff' }}
+        >
+          <CountUp value={unmeasured ? null : clamped} />
+          {!unmeasured && <span className="ml-1 align-super text-[0.42em] font-bold text-slate-500">/100</span>}
         </p>
         {band && (
           <p
@@ -635,9 +678,29 @@ export function LockedPanel({
 
 /* ------------------------------------------------------------------ meter --- */
 
-export function Meter({ value, color, className }: { value: number; color?: string; className?: string }) {
+export function Meter({
+  value,
+  color,
+  className,
+}: {
+  /** `null` renders an empty, dashed track — a 0%-wide bar looks measured. */
+  value: number | null;
+  color?: string;
+  className?: string;
+}) {
   const ref = React.useRef<HTMLDivElement>(null);
   const inView = useInView(ref, { once: true, margin: '-30px' });
+
+  if (value === null) {
+    return (
+      <div
+        ref={ref}
+        className={cn('h-1.5 w-full rounded-full border border-dashed border-white/[0.14]', className)}
+        title="Not measured"
+      />
+    );
+  }
+
   const clamped = Math.max(0, Math.min(100, value));
   return (
     <div ref={ref} className={cn('h-1.5 w-full overflow-hidden rounded-full bg-white/[0.07]', className)}>

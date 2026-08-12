@@ -474,17 +474,18 @@ export function PerformanceTab({ benchmark }: { benchmark: PerformanceBenchmarkP
           Benchmark Methodology
         </SectionHead>
         <p className="text-xs leading-relaxed text-white/55">{benchmark.methodology}</p>
+        {/* These are PREVALENCE shares — the fraction of inventory records that
+            mention each family — not a partition. One cipher suite record
+            (TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) counts toward RSA, ECC and
+            symmetric at once, so they overlap and do not sum to 100%. Presenting
+            them as a "mix" invited exactly that arithmetic. Rendered as
+            independent bars rather than one stacked bar for the same reason. */}
         <div className="mt-4">
-          <div className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-white/30">Discovered Algorithm Mix</div>
-          <div className="flex h-3 w-full overflow-hidden rounded-full bg-white/5">
-            {[
-              { share: mix.rsaSharePct, color: RED, label: 'RSA' },
-              { share: mix.eccSharePct, color: ORANGE, label: 'ECC' },
-              { share: mix.pqcSharePct, color: GREEN, label: 'PQC' },
-              { share: mix.symmetricSharePct, color: BLUE, label: 'Symmetric' },
-            ].map((seg) => seg.share > 0 && <div key={seg.label} style={{ width: `${seg.share}%`, background: seg.color }} title={`${seg.label} ${seg.share}%`} />)}
+          <div className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-white/30">
+            Algorithm Prevalence
+            <span className="ml-1.5 normal-case tracking-normal text-white/25">· share of {fmt(benchmark.sampleSize)} inventory records mentioning each family (records can match more than one, so these overlap)</span>
           </div>
-          <div className="mt-2 flex flex-wrap gap-3">
+          <div className="space-y-1.5">
             {[
               { share: mix.rsaSharePct, color: RED, label: 'RSA' },
               { share: mix.eccSharePct, color: ORANGE, label: 'ECC / EC-DH' },
@@ -492,10 +493,16 @@ export function PerformanceTab({ benchmark }: { benchmark: PerformanceBenchmarkP
               { share: mix.symmetricSharePct, color: BLUE, label: 'Symmetric (AES)' },
               ...(mix.weakSharePct ? [{ share: mix.weakSharePct, color: PURPLE, label: 'Deprecated (3DES/RC4/SHA-1)' }] : []),
             ].map((seg) => (
-              <span key={seg.label} className="flex items-center gap-1.5 text-[10px] font-bold text-white/45">
-                <span className="h-2 w-2 rounded-full" style={{ background: seg.color }} />
-                {seg.label} {seg.share}%
-              </span>
+              <div key={seg.label} className="grid grid-cols-[150px_1fr_38px] items-center gap-2">
+                <span className="flex items-center gap-1.5 text-[10px] font-bold text-white/45">
+                  <span className="h-2 w-2 rounded-full" style={{ background: seg.color }} />
+                  {seg.label}
+                </span>
+                <span className="h-2 w-full overflow-hidden rounded-full bg-white/5">
+                  <span className="block h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, seg.share))}%`, background: seg.color }} />
+                </span>
+                <span className="text-right font-mono text-[10px] text-white/45">{seg.share}%</span>
+              </div>
             ))}
           </div>
         </div>
@@ -559,7 +566,7 @@ export function ValidationTab({ summary, riskFactors, failurePrediction, sophia 
           <div className="grid grid-cols-1 gap-2">
             <div className="relative flex justify-center py-2"><ScoreGauge value={sophia?.compatibilityScorePct ?? 0} size={120} label="Compatibility" /></div>
             <div className="grid grid-cols-2 gap-2">
-              <div className="relative flex justify-center py-2"><ScoreGauge value={summary.riskScore} size={96} label="Security" /></div>
+              <div className="relative flex justify-center py-2"><ScoreGauge value={summary.quantumRiskScore} size={96} label="Quantum Risk ↓" lowerBetter /></div>
               <div className="relative flex justify-center py-2"><ScoreGauge value={100 - (failurePrediction?.overallFailureProbabilityPct ?? 0)} size={96} label="Success Odds" /></div>
             </div>
           </div>
@@ -648,7 +655,7 @@ export function ValidationTab({ summary, riskFactors, failurePrediction, sophia 
             {[
               { label: 'HNDL Exposure', value: summary.criticalExposures > 0 ? 'Active' : 'Mitigated', color: summary.criticalExposures > 0 ? RED : GREEN, detail: `${fmt(summary.criticalExposures)} critical exposure(s)` },
               { label: 'Downgrade Resistance', value: summary.highExposures > 2 ? 'Weak' : 'Validated', color: summary.highExposures > 2 ? ORANGE : GREEN, detail: `${fmt(summary.highExposures)} high exposure(s)` },
-              { label: 'Certificate Posture', value: summary.expiringCerts > 0 ? 'At Risk' : 'Healthy', color: summary.expiringCerts > 0 ? GOLD : GREEN, detail: `${fmt(summary.expiringCerts)} expiring / non-PQC` },
+              { label: 'Certificate Posture', value: summary.certsNeedingRotation > 0 ? 'At Risk' : 'Healthy', color: summary.certsNeedingRotation > 0 ? GOLD : GREEN, detail: `${fmt(summary.expiringCerts)} expiring · ${fmt(summary.nonPqcCerts)} classical` },
               { label: 'Crypto Agility', value: pct(summary.pqcReadiness), color: summary.pqcReadiness >= 70 ? GREEN : GOLD, detail: 'PQC readiness across inventory' },
               { label: 'Open Vulnerabilities', value: fmt(summary.openVulnerabilities), color: summary.openVulnerabilities > 0 ? ORANGE : GREEN, detail: 'Unresolved scanner findings' },
               { label: 'Failed Workflows', value: fmt(summary.failedWorkflows), color: summary.failedWorkflows > 0 ? RED : GREEN, detail: summary.failedWorkflows > 0 ? 'Retry required before approval' : 'No failed migrations' },

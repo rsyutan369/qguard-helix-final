@@ -14,6 +14,7 @@
 import 'dotenv/config'
 import { assessPublicTarget } from '../src/lib/scanner/public-scan/assess'
 import { supersedesXFrameOptions } from '../src/lib/scanner/public-scan/engines/http-engine'
+import { probeReachability } from '../src/lib/scanner/public-scan/engines/reachability-engine'
 import {
   buildScoreComponents,
   computeClassicalScore,
@@ -54,9 +55,11 @@ async function main(): Promise<void> {
 
   console.log(`Completed in ${(elapsed / 1000).toFixed(1)}s\n`)
   console.log(`  Grade                 ${report.executive.grade} (${report.executive.gradeLabel})`)
-  console.log(`  Classical score       ${report.executive.classicalScore}/100`)
-  console.log(`  Post-quantum ready    ${report.executive.postQuantumReadiness}%`)
-  console.log(`  Encryption score      ${report.executive.encryptionScore}/100 (${report.executive.encryptionBand})`)
+  const orWithheld = (value: number | null, suffix: string) => (value === null ? 'withheld' : `${value}${suffix}`)
+  console.log(`  Reachability          ${report.reachability.state}${report.reachability.tcpConnectMs === null ? '' : ` · ${report.reachability.tcpConnectMs}ms`}`)
+  console.log(`  Classical score       ${orWithheld(report.executive.classicalScore, '/100')}`)
+  console.log(`  Post-quantum ready    ${orWithheld(report.executive.postQuantumReadiness, '%')}`)
+  console.log(`  Encryption score      ${orWithheld(report.executive.encryptionScore, '/100')} (${report.executive.encryptionBand})`)
   console.log(`  Business risk         ${report.executive.businessRisk}`)
   console.log(`  Migration complexity  ${report.executive.migrationComplexity}`)
   console.log(`  Confidence            ${report.executive.confidence}%`)
@@ -1113,8 +1116,195 @@ async function main(): Promise<void> {
     report.handshake.every((step) => typeof step.observed === 'boolean'),
   )
 
+  // 13 — reachability preflight (both branches, on whichever host was scanned)
+  console.log('\nEndpoint reachability:')
+  const reach = report.reachability
+  check(
+    'reachability is measured before anything is concluded from it',
+    typeof reach?.reachable === 'boolean' && typeof reach.state === 'string',
+    `${reach?.state} · ${reach?.tcpConnectMs ?? 'no'} ms`,
+  )
+  check(
+    'a reachable port reports a real TCP connect time, never a placeholder',
+    !reach?.reachable || (typeof reach.tcpConnectMs === 'number' && reach.tcpConnectMs >= 0),
+    reach?.reachable ? `${reach.tcpConnectMs}ms` : 'not reachable',
+  )
+  check(
+    'an unreachable port reports no connect time rather than 0',
+    reach?.reachable || reach?.tcpConnectMs === null,
+  )
+  check(
+    'report.unreachable agrees with the reachability probe',
+    report.unreachable === (reach?.reachable === false),
+  )
+
+  await checkReachabilityClassification()
+  await checkUnreachableEndpoint()
+
   console.log(`\n${passed} passed, ${failed} failed\n`)
   process.exit(failed > 0 ? 1 : 0)
+}
+
+/**
+ * The reachability vocabulary, on cases that need no cooperating host.
+ *
+ * The six states are not interchangeable — `refused` is a definitive answer that
+ * is published on one sample, while `filtered` is falsifiable and gets a second
+ * probe — so a state being mapped wrongly changes both the report's wording and
+ * how long the scan takes. Loopback and an unresolvable name are deterministic
+ * from any machine, which keeps these assertions independent of local firewalls.
+ */
+async function checkReachabilityClassification(): Promise<void> {
+  console.log('\nReachability classification:')
+
+  const loopback = await probeReachability('127.0.0.1', 443, 3_000)
+  check(
+    'SSRF containment refuses loopback and says so — never "filtered"',
+    loopback.state === 'blocked' && !loopback.reachable,
+    `${loopback.state} · ${loopback.detail}`,
+  )
+
+  const unresolvable = await probeReachability('qguard-nonexistent-check.invalid', 443, 3_000)
+  check(
+    'a name with no address records is `unresolved`, not `filtered`',
+    unresolvable.state === 'unresolved',
+    `${unresolvable.state} · ${unresolvable.code ?? ''}`,
+  )
+  check(
+    'a blocked or unresolved target is never credited with a connect time',
+    loopback.tcpConnectMs === null && unresolvable.tcpConnectMs === null,
+  )
+}
+
+/**
+ * The unreachable-endpoint contract, asserted against a real filtered port.
+ *
+ * This is the case the scanner used to get most wrong, and every assertion here
+ * pins a defect that shipped: a 66-second assessment ending in four red FAILED
+ * stages, `quantum risk Low` derived from an empty factor list, `0%` post-quantum
+ * readiness on an endpoint that was never asked, and a "Sustain hybrid
+ * deployment" recommendation for a hybrid group that had never been seen.
+ *
+ * `PROBE_UNREACHABLE_HOST` overrides the target. The default is chosen because it
+ * resolves publicly and silently drops TCP/443 — the exact shape a firewalled
+ * enterprise endpoint has. It is skipped (not failed) if the port turns out to be
+ * open from the machine running the harness, because the assertion is about the
+ * scanner's behaviour, not about that host's firewall.
+ */
+async function checkUnreachableEndpoint(): Promise<void> {
+  const host = process.env.PROBE_UNREACHABLE_HOST || 'smtp.gmail.com'
+  console.log(`\nUnreachable endpoint contract (${host}):`)
+
+  // The rail states are only observable through the stage callback, and they are
+  // the thing the user actually looked at — so they are captured and asserted.
+  const stageStates = new Map<string, string>()
+  const started = Date.now()
+  const report = await assessPublicTarget({
+    input: host,
+    host,
+    port: 443,
+    budgetMs: 45_000,
+    onStage: (stage) => stageStates.set(stage.key, stage.state),
+  })
+  const elapsed = Date.now() - started
+
+  if (!report.unreachable) {
+    console.log(`  SKIP  ${host}:443 answered from this machine — nothing to assert`)
+    return
+  }
+
+  check(
+    'the rail marks tls/certificate/headers/quantum "unavailable", never "failed"',
+    ['tls', 'certificate', 'headers', 'quantum'].every((key) => stageStates.get(key) === 'unavailable') &&
+      ![...stageStates.values()].includes('failed'),
+    [...stageStates.entries()].map(([key, state]) => `${key}=${state}`).join(' '),
+  )
+  check(
+    'an unreachable endpoint fails fast instead of burning the whole budget',
+    elapsed < 20_000,
+    `${(elapsed / 1000).toFixed(1)}s (was 66.7s before the preflight)`,
+  )
+  check(
+    'post-quantum readiness is null, not 0%, when no handshake completed',
+    report.executive.postQuantumReadiness === null,
+    String(report.executive.postQuantumReadiness),
+  )
+  check(
+    'encryption and classical scores are withheld, not published as 0',
+    report.executive.encryptionScore === null && report.executive.classicalScore === null,
+    `${report.executive.encryptionScore} / ${report.executive.classicalScore}`,
+  )
+  check('the grade is withheld', report.executive.grade === 'N/A' && !report.executive.gradeable)
+  check(
+    'business risk is Not assessable rather than a level',
+    report.executive.businessRisk === 'Not assessable',
+    report.executive.businessRisk,
+  )
+  check(
+    'quantum risk is null — an empty factor list is not "Low"',
+    report.evidence.engines.crypto.data.quantumRisk === null &&
+      report.evidence.engines.crypto.data.quantumRiskScore === null,
+    String(report.evidence.engines.crypto.data.quantumRisk),
+  )
+  check(
+    'the crypto engine reports assessed:false with a stated reason',
+    report.evidence.engines.crypto.data.assessed === false &&
+      Boolean(report.evidence.engines.crypto.data.notAssessedReason),
+    report.evidence.engines.crypto.data.notAssessedReason ?? '',
+  )
+  check(
+    'quantum vulnerability is Unknown, not Vulnerable',
+    report.intelligence.quantumVulnerability === 'Unknown',
+    report.intelligence.quantumVulnerability,
+  )
+  check(
+    'no migration target is invented — "Sustain hybrid deployment" requires observed hybrid',
+    !report.intelligence.migrationTargets.some((target) => /sustain hybrid/i.test(target.name)),
+    `${report.intelligence.migrationTargets.length} target(s)`,
+  )
+  check(
+    'TLS, certificate and HTTP engines are marked unmeasured, not failed',
+    report.evidence.engines.tls.unmeasured === true &&
+      report.evidence.engines.certificate.unmeasured === true &&
+      report.evidence.engines.http.unmeasured === true,
+  )
+  check(
+    'every unmeasured engine quotes the SAME reachability reason',
+    new Set(
+      [report.evidence.engines.tls, report.evidence.engines.certificate, report.evidence.engines.http].map(
+        (engine) => engine.error,
+      ),
+    ).size === 1,
+  )
+  check(
+    'the TCP Connect step states why it has no timing instead of "not measured"',
+    (() => {
+      const tcp = report.handshake.find((step) => step.key === 'tcp')
+      return Boolean(tcp && tcp.observed === false && /filtered|refused|unreachable|down|resolve/i.test(tcp.detail))
+    })(),
+    report.handshake.find((step) => step.key === 'tcp')?.detail ?? '',
+  )
+  check(
+    'no finding or recommendation asserts a cryptographic weakness',
+    report.findings.every((finding) => finding.severity !== 'CRITICAL' && finding.severity !== 'HIGH') &&
+      report.recommendations.every((rec) => rec.priority !== 'Critical'),
+    `${report.findings.length} findings, ${report.recommendations.length} recommendations`,
+  )
+  check(
+    'the Quantum Risk row is still present, carrying Unknown',
+    report.findings.some((finding) => finding.control === 'Quantum Risk' && finding.status === 'Unknown'),
+  )
+  check(
+    "Sophia's narrative states the endpoint did not answer and claims nothing else",
+    /did not (accept|answer)/i.test(report.sophia.narrative) &&
+      !/harvest-now|stays decryptable/i.test(report.sophia.narrative),
+    report.sophia.headline,
+  )
+  check(
+    'the degraded reason names the transport state, not a phantom handshake',
+    Boolean(report.degradedReason) && !/^TLS handshake failed$/.test(report.degradedReason as string),
+    report.degradedReason ?? '',
+  )
 }
 
 function isSortedBySeverity(report: Awaited<ReturnType<typeof assessPublicTarget>>): boolean {

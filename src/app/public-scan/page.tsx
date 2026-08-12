@@ -129,13 +129,30 @@ function TopNav() {
   );
 }
 
+/** Engine reason strings already end in a full stop; a template that appends one
+ *  produced "…the host is down.. Scores below are…" on screen. */
+function endWithPeriod(text: string | null | undefined): string {
+  if (!text) return '';
+  return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
+}
+
 /* ------------------------------------------------------------ scan rail --- */
 
+/**
+ * `unavailable` is deliberately NOT rose, and deliberately not a cross.
+ *
+ * A module that could not run — because the port never accepted a TCP connection
+ * — has made no claim about the target. Painting it the same red as a failed
+ * control turned "we could not reach this endpoint" into four rows that read as
+ * "this endpoint failed four security checks". Amber with a dash says what
+ * actually happened: nothing was measured here.
+ */
 const STAGE_STATE_STYLE = {
   waiting: { color: ACCENT.slate, label: 'Waiting' },
   running: { color: ACCENT.cyan, label: 'Running' },
   complete: { color: ACCENT.emerald, label: 'Complete' },
   failed: { color: ACCENT.rose, label: 'Failed' },
+  unavailable: { color: ACCENT.amber, label: 'Not Measured' },
   skipped: { color: ACCENT.slate, label: 'Skipped' },
 } as const;
 
@@ -463,14 +480,33 @@ export default function PublicScanPage() {
           )}
         </AnimatePresence>
 
-        {/* ── Degraded notice ─────────────────────────────────────────── */}
+        {/* ── Degraded / unreachable notice ───────────────────────────────
+            An unreachable endpoint gets its OWN headline. "Partial assessment ·
+            scores below are computed only from the dimensions that could be
+            observed" is true but misleading when the answer is that NO dimension
+            was observed and there are no scores below. The reason string already
+            ends in a full stop, so this no longer appends a second one. */}
         {report?.degraded && (
           <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.06] px-4 py-3">
             <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
             <p className="text-[12.5px] leading-relaxed text-amber-100/85">
-              <strong className="font-bold">Partial assessment.</strong> {report.degradedReason}. Scores below are
-              computed only from the dimensions that could be observed — unmeasurable controls are excluded rather
-              than scored as failures.
+              {report.unreachable ? (
+                <>
+                  <strong className="font-bold">
+                    No assessment was possible — {report.target.host} did not answer on port {report.target.port}.
+                  </strong>{' '}
+                  {endWithPeriod(report.degradedReason)} No TLS handshake, certificate or HTTP evidence could be
+                  collected, so no cryptographic verdict is published for this target. Nothing below is a finding
+                  about its cryptography. If the service is reachable only from inside your network, assess it with
+                  the authenticated platform instead.
+                </>
+              ) : (
+                <>
+                  <strong className="font-bold">Partial assessment.</strong> {endWithPeriod(report.degradedReason)}{' '}
+                  Scores below are computed only from the dimensions that could be observed — unmeasurable controls
+                  are excluded rather than scored as failures.
+                </>
+              )}
             </p>
           </div>
         )}

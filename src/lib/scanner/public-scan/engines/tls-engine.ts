@@ -954,6 +954,21 @@ function isTransientHandshakeError(message: string): boolean {
   return TRANSIENT_HANDSHAKE_PATTERNS.some((pattern) => pattern.test(message))
 }
 
+/**
+ * Ceiling for one primary-handshake attempt.
+ *
+ * `tls-analyzer`'s own default is 15s. Three attempts at 15s is 45s — the entire
+ * scan budget — spent before the certificate engine has opened a socket, which
+ * is exactly how one unreachable endpoint turned into a 66-second assessment. A
+ * reachable endpoint completes this handshake in well under a second; the ceiling
+ * exists for a slow one, not for a silent one, and silence is now the preflight's
+ * job to detect.
+ */
+const PRIMARY_HANDSHAKE_TIMEOUT_MS = 8_000
+
+/** Least time worth starting an attempt with. Below this it cannot succeed. */
+const MIN_ATTEMPT_MS = 1_500
+
 async function analyzeTlsResilient(
   host: string,
   port: number,
@@ -961,24 +976,45 @@ async function analyzeTlsResilient(
 ): Promise<{ handshake: TlsAnalysisResult | null; error: string | null; attempts: number }> {
   const maxAttempts = 3
   let lastError: string | null = null
+  let attemptsMade = 0
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    /* Budget is checked BEFORE the attempt, not after it. Checking afterwards
+       let every attempt start with the full 15s ceiling however little time was
+       left, so the engine routinely overran the deadline it had been given by
+       the length of one whole handshake timeout. */
+    const remaining = deadline - Date.now()
+    if (remaining < MIN_ATTEMPT_MS) {
+      if (attemptsMade === 0) {
+        lastError = lastError ?? 'No time remained in the scan budget to attempt a TLS handshake.'
+      }
+      break
+    }
+
+    attemptsMade = attempt
     try {
-      return { handshake: await analyzeTls(host, port), error: null, attempts: attempt }
+      return {
+        handshake: await analyzeTls(host, port, {
+          handshakeTimeoutMs: Math.min(PRIMARY_HANDSHAKE_TIMEOUT_MS, remaining),
+          deadline,
+        }),
+        error: null,
+        attempts: attempt,
+      }
     } catch (err) {
       lastError = (err as Error).message
       // A definitive answer is not worth retrying.
       if (!isTransientHandshakeError(lastError) || attempt === maxAttempts) break
-      // Retrying past the scan's deadline buys a handshake nobody will see and
-      // spends the budget the rest of the assessment still needs.
-      if (Date.now() >= deadline) break
       // Back off so the retry does not land inside the same rate-limit window
-      // that reset the previous attempt.
-      await new Promise((resolve) => setTimeout(resolve, attempt * 600))
+      // that reset the previous attempt — but only if the backoff plus a usable
+      // attempt still fit. Sleeping into the deadline wastes the budget twice.
+      const backoff = attempt * 600
+      if (deadline - Date.now() < backoff + MIN_ATTEMPT_MS) break
+      await new Promise((resolve) => setTimeout(resolve, backoff))
     }
   }
 
-  return { handshake: null, error: lastError, attempts: maxAttempts }
+  return { handshake: null, error: lastError, attempts: Math.max(1, attemptsMade) }
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────────

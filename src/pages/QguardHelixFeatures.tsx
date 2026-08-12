@@ -13,8 +13,8 @@
  * Media: hero film and section imagery generated with Higgsfield, optimised to
  * WebP / faststart H.264 in public/helix-features.
  */
-import React from 'react';
-import { motion } from 'motion/react';
+import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Activity,
   Award,
@@ -167,7 +167,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['One number leadership trusts', 'Audit-ready evidence', 'Clear next action'],
     useCase:
       'Your regulator asks for a quantum-risk position paper in three weeks. You export it from the Report Center the same afternoon — with the findings that back every claim attached.',
-    image: `${MEDIA}/quantum-readiness.webp`,
+    image: '/downloads/readiness.png',
     icon: Gauge,
     accent: CYAN,
     to: '/dashboard/quantum-readiness',
@@ -193,7 +193,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Ordered by risk removed', 'Quick wins surfaced', 'Effort made visible'],
     useCase:
       'A platform team has budget for two sprints, not twenty. The quick-wins filter shows which eleven fixes move the readiness score most for the least work.',
-    image: `${MEDIA}/quantum-remediation.webp`,
+    image: '/downloads/remediation.jpg',
     icon: Wrench,
     accent: EMERALD,
     to: '/dashboard/quantum-readiness/remediation',
@@ -219,7 +219,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Independently verifiable', 'Wins procurement reviews', 'Never over-claims'],
     useCase:
       'An enterprise buyer asks how you handle post-quantum risk. You send a verification link instead of a slide, and they check the signature themselves.',
-    image: `${MEDIA}/quantum-certification.webp`,
+    image: '/downloads/Certifications.png',
     icon: Award,
     accent: GOLD,
     to: '/dashboard/quantum-certification',
@@ -248,7 +248,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Fundable roadmap', 'Model before you commit', 'Blockers surfaced early'],
     useCase:
       'A bank must show its regulator a dated, funded plan for twelve thousand certificates. The planner produces the waves, the costs and the dependencies behind each date.',
-    image: `${MEDIA}/migration-planner.webp`,
+    image: '/downloads/migration-planner.jpg',
     icon: Target,
     accent: VIOLET,
     to: '/dashboard/migration-planner',
@@ -274,7 +274,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Actionable work isolated', 'Vendor pressure evidenced', 'No wasted sprints'],
     useCase:
       'Half of your "critical" TLS findings sit behind a CDN you do not control. This separates them out, so your team works the half it can finish.',
-    image: `${MEDIA}/migration-intelligence.webp`,
+    image: '/downloads/migration-intelligence1.png',
     icon: Network,
     accent: BLUE,
     to: '/dashboard/migration-intelligence',
@@ -301,7 +301,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['One live status view', 'No manual reporting', 'Slippage visible early'],
     useCase:
       'The steering committee meets on Thursday. Nobody spends Wednesday building the deck — the timeline is the deck, and it is already current.',
-    image: `${MEDIA}/migration-timeline.webp`,
+    image: '/downloads/migration-operation.jpg',
     icon: CalendarClock,
     accent: AMBER,
     to: '/dashboard/migration-timeline',
@@ -330,7 +330,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Zero production risk', 'Rollback proven first', 'Approval on record'],
     useCase:
       'Before enabling hybrid TLS on a payments gateway, you run it in the twin and discover two legacy clients that cannot handle the larger handshake.',
-    image: `${MEDIA}/migration-sandbox.webp`,
+    image: '/downloads/migration-sandbox.png',
     icon: FlaskConical,
     accent: EMERALD,
     to: '/dashboard/migration-sandbox',
@@ -356,7 +356,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Verified safety net', 'Real-time control', 'Reversible by design'],
     useCase:
       'A rotation wave fails on one cluster at 2am. The job is dead-lettered, the snapshot restores the prior state automatically, and the rest of the wave continues.',
-    image: `${MEDIA}/live-migration.webp`,
+    image: '/downloads/Live-Migration-Operations.png',
     icon: Rocket,
     accent: ROSE,
     to: '/dashboard/live-migration',
@@ -463,7 +463,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Inherited risk visible', 'Contract leverage', 'Supplier comparison'],
     useCase:
       'Procurement renews a core SaaS contract next quarter. You attach a PQC readiness clause because the readiness centre shows the vendor has no published roadmap.',
-    image: `${MEDIA}/vendor-readiness.webp`,
+    image: '/downloads/vendor-readiness.png',
     icon: BadgeCheck,
     accent: GOLD,
     to: '/dashboard/vendor-pqc-readiness',
@@ -489,7 +489,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Reality over documentation', 'Shadow crypto exposed', 'Adoption measurable'],
     useCase:
       'A deprecated cipher reappears after a dependency upgrade. Runtime intelligence flags the operations within minutes of the deploy.',
-    image: `${MEDIA}/runtime-crypto-intel.webp`,
+    image: '/downloads/runtime1.png',
     icon: Eye,
     accent: ROSE,
     to: '/dashboard/runtime-crypto-intel',
@@ -515,7 +515,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Hidden trust surfaced', 'Breakage predicted', 'Ownership resolved'],
     useCase:
       'Retiring one internal CA looks routine until the trust graph shows nine services and a partner integration chaining to it.',
-    image: `${MEDIA}/trust-state-discovery.webp`,
+    image: '/downloads/Trust.png',
     icon: Link2,
     accent: BLUE,
     to: '/dashboard/trust-state-discovery',
@@ -544,7 +544,7 @@ const MODULES: ModuleEntry[] = [
     benefits: ['Plain-English answers', 'Always evidence-backed', 'Never acts unsupervised'],
     useCase:
       '"Which internet-facing systems still use RSA and who owns them?" — answered in seconds, with the asset list and evidence behind it.',
-    image: `${MEDIA}/sophia-ai.webp`,
+    image: '/downloads/Sophia-AI_Agent_Security_Copilot.png',
     icon: Sparkles,
     accent: VIOLET,
     to: '/dashboard/sophia',
@@ -760,6 +760,16 @@ function usePageMeta() {
 }
 
 export default function QguardHelixFeatures() {
+  const [currentWord, setCurrentWord] = useState(0);
+  const words = ['Algorithm', 'Certificate', 'Trust Relationship'];
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentWord((prev) => (prev + 1) % words.length);
+    }, 3500);
+    return () => clearInterval(interval);
+  }, []);
+
   usePageMeta();
 
   return (
@@ -790,10 +800,22 @@ export default function QguardHelixFeatures() {
             transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
             className="mt-6 text-4xl font-black leading-[1.05] tracking-tight text-[#f8fafc] sm:text-6xl lg:text-7xl"
           >
-            Every algorithm you run.
+            <span>Every </span>
+            <AnimatePresence mode="wait">
+              <motion.span
+                key={currentWord}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                className="inline-block bg-gradient-to-r from-cyan-300 via-[#f3d98b] to-violet-400 bg-clip-text text-transparent"
+              >
+                {words[currentWord]}.
+              </motion.span>
+            </AnimatePresence>
             <br />
             <span className="bg-gradient-to-r from-cyan-300 via-[#f3d98b] to-violet-400 bg-clip-text text-transparent">
-              Ready for what comes next.
+              Be Ready for What Comes Next.
             </span>
           </motion.h1>
 
@@ -803,9 +825,14 @@ export default function QguardHelixFeatures() {
             transition={{ duration: 0.8, delay: 0.24, ease: [0.22, 1, 0.36, 1] }}
             className="mt-6 max-w-2xl text-base leading-relaxed text-[#cbd5e1] sm:text-lg"
           >
-            Quantum computers will break the encryption protecting your business today. QGuard Helix
-            finds that cryptography, measures the exposure, plans the migration, rehearses it safely
-            and proves it worked &mdash; in one platform, with evidence behind every number.
+            Quantum computers won't simply introduce a new cyber threat&mdash;they will redefine
+            cryptographic security. QGuard Helix gives your organization complete visibility into
+            every cryptographic dependency, measures quantum exposure with evidence-backed intelligence,
+            prioritizes the highest-risk migrations, safely validates every change before production,
+            and continuously proves your quantum readiness through a single enterprise platform.
+            <br />
+            <br />
+            <span className="font-semibold">Discover. Assess. Migrate. Validate. Prove.</span>
           </motion.p>
 
           <motion.div

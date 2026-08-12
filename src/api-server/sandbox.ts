@@ -1,5 +1,9 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
+import { buildScannerIntelligence } from './scanner'
+import { buildSnapshot as buildQuantumReadinessSnapshot } from './quantum-readiness'
+import { dedupeGradedObservations, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
+import { riskBandFor, riskScoreFromLoad } from '@/lib/migration/asset-intelligence'
 import {
   ENGINE_PIPELINE_STAGES,
   SIMULATION_TYPES,
@@ -141,14 +145,25 @@ function severityRank(s: string) {
   return 1
 }
 
+/**
+ * PQC replacement for a classical primitive, resolved by USAGE.
+ *
+ * ML-KEM (FIPS 203) is key establishment ONLY; signatures take ML-DSA (FIPS 204)
+ * or SLH-DSA (FIPS 205). Order matters: authentication is tested before key
+ * establishment, because "ECDSA certificate" contains neither "rsa" nor
+ * "key exchange" but must never resolve to a KEM — and a certificate seen on a
+ * TLS asset would otherwise match the `tls` branch and be handed ML-KEM.
+ */
 function pqcAlgoRec(from: string, context = '') {
   const v = `${from} ${context}`.toLowerCase()
-  if (v.includes('rsa') || v.includes('tls') || v.includes('key exchange')) return 'ML-KEM-768'
-  if (v.includes('ecdsa') || v.includes('dsa') || v.includes('sign')) return 'ML-DSA-65'
-  if (v.includes('aes-128') || v.includes('3des') || v.includes('des')) return 'AES-256-GCM'
-  if (v.includes('dh') || v.includes('ecdh') || v.includes('x25519')) return 'X25519 + ML-KEM hybrid'
-  if (v.includes('sha1') || v.includes('md5')) return 'SHA3-256'
-  return 'ML-KEM-768 (hybrid)'
+  if (v.includes('sha1') || v.includes('sha-1') || v.includes('md5') || v.includes('hash')) return 'SHA3-256'
+  if (v.includes('ecdsa') || v.includes('dsa') || v.includes('sign') || v.includes('certificate')) return 'ML-DSA-65'
+  if (v.includes('ecdh') || v.includes('x25519') || v.includes('dh')) return 'X25519 + ML-KEM-768 hybrid'
+  if (v.includes('rsa') || v.includes('key exchange') || v.includes('cipher suite') || v.includes('tls')) return 'ML-KEM-768'
+  if (v.includes('aes-128') || v.includes('3des') || v.includes('rc4') || v.includes('des')) return 'AES-256-GCM'
+  // Usage unknown — do not assert a specific primitive. Naming a KEM here is how
+  // policy findings ended up "migrating to ML-KEM-768".
+  return 'PQC target pending classification'
 }
 
 function quantumRisk(algo: string): 'critical' | 'high' | 'medium' | 'low' {
@@ -168,22 +183,42 @@ function boolMeta(value: unknown) {
 // from hardcoded defaults, so the simulation reflects what the scanner found.
 function assetSimulationSeed(asset: any, invItems: any[], expItems: any[]) {
   const vulnerableItems = invItems.filter((i: any) => i.is_vulnerable || i.is_quantum_safe === false)
+  // The source must be a record that actually NAMES cryptography. Taking
+  // `vulnerableItems[0].algorithm` in whatever order the query returned picked
+  // up policy findings, producing simulations literally named
+  // "[DRY RUN] host (No CAA Issuance Policy -> ML-KEM-768)" — a DNS policy gap
+  // "migrated" to a key-encapsulation mechanism.
+  const cryptoRow = (rows: any[]) => rows.find((i: any) => namesCryptography(i?.name) && String(i?.algorithm || '').trim())
+  const seedRow = cryptoRow(vulnerableItems) || cryptoRow(invItems)
   const sourceAlgorithm = String(
-    vulnerableItems[0]?.algorithm
-    || expItems[0]?.detected_value
-    || invItems[0]?.algorithm
+    seedRow?.algorithm
+    || expItems.find((e: any) => String(e?.detected_value || '').trim())?.detected_value
     || ''
   ).trim() || 'Classical'
-  const context = `${asset?.type || ''} ${asset?.name || ''} ${invItems[0]?.protocol || ''} ${expItems[0]?.exposure_type || ''}`
+  // Usage decides the PQC target (FIPS 203 for key establishment, FIPS 204/205
+  // for authentication), so pass the observation class the source came from.
+  const context = `${observationClass(seedRow?.name)} ${seedRow?.item_type || ''} ${seedRow?.protocol || ''} ${asset?.type || ''}`
   const targetAlgorithm = pqcAlgoRec(sourceAlgorithm, context)
+  const criticalExposures = expItems.filter((e: any) => String(e.severity || '').toLowerCase() === 'critical').length
+  const highExposures = expItems.filter((e: any) => String(e.severity || '').toLowerCase() === 'high').length
+
   return {
     sourceAlgorithm,
     targetAlgorithm,
-    riskLevel: quantumRisk(sourceAlgorithm),
+    // Risk comes from the asset's OWN exposure evidence, with the seed
+    // algorithm only as a tiebreaker. Deriving it from the algorithm name alone
+    // made a TLS 1.2 endpoint carrying 13 critical exposures read "low",
+    // because `quantumRisk()` matches the literal "tls 1.2" and the scanner
+    // records "TLSv1.2" — and that level drives the Simulation Builder's risk
+    // filter, so the asset was invisible to a "critical/high" selection.
+    riskLevel: criticalExposures > 0 ? 'critical' as const
+      : highExposures > 0 ? 'high' as const
+        : vulnerableItems.length > 0 ? 'medium' as const
+          : quantumRisk(sourceAlgorithm),
     inventoryItems: invItems.length,
     vulnerableItems: vulnerableItems.length,
     exposures: expItems.length,
-    criticalExposures: expItems.filter((e: any) => String(e.severity || '').toLowerCase() === 'critical').length,
+    criticalExposures,
     algorithms: Array.from(new Set(invItems.map((i: any) => String(i.algorithm || '').trim()).filter(Boolean))).slice(0, 8),
   }
 }
@@ -354,7 +389,7 @@ const lastAdvanceAt = new Map<string, number>()
 async function advanceSandboxJobs(client: any, userId?: string) {
   const throttleKey = userId || '__all__'
   const lastRun = lastAdvanceAt.get(throttleKey) || 0
-  if (Date.now() - lastRun < ADVANCE_MIN_INTERVAL_MS) return { advanced: 0 }
+  if (Date.now() - lastRun < ADVANCE_MIN_INTERVAL_MS) return { advanced: 0, advancedUsers: [] as string[] }
   lastAdvanceAt.set(throttleKey, Date.now())
 
   let query = client
@@ -369,12 +404,15 @@ async function advanceSandboxJobs(client: any, userId?: string) {
   const { data: rows, error } = await query
   if (error) {
     if (!isMissingTable(error)) console.warn('[sandbox] advance jobs:', error.message)
-    return { advanced: 0 }
+    return { advanced: 0, advancedUsers: [] as string[] }
   }
 
   const now = new Date()
   const nowIso = now.toISOString()
   let advanced = 0
+  // Tenants whose jobs actually moved, so the caller can drop exactly their
+  // cached snapshots instead of waiting out the TTL.
+  const advancedUsers = new Set<string>()
   const sandboxRows = (rows || []).filter(isSandboxSimulationJob)
 
   for (const [index, job] of sandboxRows.entries()) {
@@ -543,10 +581,11 @@ async function advanceSandboxJobs(client: any, userId?: string) {
       continue
     }
     advanced++
+    if (job.user_id) advancedUsers.add(String(job.user_id))
     if (event) await insertEngineEvent(client, job, event.type, event.message, event.severity || 'info', event.metadata || {})
   }
 
-  return { advanced }
+  return { advanced, advancedUsers: [...advancedUsers] }
 }
 
 function buildSnapshotState(job: any, meta: Record<string, unknown>, context?: any) {
@@ -824,8 +863,152 @@ function riskScoreForSimulation(sim: any) {
   return clamp(100 - riskPenalty - statusPenalty + progressCredit)
 }
 
-async function buildSandboxPayload(client: any, userId: string) {
+/**
+ * Distinct graded observations across the three tables that store them.
+ *
+ * `crypto_exposures`, `pqc_scan_results` and `scanner_alerts` are storage views
+ * of the SAME scanner observations, so summing their severity counts — which is
+ * what this module used to do (`exposures.filter(critical).length +
+ * scanResults.filter(critical).length + alerts.filter(critical).length`) —
+ * counts one cipher suite up to three times. Measured on a live tenant that
+ * reported 22 critical / 50 high where the scanner's de-duplicated view held
+ * 13 / 30, so the sandbox disagreed with CBOM, Assets, the QR Engine and the
+ * workflow rail about the same estate.
+ *
+ * Identity comes from the shared `findingIdentityKey` (algorithm + subject +
+ * measurement method) so this agrees with the scanner by construction.
+ * Preferred source is still `buildScannerIntelligence` — this is the fallback
+ * for when that computation is unavailable, and it counts the same UNIT so the
+ * two branches never describe different populations.
+ */
+function gradedObservationRows(input: {
+  exposures: any[]
+  scanResults: any[]
+  scannerAlerts: any[]
+  assetName: (assetId: unknown) => string
+}) {
+  return [
+    ...(input.exposures || []).map((row) => ({
+      algorithm: row.detected_value || row.exposure_type,
+      subject: input.assetName(row.asset_id),
+      detectionMethod: '',
+      severity: row.severity,
+    })),
+    ...(input.scanResults || []).map((row) => ({
+      algorithm: row.algorithm || row.finding_type,
+      subject: input.assetName(row.asset_id),
+      detectionMethod: row.metadata?.detectionMethod,
+      severity: row.threat_level,
+    })),
+    ...(input.scannerAlerts || []).map((row) => ({
+      algorithm: row.algorithm || row.title || row.alert_type,
+      subject: input.assetName(row.asset_id),
+      detectionMethod: row.detection_method,
+      severity: row.severity || row.threat_level,
+    })),
+  ]
+}
+
+/**
+ * Shared-computation cache for the Migration Sandbox snapshot.
+ *
+ * This snapshot is the most expensive per-request computation in the module: a
+ * 14-table tenant load plus the whole twin assembly (digital twin, dependency
+ * graph, topology, failure predictions, performance benchmark, business impact,
+ * rollback analysis, Sophia, approval gate, telemetry frame), and it now also
+ * folds in the scanner-intelligence and Quantum-Readiness snapshots.
+ *
+ * It was the ONE hot path with no cache, while `/stream` rebuilt it every 8s
+ * PER CONNECTED CLIENT. Measured on a two-asset tenant: 128ms served serially,
+ * but five concurrent callers took 2.4s of wall clock because each rebuilt the
+ * whole thing. That cost scales with (open dashboards × SSE ticks × estate
+ * size), which is precisely the shape that stops scaling.
+ *
+ * Per-tenant, short-TTL and SINGLE-FLIGHT — concurrent callers await the SAME
+ * in-flight promise, so an SSE fan-out collapses to one computation. The TTL is
+ * deliberately shorter than the 8s stream cadence so a given client's own next
+ * poll is still fresh; the win is across simultaneous callers. Failures are
+ * never cached, and mutations invalidate explicitly rather than waiting the TTL
+ * out (see `buildSandboxPayloadOrNull`).
+ */
+const SANDBOX_SNAPSHOT_TTL_MS = 5_000
+/**
+ * How long the snapshot will wait on the Quantum Readiness assessment before
+ * rendering without it. Comfortably above a cache hit (~50ms) and far below a
+ * cold assessment (~6s), so a warm QR is always used and a cold one never
+ * stalls the page.
+ */
+const QR_SNAPSHOT_DEADLINE_MS = 1_500
+const sandboxSnapshotCache = new Map<string, { at: number; promise: Promise<Awaited<ReturnType<typeof buildSandboxPayload>>> }>()
+
+function invalidateSandboxSnapshot(userId: string) {
+  sandboxSnapshotCache.delete(userId)
+}
+
+/**
+ * Cached read path. Every route that only READS the snapshot goes through this;
+ * routes that mutate first must invalidate (see `buildSandboxPayloadOrNull`) so
+ * they never hand back a pre-mutation payload.
+ */
+async function getSandboxSnapshot(client: any, userId: string, token?: string | null) {
+  const cached = sandboxSnapshotCache.get(userId)
+  if (cached && Date.now() - cached.at < SANDBOX_SNAPSHOT_TTL_MS) return cached.promise
+
+  const promise = buildSandboxPayload(client, userId, token)
+  sandboxSnapshotCache.set(userId, { at: Date.now(), promise })
+  promise.catch(() => sandboxSnapshotCache.delete(userId))
+
+  if (sandboxSnapshotCache.size > 500) {
+    const now = Date.now()
+    for (const [key, value] of sandboxSnapshotCache) {
+      if (now - value.at > SANDBOX_SNAPSHOT_TTL_MS) sandboxSnapshotCache.delete(key)
+    }
+  }
+  return promise
+}
+
+async function buildSandboxPayload(client: any, userId: string, token?: string | null) {
+  // Kept INSIDE the cached computation on purpose. Simulation progress is
+  // derived from elapsed time (`(elapsed / duration) * 100`), not incremented
+  // per call, so running the engine less often changes when a row is written,
+  // never how fast a simulation completes. It also carries its own 2.5s
+  // per-tenant throttle, and the background scheduler is the 15s floor.
   await advanceSandboxJobs(client, userId)
+
+  // The platform's canonical, de-duplicated scanner view. Cached and
+  // single-flight inside scanner.ts, and already the shared authority for the
+  // QR Engine, Migration Intelligence and the remediation engine — reading it
+  // here is what keeps the sandbox's severity counts in lock-step with every
+  // other page instead of being a fourth opinion.
+  //
+  // The QR snapshot is BOUNDED rather than awaited outright. It costs ~6s when
+  // its own 15s cache is cold, and blocking on it made a cold sandbox load wait
+  // for the whole assessment before rendering anything. Missing the deadline
+  // leaves `quantumRiskScore` null — which the UI already renders as "—" — and
+  // the next snapshot picks up the now-warm value. Degrading to "not yet
+  // assessed" is honest; degrading to the sandbox's own derived number would
+  // briefly show a figure that disagrees with the QR command centre, which is
+  // the exact divergence this page was fixed to stop.
+  // 'deadline' is distinct from null on purpose: "QR answered and this tenant
+  // has no assessment evidence" and "QR has not answered yet" call for
+  // different behaviour, and collapsing them would publish a divergent risk
+  // number in the second case.
+  const withDeadline = <T>(promise: Promise<T>, ms: number): Promise<T | null | 'deadline'> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      promise.catch(() => null),
+      new Promise<'deadline'>((resolve) => { timer = setTimeout(() => resolve('deadline'), ms) }),
+    ]).finally(() => { if (timer) clearTimeout(timer) })
+  }
+
+  const [scannerIntel, qrResult] = token
+    ? await Promise.all([
+        (buildScannerIntelligence(token, userId) as Promise<any>).catch(() => null),
+        withDeadline(buildQuantumReadinessSnapshot(token, userId) as Promise<any>, QR_SNAPSHOT_DEADLINE_MS),
+      ])
+    : [null, null]
+  const qrPending = qrResult === 'deadline'
+  const qrSnapshot = qrPending ? null : (qrResult as any)
 
   const [jobs, assets, inventory, exposures, events, scanSessions, certificates, vulns, scanResults, scannerAlerts, runtimeEvents, securityEvents, auditLogs, relationships] = await Promise.all([
     safeRows(client, 'migration_jobs', (q) => q.select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(500)),
@@ -938,20 +1121,46 @@ async function buildSandboxPayload(client: any, userId: string) {
   const operationalWorkflows = workflows.filter((job) => !job.isSandbox)
 
   // ── Risk Analysis ───────────────────────────────────────────────────────────
-  const scannerCritical = (scanResults || []).filter((r: any) => String(r.threat_level || '').toLowerCase() === 'critical').length
-    + (scannerAlerts || []).filter((r: any) => String(r.severity || r.threat_level || '').toLowerCase() === 'critical').length
-  const scannerHigh = (scanResults || []).filter((r: any) => String(r.threat_level || '').toLowerCase() === 'high').length
-    + (scannerAlerts || []).filter((r: any) => String(r.severity || r.threat_level || '').toLowerCase() === 'high').length
   const runtimeRiskEvents = (runtimeEvents || []).filter((event: any) => {
     const text = JSON.stringify(event || {}).toLowerCase()
     return /rsa|ecdsa|ecdh|diffie|dh-|tlsv1\.0|tlsv1\.1|ssl|3des|rc4|sha1|md5|fallback|downgrade/.test(text)
   }).length
-  const criticalExposures = (exposures || []).filter((e: any) => e.severity === 'critical').length + scannerCritical
-  const highExposures = (exposures || []).filter((e: any) => e.severity === 'high').length + scannerHigh
+
+  // Graded observations, counted ONCE. Prefer the canonical scanner view; fall
+  // back to a local de-duplication of the same three tables, which counts the
+  // same unit so the two branches can never describe different populations.
+  const localGraded = dedupeGradedObservations(gradedObservationRows({
+    exposures: exposures || [],
+    scanResults: scanResults || [],
+    scannerAlerts: scannerAlerts || [],
+    assetName: (assetId) => String(assetMap.get(String(assetId))?.name || assetId || ''),
+  }))
+  const intelSeverity = scannerIntel?.severityCounts
+  const gradedObservations = intelSeverity
+    ? {
+        critical: Number(intelSeverity.critical || 0),
+        high: Number(intelSeverity.high || 0),
+        medium: Number(intelSeverity.medium || 0),
+        low: Number(intelSeverity.low || 0),
+        total: Number(intelSeverity.critical || 0) + Number(intelSeverity.high || 0) + Number(intelSeverity.medium || 0) + Number(intelSeverity.low || 0),
+      }
+    : localGraded
+  const gradedObservationsSource = intelSeverity ? 'scanner-intelligence' : 'sandbox-local-dedupe'
+  const criticalExposures = gradedObservations.critical
+  const highExposures = gradedObservations.high
+
   const vulnerableInventory = (inventory || []).filter((i: any) => i.is_vulnerable || i.is_quantum_safe === false).length
   const totalInventory = (inventory || []).length
-  const expiringCerts = (certificates || []).filter((c: any) => c.is_expiring_soon || !c.is_quantum_safe).length
-  const openVulns = (vulns || []).length + (scannerAlerts || []).length
+  // Two different facts that were being added together and then reported under
+  // the single label "Expiring Certificates" — which contradicted the failure
+  // prediction on the same page reading "0 expiring and 2 non-PQC certificate(s)".
+  const expiringCertCount = (certificates || []).filter((c: any) => c.is_expiring_soon).length
+  const nonPqcCertCount = (certificates || []).filter((c: any) => c.is_quantum_safe === false).length
+  const certsNeedingRotation = (certificates || []).filter((c: any) => c.is_expiring_soon || c.is_quantum_safe === false).length
+  const expiringCerts = certsNeedingRotation
+  // `scanner_alerts` already contribute to the graded-observation counts above;
+  // adding them here too counted the same rows twice on one page.
+  const openVulns = (vulns || []).length
   const failedJobs = workflows.filter((s) => s.status === 'failed').length
   const completedJobs = workflows.filter((s) => s.status === 'completed').length
   const runningJobs = workflows.filter((s) => s.status === 'running').length
@@ -968,18 +1177,64 @@ async function buildSandboxPayload(client: any, userId: string) {
   const staleQueuedWorkflows = operationalWorkflows.filter((s) => s.status === 'queued' && dateMs(s.updatedAt) < Date.now() - 60 * 60 * 1000).length
   const averageWorkflowProgress = totalJobs > 0 ? Math.round(workflows.reduce((sum, job) => sum + Number(job.progress || 0), 0) / totalJobs) : 0
 
-  const riskScore = Math.max(0, Math.min(100, Math.round(
-    100 - (criticalExposures * 15 + highExposures * 8 + expiringCerts * 5 + openVulns * 3 + failedJobs * 10 + runtimeRiskEvents * 2)
-  )))
-  const pqcReadiness = totalInventory > 0
+  /**
+   * Canonical quantum risk — 0–100, LOWER IS BETTER, banded by the shared
+   * `riskBandFor` table.
+   *
+   * The previous formula was `100 - (critical*15 + high*8 + …)`, i.e. a
+   * higher-is-better POSTURE measure published under a risk name, on a page
+   * that renders it beside PQC-readiness and compliance (both higher-better).
+   * It also saturated: seven critical exposures alone drove it to 0, so it read
+   * "Risk Score 0/100" — a perfect score on a lower-better scale — for any real
+   * estate, while the QR Engine reported 75/High for the same tenant. A metric
+   * that cannot vary carries no information.
+   *
+   * Prefer the QR Engine's score when the scanner snapshot carries one, so this
+   * page and the Quantum Readiness command centre never disagree; otherwise
+   * derive it from the same de-duplicated severity counts on the same scale.
+   */
+  const derivedQuantumRisk = riskScoreFromLoad(
+    criticalExposures * 3 + highExposures * 1.2 + gradedObservations.medium * 0.4 + certsNeedingRotation * 1 + failedJobs * 2 + Math.min(4, runtimeRiskEvents * 0.2),
+  )
+  // The Quantum Readiness Engine is the platform's risk authority — the same
+  // number the QR command centre, the executive dashboard, CBOM Explorer and
+  // the Assets page all render. Reading it here (rather than the scanner's
+  // per-asset risk mean, which is a DIFFERENT measurement that happens to share
+  // the scale) is what stops this page publishing "Quantum Risk 39" against
+  // QR's "Quantum Risk 75" for the same estate.
+  const qrRisk = Number(qrSnapshot?.scores?.quantumRisk)
+  const hasRiskBaseline = gradedObservations.total > 0 || totalInventory > 0
+  const qrAnswered = qrSnapshot?.hasData && Number.isFinite(qrRisk)
+  const quantumRiskScore = !hasRiskBaseline ? null
+    : qrAnswered ? clamp(Math.round(qrRisk))
+      // Still waiting on the assessment — withhold rather than publish the
+      // locally derived number, which would disagree with the QR command centre
+      // for a few seconds and then jump. The next snapshot has QR warm.
+      : qrPending ? null
+        // QR answered and this tenant has no assessment evidence, so the
+        // sandbox's own derivation is the best available measurement.
+        : derivedQuantumRisk
+  const quantumRiskLevel = quantumRiskScore === null
+    ? (qrPending ? 'Awaiting assessment' : 'Not assessed')
+    : riskBandFor(quantumRiskScore).label
+  const quantumRiskSource = qrAnswered ? 'quantum-readiness-engine'
+    : qrPending ? 'awaiting-quantum-readiness'
+      : quantumRiskScore === null ? 'not-assessed' : 'sandbox-derived'
+
+  // PQC readiness is a CRYPTO-INVENTORY measure. The old fallback published
+  // `completedJobs / totalJobs` under the same name — a migration-job
+  // completion rate reported as cryptographic readiness — so a tenant with no
+  // inventory and one finished job read "PQC Readiness 100%".
+  const hasReadinessBaseline = totalInventory > 0
+  const pqcReadiness = hasReadinessBaseline
     ? Math.round(((totalInventory - vulnerableInventory) / totalInventory) * 100)
-    : totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0
+    : 0
 
   const riskFactors = [
     { label: 'Critical Crypto Exposures', count: criticalExposures, severity: 'critical' as const, impact: 'high' as const },
     { label: 'High-Risk Exposures', count: highExposures, severity: 'high' as const, impact: 'high' as const },
     { label: 'Vulnerable Inventory Items', count: vulnerableInventory, severity: 'high' as const, impact: 'medium' as const },
-    { label: 'Expiring/Non-PQC Certs', count: expiringCerts, severity: 'medium' as const, impact: 'medium' as const },
+    { label: 'Certificates Needing Rotation', count: certsNeedingRotation, severity: 'medium' as const, impact: 'medium' as const },
     { label: 'Open Vulnerabilities', count: openVulns, severity: 'medium' as const, impact: 'medium' as const },
     { label: 'Failed Migration Jobs', count: failedJobs, severity: 'high' as const, impact: 'high' as const },
     { label: 'Runtime Crypto Risk Signals', count: runtimeRiskEvents, severity: 'medium' as const, impact: 'medium' as const },
@@ -1105,26 +1360,78 @@ async function buildSandboxPayload(client: any, userId: string) {
     })
   }
 
-  // ── Compliance Validation ───────────────────────────────────────────────────
-  const nistReady = pqcReadiness >= 80 && criticalExposures === 0
+  // ── Cryptographic posture indicators per control family ─────────────────────
+  //
+  // These are SCREENING INDICATORS derived from the tenant's cryptographic
+  // evidence, not compliance verdicts. The platform's Compliance dashboard owns
+  // control evidence and attestation; a formula over exposure counts cannot
+  // decide whether an organisation meets HIPAA or PCI DSS.
+  //
+  // Two faults are fixed here. Each row now carries the `basis` it was decided
+  // from, so no number is unexplained. And `status` DERIVES from `score` through
+  // one shared threshold, so the panel can no longer show "PCI DSS · partial"
+  // beside a score of 0, or "SOC 2 · compliant" from a formula with a floor.
   const agileReady = totalInventory > 0
   const auditAvailable = (events || []).length > 0 || (securityEvents || []).length > 0 || (auditLogs || []).length > 0
+  const hasPostureEvidence = totalInventory > 0 || gradedObservations.total > 0 || (certificates || []).length > 0
+
+  const indicator = (framework: string, control: string, score: number, basis: string, evidence = hasPostureEvidence) => {
+    const value = Math.max(0, Math.min(100, Math.round(score)))
+    return {
+      framework,
+      control,
+      score: value,
+      basis,
+      // One threshold for every row — status can never contradict the score.
+      status: !evidence ? 'pending' : value >= 85 ? 'met' : value >= 50 ? 'partial' : 'not-met',
+    }
+  }
+
   const complianceItems = [
-    { framework: 'NIST PQC Standards', control: 'FIPS 203/204/205 readiness', status: pqcReadiness >= 75 ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: Math.max(0, Math.min(100, Math.round((pqcReadiness + (criticalExposures === 0 ? 100 : 35)) / 2))) },
-    { framework: 'NIST Migration Guidance', control: 'Inventory, prioritization, validation, and evidence', status: totalInventory > 0 && totalJobs > 0 ? 'compliant' : totalInventory > 0 ? 'partial' : 'pending', score: totalInventory > 0 ? (totalJobs > 0 ? 88 : 55) : 0 },
-    { framework: 'NIST SP 800-208', control: 'PQC Algorithm Adoption', status: nistReady ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: pqcReadiness },
-    { framework: 'NIST SP 800-57 Rev.5', control: 'Key Management Practices', status: expiringCerts === 0 && failedJobs === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 15 - failedJobs * 20) },
-    { framework: 'NSA CNSA 2.0', control: 'NSS Algorithm Suite', status: criticalExposures === 0 && highExposures < 3 ? 'compliant' : 'non-compliant', score: Math.max(0, 100 - criticalExposures * 20 - highExposures * 10) },
-    { framework: 'FIPS 140-3 / 203-205', control: 'Validated module + approved PQC algorithm usage', status: pqcReadiness >= 70 && criticalExposures === 0 ? 'compliant' : vulnerableInventory > 0 ? 'partial' : 'pending', score: Math.max(0, Math.min(100, Math.round(pqcReadiness * 0.7 + (criticalExposures === 0 ? 30 : 0)))) },
-    { framework: 'ISO 27001', control: 'Cryptographic controls and change management', status: auditAvailable && totalInventory > 0 ? 'compliant' : auditAvailable ? 'partial' : 'pending', score: auditAvailable ? (totalInventory > 0 ? 86 : 62) : 0 },
-    { framework: 'PCI DSS', control: 'Strong cryptography, TLS, and key lifecycle evidence', status: expiringCerts === 0 && criticalExposures === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - expiringCerts * 18 - criticalExposures * 25 - highExposures * 8) },
-    { framework: 'SOC 2', control: 'Change auditability and runtime monitoring', status: auditAvailable && runtimeRiskEvents === 0 ? 'compliant' : auditAvailable ? 'partial' : 'pending', score: auditAvailable ? Math.max(45, 95 - runtimeRiskEvents * 8 - failedJobs * 12) : 0 },
-    { framework: 'HIPAA', control: 'ePHI encryption strength and transmission security', status: criticalExposures === 0 && expiringCerts === 0 ? 'compliant' : criticalExposures > 0 ? 'non-compliant' : 'partial', score: Math.max(0, 100 - criticalExposures * 22 - highExposures * 8 - expiringCerts * 10) },
-    { framework: 'GDPR', control: 'Art. 32 state-of-the-art encryption of personal data', status: vulnerableInventory === 0 && criticalExposures === 0 ? 'compliant' : 'partial', score: Math.max(0, 100 - vulnerableInventory * 4 - criticalExposures * 18) },
-    { framework: 'CISA PQC Guidance', control: 'Quantum-readiness roadmap: inventory, prioritization, migration rehearsal', status: totalInventory > 0 && totalJobs > 0 ? 'compliant' : totalInventory > 0 ? 'partial' : 'pending', score: totalInventory > 0 ? (totalJobs > 0 ? 90 : 58) : 0 },
-    { framework: 'Crypto Agility', control: 'Algorithm Replaceability', status: agileReady ? 'compliant' : 'pending', score: agileReady ? 85 : 0 },
-    { framework: 'Audit Trail', control: 'Migration Evidence Collection', status: auditAvailable ? 'compliant' : 'pending', score: auditAvailable ? 100 : 0 },
-    { framework: 'HNDL Posture', control: 'Harvest-Now-Decrypt-Later', status: criticalExposures === 0 ? 'compliant' : 'critical', score: Math.max(0, 100 - criticalExposures * 25) },
+    indicator('NIST PQC Standards', 'FIPS 203/204/205 readiness',
+      (pqcReadiness + (criticalExposures === 0 ? 100 : 35)) / 2,
+      `${pqcReadiness}% PQC-ready inventory · ${criticalExposures} critical exposure(s)`),
+    indicator('NIST Migration Guidance', 'Inventory, prioritization, validation, and evidence',
+      totalInventory > 0 ? (totalJobs > 0 ? 88 : 55) : 0,
+      `${totalInventory} inventory record(s) · ${totalJobs} migration job(s)`),
+    indicator('NIST SP 800-208', 'PQC Algorithm Adoption', pqcReadiness,
+      `${pqcReadiness}% of inventory is quantum-safe`, hasReadinessBaseline),
+    indicator('NIST SP 800-57 Rev.5', 'Key Management Practices',
+      100 - certsNeedingRotation * 15 - failedJobs * 20,
+      `${certsNeedingRotation} certificate(s) needing rotation · ${failedJobs} failed job(s)`),
+    indicator('NSA CNSA 2.0', 'NSS Algorithm Suite',
+      100 - criticalExposures * 20 - highExposures * 10,
+      `${criticalExposures} critical · ${highExposures} high exposure(s)`),
+    indicator('FIPS 140-3 / 203-205', 'Validated module + approved PQC algorithm usage',
+      pqcReadiness * 0.7 + (criticalExposures === 0 ? 30 : 0),
+      `${pqcReadiness}% PQC-ready · ${vulnerableInventory} vulnerable record(s)`),
+    indicator('ISO 27001', 'Cryptographic controls and change management',
+      auditAvailable ? (totalInventory > 0 ? 86 : 62) : 0,
+      auditAvailable ? `Audit trail present · ${totalInventory} inventory record(s)` : 'No audit or security events recorded',
+      auditAvailable),
+    indicator('PCI DSS', 'Strong cryptography, TLS, and key lifecycle evidence',
+      100 - certsNeedingRotation * 18 - criticalExposures * 25 - highExposures * 8,
+      `${criticalExposures} critical · ${highExposures} high · ${certsNeedingRotation} cert(s) needing rotation`),
+    indicator('SOC 2', 'Change auditability and runtime monitoring',
+      auditAvailable ? 95 - runtimeRiskEvents * 8 - failedJobs * 12 : 0,
+      auditAvailable ? `${runtimeRiskEvents} runtime risk signal(s) · ${failedJobs} failed job(s)` : 'No audit or security events recorded',
+      auditAvailable),
+    indicator('HIPAA', 'ePHI encryption strength and transmission security',
+      100 - criticalExposures * 22 - highExposures * 8 - certsNeedingRotation * 10,
+      `${criticalExposures} critical · ${highExposures} high · ${certsNeedingRotation} cert(s) needing rotation`),
+    indicator('GDPR', 'Art. 32 state-of-the-art encryption of personal data',
+      100 - vulnerableInventory * 4 - criticalExposures * 18,
+      `${vulnerableInventory} vulnerable inventory record(s) · ${criticalExposures} critical exposure(s)`),
+    indicator('CISA PQC Guidance', 'Quantum-readiness roadmap: inventory, prioritization, migration rehearsal',
+      totalInventory > 0 ? (totalJobs > 0 ? 90 : 58) : 0,
+      `${totalInventory} inventory record(s) · ${totalJobs} migration job(s)`),
+    indicator('Crypto Agility', 'Algorithm Replaceability', agileReady ? 85 : 0,
+      agileReady ? `${totalInventory} inventory record(s) available to re-target` : 'No crypto inventory discovered'),
+    indicator('Audit Trail', 'Migration Evidence Collection', auditAvailable ? 100 : 0,
+      auditAvailable ? `${(events || []).length} migration · ${(auditLogs || []).length} audit event(s)` : 'No migration or audit events recorded',
+      auditAvailable),
+    indicator('HNDL Posture', 'Harvest-Now-Decrypt-Later', 100 - criticalExposures * 25,
+      `${criticalExposures} critical exposure(s) with long-lived confidentiality risk`),
   ]
   const complianceScore = Math.round(complianceItems.reduce((sum, c) => sum + c.score, 0) / complianceItems.length)
 
@@ -1268,11 +1575,24 @@ async function buildSandboxPayload(client: any, userId: string) {
     vulnerableAssets: new Set((exposures || []).map((e: any) => e.asset_id).filter(Boolean)).size,
     criticalExposures,
     highExposures,
+    mediumExposures: gradedObservations.medium,
+    gradedObservations: gradedObservations.total,
+    // Which computation produced the severity counts, so a reader can tell
+    // whether this page is quoting the canonical scanner view or its fallback.
+    gradedObservationsSource,
     openVulnerabilities: openVulns,
     pqcReadiness,
-    riskScore,
+    hasReadinessBaseline,
+    // 0–100, LOWER IS BETTER, banded by the shared RISK_BANDS table — the same
+    // scale and direction as the QR Engine and /dashboard/summary. `null` means
+    // not assessed and must never render as 0.
+    quantumRiskScore,
+    quantumRiskLevel,
+    quantumRiskSource,
     complianceScore,
-    expiringCerts,
+    expiringCerts: expiringCertCount,
+    nonPqcCerts: nonPqcCertCount,
+    certsNeedingRotation,
     lastScanAt: lastScan?.completed_at || lastScan?.created_at || null,
     completionRate: simulations.length > 0 ? Math.round((sandboxCompleted / simulations.length) * 100) : 0,
     workflowCompletionRate: totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0,
@@ -1350,7 +1670,7 @@ async function buildSandboxPayload(client: any, userId: string) {
     events: events || [],
     workflows,
   }
-  const twinIntelligence = assembleTwinIntelligence(twinBundle, { pqcReadiness, riskScore, complianceScore })
+  const twinIntelligence = assembleTwinIntelligence(twinBundle, { pqcReadiness, quantumRiskScore, complianceScore })
 
   return {
     generatedAt: new Date().toISOString(),
@@ -1369,12 +1689,23 @@ async function buildSandboxPayload(client: any, userId: string) {
   }
 }
 
-// Operator actions must not fail (or lose their result) because the trailing
-// snapshot rebuild hit a transient failure — callers treat a null snapshot as
-// "keep current data and refetch".
-async function buildSandboxPayloadOrNull(client: any, userId: string) {
+/**
+ * Post-MUTATION snapshot rebuild.
+ *
+ * Every caller of this has just written to the tenant, so the cached snapshot
+ * is stale by construction — it is dropped first, and the fresh result is
+ * stored so the SSE tick that lands moments later shows the post-mutation state
+ * rather than rebuilding it again. Returning a cached pre-mutation payload here
+ * would make an operator action look like it did nothing.
+ *
+ * Operator actions must not fail (or lose their result) because the trailing
+ * snapshot rebuild hit a transient failure — callers treat a null snapshot as
+ * "keep current data and refetch".
+ */
+async function buildSandboxPayloadOrNull(client: any, userId: string, token?: string | null) {
+  invalidateSandboxSnapshot(userId)
   try {
-    return await buildSandboxPayload(client, userId)
+    return await getSandboxSnapshot(client, userId, token)
   } catch (err) {
     if (err instanceof SnapshotUnavailableError) return null
     throw err
@@ -1392,7 +1723,7 @@ router.get('/assets', requireAuth, async (req: AuthenticatedRequest, res) => {
     const userId = req.user!.id
     const [assets, inventory, exposures, jobs] = await Promise.all([
       safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
-      safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).limit(1000)),
+      safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).limit(1000)),
       safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value').eq('user_id', userId).limit(1000)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, status, metadata').eq('user_id', userId).limit(500)),
     ])
@@ -1457,7 +1788,7 @@ router.get('/snapshot', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
   try {
-    const payload = await buildSandboxPayload(client, req.user!.id)
+    const payload = await getSandboxSnapshot(client, req.user!.id, req.token)
     return res.json({ data: payload })
   } catch (err) {
     if (err instanceof SnapshotUnavailableError) {
@@ -1478,9 +1809,11 @@ router.get('/stream', requireAuth, async (req: AuthenticatedRequest, res) => {
   sseHeaders(res)
   writeSse(res, 'connected', { timestamp: new Date().toISOString(), userId: req.user!.id })
 
+  // Goes through the cache: N connected clients ticking within the same window
+  // share ONE computation instead of each rebuilding the full snapshot.
   const emit = async () => {
     try {
-      const payload = await buildSandboxPayload(client, req.user!.id)
+      const payload = await getSandboxSnapshot(client, req.user!.id, req.token)
       writeSse(res, 'sandbox-update', payload)
     } catch { /* ignore */ }
   }
@@ -1543,12 +1876,12 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
       return res.status(500).json({ error: { code: 'DELETE_FAILED', message: 'Failed to delete simulation' } })
     }
 
-    const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
+    const payload = await buildSandboxPayloadOrNull(client, req.user!.id, req.token)
     return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
   }
 
   const context = action === 'snapshot' || action === 'restore_snapshot'
-    ? (await buildSandboxPayloadOrNull(client, req.user!.id)) || undefined
+    ? (await buildSandboxPayloadOrNull(client, req.user!.id, req.token)) || undefined
     : undefined
   const update = actionUpdate(job, action, now, {
     snapshotId: typeof req.body?.snapshotId === 'string' ? req.body.snapshotId : undefined,
@@ -1567,7 +1900,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
 
   await recordOperatorTelemetry(client, req, [job], action, now, 'single')
 
-  const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
+  const payload = await buildSandboxPayloadOrNull(client, req.user!.id, req.token)
   return res.json({ data: { success: true, action, jobId: job.id, snapshot: payload } })
 })
 
@@ -1653,7 +1986,7 @@ router.post('/jobs/:id/approval', requireAuth, async (req: AuthenticatedRequest,
   })
   if (auditError && !isMissingTable(auditError)) console.warn('[sandbox] approval audit log failed:', auditError.message)
 
-  const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
+  const payload = await buildSandboxPayloadOrNull(client, req.user!.id, req.token)
   return res.json({ data: { success: true, decision, jobId: job.id, approval, snapshot: payload } })
 })
 
@@ -1767,7 +2100,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
     try {
       ;[ownedAssets, invRows, expRows] = await Promise.all([
         safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status').eq('user_id', userId).in('id', requestedAssetIds)),
-        safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
+        safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
         safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, detected_value').eq('user_id', userId).in('asset_id', requestedAssetIds).limit(1000)),
       ])
     } catch (err) {
@@ -1909,7 +2242,7 @@ router.post('/simulate', requireAuth, async (req: AuthenticatedRequest, res) => 
   })
   if (auditLogInsert.error && !isMissingTable(auditLogInsert.error)) console.warn('[sandbox] simulation audit log insert failed:', auditLogInsert.error.message)
 
-  const payload = await buildSandboxPayloadOrNull(client, userId)
+  const payload = await buildSandboxPayloadOrNull(client, userId, req.token)
   return res.json({
     data: {
       success: true,
@@ -1973,7 +2306,7 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
   }
 
   await recordOperatorTelemetry(client, req, affectedJobs, action, now, 'bulk')
-  const payload = await buildSandboxPayloadOrNull(client, req.user!.id)
+  const payload = await buildSandboxPayloadOrNull(client, req.user!.id, req.token)
   return res.json({ data: { success: true, action, scope, affected, snapshot: payload } })
 })
 
@@ -1993,16 +2326,25 @@ router.get('/risk', requireAuth, async (req: AuthenticatedRequest, res) => {
     safeCount(client, 'certificates', req.user!.id, (q) => q.eq('is_expiring_soon', true)),
   ])
 
-  const riskScore = Math.max(0, Math.min(100, 100 - critCount * 15 - highCount * 8 - expiringCertCount * 5 - vulnCount * 2 - failedJobs * 10))
-  const pqcReadiness = totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0
+  // Same two corrections as the main snapshot path, which this lightweight
+  // endpoint had drifted from:
+  //   - `100 - penalties` is a higher-is-better POSTURE score; publishing it as
+  //     `riskScore` inverted its meaning, and it saturated to 0 for any real
+  //     estate. Quantum risk is 0-100 LOWER-better, banded by RISK_BANDS.
+  //   - `completedJobs / totalJobs` is a migration-job completion rate. It is
+  //     not PQC readiness and must not be published under that name.
+  const quantumRiskScore = riskScoreFromLoad(
+    critCount * 3 + highCount * 1.2 + expiringCertCount * 1 + vulnCount * 0.4 + failedJobs * 2,
+  )
   const migrationHealth = totalJobs > 0
     ? (failedJobs / totalJobs > 0.3 ? 'critical' : failedJobs > 0 ? 'degraded' : 'healthy')
     : 'no-data'
 
   return res.json({
     data: {
-      riskScore,
-      pqcReadiness,
+      quantumRiskScore,
+      quantumRiskLevel: riskBandFor(quantumRiskScore).label,
+      migrationJobCompletionRate: totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0,
       migrationHealth,
       criticalExposures: critCount,
       highExposures: highCount,
@@ -2010,6 +2352,9 @@ router.get('/risk', requireAuth, async (req: AuthenticatedRequest, res) => {
       expiringCertificates: expiringCertCount,
       failedMigrations: failedJobs,
       totalAssets,
+      // This endpoint counts raw `crypto_exposures` rows for speed. The
+      // de-duplicated, cross-page-consistent figures live on /snapshot.
+      countBasis: 'raw crypto_exposures rows — see /snapshot for de-duplicated observation counts',
       generatedAt: new Date().toISOString(),
     }
   })
@@ -2021,7 +2366,7 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   try {
-    const payload = await buildSandboxPayload(client, req.user!.id)
+    const payload = await getSandboxSnapshot(client, req.user!.id, req.token)
     const format = String(req.query.format || 'json').toLowerCase()
     const simulationId = typeof req.query.simulationId === 'string' ? req.query.simulationId : ''
     const selectedSimulation = simulationId
@@ -2153,7 +2498,11 @@ export function startSandboxScheduler() {
 
   const tick = async () => {
     try {
-      await advanceSandboxJobs(client)
+      // The engine advances jobs behind the cache's back, so any tenant whose
+      // jobs actually moved has its snapshot dropped — otherwise a progress
+      // change could sit invisible for up to the TTL.
+      const { advancedUsers } = await advanceSandboxJobs(client)
+      for (const advancedUser of advancedUsers) invalidateSandboxSnapshot(advancedUser)
     } catch (err) {
       console.warn('[sandbox] background scheduler tick failed:', err instanceof Error ? err.message : err)
     }

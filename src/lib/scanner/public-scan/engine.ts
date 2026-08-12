@@ -124,6 +124,16 @@ export function computeClassicalScore(components: ScoreComponent[]): number {
  */
 export function computePostQuantumReadiness(evidence: PublicScanEvidence): {
   score: number
+  /**
+   * False when the named-group probe never ran, i.e. no handshake completed.
+   *
+   * `score` is still returned in that case (the scoring model needs a number for
+   * the `post-quantum-readiness` category, which is separately marked
+   * inapplicable), but no CONSUMER may publish it as a readiness percentage:
+   * 55 of its 100 points come from hybrid key agreement, so an unprobed endpoint
+   * scores 0 by construction and 0% is a verdict this scan did not earn.
+   */
+  measured: boolean
   hybridObserved: boolean
   pqSignatureObserved: boolean
   reasons: string[]
@@ -161,9 +171,22 @@ export function computePostQuantumReadiness(evidence: PublicScanEvidence): {
   if (hybridObserved && keyAgreement.hybridGroups.length) {
     reasons.push(`Hybrid post-quantum key agreement accepted: ${keyAgreement.hybridGroups.join(', ')}.`)
   }
+  const measured = keyAgreement.probed || hybridObserved || pqSignatureObserved
+  if (!measured) {
+    return {
+      score: model.score,
+      measured: false,
+      hybridObserved,
+      pqSignatureObserved,
+      reasons: [
+        'Post-quantum readiness was not measured: no TLS handshake completed, so named key-agreement groups could not be offered to this endpoint.',
+      ],
+    }
+  }
+
   reasons.push(...model.reasons)
 
-  return { score: model.score, hybridObserved, pqSignatureObserved, reasons }
+  return { score: model.score, measured: true, hybridObserved, pqSignatureObserved, reasons }
 }
 
 // ─── Executive summary ────────────────────────────────────────────────────────
@@ -253,13 +276,26 @@ export function buildExecutiveSummary(
   components: ScoreComponent[],
   findings: PublicFinding[],
 ): ExecutiveSummary {
-  const encryptionScore = computeClassicalScore(components)
+  const rawEncryptionScore = computeClassicalScore(components)
   const classicalComponents = components.filter((component) => CLASSICAL_CATEGORY_KEYS.includes(component.key))
-  const classicalScore = computeClassicalScore(classicalComponents)
+  const rawClassicalScore = computeClassicalScore(classicalComponents)
   const pq = computePostQuantumReadiness(evidence)
   const evidenceCoverage = computeEvidenceCoverage(components)
   const gradeable = evidenceCoverage >= MIN_GRADEABLE_COVERAGE
-  const graded = scoreToGrade(encryptionScore)
+  const graded = scoreToGrade(rawEncryptionScore)
+
+  /* Below the coverage floor the grade was already withheld — but the two scores
+     it is derived from were still published as 0, and 0 is the worst MEASURED
+     value on a higher-is-better scale. The gauge duly pointed at 0 and its
+     legend said "Critical" underneath a badge that said "N/A · Insufficient
+     evidence". Withholding the grade and publishing its inputs is not a partial
+     fix; it is the same claim made twice, once honestly and once not. */
+  const encryptionScore = gradeable ? rawEncryptionScore : null
+  const classicalScore = gradeable ? rawClassicalScore : null
+  /* PQ readiness is withheld on its own evidence, not on the composite's: the
+     named-group probe is what measures it, and `computePostQuantumReadiness`
+     reports whether that probe ran. */
+  const postQuantumReadiness = pq.measured ? pq.score : null
   const grade: SecurityGrade = gradeable ? graded.grade : 'N/A'
   const gradeLabel = gradeable ? graded.rating : 'Insufficient evidence'
   const gradeColor = gradeable ? graded.color : '#94a3b8'
@@ -311,7 +347,7 @@ export function buildExecutiveSummary(
       : graded.meaning,
     gradeColor,
     classicalScore,
-    postQuantumReadiness: pq.score,
+    postQuantumReadiness,
     encryptionScore,
     encryptionBand: gradeable ? graded.rating : 'Unrated',
     businessRisk,
@@ -363,14 +399,25 @@ export function buildHandshakeSteps(evidence: PublicScanEvidence): HandshakeStep
       observed: dns.addressCount > 0,
       timingMs: null,
     },
-    {
-      key: 'tcp',
-      label: 'TCP Connect',
-      value: timing.tcpConnectMs !== null ? `${timing.tcpConnectMs} ms` : 'not measured',
-      detail: `Port ${evidence.port} · measured on the assessment socket`,
-      observed: timing.tcpConnectMs !== null,
-      timingMs: timing.tcpConnectMs,
-    },
+    /* The reachability preflight measures this directly, so the step reports a
+       real number even when the TLS session probe never got far enough to time
+       one — and, when the port refused or dropped the connection, it reports
+       exactly which of those happened instead of a bare "not measured". */
+    (() => {
+      const reach = evidence.engines?.reachability?.data
+      const connectMs = timing.tcpConnectMs ?? reach?.tcpConnectMs ?? null
+      return {
+        key: 'tcp',
+        label: 'TCP Connect',
+        value: connectMs !== null ? `${connectMs} ms` : (reach?.state ?? 'not measured'),
+        detail:
+          connectMs !== null
+            ? `Port ${evidence.port} · measured on the assessment socket`
+            : (reach?.detail ?? `Port ${evidence.port} did not answer`),
+        observed: connectMs !== null,
+        timingMs: connectMs,
+      }
+    })(),
     {
       key: 'client-hello',
       // What the SCANNER offered. Previously the static string "TLS 1.0–1.3
@@ -568,7 +615,12 @@ export function buildIntelligence(evidence: PublicScanEvidence, confidence: numb
       replaces: `${certificate.publicKeyAlgorithm} leaf signature`,
     })
   }
-  if (!migrationTargets.length) {
+  /* Only claim "sustain hybrid" when hybrid was actually observed. The
+     unconditional fallback this replaces fired on an endpoint where nothing at
+     all was measured, telling the reader to maintain a hybrid group the scan had
+     never seen and citing "no classical-only primitive observed at the edge" —
+     technically true, because NOTHING was observed at the edge. */
+  if (!migrationTargets.length && pq.hybridObserved) {
     migrationTargets.push({
       name: 'Sustain hybrid deployment',
       standard: 'NIST SP 1800-38C',
@@ -580,11 +632,18 @@ export function buildIntelligence(evidence: PublicScanEvidence, confidence: numb
     observedAlgorithms,
     keyExchange: kex,
     forwardSecrecy,
-    quantumVulnerability: pq.hybridObserved
-      ? pq.pqSignatureObserved
-        ? 'Quantum-safe'
-        : 'Hybrid-protected'
-      : 'Vulnerable',
+    /* `Unknown` is reported when the key-agreement dimension was never probed.
+       Reporting `Vulnerable` there stated a measured verdict about an endpoint
+       that had refused every connection — and paired it with the reason "No
+       hybrid or post-quantum key agreement offered", which reads as an
+       observation about the target rather than about the scan. */
+    quantumVulnerability: !pq.measured
+      ? 'Unknown'
+      : pq.hybridObserved
+        ? pq.pqSignatureObserved
+          ? 'Quantum-safe'
+          : 'Hybrid-protected'
+        : 'Vulnerable',
     quantumVulnerabilityReason: pq.reasons[0],
     migrationTargets,
     confidence,
@@ -617,14 +676,28 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     /TLSv1$|TLSv1\.1|SSL/i.test(protocol),
   )
 
+  /* Nothing on this timeline may describe THIS endpoint when nothing about it was
+     measured. The un-gated version rendered "Key agreement is unknown with no
+     post-quantum group offered — classical protection only" and "Sessions
+     harvested today become readable once unknown is broken" — a harvest-now
+     narrative built around the literal string "unknown", asserting classical
+     exposure for an endpoint that never completed a handshake.
+
+     The three forward-looking phases (CRQC horizon, hybrid availability, full
+     PQC adoption) are industry context and stay as they are; the four that make
+     claims about the target are replaced with what actually happened. */
+  const measured = pq.measured
+
   // The "Today" line states what was measured about this endpoint.
-  const todayDescription = pq.hybridObserved
-    ? `Hybrid post-quantum key agreement (${groups}) protects new sessions; the chain is still signed with ${certificateAlgorithm ?? 'a classical algorithm'}.`
-    : legacyProtocols.length
-      ? `Key agreement is ${kex}, and deprecated ${legacyProtocols.join('/')} is still accepted — no quantum protection, and a live downgrade path.`
-      : pureKem.length
-        ? `Standalone ${pureKem.join(', ')} is accepted but no hybrid group is offered, so sessions fall back to ${kex}.`
-        : `Key agreement is ${kex} with no post-quantum group offered — classical protection only.`
+  const todayDescription = !measured
+    ? `No handshake completed against this endpoint, so its key agreement and certificate chain are unknown. Nothing on this timeline below is a measurement of this target.`
+    : pq.hybridObserved
+      ? `Hybrid post-quantum key agreement (${groups}) protects new sessions; the chain is still signed with ${certificateAlgorithm ?? 'a classical algorithm'}.`
+      : legacyProtocols.length
+        ? `Key agreement is ${kex}, and deprecated ${legacyProtocols.join('/')} is still accepted — no quantum protection, and a live downgrade path.`
+        : pureKem.length
+          ? `Standalone ${pureKem.join(', ')} is accepted but no hybrid group is offered, so sessions fall back to ${kex}.`
+          : `Key agreement is ${kex} with no post-quantum group offered — classical protection only.`
 
   return [
     {
@@ -637,10 +710,12 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     {
       key: 'harvest',
       title: 'Harvest Now',
-      description: pq.hybridObserved
-        ? 'Recorded sessions are protected by ML-KEM; only captures from before this rollout remain exposed.'
-        : `Traffic protected by ${kex} can be recorded today and stored until it is decryptable.`,
-      state: pq.hybridObserved ? 'future' : 'active',
+      description: !measured
+        ? 'Whether traffic to this endpoint is harvestable cannot be determined without observing its key agreement.'
+        : pq.hybridObserved
+          ? 'Recorded sessions are protected by ML-KEM; only captures from before this rollout remain exposed.'
+          : `Traffic protected by ${kex} can be recorded today and stored until it is decryptable.`,
+      state: !measured ? 'future' : pq.hybridObserved ? 'future' : 'active',
       horizon: 'Ongoing',
     },
     {
@@ -654,18 +729,22 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     {
       key: 'decryption',
       title: 'Potential Decryption Risk',
-      description: pq.hybridObserved
-        ? 'Only traffic captured before the hybrid rollout becomes readable.'
-        : `Sessions harvested today become readable once ${kex.split(' (')[0]} is broken.`,
+      description: !measured
+        ? 'Not assessable — the key agreement protecting this endpoint’s sessions was never observed.'
+        : pq.hybridObserved
+          ? 'Only traffic captured before the hybrid rollout becomes readable.'
+          : `Sessions harvested today become readable once ${kex.split(' (')[0]} is broken.`,
       state: 'future',
       horizon: 'Post-CRQC',
     },
     {
       key: 'migration',
       title: 'Recommended Migration',
-      description: pq.hybridObserved
-        ? 'Hybrid key agreement is live at this edge; extend the same rollout to internal services and machine identities. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
-        : 'Begin hybrid PQC rollout so long-lived data stops accumulating exposure. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.',
+      description: !measured
+        ? 'Restore reachability on this port, or assess the service from inside the network, before a migration position can be recommended for it. NIST IR 8547 deprecates 112-bit classical key establishment from 2030 regardless.'
+        : pq.hybridObserved
+          ? 'Hybrid key agreement is live at this edge; extend the same rollout to internal services and machine identities. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
+          : 'Begin hybrid PQC rollout so long-lived data stops accumulating exposure. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.',
       state: pq.hybridObserved ? 'now' : 'target',
       horizon: 'Deprecated 2030 · NIST IR 8547',
     },
@@ -1197,9 +1276,15 @@ export function buildSophia(
           ? 'workable classical cryptography with specific hardening gaps'
           : 'material weaknesses in its public cryptographic configuration'
 
-  const quantumClause = pq.hybridObserved
-    ? `Hybrid post-quantum key agreement (${evidence.keyAgreement.hybridGroups.join(', ')}) is accepted at the edge, which places this endpoint ahead of most Internet-facing infrastructure. The certificate chain, however, is still anchored on ${certAlg}.`
-    : `Key agreement remains ${resolveKeyExchange(evidence)} and the chain is anchored on ${certAlg}, so traffic captured today stays decryptable once a cryptographically relevant quantum computer exists.`
+  /* The harvest-now-decrypt-later claim is a statement about OBSERVED key
+     agreement. Asserting it for an endpoint that never completed a handshake
+     described cryptography the scan had not seen — so when the probe never ran,
+     Sophia says what actually happened instead. */
+  const quantumClause = !pq.measured
+    ? `No TLS handshake completed against this endpoint, so its key agreement, certificate chain and post-quantum posture are all unassessed. Nothing here should be read as a finding about the target's cryptography — only about its availability.`
+    : pq.hybridObserved
+      ? `Hybrid post-quantum key agreement (${evidence.keyAgreement.hybridGroups.join(', ')}) is accepted at the edge, which places this endpoint ahead of most Internet-facing infrastructure. The certificate chain, however, is still anchored on ${certAlg}.`
+      : `Key agreement remains ${resolveKeyExchange(evidence)} and the chain is anchored on ${certAlg}, so traffic captured today stays decryptable once a cryptographically relevant quantum computer exists.`
 
   const scoreClause = summary.gradeable
     ? `Post-quantum readiness measured at the edge is ${summary.postQuantumReadiness}%, against a classical transport score of ${summary.classicalScore} — a composite encryption score of ${summary.encryptionScore}/100, graded ${summary.grade}.`
@@ -1230,9 +1315,16 @@ export function buildSophia(
     ? ` The single highest-value change measured here is "${topAction.title}", modelled at +${topAction.scoreGain} points on the encryption score.`
     : ''
 
+  const unreachable = evidence.engines?.reachability?.data?.reachable === false
+  const opener = unreachable
+    ? `Port ${evidence.port} did not accept a TCP connection, so no cryptographic evidence was collected.`
+    : `Based on the observed ${tlsVersion} handshake, this organization demonstrates ${posture}.`
+
   return {
-    headline: `${posture.charAt(0).toUpperCase()}${posture.slice(1)} on the public edge`,
-    narrative: `Based on the observed ${tlsVersion} handshake, this organization demonstrates ${posture}. ${quantumClause} ${scoreClause}${findingsClause}${actionClause}`,
+    headline: unreachable
+      ? `Endpoint did not answer on port ${evidence.port}`
+      : `${posture.charAt(0).toUpperCase()}${posture.slice(1)} on the public edge`,
+    narrative: `${opener} ${quantumClause} ${scoreClause}${findingsClause}${actionClause}`,
     cannotValidate: [
       'Source code cryptography',
       'Internal PKI and certificate authorities',

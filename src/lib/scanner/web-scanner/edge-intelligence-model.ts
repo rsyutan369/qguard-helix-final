@@ -179,10 +179,16 @@ export interface EdgeQuantumSurface {
   keyExchangeClass: string
   forwardSecrecy: string
   kemParameterSets: string[]
-  postQuantumReadiness: number
+  /**
+   * Null when the named-group probe never ran (no handshake completed). 0 is the
+   * worst MEASURED readiness on this scale, so a target that refused every
+   * connection must not be published at 0% — it was not assessed.
+   */
+  postQuantumReadiness: number | null
   readinessReasons: string[]
-  quantumRisk: 'Low' | 'Medium' | 'High' | 'Critical'
-  quantumRiskScore: number
+  /** Null when no primitive was observed. An empty factor set is not "Low". */
+  quantumRisk: 'Low' | 'Medium' | 'High' | 'Critical' | null
+  quantumRiskScore: number | null
   riskFactors: Array<{ factor: string; observed: string; impact: string; explanation: string }>
   vulnerability: EdgeQuantumVulnerability
   vulnerabilityReason: string
@@ -205,6 +211,106 @@ export interface EdgeIntelligence {
   quantum: EdgeQuantumSurface
 }
 
+
+/* ────────────────────────────────────────────── measured key agreement ────── */
+
+/**
+ * The measured post-quantum key-agreement verdict for an endpoint.
+ *
+ * WHY EVERY CONSUMER MUST COME THROUGH HERE
+ * -----------------------------------------
+ * `tls.getEphemeralKeyInfo()` returns an EMPTY object for a TLS 1.3 handshake,
+ * so `TlsAnalysisResult.keyExchange` degrades to the literal string
+ * `"ECDHE (TLS 1.3 key_share)"` on every modern endpoint regardless of the group
+ * that was actually negotiated, and `negotiatedCurve` is null. Any consumer that
+ * substring-tests that label concludes "classical ECDHE" for an endpoint running
+ * X25519MLKEM768 — which is how a live hybrid host came to be scored, graded and
+ * coloured as classical-only across the whole assessment.
+ *
+ * The named-group prober is the ONLY component that knows the answer: it offers
+ * each group in isolation under a TLS 1.3 floor and records what the endpoint
+ * accepted. This module is the single place that reading is interpreted, so the
+ * detection rules, the published scoring model, the cipher-suite analyzer and
+ * the dashboard cannot reach four different conclusions from one measurement.
+ */
+export interface MeasuredKeyAgreement {
+  /** True when named-group probing ran at all. False ⇒ everything below is unknown, not negative. */
+  probed: boolean
+  /** Classical hedge + ML-KEM accepted together — the recommended migration posture. */
+  hybrid: boolean
+  /** Standalone ML-KEM accepted with no classical hedge. */
+  pureKem: boolean
+  /** `hybrid || pureKem` — session secrets on this channel are out of Shor's reach. */
+  kemApplied: boolean
+  /** The group the verdict rests on, e.g. `X25519MLKEM768`. Null when none was accepted. */
+  group: string | null
+  /** Operator-facing label for the key agreement, e.g. `X25519MLKEM768 (hybrid)`. */
+  label: string | null
+  /** Named classical half of a hybrid construction, e.g. `X25519 (Curve25519 ECDHE)`. */
+  classicalComponent: string | null
+  /** Named post-quantum half, e.g. `ML-KEM-768 (FIPS 203)`. */
+  postQuantumComponent: string | null
+  /** Handshakes spent reaching this verdict. Provenance, never an estimate. */
+  handshakes: number
+  confidence: number
+}
+
+/** The verdict for an endpoint no probe ever reached. Never a negative result. */
+export const UNPROBED_KEY_AGREEMENT: MeasuredKeyAgreement = {
+  probed: false,
+  hybrid: false,
+  pureKem: false,
+  kemApplied: false,
+  group: null,
+  label: null,
+  classicalComponent: null,
+  postQuantumComponent: null,
+  handshakes: 0,
+  confidence: 0,
+}
+
+/**
+ * Resolve the measured key agreement from an edge bundle.
+ *
+ * Accepts `null`/`undefined` and returns {@link UNPROBED_KEY_AGREEMENT} so a
+ * caller with no edge evidence gets "not measured" rather than "no PQC" — the
+ * distinction the whole honesty contract rests on.
+ */
+export function measuredKeyAgreement(edge: EdgeIntelligence | null | undefined): MeasuredKeyAgreement {
+  const pq = edge?.pqKeyAgreement
+  if (!pq?.probed) return UNPROBED_KEY_AGREEMENT
+
+  /* `state === 'pass'` is required for the hybrid verdict because a partial
+     result means some groups were inconclusive: the prober saw an accept it
+     could not reproduce. A pure-KEM accept needs no such gate — there is no
+     classical hedge to be uncertain about, only the group itself. */
+  const hybrid = pq.state === 'pass' && pq.hybridGroups.length > 0
+  const pureKem = !hybrid && pq.pureKemGroups.length > 0
+  const group = hybrid ? (pq.primaryGroup ?? pq.hybridGroups[0]) : pureKem ? pq.pureKemGroups[0] : null
+
+  return {
+    probed: true,
+    hybrid,
+    pureKem,
+    kemApplied: hybrid || pureKem,
+    group,
+    label: group ? `${group}${hybrid ? ' (hybrid)' : ' (no classical hedge)'}` : null,
+    classicalComponent: hybrid ? pq.classicalComponent : null,
+    postQuantumComponent: hybrid || pureKem ? pq.postQuantumComponent : null,
+    handshakes: pq.handshakes,
+    confidence: pq.confidence,
+  }
+}
+
+/**
+ * Shorthand for "are the session secrets on this channel out of Shor's reach?".
+ *
+ * Deliberately narrower than "has any PQC been observed anywhere": a repository
+ * that imports liboqs has adopted PQC but has not protected this handshake.
+ */
+export function measuredKemApplied(edge: EdgeIntelligence | null | undefined): boolean {
+  return measuredKeyAgreement(edge).kemApplied
+}
 
 /* ─────────────────────────────────────────────────── quantum vulnerability ── */
 
@@ -236,7 +342,8 @@ export function classifyQuantumVulnerability(input: {
   hasTransportEvidence: boolean
   hybridObserved: boolean
   pqSignatureObserved: boolean
-  quantumRisk: 'Low' | 'Medium' | 'High' | 'Critical'
+  /** Null when nothing was observed — handled by the `hasTransportEvidence` gate. */
+  quantumRisk: 'Low' | 'Medium' | 'High' | 'Critical' | null
   hybridProbed: boolean
   supportsTls13: boolean
   /**

@@ -27,10 +27,88 @@ tools/scanner-hero-cards-check.ts      hero card label/colour consistency (exhau
                                        PQ honesty, with classical/unprobed negative controls
 tools/crypto-detection-check.ts        catalog structure, 8-language controls, false positives
 tools/repo-provider-check.ts           platform parsing, misclassification guards
-tools/public-scan-check.ts             public engine invariants
+tools/public-scan-check.ts             LIVE public engine invariants (139) — scores,
+                                       grading model, seven-state statuses, PLUS the
+                                       unreachable-endpoint contract: an unanswered
+                                       port must fast-fail (<20s, was 66.7s), mark
+                                       stages `unavailable` not `failed`, and publish
+                                       null for every score/risk/readiness. Also pins
+                                       reachability classification — loopback must be
+                                       `blocked`, which is how the SSRF hole from
+                                       `net.connect` skipping `lookup` on IP literals
+                                       was caught. `PROBE_UNREACHABLE_HOST` overrides
+                                       the filtered target (default smtp.gmail.com)
 tools/hndl-check.ts                    harvest-now-decrypt-later sections
 tools/discovery-workflow-probe.ts      LIVE end-to-end scan + rail rendering
+tools/dashboard-summary-check.ts       LIVE /dashboard/summary scale + direction:
+                                       risk 0-100 lower-better vs readiness
+                                       higher-better, bands derived from the
+                                       shared tables, agreement with the
+                                       executive KPI, subject-vs-finding counts,
+                                       + an unmeasured-estate negative control
+tools/scanner-finding-identity-check.ts  finding de-duplication identity (the four
+                                       storage views of one observation collapse,
+                                       distinct observations do NOT), narrative
+                                       preservation, CBOM component partition,
+                                       at-risk subset scope, chart denominator,
+                                       algorithm-vs-posture classification, the
+                                       sandbox graded-observation count, and risk
+                                       score DIRECTION + non-saturation
+tools/sandbox-twin-check.ts            twin/graph/predictions/benchmark/Sophia/
+                                       approval gate + null-not-zero rollback
+                                       figures and covered/detail agreement
+tools/sandbox-latency-probe.ts         LIVE sandbox: cross-engine reconciliation,
+                                       cold-vs-warm build cost, and the cache
+                                       contract (single-flight via a shared
+                                       `generatedAt`, TTL expiry, and with
+                                       PROBE_MUTATE=1 the invalidate-on-write
+                                       path, which cleans up after itself)
 ```
+
+### The cross-population sanity probe
+
+Two classes of defect are invisible in the source and obvious in the payload.
+Run these against the live API before believing any headline count:
+
+```js
+// 1. Is a "findings" total actually distinct observations?
+//    distinctBy(semantic key) << total means the dedupe key is wrong.
+const g = new Map(); findings.forEach(f => {
+  const k = [f.algorithm, hostOf(f.location)].join('|'); g.set(k, (g.get(k)||0)+1)
+});
+console.log(findings.length, '→', g.size)   // 255 → 66 was issue #20
+
+// 2. Do per-row counts sum to the headline?
+assets.reduce((s,a) => s + a.vulnerableCount, 0) === summary.vulnerableComponents
+
+// 3. Do two INDEPENDENTLY derived counts of the same universe agree?
+//    scanner severityCounts vs quantum-readiness riskDistribution vs the
+//    workflow rail's "N critical · M findings" — all three read the same list.
+```
+
+An independently-derived count agreeing is the strongest evidence a grouping is
+correct. Issue #20's fix was confirmed when the de-duplicated finding count
+(66, of which 62 non-safe) matched `quantumVulnerableComponents: 62` produced by
+an unrelated grouping of `crypto_inventory`.
+
+### Verifying an authenticated endpoint without a password
+
+`dashboard-summary-check.ts` needs a REAL user session — the service-role key
+bypasses RLS and would read rows the app cannot, proving nothing. Mint one from
+the service role instead of storing test passwords:
+
+```ts
+const { data: link } = await admin.auth.admin.generateLink({ type: 'magiclink', email })
+const { data } = await anonClient.auth.verifyOtp({
+  token_hash: (link as any).properties.hashed_token, type: 'magiclink',
+})
+const token = data.session!.access_token   // now call the API as that user
+```
+
+`generateLink` does NOT send mail, so it is safe to run repeatedly. The same
+session can be injected into a browser via
+`localStorage.setItem('sb-<project-ref>-auth-token', JSON.stringify(session))`
+when a render site has to be checked. Clear it afterwards.
 
 Shape:
 

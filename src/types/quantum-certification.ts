@@ -45,7 +45,17 @@ export interface CertificationPolicy {
 }
 
 export interface EligibilityResult {
+  /**
+   * All required criteria met — the estate is CERTIFICATION-grade (Silver+).
+   * Distinct from `issuable`: this is the claim "quantum secure".
+   */
   eligible: boolean;
+  /**
+   * Enough measured evidence exists to state a baseline posture, so a Bronze
+   * "Initial Readiness" attestation can be issued. Bronze does NOT assert the
+   * estate is quantum-safe — it records what was measured, including the gaps.
+   */
+  issuable: boolean;
   evaluatedAt: string;
   hasData: boolean;
   requiredTotal: number;
@@ -92,6 +102,16 @@ export interface QuantumTrustCertificate {
   status: CertificateStatus;
   level: CertificationLevel;
   levelLabel: string;
+  /**
+   * True only when every required criterion was met at issuance (Silver+).
+   * A Bronze baseline attestation is `false` — it must never be presented as
+   * a quantum-secure certification. Carried inside the ML-DSA-65-signed
+   * canonical payload, so it is tamper-evident on the public verify portal.
+   */
+  certified: boolean;
+  /** Criteria met at issuance, e.g. 3 of 10 — printed on the artifact. */
+  criteriaMet: number;
+  criteriaTotal: number;
   trustScore: number;
   overallReadiness: number;
   quantumRisk: number;
@@ -169,6 +189,14 @@ export interface PublicCertificateVerification {
   statusDetail: string;
   level: CertificationLevel | null;
   levelLabel: string;
+  /**
+   * False for a Bronze baseline attestation. The public portal MUST surface
+   * this — a third party reading a verification page has to be able to tell a
+   * measured baseline from a quantum-secure certification.
+   */
+  certified: boolean;
+  criteriaMet: number;
+  criteriaTotal: number;
   trustScore: number;
   overallReadiness: number;
   pqcAdoption: number;

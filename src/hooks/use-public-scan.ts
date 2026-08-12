@@ -204,7 +204,12 @@ export function usePublicScan(): UsePublicScanResult {
   const totalWeight = Object.values(STAGE_WEIGHT).reduce((sum, weight) => sum + weight, 0);
   const earned = stages.reduce((sum, stage) => {
     const weight = STAGE_WEIGHT[stage.key] ?? 0;
-    if (stage.state === 'complete' || stage.state === 'failed') return sum + weight;
+    // `unavailable` is a settled stage — it will not do any more work — so it
+    // earns its full weight. Leaving it out stalled the bar at ~15% for the
+    // whole run against an unreachable endpoint.
+    if (stage.state === 'complete' || stage.state === 'failed' || stage.state === 'unavailable') {
+      return sum + weight;
+    }
     if (stage.state !== 'running') return sum;
     // A running stage contributes what it has actually measured. Only the TLS
     // stage reports sub-progress; the rest are short enough that a half-credit

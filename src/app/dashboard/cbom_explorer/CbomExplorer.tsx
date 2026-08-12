@@ -35,6 +35,7 @@ import {
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
 import { useQuantumReadiness, readinessTone } from '@/app/dashboard/quantum-readiness/_shared';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
+import { namesCryptography as sharedNamesCryptography } from '@/lib/scanner/finding-identity';
 
 type CbomEntry = {
   id: string;
@@ -177,55 +178,112 @@ function latestScanAt(history: any[], generatedAt?: string) {
   return latest?.completedAt || latest?.startedAt || latest?.created_at || fallback;
 }
 
-function buildTrend(history: any[], currentScore: number): TrendPoint[] {
-  const scanPoints = [...history]
+/**
+ * Per-scan PQC readiness, measured.
+ *
+ * This used to plot each scan's Q-Score (100 − riskScore) under the label "PQC
+ * Readiness Score" — a different measurement entirely — and, when a scan had no
+ * score at all, substituted the CURRENT readiness so an unmeasured run drew a
+ * point that looked measured. Both are gone: a scan contributes a point only
+ * when it actually recorded a component count, and the value is the share of
+ * those components that were PQC-ready.
+ */
+function buildTrend(history: any[]): TrendPoint[] {
+  return [...history]
+    .filter((entry: any) => Number(entry?.detectedComponents) > 0)
     .reverse()
     .slice(-8)
-    .map((entry: any) => {
-      const raw =
-        entry?.summary?.qScore ??
-        entry?.qScore ??
-        (Number.isFinite(Number(entry?.summary?.riskScore)) ? 100 - Number(entry.summary.riskScore) : null) ??
-        currentScore;
-      return {
-        label: shortDate(entry?.completedAt || entry?.startedAt || entry?.created_at).split(',')[0],
-        value: Math.max(0, Math.min(100, Math.round(Number(raw) || 0))),
-      };
-    });
-
-  if (scanPoints.length > 0) return scanPoints;
-  return [{ label: 'Current', value: Math.max(0, Math.min(100, Math.round(currentScore || 0))) }];
+    .map((entry: any) => ({
+      label: shortDate(entry?.completedAt || entry?.startedAt || entry?.created_at).split(',')[0],
+      value: percent(Number(entry.pqcReadyFindings || 0), Number(entry.detectedComponents)),
+    }));
 }
 
-function buildAlgorithmDistribution(entries: CbomEntry[]) {
+/**
+ * Observation classes whose `algorithm` field names an actual cryptographic
+ * algorithm, protocol or suite.
+ *
+ * The scanner writes BOTH measured cryptography and policy/configuration
+ * findings into `crypto_inventory`, and for the latter the `algorithm` column
+ * holds the finding TITLE ("No Certificate Pinning", "Regulatory Compliance
+ * Gap"). Charting all of it as "Algorithm Distribution" put rule names on an
+ * algorithm axis. The scanner labels every row with its own class prefix
+ * ("Cipher Suite: …", "Rule (Tls Config): …"), so this reads that label rather
+ * than guessing what an algorithm name looks like. An unrecognised class is
+ * treated as a posture observation — the safe direction, since the chart then
+ * never claims a non-algorithm is an algorithm.
+ */
+const CRYPTO_OBSERVATION_CLASSES = [
+  'cipher suite',
+  'symmetric encryption',
+  'asymmetric encryption',
+  'certificate',
+  'certificate signature',
+  'signature',
+  'key exchange',
+  'post-quantum key agreement',
+  'protocol',
+  'protocol support',
+  'hash',
+  'mac',
+  'kdf',
+];
+
+function observationClass(entry: CbomEntry) {
+  const component = String(entry.component || '').trim();
+  const prefix = component.includes(':') ? component.slice(0, component.indexOf(':')) : component;
+  // "Key Exchange (Harvest Now Decrypt Later)" → "key exchange"
+  return prefix.replace(/\s*\(.*$/, '').trim().toLowerCase();
+}
+
+function namesCryptography(entry: CbomEntry) {
+  return CRYPTO_OBSERVATION_CLASSES.includes(observationClass(entry));
+}
+
+function buildAlgorithmDistribution(entries: CbomEntry[], limit = 6) {
   const grouped = new Map<string, number>();
+  let total = 0;
   entries.forEach((entry) => {
+    const count = Number(entry.instances || 1);
+    total += count;
     const label = algorithmLabel(entry.algorithm);
-    grouped.set(label, (grouped.get(label) || 0) + Number(entry.instances || 1));
+    grouped.set(label, (grouped.get(label) || 0) + count);
   });
-  return Array.from(grouped, ([algorithm, count]) => ({ algorithm, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6);
+
+  const ranked = Array.from(grouped, ([algorithm, count]) => ({ algorithm, count })).sort((a, b) => b.count - a.count);
+  const top = ranked.slice(0, limit);
+  const remainder = total - top.reduce((sum, item) => sum + item.count, 0);
+  // The donut used to show only the top 6 and label their sum "Total", so 12
+  // instances stood in for a 66-component estate and every percentage was of
+  // the wrong denominator. The remainder is now an explicit slice.
+  const slices = remainder > 0
+    ? [...top, { algorithm: `Other (${ranked.length - top.length} more)`, count: remainder }]
+    : top;
+
+  return { slices, total, distinct: ranked.length };
 }
 
-function buildRiskyAlgorithms(entries: CbomEntry[], findings: ScannerFinding[]) {
+/**
+ * Riskiest algorithms across the CBOM inventory.
+ *
+ * Counts COMPONENTS only. It previously folded the scanner findings list into
+ * the same tally, so an algorithm present on one component could be counted
+ * several times over — two populations summed into one number.
+ */
+function buildRiskyAlgorithms(entries: CbomEntry[]) {
   const grouped = new Map<string, { algorithm: string; count: number; severity: string }>();
-  const record = (algorithm: string, severity: string) => {
-    const label = algorithmLabel(algorithm);
-    const existing = grouped.get(label);
-    const nextSeverity = !existing || riskRank(severity) > riskRank(existing.severity) ? normalizeSeverity(severity) : existing.severity;
-    grouped.set(label, { algorithm: label, count: (existing?.count || 0) + 1, severity: nextSeverity });
-  };
 
   entries.forEach((entry) => {
     const weak = WEAK_ALGORITHMS.has(algorithmLabel(entry.algorithm).toUpperCase());
-    if (entry.isVulnerable || weak || riskRank(entry.riskSeverity) >= 2) {
-      record(entry.algorithm, entry.riskSeverity || (weak ? 'High' : 'Medium'));
-    }
-  });
-
-  findings.forEach((finding) => {
-    record(String(finding.algorithm || finding.category || 'Unknown'), String(finding.threatLevel || finding.status || 'Medium'));
+    if (!entry.isVulnerable && !weak && riskRank(entry.riskSeverity) < 2) return;
+    const label = algorithmLabel(entry.algorithm);
+    const severity = entry.riskSeverity || (weak ? 'High' : 'Medium');
+    const existing = grouped.get(label);
+    grouped.set(label, {
+      algorithm: label,
+      count: (existing?.count || 0) + Number(entry.instances || 1),
+      severity: !existing || riskRank(severity) > riskRank(existing.severity) ? normalizeSeverity(severity) : existing.severity,
+    });
   });
 
   return Array.from(grouped.values())
@@ -233,26 +291,51 @@ function buildRiskyAlgorithms(entries: CbomEntry[], findings: ScannerFinding[]) 
     .slice(0, 5);
 }
 
-function buildComplianceRows(totalComponents: number, pqcReady: number, atRisk: number, criticalFindings: number) {
+/**
+ * Screening indicators against control families that depend on cryptographic
+ * posture.
+ *
+ * These are NOT compliance verdicts — the platform's Compliance dashboard owns
+ * those, with the control evidence behind them. What this panel can honestly
+ * say is which CBOM measurement each family is gated on and whether that
+ * measurement currently passes, so every row carries the criterion and the
+ * measured basis it was decided from instead of a bare "Compliant".
+ */
+function buildComplianceRows(totalComponents: number, pqcReady: number, atRiskComponents: number, criticalFindings: number) {
   const readiness = percent(pqcReady, totalComponents);
-  return [
+  const rows = [
     {
       label: 'PCI DSS 4.0',
-      status: atRisk === 0 && totalComponents > 0 ? 'Compliant' : totalComponents > 0 ? 'Partial' : 'Awaiting Data',
+      criterion: 'No at-risk cryptographic components',
+      basis: `${numberFmt(atRiskComponents)} at-risk of ${numberFmt(totalComponents)} components`,
+      met: atRiskComponents === 0,
     },
     {
       label: 'NIST SP 800-131A',
-      status: readiness >= 90 ? 'Compliant' : totalComponents > 0 ? 'Partial' : 'Awaiting Data',
+      criterion: 'PQC-ready share at or above 90%',
+      basis: `${readiness}% PQC-ready (${numberFmt(pqcReady)} of ${numberFmt(totalComponents)})`,
+      met: readiness >= 90,
     },
     {
       label: 'ISO/IEC 27001',
-      status: criticalFindings === 0 && totalComponents > 0 ? 'Compliant' : totalComponents > 0 ? 'Partial' : 'Awaiting Data',
+      criterion: 'No critical cryptographic findings',
+      basis: `${numberFmt(criticalFindings)} critical finding${criticalFindings === 1 ? '' : 's'}`,
+      met: criticalFindings === 0,
     },
     {
       label: 'CIS Controls 8',
-      status: totalComponents > 0 && atRisk === 0 ? 'Compliant' : totalComponents > 0 ? 'Partial' : 'Awaiting Data',
+      criterion: 'No at-risk cryptographic components',
+      basis: `${numberFmt(atRiskComponents)} at-risk of ${numberFmt(totalComponents)} components`,
+      met: atRiskComponents === 0,
     },
   ];
+
+  return rows.map((row) => ({
+    ...row,
+    // With no inventory there is nothing to screen against — that is not a pass
+    // and not a failure, and must not be rendered as either.
+    status: totalComponents === 0 ? 'No evidence' : row.met ? 'Indicator met' : 'Indicator not met',
+  }));
 }
 
 function distributionGradient(items: { algorithm: string; count: number }[], total: number) {
@@ -305,11 +388,13 @@ function LineTrendChart({ points }: { points: TrendPoint[] }) {
   );
 }
 
-function ReadinessGauge({ score }: { score: number }) {
-  const safeScore = Math.max(0, Math.min(100, Math.round(score || 0)));
+function ReadinessGauge({ score, hasScore = true }: { score: number; hasScore?: boolean }) {
+  const safeScore = hasScore ? Math.max(0, Math.min(100, Math.round(score || 0))) : 0;
   const circumference = 2 * Math.PI * 42;
   const offset = circumference - (safeScore / 100) * circumference;
-  const band = safeScore >= 80 ? 'Good' : safeScore >= 50 ? 'Fair' : safeScore > 0 ? 'Low' : 'Awaiting Data';
+  // Unmeasured is not zero: with no readiness score the dial reads "—" rather
+  // than a 0 that would be indistinguishable from a measured worst case.
+  const band = !hasScore ? 'Awaiting Data' : safeScore >= 80 ? 'Good' : safeScore >= 50 ? 'Fair' : 'Low';
 
   return (
     <div className="grid gap-4 sm:grid-cols-[130px_1fr] sm:items-center">
@@ -330,7 +415,7 @@ function ReadinessGauge({ score }: { score: number }) {
         </svg>
         <div className="absolute inset-0 grid place-items-center text-center">
           <div>
-            <div className="text-4xl font-black text-[var(--qg-dashboard-text)]">{safeScore}</div>
+            <div className="text-4xl font-black text-[var(--qg-dashboard-text)]">{hasScore ? safeScore : '—'}</div>
             <div className="text-[10px] text-[var(--qg-text-muted)]">/100</div>
             <div className="mt-1 text-xs font-black text-[var(--qg-amber)]">{band}</div>
           </div>
@@ -513,8 +598,10 @@ function FocusedTabDashboard({
   pqcReady,
   inProgress,
   notPqcReady,
-  atRisk,
+  atRiskComponents,
+  criticalFindings,
   readinessScore,
+  readinessMeasured,
   loading,
   exportSnapshot,
   refresh,
@@ -530,14 +617,16 @@ function FocusedTabDashboard({
   vulnerabilityEntries: CbomEntry[];
   readinessBacklog: CbomEntry[];
   trendPoints: TrendPoint[];
-  complianceRows: { label: string; status: string }[];
+  complianceRows: { label: string; criterion: string; basis: string; met: boolean; status: string }[];
   totalAssets: number;
   totalComponents: number;
   pqcReady: number;
   inProgress: number;
   notPqcReady: number;
-  atRisk: number;
+  atRiskComponents: number;
+  criticalFindings: number;
   readinessScore: number;
+  readinessMeasured: boolean;
   loading: boolean;
   exportSnapshot: () => void;
   refresh: () => void;
@@ -602,29 +691,38 @@ function FocusedTabDashboard({
       {activeTab === 'PQC Readiness' && (
         <div className="grid gap-3 xl:grid-cols-12">
           <div className={`${subtlePanelClass} p-4 xl:col-span-4`}>
-            <ReadinessGauge score={readinessScore} />
+            <ReadinessGauge score={readinessScore} hasScore={readinessMeasured} />
             <div className="mt-4 space-y-2">
               {[
                 ['PQC Ready', pqcReady, 'text-emerald-600 dark:text-emerald-300'],
                 ['In Progress', inProgress, 'text-blue-600 dark:text-blue-300'],
                 ['Not PQC Ready', notPqcReady, 'text-orange-600 dark:text-orange-300'],
-                ['At Risk', atRisk, 'text-red-600 dark:text-red-300'],
               ].map(([label, value, color]) => (
                 <div key={String(label)} className="flex items-center justify-between rounded border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-3 py-2 text-xs">
                   <span>{label}</span>
                   <span className={`font-black ${color}`}>{numberFmt(Number(value))}</span>
                 </div>
               ))}
+              <div className="flex items-center justify-between rounded border border-red-500/25 bg-red-500/8 px-3 py-2 text-xs">
+                <span>At Risk <span className="text-[10px] text-[var(--qg-text-muted)]">(subset of Not PQC Ready)</span></span>
+                <span className="font-black text-red-600 dark:text-red-300">{numberFmt(atRiskComponents)}</span>
+              </div>
+              <p className="text-[10px] leading-relaxed text-[var(--qg-text-muted)]">
+                Component scope — {numberFmt(totalComponents)} cryptographic components across {numberFmt(totalAssets)} asset{totalAssets === 1 ? '' : 's'}.
+                Separately, {numberFmt(criticalFindings)} scanner finding{criticalFindings === 1 ? '' : 's'} {criticalFindings === 1 ? 'is' : 'are'} graded Critical.
+              </p>
             </div>
             <DashboardAction to="/dashboard/migration-planner" icon={PackagePlus} label="Open Migration Planner" detail="Create phased PQC remediation workstreams" />
           </div>
           <div className="xl:col-span-8">
             <div className={`${subtlePanelClass} mb-3 p-4`}>
               <div className="mb-2 flex items-center justify-between text-xs">
-                <span className="font-black uppercase tracking-wider">Readiness Trend</span>
-                <span className="text-[var(--qg-text-muted)]">Last {Math.max(1, trendPoints.length)} scans</span>
+                <span className="font-black uppercase tracking-wider">PQC-Ready Share Per Scan</span>
+                <span className="text-[var(--qg-text-muted)]">{trendPoints.length} measured scan{trendPoints.length === 1 ? '' : 's'}</span>
               </div>
-              <div className="h-44"><LineTrendChart points={trendPoints} /></div>
+              {trendPoints.length === 0
+                ? <EmptyState label="No completed scan has recorded a component count yet, so there is no readiness trend to plot." />
+                : <div className="h-44"><LineTrendChart points={trendPoints} /></div>}
             </div>
             <EntryEvidenceList entries={readinessBacklog} assets={assets} emptyLabel="No PQC readiness backlog exists for the synchronized tenant inventory." />
           </div>
@@ -634,10 +732,10 @@ function FocusedTabDashboard({
       {activeTab === 'Vulnerabilities' && (
         <div className="grid gap-3 xl:grid-cols-12">
           <div className="grid gap-3 md:grid-cols-2 xl:col-span-4">
-            <DashboardMetric icon={AlertTriangle} label="At-Risk Items" value={atRisk} detail="Correlated risk from findings and CBOM rows" tone="red" />
+            <DashboardMetric icon={AlertTriangle} label="At-Risk Components" value={atRiskComponents} detail="Vulnerable CBOM components graded Medium or worse" tone="red" />
             <DashboardMetric icon={ShieldAlert} label="Vulnerable Components" value={vulnerabilityEntries.length} detail="Quantum or weak-crypto exposure" tone="amber" />
-            <DashboardMetric icon={Bell} label="Findings" value={findings.length} detail="Scanner findings synchronized from backend" tone="red" />
-            <DashboardMetric icon={Zap} label="Critical Signals" value={findings.filter((finding) => riskRank(String(finding.threatLevel || finding.status)) >= 4).length} detail="Immediate remediation candidates" tone="red" />
+            <DashboardMetric icon={Bell} label="Findings" value={findings.length} detail="De-duplicated scanner observations" tone="red" />
+            <DashboardMetric icon={Zap} label="Critical Findings" value={criticalFindings} detail="Immediate remediation candidates" tone="red" />
             <div className="md:col-span-2">
               <DashboardAction to="/dashboard/vulnerabilities" icon={ExternalLink} label="Open Vulnerability Center" detail="Review remediation workflows and risk evidence" />
             </div>
@@ -652,10 +750,10 @@ function FocusedTabDashboard({
       {activeTab === 'Certificates' && (
         <div className="grid gap-3 xl:grid-cols-12">
           <div className="grid gap-3 md:grid-cols-2 xl:col-span-4">
-            <DashboardMetric icon={FileArchive} label="Certificate / TLS Rows" value={certificateEntries.length} detail="TLS, certificate, and trust-chain records" tone="cyan" />
-            <DashboardMetric icon={ShieldAlert} label="Weak Trust Items" value={certificateEntries.filter((entry) => entry.isVulnerable || riskRank(entry.riskSeverity) >= 2).length} detail="Certificate or protocol rows needing review" tone="amber" />
-            <DashboardMetric icon={ShieldCheck} label="PQC-Ready Trust" value={certificateEntries.filter((entry) => entry.isQuantumSafe).length} detail="Rows already marked quantum safe" tone="green" />
-            <DashboardMetric icon={CalendarClock} label="Scan Evidence" value={history.length} detail="Authorized scans with certificate evidence" tone="blue" />
+            <DashboardMetric icon={FileArchive} label="Certificate / TLS Rows" value={certificateEntries.length} detail={`of ${numberFmt(totalComponents)} CBOM rows matching certificate, TLS or PKI evidence`} tone="cyan" />
+            <DashboardMetric icon={ShieldAlert} label="Weak Trust Items" value={certificateEntries.filter((entry) => entry.isVulnerable || riskRank(entry.riskSeverity) >= 2).length} detail="Of those, vulnerable or graded Medium+" tone="amber" />
+            <DashboardMetric icon={ShieldCheck} label="PQC-Ready Trust" value={certificateEntries.filter((entry) => entry.isQuantumSafe).length} detail="Of those, marked quantum safe" tone="green" />
+            <DashboardMetric icon={CalendarClock} label="Scans In History" value={history.length} detail="Authorized scans this view draws on" tone="blue" />
             <div className="md:col-span-2">
               <DashboardAction to="/dashboard/pki" icon={ExternalLink} label="Open PKI Operations" detail="Manage certificates, policy, and lifecycle tasks" />
             </div>
@@ -669,10 +767,10 @@ function FocusedTabDashboard({
       {activeTab === 'Key Management' && (
         <div className="grid gap-3 xl:grid-cols-12">
           <div className="grid gap-3 md:grid-cols-2 xl:col-span-4">
-            <DashboardMetric icon={Gauge} label="Key-Control Rows" value={keyEntries.length} detail="KEM, key exchange, signing, and key records" tone="cyan" />
-            <DashboardMetric icon={ShieldAlert} label="Rotation Candidates" value={keyEntries.filter((entry) => entry.isVulnerable || entry.pqcReplacement).length} detail="Rows with PQC replacement or risk evidence" tone="amber" />
-            <DashboardMetric icon={ShieldCheck} label="Quantum-Safe Keys" value={keyEntries.filter((entry) => entry.isQuantumSafe).length} detail="Inventory rows marked PQC ready" tone="green" />
-            <DashboardMetric icon={Activity} label="Key Events" value={telemetry.filter((event: any) => /key|kem|rotation|signature/i.test(`${event.message} ${event.type} ${event.event}`)).length} detail="Runtime key-management telemetry events" tone="blue" />
+            <DashboardMetric icon={Gauge} label="Key-Control Rows" value={keyEntries.length} detail={`of ${numberFmt(totalComponents)} CBOM rows matching KEM, key-exchange or signing evidence`} tone="cyan" />
+            <DashboardMetric icon={ShieldAlert} label="Rotation Candidates" value={keyEntries.filter((entry) => entry.isVulnerable || entry.pqcReplacement).length} detail="Of those, carrying a PQC replacement or risk evidence" tone="amber" />
+            <DashboardMetric icon={ShieldCheck} label="Quantum-Safe Keys" value={keyEntries.filter((entry) => entry.isQuantumSafe).length} detail="Of those, marked PQC ready" tone="green" />
+            <DashboardMetric icon={Activity} label="Key Events" value={telemetry.filter((event: any) => /key|kem|rotation|signature/i.test(`${event.message} ${event.type} ${event.event}`)).length} detail={`of ${numberFmt(telemetry.length)} recorded scan telemetry events`} tone="blue" />
             <div className="md:col-span-2">
               <DashboardAction to="/dashboard/keys" icon={ExternalLink} label="Open Key Management" detail="Generate, rotate, and monitor cryptographic keys" />
             </div>
@@ -687,7 +785,7 @@ function FocusedTabDashboard({
         <div className="grid gap-3 xl:grid-cols-12">
           <div className="grid gap-3 md:grid-cols-2 xl:col-span-5">
             <DashboardMetric icon={FileArchive} label="Reportable CBOM Rows" value={entries.length} detail="Exported from the current synchronized snapshot" tone="cyan" />
-            <DashboardMetric icon={ListFilter} label="Compliance Controls" value={complianceRows.length} detail="Mapped controls in this evidence pack" tone="blue" />
+            <DashboardMetric icon={ListFilter} label="Screening Indicators" value={complianceRows.length} detail={`${complianceRows.filter((row) => row.met).length} currently met`} tone="blue" />
             <DashboardMetric icon={LineChart} label="Telemetry Events" value={telemetry.length} detail="Runtime events included in evidence" tone="amber" />
             <DashboardMetric icon={CalendarClock} label="Scan Records" value={history.length} detail="Historical scan runs included in export" tone="green" />
             <div className="md:col-span-2 grid gap-2 md:grid-cols-2">
@@ -697,12 +795,23 @@ function FocusedTabDashboard({
           </div>
           <div className="space-y-3 xl:col-span-7">
             <div className={`${subtlePanelClass} p-4`}>
-              <div className="mb-3 text-xs font-black uppercase tracking-wider text-[var(--qg-dashboard-text)]">Compliance Evidence</div>
+              <div className="mb-1 text-xs font-black uppercase tracking-wider text-[var(--qg-dashboard-text)]">Cryptographic Screening Indicators</div>
+              <p className="mb-3 text-[10px] leading-relaxed text-[var(--qg-text-muted)]">
+                Each row states the CBOM measurement the control family is gated on and how that measurement currently reads.
+                These are screening indicators, not compliance verdicts — control evidence and attestation live in the Compliance dashboard.
+              </p>
               <div className="space-y-2">
                 {complianceRows.map((row) => (
-                  <div key={row.label} className="flex items-center justify-between rounded border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-3 py-2 text-xs">
-                    <span className="font-bold">{row.label}</span>
-                    <span className={row.status === 'Compliant' ? 'font-black text-emerald-600 dark:text-emerald-300' : row.status === 'Partial' ? 'font-black text-[var(--qg-amber)]' : 'font-black text-[var(--qg-text-muted)]'}>{row.status}</span>
+                  <div key={row.label} className="rounded border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-bold">{row.label}</span>
+                      <span className={
+                        row.status === 'Indicator met' ? 'shrink-0 font-black text-emerald-600 dark:text-emerald-300'
+                          : row.status === 'Indicator not met' ? 'shrink-0 font-black text-[var(--qg-amber)]'
+                            : 'shrink-0 font-black text-[var(--qg-text-muted)]'
+                      }>{row.status}</span>
+                    </div>
+                    <div className="mt-1 text-[10px] text-[var(--qg-text-muted)]">{row.criterion} — {row.basis}</div>
                   </div>
                 ))}
               </div>
@@ -732,9 +841,12 @@ function FocusedTabDashboard({
           <div className="space-y-3 xl:col-span-5">
             <DashboardAction to="/dashboard/scanner" icon={Activity} label="Start New Scan" detail="Create a new authorized CBOM scan job" />
             <div className={`${subtlePanelClass} p-4`}>
-              <div className="mb-3 text-xs font-black uppercase tracking-wider text-[var(--qg-dashboard-text)]">Live Runtime Events</div>
+              <div className="mb-1 text-xs font-black uppercase tracking-wider text-[var(--qg-dashboard-text)]">Scanner Runtime Events</div>
+              <p className="mb-3 text-[10px] text-[var(--qg-text-muted)]">
+                Telemetry recorded during past scans, newest first — not a live feed.
+              </p>
               {telemetry.length === 0 ? (
-                <EmptyState label="No live runtime telemetry has been published yet." />
+                <EmptyState label="No scan has recorded runtime telemetry yet." />
               ) : (
                 <div className="space-y-2">
                   {telemetry.slice(0, 6).map((event: any, index: number) => (
@@ -742,7 +854,11 @@ function FocusedTabDashboard({
                       <div className="font-bold text-[var(--qg-dashboard-text)]">{String(event.message || event.event || event.type || 'Telemetry event')}</div>
                       <div className="mt-1 flex justify-between text-[10px] text-[var(--qg-text-muted)]">
                         <span>{shortDate(event.timestamp || event.created_at || event.startedAt)}</span>
-                        <span>{String(event.severity || event.status || 'info')}</span>
+                        {/* `event.status` is the scan's lifecycle phase when the event
+                            was emitted ("running"), not a severity — rendering it in a
+                            severity slot made every stored event of a completed scan
+                            read "running". */}
+                        <span>{event.severity ? String(event.severity) : `phase: ${String(event.status || 'n/a')}`}</span>
                       </div>
                     </div>
                   ))}
@@ -780,25 +896,46 @@ export default function CbomExplorer() {
   const telemetry = data.telemetry || [];
   const stats = data.cbom.stats || { totalComponents: 0, quantumVulnerableComponents: 0, pqcReadyComponents: 0, totalInstances: 0 };
 
-  const totalAssets = Number(data.summary.totalAssets || assets.length || 0);
-  const totalComponents = Number(stats.totalComponents || entries.length || 0);
-  const pqcReady = Number(stats.pqcReadyComponents || entries.filter((entry) => entry.isQuantumSafe).length || 0);
-  const vulnerableComponents = Number(stats.quantumVulnerableComponents || entries.filter((entry) => entry.isVulnerable).length || 0);
-  const inProgress = entries.filter((entry) => !entry.isQuantumSafe && !entry.isVulnerable).length;
-  const notPqcReady = Math.max(0, totalComponents - pqcReady - inProgress);
-  const atRisk = entries.filter((entry) => entry.isVulnerable && riskRank(entry.riskSeverity) >= 2).length + Number(data.summary.criticalFindings || 0);
+  // ---- Component scope --------------------------------------------------------
+  // ONE decision about which population every component figure describes: the
+  // backend's grouped CBOM stats when the snapshot carries them, otherwise the
+  // rows this page received. Never a per-field `||` between the two — that is a
+  // scope decision in disguise, and is how two panels end up describing
+  // different populations while each looks locally correct.
+  const hasComponentStats = Number(stats.totalComponents) > 0;
+  const totalAssets = Number(data.summary.totalAssets) || assets.length;
+  const totalComponents = hasComponentStats ? Number(stats.totalComponents) : entries.length;
+  const pqcReady = hasComponentStats ? Number(stats.pqcReadyComponents) : entries.filter((entry) => entry.isQuantumSafe).length;
+  const vulnerableComponents = hasComponentStats ? Number(stats.quantumVulnerableComponents) : entries.filter((entry) => entry.isVulnerable).length;
+  // PQC-ready / not-ready / in-progress PARTITION the component universe, so
+  // the Overview legend's percentages always add to 100.
+  const notPqcReady = vulnerableComponents;
+  const inProgress = Math.max(0, totalComponents - pqcReady - notPqcReady);
+
+  // At-risk COMPONENTS — vulnerable components carrying a Medium-or-worse
+  // exposure level. Component scope, so it can never exceed totalComponents.
+  // This used to be that count PLUS `summary.criticalFindings`, a finding-level
+  // number: adding two populations is what made a 66-component estate report
+  // "At Risk 100" and a 100% at-risk share.
+  const atRiskComponents = entries.filter((entry) => entry.isVulnerable && riskRank(entry.riskSeverity) >= 2).length;
+  const criticalFindings = Number(data.summary.criticalFindings || 0);
   const readinessPercent = percent(pqcReady, totalComponents);
 
   // --- Quantum Readiness Engine reconciliation ---------------------------------
+  // The QR Engine is the platform's readiness/risk authority. Until its snapshot
+  // has actually resolved, this page has NO opinion on those scores and must say
+  // so: rendering `quantumRisk = 0` while waiting printed a perfect score on a
+  // lower-is-better scale, and claiming "In sync with QR" with an empty QR
+  // column asserted an agreement nothing had been compared for.
   const qrHasData = qr.snapshot.hasData;
+  const qrResolved = qr.state === 'success';
   const qrScores = qr.snapshot.scores;
   const qrInventory = qr.snapshot.inventory;
-  // Headline readiness = QR Engine's composite quantumReadiness (falls back to the
-  // component PQC-ready share before the QR snapshot arrives). This is the number
-  // the QR command-center, executive dashboard and reports all show.
   const readinessScore = qrHasData ? qrScores.quantumReadiness : readinessPercent;
-  const readinessLevel = qrHasData ? qrScores.quantumReadinessLevel : readinessPercent >= 50 ? 'Emerging' : 'Not Started';
-  const quantumRisk = qrHasData ? qrScores.quantumRisk : 0;
+  const readinessLevel = qrHasData
+    ? qrScores.quantumReadinessLevel
+    : qrResolved ? 'No assessment evidence' : 'Awaiting assessment';
+  const quantumRisk = qrHasData ? qrScores.quantumRisk : null;
   const pqcAdoption = qrHasData ? Math.round(qrScores.pqcAdoption) : readinessPercent;
   const qrLive = qr.sseConnected;
   // Do CBOM's component counts agree with the QR Engine's inventory? (Both derive
@@ -811,14 +948,20 @@ export default function CbomExplorer() {
     { label: 'Crypto Components', cbom: totalComponents, qr: Number(qrInventory.cryptoComponents || 0) },
     { label: 'Vulnerable', cbom: vulnerableComponents, qr: Number(qrInventory.vulnerableComponents || 0) },
     { label: 'PQC-Ready', cbom: pqcReady, qr: Number(qrInventory.pqcReadyComponents || 0) },
-  ].map((row) => ({ ...row, match: !qrHasData || withinTolerance(row.cbom, row.qr) }));
-  const reconciled = reconciliation.every((row) => row.match);
-  const riskyAlgorithms = useMemo(() => buildRiskyAlgorithms(entries, findings), [entries, findings]);
-  const algorithmDistribution = useMemo(() => buildAlgorithmDistribution(entries), [entries]);
-  const distributionTotal = algorithmDistribution.reduce((sum, item) => sum + item.count, 0);
-  const trendPoints = useMemo(() => buildTrend(history, readinessScore), [history, readinessScore]);
+  ].map((row) => ({ ...row, match: qrHasData ? withinTolerance(row.cbom, row.qr) : null }));
+  const reconciliationState: 'match' | 'diverged' | 'pending' | 'no-evidence' = !qrHasData
+    ? (qrResolved ? 'no-evidence' : 'pending')
+    : reconciliation.every((row) => row.match) ? 'match' : 'diverged';
+  // Charted over the rows whose `algorithm` really names cryptography; the
+  // policy/configuration rows are counted separately and stated, never silently
+  // plotted on an algorithm axis.
+  const cryptoEntries = useMemo(() => entries.filter(namesCryptography), [entries]);
+  const riskyAlgorithms = useMemo(() => buildRiskyAlgorithms(cryptoEntries), [cryptoEntries]);
+  const postureEntryCount = entries.length - cryptoEntries.length;
+  const algorithmDistribution = useMemo(() => buildAlgorithmDistribution(cryptoEntries), [cryptoEntries]);
+  const trendPoints = useMemo(() => buildTrend(history), [history]);
   const latestScan = latestScanAt(history, data.generatedAt);
-  const complianceRows = buildComplianceRows(totalComponents, pqcReady, atRisk, Number(data.summary.criticalFindings || 0));
+  const complianceRows = buildComplianceRows(totalComponents, pqcReady, atRiskComponents, criticalFindings);
   const hasSynchronizedData = Boolean(entries.length || assets.length || findings.length || history.length || telemetry.length || totalComponents);
   const isInitialSyncing = loading && !hasSynchronizedData;
   const certificateEntries = useMemo(
@@ -898,9 +1041,11 @@ export default function CbomExplorer() {
   const metricCards = [
     { label: 'Total Assets', value: totalAssets, detail: `${numberFmt(data.summary.vulnerableAssets)} with open exposure`, icon: Database, tone: 'blue' },
     { label: 'Crypto Components', value: totalComponents, detail: `${numberFmt(Number(stats.totalInstances || totalComponents))} observed instances`, icon: Layers, tone: 'blue' },
-    { label: 'PQC Ready', value: pqcReady, detail: `${readinessPercent}% of total`, icon: ShieldCheck, tone: 'green' },
-    { label: 'Not PQC Ready', value: notPqcReady, detail: `${numberFmt(vulnerableComponents)} vulnerable components`, icon: ShieldAlert, tone: 'orange' },
-    { label: 'At Risk', value: atRisk, detail: `${numberFmt(findings.length)} correlated findings`, icon: AlertTriangle, tone: 'red' },
+    { label: 'PQC Ready', value: pqcReady, detail: `${readinessPercent}% of components`, icon: ShieldCheck, tone: 'green' },
+    { label: 'Not PQC Ready', value: notPqcReady, detail: `${percent(notPqcReady, totalComponents)}% of components`, icon: ShieldAlert, tone: 'orange' },
+    // Component scope, stated. Findings are a different population and get their
+    // own card rather than being added into this one.
+    { label: 'At-Risk Components', value: atRiskComponents, detail: `${numberFmt(criticalFindings)} critical of ${numberFmt(findings.length)} findings`, icon: AlertTriangle, tone: 'red' },
   ];
 
   const focusedTabDashboard = activeTab === 'Overview' ? null : (
@@ -922,8 +1067,10 @@ export default function CbomExplorer() {
       pqcReady={pqcReady}
       inProgress={inProgress}
       notPqcReady={notPqcReady}
-      atRisk={atRisk}
+      atRiskComponents={atRiskComponents}
+      criticalFindings={criticalFindings}
       readinessScore={readinessScore}
+      readinessMeasured={qrHasData}
       loading={loading}
       exportSnapshot={exportSnapshot}
       refresh={refresh}
@@ -977,7 +1124,14 @@ export default function CbomExplorer() {
           </button>
           <button type="button" className="relative inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] text-[var(--qg-dashboard-text-soft)]">
             <Bell className="h-4 w-4" />
-            {atRisk > 0 && <span className="absolute -right-1 -top-1 rounded-full bg-[var(--qg-amber)] px-1.5 text-[9px] font-black text-[var(--qg-on-accent)]">{Math.min(atRisk, 9)}</span>}
+            {atRiskComponents > 0 && (
+              <span
+                title={`${numberFmt(atRiskComponents)} at-risk cryptographic components`}
+                className="absolute -right-1 -top-1 rounded-full bg-[var(--qg-amber)] px-1.5 text-[9px] font-black text-[var(--qg-on-accent)]"
+              >
+                {atRiskComponents > 9 ? '9+' : atRiskComponents}
+              </span>
+            )}
           </button>
           <button type="button" className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] text-[var(--qg-dashboard-text-soft)]">
             <CircleHelp className="h-4 w-4" />
@@ -1081,16 +1235,38 @@ export default function CbomExplorer() {
               <Sparkles className="h-3.5 w-3.5" /> Quantum Readiness Engine
             </div>
             <div className="mt-2 flex items-end gap-2">
-              <span className="text-4xl font-black" style={{ color: readinessTone(readinessScore) }}>{Math.round(readinessScore)}</span>
-              <span className="mb-1 text-xs text-[var(--qg-text-muted)]">/100 · {readinessLevel}</span>
+              {qrHasData ? (
+                <>
+                  <span className="text-4xl font-black" style={{ color: readinessTone(readinessScore) }}>{Math.round(readinessScore)}</span>
+                  <span className="mb-1 text-xs text-[var(--qg-text-muted)]">/100 · {readinessLevel}</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-4xl font-black text-[var(--qg-text-muted)]">—</span>
+                  <span className="mb-1 text-xs text-[var(--qg-text-muted)]">{readinessLevel}</span>
+                </>
+              )}
             </div>
             <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[var(--qg-muted-panel)]">
-              <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(0, Math.min(100, readinessScore))}%`, background: readinessTone(readinessScore) }} />
+              {qrHasData && (
+                <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(0, Math.min(100, readinessScore))}%`, background: readinessTone(readinessScore) }} />
+              )}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]">Quantum Risk {quantumRisk}/100</span>
+              {/* An unresolved risk score renders as "—", never as 0: on a
+                  lower-is-better scale a placeholder zero reads as a perfect posture. */}
+              <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]">
+                Quantum Risk {quantumRisk === null ? '—' : `${quantumRisk}/100`}
+              </span>
               <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]">PQC Adoption {pqcAdoption}%</span>
             </div>
+            {!qrHasData && (
+              <p className="mt-2 text-[10px] leading-relaxed text-[var(--qg-text-muted)]">
+                {qrResolved
+                  ? 'The Quantum Readiness Engine has no assessment evidence for this tenant yet. Component counts below are CBOM-only.'
+                  : 'Waiting for the Quantum Readiness Engine assessment. Readiness and risk are withheld until it responds.'}
+              </p>
+            )}
           </div>
 
           <div>
@@ -1098,8 +1274,18 @@ export default function CbomExplorer() {
               <span className="inline-flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">
                 <GitCompareArrows className="h-3.5 w-3.5" /> Inventory Reconciliation
               </span>
-              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase ${reconciled ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-[var(--qg-amber)]/30 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)]'}`}>
-                <CheckCircle2 className="h-3 w-3" /> {reconciled ? 'In sync with QR' : 'Reconciling'}
+              {/* A verdict is only claimed once there is something to compare.
+                  With no QR snapshot the badge previously read "In sync with QR"
+                  beside three empty QR cells. */}
+              <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase ${
+                reconciliationState === 'match' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                  : reconciliationState === 'diverged' ? 'border-[var(--qg-amber)]/30 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)]'
+                    : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]'
+              }`}>
+                {reconciliationState === 'match' ? <CheckCircle2 className="h-3 w-3" /> : reconciliationState === 'diverged' ? <AlertTriangle className="h-3 w-3" /> : <CircleHelp className="h-3 w-3" />}
+                {reconciliationState === 'match' ? 'In sync with QR'
+                  : reconciliationState === 'diverged' ? 'Diverged from QR'
+                    : reconciliationState === 'no-evidence' ? 'No QR evidence' : 'Awaiting QR'}
               </span>
             </div>
             <div className="overflow-hidden rounded-lg border border-[var(--qg-card-border)]">
@@ -1111,7 +1297,13 @@ export default function CbomExplorer() {
                   <span className="font-bold text-[var(--qg-dashboard-text)]">{row.label}</span>
                   <span className="text-right font-black text-[var(--qg-dashboard-text)]">{numberFmt(row.cbom)}</span>
                   <span className="text-right font-mono text-[var(--qg-dashboard-text-soft)]">{qrHasData ? numberFmt(row.qr) : '—'}</span>
-                  <span className="pl-3">{row.match ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> : <AlertTriangle className="h-3.5 w-3.5 text-[var(--qg-amber)]" />}</span>
+                  <span className="pl-3">
+                    {row.match === null
+                      ? <CircleHelp className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
+                      : row.match
+                        ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                        : <AlertTriangle className="h-3.5 w-3.5 text-[var(--qg-amber)]" />}
+                  </span>
                 </div>
               ))}
             </div>
@@ -1144,22 +1336,35 @@ export default function CbomExplorer() {
           <div className="mb-3 flex items-center gap-2 text-sm font-bold">
             Quantum Readiness Score <span className="text-[10px] font-black uppercase text-[var(--qg-text-muted)]">· {readinessLevel}</span> <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
           </div>
-          <ReadinessGauge score={readinessScore} />
+          <ReadinessGauge score={readinessScore} hasScore={qrHasData} />
+          {/* These three PARTITION the component universe and therefore add to
+              100%. "At Risk" is a subset of Not PQC Ready, not a fourth slice —
+              listing it alongside them (with a findings count folded in) is what
+              produced a legend reading 6.1 / 0 / 93.9 / 100 %. */}
           <div className="mt-4 space-y-2">
             {[
               ['PQC Ready', pqcReady, 'bg-emerald-400'],
               ['In Progress', inProgress, 'bg-blue-400'],
               ['Not PQC Ready', notPqcReady, 'bg-orange-400'],
-              ['At Risk', atRisk, 'bg-red-400'],
             ].map(([label, value, color]) => (
               <div key={String(label)} className="grid grid-cols-[1fr_auto] items-center gap-2 text-xs">
                 <div className="flex items-center gap-2">
                   <span className={`h-2 w-2 rounded-full ${color}`} />
                   <span>{label}</span>
                 </div>
-                <span>{percent(Number(value), Math.max(1, totalComponents))}%</span>
+                <span>{percent(Number(value), Math.max(1, totalComponents))}% ({numberFmt(Number(value))})</span>
               </div>
             ))}
+            <div className="grid grid-cols-[1fr_auto] items-center gap-2 border-t border-[var(--qg-card-border)] pt-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-red-400" />
+                <span>At Risk <span className="text-[10px] text-[var(--qg-text-muted)]">· of Not PQC Ready</span></span>
+              </div>
+              <span>{percent(atRiskComponents, Math.max(1, totalComponents))}% ({numberFmt(atRiskComponents)})</span>
+            </div>
+            <p className="text-[10px] leading-relaxed text-[var(--qg-text-muted)]">
+              Component scope across the tenant estate. Score and level come from the Quantum Readiness Engine.
+            </p>
           </div>
           <Link to="/dashboard/migration-planner" className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[var(--qg-amber)]/35 bg-[var(--qg-amber)]/10 px-3 py-2 text-xs font-black text-[var(--qg-amber)]">
             <PackagePlus className="h-4 w-4" />
@@ -1170,36 +1375,46 @@ export default function CbomExplorer() {
 
         <div className={`${panelClass} p-4 xl:col-span-6`}>
           <div className="mb-3 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-bold">PQC Readiness Trend</div>
-            <span className="rounded-md border border-[var(--qg-card-border)] px-2 py-1 text-[10px] text-[var(--qg-text-muted)]">Last {Math.max(1, trendPoints.length)} scans</span>
+            <div className="flex items-center gap-2 text-sm font-bold">PQC-Ready Share Per Scan</div>
+            <span className="rounded-md border border-[var(--qg-card-border)] px-2 py-1 text-[10px] text-[var(--qg-text-muted)]">{trendPoints.length} measured scan{trendPoints.length === 1 ? '' : 's'}</span>
           </div>
-          <div className="h-[210px]">
-            <LineTrendChart points={trendPoints} />
-          </div>
-          <div className="mt-2 flex justify-center gap-2 text-xs text-[var(--qg-text-muted)]">
-            <span className="mt-1 h-0.5 w-4 bg-[var(--qg-amber)]" />
-            PQC Readiness Score
-          </div>
+          {trendPoints.length === 0 ? (
+            <EmptyState label="No completed scan has recorded a component count yet, so there is no readiness trend to plot." />
+          ) : (
+            <>
+              <div className="h-[210px]">
+                <LineTrendChart points={trendPoints} />
+              </div>
+              <div className="mt-2 flex justify-center gap-2 text-xs text-[var(--qg-text-muted)]">
+                <span className="mt-1 h-0.5 w-4 bg-[var(--qg-amber)]" />
+                PQC-ready components ÷ components detected, per scan
+              </div>
+            </>
+          )}
         </div>
 
         <div className={`${panelClass} p-4 xl:col-span-8`}>
-          <div className="mb-3 flex items-center gap-2 text-sm font-bold">
+          <div className="mb-1 flex items-center gap-2 text-sm font-bold">
             Algorithm Distribution <Info className="h-3.5 w-3.5 text-[var(--qg-text-muted)]" />
           </div>
-          {algorithmDistribution.length === 0 ? (
-            <EmptyState label="No algorithms have been inventoried yet." />
+          <p className="mb-3 text-[10px] text-[var(--qg-text-muted)]">
+            {numberFmt(algorithmDistribution.total)} instance{algorithmDistribution.total === 1 ? '' : 's'} across {numberFmt(algorithmDistribution.distinct)} algorithm{algorithmDistribution.distinct === 1 ? '' : 's'}.
+            {postureEntryCount > 0 && ` ${numberFmt(postureEntryCount)} policy and configuration observation${postureEntryCount === 1 ? '' : 's'} are excluded — they record posture, not an algorithm.`}
+          </p>
+          {algorithmDistribution.slices.length === 0 ? (
+            <EmptyState label="No cryptographic algorithms have been inventoried yet. Policy and configuration observations are listed under Inventory." />
           ) : (
             <div className="grid gap-5 md:grid-cols-[190px_1fr]">
-              <div className="relative mx-auto h-44 w-44 rounded-full" style={{ background: distributionGradient(algorithmDistribution, distributionTotal) }}>
+              <div className="relative mx-auto h-44 w-44 rounded-full" style={{ background: distributionGradient(algorithmDistribution.slices, algorithmDistribution.total) }}>
                 <div className="absolute inset-9 grid place-items-center rounded-full bg-[var(--qg-dashboard-bg)] text-center shadow-inner">
                   <div>
-                    <div className="text-2xl font-black">{numberFmt(distributionTotal)}</div>
-                    <div className="text-[10px] text-[var(--qg-text-muted)]">Total</div>
+                    <div className="text-2xl font-black">{numberFmt(algorithmDistribution.total)}</div>
+                    <div className="text-[10px] text-[var(--qg-text-muted)]">Instances</div>
                   </div>
                 </div>
               </div>
               <div className="space-y-3">
-                {algorithmDistribution.map((item, index) => {
+                {algorithmDistribution.slices.map((item, index) => {
                   const colors = ['bg-blue-500', 'bg-slate-500', 'bg-amber-500', 'bg-emerald-500', 'bg-violet-500', 'bg-slate-600'];
                   return (
                     <div key={item.algorithm} className="grid grid-cols-[1fr_auto] items-center gap-3 text-xs">
@@ -1207,7 +1422,7 @@ export default function CbomExplorer() {
                         <span className={`h-3 w-3 rounded-full ${colors[index % colors.length]}`} />
                         <span>{item.algorithm}</span>
                       </div>
-                      <span className="text-[var(--qg-text-muted)]">{percent(item.count, distributionTotal)}% ({numberFmt(item.count)})</span>
+                      <span className="text-[var(--qg-text-muted)]">{percent(item.count, algorithmDistribution.total)}% ({numberFmt(item.count)})</span>
                     </div>
                   );
                 })}

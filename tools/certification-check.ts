@@ -15,6 +15,7 @@
 import { randomBytes } from 'node:crypto'
 import {
   computeTrustScore,
+  deriveCryptoStack,
   evaluateEligibility,
   hashCanonical,
   levelForScore,
@@ -136,16 +137,26 @@ const forcedChecks = evaluateEligibility(eligibleBundle, relaxedPolicy)
 console.log(`     (with pipeline-tuned policy: eligible=${forcedChecks.eligible}, level=${forcedChecks.level})`)
 
 const vulnerableResult = evaluateEligibility(makeBundle('vulnerable'), DEFAULT_POLICY)
-assert(!vulnerableResult.eligible, 'vulnerable estate is NOT eligible')
-assert(vulnerableResult.level === null, 'vulnerable estate has no level')
+assert(!vulnerableResult.eligible, 'vulnerable estate is NOT certification-eligible')
+// A measured-but-vulnerable estate receives the Bronze BASELINE attestation.
+// The integrity invariant is not "no certificate" — it is "no CERTIFIED claim".
+assert(vulnerableResult.issuable, 'vulnerable estate can still issue a baseline attestation')
+assert(vulnerableResult.level === 'bronze', 'vulnerable estate caps at the bronze baseline', String(vulnerableResult.level))
+assert(vulnerableResult.levelLabel === 'Initial Readiness', 'bronze baseline is labelled Initial Readiness, never a security claim')
+assert(vulnerableResult.requiredMet < vulnerableResult.requiredTotal, 'baseline records the unmet criteria', `${vulnerableResult.requiredMet}/${vulnerableResult.requiredTotal}`)
+
 assert(vulnerableResult.recommendations.length > 0, 'vulnerable estate produces remediation recommendations', `${vulnerableResult.recommendations.length} recs`)
 assert(vulnerableResult.checks.some((c) => c.id === 'disallowed-algorithms' && !c.met), 'disallowed algorithms criterion fails on legacy RSA/ECC')
 assert(vulnerableResult.checks.some((c) => c.id === 'critical-vulns' && !c.met), 'critical vulnerabilities criterion fails')
 
 const emptyResult = evaluateEligibility(makeBundle('empty'), DEFAULT_POLICY)
 assert(!emptyResult.eligible, 'empty estate is NOT eligible (no evidence)')
+// The evidence floor that must still refuse: a certificate over zero evidence
+// would attest to nothing, so the baseline path may not issue one either.
+assert(!emptyResult.issuable, 'empty estate is NOT issuable (evidence floor holds)')
 assert(!emptyResult.hasData, 'empty estate reports hasData=false')
 assert(emptyResult.level === null, 'empty estate has no level')
+assert(emptyResult.levelLabel === 'Awaiting Assessment', 'empty estate reads as awaiting assessment')
 assert(emptyResult.checks.length > 0, 'empty estate still lists criteria (all unmet)')
 
 /* ------------------------------------------------------------------ */
@@ -156,11 +167,21 @@ const lowScore = computeTrustScore({ readiness: 40, pqcAdoption: 20, quantumRisk
 const highScore = computeTrustScore({ readiness: 95, pqcAdoption: 95, quantumRisk: 8, hndlRisk: 10, confidence: 98, validationPass: true, cryptoAgility: true })
 assert(lowScore >= 0 && highScore <= 1000, 'trust score stays within 0–1000 bounds', `${lowScore}..${highScore}`)
 assert(highScore > lowScore, 'better posture yields a higher trust score', `${highScore} > ${lowScore}`)
-assert(levelForScore(highScore, { hybridImplemented: true, assessments: 3, eligible: false }) === null, 'ineligible estate never gets a level regardless of score')
-assert(levelForScore(720, { hybridImplemented: false, eligible: true, assessments: 1 }) === 'bronze', 'no hybrid evidence caps at bronze')
-assert(levelForScore(820, { hybridImplemented: true, eligible: true, assessments: 1 }) === 'gold', 'gold band with hybrid evidence')
-assert(levelForScore(960, { hybridImplemented: true, eligible: true, assessments: 3 }) === 'diamond', 'diamond requires top score + continuous assessment')
-assert(levelForScore(960, { hybridImplemented: true, eligible: true, assessments: 1 }) === 'platinum', 'diamond gate needs >=3 assessments (falls to platinum)')
+// Without measured evidence nothing is issued, at any score.
+assert(levelForScore(highScore, { hybridImplemented: true, assessments: 3, eligible: true, issuable: false }) === null, 'no evidence never gets a level regardless of score')
+assert(levelForScore(lowScore, { hybridImplemented: false, assessments: 0, eligible: false, issuable: false }) === null, 'unmeasured estate is not issuable')
+
+// Bronze is the BASELINE attestation: measured evidence, criteria unmet.
+assert(levelForScore(lowScore, { hybridImplemented: false, assessments: 1, eligible: false, issuable: true }) === 'bronze', 'measured but uncertified estate gets the bronze baseline')
+assert(levelForScore(980, { hybridImplemented: true, assessments: 5, eligible: false, issuable: true }) === 'bronze', 'failing a required criterion caps at bronze even with a perfect score')
+
+// Silver+ stay certification-grade: every required criterion AND hybrid AND score.
+assert(levelForScore(720, { hybridImplemented: false, eligible: true, assessments: 1, issuable: true }) === 'bronze', 'no hybrid evidence caps at bronze')
+assert(levelForScore(720, { hybridImplemented: true, eligible: true, assessments: 1, issuable: true }) === 'silver', 'silver band with hybrid evidence')
+assert(levelForScore(690, { hybridImplemented: true, eligible: true, assessments: 1, issuable: true }) === 'bronze', 'below the silver floor stays bronze')
+assert(levelForScore(820, { hybridImplemented: true, eligible: true, assessments: 1, issuable: true }) === 'gold', 'gold band with hybrid evidence')
+assert(levelForScore(960, { hybridImplemented: true, eligible: true, assessments: 3, issuable: true }) === 'diamond', 'diamond requires top score + continuous assessment')
+assert(levelForScore(960, { hybridImplemented: true, eligible: true, assessments: 1, issuable: true }) === 'platinum', 'diamond gate needs >=3 assessments (falls to platinum)')
 
 /* ------------------------------------------------------------------ */
 /* 3. Canonical hash determinism                                       */
@@ -201,6 +222,85 @@ assert(
   'validation criterion mirrors the report validation verdict',
   certifiedBundle.report.reportValidation.overall,
 )
+
+/* ------------------------------------------------------------------ */
+/* Verified Quantum Algorithm Stack                                    */
+/*                                                                     */
+/* Rows below are VERBATIM `crypto_inventory.algorithm` values from a  */
+/* real tenant. The scanner writes finding titles into that column     */
+/* alongside genuine algorithms, and the certificate must print only   */
+/* the algorithms.                                                     */
+/* ------------------------------------------------------------------ */
+console.log('\n=== Verified Quantum Algorithm Stack ===')
+
+const inv = (algorithm: string, quantumSafe: boolean, vulnerable: boolean, protocol = 'TLSv1.3') => ({
+  algorithm, protocol, is_quantum_safe: quantumSafe, is_vulnerable: vulnerable,
+})
+
+const realInventory = [
+  inv('ML-KEM', true, false),
+  inv('ML-KEM-768 (FIPS 203)', true, false),
+  inv('X25519MLKEM768', true, false),
+  inv('AES-256-GCM', true, false),
+  inv('TLS_AES_256_GCM_SHA384', true, false),
+  inv('ML-DSA/SLH-DSA/Falcon', true, false),
+  // Finding titles the scanner stores in the same column — never algorithms.
+  inv('No Hybrid TLS', false, true, 'TLSv1.2'),
+  inv('No ML-KEM Support', false, true, 'TLSv1.2'),
+  inv('Missing Crypto Agility', false, true, 'TLSv1.2'),
+  inv('HNDL Risk: HIGH', false, true, 'TLSv1.2'),
+  inv('Quantum-Vulnerable OIDs', false, true, 'TLSv1.2'),
+  inv('NIST Compliance: Grade C', false, true, 'TLSv1.2'),
+  inv('Wide Crypto Attack Surface', false, true, 'TLSv1.2'),
+  // Genuine but quantum-VULNERABLE primitives — excluded from a "verified
+  // quantum" stack.
+  inv('RSA-2048 (Certificate)', false, true, 'TLSv1.2'),
+  inv('ECDHE prime256v1 (256-bit)', false, true, 'TLSv1.2'),
+  inv('TLSv1.2', false, true, 'TLSv1.2'),
+]
+
+const stack = deriveCryptoStack(realInventory)
+const names = stack.map((a) => a.algorithm)
+const find = (needle: string) => stack.find((a) => a.algorithm.toUpperCase().includes(needle.toUpperCase()))
+
+assert(stack.length > 0, 'a real inventory produces a non-empty stack', names.join(', '))
+
+// The inversion bug: "No Hybrid TLS" contains "Hybrid", and the old
+// quantum-safe name heuristic admitted it as hybrid-TLS evidence.
+assert(!names.some((n) => /^no\s|^missing\s|risk:|grade\s+c|attack surface/i.test(n)), 'no finding titles reach the certificate', names.join(', '))
+assert(!names.some((n) => /^no hybrid tls$/i.test(n)), 'the "No Hybrid TLS" FINDING is never certified as hybrid TLS evidence')
+
+// Quantum-vulnerable primitives must not appear on a quantum stack.
+assert(!names.some((n) => /^RSA|prime256v1|^TLSv1\.2$/i.test(n)), 'quantum-vulnerable entries are excluded', names.join(', '))
+
+// The SHA384-matches-SHA3 substring trap.
+const suite = find('TLS_AES_256_GCM_SHA384')
+assert(Boolean(suite), 'the TLS 1.3 suite is present')
+assert(suite?.category === 'TLS 1.3 Cipher Suite', 'TLS_AES_256_GCM_SHA384 is a cipher suite, not a hash', suite?.category)
+assert(suite?.standard !== 'FIPS 202', 'TLS_AES_256_GCM_SHA384 is NOT claimed as a FIPS 202 hash', suite?.standard)
+
+// One observation must yield exactly one row.
+assert(stack.filter((a) => a.algorithm === 'ML-DSA/SLH-DSA/Falcon').length === 1, 'a combined signature string is categorised once, not duplicated')
+assert(find('ML-DSA/SLH-DSA')?.standard === 'FIPS 204', 'a combined signature string reports its primary scheme (ML-DSA / FIPS 204)', find('ML-DSA/SLH-DSA')?.standard)
+// A bare stateless signature must still land in FIPS 205.
+assert(
+  deriveCryptoStack([inv('SLH-DSA-SHA2-128s', true, false)])[0]?.standard === 'FIPS 205',
+  'a standalone SLH-DSA is still categorised as FIPS 205 stateless signatures',
+)
+
+// The doubled "(FIPS 203) (FIPS 203)" on the rendered certificate.
+const kem = find('ML-KEM-768')
+assert(kem?.algorithm === 'ML-KEM-768', 'the redundant standard suffix is stripped from the name', kem?.algorithm)
+assert(kem?.standard === 'FIPS 203', 'ML-KEM-768 carries FIPS 203', kem?.standard)
+
+// Hybrid must keep its hybrid identity rather than collapsing to plain ML-KEM.
+assert(find('X25519MLKEM768')?.category === 'Hybrid Key Establishment', 'X25519MLKEM768 is categorised as hybrid key establishment', find('X25519MLKEM768')?.category)
+
+// Every entry must be traceable.
+assert(stack.every((a) => /Observed \d+×/.test(a.evidence)), 'every entry cites its observation count')
+assert(stack.every((a) => a.category && a.standard && a.algorithm), 'every entry is fully populated')
+
+console.log(`     stack: ${stack.map((a) => `${a.algorithm} [${a.category}/${a.standard}]`).join(' · ')}`)
 
 console.log(`\n${failures === 0 ? 'All certification engine checks passed.' : `${failures} check(s) FAILED.`}`)
 process.exit(failures === 0 ? 0 : 1)

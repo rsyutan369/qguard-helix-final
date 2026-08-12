@@ -202,6 +202,7 @@ const CATEGORY_OWNERS: Array<[string, string]> = [
   ['Source Code (asymmetric)', 'dependency-crypto-scanner'],
   ['Web Crypto (hash)', 'dependency-crypto-scanner'],
   ['Repository Access', 'dependency-crypto-scanner'],
+  ['Repository Scan Error', 'dependency-crypto-scanner'],
   ['Rule (Post Quantum)', 'crypto-detection-rules'],
   ['NIST Compliance', 'risk-scoring-engine'],
 ]
@@ -213,6 +214,37 @@ function verifyFindingOwnership() {
     const owner = moduleIdForFinding({ category, detectionMethod: 'scan', algorithm: 'RSA-2048' })
     assert(owner === expected, `"${category}" → ${expected} (got ${owner})`)
   }
+
+  /* Ownership must not depend on the PHASE a finding was emitted in.
+     `detectionMethod` carries the pipeline phase, and a `method.includes('deep')`
+     clause used to route anything emitted during `deep-scan` to the dependency
+     scanner. That is how the AES-256-GCM cipher-suite observation ended up as the
+     ONLY finding on the Code & Dependencies surface and — being SAFE — scored it
+     "Elite 100" for a target whose source code had never been read.
+
+     Asserted across every phase name the orchestrator uses, so no future finding
+     can inherit a surface from where it happened to be emitted. */
+  const PHASES = ['initializing', 'edge-intelligence', 'tls-handshake', 'key-exchange', 'cert-analysis', 'cipher-enum', 'header-inspection', 'deep-scan', 'repo-scan', 'risk-calculation', 'report-generation']
+  for (const [category, expected] of CATEGORY_OWNERS) {
+    for (const phase of PHASES) {
+      const owner = moduleIdForFinding({ category, detectionMethod: phase, algorithm: 'AES-256-GCM' })
+      assert(
+        owner === expected,
+        `"${category}" is owned by ${expected} regardless of phase (phase=${phase} gave ${owner})`,
+      )
+    }
+  }
+
+  /* The exact regression, stated as itself: a negotiated cipher suite belongs to
+     the transport surface, never to Code & Dependencies. */
+  assert(
+    nodeForFindingCategory('Symmetric Encryption', 'cipher-enum', 'AES-256-GCM') === 'transport',
+    'a negotiated cipher suite is transport evidence, not code evidence',
+  )
+  assert(
+    nodeForFindingCategory('Symmetric Encryption', 'deep-scan', 'AES-256-GCM') === 'transport',
+    'and stays transport evidence even if emitted during the client-code phase',
+  )
 
   // Ownership must be total: every category resolves to a catalog module.
   for (const [category] of CATEGORY_OWNERS) {

@@ -94,7 +94,6 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/dashboard/shadow-crypto', tier: 'pro' },
   // PRO — Operations
   { prefix: '/dashboard/migration-timeline', tier: 'pro' },
-  { prefix: '/dashboard/migration-phases', tier: 'pro' },
   { prefix: '/dashboard/pqc-orchestration', tier: 'pro' },
   { prefix: '/dashboard/crypto-agility', tier: 'pro' },
   { prefix: '/dashboard/live-migration', tier: 'pro' },

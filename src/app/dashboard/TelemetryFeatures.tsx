@@ -57,9 +57,12 @@ function fmt(value: number) {
   return new Intl.NumberFormat('en-US').format(value || 0)
 }
 
-function riskTo100(score: number) {
-  return clamp(score > 100 ? score / 10 : score)
-}
+/* `riskTo100` used to live here: `clamp(score > 100 ? score / 10 : score)`.
+   It guessed the scale of whatever the API sent and, because the API was
+   actually sending a HIGHER-better posture composite on a 0–1000 scale, it
+   rendered a Critical estate as "23/100" risk. The API now publishes risk and
+   readiness under their real names on the canonical 0–100 scales, so there is
+   nothing left to convert — read the field directly. */
 
 function GlassPanel({ children, className, href, label }: { children: ReactNode; className?: string; href?: string; label?: string }) {
   const classes = cx(
@@ -214,7 +217,8 @@ export default function TelemetryFeatures({
   const highExposures = summary?.highExposures || 0
   const unresolvedVulns = summary?.unresolvedVulns || 0
   const expiringCerts = summary?.expiringCerts || 0
-  const riskScore = riskTo100(summary?.quantumRiskScore || 0)
+  const hasBaseline = summary?.hasBaseline ?? false
+  const riskScore = clamp(summary?.quantumRiskScore || 0)
   const safeAssets = Math.max(0, totalAssets - vulnerableAssets)
   const eventCounts = countBy(events.map((event) => event.severity))
   const environmentCounts = countBy(exposureMap.nodes.map((node) => node.environment || 'unknown'))
@@ -222,7 +226,9 @@ export default function TelemetryFeatures({
   const environments = Object.entries(environmentCounts).sort((a, b) => b[1] - a[1]).slice(0, 4)
   const types = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]).slice(0, 4)
   const eventTrend = recentEventBuckets(events)
-  const readiness = totalAssets ? clamp((safeAssets / totalAssets) * 100) : riskScore
+  // Fall back to the API's readiness composite, never to `riskScore` — that
+  // substituted a lower-better number into a higher-better meter.
+  const readiness = totalAssets ? clamp((safeAssets / totalAssets) * 100) : clamp(summary?.quantumReadinessScore || 0)
   const cbomCoverage = totalAssets ? clamp((totalCbomItems / totalAssets) * 100) : 0
   const migrationTotal = completedMigrations + activeMigrations + failedMigrations
   const migrationCompletion = summary?.migrationCompletionRate ?? (migrationTotal ? percent(completedMigrations, migrationTotal) : 0)
@@ -241,12 +247,14 @@ export default function TelemetryFeatures({
           </div>
           <div className="flex flex-1 flex-col items-center">
             <span className="text-[9px] font-bold uppercase tracking-widest text-white/50">Quantum Risk Score</span>
+            {/* Nothing measured is a THIRD state — rendering the 0 here would
+                read as a perfect score on a lower-better scale. */}
             <div className="mt-2 flex items-baseline gap-1">
-              <span className="text-5xl font-black text-[#06B6D4]">{loading ? '--' : riskScore}</span>
+              <span className="text-5xl font-black text-[#06B6D4]">{loading || !hasBaseline ? '--' : riskScore}</span>
               <span className="text-sm font-bold text-white/50">/100</span>
             </div>
             <div className="mt-2 text-[10px] font-bold tracking-widest text-white/70">
-              Risk Band: <span className="text-[#06B6D4]">{summary?.riskBand || 'No scan baseline'}</span>
+              Risk Band: <span className="text-[#06B6D4]">{hasBaseline ? summary?.riskBand : 'No scan baseline'}</span>
             </div>
             <div className="mt-4 w-full">
               <span className="text-[8px] uppercase text-white/40">Event Trend (7 Days)</span>
@@ -394,7 +402,7 @@ export default function TelemetryFeatures({
             <div className="text-[9px] font-bold uppercase text-white/50">Expiring Soon</div>
             <div className="text-xl font-black text-[#06B6D4]">{fmt(expiringCerts)}</div>
             <div className="mt-3 text-[9px] font-bold uppercase text-white/50">Related Risk Band</div>
-            <div className="text-sm font-black text-white">{summary?.riskBand || 'No baseline'}</div>
+            <div className="text-sm font-black text-white">{hasBaseline ? summary?.riskBand : 'No baseline'}</div>
           </div>
           <DonutRing percentage={expiringCerts ? clamp(100 - expiringCerts * 5) : 100} color="#06B6D4" />
         </div>

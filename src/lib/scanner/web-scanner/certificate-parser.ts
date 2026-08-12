@@ -9,6 +9,34 @@ import type { CertificateInfo, CertificateChainEntry, OidClassification } from '
 import { classifySignatureAlgorithm, lookupOid, OID_DATABASE } from './oid-database'
 
 /**
+ * The OIDs in `detectedOids` that merely RESTATE facts already reported by the
+ * dedicated public-key and signature findings.
+ *
+ * ONE FACT, ONE FINDING. `detectedOids` is a complete parse of the certificate,
+ * so for a single ECDSA P-256 leaf it contains `ecPublicKey` (the key's
+ * algorithm), `secp256r1 (P-256)` (that same key's curve) and
+ * `ecdsa-with-SHA256` (the signature) — every one of which is also reported by
+ * the certificate finding or the signature finding. Emitting all of them turned
+ * one certificate, carrying two facts, into five separate HIGH findings. That
+ * inflated the headline count, the per-surface severity mass and every mean
+ * computed over the evidence list, and it is why the Certificates & Keys card
+ * could not read better than "Critical" for any certificate on the public
+ * internet.
+ *
+ * Exported so the rule can be exercised directly by
+ * `tools/scanner-scoring-check.ts` instead of only through a live scan.
+ */
+export function leafRestatedOids(
+  cert: Pick<CertificateInfo, 'publicKeyOid' | 'publicKeyCurveOid' | 'signatureOid'>,
+): Set<string> {
+  return new Set(
+    [cert.publicKeyOid, cert.publicKeyCurveOid, cert.signatureOid].filter(
+      (oid): oid is string => Boolean(oid),
+    ),
+  )
+}
+
+/**
  * Parse a certificate from Node.js TLS PeerCertificate object
  */
 export function parseCertificateFromPeer(
@@ -43,6 +71,12 @@ export function parseCertificateFromPeer(
   let publicKeySize = 0
   let signatureAlgorithm = 'unknown'
   let signatureOid = ''
+  /* Recorded alongside `detectedOids` so the orchestrator can tell which parsed
+     OIDs merely RESTATE the leaf's own key — the SPKI algorithm and its named
+     curve — and are therefore already reported by the dedicated public-key
+     finding. See `CertificateInfo.publicKeyOid`. */
+  let publicKeyOid: string | null = null
+  let publicKeyCurveOid: string | null = null
   let detectedOids: OidClassification[] = []
 
   if (peerCert.raw) {
@@ -80,6 +114,7 @@ export function parseCertificateFromPeer(
       // Detect public key algorithm OID
       const pubKeyOid = getPublicKeyOid(publicKeyAlgorithm)
       if (pubKeyOid) {
+        publicKeyOid = pubKeyOid
         const pubKeyEntry = lookupOid(pubKeyOid)
         if (pubKeyEntry && !detectedOids.some(o => o.oid === pubKeyEntry.oid)) {
           detectedOids.push(pubKeyEntry)
@@ -90,6 +125,7 @@ export function parseCertificateFromPeer(
       if (pubKey.asymmetricKeyType === 'ec') {
         const curveOid = detectEcCurveOid(pubKey)
         if (curveOid) {
+          publicKeyCurveOid = curveOid
           const curveEntry = lookupOid(curveOid)
           if (curveEntry && !detectedOids.some(o => o.oid === curveEntry.oid)) {
             detectedOids.push(curveEntry)
@@ -107,6 +143,10 @@ export function parseCertificateFromPeer(
   // If we still couldn't get OIDs, try to infer from algorithm names
   if (detectedOids.length === 0) {
     detectedOids = inferOidsFromAlgorithms(publicKeyAlgorithm, signatureAlgorithm)
+    // The inferred set restates the same two facts, so the leaf-key OID has to
+    // be recorded here too or the dedup filter silently stops working on every
+    // certificate whose DER did not parse.
+    publicKeyOid = publicKeyOid ?? getPublicKeyOid(publicKeyAlgorithm)
   }
 
   // Walk the certificate chain
@@ -119,6 +159,8 @@ export function parseCertificateFromPeer(
     publicKeySize,
     signatureAlgorithm,
     signatureOid,
+    publicKeyOid,
+    publicKeyCurveOid,
     validFrom,
     validTo,
     serialNumber: peerCert.serialNumber || '',

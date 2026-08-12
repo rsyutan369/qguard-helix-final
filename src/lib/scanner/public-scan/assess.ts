@@ -191,9 +191,13 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
       const key = ENGINE_STAGE[engine]
       if (key) emit(stage(key, 'running'))
     },
-    onEngine: (engine, ok, detail) => {
+    onEngine: (engine, ok, detail, unmeasured) => {
       const key = ENGINE_STAGE[engine]
-      if (key) emit(stage(key, ok ? 'complete' : 'failed', detail))
+      /* `unavailable`, not `failed`. A module that could not run because the port
+         never answered has made no claim about the target — painting it with the
+         same red cross as a genuine control failure is what made an unreachable
+         endpoint look like it had failed four security checks. */
+      if (key) emit(stage(key, ok ? 'complete' : unmeasured ? 'unavailable' : 'failed', detail))
     },
     onObservation: options.onObservation,
     budgetMs: options.budgetMs,
@@ -232,7 +236,29 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
     durationMs: Date.now() - startedAt.getTime(),
     cached: false,
     degraded: !bundle.tls.ok,
-    degradedReason: bundle.tls.ok ? null : bundle.tls.error || 'TLS handshake failed',
+    /* When the port never answered, that is the reason — and it is a different
+       statement from "the TLS handshake failed", which implies a handshake was
+       attempted against a listening service. */
+    degradedReason: bundle.tls.ok
+      ? null
+      : bundle.reachability.data.reachable === false
+        ? bundle.reachability.data.detail
+        : bundle.tls.error || 'TLS handshake failed',
+    /**
+     * True when nothing was measured because the endpoint did not accept a TCP
+     * connection. Consumers use this to render "not assessed" rather than a
+     * failing verdict — a degraded report and an unreachable target are not the
+     * same result.
+     */
+    unreachable: bundle.reachability.data.reachable === false,
+    reachability: {
+      state: bundle.reachability.data.state,
+      reachable: bundle.reachability.data.reachable,
+      tcpConnectMs: bundle.reachability.data.tcpConnectMs,
+      address: bundle.reachability.data.address,
+      detail: bundle.reachability.data.detail,
+      summary: bundle.reachability.data.summary,
+    },
     executive,
     scoreComponents,
     handshake: buildHandshakeSteps(evidence),

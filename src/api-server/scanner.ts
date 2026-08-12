@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express'
 import net from 'node:net'
 import { getToken, getServerUser, createAuthClient, getServiceClient } from '@/lib/supabase-server'
 import { validateAsset } from '@/lib/scanner/asset-validator'
+import { persistableTelemetry } from '@/lib/scanner/session-payload'
+import { findingIdentityKey, richerText } from '@/lib/scanner/finding-identity'
 import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
 import { repositoryProvider } from '@/lib/scanner/web-scanner/repo-scanner'
 import type {
@@ -1975,7 +1977,7 @@ router.get('/stream', async (req, res) => {
       if (state?.cancelled) {
         closeModuleLedger('cancelled by operator')
         emit({ type: 'scan-cancelled', status: 'cancelled', progress: Math.round((index / normalized.length) * 100), message: 'Scan cancellation requested by user', moduleStates, moduleLedger: summarizeModuleLedger() })
-        await updateSession(client, session.id, user.id, { status: 'cancelled', completed_at: new Date().toISOString(), metadata: { targets: normalized, telemetry, moduleStates, results, errors } }, session.mode)
+        await updateSession(client, session.id, user.id, { status: 'cancelled', completed_at: new Date().toISOString(), metadata: { targets: normalized, telemetry: persistableTelemetry(telemetry), moduleStates, results, errors } }, session.mode)
         res.end()
         return
       }
@@ -2189,7 +2191,7 @@ router.get('/stream', async (req, res) => {
         authorization: 'explicit-user-acknowledgement',
         scannerMode: 'defensive-cryptographic-inventory',
         targets: normalized,
-        telemetry,
+        telemetry: persistableTelemetry(telemetry),
         moduleStates,
         // Only modules that produced a measurement count as "used": a module
         // that did not apply, or that failed, must not inflate coverage.
@@ -2220,7 +2222,7 @@ router.get('/stream', async (req, res) => {
         completed_at: new Date().toISOString(),
         metadata: {
           targets: normalized,
-          telemetry,
+          telemetry: persistableTelemetry(telemetry),
           moduleStates,
           scannerModulesUsed: moduleStates.filter((module) => module.status === 'Completed' || module.status === 'No findings').map((module) => module.name),
           errors,
@@ -2858,29 +2860,60 @@ function vulnerabilityItemToFinding(item: AssetVulnerabilityItem, asset?: any): 
   }
 }
 
-function mergeScannerFindings(findings: DefensiveFinding[]) {
-  const grouped = new Map<string, DefensiveFinding>()
+type ScannerFindingInput = DefensiveFinding & { scanTarget?: string }
+export type MergedScannerFinding = DefensiveFinding & { observations: number; sources: string[] }
+
+/**
+ * Collapse the four storage views of one observation into a single finding.
+ *
+ * The scanner persists every detection to `pqc_scan_results`, `crypto_exposures`
+ * and `crypto_inventory` AND keeps it in the scan session's own findings array.
+ * The old merge key started with `finding.source` — the one field guaranteed to
+ * differ between those copies — so a single cipher suite was reported four
+ * times, inflating `totalFindings`, `criticalFindings`, `severityCounts` and
+ * every dashboard that reads them (measured: 255 reported for ~100 real
+ * observations). `category` is equally unusable as an identity: the same cipher
+ * suite is filed as "rsa", "Cipher Suite" and "algorithm" by the three writers.
+ *
+ * Identity is therefore (algorithm, subject host, detection method) — the three
+ * properties of the OBSERVATION rather than of the row that stored it. The
+ * strongest severity wins, the merged record carries how many rows backed it
+ * (`observations`) and which tables they came from (`sources`).
+ */
+function mergeScannerFindings(findings: ScannerFindingInput[]): MergedScannerFinding[] {
+  const grouped = new Map<string, MergedScannerFinding>()
 
   for (const finding of findings) {
-    const key = [
-      finding.source,
-      finding.algorithm,
-      finding.location,
-      finding.category,
-      finding.evidence,
-    ].map((value) => String(value || '').toLowerCase()).join('|')
+    const key = findingIdentityKey(finding)
+    const source = String(finding.source || 'scanner-evidence')
     const current = grouped.get(key)
     if (!current) {
-      grouped.set(key, finding)
+      grouped.set(key, { ...finding, observations: 1, sources: [source] })
       continue
     }
+
+    current.observations += 1
+    if (!current.sources.includes(source)) current.sources.push(source)
+
     const currentWeight = storedSeverityWeight(current.threatLevel)
     const nextWeight = storedSeverityWeight(finding.threatLevel)
     const currentTime = Date.parse(current.detectedAt || current.timestamp || '') || 0
     const nextTime = Date.parse(finding.detectedAt || finding.timestamp || '') || 0
-    if (nextWeight > currentWeight || (nextWeight === currentWeight && nextTime > currentTime)) {
-      grouped.set(key, finding)
-    }
+    const winner = nextWeight > currentWeight || (nextWeight === currentWeight && nextTime > currentTime)
+      ? { ...finding, observations: current.observations, sources: current.sources }
+      : current
+
+    // Severity is decided by the strongest copy, but the narrative fields are
+    // not: the copy that carries the highest severity is often the terse
+    // `crypto_exposures` row, while the scan session's copy holds the analyst
+    // explanation. Keep the most specific text from ANY merged copy so nothing
+    // a user would read is lost to the merge.
+    grouped.set(key, {
+      ...winner,
+      description: richerText(current.description, finding.description),
+      evidence: richerText(current.evidence, finding.evidence),
+      recommendation: richerText(current.recommendation, finding.recommendation),
+    })
   }
 
   return Array.from(grouped.values()).sort((a, b) => {
@@ -3120,9 +3153,18 @@ async function computeScannerIntelligence(token: string, userId: string) {
   const assetPayload = buildAssetsPayload(evidenceAssets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode)
   const exposure = buildExposurePayload(evidenceAssets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode)
   const historyPayload = mergeActiveScannerJobs(userId, buildHistoryPayload(sessions as any[], results as any[], mode))
-  const historyFindings = historyPayload.history.flatMap((entry: any) => entry.findings || [])
+  // Stamp the scan / asset each finding was observed on. Rule-derived session
+  // findings carry a location like "Detection Rule TLS-008" with no target in
+  // it, so without this the merge cannot tell that the session's copy and the
+  // asset's copy of one observation describe the same thing.
+  const historyFindings = historyPayload.history.flatMap((entry: any) =>
+    (entry.findings || []).map((finding: DefensiveFinding) => ({ ...finding, scanTarget: entry.target })),
+  )
   const assetFindings = assetPayload.assets.flatMap((asset: any) =>
-    (Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : []).map((item: AssetVulnerabilityItem) => vulnerabilityItemToFinding(item, asset)),
+    (Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : []).map((item: AssetVulnerabilityItem) => ({
+      ...vulnerabilityItemToFinding(item, asset),
+      scanTarget: String(asset.url || asset.domain || asset.name || ''),
+    })),
   )
   const findings = mergeScannerFindings([...historyFindings, ...assetFindings])
   const latest = historyPayload.history[0] || null
@@ -3375,8 +3417,13 @@ router.get('/cbom', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const client = getDbClient(token)
-  const { assets, inventory, mode } = await loadScannerTables(client, user.id)
-  res.json({ data: buildCbomPayload(assets as any[], inventory as any[], mode) })
+  const { assets, inventory, exposures, results, vulnerabilities, mode } = await loadScannerTables(client, user.id)
+  // Evidence-backed assets, exactly as computeScannerIntelligence does it —
+  // otherwise every component discovered on an asset that exists only as
+  // scanner evidence renders as "Unknown asset" on this route but not on the
+  // intelligence route, for the same tenant and the same rows.
+  const evidenceAssets = buildEvidenceBackedAssets(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[])
+  res.json({ data: buildCbomPayload(evidenceAssets as any[], inventory as any[], mode) })
 })
 
 router.get('/assets', async (req, res) => {

@@ -9,18 +9,35 @@
  *
  * SCHEDULING
  * ----------
- * DNS and HTTP are independent of TLS and run alongside it. TLS and certificate
- * probing are serialised because `analyzeTls` alone opens ~12 sockets to
- * enumerate protocols and cipher suites; stacking more concurrent handshakes on
- * top trips CDN per-IP connection limits, and a throttled RST is
+ * A TCP reachability preflight runs FIRST (see `reachability-engine`), because
+ * every cryptographic verdict downstream is conditional on the port answering.
+ * Establishing that once, in one connect, is what stops each engine paying its
+ * own timeout to rediscover a dead port — and, more importantly, is what lets
+ * the report say "nothing answered" instead of accusing the endpoint of failing
+ * four controls it was never asked about.
+ *
+ * After the preflight, DNS and HTTP are independent of TLS and run alongside it.
+ * TLS and certificate probing are serialised because `analyzeTls` alone opens
+ * ~12 sockets to enumerate protocols and cipher suites; stacking more concurrent
+ * handshakes on top trips CDN per-IP connection limits, and a throttled RST is
  * indistinguishable from "not supported" — a false negative on the very
  * measurements this scanner exists to make.
+ *
+ * DNS runs regardless of reachability: whether a name resolves is real, useful
+ * evidence even when the service behind it is down, and it is the first thing an
+ * operator needs in order to tell "wrong DNS" from "dead service".
  */
 
 import { runCertificateEngine, emptyCertificate, type CertificateIntelligence } from './certificate-engine'
-import { runCryptoEngine, type CryptoIntelligenceData } from './crypto-engine'
+import { runCryptoEngine, notAssessedCrypto, type CryptoIntelligenceData } from './crypto-engine'
 import { runDnsEngine, emptyDns, type DnsIntelligence } from './dns-engine'
 import { runHttpEngine, emptyHttp, type HttpIntelligence } from './http-engine'
+import {
+  runReachabilityEngine,
+  emptyReachability,
+  REACHABILITY_TIMEOUT_MS,
+  type ReachabilityIntelligence,
+} from './reachability-engine'
 import { runTlsEngine, emptyTls, type TlsIntelligence } from './tls-engine'
 import {
   type EngineResult,
@@ -28,6 +45,7 @@ import {
   type ObservationSink,
   clampScore,
   observationEmitter,
+  unmeasuredResult,
 } from './contract'
 
 export * from './contract'
@@ -36,9 +54,11 @@ export * from './http-engine'
 export * from './tls-engine'
 export * from './certificate-engine'
 export * from './crypto-engine'
+export * from './reachability-engine'
 
 /** One entry per engine, for the scanner-capability disclosure. */
 export const ENGINE_REGISTRY = [
+  { id: 'endpoint-reachability', name: 'Endpoint Reachability Engine', covers: ['TCP connect', 'Port state', 'Connect latency', 'Route reachability'] },
   { id: 'dns-intelligence', name: 'DNS Intelligence Engine', covers: ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SOA', 'CAA', 'DNSSEC', 'SPF', 'DKIM', 'DMARC'] },
   { id: 'tls-intelligence', name: 'TLS Intelligence Engine', covers: ['Protocol versions', 'Cipher suites', 'ALPN', 'Named groups', 'Hybrid PQ groups', 'Session resumption', 'Forward secrecy'] },
   { id: 'certificate-intelligence', name: 'Certificate Intelligence Engine', covers: ['Chain', 'Trust verification', 'SAN/CN', 'Key + signature', 'Validity', 'OCSP', 'SCT / CT', 'CRL', 'Must-staple'] },
@@ -49,6 +69,11 @@ export const ENGINE_REGISTRY = [
 export interface ScanEvidenceBundle {
   host: string
   port: number
+  /**
+   * The preflight. `reachability.data.reachable === false` is the single
+   * predicate that explains every Unknown in the rest of the bundle.
+   */
+  reachability: EngineResult<ReachabilityIntelligence>
   dns: EngineResult<DnsIntelligence>
   tls: EngineResult<TlsIntelligence>
   certificate: EngineResult<CertificateIntelligence>
@@ -76,8 +101,14 @@ export const DEFAULT_SCAN_BUDGET_MS = 45_000
 export interface OrchestratorOptions {
   host: string
   port: number
-  /** Called as each engine finishes, for SSE progress. */
-  onEngine?: (engine: string, ok: boolean, detail: string) => void
+  /**
+   * Called as each engine finishes, for SSE progress.
+   *
+   * `unmeasured` distinguishes "this module could not be run, so there is no
+   * verdict" from "this module ran and the target failed". The rail paints them
+   * differently on purpose — see `PublicScanStageState`.
+   */
+  onEngine?: (engine: string, ok: boolean, detail: string, unmeasured?: boolean) => void
   /** Called as individual measurements land, for the live visualization. */
   onObservation?: ObservationSink
   /** Called when an engine begins, so the rail reflects real start times. */
@@ -134,6 +165,40 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
     })
     return result
   })
+
+  /* ── Preflight ────────────────────────────────────────────────────────────
+     One TCP connect, before anything expensive. It drives no stage of its own:
+     the TLS stage owns the transport in the UI rail, and this is the evidence
+     that stage reports when the port never answered. */
+  const reachabilityResult = await runReachabilityEngine(
+    host,
+    port,
+    REACHABILITY_TIMEOUT_MS,
+    Math.max(2_000, Math.min(REACHABILITY_TIMEOUT_MS * 2 + 500, deadline - Date.now() - 2_000)),
+  )
+  const reachability = reachabilityResult.data
+  emit({
+    surface: 'tls',
+    label: 'TCP reachability',
+    detail: reachability.detail,
+    /* An unreachable port is `info`, not `critical`, and the distinction is not
+       softening the result — it is putting it in the right register. The hero's
+       surfaces report CRYPTOGRAPHIC verdicts; a critical status paints the
+       transport card red, which says "this endpoint's transport security is
+       broken" when what was actually established is that there is no endpoint
+       answering to assess. The unreachability itself is stated prominently by
+       the stage rail, the report header, the TCP Connect step and Sophia. */
+    status: 'info',
+    severity: 'info',
+    // Only the unreachable case claims the surface headline: when the port is
+    // open this is a prerequisite, not the transport verdict, and letting it
+    // write "Reachable" would overwrite the protocol result seconds later.
+    ...(reachability.reachable ? {} : { verdict: 'Unreachable' }),
+  })
+
+  if (!reachability.reachable) {
+    return unreachableBundle(host, port, startedAt, reachabilityResult, dnsPromise, onEngineStart, onEngine, emit)
+  }
 
   onEngineStart?.('http-security')
   const httpPromise = runHttpEngine(host, port).then((result) => {
@@ -204,26 +269,7 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
     certificateResult.data,
     httpResult.data.hsts.status === 'Healthy',
   )
-  onEngine?.(
-    'cryptographic-intelligence',
-    cryptoResult.ok,
-    `PQ readiness ${cryptoResult.data.postQuantumReadiness}% · quantum risk ${cryptoResult.data.quantumRisk}`,
-  )
-  emit({
-    surface: 'quantum',
-    label: 'Post-quantum readiness',
-    detail: tlsResult.data.hybridGroups.length
-      ? `ML-KEM key establishment active (${tlsResult.data.primaryGroup}) · readiness ${cryptoResult.data.postQuantumReadiness}%`
-      : `Hybrid not detected · classical key establishment only · readiness ${cryptoResult.data.postQuantumReadiness}%`,
-    status: tlsResult.data.hybridGroups.length ? 'pass' : 'warning',
-    severity: tlsResult.data.hybridGroups.length ? 'none' : 'medium',
-    verdict: tlsResult.data.hybridGroups.length
-      ? 'Hybrid ready'
-      : cryptoResult.data.postQuantumReadiness >= 40
-        ? 'Fair'
-        : 'Classical only',
-    postQuantum: tlsResult.data.hybridGroups.length > 0,
-  })
+  emitCryptoStage(cryptoResult, tlsResult, onEngine, emit)
 
   const engines = [dnsResult, tlsResult, certificateResult, httpResult, cryptoResult]
 
@@ -243,14 +289,163 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
   return {
     host,
     port,
+    reachability: reachabilityResult,
     dns: dnsResult,
     tls: tlsResult,
     certificate: certificateResult,
     http: httpResult,
     crypto: cryptoResult,
-    evidence: engines.flatMap((engine) => engine.evidence),
-    notes: engines.flatMap((engine) => engine.notes),
+    evidence: [reachabilityResult, ...engines].flatMap((engine) => engine.evidence),
+    notes: [reachabilityResult, ...engines].flatMap((engine) => engine.notes),
     confidence,
+    totalMs: Date.now() - startedAt,
+  }
+}
+
+/**
+ * Publish the cryptographic-intelligence stage.
+ *
+ * Extracted because it has to say two very different things and used to say only
+ * one of them: the rail detail was `PQ readiness 0% · quantum risk Low` printed
+ * UNCONDITIONALLY, so an endpoint that never completed a handshake got a stage
+ * marked FAILED whose own text quoted a readiness percentage and a reassuring
+ * risk level. Both numbers were computed from an empty evidence set — the
+ * classic "absence of evidence rendered as good news".
+ */
+function emitCryptoStage(
+  cryptoResult: EngineResult<CryptoIntelligenceData>,
+  tlsResult: EngineResult<TlsIntelligence>,
+  onEngine: OrchestratorOptions['onEngine'],
+  emit: ObservationSink,
+): void {
+  const crypto = cryptoResult.data
+  const hybrid = tlsResult.data.hybridGroups.length > 0
+
+  if (!crypto.assessed) {
+    // The engine ran and correctly concluded that nothing was observable. That
+    // is a completed module with an unmeasured result — reported as such, with
+    // no score attached, so the rail cannot imply a verdict that does not exist.
+    onEngine?.(
+      'cryptographic-intelligence',
+      false,
+      crypto.notAssessedReason ?? 'Not assessed — no handshake or certificate evidence to score.',
+      true,
+    )
+    emit({
+      surface: 'quantum',
+      label: 'Post-quantum readiness',
+      detail: crypto.notAssessedReason ?? 'No cryptographic evidence was collected, so readiness was not scored.',
+      status: 'info',
+      severity: 'info',
+      verdict: 'Not measured',
+    })
+    return
+  }
+
+  onEngine?.(
+    'cryptographic-intelligence',
+    cryptoResult.ok,
+    `PQ readiness ${crypto.postQuantumReadiness}% · quantum risk ${crypto.quantumRisk}`,
+  )
+  emit({
+    surface: 'quantum',
+    label: 'Post-quantum readiness',
+    detail: hybrid
+      ? `ML-KEM key establishment active (${tlsResult.data.primaryGroup}) · readiness ${crypto.postQuantumReadiness}%`
+      : `Hybrid not detected · classical key establishment only · readiness ${crypto.postQuantumReadiness}%`,
+    status: hybrid ? 'pass' : 'warning',
+    severity: hybrid ? 'none' : 'medium',
+    verdict: hybrid ? 'Hybrid ready' : (crypto.postQuantumReadiness ?? 0) >= 40 ? 'Fair' : 'Classical only',
+    postQuantum: hybrid,
+  })
+}
+
+/**
+ * The bundle for an endpoint whose port never accepted a TCP connection.
+ *
+ * Everything that depends on a handshake is marked `unmeasured` with the SAME
+ * reason string, so the rail, the controls, the findings table and the executive
+ * summary all quote one explanation instead of four independently-worded
+ * guesses. Nothing here is scored: an endpoint that did not answer has not
+ * failed anything.
+ *
+ * DNS still completes — it was already in flight and it is the evidence that
+ * distinguishes "the name points somewhere wrong" from "the service is down".
+ */
+async function unreachableBundle(
+  host: string,
+  port: number,
+  startedAt: number,
+  reachabilityResult: EngineResult<ReachabilityIntelligence>,
+  dnsPromise: Promise<EngineResult<DnsIntelligence>>,
+  onEngineStart: OrchestratorOptions['onEngineStart'],
+  onEngine: OrchestratorOptions['onEngine'],
+  emit: ObservationSink,
+): Promise<ScanEvidenceBundle> {
+  const reachability = reachabilityResult.data
+  /* `reason` is the full sentence and belongs where the outcome is EXPLAINED —
+     once, on the TLS stage, which owns the transport. `short` is the compact
+     phrase for the places that merely have to say why they are empty; echoing
+     the full sentence on three stages and three surface cards rendered the same
+     paragraph six times over. */
+  const reason = reachability.unreachableReason ?? `Port ${port} did not answer.`
+  const short = reachability.summary
+
+  const tls = unmeasuredResult('tls-intelligence', emptyTls(reason), reason)
+  const certificate = unmeasuredResult('certificate-intelligence', emptyCertificate(reason), reason)
+  const http = unmeasuredResult('http-security', emptyHttp(reason), reason)
+  const crypto = unmeasuredResult(
+    'cryptographic-intelligence',
+    notAssessedCrypto(`Not assessed — ${short}, so no handshake or certificate evidence exists to score.`),
+    reason,
+  )
+
+  // Each stage is announced started and then immediately resolved as
+  // unavailable, so the rail shows the same six steps rather than silently
+  // leaving three of them on "Waiting" forever.
+  onEngineStart?.('tls-intelligence')
+  onEngine?.('tls-intelligence', false, reason, true)
+  onEngineStart?.('certificate-intelligence')
+  onEngine?.('certificate-intelligence', false, `Chain not collected — ${short}`, true)
+  onEngineStart?.('http-security')
+  onEngine?.('http-security', false, `Headers not collected — ${short}`, true)
+
+  emit({
+    surface: 'certificate',
+    label: 'Certificate chain',
+    detail: `Not collected — ${short}`,
+    status: 'info',
+    severity: 'info',
+    verdict: 'Not measured',
+  })
+  emit({
+    surface: 'headers',
+    label: 'Transport security headers',
+    detail: `Not collected — ${short}`,
+    status: 'info',
+    severity: 'info',
+    verdict: 'Not measured',
+  })
+
+  onEngineStart?.('cryptographic-intelligence')
+  emitCryptoStage(crypto, tls, onEngine, emit)
+
+  const dns = await dnsPromise
+
+  return {
+    host,
+    port,
+    reachability: reachabilityResult,
+    dns,
+    tls,
+    certificate,
+    http,
+    crypto,
+    evidence: [...reachabilityResult.evidence, ...dns.evidence],
+    notes: [...reachabilityResult.notes, ...dns.notes],
+    // DNS is the only cryptographic-assessment weight that was earned, so
+    // confidence reflects exactly that and nothing else.
+    confidence: clampScore((dns.confidence * 15) / 100),
     totalMs: Date.now() - startedAt,
   }
 }
@@ -270,26 +465,17 @@ export function emptyBundle(host: string, port: number, error: string): ScanEvid
   return {
     host,
     port,
+    reachability: wrap('endpoint-reachability', emptyReachability(error)),
     dns: wrap('dns-intelligence', emptyDns(host)),
     tls: wrap('tls-intelligence', emptyTls(error)),
     certificate: wrap('certificate-intelligence', emptyCertificate(error)),
     http: wrap('http-security', emptyHttp(error)),
-    crypto: wrap('cryptographic-intelligence', {
-      algorithms: [],
-      keyExchange: 'unknown',
-      keyExchangeClass: 'Classical',
-      forwardSecrecy: 'Not observed',
-      hybridObserved: false,
-      pqSignatureObserved: false,
-      hybridGroups: [],
-      kemParameterSets: [],
-      postQuantumReadiness: 0,
-      readinessReasons: [],
-      quantumRisk: 'Critical',
-      quantumRiskScore: 100,
-      riskFactors: [],
-      migrationTargets: [],
-    } as CryptoIntelligenceData),
+    // `notAssessedCrypto` rather than a hand-written payload. The inline literal
+    // this replaces published `quantumRisk: 'Critical', quantumRiskScore: 100`
+    // for the no-evidence case, while `computeQuantumRisk` published `'Low'` for
+    // the very same case — two contradictory fabrications for one condition,
+    // both invented. There is now exactly one representation of "not assessed".
+    crypto: wrap('cryptographic-intelligence', notAssessedCrypto(error)),
     evidence: [],
     notes: [],
     confidence: 0,

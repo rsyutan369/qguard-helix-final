@@ -236,7 +236,11 @@ async function runScan(
     writeCache(target.cacheKey, report)
     // Privacy-first logging: target host + outcome only, no client identifiers.
     console.info(
-      `[public-scan] ${target.host}:${target.port} → grade ${report.executive.grade}, pq ${report.executive.postQuantumReadiness}%, ${Date.now() - startedAt}ms`,
+      `[public-scan] ${target.host}:${target.port} → ` +
+        (report.unreachable
+          ? `unreachable (${report.reachability.state})`
+          : `grade ${report.executive.grade}, pq ${report.executive.postQuantumReadiness ?? 'n/a'}%`) +
+        `, ${Date.now() - startedAt}ms`,
     )
     return report
   } finally {
@@ -425,6 +429,12 @@ router.get('/stream', async (req: Request, res: Response) => {
 function cachedStages(report: PublicScanReport): PublicScanStage[] {
   const { evidence, executive } = report
   const certificate = evidence.certificateExtras
+  /* The replay must reproduce the SAME states the live run emitted. When the port
+     never answered, three of these modules were `unavailable`, not `failed` — a
+     cache hit that repainted them red would contradict the live rail for the
+     identical assessment. */
+  const unreachable = report.unreachable
+  const reason = report.reachability?.detail ?? 'Endpoint did not answer'
   return [
     {
       key: 'dns',
@@ -439,37 +449,46 @@ function cachedStages(report: PublicScanReport): PublicScanStage[] {
       key: 'tls',
       label: 'TLS Handshake',
       description: 'Negotiating protocols and cipher suites',
-      state: report.degraded ? 'failed' : 'complete',
-      detail: `${evidence.tls?.tlsVersion ?? 'n/a'} · ${
-        evidence.keyAgreement.hybridGroups.length
-          ? `hybrid PQ (${evidence.keyAgreement.hybridGroups[0]})`
-          : 'classical groups only'
-      }`,
+      state: unreachable ? 'unavailable' : report.degraded ? 'failed' : 'complete',
+      detail: unreachable
+        ? reason
+        : `${evidence.tls?.tlsVersion ?? 'n/a'} · ${
+            evidence.keyAgreement.hybridGroups.length
+              ? `hybrid PQ (${evidence.keyAgreement.hybridGroups[0]})`
+              : 'classical groups only'
+          }`,
     },
     {
       key: 'certificate',
       label: 'Certificate Collection',
       description: 'Reading the served X.509 chain',
-      state: certificate ? 'complete' : 'failed',
+      state: certificate ? 'complete' : unreachable ? 'unavailable' : 'failed',
       detail: certificate
         ? `${certificate.sanCount} SAN${certificate.sanCount === 1 ? '' : 's'} · chain depth ${certificate.chainDepth}`
-        : 'Certificate chain unavailable',
+        : unreachable
+          ? `Not collected — ${reason}`
+          : 'Certificate chain unavailable',
     },
     {
       key: 'headers',
       label: 'Security Header Analysis',
       description: 'Inspecting HTTP transport controls',
-      state: evidence.http.reachable ? 'complete' : 'failed',
+      state: evidence.http.reachable ? 'complete' : unreachable ? 'unavailable' : 'failed',
       detail: evidence.http.reachable
         ? `HTTP ${evidence.http.statusCode} · ${evidence.http.headers.filter((h) => h.secure).length}/${evidence.http.headers.length} hardened`
-        : 'Origin unreachable',
+        : unreachable
+          ? `Not collected — ${reason}`
+          : 'Origin unreachable',
     },
     {
       key: 'quantum',
       label: 'Quantum Assessment',
       description: 'Scoring post-quantum exposure',
-      state: 'complete',
-      detail: `PQ readiness ${executive.postQuantumReadiness}% · encryption ${executive.encryptionScore}/100`,
+      state: executive.postQuantumReadiness === null ? 'unavailable' : 'complete',
+      detail:
+        executive.postQuantumReadiness === null
+          ? 'Not assessed — no cryptographic evidence was collected.'
+          : `PQ readiness ${executive.postQuantumReadiness}% · encryption ${executive.encryptionScore ?? '—'}/100`,
     },
     {
       key: 'report',

@@ -15,8 +15,10 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'rsa',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'dual',
     pqcReplacement: 'ML-KEM-768 (FIPS 203)',
-    description: 'RSA public key encryption — fully breakable by Shor\'s algorithm',
+    pqcSignatureReplacement: 'ML-DSA-65 (FIPS 204)',
+    description: 'RSA public key — fully breakable by Shor\'s algorithm. Used for both key transport and signatures; in an X.509 certificate this is an authentication key.',
   },
   {
     oid: '1.2.840.113549.1.1.2',
@@ -105,6 +107,7 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'rsa',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'key-establishment',
     pqcReplacement: 'ML-KEM-768 (FIPS 203)',
     description: 'RSA-OAEP encryption — quantum-vulnerable key encapsulation',
   },
@@ -117,8 +120,10 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'ecc',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'dual',
     pqcReplacement: 'ML-KEM-768 (FIPS 203)',
-    description: 'Elliptic curve public key — breakable by Shor\'s algorithm on ECDLP',
+    pqcSignatureReplacement: 'ML-DSA-65 (FIPS 204)',
+    description: 'Elliptic curve public key — breakable by Shor\'s algorithm on ECDLP. Used for both ECDH and ECDSA; in an X.509 certificate this is an authentication key.',
   },
   {
     oid: '1.2.840.10045.4.1',
@@ -171,6 +176,8 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'ecc',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'dual',
+    pqcSignatureReplacement: 'ML-DSA-65 (FIPS 204)',
     pqcReplacement: 'ML-KEM-768 (FIPS 203)',
     description: 'NIST P-256 curve — widely used but quantum-vulnerable via ECDLP',
   },
@@ -180,6 +187,8 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'ecc',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'dual',
+    pqcSignatureReplacement: 'ML-DSA-87 (FIPS 204)',
     pqcReplacement: 'ML-KEM-1024 (FIPS 203)',
     description: 'NIST P-384 curve — quantum-vulnerable via ECDLP',
   },
@@ -189,6 +198,8 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'ecc',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'dual',
+    pqcSignatureReplacement: 'ML-DSA-87 (FIPS 204)',
     pqcReplacement: 'ML-KEM-1024 (FIPS 203)',
     description: 'NIST P-521 curve — quantum-vulnerable via ECDLP',
   },
@@ -201,6 +212,7 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'dh',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'key-establishment',
     pqcReplacement: 'ML-KEM-768 (FIPS 203)',
     description: 'Diffie-Hellman key agreement — breakable by Shor\'s algorithm',
   },
@@ -210,6 +222,7 @@ export const OID_DATABASE: OidClassification[] = [
     category: 'dh',
     quantumVulnerable: true,
     quantumThreat: 'shor',
+    role: 'key-establishment',
     pqcReplacement: 'ML-KEM-768 (FIPS 203)',
     description: 'Diffie-Hellman public key — quantum-vulnerable key exchange',
   },
@@ -511,6 +524,33 @@ export const OID_DATABASE: OidClassification[] = [
  */
 export function lookupOid(oid: string): OidClassification | null {
   return OID_DATABASE.find(entry => entry.oid === oid) || null
+}
+
+/**
+ * The migration recommendation for an OID, resolved against the role it was
+ * OBSERVED performing.
+ *
+ * ALWAYS use this instead of reading `pqcReplacement` directly. ML-KEM
+ * (FIPS 203) is a key-encapsulation mechanism: it establishes shared secrets and
+ * cannot produce a signature. Recommending it for a certificate's public key —
+ * which is what reading `pqcReplacement` unconditionally did for `ecPublicKey`,
+ * `secp256r1` and `rsaEncryption` — tells an operator to replace an
+ * authentication key with something that cannot authenticate.
+ *
+ * `usage` is the role the CALL SITE observed, not a property of the OID: the
+ * same `ecPublicKey` is an ECDH key in a key-agreement context and an ECDSA key
+ * in a certificate.
+ */
+export function pqcReplacementFor(
+  oid: OidClassification,
+  usage: 'signature' | 'key-establishment',
+): string {
+  const role = oid.role ?? 'other'
+  const target =
+    usage === 'signature' && (role === 'dual' || role === 'signature')
+      ? (oid.pqcSignatureReplacement ?? oid.pqcReplacement)
+      : oid.pqcReplacement
+  return target ? `Migrate to ${target}` : 'Upgrade to a quantum-safe algorithm'
 }
 
 /**

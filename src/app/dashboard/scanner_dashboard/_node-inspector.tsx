@@ -94,7 +94,7 @@ export function ScannerNodeInspector({ node, evidence, onClose, animate }: Scann
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {evidence?.score !== null && evidence !== null && (
-                <span className="text-right">
+                <span className="text-right" title={evidence.scoreBasis}>
                   <span className="block font-mono text-[9px] uppercase tracking-widest text-slate-600">Posture</span>
                   <span className="block text-[13px] font-black tabular-nums" style={{ color: verdict.color }}>
                     {evidence.score}
@@ -114,6 +114,14 @@ export function ScannerNodeInspector({ node, evidence, onClose, animate }: Scann
 
           {evidence && evidence.score !== null && (
             <Meter value={evidence.score} color={verdict.color} className="mt-2.5 h-1" />
+          )}
+
+          {/* Provenance for the number above. A posture score an operator cannot
+              trace back to named categories and weights is one they cannot
+              defend in an audit, so the derivation travels WITH the verdict
+              instead of living in a report they have to go and find. */}
+          {evidence && (
+            <p className="mt-2 text-[10px] leading-relaxed text-slate-500">{evidence.scoreBasis}</p>
           )}
 
           <div className="mt-3 space-y-3">

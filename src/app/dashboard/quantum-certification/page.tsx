@@ -253,7 +253,17 @@ export default function QuantumCertificationPage() {
           <div>
             <MetricCard
               label="Certification Status"
-              value={activeCert ? STATUS_META[activeCert.status].label : eligibility.eligible ? 'Eligible' : 'Not Certified'}
+              value={
+                activeCert
+                  ? activeCert.certified === false
+                    ? 'Baseline Attested'
+                    : STATUS_META[activeCert.status].label
+                  : eligibility.eligible
+                    ? 'Eligible'
+                    : eligibility.issuable
+                      ? 'Baseline Available'
+                      : 'Not Assessed'
+              }
               detail={activeCert ? activeCert.certificateId : eligibility.hasData ? `${eligibility.requiredMet}/${eligibility.requiredTotal} criteria met` : 'No evidence yet'}
               color={activeCert ? STATUS_META[activeCert.status].color : eligibility.eligible ? EMERALD : ORANGE}
               icon={activeCert?.status === 'active' ? ShieldCheck : activeCert?.status === 'suspended' ? ShieldAlert : eligibility.eligible ? BadgeCheck : ShieldX}
@@ -381,11 +391,18 @@ export default function QuantumCertificationPage() {
                       {eligibility.requiredTotal} required criteria are met (Quantum Trust Score™ {eligibility.trustScore}/1000).
                       Issue your signed, publicly verifiable certificate below.
                     </>
+                  ) : eligibility.issuable ? (
+                    <>
+                      <strong className="font-bold">Ready to issue your Initial Readiness attestation.</strong>{' '}
+                      {eligibility.requiredMet}/{eligibility.requiredTotal} certification criteria met (Quantum Trust Score™{' '}
+                      {eligibility.trustScore}/1000). This Bronze attestation is a signed, publicly verifiable record of your{' '}
+                      <em>measured</em> baseline — it does not claim your estate is quantum-safe. Certified status begins at
+                      Silver, once every criterion passes.
+                    </>
                   ) : (
                     <>
-                      <strong className="font-bold">Not yet eligible.</strong> {eligibility.requiredMet}/
-                      {eligibility.requiredTotal} required criteria met. Resolve the outstanding criteria in the checklist,
-                      then re-scan to qualify.
+                      <strong className="font-bold">No assessment evidence yet.</strong> Run a discovery scan first — a
+                      certificate attests to measured evidence, and nothing has been measured for this tenant.
                     </>
                   )}
                 </div>
@@ -422,8 +439,17 @@ export default function QuantumCertificationPage() {
                     </span>
                   </label>
                 </div>
-                <PrimaryButton icon={eligibility.eligible ? BadgeCheck : Lock} onClick={() => void onIssue()} disabled={!eligibility.eligible || busy}>
-                  {busy ? 'Issuing…' : eligibility.eligible ? 'Issue Quantum Trust Certificate' : 'Certification Criteria Not Met'}
+                {/* Issuance is gated on the EVIDENCE floor, not on certification
+                    criteria: a measured tenant can always issue its Bronze
+                    baseline. Only an unmeasured estate is blocked. */}
+                <PrimaryButton icon={eligibility.issuable ? BadgeCheck : Lock} onClick={() => void onIssue()} disabled={!eligibility.issuable || busy}>
+                  {busy
+                    ? 'Issuing…'
+                    : eligibility.eligible
+                      ? 'Issue Quantum Trust Certificate'
+                      : eligibility.issuable
+                        ? 'Issue Initial Readiness Attestation (Bronze)'
+                        : 'Run a Discovery Scan First'}
                 </PrimaryButton>
               </div>
             )}

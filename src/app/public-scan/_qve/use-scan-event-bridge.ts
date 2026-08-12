@@ -133,7 +133,14 @@ export function useScanEventBridge({
   /* ── Stage frames (real SSE) ───────────────────────────────────────────── */
 
   React.useEffect(() => {
-    if (state !== 'scanning') return;
+    /* `complete` is included deliberately. A CACHED result replays every stage
+       frame and `scan-complete` inside one React batch, so by the time this
+       effect ran the state had already flipped to `complete` and every stage
+       transition was dropped — the six surface cards sat on "Standby" under a
+       finished report. Settled transitions are real information whenever they
+       arrive; `mergeNodeState` already stops a late frame from regressing a
+       card, so ingesting them here cannot fight the report-derived events. */
+    if (state !== 'scanning' && state !== 'complete') return;
     const derived: ScanEvent[] = [];
     for (const stage of stages) {
       const previous = previousStates.current.get(stage.key);

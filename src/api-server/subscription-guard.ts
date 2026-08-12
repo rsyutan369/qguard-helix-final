@@ -57,6 +57,15 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/dashboard/ecosystem-supply-chain', tier: 'pro' },
   { prefix: '/api/v1/dashboard/trust-state-discovery', tier: 'pro' },
   { prefix: '/api/v1/dashboard/zero-trust', tier: 'pro' },
+  // Crypto Agility Command Center™ — the frontend route /dashboard/crypto-agility
+  // is Pro; both its API surfaces are gated here so a hand-crafted request is
+  // held to the same tier as the UI.
+  { prefix: '/api/v1/crypto-agility', tier: 'pro' },
+  { prefix: '/api/v1/dashboard/crypto-agility', tier: 'pro' },
+  // External Trust & Ecosystem suite — the four frontend routes are Pro, so the
+  // API that backs them is held to the same tier.
+  { prefix: '/api/v1/external-trust', tier: 'pro' },
+  { prefix: '/api/v1/dashboard/ecosystem-supply-chain', tier: 'pro' },
 
   // ELITE — Governance / Telemetry / QKMS
   { prefix: '/api/v1/dashboard/quantum-governance', tier: 'elite' },

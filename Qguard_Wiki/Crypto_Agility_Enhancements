@@ -1,0 +1,1830 @@
+# QGuard Helix — Crypto Agility Command Center
+
+## Complete Enterprise-Grade Refactor & Implementation Prompt
+
+You are working on the QGuard Helix Quantum Cyber Defense Platform.
+
+Refactor and upgrade the existing page:
+
+`/dashboard/crypto-agility`
+
+The goal is to transform the current Crypto Agility page into a **premium, enterprise-grade Crypto Agility Command Center** suitable for production deployment.
+
+---
+
+# 1. PRIMARY OBJECTIVE
+
+Redesign `/dashboard/crypto-agility` so that it becomes the operational control center for measuring, understanding, improving, simulating, and continuously monitoring an organization's **cryptographic agility**.
+
+Crypto Agility must NOT be presented as another crypto inventory page.
+
+The page must answer:
+
+> **"How quickly and safely can this organization change cryptography across its environment without breaking applications, infrastructure, identity, PKI, trust relationships, vendors, or business operations?"**
+
+The page should measure the organization's ability to:
+
+* discover cryptographic dependencies
+* identify cryptographic rigidity
+* determine algorithm replaceability
+* identify crypto coupling
+* measure migration readiness
+* identify migration blockers
+* assess certificate agility
+* assess key agility
+* assess protocol agility
+* assess application agility
+* assess library/provider agility
+* assess trust agility
+* assess vendor/ecosystem agility
+* assess runtime agility
+* simulate proposed cryptographic changes
+* generate remediation actions
+* assign ownership
+* track responsibility
+* monitor runtime crypto changes
+* enforce cryptographic policy
+* continuously improve crypto agility
+
+---
+
+# 2. IMPORTANT PRODUCT POSITIONING
+
+Maintain clear separation between QGuard Helix modules.
+
+### Crypto Inventory / CBOM
+
+Answers:
+
+> What cryptography exists?
+
+### Quantum Readiness
+
+Answers:
+
+> How exposed are we to quantum-era cryptographic risk?
+
+### Crypto Agility
+
+Answers:
+
+> How easily can we change our cryptography?
+
+### Migration Planner
+
+Answers:
+
+> What should we migrate, and in what order?
+
+### Migration Sandbox / Digital Twin
+
+Answers:
+
+> What happens if we perform the migration?
+
+### Live Migration Operations
+
+Answers:
+
+> Execute the approved migration.
+
+### Runtime Crypto Telemetry
+
+Answers:
+
+> What is happening in production right now?
+
+Do NOT duplicate these modules unnecessarily.
+
+Instead, Crypto Agility should become the **decision and control layer connecting them**.
+
+---
+
+# 3. FIRST STEP — INSPECT THE EXISTING APPLICATION
+
+Before modifying anything:
+
+1. Inspect the existing `/dashboard/crypto-agility` page.
+2. Inspect all components used by the page.
+3. Inspect existing hooks.
+4. Inspect API clients.
+5. Inspect backend endpoints.
+6. Inspect database models/types.
+7. Inspect Supabase queries.
+8. Inspect existing crypto inventory/CBOM data structures.
+9. Inspect Quantum Readiness data structures.
+10. Inspect Migration Planner integration.
+11. Inspect Migration Sandbox integration.
+12. Inspect Runtime Crypto Telemetry integration.
+13. Inspect existing dashboard layout/navigation.
+14. Inspect existing design system.
+15. Inspect existing theme system.
+16. Inspect existing animations.
+17. Inspect existing charts/graph components.
+18. Inspect existing loading/error/empty states.
+19. Inspect authentication and tenant isolation.
+20. Inspect existing RBAC/permission handling.
+
+Do NOT blindly replace existing functionality.
+
+Reuse existing components, hooks, API clients, types, utilities, and design-system primitives whenever appropriate.
+
+Do not introduce duplicate implementations.
+
+---
+
+# 4. DATA INTEGRITY REQUIREMENT
+
+This page must use real application data wherever available.
+
+DO NOT fabricate production metrics.
+
+DO NOT hard-code fake:
+
+* asset counts
+* scores
+* migration readiness
+* blocked assets
+* vulnerabilities
+* dependencies
+* policy compliance
+* telemetry events
+
+If backend data is unavailable, create a clearly isolated mock/demo adapter only if necessary for development.
+
+Production mode must distinguish:
+
+* Real data
+* Estimated data
+* Derived data
+* Unknown data
+
+Never present unavailable data as fact.
+
+Use explicit states such as:
+
+* `Unknown`
+* `Not Observed`
+* `Insufficient Evidence`
+* `Not Applicable`
+
+Do not convert missing data into zero.
+
+---
+
+# 5. PAGE INFORMATION ARCHITECTURE
+
+Implement the following structure.
+
+---
+
+## SECTION 1 — HERO / CRYPTO AGILITY COMMAND CENTER
+
+Create a premium hero/header.
+
+Title:
+
+**Crypto Agility Command Center**
+
+Subtitle:
+
+**Measure how quickly and safely your organization can change cryptography without disrupting applications, infrastructure, identity, trust, or business operations.**
+
+Display:
+
+### Crypto Agility Score
+
+Example:
+
+`72 / 100`
+
+Use actual calculated data in production.
+
+Add status:
+
+* Excellent
+* Strong
+* Moderate
+* Weak
+* Critical
+* Unknown
+
+Also display:
+
+### Migration Readiness
+
+Example:
+
+`78%`
+
+### Assets Evaluated
+
+Example:
+
+`1,284`
+
+### Critical Blockers
+
+Example:
+
+`23`
+
+### Last Assessment
+
+Show actual timestamp.
+
+Add actions:
+
+**[Run Assessment]**
+
+**[View Assessment History]**
+
+**[Ask Sophia]**
+
+---
+
+# 6. CRYPTO AGILITY SCORE ENGINE
+
+Create or integrate a Crypto Agility scoring model.
+
+The score should be derived from evidence.
+
+Recommended domains:
+
+* Application Agility
+* Algorithm Replaceability
+* Protocol Agility
+* Certificate Agility
+* Key Agility
+* Library/Provider Agility
+* Infrastructure Agility
+* Identity Agility
+* Trust Agility
+* Vendor/Ecosystem Agility
+* Runtime Agility
+
+Each domain should expose:
+
+* Score
+* Evidence coverage
+* Risk
+* Blockers
+* Number of affected assets
+* Improvement opportunity
+
+Do not create arbitrary scores.
+
+Create a transparent scoring explanation.
+
+Example:
+
+`Crypto Agility Score = weighted domain score adjusted by evidence confidence and unresolved blockers.`
+
+Include:
+
+**[How is this score calculated?]**
+
+Open a detailed scoring explanation.
+
+---
+
+# 7. CRYPTO AGILITY POSTURE
+
+Create a major dashboard section.
+
+Display domain scores using premium cards or horizontal score bars.
+
+Domains:
+
+### Application Agility
+
+Can applications change cryptographic algorithms without major code changes?
+
+### Algorithm Replaceability
+
+Can algorithms be replaced without redesigning applications?
+
+### Protocol Agility
+
+Can TLS and protocol configurations transition to new cryptographic suites?
+
+### Certificate Agility
+
+Can certificates and trust chains be replaced quickly and safely?
+
+### Key Agility
+
+Can keys be rotated/replaced without operational disruption?
+
+### Library Agility
+
+Can cryptographic libraries/providers be upgraded safely?
+
+### Infrastructure Agility
+
+Can cryptographic configuration be changed across servers, containers, and Kubernetes?
+
+### Identity Agility
+
+Can authentication and signing mechanisms transition to PQC?
+
+### Trust Agility
+
+Can trust anchors, CA chains, federation, and identity dependencies change safely?
+
+### Vendor Agility
+
+Can external vendors support cryptographic transitions?
+
+### Runtime Agility
+
+Can cryptographic changes and drift be detected during operation?
+
+Each domain must support:
+
+* click
+* drill-down
+* evidence
+* affected assets
+* remediation recommendations
+
+---
+
+# 8. AGILITY STATE CLASSIFICATION
+
+Every relevant asset/implementation should be classified.
+
+Use:
+
+### AGILE
+
+Configuration-driven and replaceable.
+
+### CONDITIONALLY AGILE
+
+Can be changed but requires coordinated dependencies or manual intervention.
+
+### RIGID
+
+Requires code or architecture changes.
+
+### BLOCKED
+
+Cannot currently be migrated due to a known dependency.
+
+### UNKNOWN
+
+Insufficient evidence.
+
+Never imply that UNKNOWN means safe.
+
+---
+
+# 9. AGILITY POSTURE VISUALIZATION
+
+Create an interactive distribution visualization:
+
+```text
+Agile
+Conditional
+Rigid
+Blocked
+Unknown
+```
+
+Example:
+
+```text
+Agile        742
+Conditional  318
+Rigid         34
+Blocked      147
+Unknown       77
+```
+
+Use real data.
+
+Clicking a category should filter the asset/dependency views.
+
+---
+
+# 10. CRYPTO DEPENDENCY & COUPLING GRAPH
+
+Create an interactive graph.
+
+The graph should model relationships such as:
+
+```text
+Application
+    ↓
+Crypto Library
+    ↓
+Algorithm
+    ↓
+Certificate
+    ↓
+PKI / CA
+    ↓
+Trust Anchor
+    ↓
+Identity Provider
+    ↓
+Vendor / External Service
+```
+
+Where available, connect to QGuard Helix's existing:
+
+* CBOM
+* Trust-State Discovery
+* Quantum Exposure Graph
+* asset dependency data
+
+Do not create a second unrelated graph database model if an existing graph model can be reused.
+
+The graph should support:
+
+* zoom
+* pan
+* node selection
+* dependency highlighting
+* risk highlighting
+* asset filtering
+* algorithm filtering
+* trust dependency filtering
+
+When a node is selected, display:
+
+* Asset
+* Algorithm
+* Library
+* Certificate
+* Trust dependencies
+* Vendor dependencies
+* Agility state
+* Migration readiness
+* Risk
+* Recommended action
+
+---
+
+# 11. CRYPTO COUPLING ANALYSIS
+
+Create a dedicated analysis panel.
+
+Detect:
+
+* hard-coded algorithms
+* hard-coded cipher suites
+* hard-coded key sizes
+* embedded certificates
+* embedded public keys
+* static trust anchors
+* hard-coded certificate paths
+* vendor-locked cryptography
+* legacy crypto providers
+* crypto configuration embedded in application code
+* manually managed certificates
+* manually managed keys
+* undocumented dependencies
+
+For each finding show:
+
+* Severity
+* Asset
+* Evidence
+* Dependency count
+* Agility impact
+* Recommended remediation
+
+---
+
+# 12. ALGORITHM REPLACEABILITY MATRIX
+
+Create an interactive table.
+
+Columns:
+
+* Current Algorithm
+* Proposed Replacement
+* Assets
+* Replaceability
+* Dependencies
+* Migration Complexity
+* Compatibility
+* Risk
+* Status
+
+Example rows:
+
+```text
+RSA-2048
+→ ML-DSA-65
+
+X25519
+→ X25519 + ML-KEM-768
+
+ECDSA P-256
+→ Ed25519 + ML-DSA
+
+AES-128
+→ AES-256-GCM
+```
+
+Do not assume every replacement is technically valid for every use case.
+
+Use the existing QGuard Helix cryptographic policy and algorithm metadata.
+
+For each replacement, expose:
+
+**Configuration-only**
+
+**Library change**
+
+**Code change**
+
+**Architecture change**
+
+**Vendor dependency**
+
+---
+
+# 13. REPLACEABILITY TEST
+
+For each important cryptographic implementation provide:
+
+### "Can this cryptography be replaced without modifying application logic?"
+
+Possible results:
+
+🟢 Configuration Only
+
+🟡 Library Upgrade
+
+🟠 Code Modification
+
+🔴 Architecture Modification
+
+⚫ Vendor Dependency
+
+Unknown if evidence is insufficient.
+
+---
+
+# 14. MIGRATION READINESS
+
+Create a dedicated section.
+
+Display:
+
+```text
+Ready
+Conditionally Ready
+Blocked
+Unknown
+```
+
+For each asset:
+
+* Current state
+* Proposed target
+* Dependencies
+* Readiness
+* Blockers
+* Owner
+* Priority
+* Next action
+
+Example:
+
+```text
+Asset: Payment API
+
+Current:
+RSA-2048
+
+Target:
+ML-DSA-65
+
+Readiness:
+Conditional
+
+Dependencies:
+7
+
+Blockers:
+2
+
+Owner:
+Payments Platform
+
+Next:
+Run Migration Sandbox
+```
+
+Provide:
+
+**[Open Migration Planner]**
+
+**[Run in Migration Sandbox]**
+
+---
+
+# 15. MIGRATION BLOCKERS
+
+Create a prominent "Agility Blockers" section.
+
+Categorize blockers:
+
+* Hard-coded crypto
+* Unsupported library
+* Legacy protocol
+* Certificate dependency
+* Trust dependency
+* Vendor dependency
+* Application incompatibility
+* Infrastructure dependency
+* Identity dependency
+* Unknown dependency
+
+Display:
+
+* Count
+* Severity
+* affected assets
+* business impact
+* owner
+* recommended remediation
+
+---
+
+# 16. RESPONSIBILITY MATRIX
+
+Implement the responsibility model.
+
+Columns:
+
+| Finding | Owner | User Action | Priority | Control Domain |
+| ------- | ----- | ----------- | -------- | -------------- |
+
+Control Domain must support:
+
+* Customer-Controlled
+* Provider-Controlled
+* Ecosystem-Dependent
+
+Example:
+
+```text
+Hard-coded RSA
+Application Team
+Externalize crypto configuration
+High
+Customer-Controlled
+```
+
+Make the matrix filterable and sortable.
+
+---
+
+# 17. CRYPTO AGILITY LIFECYCLE
+
+Create a visual lifecycle:
+
+```text
+DISCOVER
+    ↓
+MAP
+    ↓
+ASSESS
+    ↓
+DECOUPLE
+    ↓
+SIMULATE
+    ↓
+MIGRATE
+    ↓
+VALIDATE
+    ↓
+MONITOR
+    ↓
+REPEAT
+```
+
+Each stage should link to the appropriate QGuard Helix module.
+
+Do not make this decorative only.
+
+It should function as navigation.
+
+---
+
+# 18. MIGRATION SANDBOX INTEGRATION
+
+Add:
+
+### Test Crypto Change
+
+Allow the user to select:
+
+* Asset
+* Current algorithm
+* Proposed algorithm
+* Certificate
+* Protocol
+* Key configuration
+* Library/provider
+
+Then display an impact preview:
+
+```text
+Assets affected
+Dependencies
+Potential failures
+Compatibility
+Trust impact
+Migration risk
+Expected remediation
+```
+
+Provide:
+
+**[Run Simulation]**
+
+This must invoke the existing Migration Sandbox/Digital Twin functionality where available.
+
+Do not duplicate the simulation engine.
+
+---
+
+# 19. RUNTIME CRYPTO AGILITY
+
+Integrate with the existing Runtime Crypto Telemetry Engine.
+
+Show:
+
+### Live Crypto Events
+
+Examples:
+
+* New RSA usage
+* Legacy TLS detected
+* Certificate changed
+* Key rotated
+* Crypto provider changed
+* New crypto dependency
+* Policy violation
+* Unexpected legacy algorithm
+* Runtime drift
+
+Each event should include:
+
+* Timestamp
+* Asset
+* Event type
+* Algorithm
+* Source
+* Severity
+* Status
+
+Provide:
+
+**[Investigate]**
+
+---
+
+# 20. CRYPTO AGILITY DRIFT
+
+Implement a drift indicator.
+
+Detect changes such as:
+
+* New cryptographic algorithms
+* Reintroduced legacy algorithms
+* New certificates
+* New trust anchors
+* Crypto configuration changes
+* Library/provider changes
+* Runtime policy violations
+
+Show:
+
+### Crypto Agility Drift
+
+* Improving
+* Stable
+* Degrading
+* Critical
+
+Provide historical trend.
+
+---
+
+# 21. CRYPTO AGILITY POLICY
+
+Create a policy section.
+
+Integrate with the existing QGuard Helix policy engine if available.
+
+Show:
+
+* Active policy
+* Version
+* Last evaluated
+* Compliance
+* Violations
+* Exceptions
+
+Support policy rules such as:
+
+```text
+RSA < 2048          BLOCK
+RSA 2048            WARN
+RSA 3072+           ALLOW
+
+TLS 1.2             WARN
+TLS 1.3             REQUIRED
+
+X25519              ALLOW
+X25519+ML-KEM-768   PREFERRED
+
+ML-DSA-65           PREFERRED
+
+AES-128              WARN
+AES-256-GCM          REQUIRED
+```
+
+Do not hard-code these values if the application already has a configurable cryptographic policy engine.
+
+---
+
+# 22. EXECUTIVE KPIs
+
+Provide executive-level metrics:
+
+* Crypto Agility Score
+* Migration Readiness
+* Assets Evaluated
+* Agile Assets
+* Conditional Assets
+* Rigid Assets
+* Blocked Assets
+* Unknown Assets
+* Critical Dependencies
+* Crypto Drift
+* Policy Compliance
+* Automation Coverage
+
+Every KPI must support drill-down.
+
+---
+
+# 23. SOPHIA AI INTEGRATION
+
+Integrate with the existing:
+
+**Sophia — QGuard Helix AI Security Copilot™**
+
+Sophia must answer using the authenticated tenant's live data.
+
+Do not expose data across tenants.
+
+Example questions:
+
+> Why is our crypto agility score low?
+
+> What are our biggest migration blockers?
+
+> Which applications are cryptographically rigid?
+
+> What would happen if we replaced RSA-2048 with ML-DSA-65?
+
+> Which vendor dependencies are blocking PQC migration?
+
+> Which remediation would improve our agility score the most?
+
+> Show me all customer-controlled blockers.
+
+> Which assets should we migrate first?
+
+Display contextual recommendations.
+
+Example:
+
+### Sophia Recommendation
+
+**Prioritize the 37 applications containing hard-coded cryptographic configuration.**
+
+Expected impact:
+
+`+8 agility score`
+
+Affected assets:
+
+`37`
+
+Dependency reduction:
+
+`23%`
+
+Action:
+
+**[Create Remediation Plan]**
+
+Do not generate unsupported claims.
+
+Sophia should cite the underlying evidence/assets when possible.
+
+---
+
+# 24. ASSESSMENT HISTORY
+
+Add an assessment history view.
+
+Display:
+
+* Date
+* Crypto Agility Score
+* Migration Readiness
+* Blockers
+* Policy Compliance
+* Drift
+* Assets Evaluated
+
+Add trend visualization.
+
+Example:
+
+```text
+June     61
+July     67
+August   72
+```
+
+The trend must use actual historical assessment data.
+
+---
+
+# 25. SEARCH / FILTERING
+
+Provide global filtering.
+
+Filters:
+
+* Asset
+* Business Unit
+* Environment
+* Application
+* Algorithm
+* Protocol
+* Certificate
+* PKI
+* Vendor
+* Agility State
+* Migration Readiness
+* Risk
+* Owner
+* Control Domain
+
+Support URL/query-state persistence where practical.
+
+---
+
+# 26. TABLE UX
+
+Enterprise tables must support:
+
+* sorting
+* filtering
+* pagination
+* column visibility
+* row selection
+* bulk actions
+* export
+* search
+* drill-down
+
+Do not create oversized tables that become unusable.
+
+Use virtualization if the existing data volume requires it.
+
+---
+
+# 27. ACTIONS
+
+Provide contextual actions.
+
+Examples:
+
+**[Run Assessment]**
+
+**[View Assets]**
+
+**[View Dependencies]**
+
+**[Create Remediation]**
+
+**[Open Migration Planner]**
+
+**[Run Sandbox Simulation]**
+
+**[Investigate]**
+
+**[Assign Owner]**
+
+**[Create Exception]**
+
+**[Ask Sophia]**
+
+Actions must connect to real application functionality.
+
+Do not create buttons that do nothing.
+
+---
+
+# 28. EMPTY STATES
+
+Design premium empty states.
+
+Example:
+
+### No Crypto Agility Assessment
+
+"QGuard Helix has not evaluated cryptographic replaceability for this environment yet."
+
+CTA:
+
+**[Run Crypto Agility Assessment]**
+
+Explain what will happen.
+
+---
+
+# 29. LOADING STATES
+
+Implement polished skeleton states.
+
+Avoid layout jumps.
+
+Use the existing QGuard Helix loading system if available.
+
+---
+
+# 30. ERROR STATES
+
+Create actionable errors.
+
+Example:
+
+### Crypto Agility Data Unavailable
+
+"QGuard Helix could not retrieve the latest agility assessment."
+
+Actions:
+
+**[Retry]**
+
+**[View Last Successful Assessment]**
+
+Do not silently show zero values.
+
+---
+
+# 31. SECURITY REQUIREMENTS
+
+This is an enterprise cybersecurity product.
+
+Ensure:
+
+* tenant isolation
+* authenticated access
+* authorization checks
+* RBAC
+* server-side authorization
+* no cross-tenant data exposure
+* safe API calls
+* no sensitive cryptographic material exposed unnecessarily
+* no private keys displayed
+* no secrets rendered
+* audit logging for privileged actions
+* secure error handling
+
+Never expose:
+
+* private keys
+* secret material
+* credentials
+* tokens
+* raw sensitive secrets
+
+The page should work primarily from metadata and evidence.
+
+---
+
+# 32. PERFORMANCE
+
+The page must be production-ready.
+
+Avoid:
+
+* unnecessary API calls
+* duplicate fetching
+* rendering huge datasets unnecessarily
+* excessive re-renders
+* blocking the main thread
+* loading every graph node at once
+
+Use:
+
+* caching
+* pagination
+* incremental loading
+* memoization where justified
+* virtualization where necessary
+* server-side aggregation where appropriate
+
+Do not optimize prematurely; profile first where practical.
+
+---
+
+# 33. DESIGN SYSTEM
+
+Follow the existing QGuard Helix design system.
+
+The UI should feel:
+
+* Premium
+* Enterprise
+* Cybersecurity-focused
+* Technical
+* Trustworthy
+* Modern
+* High signal
+* Data-driven
+
+Avoid:
+
+* excessive neon
+* gaming aesthetics
+* unnecessary glowing elements
+* excessive gradients
+* decorative animations
+* meaningless 3D graphics
+
+Use visual effects only where they improve information hierarchy.
+
+---
+
+# 34. VISUAL LANGUAGE
+
+Recommended visual hierarchy:
+
+### Primary
+
+Crypto Agility Score
+
+### Secondary
+
+Migration Readiness
+
+### Tertiary
+
+Agility Domains
+
+### Analytical
+
+Dependency Graph
+
+### Operational
+
+Blockers / Actions
+
+### Continuous
+
+Runtime Telemetry / Drift
+
+### Governance
+
+Policy / Responsibility
+
+### AI
+
+Sophia Recommendations
+
+---
+
+# 35. ANIMATION
+
+Use subtle enterprise-grade motion.
+
+Examples:
+
+* score count-up
+* chart entrance
+* graph transitions
+* card reveal
+* filtering transitions
+* drawer transitions
+* lifecycle progression
+
+Animations must:
+
+* respect `prefers-reduced-motion`
+* remain fast
+* never block interaction
+* never distract from data
+
+Do not add animations simply for visual decoration.
+
+---
+
+# 36. RESPONSIVE DESIGN
+
+The page must work on:
+
+* desktop
+* laptop
+* tablet
+
+Prioritize desktop enterprise workflows.
+
+Do not sacrifice desktop information density.
+
+On smaller screens:
+
+* stack cards
+* collapse advanced analytics
+* make tables horizontally scrollable
+* use drawers for detail views
+* preserve critical actions
+
+---
+
+# 37. ACCESSIBILITY
+
+Implement:
+
+* semantic HTML
+* keyboard navigation
+* visible focus states
+* ARIA labels where needed
+* accessible charts
+* accessible tables
+* sufficient contrast
+* reduced motion support
+
+Do not rely exclusively on color to communicate risk.
+
+Use:
+
+* icon
+* text
+* severity
+* pattern/status
+
+---
+
+# 38. ARCHITECTURE
+
+Keep concerns separated.
+
+Recommended conceptual structure:
+
+```text
+CryptoAgilityPage
+│
+├── CryptoAgilityHeader
+├── CryptoAgilityScore
+├── AgilityKPIs
+├── AgilityPosture
+├── AgilityDistribution
+├── DependencyGraph
+├── CouplingAnalysis
+├── ReplaceabilityMatrix
+├── MigrationReadiness
+├── AgilityBlockers
+├── ResponsibilityMatrix
+├── AgilityLifecycle
+├── SandboxIntegration
+├── RuntimeTelemetry
+├── AgilityDrift
+├── PolicyCompliance
+├── AssessmentHistory
+└── SophiaRecommendations
+```
+
+Use existing shared components wherever possible.
+
+Do not create unnecessary component fragmentation.
+
+---
+
+# 39. API / DATA LAYER
+
+Before creating new endpoints, inspect whether existing APIs already provide:
+
+* crypto inventory
+* CBOM
+* readiness
+* migration
+* trust dependencies
+* runtime telemetry
+* policies
+* ownership
+* assessment history
+
+Reuse existing APIs.
+
+Only create new endpoints where the capability genuinely does not exist.
+
+If new API endpoints are required, follow the existing backend conventions.
+
+Define:
+
+* request schema
+* response schema
+* validation
+* authorization
+* tenant isolation
+* pagination
+* error handling
+
+---
+
+# 40. DATABASE / SUPABASE
+
+If new persistence is required, inspect existing schema first.
+
+Do not create duplicate tables for concepts already represented.
+
+Potential data entities may include:
+
+* crypto agility assessments
+* agility domain scores
+* agility findings
+* migration blockers
+* responsibility assignments
+* agility history
+* policy evaluation
+* crypto drift events
+
+Use proper:
+
+* tenant IDs
+* indexes
+* foreign keys
+* timestamps
+* audit metadata
+
+Ensure Row Level Security where applicable.
+
+---
+
+# 41. TYPESCRIPT
+
+Maintain strict TypeScript typing.
+
+Do not introduce:
+
+```typescript
+any
+```
+
+unless absolutely unavoidable.
+
+Create explicit domain types for:
+
+* AgilityScore
+* AgilityDomain
+* AgilityState
+* ReplaceabilityResult
+* MigrationReadiness
+* AgilityBlocker
+* ResponsibilityFinding
+* CryptoDriftEvent
+* PolicyEvaluation
+* AssessmentHistory
+
+---
+
+# 42. TESTING
+
+Before declaring completion, test:
+
+### Functional
+
+* page loads
+* data loads
+* filters work
+* sorting works
+* drill-down works
+* graph works
+* migration planner links work
+* sandbox integration works
+* Sophia integration works
+* assessment history works
+* policy data works
+
+### Security
+
+* unauthorized access
+* tenant isolation
+* RBAC
+* API authorization
+
+### UI
+
+* responsive layout
+* dark theme
+* light theme if supported
+* loading state
+* error state
+* empty state
+* keyboard navigation
+* reduced motion
+
+### Performance
+
+Check:
+
+* initial page load
+* unnecessary requests
+* large datasets
+* graph rendering
+* table performance
+
+---
+
+# 43. PRODUCTION VERIFICATION
+
+After implementation:
+
+1. Run lint.
+2. Run TypeScript checks.
+3. Run unit tests.
+4. Run integration tests where available.
+5. Start the development server.
+6. Open:
+
+`http://localhost:3000/dashboard/crypto-agility`
+
+7. Verify the page visually using browser automation.
+8. Check browser console for errors.
+9. Check network requests.
+10. Verify API responses.
+11. Verify authenticated tenant context.
+12. Verify no sensitive data leakage.
+13. Test all major interactions.
+14. Test responsive layouts.
+15. Fix all discovered issues.
+
+Do not stop at "build passes."
+
+The page must be **functionally and visually verified**.
+
+---
+
+# 44. IMPORTANT — DO NOT BREAK EXISTING FEATURES
+
+Do not remove or break:
+
+* dashboard navigation
+* authentication
+* tenant isolation
+* existing API contracts
+* existing hooks
+* existing CBOM
+* existing Quantum Readiness
+* Migration Planner
+* Migration Sandbox
+* Digital Twin
+* Runtime Crypto Telemetry
+* Sophia
+* existing theme system
+* existing design system
+
+If an existing implementation is incorrect, improve it safely rather than deleting functionality without understanding its dependencies.
+
+---
+
+# 45. SUCCESS CRITERIA
+
+The implementation is successful only when `/dashboard/crypto-agility` can clearly answer:
+
+### 1.
+
+**How agile is our cryptographic environment?**
+
+### 2.
+
+**Why is our agility score what it is?**
+
+### 3.
+
+**Which assets are cryptographically rigid?**
+
+### 4.
+
+**What is preventing migration?**
+
+### 5.
+
+**Which algorithms can be replaced easily?**
+
+### 6.
+
+**Which dependencies create migration risk?**
+
+### 7.
+
+**Who owns each blocker?**
+
+### 8.
+
+**What should we remediate first?**
+
+### 9.
+
+**What happens if we change a cryptographic implementation?**
+
+### 10.
+
+**Can we safely simulate that change?**
+
+### 11.
+
+**What is changing in runtime?**
+
+### 12.
+
+**Is cryptographic agility improving or degrading over time?**
+
+### 13.
+
+**Are we compliant with our cryptographic policies?**
+
+### 14.
+
+**What does Sophia recommend?**
+
+---
+
+# 46. FINAL PRODUCT EXPERIENCE
+
+The final page should feel like:
+
+> **"Mission Control for Cryptographic Change."**
+
+It should not feel like:
+
+* a generic dashboard
+* a vulnerability scanner
+* a CBOM viewer
+* another compliance report
+* a collection of charts
+
+The user should be able to enter the page and immediately understand:
+
+```text
+OUR CURRENT AGILITY
+        ↓
+WHAT IS BLOCKING US
+        ↓
+WHAT CAN CHANGE
+        ↓
+WHAT WILL BREAK
+        ↓
+WHAT SHOULD WE FIX
+        ↓
+WHO OWNS IT
+        ↓
+CAN WE SIMULATE IT
+        ↓
+CAN WE SAFELY MIGRATE IT
+        ↓
+IS THE ENVIRONMENT STILL AGILE
+```
+
+Build the page as a **continuous Crypto Agility control plane**, not a static report.
+
+---
+
+# 47. IMPLEMENTATION WORKFLOW
+
+Follow this exact sequence:
+
+### Phase 1 — Discovery
+
+Inspect the existing implementation and architecture.
+
+### Phase 2 — Architecture
+
+Map existing APIs, components, hooks, data models, and integrations.
+
+### Phase 3 — Data
+
+Identify real sources for every metric.
+
+### Phase 4 — Core UX
+
+Implement:
+
+* Hero
+* Score
+* KPIs
+* Posture
+* Distribution
+
+### Phase 5 — Intelligence
+
+Implement:
+
+* dependency graph
+* coupling analysis
+* replaceability
+* migration readiness
+* blockers
+
+### Phase 6 — Operations
+
+Implement:
+
+* responsibility matrix
+* sandbox integration
+* runtime telemetry
+* drift
+* policy
+
+### Phase 7 — AI
+
+Integrate Sophia using authenticated tenant data.
+
+### Phase 8 — History
+
+Implement assessment history and trends.
+
+### Phase 9 — UX Polish
+
+Implement:
+
+* responsive behavior
+* animations
+* empty states
+* loading states
+* errors
+* accessibility
+
+### Phase 10 — Verification
+
+Run complete functional, security, performance, and browser verification.
+
+---
+
+# 48. DO NOT FAKE COMPLETION
+
+Do not report a feature as implemented simply because:
+
+* a button exists
+* a card exists
+* a chart renders static data
+* an API call is mocked
+* a component has been created
+
+Every major interaction must either:
+
+1. connect to a real backend capability, or
+2. clearly indicate that the capability is pending backend implementation.
+
+If a backend capability is missing, document it explicitly and implement the frontend in a way that can consume the real API later without architectural rework.
+
+---
+
+# 49. FINAL DELIVERABLE
+
+Deliver:
+
+1. Refactored `/dashboard/crypto-agility`
+2. Reusable components
+3. Proper TypeScript types
+4. Real data integration
+5. API integration where required
+6. Migration Planner integration
+7. Migration Sandbox integration
+8. Runtime Telemetry integration
+9. Sophia integration
+10. Responsibility Matrix
+11. Policy integration
+12. Assessment history
+13. Responsive UX
+14. Accessibility
+15. Loading/error/empty states
+16. Tests
+17. Browser verification
+
+At completion, provide a concise implementation report containing:
+
+### Implemented
+
+List completed capabilities.
+
+### Reused
+
+List existing components/APIs/hooks reused.
+
+### Added
+
+List genuinely new components/APIs/data models.
+
+### Backend Dependencies
+
+List anything that still requires backend support.
+
+### Verification
+
+Report:
+
+* TypeScript
+* lint
+* tests
+* browser verification
+* console errors
+* API errors
+
+### Remaining Risks
+
+List anything that should be addressed before production deployment.
+
+Do not claim production readiness if unresolved functional, security, or data-integrity issues remain.
+
+Page should look like below:
+
+CRYPTO AGILITY
+──────────────────────────────────────────────
+
+Crypto Agility Score        Migration Readiness
+       72/100                     78%
+
+[Agile] [Conditional] [Rigid] [Unknown]
+
+
+CRYPTO AGILITY POSTURE
+──────────────────────────────────────────────
+Application    ████████░░ 81%
+Protocol       ███████░░░ 68%
+Certificate    ████████░░ 76%
+Key            ███████░░░ 70%
+Library        ██████░░░░ 62%
+Trust          ███████░░░ 71%
+Runtime        ████████░░ 75%
+
+
+CRYPTO DEPENDENCY GRAPH
+──────────────────────────────────────────────
+Application → Library → Algorithm → Certificate
+      ↓           ↓          ↓           ↓
+    Vendor      Provider    Policy      PKI
+
+
+AGILITY BLOCKERS
+──────────────────────────────────────────────
+🔴 147 Blocked
+🟠 318 Conditional
+🟡 34 Rigid Implementations
+⚫ 77 Unknown
+
+
+REPLACEABILITY
+──────────────────────────────────────────────
+Algorithm       Replacement       Readiness
+RSA-2048        ML-DSA-65         🟢 Ready
+X25519          X25519+ML-KEM      🟢 Ready
+ECDSA-P256      Hybrid             🟠 Conditional
+
+
+MIGRATION READINESS
+──────────────────────────────────────────────
+Ready → Simulate → Approve → Execute → Validate
+
+
+CRYPTO AGILITY AUTOMATION
+──────────────────────────────────────────────
+[Detect] [Analyze] [Simulate] [Plan] [Validate]
+
+
+RUNTIME CRYPTO TELEMETRY
+──────────────────────────────────────────────
+Live crypto changes / violations / drift
+
+
+POLICY & GOVERNANCE
+──────────────────────────────────────────────
+Policy compliance / violations / exceptions
+
+
+RESPONSIBILITY MATRIX
+──────────────────────────────────────────────
+Finding | Owner | Action | Priority | Control
+
+
+SOPHIA RECOMMENDATIONS
+──────────────────────────────────────────────
+AI-driven remediation and prioritization

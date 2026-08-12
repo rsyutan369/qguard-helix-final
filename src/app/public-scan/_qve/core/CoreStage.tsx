@@ -35,7 +35,8 @@ const QuantumCore3D = React.lazy(() => import('./QuantumCore3D'));
 export interface CoreStageProps {
   run: QveRunState;
   progress: number;
-  score: number;
+  /** Composite score once graded; `null` when the assessment is not gradeable. */
+  score: number | null;
   grade: string | null;
   /**
    * Structural accent for the hologram itself. Restricted to the engine's
@@ -169,6 +170,10 @@ export const CoreStage = React.memo(function CoreStage({
 
   // The headline number: live progress while scanning, the settled score
   // afterwards. Rounded from engine state — never counted by a timer.
+  //
+  // A completed run with NO score (coverage below the gradeable floor) reads
+  // "—". Falling back to the progress value there would have printed 100 in the
+  // score's own slot, which is the most misleading number available.
   const readout = run === 'complete' ? score : progress;
 
   return (
@@ -237,10 +242,10 @@ export const CoreStage = React.memo(function CoreStage({
               className="text-[1.7rem] font-black leading-none tracking-tighter tabular-nums @[15rem]:text-[2.35rem]"
               style={{ color: verdictColor, textShadow: `0 0 30px ${verdictColor}55, 0 2px 12px rgba(0,0,0,0.9)` }}
             >
-              {Math.round(readout)}
+              {readout === null ? '—' : Math.round(readout)}
             </span>
             <span className="text-[0.95rem] font-bold" style={{ color: verdictColor, opacity: 0.7 }}>
-              %
+              {readout === null ? '' : '%'}
             </span>
           </div>
         </div>
@@ -290,7 +295,7 @@ export const CoreStage = React.memo(function CoreStage({
 
         <ScoreRing
           progress={progress}
-          score={run === 'complete' ? score : progress}
+          score={run === 'complete' ? (score ?? 0) : progress}
           grade={grade}
           accent={accent}
           verdictColor={verdictColor}

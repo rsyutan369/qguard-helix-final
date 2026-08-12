@@ -27,7 +27,29 @@ export type PublicScanStageKey =
   | 'quantum'
   | 'report'
 
-export type PublicScanStageState = 'waiting' | 'running' | 'complete' | 'failed' | 'skipped'
+/**
+ * `failed` and `unavailable` are NOT the same claim, and the distinction is the
+ * whole reason this union has five members:
+ *
+ *   complete     The module ran and produced a verdict.
+ *   failed       The module ran and could not reach a conclusion — a scanner
+ *                fault, or an endpoint that answered in a way it could not parse.
+ *   unavailable  The module could not run at all, because a prerequisite was
+ *                absent (the port never accepted a TCP connection). There is
+ *                nothing to report about the target, and the rail must not paint
+ *                a red cross that reads as "this endpoint failed the control".
+ *   skipped      Deliberately not run — not applicable to this target.
+ *
+ * An assessment of an endpoint that is simply down used to render as four red
+ * FAILED rows, which is an accusation the evidence does not support.
+ */
+export type PublicScanStageState =
+  | 'waiting'
+  | 'running'
+  | 'complete'
+  | 'failed'
+  | 'unavailable'
+  | 'skipped'
 
 export interface PublicScanStage {
   key: PublicScanStageKey
@@ -90,15 +112,21 @@ export interface ExecutiveSummary {
   /**
    * 0-100 weighted mean of the ten non-PQ categories only, renormalized among
    * themselves. An informative sub-metric — it does NOT drive the grade.
+   *
+   * **Null when the assessment is not gradeable.** On a higher-is-better scale 0
+   * is the worst possible measured result, so publishing 0 for an endpoint that
+   * never answered stated that its encryption had been examined and found
+   * critical. Null is rendered as "—" and cannot be mistaken for a measurement.
    */
-  classicalScore: number
-  /** 0-100 post-quantum readiness observable at the edge. */
-  postQuantumReadiness: number
+  classicalScore: number | null
+  /** 0-100 post-quantum readiness observable at the edge; null when unmeasured. */
+  postQuantumReadiness: number | null
   /**
    * 0-100 weighted mean across all 12 published categories (grading-model.ts).
    * This — not classicalScore — is what scoreToGrade() maps to a letter grade.
+   * Null when coverage is below MIN_GRADEABLE_COVERAGE, for the same reason.
    */
-  encryptionScore: number
+  encryptionScore: number | null
   encryptionBand: string
   businessRisk: RiskBand
   businessRiskDetail: string
@@ -226,7 +254,13 @@ export interface CryptoIntelligence {
   }>
   keyExchange: string
   forwardSecrecy: 'Enabled' | 'Partial' | 'Not observed'
-  quantumVulnerability: 'Vulnerable' | 'Hybrid-protected' | 'Quantum-safe'
+  /**
+   * `Unknown` is a first-class verdict, not a fallback. The panel used to report
+   * `Vulnerable` — with the reason "No hybrid or post-quantum key agreement
+   * offered" — for endpoints where no handshake ever happened. Nothing was
+   * offered to us because we were never able to ask.
+   */
+  quantumVulnerability: 'Vulnerable' | 'Hybrid-protected' | 'Quantum-safe' | 'Unknown'
   quantumVulnerabilityReason: string
   migrationTargets: Array<{ name: string; standard: string; replaces: string }>
   confidence: number
@@ -487,6 +521,27 @@ export interface PublicScanReport {
   cached: boolean
   degraded: boolean
   degradedReason: string | null
+  /**
+   * True when the assessed port did not accept a TCP connection, so no
+   * cryptographic evidence exists at all.
+   *
+   * Distinct from `degraded`: a degraded report measured *some* of the edge and
+   * withheld the rest. An unreachable target produced no measurement to withhold,
+   * and every panel must say so rather than rendering the absence as a low score.
+   */
+  unreachable: boolean
+  /** Measured transport reachability — the prerequisite for everything below. */
+  reachability: {
+    state: import('./engines/reachability-engine').ReachabilityState
+    reachable: boolean
+    /** Real TCP connect time in ms; null when no connection was established. */
+    tcpConnectMs: number | null
+    address: string | null
+    /** Full sentence. Use where the outcome is explained — once. */
+    detail: string
+    /** Compact phrase ("port 443 did not answer") for repeated slots. */
+    summary: string
+  }
 
   executive: ExecutiveSummary
   scoreComponents: ScoreComponent[]

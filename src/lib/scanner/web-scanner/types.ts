@@ -48,6 +48,20 @@ export interface CertificateInfo {
   publicKeySize: number
   signatureAlgorithm: string
   signatureOid: string
+  /**
+   * OIDs that describe the leaf's OWN public key — the SPKI algorithm and, for
+   * EC keys, the named curve.
+   *
+   * Recorded so consumers can tell a restatement from a new observation.
+   * `detectedOids` deliberately contains every OID parsed out of the
+   * certificate, including the ones the dedicated public-key and signature
+   * findings already report; without these two fields the only way to filter
+   * them was to guess from the algorithm string, and nothing did, so one
+   * certificate produced five separate HIGH findings for two facts.
+   * Null when the DER could not be parsed.
+   */
+  publicKeyOid: string | null
+  publicKeyCurveOid: string | null
   validFrom: string
   validTo: string
   serialNumber: string
@@ -84,13 +98,37 @@ export type OidCategory =
 
 export type QuantumThreat = 'shor' | 'grover' | 'both' | 'classical-broken' | 'safe'
 
+/**
+ * What the primitive behind an OID is actually FOR.
+ *
+ * This exists because the correct post-quantum replacement depends entirely on
+ * the answer, and getting it wrong is a standards error, not a wording nit:
+ * ML-KEM (FIPS 203) is key establishment ONLY and can never sign anything.
+ * Without this field the database recommended migrating a certificate's ECDSA
+ * P-256 key to ML-KEM-768 — advice that, if followed, produces a certificate
+ * that cannot authenticate.
+ *
+ * `dual` covers the SPKI-level OIDs (`rsaEncryption`, `ecPublicKey`, the named
+ * curves) that are genuinely used for both roles; the emitting call site knows
+ * which role it observed and resolves them via `pqcReplacementFor`.
+ */
+export type OidRole = 'signature' | 'key-establishment' | 'dual' | 'hash' | 'other'
+
 export interface OidClassification {
   oid: string
   name: string
   category: OidCategory
   quantumVulnerable: boolean
   quantumThreat: QuantumThreat
+  /**
+   * The replacement for this primitive in its PRIMARY role. For a `dual` OID
+   * that is the key-establishment target; see {@link pqcSignatureReplacement}.
+   * Always read this through `pqcReplacementFor`, never directly.
+   */
   pqcReplacement: string | null
+  /** Replacement when a `dual` primitive was observed authenticating (FIPS 204/205). */
+  pqcSignatureReplacement?: string | null
+  role?: OidRole
   description: string
 }
 

@@ -59,14 +59,63 @@ export interface CryptoIntelligenceData {
   hybridGroups: string[]
   kemParameterSets: string[]
 
-  postQuantumReadiness: number
+  /**
+   * 0-100, or **null** when no cryptographic evidence was collected.
+   *
+   * Null and 0 are not interchangeable here and the difference is not cosmetic:
+   * 0% is the worst possible measured readiness, so publishing it for an
+   * endpoint that never completed a handshake told the reader the target had
+   * been assessed and found unprepared. It had not been assessed at all.
+   */
+  postQuantumReadiness: number | null
   readinessReasons: string[]
 
-  quantumRisk: QuantumRiskLevel
-  quantumRiskScore: number
+  /** Null when there was no evidence to evaluate. Never a default level. */
+  quantumRisk: QuantumRiskLevel | null
+  quantumRiskScore: number | null
   riskFactors: QuantumRiskFactor[]
 
   migrationTargets: Array<{ name: string; standard: string; replaces: string; rationale: string }>
+
+  /**
+   * False when the engine ran but had nothing to evaluate — no handshake, no
+   * certificate. Every consumer must branch on this before rendering a score or
+   * a risk level; the numbers above are null in that case precisely so a
+   * consumer that forgets cannot silently print a fabricated zero.
+   */
+  assessed: boolean
+  /** Why nothing could be assessed. Null when `assessed` is true. */
+  notAssessedReason: string | null
+}
+
+/**
+ * The single representation of "the cryptographic assessment did not run".
+ *
+ * There used to be two, and they contradicted each other: `emptyBundle` in the
+ * orchestrator published `quantumRisk: 'Critical'` / score 100, while
+ * `computeQuantumRisk` on an empty evidence set fell out at `'Low'` / score 0
+ * for the identical condition. One said the endpoint was in maximum danger, the
+ * other that it was fine, and neither had measured anything.
+ */
+export function notAssessedCrypto(reason: string | null = null): CryptoIntelligenceData {
+  return {
+    algorithms: [],
+    keyExchange: 'unknown',
+    keyExchangeClass: 'Classical',
+    forwardSecrecy: 'Not observed',
+    hybridObserved: false,
+    pqSignatureObserved: false,
+    hybridGroups: [],
+    kemParameterSets: [],
+    postQuantumReadiness: null,
+    readinessReasons: [],
+    quantumRisk: null,
+    quantumRiskScore: null,
+    riskFactors: [],
+    migrationTargets: [],
+    assessed: false,
+    notAssessedReason: reason ?? 'No TLS handshake or certificate evidence was collected from this endpoint.',
+  }
 }
 
 // ─── Pattern catalogues ───────────────────────────────────────────────────────
@@ -233,12 +282,17 @@ function catalogueAlgorithms(tls: TlsIntelligence, cert: CertificateIntelligence
  * Deliberately conservative: a target scores 0 unless a hybrid/PQ group or PQ
  * signature is actually observed. Crypto-agility signals earn a small
  * "ready to move" allowance — never a readiness claim.
+ *
+ * `score` is **null** when the key-agreement dimension was never probed. 55 of
+ * the 100 available points come from hybrid key agreement, so scoring readiness
+ * without having offered a single named group is not conservatism — it is
+ * reporting an unmeasured dimension as a failed one.
  */
 export function computeReadiness(
   tls: TlsIntelligence,
   cert: CertificateIntelligence,
   hstsSecure: boolean,
-): { score: number; hybridObserved: boolean; pqSignatureObserved: boolean; reasons: string[] } {
+): { score: number | null; hybridObserved: boolean; pqSignatureObserved: boolean; reasons: string[] } {
   const reasons: string[] = []
 
   const hybridObserved =
@@ -251,6 +305,21 @@ export function computeReadiness(
     isPostQuantumSignature(cert.signatureAlgorithm) ||
     isPostQuantumSignature(cert.publicKeyAlgorithm) ||
     isPostQuantumSignature(tls.handshake?.signatureAlgorithm)
+
+  // The named-group probe is what makes readiness a measurement. Without it the
+  // dominant 55-point dimension is simply unknown, and no combination of the
+  // remaining hygiene signals adds up to a defensible readiness percentage.
+  const measurable = tls.groupsProbed || hybridObserved || pqSignatureObserved
+  if (!measurable) {
+    return {
+      score: null,
+      hybridObserved,
+      pqSignatureObserved,
+      reasons: [
+        'Post-quantum readiness was not scored: no TLS handshake completed, so named key-agreement groups could not be offered.',
+      ],
+    }
+  }
 
   let score = 0
 
@@ -303,7 +372,7 @@ export function computeQuantumRisk(
   tls: TlsIntelligence,
   cert: CertificateIntelligence,
   hybridObserved: boolean,
-): { level: QuantumRiskLevel; score: number; factors: QuantumRiskFactor[] } {
+): { level: QuantumRiskLevel | null; score: number | null; factors: QuantumRiskFactor[] } {
   const factors: QuantumRiskFactor[] = []
 
   // Key exchange — the harvest-now-decrypt-later surface.
@@ -391,8 +460,14 @@ export function computeQuantumRisk(
     })
   }
 
+  // No factors means no primitive was observed — not that every primitive was
+  // safe. The old `: 0` fallback made that empty set fall out as `'Low'`, so an
+  // endpoint that refused every connection was reported at the LOWEST quantum
+  // risk on the scale. Absence of evidence is returned as absence of a verdict.
+  if (!factors.length) return { level: null, score: null, factors }
+
   const weights: Record<QuantumRiskFactor['impact'], number> = { Low: 0, Medium: 40, High: 70, Critical: 100 }
-  const score = factors.length ? Math.max(...factors.map((factor) => weights[factor.impact])) : 0
+  const score = Math.max(...factors.map((factor) => weights[factor.impact]))
   const level: QuantumRiskLevel = score >= 100 ? 'Critical' : score >= 70 ? 'High' : score >= 40 ? 'Medium' : 'Low'
 
   return { level, score, factors }
@@ -407,25 +482,39 @@ export async function runCryptoEngine(
 ): Promise<EngineResult<CryptoIntelligenceData>> {
   return runEngine(
     'cryptographic-intelligence',
-    {
-      algorithms: [],
-      keyExchange: 'unknown',
-      keyExchangeClass: 'Classical' as AlgorithmClass,
-      forwardSecrecy: 'Not observed' as const,
-      hybridObserved: false,
-      pqSignatureObserved: false,
-      hybridGroups: [],
-      kemParameterSets: [],
-      postQuantumReadiness: 0,
-      readinessReasons: [],
-      quantumRisk: 'Critical' as QuantumRiskLevel,
-      quantumRiskScore: 100,
-      riskFactors: [],
-      migrationTargets: [],
-    },
+    notAssessedCrypto('The cryptographic intelligence engine could not complete.'),
     async () => {
       const evidence: Evidence[] = []
       const notes: string[] = []
+
+      /* Is there anything at all to reason about? The engine is pure — it derives
+         everything from the TLS and certificate bundles — so "no evidence in"
+         must mean "no verdict out". Both halves are checked because either can
+         succeed alone: the certificate engine retries independently and has
+         returned a full chain on a host whose primary handshake was reset. */
+      const hasTransportEvidence =
+        Boolean(tls.handshake) ||
+        tls.supportedProtocols.length > 0 ||
+        tls.hybridGroups.length > 0 ||
+        tls.classicalGroups.length > 0
+      const hasCertificateEvidence = Boolean(cert.publicKeyAlgorithm || cert.signatureAlgorithm)
+
+      if (!hasTransportEvidence && !hasCertificateEvidence) {
+        const reason = [tls.error, cert.error].filter(Boolean).join(' · ') || null
+        const data = notAssessedCrypto(
+          reason
+            ? `No cryptographic evidence was collected from this endpoint (${reason}).`
+            : 'No cryptographic evidence was collected from this endpoint.',
+        )
+        return {
+          data,
+          ok: false,
+          confidence: 0,
+          evidence: [],
+          notes: [data.notAssessedReason as string],
+          error: null,
+        }
+      }
 
       const algorithms = catalogueAlgorithms(tls, cert)
       const readiness = computeReadiness(tls, cert, hstsSecure)
@@ -461,7 +550,13 @@ export async function runCryptoEngine(
           rationale: `Parameter set matched to the classical security level the current ${cert.publicKeyAlgorithm} key targets.`,
         })
       }
-      if (!migrationTargets.length) {
+      /* "Sustain hybrid deployment" is only true when hybrid was actually
+         observed. The old unconditional fallback fired whenever the list was
+         empty — including for an endpoint that never completed a handshake,
+         where it told the reader to maintain a hybrid group the scan had never
+         seen, citing "no classical-only primitive observed at the edge" when
+         nothing whatsoever had been observed at the edge. */
+      if (!migrationTargets.length && readiness.hybridObserved) {
         migrationTargets.push({
           name: 'Sustain hybrid deployment',
           standard: 'NIST SP 1800-38C',
@@ -487,6 +582,8 @@ export async function runCryptoEngine(
         quantumRiskScore: risk.score,
         riskFactors: risk.factors,
         migrationTargets,
+        assessed: true,
+        notAssessedReason: null,
       }
 
       evidence.push({
@@ -498,7 +595,9 @@ export async function runCryptoEngine(
       })
       evidence.push({
         label: 'Quantum risk',
-        observedValue: `${risk.level} (${risk.factors.length} factor${risk.factors.length === 1 ? '' : 's'})`,
+        observedValue: risk.level
+          ? `${risk.level} (${risk.factors.length} factor${risk.factors.length === 1 ? '' : 's'})`
+          : 'not assessed — no primitive observed',
         detectionMethod: 'Derived',
         evidenceSource: 'Quantum Risk Engine',
         confidence: 95,
@@ -509,8 +608,12 @@ export async function runCryptoEngine(
 
       return {
         data,
-        ok: algorithms.length > 0,
-        confidence: clampScore(algorithms.length ? 95 : 20),
+        // The engine reached a conclusion from real evidence. It used to key
+        // `ok` off `algorithms.length`, which flipped the rail to FAILED for an
+        // endpoint that produced no catalogue — the same condition now handled
+        // above as an explicit not-assessed result, with a reason.
+        ok: true,
+        confidence: clampScore(algorithms.length ? 95 : 40),
         evidence,
         notes,
         error: null,

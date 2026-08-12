@@ -21,6 +21,9 @@ import type {
 } from './types'
 import { parseTarget, analyzeTls } from './tls-analyzer'
 import { collectEdgeIntelligence, type EdgeIntelligence } from './edge-intelligence'
+import { measuredKeyAgreement } from './edge-intelligence-model'
+import { pqcReplacementFor } from './oid-database'
+import { leafRestatedOids } from './certificate-parser'
 import { analyzeCipherSuites } from './cipher-suite-analyzer'
 import { scanRepository, repositoryProvider } from './repo-scanner'
 import { PROVIDER_LABEL } from './repo-providers'
@@ -784,6 +787,24 @@ export async function executeWebScan(
         moduleStart('certificate-parser', 'Certificate Chain Audit', target, 32)
         const certFindingStart = findings.length
         if (certInfo) {
+          /* ONE FACT, ONE FINDING.
+             `detectedOids` contains every OID parsed out of the certificate,
+             which includes the ones that merely RESTATE the leaf's own key and
+             signature: `ecPublicKey` and `secp256r1 (P-256)` are the algorithm
+             and curve of the very key reported below, and the signature OID is
+             the algorithm reported by the signature analyzer. Emitting all of
+             them turned one certificate — two facts — into FIVE HIGH findings,
+             which then inflated every count, every per-surface mean and the
+             severity mass behind the surface verdict. The restated OIDs are
+             folded into the two dedicated findings as provenance instead. */
+          const leafKeyOids = [certInfo.publicKeyOid, certInfo.publicKeyCurveOid].filter(
+            (oid): oid is string => Boolean(oid),
+          )
+          const restatedOids = leafRestatedOids(certInfo)
+          const keyOidNames = certInfo.detectedOids
+            .filter((entry) => leafKeyOids.includes(entry.oid))
+            .map((entry) => `${entry.name} (${entry.oid})`)
+
           // Public key algorithm finding
           addFinding({
             phase: 'cert-analysis',
@@ -791,11 +812,13 @@ export async function executeWebScan(
             location: `Certificate — ${target}`,
             threatLevel: getCertAlgorithmThreat(certInfo.publicKeyAlgorithm),
             category: 'Certificate',
-            description: getCertAlgorithmDescription(certInfo),
+            description: keyOidNames.length
+              ? `${getCertAlgorithmDescription(certInfo)}. Key encoded as ${keyOidNames.join(' / ')}.`
+              : getCertAlgorithmDescription(certInfo),
             recommendation: getCertRecommendation(certInfo.publicKeyAlgorithm),
             quantumBreakTime: certInfo.publicKeyAlgorithm.includes('RSA') ? '~4-8 hours (CRQC)' : '~2-4 hours (CRQC)',
             classicalBreakTime: '> 300 trillion years',
-            oid: certInfo.signatureOid || undefined,
+            oid: certInfo.publicKeyOid || certInfo.signatureOid || undefined,
           })
 
           // Expiry finding
@@ -818,6 +841,10 @@ export async function executeWebScan(
           // is never counted against two surfaces.
           for (const oid of certInfo.detectedOids) {
             if (oid.category === 'hash') continue
+            // Already reported by the public-key finding above or by the
+            // signature analyzer below. Skipping them is what makes the
+            // per-surface mean a measurement rather than a count of synonyms.
+            if (restatedOids.has(oid.oid)) continue
             if (oid.quantumVulnerable && oid.category !== 'extension' && oid.category !== 'ca-identifier') {
               addFinding({
                 phase: 'cert-analysis',
@@ -826,7 +853,7 @@ export async function executeWebScan(
                 threatLevel: oid.quantumThreat === 'shor' ? 'HIGH' : (oid.quantumThreat === 'classical-broken' ? 'CRITICAL' : 'MEDIUM'),
                 category: `OID (${oid.category.toUpperCase()})`,
                 description: oid.description,
-                recommendation: oid.pqcReplacement ? `Migrate to ${oid.pqcReplacement}` : 'Upgrade to quantum-safe algorithm',
+                recommendation: pqcReplacementFor(oid, 'signature'),
                 quantumBreakTime: oid.quantumThreat === 'shor' ? '~2-8 hours (CRQC)' : 'N/A',
                 classicalBreakTime: oid.quantumThreat === 'classical-broken' ? 'Already broken' : '> 10^20 years',
                 oid: oid.oid,
@@ -940,7 +967,15 @@ export async function executeWebScan(
           const cipherNames = tlsResult.cipherSuites.length > 0
             ? tlsResult.cipherSuites.map((suite) => suite.standardName)
             : [tlsResult.cipherSuite]
-          cipherSuiteBreakdown = analyzeCipherSuites(cipherNames, tlsResult.tlsVersion)
+          /* The measured group re-rates the TLS 1.3 rows. Without it every TLS 1.3
+             suite carries the fingerprint database's classical-ECDHE assumption,
+             which is how a panel reported "8 accepted · 8 quantum-vulnerable"
+             two rows below "Post-quantum key agreement: Applied". */
+          cipherSuiteBreakdown = analyzeCipherSuites(
+            cipherNames,
+            tlsResult.tlsVersion,
+            measuredKeyAgreement(edgeIntelligence),
+          )
 
           for (const suite of cipherSuiteBreakdown) {
             addFinding({
@@ -1076,10 +1111,15 @@ export async function executeWebScan(
           // Web crypto scan failed — non-critical
         }
 
-        // Add AES-256-GCM as a safe finding if detected
+        /* AES-256-GCM read from the NEGOTIATED CIPHER SUITE.
+           Filed under `cipher-enum`, the phase that actually measured it. It sat
+           in `deep-scan` — the client-side code phase — which made it the only
+           finding on the Code & Dependencies surface and, being SAFE, scored that
+           surface "Elite 100" for targets whose source had never been read. A
+           finding's phase is part of its provenance, not a convenience. */
         if (tlsResult?.cipherSuite.includes('AES_256_GCM') || tlsResult?.cipherSuite.includes('AES-256-GCM')) {
           addFinding({
-            phase: 'deep-scan',
+            phase: 'cipher-enum',
             algorithm: 'AES-256-GCM',
             location: `Cipher Suite — ${target}`,
             threatLevel: 'SAFE',
@@ -1192,7 +1232,11 @@ export async function executeWebScan(
             algorithm: 'Repository Scan Failed',
             location: target,
             threatLevel: 'LOW',
-            category: 'Scan Error',
+            /* Names its own provenance rather than relying on the phase. Ownership
+               used to fall back to `detectionMethod.includes('repo')`, which also
+               matched the string "report-generation" — so any finding emitted while
+               the report was being composed was filed under the code scanner. */
+            category: 'Repository Scan Error',
             description: `Repository scan failed: ${(err as Error).message}`,
             recommendation: 'Verify repository URL and accessibility',
             quantumBreakTime: 'N/A',
@@ -1234,8 +1278,14 @@ export async function executeWebScan(
 
       // ─── Phase 9: Risk Scoring & Recommendations ──────────────────
       moduleStart('risk-scoring-engine', 'Risk Scoring Engine', target, 87)
+      /* `edgeIntelligence` is what lets the published categories score the
+         MEASURED key agreement instead of the socket's generic TLS 1.3 label.
+         Without it a live X25519MLKEM768 endpoint scored 70/100 on key exchange,
+         forfeited the 55-point hybrid readiness allowance, and had its hybrid
+         group counted as a quantum-vulnerable algorithm — three penalties for
+         having migrated. */
       const riskScore = calculateRiskScore(
-        findings, tlsResult, certInfo, apiResult, repoResult, webCryptoResult, ruleResults
+        findings, tlsResult, certInfo, apiResult, repoResult, webCryptoResult, ruleResults, edgeIntelligence
       )
 
       moduleStart('pqc-recommendations', 'PQC Recommendation Engine', target, 89)
@@ -1498,10 +1548,20 @@ function getCertAlgorithmDescription(cert: CertificateInfo): string {
   return `Certificate uses ${alg} — evaluate quantum resistance`
 }
 
+/**
+ * The migration target for a certificate's public key.
+ *
+ * A certificate key AUTHENTICATES. The replacement is therefore a signature
+ * algorithm — ML-DSA (FIPS 204), or SLH-DSA (FIPS 205) where a conservative
+ * hash-based scheme is required — never ML-KEM, which is key establishment and
+ * cannot sign. The RSA branch recommended "ML-KEM-768 (FIPS 203) hybrid
+ * certificate", which is not a thing that can exist.
+ */
 function getCertRecommendation(alg: string): string {
-  if (alg.includes('RSA')) return 'Migrate to ML-KEM-768 (FIPS 203) hybrid certificate'
-  if (alg.includes('EC') || alg.includes('ECDSA')) return 'Migrate to ML-DSA-65 (FIPS 204) certificate'
-  return 'Evaluate PQC certificate alternatives'
+  const hybrid = 'deploy hybrid (classical + ML-DSA) while relying parties catch up'
+  if (alg.includes('RSA')) return `Migrate the certificate to ML-DSA-65 (FIPS 204) — ${hybrid}`
+  if (alg.includes('EC') || alg.includes('ECDSA')) return `Migrate the certificate to ML-DSA-65 (FIPS 204) — ${hybrid}`
+  return 'Evaluate PQC certificate alternatives: ML-DSA (FIPS 204) or SLH-DSA (FIPS 205)'
 }
 
 function getSignatureThreat(sigAlg: string): ThreatLevel {

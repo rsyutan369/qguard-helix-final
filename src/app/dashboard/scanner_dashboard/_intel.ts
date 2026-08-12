@@ -310,14 +310,6 @@ export interface ScannerAssessment {
 
 /* ================================================================= helpers == */
 
-const RESIDUAL_SECURITY: Record<ThreatLevel, number> = {
-  SAFE: 1,
-  LOW: 0.75,
-  MEDIUM: 0.45,
-  HIGH: 0.15,
-  CRITICAL: 0,
-};
-
 const THREAT_RANK: Record<ThreatLevel, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, SAFE: 0 };
 
 /** Escalate to the more severe of two risk bands. */
@@ -350,28 +342,109 @@ export function riskColorFor(band: RiskBand): string {
 /* ============================================================ node scoring == */
 
 /**
- * Per-node posture 0-100, from the severity of the findings the scanner routed
- * to that node.
+ * Which of THIS scanner's published grading categories belong to each of THIS
+ * dashboard's six discovery surfaces.
  *
- * The residual-security ladder (SAFE 1.0 → CRITICAL 0) is the same ladder the
- * Encryption Score panel documents, so a node's colour and the score bar under
- * it are computed from one model. A node with no findings returns nothing at
- * all — "not measured" and "measured as bad" must never render the same.
+ * WHY THIS REPLACED A SEVERITY MEAN
+ * ---------------------------------
+ * A node's headline number used to be `scoreNodes(findings)`: the mean of a
+ * residual-security ladder (SAFE 1.0 → CRITICAL 0) over every finding routed to
+ * the surface. It produced two defects that reinforced each other.
+ *
+ * 1. It was a SECOND SCORING MODEL. The gauge, the grade letter and the category
+ *    bars all come from the published weighted categories; the cards came from a
+ *    mean over finding counts. One scan therefore published "C+ · Fair · 71"
+ *    beside four surfaces reading "Critical" — two true statements from two
+ *    different models, presented as one assessment.
+ *
+ * 2. A mean over findings counts SYNONYMS. One certificate that restated its key
+ *    three ways and its signature twice contributed five HIGH observations, and
+ *    the mean read that as five problems. The duplication is fixed at source in
+ *    `scan-orchestrator`, but a mean over an evidence list is structurally the
+ *    wrong shape for a posture score regardless: adding a probe that emits more
+ *    rows must not lower the posture of the surface it probed.
+ *
+ * The projection below is a VIEW of the same weighted model the headline uses,
+ * so a card can never disagree with the gauge above it. Note this is the
+ * Dashboard Scanner's own mapping over its own six surfaces — /public-scan has a
+ * separate ring, a separate engine and its own `NODE_SCORE_CATEGORIES`. The two
+ * surfaces share only the published grading STANDARD, never a pipeline.
+ *
+ * INVARIANT: every published category appears exactly once, so no measurement is
+ * double-counted across surfaces and none is silently dropped.
+ * `tools/scanner-scoring-check.ts` asserts it.
  */
-export function scoreNodes(findings: DefensiveFinding[]): Record<string, number> {
-  const buckets = new Map<string, { retained: number; count: number }>();
-  for (const finding of findings) {
-    const node = nodeForFindingCategory(finding.category, finding.detectionMethod, finding.algorithm);
-    const bucket = buckets.get(node) ?? { retained: 0, count: 0 };
-    bucket.retained += RESIDUAL_SECURITY[finding.threatLevel] ?? 0;
-    bucket.count += 1;
-    buckets.set(node, bucket);
-  }
+export const SCANNER_NODE_CATEGORIES: Record<string, readonly string[]> = {
+  discovery: ['dns-caa'],
+  transport: ['tls-configuration', 'cipher-suites', 'key-exchange', 'forward-secrecy'],
+  certificates: ['certificates', 'certificate-transparency', 'ocsp-stapling'],
+  /* The Code & Dependencies card is where this dashboard renders the
+     application-layer controls it measures (response headers, HSTS). Application
+     cryptography itself — repository and Web Crypto patterns — has no category of
+     its own in the published model; it is folded into `cryptographic-algorithms`
+     and therefore scored on the Quantum Posture surface. */
+  code: ['http-security-headers', 'hsts'],
+  posture: ['cryptographic-algorithms', 'post-quantum-readiness'],
+  /**
+   * Deliberately empty. The published model has NO category for SSH host keys or
+   * token signing algorithms, so this surface has no measured posture to report
+   * and shows none. Its verdict comes from the severity of what it observed,
+   * which `resolveNodeVerdict` handles as a first-class unscored case.
+   *
+   * Inventing a number here — by averaging its findings, as the old model did —
+   * would publish a posture the platform never measured, which is the one thing
+   * the honesty contract forbids outright.
+   */
+  identity: [],
+};
+
+/**
+ * Per-node posture 0-100, projected from the published category scores.
+ *
+ * Weighted by each category's published weight, and inapplicable categories are
+ * excluded entirely rather than scored zero — the grading model already
+ * redistributes their weight. A surface whose every category was unmeasurable
+ * returns NO score, so the card keeps showing "not measured" instead of being
+ * painted red for evidence nobody collected.
+ */
+export function scoreNodesFromCategories(components: ScoreComponent[]): Record<string, number> {
+  const byKey = new Map(components.map((component) => [component.key, component]));
   const scores: Record<string, number> = {};
-  for (const [node, bucket] of buckets) {
-    if (bucket.count > 0) scores[node] = clamp((bucket.retained / bucket.count) * 100);
+
+  for (const [node, categories] of Object.entries(SCANNER_NODE_CATEGORIES)) {
+    let weighted = 0;
+    let weight = 0;
+    for (const key of categories) {
+      const component = byKey.get(key);
+      if (!component || component.score === null) continue;
+      weighted += component.score * component.weight;
+      weight += component.weight;
+    }
+    if (weight > 0) scores[node] = clamp(weighted / weight);
   }
+
   return scores;
+}
+
+/**
+ * What a node's score was computed from, for the inspector's provenance line.
+ * A number an operator cannot trace is a number they cannot defend in an audit.
+ */
+export function nodeScoreBasis(nodeKey: string, components: ScoreComponent[]): string {
+  const categories = SCANNER_NODE_CATEGORIES[nodeKey] ?? [];
+  if (categories.length === 0) {
+    return 'The published grading model has no category for this surface, so no posture score is claimed. The verdict below is graded from the severity of what was observed here.';
+  }
+  const byKey = new Map(components.map((component) => [component.key, component]));
+  const measured = categories
+    .map((key) => byKey.get(key))
+    .filter((component): component is ScoreComponent => Boolean(component) && component!.score !== null);
+  if (measured.length === 0) {
+    return 'None of this surface’s grading categories could be measured on the submitted targets, so no posture score is claimed.';
+  }
+  return `Weighted mean of ${measured
+    .map((component) => `${component.label} ${component.score}/100 (weight ${component.weight})`)
+    .join(' · ')} — the same categories, weights and grade table that produced the composite score above.`;
 }
 
 /** The two quantum categories of the published model. */
@@ -449,6 +522,8 @@ export interface NodeEvidence {
   findings: DefensiveFinding[];
   /** Node posture 0-100, or null when nothing was measured here. */
   score: number | null;
+  /** The categories and weights behind {@link score}, stated so it can be audited. */
+  scoreBasis: string;
   /** Why the panel is empty, when it is. */
   emptyReason: string | null;
 }
@@ -489,6 +564,14 @@ export function buildNodeEvidence(
     scanner2: EnterpriseScanner2 | null;
     targets: string[];
     linked: { cbom: number; assets: number; exposures: number };
+    /**
+     * The assessment's published category decomposition.
+     *
+     * Passed in rather than recomputed here: this panel, the hero card and the
+     * Encryption Score table are three views of ONE decomposition, and the way
+     * they used to drift was each deriving its own from the same raw findings.
+     */
+    scoreComponents: ScoreComponent[];
   },
 ): NodeEvidence {
   const primary = input.results[0] ?? null;
@@ -525,7 +608,8 @@ export function buildNodeEvidence(
     .filter((finding) => nodeForFindingCategory(finding.category, finding.detectionMethod, finding.algorithm) === nodeKey)
     .sort((a, b) => THREAT_RANK[b.threatLevel] - THREAT_RANK[a.threatLevel]);
 
-  const score = scoreNodes(input.findings)[nodeKey] ?? null;
+  const score = scoreNodesFromCategories(input.scoreComponents)[nodeKey] ?? null;
+  const scoreBasis = nodeScoreBasis(nodeKey, input.scoreComponents);
   const rows: EvidenceRow[] = [];
 
   switch (nodeKey) {
@@ -946,43 +1030,72 @@ export function buildNodeEvidence(
               ? 'A post-quantum signature was parsed from the served certificate chain'
               : 'Certificate authentication remains classical — ML-DSA (FIPS 204) is the migration target. Signature exposure is forgery-at-break, not harvest-now.',
           },
+          /* NAME THE POPULATION.
+             This card can carry three different "readiness" numbers — this
+             endpoint's measured posture, Scanner_2's estate-wide asset share,
+             and Scanner_2's risk aggregate — and they legitimately differ
+             because they count different things. Labelling all three
+             "readiness" is what made the panel read as self-contradictory, so
+             every row below states its source and its population in the label
+             itself, not only in a tooltip. */
+          /* `Math.round(null)` is 0, and 0 here reads as "measured, and as bad as
+             it gets" on a higher-is-better scale. A target whose port never
+             answered reports "Not measured" and stays tonally neutral. */
           {
-            label: 'Measured PQ readiness',
-            value: `${Math.round(quantum.postQuantumReadiness)}%`,
-            tone: quantum.postQuantumReadiness >= 60 ? TONE_PASS : quantum.postQuantumReadiness >= 35 ? TONE_WARN : TONE_FAIL,
-            detail: quantum.readinessReasons.slice(0, 3).join(' · ') || 'Measured from the observed edge surface',
+            label: 'PQ readiness · this endpoint',
+            value: quantum.postQuantumReadiness === null ? 'Not measured' : `${Math.round(quantum.postQuantumReadiness)}%`,
+            tone:
+              quantum.postQuantumReadiness === null
+                ? TONE_MUTED
+                : quantum.postQuantumReadiness >= 60
+                  ? TONE_PASS
+                  : quantum.postQuantumReadiness >= 35
+                    ? TONE_WARN
+                    : TONE_FAIL,
+            detail:
+              `${quantum.readinessReasons.slice(0, 3).join(' · ') || 'Measured from the observed edge surface'}` +
+              ' — the published Post-Quantum Readiness category for this target, and the same number the surface score above is partly derived from.',
           },
           {
             label: 'Quantum vulnerability',
             value: quantum.vulnerability,
             tone:
-              quantum.quantumRisk === 'Low'
-                ? TONE_PASS
-                : quantum.quantumRisk === 'Medium'
-                  ? TONE_WARN
-                  : TONE_FAIL,
+              // An `Unknown` verdict carries no risk level, so the old ternary's
+              // final branch painted it red — a failure colour on a row whose own
+              // value says nothing was determined.
+              quantum.quantumRisk === null
+                ? TONE_MUTED
+                : quantum.quantumRisk === 'Low'
+                  ? TONE_PASS
+                  : quantum.quantumRisk === 'Medium'
+                    ? TONE_WARN
+                    : TONE_FAIL,
             detail: quantum.vulnerabilityReason,
           },
         );
       }
       if (readiness) {
         rows.push({
-          label: 'Quantum readiness',
+          /* A share of ASSETS, not a posture percentage — a different population
+             from the row above, which is why the two numbers can be far apart
+             without either being wrong. Reported separately and labelled with
+             its source, never averaged into the platform figure. */
+          label: 'Asset readiness · Scanner_2',
           value: `${Math.round(readiness.score)}% · ${readiness.label}`,
           tone: readiness.score >= 60 ? TONE_PASS : TONE_WARN,
-          detail: `${readiness.quantumSafeAssets}/${readiness.totalAssets} assets already quantum-safe`,
+          detail: `${readiness.quantumSafeAssets} of ${readiness.totalAssets} inventoried asset(s) are already quantum-safe. This is a share of the asset population, NOT this endpoint's measured posture — it does not contribute to the surface score above.`,
         });
       }
       if (risk) {
         rows.push(
           {
-            label: 'Quantum risk score',
+            label: 'Risk aggregate · Scanner_2',
             value: `${Math.round(risk.overall)} · ${risk.level}`,
             tone: risk.level === 'quantum-safe' ? TONE_PASS : risk.level === 'critical-risk' ? TONE_FAIL : TONE_WARN,
-            detail: 'Scanner_2 aggregate over every enriched finding',
+            detail: 'Scanner_2 aggregate over every enriched finding. A finding-weighted index on its own scale — not a 0-100 posture, and not an input to the surface score above.',
           },
           {
-            label: 'Severity split',
+            label: 'Severity split · Scanner_2',
             value: `${risk.criticalCount}C · ${risk.highCount}H · ${risk.moderateCount}M · ${risk.lowCount}L`,
             detail: `${risk.totalFindings} enriched finding(s) scored`,
           },
@@ -1053,7 +1166,7 @@ export function buildNodeEvidence(
     }
   }
 
-  return { rows, modules, findings: nodeFindings.slice(0, 6), score, emptyReason };
+  return { rows, modules, findings: nodeFindings.slice(0, 6), score, scoreBasis, emptyReason };
 }
 
 /* ============================================================== evidence ==== */
@@ -1551,7 +1664,9 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
       statement:
         'The Dashboard Scanner performs authorized, defensive cryptographic inventory only: no exploitation, credential collection, stealth behaviour or unauthorized reconnaissance. Results persist per tenant and populate CBOM, Assets, Crypto Exposure, Quantum Readiness and Migration Planner.',
     },
-    nodeScores: scoreNodes(findings),
+    /* Projected from the SAME decomposition the gauge and the category bars
+       read, so a surface card can never contradict the composite above it. */
+    nodeScores: scoreNodesFromCategories(scoreComponents),
     hndl,
   };
 }

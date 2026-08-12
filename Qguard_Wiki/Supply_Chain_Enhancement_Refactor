@@ -1,0 +1,2404 @@
+# QGuard Helix — External Trust & Ecosystem Suite
+
+## Master Enterprise Implementation Prompt
+
+You are working on the QGuard Helix Quantum Cyber Defense Platform.
+
+Refactor and implement the following four existing dashboard pages:
+
+1. `/dashboard/vendor-pqc-readiness`
+2. `/dashboard/ecosystem-dependency-map`
+3. `/dashboard/trust-chain-analyzer`
+4. `/dashboard/hybrid-crypto-lab`
+
+These pages form a unified capability group:
+
+# EXTERNAL TRUST & ECOSYSTEM
+
+The four pages must work together while maintaining a very clear and simple responsibility for each page.
+
+---
+
+# 1. PRODUCT OBJECTIVE
+
+The purpose of this capability group is to help organizations:
+
+> **Track vendor PQC readiness, standards alignment, contractual obligations, evidence requests, ecosystem dependencies, trust-chain exposure, and hybrid cryptographic migration compatibility.**
+
+The experience must be:
+
+* Enterprise-grade
+* Professional
+* Simple
+* Evidence-driven
+* Operational
+* Easy to understand
+* Technically credible
+* Production-ready
+
+Do NOT turn these pages into generic cybersecurity dashboards.
+
+Do NOT overload the user with unnecessary charts.
+
+Each page must have one dominant job.
+
+---
+
+# 2. PAGE RESPONSIBILITIES
+
+## Vendor PQC Readiness
+
+Primary question:
+
+> **Can we depend on our vendors to support our PQC migration?**
+
+Primary interaction:
+
+**Review → Request Evidence → Track Commitment**
+
+---
+
+## Ecosystem Dependency Map
+
+Primary question:
+
+> **What external vendors, services, platforms, identity systems, APIs, PKI systems, and other dependencies affect our cryptographic migration?**
+
+Primary interaction:
+
+**Explore → Select Dependency → Analyze Blast Radius**
+
+---
+
+## Trust Chain Analyzer
+
+Primary question:
+
+> **Which certificate, PKI, federation, trust-anchor, and trust relationships could affect migration?**
+
+Primary interaction:
+
+**Select Chain → Analyze Trust → Compare Migration**
+
+---
+
+## Hybrid Crypto Lab
+
+Primary question:
+
+> **Will the proposed hybrid cryptographic configuration actually work?**
+
+Primary interaction:
+
+**Configure → Test → Analyze → Generate Evidence**
+
+---
+
+# 3. IMPORTANT ARCHITECTURAL RULE
+
+These pages MUST NOT become four disconnected implementations.
+
+The information flow should be:
+
+```text
+Vendor PQC Readiness
+        ↓
+Vendor capabilities / commitments / evidence
+        ↓
+Ecosystem Dependency Map
+        ↓
+External dependency relationships / blast radius
+        ↓
+Trust Chain Analyzer
+        ↓
+PKI / certificates / trust relationships
+        ↓
+Hybrid Crypto Lab
+        ↓
+Configuration compatibility testing
+        ↓
+Migration Planner
+        ↓
+Migration Sandbox / Digital Twin
+        ↓
+Live Migration Operations
+```
+
+The existing Crypto Agility page should consume the resulting evidence and readiness information.
+
+---
+
+# 4. FIRST STEP — INSPECT BEFORE CODING
+
+Before changing code, inspect the existing application.
+
+Inspect:
+
+* all four existing pages
+* shared dashboard layout
+* navigation
+* design system
+* UI components
+* charts
+* graph components
+* tables
+* drawers
+* dialogs
+* modals
+* hooks
+* API clients
+* backend APIs
+* Supabase queries
+* database schema
+* TypeScript types
+* tenant handling
+* RBAC
+* authentication
+* existing CBOM
+* crypto inventory
+* Trust-State Discovery
+* Quantum Exposure Graph
+* Crypto Agility
+* Migration Planner
+* Migration Sandbox
+* Digital Twin
+* Runtime Crypto Telemetry
+* Sophia
+* existing cryptographic policy engine
+* existing assessment engine
+
+Do not immediately rewrite the pages.
+
+First determine:
+
+1. What already exists?
+2. What can be reused?
+3. What APIs already provide required data?
+4. What data models already exist?
+5. What functionality genuinely needs to be added?
+6. What integrations already exist?
+7. What functionality should remain owned by another module?
+
+Avoid duplicate systems.
+
+---
+
+# 5. DATA INTEGRITY
+
+Do NOT fabricate enterprise data.
+
+Do not hard-code fake production values for:
+
+* vendor counts
+* readiness scores
+* dependency counts
+* trust chains
+* migration results
+* experiment results
+* standards compliance
+* evidence status
+* contract status
+* risk
+* blast radius
+
+Use real data whenever available.
+
+If a backend capability does not yet exist:
+
+* create a clean data interface
+* isolate the temporary adapter
+* clearly mark unavailable information
+* do not present mock data as production evidence
+
+Use:
+
+* Unknown
+* Not Observed
+* Insufficient Evidence
+* Not Evaluated
+* Not Applicable
+
+Do not convert missing evidence into a safe status.
+
+---
+
+# 6. SHARED DESIGN LANGUAGE
+
+All four pages must feel like parts of one QGuard Helix product.
+
+Use the existing QGuard Helix design system.
+
+Visual style:
+
+* premium
+* enterprise
+* restrained
+* technical
+* clean
+* high information density where appropriate
+* excellent spacing
+* clear hierarchy
+* subtle motion
+
+Avoid:
+
+* excessive neon
+* gaming UI
+* excessive glow
+* giant decorative graphics
+* unnecessary 3D
+* excessive gradients
+* meaningless animations
+* dashboard clutter
+
+The user should understand the page within seconds.
+
+---
+
+# 7. SHARED STATUS MODEL
+
+Use consistent terminology across all four pages.
+
+### Readiness
+
+* Ready
+* Hybrid Ready
+* Preparing
+* Committed
+* Not Ready
+* Unknown
+
+### Evidence
+
+* Complete
+* Partial
+* Requested
+* Pending
+* Overdue
+* Rejected
+* Unknown
+
+### Risk
+
+* Critical
+* High
+* Medium
+* Low
+* Unknown
+
+### Dependency
+
+* Direct
+* Indirect
+* Critical
+* Optional
+* Unknown
+
+### Trust
+
+* Trusted
+* Valid
+* Expiring
+* Weak
+* Broken
+* Unknown
+
+### Experiment
+
+* Passed
+* Passed with Warnings
+* Conditional
+* Failed
+* Not Evaluated
+
+---
+
+# ==========================================================
+
+# PAGE 1 — VENDOR PQC READINESS
+
+# ==========================================================
+
+Route:
+
+`/dashboard/vendor-pqc-readiness`
+
+Page title:
+
+# Vendor PQC Readiness
+
+Subtitle:
+
+> Track vendor post-quantum readiness, standards alignment, contractual commitments, evidence, and migration support.
+
+---
+
+# 8. VENDOR PAGE HERO
+
+Create a compact professional header.
+
+Display:
+
+### Vendors Assessed
+
+### PQC Ready
+
+### Preparing / Committed
+
+### Evidence Pending
+
+### Critical Vendor Risks
+
+### Overall Vendor Readiness
+
+Do not use giant dashboard tiles.
+
+Keep the layout compact.
+
+Primary action:
+
+**[Assess Vendors]**
+
+Secondary:
+
+**[Request Evidence]**
+
+---
+
+# 9. VENDOR READINESS DISTRIBUTION
+
+Show:
+
+```text
+Ready
+Hybrid Ready
+Preparing
+Committed
+Not Ready
+Unknown
+```
+
+Allow clicking a status to filter the vendor register.
+
+---
+
+# 10. VENDOR READINESS REGISTER
+
+This is the primary page component.
+
+Columns:
+
+* Vendor
+* Service
+* Business Owner
+* Criticality
+* PQC Readiness
+* Standards Alignment
+* Evidence
+* Contractual Coverage
+* Migration Support
+* Last Assessment
+* Next Review
+
+Support:
+
+* search
+* filtering
+* sorting
+* pagination
+* column visibility
+* export
+* row selection
+
+---
+
+# 11. VENDOR FILTERS
+
+Allow filtering by:
+
+* Vendor
+* Criticality
+* PQC readiness
+* Standards
+* Evidence
+* Contract
+* Migration support
+* Business owner
+* Environment
+* Assessment date
+
+---
+
+# 12. VENDOR DETAIL DRAWER
+
+Clicking a vendor opens a side drawer.
+
+Sections:
+
+## Vendor Overview
+
+* vendor
+* service
+* business owner
+* technical owner
+* criticality
+* assessment date
+* next review
+
+## PQC Position
+
+Display:
+
+* current algorithms
+* supported algorithms
+* hybrid support
+* KEM support
+* signature support
+* TLS support
+* certificate support
+* key management support
+
+Do not imply support merely because a vendor claims it.
+
+Every important claim should have evidence.
+
+---
+
+# 13. STANDARDS ALIGNMENT
+
+Track applicable standards.
+
+Potential categories:
+
+* NIST
+* FIPS
+* TLS
+* CNSA 2.0
+* industry-specific standards
+* internal enterprise requirements
+
+Do not hard-code a standard as applicable to every vendor.
+
+Show:
+
+* Aligned
+* Partial
+* Not Aligned
+* Unknown
+* Not Applicable
+
+Include:
+
+**Evidence**
+
+**Last Verified**
+
+---
+
+# 14. VENDOR PQC ROADMAP
+
+Show:
+
+```text
+Current State
+      ↓
+Hybrid Support
+      ↓
+PQC Support
+      ↓
+Legacy Crypto Retirement
+```
+
+Display vendor commitments and target dates.
+
+Separate:
+
+**Vendor Commitment**
+
+from:
+
+**QGuard Helix Assessment**
+
+Never treat a vendor promise as verified technical capability.
+
+---
+
+# 15. EVIDENCE REQUEST MANAGEMENT
+
+Implement evidence request workflow.
+
+Allow users to request:
+
+* PQC roadmap
+* algorithm support matrix
+* TLS/PQC support statement
+* certificate roadmap
+* key management roadmap
+* cryptographic architecture
+* migration timeline
+* product version support
+* security/compliance documentation
+
+Workflow:
+
+```text
+Requested
+   ↓
+Vendor Responded
+   ↓
+Evidence Received
+   ↓
+Under Review
+   ↓
+Accepted / Rejected
+```
+
+Track:
+
+* request
+* owner
+* date
+* due date
+* response
+* evidence
+* reviewer
+* verification state
+
+---
+
+# 16. CONTRACTUAL OBLIGATIONS
+
+Track:
+
+* PQC migration commitment
+* crypto lifecycle requirements
+* security requirements
+* notification obligations
+* supported algorithms
+* deprecation requirements
+* certificate obligations
+* key rotation requirements
+
+Statuses:
+
+* Covered
+* Partially Covered
+* Under Review
+* Missing
+* Expired
+* Unknown
+
+This is not a full contract-management application.
+
+Keep it focused on cryptographic obligations.
+
+---
+
+# 17. VENDOR MIGRATION SUPPORT
+
+Display:
+
+* Full Support
+* Partial Support
+* Roadmap Only
+* No Support
+* Unknown
+
+Include:
+
+* migration documentation
+* supported versions
+* migration tooling
+* vendor professional services
+* compatibility testing
+* escalation path
+
+---
+
+# 18. VENDOR RISK
+
+Calculate a vendor PQC risk based on evidence.
+
+Factors may include:
+
+* business criticality
+* PQC readiness
+* evidence confidence
+* contractual coverage
+* migration dependency
+* replacement difficulty
+* support status
+
+Do not create arbitrary scores.
+
+Show why the risk exists.
+
+---
+
+# 19. VENDOR ACTIONS
+
+Provide:
+
+**[Request Evidence]**
+
+**[Review Roadmap]**
+
+**[Assign Owner]**
+
+**[Create Remediation]**
+
+**[Add to Migration Plan]**
+
+**[View Dependencies]**
+
+**[Analyze Trust Impact]**
+
+**[Run Hybrid Test]**
+
+Actions must connect to real functionality.
+
+---
+
+# 20. SOPHIA
+
+Add a compact recommendation card.
+
+Example:
+
+> Sophia identified 7 critical vendors with insufficient PQC evidence.
+
+Actions:
+
+**[Review]**
+
+**[Ask Sophia]**
+
+Sophia must use authenticated tenant data only.
+
+---
+
+# ==========================================================
+
+# PAGE 2 — ECOSYSTEM DEPENDENCY MAP
+
+# ==========================================================
+
+Route:
+
+`/dashboard/ecosystem-dependency-map`
+
+Page title:
+
+# Ecosystem Dependency Map
+
+Subtitle:
+
+> Understand the external vendors, services, platforms, identity systems, APIs, PKI, and trust relationships that influence cryptographic migration.
+
+This page is especially important.
+
+It should be a **dependency intelligence view**, not simply a pretty graph.
+
+---
+
+# 21. ECOSYSTEM TOP KPIs
+
+Display:
+
+* External Dependencies
+* Critical Dependencies
+* Vendor Dependencies
+* Single Points of Failure
+* Unknown Dependencies
+* Migration Blockers
+
+Keep these compact.
+
+---
+
+# 22. PRIMARY ECOSYSTEM GRAPH
+
+Create an interactive dependency graph.
+
+Node categories:
+
+### Vendors
+
+External suppliers and technology providers.
+
+### Services
+
+SaaS, cloud, APIs, managed services.
+
+### Applications
+
+Internal applications consuming external services.
+
+### Identity
+
+IdP, federation, authentication providers.
+
+### PKI
+
+CA, certificates, trust anchors.
+
+### Crypto
+
+Crypto providers, libraries, algorithms.
+
+### Protocols
+
+TLS, mTLS, federation protocols, signing protocols.
+
+### Infrastructure
+
+Cloud, Kubernetes, servers, gateways.
+
+### Business Services
+
+Critical business capabilities.
+
+---
+
+# 23. GRAPH RELATIONSHIPS
+
+Represent relationships such as:
+
+```text
+Application
+   ↓
+External API
+   ↓
+Vendor
+   ↓
+TLS
+   ↓
+Certificate
+   ↓
+CA
+   ↓
+Trust Anchor
+```
+
+Also support:
+
+```text
+Application
+   ↓
+Identity Provider
+   ↓
+Federation
+   ↓
+Vendor
+```
+
+And:
+
+```text
+Application
+   ↓
+Crypto Library
+   ↓
+Algorithm
+```
+
+---
+
+# 24. GRAPH CONTROLS
+
+Provide:
+
+* zoom
+* pan
+* search
+* filter
+* fit-to-view
+* focus node
+* dependency depth
+* risk filter
+* vendor filter
+* trust filter
+* crypto filter
+* environment filter
+
+Provide a clear legend.
+
+---
+
+# 25. GRAPH FILTERS
+
+Allow:
+
+### Dependency Type
+
+* Vendor
+* API
+* Identity
+* PKI
+* Crypto
+* Protocol
+* Infrastructure
+* SaaS
+* Cloud
+
+### Criticality
+
+* Critical
+* High
+* Medium
+* Low
+
+### PQC Status
+
+* Ready
+* Preparing
+* Not Ready
+* Unknown
+
+### Migration State
+
+* Ready
+* Conditional
+* Blocked
+* Unknown
+
+---
+
+# 26. DEPENDENCY DETAIL PANEL
+
+Selecting any node opens a detail drawer.
+
+Display:
+
+### Identity
+
+* name
+* type
+* owner
+* environment
+* criticality
+
+### Dependency
+
+* direct dependencies
+* indirect dependencies
+* upstream
+* downstream
+
+### Crypto
+
+* algorithms
+* protocols
+* certificates
+* crypto providers
+
+### Trust
+
+* CA
+* trust anchor
+* federation
+* certificate dependencies
+
+### Vendor
+
+* PQC readiness
+* evidence
+* contract
+* migration support
+
+### Migration
+
+* affected migration plans
+* blockers
+* readiness
+
+---
+
+# 27. BLAST RADIUS ANALYSIS
+
+This is one of the most important features.
+
+User selects:
+
+**Vendor X**
+
+Then display:
+
+```text
+Direct Dependencies
+12
+
+Indirect Dependencies
+38
+
+Applications Affected
+21
+
+Business Services
+8
+
+Trust Relationships
+7
+
+Migration Plans
+4
+
+Critical Services
+3
+```
+
+Then:
+
+**[Analyze Blast Radius]**
+
+Highlight affected nodes in the graph.
+
+---
+
+# 28. SINGLE POINTS OF FAILURE
+
+Automatically identify external dependencies that have:
+
+* many downstream consumers
+* no alternative
+* poor PQC readiness
+* high criticality
+* weak evidence
+
+Example:
+
+> Vendor X is a potential ecosystem single point of failure.
+
+Explain why.
+
+---
+
+# 29. MIGRATION BOTTLENECKS
+
+Detect dependencies that block migration.
+
+Example:
+
+> Vendor Y currently prevents PQC migration for 8 applications.
+
+Show:
+
+* affected assets
+* reason
+* vendor status
+* evidence
+* alternative options
+* recommended action
+
+---
+
+# 30. UNKNOWN DEPENDENCIES
+
+Explicitly surface:
+
+> 23 relationships have insufficient evidence.
+
+Provide:
+
+**[Investigate Unknowns]**
+
+Unknown dependencies are important because undocumented trust/dependency relationships frequently become migration failure points.
+
+---
+
+# 31. CASCADING DEPENDENCY VIEW
+
+Allow:
+
+**Analyze Dependency Chain**
+
+Example:
+
+```text
+Vendor
+ ↓
+Identity Provider
+ ↓
+Federation
+ ↓
+Application
+ ↓
+Certificate
+ ↓
+Trust Anchor
+```
+
+Show:
+
+* dependency depth
+* risk
+* affected assets
+* affected migration plans
+
+---
+
+# 32. ECOSYSTEM IMPACT ANALYSIS
+
+For selected dependency show:
+
+### What happens if this dependency changes?
+
+Display:
+
+* affected applications
+* affected services
+* affected trust chains
+* affected certificates
+* affected vendors
+* affected migrations
+* affected business services
+
+---
+
+# 33. ECOSYSTEM RECOMMENDATIONS
+
+Examples:
+
+> Request PQC roadmap from Vendor X.
+
+> Identify an alternate provider.
+
+> Add Vendor Y to migration plan.
+
+> Validate Vendor Z using Hybrid Crypto Lab.
+
+> Analyze affected trust chains.
+
+Actions:
+
+**[Request Evidence]**
+
+**[Analyze Trust]**
+
+**[Run Hybrid Test]**
+
+**[Create Migration Task]**
+
+---
+
+# 34. ECOSYSTEM GRAPH DATA SOURCES
+
+Where available, integrate:
+
+* CBOM
+* Trust-State Discovery
+* asset inventory
+* vendor inventory
+* dependency metadata
+* certificates
+* PKI
+* identity
+* runtime telemetry
+* migration plans
+* vendor assessments
+
+Do not create a separate isolated dependency model if an existing relationship model can be extended.
+
+---
+
+# ==========================================================
+
+# PAGE 3 — TRUST CHAIN ANALYZER
+
+# ==========================================================
+
+Route:
+
+`/dashboard/trust-chain-analyzer`
+
+Page title:
+
+# Trust Chain Analyzer
+
+Subtitle:
+
+> Analyze certificates, PKI, trust anchors, federation, and cryptographic trust relationships before migration.
+
+Keep this page focused.
+
+---
+
+# 35. TRUST SUMMARY
+
+Display:
+
+* Trust Chains
+* Critical Chains
+* Expiring Certificates
+* Legacy Algorithms
+* External Trust Dependencies
+* Unknown Relationships
+
+---
+
+# 36. TRUST CHAIN VIEW
+
+Primary visual:
+
+```text
+Root CA
+   ↓
+Intermediate CA
+   ↓
+Certificate
+   ↓
+Service
+   ↓
+Application
+   ↓
+Identity / Federation
+```
+
+Use actual discovered relationships.
+
+Do not generate fake chains.
+
+---
+
+# 37. TRUST GRAPH
+
+Support:
+
+* zoom
+* pan
+* node selection
+* chain highlighting
+* dependency traversal
+* risk filtering
+
+Node types:
+
+* Root CA
+* Intermediate CA
+* Certificate
+* Service
+* Application
+* Trust Anchor
+* Identity Provider
+* Federation
+* Vendor
+
+---
+
+# 38. CERTIFICATE DETAIL
+
+Show:
+
+* subject
+* issuer
+* validity
+* signature algorithm
+* public-key algorithm
+* key size
+* certificate chain
+* trust anchor
+* dependencies
+* renewal mechanism
+* owner
+* environment
+
+Never display private keys or secrets.
+
+---
+
+# 39. TRUST FINDINGS
+
+Detect:
+
+* broken chain
+* expiring certificate
+* weak algorithm
+* legacy signature
+* unknown CA
+* external CA dependency
+* static trust anchor
+* manual renewal
+* missing automation
+* PQC compatibility issue
+* vendor dependency
+
+Each finding:
+
+* severity
+* evidence
+* affected assets
+* recommended action
+
+---
+
+# 40. TRUST AGILITY
+
+Display:
+
+### Trust Agility Score
+
+Break down:
+
+* Certificate Replaceability
+* CA Agility
+* Trust Anchor Agility
+* Federation Agility
+* Renewal Automation
+* PQC Compatibility
+
+Connect this score to the Crypto Agility page.
+
+---
+
+# 41. MIGRATION IMPACT
+
+For each trust chain:
+
+Show:
+
+### Current
+
+Existing chain.
+
+### Proposed
+
+Proposed future/hybrid chain.
+
+### Impact
+
+* applications affected
+* services affected
+* certificates affected
+* trust anchors affected
+* vendor dependencies
+* compatibility issues
+
+---
+
+# 42. TRUST CHAIN COMPARISON
+
+Allow:
+
+**[Compare Current vs Proposed]**
+
+Show side-by-side.
+
+Example:
+
+```text
+CURRENT
+
+Root CA
+ ↓
+Intermediate CA
+ ↓
+RSA Certificate
+ ↓
+Application
+
+
+PROPOSED
+
+Root CA
+ ↓
+PQC/Hybrid-capable CA
+ ↓
+PQC-compatible Certificate
+ ↓
+Application
+```
+
+Do not claim that PQC certificate-chain migration is universally supported.
+
+Use actual supported implementation/policy information.
+
+---
+
+# 43. TRUST CHAIN ACTIONS
+
+Provide:
+
+**[Analyze Dependency]**
+
+**[Run Hybrid Test]**
+
+**[Create Migration Plan]**
+
+**[Assign Owner]**
+
+**[Request Vendor Evidence]**
+
+---
+
+# ==========================================================
+
+# PAGE 4 — HYBRID CRYPTO LAB
+
+# ==========================================================
+
+Route:
+
+`/dashboard/hybrid-crypto-lab`
+
+Page title:
+
+# Hybrid Crypto Lab
+
+Subtitle:
+
+> Safely evaluate hybrid cryptographic configurations and compatibility before production migration.
+
+This should be a **controlled test environment**, not a generic cryptographic playground.
+
+---
+
+# 44. LAB OVERVIEW
+
+Display:
+
+* Experiments
+* Passed
+* Conditional
+* Failed
+* Compatibility Issues
+* Evidence Generated
+
+Primary action:
+
+**[New Experiment]**
+
+---
+
+# 45. EXPERIMENT BUILDER
+
+Implement a simple wizard.
+
+## Step 1 — Target
+
+Select:
+
+* application
+* service
+* endpoint
+* vendor
+* certificate
+* environment
+
+## Step 2 — Current Configuration
+
+Display:
+
+* protocol
+* algorithm
+* key exchange
+* signature
+* certificate
+* provider/library
+
+## Step 3 — Proposed Configuration
+
+Select compatible target options.
+
+## Step 4 — Execute Test
+
+**[Run Experiment]**
+
+---
+
+# 46. CRYPTOGRAPHIC CONFIGURATION
+
+Support QGuard Helix's approved cryptographic stack.
+
+Where applicable:
+
+### Key Exchange
+
+* X25519
+* ML-KEM-768
+* X25519 + ML-KEM-768
+
+### Signatures
+
+* Ed25519
+* ML-DSA-65
+* Ed25519 + ML-DSA
+
+### Symmetric
+
+* AES-256-GCM
+
+### KDF
+
+* HKDF-SHA3-256
+* approved fallback where policy permits
+
+### Hashing
+
+* SHA3-256
+* SHA3-512
+
+Do not assume every algorithm is interchangeable.
+
+Respect algorithm purpose.
+
+Do not allow invalid combinations.
+
+---
+
+# 47. OQS / HYBRID IMPLEMENTATION
+
+Where the backend supports it, use the organization's existing:
+
+* liboqs
+* OQS-OpenSSL
+* hybrid TLS implementation
+
+Do not implement a separate cryptographic engine inside the frontend.
+
+The frontend should submit an experiment specification to the backend laboratory/sandbox.
+
+---
+
+# 48. EXPERIMENT RESULT
+
+Display:
+
+### Overall Result
+
+* Passed
+* Passed with Warnings
+* Conditional
+* Failed
+
+Then:
+
+### Protocol
+
+PASS / FAIL / UNKNOWN
+
+### Crypto
+
+PASS / FAIL / UNKNOWN
+
+### Certificate
+
+PASS / FAIL / UNKNOWN
+
+### Trust Chain
+
+PASS / FAIL / UNKNOWN
+
+### Application
+
+PASS / FAIL / UNKNOWN
+
+### Vendor
+
+PASS / FAIL / UNKNOWN
+
+### Policy
+
+PASS / FAIL / UNKNOWN
+
+---
+
+# 49. FAILURE ANALYSIS
+
+When an experiment fails:
+
+Explain:
+
+* failure
+* affected component
+* evidence
+* likely cause
+* affected dependencies
+* recommended remediation
+
+Example:
+
+> Certificate compatibility issue detected.
+
+Current:
+
+`RSA-2048`
+
+Target:
+
+`PQC-compatible signing`
+
+Affected:
+
+`12 services`
+
+Recommended action:
+
+> Analyze affected trust chains before attempting migration.
+
+Buttons:
+
+**[Analyze Trust Chain]**
+
+**[View Dependencies]**
+
+**[Create Migration Task]**
+
+---
+
+# 50. EXPERIMENT HISTORY
+
+Display:
+
+| Date | Target | Configuration | Result | Risk |
+| ---- | ------ | ------------- | ------ | ---- |
+
+Support:
+
+* search
+* filter
+* sort
+* open
+* clone
+* compare
+* export evidence
+
+---
+
+# 51. EXPERIMENT COMPARISON
+
+Allow users to compare two experiments.
+
+Show:
+
+* configuration
+* protocol
+* algorithms
+* compatibility
+* trust result
+* application result
+* policy result
+* failures
+* warnings
+
+---
+
+# 52. EVIDENCE GENERATION
+
+After an experiment:
+
+**[Generate Evidence]**
+
+Capture:
+
+* experiment ID
+* timestamp
+* target
+* environment
+* configuration
+* algorithms
+* protocol
+* result
+* dependencies
+* findings
+* validation status
+
+Clearly label:
+
+> Experimental Evidence — Production Validation Required
+
+Do not represent laboratory results as proof of production security.
+
+---
+
+# 53. SAFE EXECUTION MODEL
+
+Clearly distinguish:
+
+### Simulation
+
+No production impact.
+
+### Controlled Test
+
+Isolated test environment.
+
+### Production
+
+No direct production mutation unless explicitly authorized through an existing QGuard Helix integration.
+
+Never silently execute production-changing operations.
+
+---
+
+# ==========================================================
+
+# SHARED CROSS-PAGE INTEGRATION
+
+# ==========================================================
+
+# 54. CROSS-LINKING
+
+These pages must link intelligently.
+
+## Vendor → Ecosystem
+
+Vendor detail:
+
+**[View Dependencies]**
+
+opens the ecosystem map focused on that vendor.
+
+---
+
+## Vendor → Trust
+
+Vendor detail:
+
+**[Analyze Trust Impact]**
+
+opens Trust Chain Analyzer filtered to vendor-related trust relationships.
+
+---
+
+## Vendor → Lab
+
+Vendor detail:
+
+**[Run Hybrid Test]**
+
+opens Hybrid Crypto Lab with the vendor context preselected.
+
+---
+
+## Ecosystem → Vendor
+
+Dependency node:
+
+**[View Vendor Readiness]**
+
+---
+
+## Ecosystem → Trust
+
+Dependency node:
+
+**[Analyze Trust]**
+
+---
+
+## Ecosystem → Lab
+
+Crypto-related dependency:
+
+**[Test Configuration]**
+
+---
+
+## Trust → Ecosystem
+
+Trust dependency:
+
+**[View Ecosystem Impact]**
+
+---
+
+## Trust → Lab
+
+**[Validate Proposed Configuration]**
+
+---
+
+## Lab → Trust
+
+Certificate/trust failure:
+
+**[Analyze Trust Chain]**
+
+---
+
+## Lab → Ecosystem
+
+Dependency issue:
+
+**[Analyze Dependency]**
+
+---
+
+## Lab → Migration Planner
+
+Successful configuration:
+
+**[Create Migration Plan]**
+
+---
+
+# ==========================================================
+
+# SOPHIA INTEGRATION
+
+# ==========================================================
+
+# 55. SOPHIA CONTEXTUAL INTELLIGENCE
+
+Integrate the existing Sophia AI Security Copilot.
+
+Sophia must operate using authenticated tenant data only.
+
+Each page should provide contextual prompts.
+
+## Vendor Page
+
+> Which vendors are blocking PQC migration?
+
+> Which vendors have missing evidence?
+
+> Which vendor commitments are overdue?
+
+---
+
+## Ecosystem Page
+
+> What are our most critical external dependencies?
+
+> Which dependency has the largest migration blast radius?
+
+> Where are our unknown dependencies?
+
+---
+
+## Trust Page
+
+> Which trust chains are most difficult to migrate?
+
+> Which certificates create PQC migration risk?
+
+---
+
+## Lab
+
+> Why did this hybrid test fail?
+
+> What configuration should we test next?
+
+> What dependencies should I validate before production?
+
+Sophia responses must reference underlying evidence where possible.
+
+---
+
+# ==========================================================
+
+# SEARCH / FILTER / UX
+
+# ==========================================================
+
+# 56. GLOBAL SEARCH
+
+Each page should provide context-specific search.
+
+Do not create a single massive global search system unless one already exists.
+
+---
+
+# 57. TABLE REQUIREMENTS
+
+Enterprise tables should support:
+
+* sorting
+* filtering
+* pagination
+* column visibility
+* search
+* row selection
+* export
+
+Use virtualization for very large datasets where required.
+
+---
+
+# 58. DRAWERS OVER PAGE NAVIGATION
+
+Where practical, use detail drawers for:
+
+* vendor details
+* dependency details
+* trust nodes
+* experiment details
+
+Do not force users through many pages just to inspect a single object.
+
+---
+
+# ==========================================================
+
+# LOADING / EMPTY / ERROR
+
+# ==========================================================
+
+# 59. LOADING STATES
+
+Use polished skeletons.
+
+Prevent layout jumps.
+
+---
+
+# 60. EMPTY STATES
+
+Example:
+
+### No Vendor Assessments
+
+> No vendor PQC readiness assessments have been completed yet.
+
+CTA:
+
+**[Start Assessment]**
+
+---
+
+### No Dependency Map
+
+> QGuard Helix has not discovered sufficient ecosystem dependency evidence yet.
+
+CTA:
+
+**[Run Discovery]**
+
+---
+
+### No Trust Chains
+
+> No trust-chain evidence is available for this environment.
+
+CTA:
+
+**[Analyze Trust State]**
+
+---
+
+### No Experiments
+
+> No hybrid cryptographic experiments have been performed.
+
+CTA:
+
+**[Create Experiment]**
+
+---
+
+# 61. ERROR STATES
+
+Never silently render empty data after API failure.
+
+Provide:
+
+**[Retry]**
+
+and where appropriate:
+
+**[View Last Successful Assessment]**
+
+---
+
+# ==========================================================
+
+# SECURITY
+
+# ==========================================================
+
+# 62. SECURITY REQUIREMENTS
+
+All four pages must enforce:
+
+* authentication
+* authorization
+* tenant isolation
+* RBAC
+* server-side authorization
+* secure API handling
+* auditability
+* safe error handling
+
+Never expose:
+
+* private keys
+* secret keys
+* credentials
+* tokens
+* sensitive secrets
+
+Use metadata/evidence whenever possible.
+
+---
+
+# ==========================================================
+
+# API / DATA ARCHITECTURE
+
+# ==========================================================
+
+# 63. REUSE EXISTING APIs
+
+Before adding APIs, inspect existing endpoints.
+
+Reuse existing capabilities for:
+
+* vendors
+* CBOM
+* assets
+* trust
+* certificates
+* dependencies
+* migration
+* runtime telemetry
+* policies
+* experiments
+
+Only introduce new APIs when required.
+
+---
+
+# 64. POTENTIAL DOMAIN MODELS
+
+If these do not already exist, define clean domain models.
+
+### Vendor
+
+```text
+Vendor
+VendorAssessment
+VendorCapability
+VendorCommitment
+VendorEvidenceRequest
+VendorEvidence
+VendorContractualObligation
+VendorMigrationSupport
+```
+
+### Ecosystem
+
+```text
+EcosystemNode
+EcosystemRelationship
+DependencyAssessment
+DependencyImpact
+DependencyFinding
+```
+
+### Trust
+
+```text
+TrustChain
+TrustNode
+CertificateEvidence
+TrustRelationship
+TrustFinding
+TrustMigrationAssessment
+```
+
+### Lab
+
+```text
+Experiment
+ExperimentConfiguration
+ExperimentResult
+ExperimentFinding
+ExperimentEvidence
+```
+
+Do not create duplicate models if existing equivalents already exist.
+
+---
+
+# ==========================================================
+
+# TYPESCRIPT
+
+# ==========================================================
+
+# 65. TYPE SAFETY
+
+Maintain strict TypeScript.
+
+Do not use `any` unnecessarily.
+
+Create explicit types for:
+
+* statuses
+* findings
+* relationships
+* evidence
+* assessments
+* experiments
+* results
+* risk
+
+Use discriminated unions where appropriate.
+
+---
+
+# ==========================================================
+
+# RESPONSIVE DESIGN
+
+# ==========================================================
+
+# 66. RESPONSIVENESS
+
+Support:
+
+* desktop
+* laptop
+* tablet
+
+Desktop is the primary enterprise workflow.
+
+On smaller screens:
+
+* stack KPI groups
+* use drawers
+* horizontally scroll complex tables
+* collapse graph controls
+* preserve critical actions
+
+---
+
+# ==========================================================
+
+# ACCESSIBILITY
+
+# ==========================================================
+
+# 67. ACCESSIBILITY
+
+Implement:
+
+* semantic HTML
+* keyboard navigation
+* focus states
+* ARIA labels
+* accessible tables
+* accessible graph controls
+* sufficient contrast
+* reduced motion
+
+Never rely solely on colors to communicate status.
+
+---
+
+# ==========================================================
+
+# PERFORMANCE
+
+# ==========================================================
+
+# 68. PERFORMANCE
+
+Optimize:
+
+* API calls
+* graph rendering
+* large tables
+* unnecessary React renders
+* data fetching
+* client-side filtering
+
+Use:
+
+* pagination
+* caching
+* memoization where justified
+* virtualization where needed
+* incremental graph loading
+
+Do not load thousands of graph nodes unnecessarily.
+
+---
+
+# ==========================================================
+
+# AUDITABILITY
+
+# ==========================================================
+
+# 69. AUDIT EVENTS
+
+Where appropriate, audit:
+
+* evidence request
+* evidence approval/rejection
+* vendor assessment
+* ownership change
+* experiment execution
+* experiment approval
+* migration plan creation
+* policy exception
+
+Record:
+
+* actor
+* timestamp
+* tenant
+* action
+* object
+* result
+
+---
+
+# ==========================================================
+
+# VISUAL QUALITY
+
+# ==========================================================
+
+# 70. PREMIUM BUT SIMPLE
+
+The pages should feel like enterprise software, not marketing pages.
+
+Prioritize:
+
+* whitespace
+* hierarchy
+* typography
+* clear status indicators
+* compact charts
+* professional tables
+* useful graphs
+* restrained animation
+
+Do not fill empty space with decorative graphics.
+
+---
+
+# ==========================================================
+
+# VERIFICATION
+
+# ==========================================================
+
+# 71. TEST ALL FOUR PAGES
+
+Verify:
+
+## Vendor
+
+* vendor loading
+* filters
+* details
+* evidence requests
+* standards
+* contracts
+* readiness
+* actions
+
+## Ecosystem
+
+* graph
+* filters
+* node selection
+* blast radius
+* dependency chains
+* unknowns
+* recommendations
+
+## Trust
+
+* chain loading
+* certificate details
+* trust graph
+* findings
+* comparison
+* migration impact
+
+## Lab
+
+* experiment creation
+* configuration validation
+* execution
+* result
+* failure analysis
+* history
+* evidence generation
+
+---
+
+# 72. SECURITY VERIFICATION
+
+Test:
+
+* unauthorized access
+* tenant isolation
+* RBAC
+* API authorization
+* sensitive data exposure
+
+---
+
+# 73. BROWSER VERIFICATION
+
+After implementation:
+
+1. Start development server.
+2. Open all four pages.
+3. Verify visual rendering.
+4. Verify console.
+5. Verify network calls.
+6. Verify API responses.
+7. Test navigation.
+8. Test filters.
+9. Test drawers.
+10. Test graph interactions.
+11. Test experiment workflow.
+12. Test responsive layout.
+
+Do not stop at a successful build.
+
+The pages must be visually and functionally verified.
+
+---
+
+# ==========================================================
+
+# NO FAKE COMPLETION
+
+# ==========================================================
+
+# 74. IMPORTANT
+
+Do not claim a feature is implemented simply because:
+
+* a button exists
+* a card exists
+* a graph renders static nodes
+* an API request is mocked
+* a table contains placeholder rows
+
+Every major interaction must either:
+
+1. connect to a real backend capability, or
+2. clearly identify the missing backend dependency.
+
+Do not present mock data as real enterprise evidence.
+
+---
+
+# ==========================================================
+
+# FINAL PRODUCT EXPERIENCE
+
+# ==========================================================
+
+# 75. THE FOUR-PAGE EXPERIENCE
+
+The final product should communicate:
+
+```text
+WHO DO WE DEPEND ON?
+        ↓
+Vendor PQC Readiness
+
+WHAT DO WE DEPEND ON?
+        ↓
+Ecosystem Dependency Map
+
+WHAT TRUST RELATIONSHIPS EXIST?
+        ↓
+Trust Chain Analyzer
+
+WILL THE NEW CRYPTO WORK?
+        ↓
+Hybrid Crypto Lab
+```
+
+Then:
+
+```text
+WHAT SHOULD WE MIGRATE?
+        ↓
+Migration Planner
+
+WILL MIGRATION BREAK ANYTHING?
+        ↓
+Migration Sandbox / Digital Twin
+
+EXECUTE
+        ↓
+Live Migration Operations
+
+VALIDATE
+        ↓
+Runtime Telemetry + Evidence
+```
+
+---
+
+# 76. FINAL UX PRINCIPLE
+
+Do not make these four pages compete with each other.
+
+Each page must have one primary action:
+
+### Vendor PQC Readiness
+
+**Review → Request Evidence → Track Commitment**
+
+### Ecosystem Dependency Map
+
+**Explore → Select Dependency → Analyze Blast Radius**
+
+### Trust Chain Analyzer
+
+**Select Chain → Analyze Trust → Compare Migration**
+
+### Hybrid Crypto Lab
+
+**Configure → Test → Analyze → Generate Evidence**
+
+---
+
+# 77. FINAL IMPLEMENTATION REPORT
+
+After implementation, provide:
+
+## Implemented
+
+List completed features for each page.
+
+## Reused
+
+List existing components, APIs, hooks, models, and integrations reused.
+
+## Added
+
+List genuinely new components, APIs, database models, and services.
+
+## Backend Dependencies
+
+List capabilities that still require backend work.
+
+## Data Sources
+
+Document where each major metric originates.
+
+## Security
+
+Report tenant isolation, authorization, and sensitive-data handling.
+
+## Verification
+
+Report:
+
+* TypeScript
+* lint
+* tests
+* browser verification
+* console errors
+* API errors
+* responsive verification
+
+## Remaining Risks
+
+Clearly identify anything preventing production readiness.
+
+Do not claim enterprise production readiness if unresolved issues remain.

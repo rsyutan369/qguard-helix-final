@@ -65,7 +65,6 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'Migration Timeline', path: '/dashboard/migration-timeline', icon: Clock },
-      { name: 'Migration Phases', path: '/dashboard/migration-phases', icon: Layers },
       { name: 'PQC Orchestration', path: '/dashboard/pqc-orchestration', icon: Network },
       { name: 'Crypto Agility Engine', path: '/dashboard/crypto-agility', icon: Zap },
     ],

@@ -112,6 +112,12 @@ interface EventDraft {
   nodeProgress?: number;
   postQuantum?: boolean;
   timeline?: boolean;
+  /**
+   * Why the surface is unmeasured, when it is. See
+   * {@link QveNode.unmeasuredReason} — typed so the card's label never comes
+   * from a free-text engine phrase.
+   */
+  unmeasuredReason?: 'not-applicable' | 'not-measured';
   details?: Record<string, unknown>;
 }
 
@@ -129,6 +135,7 @@ function make(draft: EventDraft, progress: number, asset: string | null, timesta
     nodeProgress,
     postQuantum,
     timeline,
+    unmeasuredReason,
     details,
   } = draft;
   return {
@@ -150,6 +157,7 @@ function make(draft: EventDraft, progress: number, asset: string | null, timesta
       ...(nodeProgress !== undefined ? { nodeProgress } : {}),
       ...(postQuantum !== undefined ? { postQuantum } : {}),
       ...(timeline !== undefined ? { timeline } : {}),
+      ...(unmeasuredReason !== undefined ? { unmeasuredReason } : {}),
     },
   };
 }
@@ -256,8 +264,35 @@ export function stageTransitionEvents(
     ];
   }
 
-  if (stage.state === 'complete' || stage.state === 'failed') {
+  if (stage.state === 'complete' || stage.state === 'failed' || stage.state === 'unavailable') {
+    /* `unavailable` is settled but NOT failed: the module never ran, so the
+       surface has no verdict rather than a bad one. It resolves the node to
+       `unmeasured` (grey) instead of `failed` (red) — the hero used to light four
+       surfaces critical-red for an endpoint that simply had not answered. */
+    const unmeasured = stage.state === 'unavailable';
     const failed = stage.state === 'failed';
+    if (unmeasured) {
+      if (!node) return [];
+      return [
+        make(
+          {
+            type: 'WARNING',
+            category: node,
+            status: 'info',
+            severity: 'info',
+            finding: stage.detail || `${stage.label} could not be measured`,
+            verdict: 'Not measured',
+            unmeasuredReason: 'not-measured',
+            nodeProgress: 100,
+            timelineLabel: stage.label,
+            timelineDetail: stage.detail,
+          },
+          progress,
+          asset,
+          now,
+        ),
+      ];
+    }
     const type: ScanEventType =
       stage.key === 'dns' ? 'DNS_COMPLETED' : failed ? 'ERROR' : stage.key === 'report' ? 'SCAN_COMPLETED' : 'HEADERS';
     if (!node) {
@@ -386,6 +421,15 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   const http = evidence.http;
   const keyAgreement = evidence.keyAgreement;
 
+  /* The port never accepted a TCP connection, so the TLS / certificate / HTTP
+     branches below have nothing to report. They are emitted as `info` +
+     "Not measured" instead of `failed` + "TLS negotiation failed": the module did
+     not fail, it was never able to run, and an ERROR event both paints the
+     surface card critical-red and pushes the run's peak severity to high on the
+     strength of an endpoint being switched off. */
+  const unreachable = report.unreachable;
+  const unreachableReason = report.reachability?.summary ?? 'the endpoint did not answer on this port';
+
   /* ── DNS & CAA ─────────────────────────────────────────────────────────── */
 
   const dnsReachable = dns.addressCount > 0;
@@ -490,14 +534,15 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     });
   } else {
     push({
-      type: 'ERROR',
+      type: unreachable ? 'WARNING' : 'ERROR',
       category: 'tls',
-      status: 'failed',
-      severity: 'high',
-      verdict: 'No handshake',
-      finding: report.degradedReason ?? 'TLS handshake could not be completed',
+      status: unreachable ? 'info' : 'failed',
+      severity: unreachable ? 'info' : 'high',
+      verdict: unreachable ? 'Not measured' : 'No handshake',
+      ...(unreachable ? { unmeasuredReason: 'not-measured' as const } : {}),
+      finding: unreachable ? unreachableReason : (report.degradedReason ?? 'TLS handshake could not be completed'),
       nodeProgress: 100,
-      timelineLabel: 'TLS negotiation failed',
+      timelineLabel: unreachable ? 'TLS not measured' : 'TLS negotiation failed',
     });
   }
 
@@ -570,14 +615,17 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     });
   } else {
     push({
-      type: 'ERROR',
+      type: unreachable ? 'WARNING' : 'ERROR',
       category: 'certificate',
-      status: 'failed',
-      severity: 'high',
-      verdict: 'Unavailable',
-      finding: 'Certificate chain could not be collected',
+      status: unreachable ? 'info' : 'failed',
+      severity: unreachable ? 'info' : 'high',
+      verdict: unreachable ? 'Not measured' : 'Unavailable',
+      ...(unreachable ? { unmeasuredReason: 'not-measured' as const } : {}),
+      finding: unreachable
+        ? `Chain not collected — ${unreachableReason}`
+        : 'Certificate chain could not be collected',
       nodeProgress: 100,
-      timelineLabel: 'Certificate collection failed',
+      timelineLabel: unreachable ? 'Certificate not measured' : 'Certificate collection failed',
     });
     push({
       type: 'OCSP',
@@ -622,14 +670,17 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     });
   } else {
     push({
-      type: 'ERROR',
+      type: unreachable ? 'WARNING' : 'ERROR',
       category: 'headers',
-      status: 'failed',
-      severity: 'medium',
-      verdict: 'Unreachable',
-      finding: http.error ?? 'Origin did not answer over HTTPS',
+      status: unreachable ? 'info' : 'failed',
+      severity: unreachable ? 'info' : 'medium',
+      verdict: unreachable ? 'Not measured' : 'Unreachable',
+      ...(unreachable ? { unmeasuredReason: 'not-measured' as const } : {}),
+      finding: unreachable
+        ? `Headers not collected — ${unreachableReason}`
+        : (http.error ?? 'Origin did not answer over HTTPS'),
       nodeProgress: 100,
-      timelineLabel: 'HTTP probe failed',
+      timelineLabel: unreachable ? 'HTTP headers not measured' : 'HTTP probe failed',
     });
   }
 
@@ -666,21 +717,34 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     });
   }
 
+  /* `postQuantumReadiness === null` means the named-group probe never ran. The
+     warning branch below states "Hybrid not detected · classical key
+     establishment only", which is a claim about the endpoint — untrue when the
+     endpoint was never asked. */
+  const pqMeasured = executive.postQuantumReadiness !== null;
   push({
     type: 'PQ_KEM',
     category: 'quantum',
-    status: pqReady ? 'pass' : 'warning',
-    severity: pqReady ? 'none' : 'medium',
+    status: !pqMeasured ? 'info' : pqReady ? 'pass' : 'warning',
+    severity: !pqMeasured ? 'info' : pqReady ? 'none' : 'medium',
     postQuantum: pqReady,
-    verdict: pqReady ? 'Hybrid ready' : executive.postQuantumReadiness >= 40 ? 'Fair' : 'Classical only',
-    finding: pqReady
-      ? `ML-KEM key establishment active (${keyAgreement.primaryGroup ?? hybrid[0]})`
-      : 'Hybrid not detected · classical key establishment only',
-    nodeLine: pqReady ? `${keyAgreement.primaryGroup ?? hybrid[0]} active` : 'Hybrid not detected',
+    verdict: !pqMeasured
+      ? 'Not measured'
+      : pqReady
+        ? 'Hybrid ready'
+        : executive.postQuantumReadiness! >= 40
+          ? 'Fair'
+          : 'Classical only',
+    finding: !pqMeasured
+      ? 'Post-quantum readiness not assessed — no TLS handshake completed'
+      : pqReady
+        ? `ML-KEM key establishment active (${keyAgreement.primaryGroup ?? hybrid[0]})`
+        : 'Hybrid not detected · classical key establishment only',
+    nodeLine: !pqMeasured ? 'Not measured' : pqReady ? `${keyAgreement.primaryGroup ?? hybrid[0]} active` : 'Hybrid not detected',
     nodeProgress: 100,
     timelineLabel: 'ML-KEM key establishment',
-    timelineDetail: `PQ readiness ${executive.postQuantumReadiness}%`,
-    details: { readiness: executive.postQuantumReadiness },
+    timelineDetail: pqMeasured ? `PQ readiness ${executive.postQuantumReadiness}%` : 'PQ readiness not measured',
+    details: { readiness: executive.postQuantumReadiness ?? undefined },
   });
 
   const signature = report.evidence.certificate?.signatureAlgorithm ?? null;
@@ -723,10 +787,12 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       ? `Assessment complete with limited evidence — grade ${executive.grade}`
       : `Assessment complete — grade ${executive.grade}`,
     timelineLabel: 'Assessment complete',
-    timelineDetail: `Grade ${executive.grade} · score ${executive.encryptionScore}/100 · ${(report.durationMs / 1000).toFixed(1)}s`,
+    timelineDetail: `Grade ${executive.grade} · ${
+      executive.encryptionScore === null ? 'score withheld' : `score ${executive.encryptionScore}/100`
+    } · ${(report.durationMs / 1000).toFixed(1)}s`,
     details: {
       grade: executive.grade,
-      score: executive.encryptionScore,
+      score: executive.encryptionScore ?? undefined,
       postQuantum: pqReady,
     },
   });

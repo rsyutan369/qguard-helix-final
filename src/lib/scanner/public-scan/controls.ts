@@ -153,8 +153,14 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       shortLabel: 'TLS Service',
       status: tls ? 'Healthy' : 'Unknown',
       severity: 'SAFE',
-      value: tls ? `HTTPS (${evidence.port})` : 'None',
-      finding: tls ? `TLS reachable on port ${evidence.port}` : 'No TLS service reachable',
+      /* "None" asserted that no TLS service exists here. On a filtered port the
+         scanner cannot know that — something may well be listening and simply
+         not answering us. The row's status is already Unknown; its value now
+         agrees with it instead of contradicting it. */
+      value: tls ? `HTTPS (${evidence.port})` : 'Unknown',
+      finding: tls
+        ? `TLS reachable on port ${evidence.port}`
+        : `No TLS service could be reached on port ${evidence.port} — whether one is listening is not observable from here`,
       evidence: `Assessed endpoint: ${evidence.port}/tcp`,
       businessImpact: 'The endpoint terminating TLS for this name.',
       quantumImpact: 'This terminator is where hybrid key agreement is enabled.',
@@ -504,7 +510,16 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       shortLabel: 'Key Exchange',
       status: !tls ? 'Unknown' : fs.enabled ? (staticRsa ? 'Warning' : 'Healthy') : 'Critical',
       severity: !tls ? 'LOW' : fs.enabled ? 'SAFE' : 'HIGH',
-      value: keyAgreement.hybridGroups.length ? 'Hybrid PQ' : kex.split(' (')[0] || 'Unknown',
+      /* `resolveKeyExchange` returns the literal lowercase 'unknown' when nothing
+         was observed, which rendered as a lowercase "unknown" in a column of
+         capitalised "Unknown" rows — reading as a value rather than as the absence
+         of one. Normalised to the same word the other unmeasured rows use. */
+      value: keyAgreement.hybridGroups.length
+        ? 'Hybrid PQ'
+        : (() => {
+            const label = kex.split(' (')[0]
+            return !label || label.toLowerCase() === 'unknown' ? 'Unknown' : label
+          })(),
       finding: !tls
         ? 'Could not be determined'
         : fs.enabled
@@ -1191,7 +1206,37 @@ function engineControls(evidence: PublicScanEvidence): ControlState[] {
   }
 
   // ── Quantum Risk Engine verdict ──────────────────────────────────────────
-  if (crypto.riskFactors.length) {
+  /* The engine ran but had no primitive to evaluate. The row is still emitted —
+     dropping it would silently shrink the Attack Surface list and leave the
+     reader unable to tell "no quantum risk" from "not assessed" — but it carries
+     Unknown and no severity. Previously an empty factor list fell out of
+     `computeQuantumRisk` as `'Low'`, so a completely unreachable endpoint was
+     reported at the LOWEST quantum risk on the scale. */
+  if (!crypto.assessed || !crypto.riskFactors.length) {
+    states.push(
+      reported({
+        key: 'quantum-risk',
+        control: 'Quantum Risk',
+        shortLabel: 'Quantum Risk',
+        status: 'Unknown',
+        severity: 'SAFE',
+        value: 'Unknown',
+        finding: 'Quantum risk was not assessed — no cryptographic primitive was observed at the edge.',
+        evidence:
+          crypto.notAssessedReason ??
+          'The Quantum Risk Engine evaluates observed primitives; none were collected from this endpoint.',
+        businessImpact:
+          'No conclusion can be drawn about this endpoint’s exposure to a cryptographically relevant quantum computer. That is an absence of evidence, not an absence of risk.',
+        quantumImpact: 'Not assessed.',
+        nextStep:
+          'Re-run the assessment once the endpoint answers on this port, or assess it from inside the network with the authenticated platform.',
+        observed: 'no primitive observed',
+        detail: 'Quantum Risk Engine — no evidence to evaluate',
+        inAttackSurface: true,
+        inFindings: true,
+      }),
+    )
+  } else {
     const worst = crypto.riskFactors.find((factor) => factor.impact === 'Critical') ?? crypto.riskFactors[0]
     states.push(
       reported({

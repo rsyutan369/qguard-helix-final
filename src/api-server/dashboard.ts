@@ -1,6 +1,16 @@
 import { Router, Request, Response } from 'express'
 import { getToken, getServerUser, getServiceClient, createAuthClient } from '@/lib/supabase-server'
 import { buildExecutiveSnapshot } from './dashboard-executive'
+import {
+  deriveAssetPostureModel,
+  isInternetFacing,
+  levelFromReadiness,
+  levelFromRisk,
+  postureLabel,
+  riskBandFor,
+  str as textOf,
+  UNASSESSED_BAND,
+} from '@/lib/migration/asset-intelligence'
 
 const router = Router()
 
@@ -190,22 +200,33 @@ async function buildDashboardSummaryFallback(client: any, userId: string) {
   for (const row of riskyRuntime) addRiskSubject(vulnerableSubjects, row.asset_id, row.host || row.id)
   for (const row of [...expiringCertRows, ...weakCertRows]) addRiskSubject(vulnerableSubjects, row.asset_id, row.name || row.id)
 
+  /* Every signal carries the SUBJECT it was observed on, keyed exactly like
+     `vulnerableSubjects` above. Without it "new vulnerable assets" cannot be
+     counted at all — the field used to return a raw finding count, so a single
+     asset with 98 recent findings reported "98 new vulnerable assets" beside
+     "1 vulnerable asset". Sharing the keying makes the recent set a strict
+     subset of the total, so the two can never disagree. */
+  const subjectOf = (value: unknown, fallback?: unknown) => textValue(value, textValue(fallback))
   const riskSignals = [
-    ...(exposures || []).map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at })),
-    ...openVulnerabilities.map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at })),
-    ...(scanResults || []).map((row: any) => ({ severity: row.threat_level, timestamp: row.created_at })),
-    ...openAlerts.map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at })),
-    ...riskyRuntime.map((row: any) => ({ severity: row.severity || (Number(row.risk_score || 0) >= 86 ? 'critical' : 'high'), timestamp: row.observed_at || row.created_at })),
-    ...expiringCertRows.map((row: any) => ({ severity: 'medium', timestamp: row.updated_at || row.created_at })),
+    ...(exposures || []).map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at, subject: subjectOf(row.asset_id, row.id) })),
+    ...openVulnerabilities.map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at, subject: subjectOf(row.asset_id, row.id) })),
+    ...(scanResults || []).map((row: any) => ({ severity: row.threat_level, timestamp: row.created_at, subject: subjectOf(row.asset_id, row.id) })),
+    ...openAlerts.map((row: any) => ({ severity: row.severity, timestamp: row.updated_at || row.created_at, subject: subjectOf(row.id) })),
+    ...riskyRuntime.map((row: any) => ({ severity: row.severity || (Number(row.risk_score || 0) >= 86 ? 'critical' : 'high'), timestamp: row.observed_at || row.created_at, subject: subjectOf(row.asset_id, row.host || row.id) })),
+    ...expiringCertRows.map((row: any) => ({ severity: 'medium', timestamp: row.updated_at || row.created_at, subject: subjectOf(row.asset_id, row.name || row.id) })),
   ]
   const criticalExposures = riskSignals.filter((signal) => severityRank(String(signal.severity || '')) >= 4).length
   const highExposures = riskSignals.filter((signal) => severityRank(String(signal.severity || '')) >= 3).length
   const mediumFindings = riskSignals.filter((signal) => severityRank(String(signal.severity || '')) === 2).length
-  const currentFindings = riskSignals.filter((signal) => dateMs(signal.timestamp) >= recentStart).length
-  const previousFindings = riskSignals.filter((signal) => {
+  // Window the signals ONCE; every trend figure below reads these two arrays.
+  const recentSignals = riskSignals.filter((signal) => dateMs(signal.timestamp) >= recentStart)
+  const previousSignals = riskSignals.filter((signal) => {
     const ms = dateMs(signal.timestamp)
     return ms >= previousStart && ms < recentStart
-  }).length
+  })
+  const currentFindings = recentSignals.length
+  const previousFindings = previousSignals.length
+  const newVulnerableSubjects = new Set(recentSignals.map((signal) => signal.subject).filter(Boolean))
 
   const assessedAssets = new Set([
     ...(inventory || []).map((row: any) => row.asset_id).filter(Boolean),
@@ -222,26 +243,43 @@ async function buildDashboardSummaryFallback(client: any, userId: string) {
   const readinessScore = percentOf(pqcReadyCrypto + completedJobs.length, Math.max(1, totalCryptoItems + (jobs || []).length))
   const coverageScore = percentOf(assessedAssets.size, Math.max(1, activeAssets.length))
   const riskPressure = clampPercent(criticalExposures * 12 + Math.max(0, highExposures - criticalExposures) * 7 + mediumFindings * 3 + failedJobs.length * 8 + expiringCertRows.length * 2)
-  const hasTelemetry = activeAssets.length || totalCryptoItems || scanSessions.length || runtimeEvents.length || riskSignals.length
-  const quantumRiskScore = hasTelemetry
-    ? Math.max(0, Math.min(1000, Math.round(((readinessScore * 0.45) + (coverageScore * 0.2) + ((100 - riskPressure) * 0.35)) * 10)))
+  const hasTelemetry = Boolean(activeAssets.length || totalCryptoItems || scanSessions.length || runtimeEvents.length || riskSignals.length)
+
+  /* This composite has always been a POSTURE measure — readiness, coverage and
+     the INVERSE of risk pressure, i.e. higher is better. It was published as
+     `quantumRiskScore` on a private 0–1000 scale with its own band table, which
+     made it two lies at once: the name inverted its direction, and the scale
+     collided with `/dashboard/executive`'s `quantum-risk` KPI (0–100,
+     lower-better). The frontend then "converted" it by guessing
+     (`score > 100 ? score / 10 : score`) and rendered a Critical estate as
+     23/100 risk. Both figures are now published under their real names, on the
+     platform's canonical 0–100 scales, banded by the shared tables in
+     asset-intelligence.ts so they cannot drift from the rest of the platform. */
+  const quantumReadinessScore = hasTelemetry
+    ? clampPercent((readinessScore * 0.45) + (coverageScore * 0.2) + ((100 - riskPressure) * 0.35))
     : 0
-  const riskBand = !hasTelemetry
-    ? 'No Baseline'
-    : quantumRiskScore >= 850
-    ? 'Quantum Ready'
-    : quantumRiskScore >= 650
-      ? 'Moderate'
-      : quantumRiskScore >= 400
-        ? 'Vulnerable'
-        : 'Critical'
+  const readinessBand = hasTelemetry ? levelFromReadiness(quantumReadinessScore) : 'No Baseline'
+  // Risk is the complement of posture on the canonical 0–100 LOWER-better risk
+  // scale, so it is directly comparable with the executive KPI rather than
+  // contradicting it.
+  const quantumRiskScore = hasTelemetry ? clampPercent(100 - quantumReadinessScore) : 0
+  const riskBand = hasTelemetry ? riskBandFor(quantumRiskScore).label : 'No Baseline'
 
   return {
+    /** Canonical 0–100, LOWER-better. Same scale/direction as the executive KPI. */
     quantumRiskScore,
     riskBand,
+    /** Canonical 0–100, HIGHER-better posture composite (was `quantumRiskScore`). */
+    quantumReadinessScore,
+    readinessBand,
+    /** False = nothing measured yet; render "No baseline", never the 0. */
+    hasBaseline: hasTelemetry,
     riskTrend: previousFindings - currentFindings,
     vulnerableAssetsCount: vulnerableSubjects.size,
-    newVulnerableAssets: currentFindings,
+    /** Distinct SUBJECTS with a risk signal in the last 7 days (⊆ vulnerableAssetsCount). */
+    newVulnerableAssets: newVulnerableSubjects.size,
+    /** The raw signal count behind `riskTrend` — what `newVulnerableAssets` used to return. */
+    newFindings: currentFindings,
     totalCbomItems: totalCryptoItems,
     activeMigrations: activeJobs.length,
     failedMigrations: failedJobs.length,
@@ -275,7 +313,7 @@ async function buildEventsFallback(client: any, userId: string, limit: number) {
   const [securityEvents, scannerAlerts, scanSessions, scanResults, runtimeEvents, vulnerabilities, auditLogs] = await Promise.all([
     safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
     safeRows(client, 'scanner_alerts', (q) => q.select('id, severity, category, title, message, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, findings_count, target_scope, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, findings_count, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, finding_type, algorithm, threat_level, description, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(limit)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, algorithm, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(limit)),
     safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status, source, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(limit)),
@@ -380,40 +418,71 @@ async function buildExposureMapFallback(client: any, userId: string) {
     safeRows(client, 'asset_relationships', (q) => q.select('source_asset_id, target_asset_id, relationship_type').eq('user_id', userId).limit(600)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, severity, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000)),
     safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, severity, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
-    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, threat_level, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    // `algorithm` is required: the shared posture engine classifies it to decide
+    // whether the asset is quantum-vulnerable. Omitting it silently downgraded
+    // every asset's posture to "hybrid".
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, algorithm, threat_level, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, severity, risk_score, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2400)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, is_vulnerable, is_quantum_safe, exposure_level, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(1600)),
     safeRows(client, 'certificates', (q) => q.select('id, asset_id, status, algorithm, not_after, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
   ])
 
-  const riskByAsset = new Map<string, number>()
-  const addRisk = (assetId: unknown, score: number) => {
-    const id = textValue(assetId)
-    if (!id) return
-    riskByAsset.set(id, (riskByAsset.get(id) || 0) + score)
-  }
+  // Per-asset risk comes from the SHARED engine in
+  // src/lib/migration/asset-intelligence.ts — the same call the Quantum
+  // Readiness snapshot and the Migration Planner asset dossiers make. It yields
+  // a bounded 0–100 score, so an asset reads the same number on every page.
+  //
+  // This endpoint used to keep a PRIVATE unbounded accumulator (+3 per finding,
+  // no cap), which is why the Node Inspector rendered values like "3047.0" and
+  // why every asset with more than a handful of findings saturated to Critical.
+  const postureModel = deriveAssetPostureModel({
+    assets: assets || [],
+    scanResults: scanResults || [],
+    cryptoExposures: exposures || [],
+    cryptoInventory: inventory || [],
+    runtimeEvents: runtimeEvents || [],
+  })
 
-  for (const exposure of exposures || []) addRisk(exposure.asset_id, severityRank(String(exposure.severity || '')) * 3 || 2)
+  /* Evidence tallies. These decide whether an asset was ASSESSED at all —
+     "no evidence" is a third state that must never render as a green pass. */
+  const tally = new Map<string, { findings: number; exposures: number; components: number; runtime: number }>()
+  const bump = (assetId: unknown, key: 'findings' | 'exposures' | 'components' | 'runtime') => {
+    const id = textOf(assetId)
+    if (!id) return
+    const row = tally.get(id) || { findings: 0, exposures: 0, components: 0, runtime: 0 }
+    row[key] += 1
+    tally.set(id, row)
+  }
+  for (const result of scanResults || []) bump(result.asset_id, 'findings')
+  for (const exposure of exposures || []) bump(exposure.asset_id, 'exposures')
+  for (const item of inventory || []) bump(item.asset_id, 'components')
+  for (const event of runtimeEvents || []) bump(event.asset_id, 'runtime')
+
+  /* Contextual signals shown BESIDE the score, never folded into it — adding
+     them here would fork the canonical model all over again. */
+  const openVulns = new Map<string, number>()
   for (const vuln of vulnerabilities || []) {
     if (['resolved', 'closed', 'false_positive', 'accepted'].includes(String(vuln.status || '').toLowerCase())) continue
-    addRisk(vuln.asset_id, severityRank(String(vuln.severity || '')) * 3 || 2)
+    const id = textOf(vuln.asset_id)
+    if (id) openVulns.set(id, (openVulns.get(id) || 0) + 1)
   }
-  for (const result of scanResults || []) addRisk(result.asset_id, severityRank(String(result.threat_level || '')) * 3 || 2)
-  for (const event of runtimeEvents || []) {
-    const risky = event.is_legacy || event.downgrade_detected || event.shadow_crypto || event.hndl_risk || severityRank(String(event.severity || '')) >= 3 || Number(event.risk_score || 0) >= 68
-    if (risky) addRisk(event.asset_id, Math.max(2, Math.ceil(Number(event.risk_score || 0) / 20)))
-  }
-  for (const item of inventory || []) {
-    if (item.is_vulnerable && !item.is_quantum_safe) addRisk(item.asset_id, severityRank(String(item.exposure_level || 'medium')) * 2 || 2)
-  }
+  const expiringCerts = new Map<string, number>()
   for (const cert of certificates || []) {
     const expiresAt = dateMs(cert.not_after)
     const expiring = cert.is_expiring_soon || (expiresAt && expiresAt < Date.now() + 30 * 86400000)
-    if (expiring || (!cert.is_quantum_safe && !isPqcReadyAlgorithm(`${cert.algorithm || ''}`))) addRisk(cert.asset_id, expiring ? 2 : 3)
+    if (!expiring) continue
+    const id = textOf(cert.asset_id)
+    if (id) expiringCerts.set(id, (expiringCerts.get(id) || 0) + 1)
   }
 
   const nodes = (assets || []).map((asset: any) => {
-    const riskScore = riskByAsset.get(asset.id) || 0
+    const id = textOf(asset.id)
+    const evidence = tally.get(id) || { findings: 0, exposures: 0, components: 0, runtime: 0 }
+    const assessed = evidence.findings + evidence.exposures + evidence.components + evidence.runtime > 0
+    const riskScore = Math.round(postureModel.assetRisk.get(id) || 0)
+    const posture = postureModel.assetPosture.get(id) || 'hybrid'
+    const band = riskBandFor(riskScore)
+
     return {
       id: asset.id,
       name: asset.name,
@@ -421,8 +490,19 @@ async function buildExposureMapFallback(client: any, userId: string) {
       environment: asset.environment || 'unknown',
       criticality: asset.criticality || 'medium',
       status: asset.status || 'active',
+      /** Canonical 0–100. Only meaningful when `assessed` is true. */
       riskScore,
-      color: getRiskColor(riskScore, asset.status || 'active'),
+      riskLevel: assessed ? levelFromRisk(riskScore) : UNASSESSED_BAND.label,
+      assessed,
+      posture,
+      postureLabel: postureLabel(posture),
+      internetFacing: isInternetFacing(asset),
+      evidence: {
+        ...evidence,
+        openVulnerabilities: openVulns.get(id) || 0,
+        expiringCertificates: expiringCerts.get(id) || 0,
+      },
+      color: assessed ? band.hex : UNASSESSED_BAND.hex,
     }
   })
 
@@ -530,14 +610,6 @@ router.get('/exposure-map', async (req: Request, res: Response) => {
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch exposure map' } })
   }
 })
-
-function getRiskColor(riskScore: number, status: string): string {
-  if (status === 'migrated' || status === 'protected') return '#10b981' // green
-  if (!riskScore || riskScore === 0) return '#3b82f6' // blue
-  if (riskScore >= 3) return '#ef4444' // red - critical
-  if (riskScore >= 2) return '#f97316' // orange - high
-  return '#eab308' // yellow - moderate
-}
 
 /**
  * GET /api/v1/dashboard/activity
@@ -1395,7 +1467,7 @@ async function buildPqcOnboardingSnapshot(client: any, user: any) {
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1200)),
     safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(800)),
     safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(700)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(120)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(120)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(700)),
     safeRows(client, 'compliance_evidence', (q) => q.select('id, framework, control_id, status, evidence_type, description, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(300)),
@@ -1829,7 +1901,7 @@ async function buildComplianceDashboardSnapshot(client: any, user: any) {
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1600)),
     safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
     safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(160)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(160)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1800)),
     safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
     safeRows(client, 'compliance_evidence', (q) => q.select('id, asset_id, framework, control_id, status, evidence_type, description, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
@@ -2315,8 +2387,14 @@ function hndlRowsFromScanSessions(scanSessions: any[]) {
   const rows: any[] = []
 
   for (const session of scanSessions || []) {
+    // The session row carries the whole scan payload in metadata (telemetry +
+    // results + module state, ~420KB/row). HNDL only needs the results array,
+    // so the query selects `results:metadata->results` and we read that
+    // projection first; the full-metadata shape stays supported for callers
+    // that still hand over an unprojected row.
     const metadata = recordOf(session?.metadata)
-    const results = Array.isArray(metadata.results) ? metadata.results : []
+    const projected = session?.results
+    const results = Array.isArray(projected) ? projected : Array.isArray(metadata.results) ? metadata.results : []
 
     results.forEach((result: any, resultIndex: number) => {
       const findings = Array.isArray(result?.findings) ? result.findings : []
@@ -2621,7 +2699,7 @@ router.post('/harvest-now/defense-action', async (req: Request, res: Response) =
       safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
       safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
-      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, results:metadata->results, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
     ])
 
     const existingHndlJobs = (jobs || [])
@@ -2823,7 +2901,7 @@ router.post('/pqc-orchestration/hndl-remediation', async (req: Request, res: Res
       safeRows(client, 'assets', (q) => q.select('id, name, type, environment, service_owner, criticality, status, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
       safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
-      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, results:metadata->results, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
     ])
 
     const candidates = buildHndlRemediationCandidates([...(scanResults || []), ...hndlRowsFromScanSessions(scanSessions || [])], assets || [], jobs || [])
@@ -2890,7 +2968,7 @@ router.get('/pqc-orchestration', async (req: Request, res: Response) => {
       safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(750)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(300)),
       safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(150)),
-      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, results:metadata->results, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(50)),
       safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, resource_name, resource_type, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100)),
       safeRows(client, 'compliance_evidence', (q) => q.select('id, framework, control_id, status, evidence_type, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(100)),
       safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
@@ -3173,7 +3251,7 @@ router.get('/migration-sandbox', async (req: Request, res: Response) => {
       safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(750)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(300)),
       safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(200)),
-      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(60)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(60)),
       safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, resource_name, resource_type, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(120)),
       safeRows(client, 'asset_relationships', (q) => q.select('id, source_asset_id, target_asset_id, relationship_type, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(400)),
     ])
@@ -4080,7 +4158,7 @@ router.get('/vulnerabilities', async (req: Request, res: Response) => {
       safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', user.id).order('discovered_at', { ascending: false }).limit(1000)),
       safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, subject, not_after, is_quantum_safe, is_expiring_soon, status, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
-      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(80)),
       safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(300)),
     ])
 
@@ -4385,7 +4463,7 @@ router.get('/runtime-crypto-intel', async (req: Request, res: Response) => {
       safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', user.id).order('discovered_at', { ascending: false }).limit(1000)),
       safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
       safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
-      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(120)),
+      safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(120)),
       safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, is_read, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(500)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
       safeRows(client, 'migration_events', (q) => q.select('id, migration_id, event_type, message, severity, metadata, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(500)),

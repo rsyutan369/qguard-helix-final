@@ -294,7 +294,7 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, agent_id, connector_account_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(5000)),
     safeRows(client, 'scanner_evidence', (q) => q.select('id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, protocol, observed_algorithm, key_size, confidence, raw_evidence, processed_at, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2500)),
     safeRows(client, 'scanner_alerts', (q) => q.select('id, agent_id, connector_account_id, evidence_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(220)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, mt:metadata->>target, mts:metadata->>targetScope, ms:metadata->>scope, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(220)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(2200)),
     safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
@@ -499,7 +499,12 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
   }
 
   for (const session of scanSessions || []) {
+    // Only the subject name is needed from the session's metadata blob, so the
+    // query projects those three keys (mt/mts/ms) instead of pulling the whole
+    // ~420KB scan payload per row. Unprojected rows still resolve via metadata.
     const metadata = recordOf(session.metadata)
+    const scopeHint = firstString({ target: session.mt, targetScope: session.mts, scope: session.ms }, ['target', 'targetScope', 'scope'])
+      || firstString(metadata, ['target', 'targetScope', 'scope'])
     const status = String(session.status || 'pending').toLowerCase()
     const failed = /fail|error|cancel|blocked/.test(status)
     const running = /run|scan|progress|pending|queued/.test(status)
@@ -509,7 +514,7 @@ async function buildTrustSnapshot(kind: TrustDashboardKind, token: string, userI
       sourceTable: 'pqc_scan_sessions',
       domain: 'Scan Lifecycle',
       title: failed ? 'Scan requires attention' : running ? 'Scan in progress' : 'Scan completed',
-      subject: textValue(session.target_scope, firstString(metadata, ['target', 'targetScope', 'scope']) || 'PQC scan'),
+      subject: textValue(session.target_scope, scopeHint || 'PQC scan'),
       subjectType: 'Scan Session',
       status: textValue(session.status, running ? 'running' : 'completed'),
       severity: failed ? 'high' : findings > 0 ? 'medium' : 'low',

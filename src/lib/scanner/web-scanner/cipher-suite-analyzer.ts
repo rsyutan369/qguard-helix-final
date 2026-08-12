@@ -4,6 +4,7 @@
  * Detects 30 cipher suite fingerprints across 5 categories
  */
 
+import { UNPROBED_KEY_AGREEMENT, type MeasuredKeyAgreement } from './edge-intelligence-model'
 import type { CipherSuiteDetail, CipherSuiteCategory, ThreatLevel } from './types'
 
 // ─── Cipher Suite Fingerprint Database ──────────────────────────────────────
@@ -618,9 +619,52 @@ function classifyFromPattern(name: string, protocol: string): CipherSuiteDetail 
 /**
  * Analyze multiple cipher suites and return classified details
  */
+/**
+ * Re-classify a TLS 1.3 suite against the MEASURED key-agreement group.
+ *
+ * WHY THIS IS NECESSARY
+ * ---------------------
+ * A TLS 1.3 suite name carries no key-exchange token — `TLS_AES_256_GCM_SHA384`
+ * describes an AEAD and a hash, nothing more. The group is negotiated separately
+ * in `key_share`. The fingerprint database therefore has to assume something,
+ * and it assumed classical ECDHE: every TLS 1.3 row is catalogued
+ * `quantumVulnerable: true, MEDIUM, "key exchange is quantum-vulnerable"`.
+ *
+ * On an endpoint whose measured group is X25519MLKEM768 that assumption is
+ * simply false, and it produced the contradiction operators reported: a panel
+ * reading "Post-quantum key agreement: Applied" directly above
+ * "8 accepted · 8 quantum-vulnerable".
+ *
+ * Only TLS 1.3 rows are touched. A TLS 1.2 suite names its own key exchange
+ * (`TLS_RSA_WITH_…`, `TLS_ECDHE_RSA_WITH_…`) and no hybrid group applies to it —
+ * ML-KEM lives exclusively in the TLS 1.3 key_share, so a session negotiated on
+ * one of those suites carries no post-quantum protection whatsoever and its
+ * rating must not move.
+ */
+function applyMeasuredKeyAgreement(detail: CipherSuiteDetail, kem: MeasuredKeyAgreement): CipherSuiteDetail {
+  if (detail.category !== 'tls13' || !kem.kemApplied || !kem.group) return detail
+  return {
+    ...detail,
+    keyExchange: kem.group,
+    quantumVulnerable: false,
+    riskLevel: 'SAFE',
+    description: kem.hybrid
+      ? `TLS 1.3 with ${kem.group} — measured hybrid key agreement (${kem.classicalComponent} + ${kem.postQuantumComponent}); session secrets are out of Shor's reach. Certificate authentication remains classical.`
+      : `TLS 1.3 with ${kem.group} — measured post-quantum key agreement with no classical hedge. Certificate authentication remains classical.`,
+  }
+}
+
+/**
+ * Classify the suites an endpoint accepted.
+ *
+ * `keyAgreement` is the measured named-group verdict. Omit it and every TLS 1.3
+ * suite keeps the database's classical-ECDHE assumption, which is the right
+ * default for an unprobed endpoint and the wrong answer for a probed hybrid one.
+ */
 export function analyzeCipherSuites(
   negotiatedCipher: string | string[],
-  protocol: string
+  protocol: string,
+  keyAgreement: MeasuredKeyAgreement = UNPROBED_KEY_AGREEMENT
 ): CipherSuiteDetail[] {
   const results: CipherSuiteDetail[] = []
   const seen = new Set<string>()
@@ -630,7 +674,7 @@ export function analyzeCipherSuites(
     const detail = classifyCipherSuite(cipher, protocol)
     if (detail && !seen.has(detail.standardName)) {
       seen.add(detail.standardName)
-      results.push(detail)
+      results.push(applyMeasuredKeyAgreement(detail, keyAgreement))
     }
   }
 

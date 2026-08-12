@@ -95,6 +95,9 @@ function eligibilityStub(eligible: boolean): EligibilityResult {
   const ids = ['readiness', 'critical-vulns', 'hndl', 'residual-risk', 'confidence', 'pqc-adoption', 'disallowed-algorithms', 'vulnerable-components', 'expired-certificates', 'validation']
   return {
     eligible,
+    // Evidence exists in this fixture, so a baseline attestation is issuable
+    // whether or not the certification criteria pass.
+    issuable: true,
     evaluatedAt: new Date().toISOString(),
     hasData: true,
     requiredTotal: 10,

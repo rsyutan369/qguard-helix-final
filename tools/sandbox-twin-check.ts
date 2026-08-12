@@ -178,14 +178,31 @@ assert(impact.categories.length > 0, 'business categories found from real assets
 assert(impact.categories.some((c: any) => c.id === 'customer_portals'), 'customer portal category detected')
 assert(buildBusinessImpact(EMPTY, noPred).categories.length === 0, 'empty tenant → no business impact categories')
 const rollback = buildRollbackAnalysis(bundle, predictions)
-assert(rollback.successProbabilityPct > 0 && rollback.rtoMinutes > 0, 'RTO + success probability computed', `RTO ${rollback.rtoMinutes}m, ${rollback.successProbabilityPct}%`)
+assert(Number(rollback.successProbabilityPct) > 0 && Number(rollback.rtoMinutes) > 0, 'RTO + success probability computed', `RTO ${rollback.rtoMinutes}m, ${rollback.successProbabilityPct}%`)
 assert(rollback.rpoMinutes === 5, 'snapshot coverage drives RPO', `${rollback.rpoMinutes}m`)
 assert(rollback.restorationChecklist.length === 6, 'restoration checklist covers certs/keys/config/policies/trust/secrets')
-assert(buildRollbackAnalysis(EMPTY, noPred).successProbabilityPct === 0, 'empty tenant → no rollback probability')
+// Unmeasured is not zero: an unrehearsed rollback must be null (renders as
+// "Not assessed"), never 0% — which is indistinguishable from a rehearsal that
+// failed every time. Same for RPO, where 0m is the BEST possible objective.
+const unrehearsed = buildRollbackAnalysis(EMPTY, noPred)
+assert(unrehearsed.successProbabilityPct === null, 'empty tenant → rollback probability is null, not 0')
+assert(unrehearsed.rpoMinutes === null, 'empty tenant → RPO is null, not a perfect 0m')
+assert(unrehearsed.snapshotCoveragePct === null, 'empty tenant → snapshot coverage is null')
+assert(unrehearsed.assessed === false, 'empty tenant is flagged unassessed')
+assert(unrehearsed.automaticRollbackReady === false, 'auto-rollback is never ready without a rehearsal')
+// Every checklist detail must be TRUE for the covered flag beside it.
+for (const item of unrehearsed.restorationChecklist) {
+  if (item.covered) continue
+  assert(
+    !/is (?:recorded|snapshot-tracked|restored)/.test(item.detail),
+    `uncovered "${item.id}" does not claim the covered case`,
+    item.detail,
+  )
+}
 
 /* [8] Sophia advisor */
 console.log('\n[8] Sophia AI Migration Advisor')
-const context = { pqcReadiness: 33, riskScore: 48, complianceScore: 61 }
+const context = { pqcReadiness: 33, quantumRiskScore: 48, complianceScore: 61 }
 const sophia = buildSophiaAdvisor(bundle, twin, graph, predictions, benchmark, rollback, impact, context)
 assert(sophia.migrationConfidencePct > 0 && sophia.migrationConfidencePct <= 100, 'migration confidence bounded', `${sophia.migrationConfidencePct}%`)
 assert(sophia.compatibilityScorePct > 0, 'compatibility score computed', `${sophia.compatibilityScorePct}%`)
@@ -195,7 +212,7 @@ assert(sophia.detectedBlockers.length > 0, 'critical blockers surfaced', `${soph
 assert(sophia.rootCauses.some((r: string) => r.toLowerCase().includes('pki') || r.toLowerCase().includes('ca')), 'root cause names the CA tier')
 assert(sophia.executiveSummary.length > 50, 'executive summary generated')
 assert(sophia.evidenceBasis.assets === 6, 'evidence basis disclosed')
-const emptySophia = buildSophiaAdvisor(EMPTY, emptyTwin, buildDependencyGraph(EMPTY), noPred, buildPerformanceBenchmark(EMPTY), buildRollbackAnalysis(EMPTY, noPred), buildBusinessImpact(EMPTY, noPred), { pqcReadiness: 0, riskScore: 100, complianceScore: 0 })
+const emptySophia = buildSophiaAdvisor(EMPTY, emptyTwin, buildDependencyGraph(EMPTY), noPred, buildPerformanceBenchmark(EMPTY), buildRollbackAnalysis(EMPTY, noPred), buildBusinessImpact(EMPTY, noPred), { pqcReadiness: 0, quantumRiskScore: null, complianceScore: 0 })
 assert(emptySophia.verdict === 'no_data' && emptySophia.migrationConfidencePct === 0, 'empty tenant → no_data verdict, zero confidence')
 
 /* [9] Approval gate */
@@ -213,7 +230,7 @@ const cleanPred = predictFailures(cleanBundle, cleanGraph)
 const cleanTwin = buildDigitalTwin(cleanBundle)
 const cleanRollback = buildRollbackAnalysis(cleanBundle, cleanPred)
 const cleanImpact = buildBusinessImpact(cleanBundle, cleanPred)
-const cleanSophia = buildSophiaAdvisor(cleanBundle, cleanTwin, cleanGraph, cleanPred, buildPerformanceBenchmark(cleanBundle), cleanRollback, cleanImpact, { pqcReadiness: 92, riskScore: 88, complianceScore: 85 })
+const cleanSophia = buildSophiaAdvisor(cleanBundle, cleanTwin, cleanGraph, cleanPred, buildPerformanceBenchmark(cleanBundle), cleanRollback, cleanImpact, { pqcReadiness: 92, quantumRiskScore: 12, complianceScore: 85 })
 const cleanGate = buildApprovalGate(cleanBundle, cleanSophia, cleanPred, cleanRollback, 85)
 assert(cleanGate.simulationStatus === 'PASS', 'clean completed simulation → PASS', cleanGate.simulationStatus)
 const emptyGate = buildApprovalGate(EMPTY, emptySophia, noPred, buildRollbackAnalysis(EMPTY, noPred), 0)

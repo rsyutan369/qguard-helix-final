@@ -141,8 +141,8 @@ export type QveAction =
       type: 'settle';
       grade: string | null;
       gradeColor: string | null;
-      score: number;
-      postQuantumScore: number;
+      score: number | null;
+      postQuantumScore: number | null;
       /**
        * Per-node 0-100 scores, derived from the report's own published grading
        * categories. Absent keys stay unscored rather than defaulting to zero —
@@ -303,6 +303,13 @@ export function qveReducer(
                   ? ''
                   : current.verdict,
             hasEvidence: current.hasEvidence || (settled && Boolean(line)),
+            /* Typed, and first-write-wins: once a surface has been told WHY it is
+               unmeasured, a later event carrying no reason must not erase it. */
+            unmeasuredReason:
+              event.details?.unmeasuredReason === 'not-measured' ||
+              event.details?.unmeasuredReason === 'not-applicable'
+                ? event.details.unmeasuredReason
+                : current.unmeasuredReason,
             lines,
             progress:
               typeof event.details?.nodeProgress === 'number'

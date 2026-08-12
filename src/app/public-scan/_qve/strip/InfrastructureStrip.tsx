@@ -112,10 +112,23 @@ export function buildInfraTiles(report: PublicScanReport | null): InfraTile[] {
     {
       key: 'ports',
       label: 'Assessed Port',
-      value: handshakeOk ? `1 (${report.target.port})` : `0 (${report.target.port})`,
+      /* The port state, not a count. "0 (443)" was a tile reading zero next to the
+         port number it was supposedly counting — and it collapsed three different
+         outcomes (nothing listening, packets dropped, handshake rejected) into the
+         same digit. The reachability probe distinguishes them, so the tile states
+         which one happened. */
+      value: handshakeOk
+        ? `${report.target.port} · open`
+        : report.reachability
+          ? `${report.target.port} · ${report.reachability.state}`
+          : `${report.target.port} · no handshake`,
       basis: handshakeOk
-        ? `TLS handshake completed on port ${report.target.port}. The public scanner assesses one HTTPS endpoint and does not port-scan.`
-        : `Port ${report.target.port} did not complete a TLS handshake`,
+        ? `TLS handshake completed on port ${report.target.port}${
+            report.reachability?.tcpConnectMs === null || report.reachability?.tcpConnectMs === undefined
+              ? ''
+              : ` (TCP connect ${report.reachability.tcpConnectMs}ms)`
+          }. The public scanner assesses one HTTPS endpoint and does not port-scan.`
+        : (report.reachability?.detail ?? `Port ${report.target.port} did not complete a TLS handshake`),
       icon: Waypoints,
       measured: handshakeOk,
     },

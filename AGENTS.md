@@ -276,7 +276,6 @@ Modules:
 
 * Migration Planner
 * Migration Timeline
-* Migration Phases
 * Live Migration Ops
 * PQC Orchestration
 * Migration Sandbox

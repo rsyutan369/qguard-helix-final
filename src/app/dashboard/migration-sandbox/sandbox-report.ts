@@ -14,7 +14,7 @@ export type SandboxReportType = 'executive' | 'technical' | 'compliance' | 'migr
 export const SANDBOX_REPORT_TYPES: Array<{ id: SandboxReportType; label: string; description: string }> = [
   { id: 'executive', label: 'Executive Report', description: 'Leadership verdict: confidence scores, approval gate, business impact, priority actions.' },
   { id: 'technical', label: 'Technical Report', description: 'Simulations, digital twin composition, dependency stats, and failure predictions.' },
-  { id: 'compliance', label: 'Compliance Report', description: 'Framework-by-framework validation results with scores and audit evidence.' },
+  { id: 'compliance', label: 'Crypto Posture Report', description: 'Per-control-family cryptographic screening indicators, each with the measurement it was decided from.' },
   { id: 'migration', label: 'Migration Report', description: 'Workflow pipeline, simulation history, and the live migration timeline.' },
   { id: 'performance', label: 'Performance Report', description: 'Before/after benchmark projection across 13 metrics with methodology.' },
   { id: 'rollback', label: 'Rollback Report', description: 'RTO/RPO, rollback success probability, and restoration checklist coverage.' },
@@ -60,7 +60,7 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
         ['Sandbox simulations', s(snapshot.summary.totalSimulations)],
         ['Completed / failed', `${snapshot.summary.completed} / ${snapshot.summary.failed}`],
         ['PQC readiness', pctText(snapshot.summary.pqcReadiness)],
-        ['Risk score', s(snapshot.summary.riskScore)],
+        ['Quantum risk (0-100, lower is better)', snapshot.summary.quantumRiskScore === null ? 'Not assessed' : `${snapshot.summary.quantumRiskScore} (${snapshot.summary.quantumRiskLevel})`],
         ['Compliance score', pctText(snapshot.complianceScore)],
         ['Critical exposures', s(snapshot.summary.criticalExposures)],
       ],
@@ -79,7 +79,7 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
             ['Compatibility score', pctText(sophia.compatibilityScorePct)],
             ['Rollback confidence', pctText(sophia.rollbackConfidencePct)],
             ['AI confidence (evidence depth)', pctText(sophia.aiConfidencePct)],
-            ['Risk score', s(sophia.riskScorePct)],
+            ['Quantum risk (0-100, lower is better)', sophia.quantumRiskScore === null ? 'Not assessed' : s(sophia.quantumRiskScore)],
           ],
         },
       })
@@ -144,7 +144,7 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
     push({ title: 'Compliance Posture', paragraphs: [`Overall compliance score: ${snapshot.complianceScore}%.`] })
     push({
       title: 'Framework Validation',
-      table: { headers: ['Framework', 'Control', 'Status', 'Score'], rows: snapshot.complianceItems.map((c) => [c.framework, c.control, c.status, s(c.score)]) },
+      table: { headers: ['Control family', 'Indicator', 'Status', 'Score', 'Basis'], rows: snapshot.complianceItems.map((c) => [c.framework, c.control, c.status, s(c.score), c.basis || '']) },
     })
     if (gate) push({ title: 'Approval Evidence', table: { headers: ['Simulation', 'Decision', 'Decided By', 'At'], rows: gate.decisions.map((d) => [d.jobName, d.decision, s(d.decidedBy), s(d.decidedAt)]) } })
     return doc
@@ -165,7 +165,7 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
   if (type === 'performance') {
     const bench = snapshot.performanceBenchmark
     if (bench?.available) {
-      push({ title: 'Methodology', paragraphs: [bench.methodology, `Sample: ${bench.sampleSize} crypto inventory records. Mix — RSA ${bench.algorithmMix.rsaSharePct}%, ECC ${bench.algorithmMix.eccSharePct}%, PQC ${bench.algorithmMix.pqcSharePct}%, symmetric ${bench.algorithmMix.symmetricSharePct}%.`] })
+      push({ title: 'Methodology', paragraphs: [bench.methodology, `Sample: ${bench.sampleSize} crypto inventory records. Algorithm prevalence (overlapping shares of records, not a partition) — RSA ${bench.algorithmMix.rsaSharePct}%, ECC ${bench.algorithmMix.eccSharePct}%, PQC ${bench.algorithmMix.pqcSharePct}%, symmetric ${bench.algorithmMix.symmetricSharePct}%.`] })
       push({
         title: 'Before vs After Migration',
         table: { headers: ['Metric', 'Before', 'After', 'Δ %', 'Note'], rows: bench.metrics.map((m) => [`${m.label} (${m.unit})`, s(m.before), s(m.after), `${m.deltaPct > 0 ? '+' : ''}${m.deltaPct}%`, m.note]) },
@@ -184,11 +184,11 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
         table: {
           headers: ['Metric', 'Value'],
           rows: [
-            ['Rollback success probability', pctText(rb.successProbabilityPct)],
-            ['Recovery Time Objective (RTO)', `${rb.rtoMinutes} min`],
-            ['Recovery Point Objective (RPO)', `${rb.rpoMinutes} min`],
-            ['Predicted downtime', `${rb.downtimePredictionMin} min`],
-            ['Snapshot coverage', pctText(rb.snapshotCoveragePct)],
+            ['Rollback success probability', rb.successProbabilityPct === null ? 'Not assessed (no rehearsal)' : pctText(rb.successProbabilityPct)],
+            ['Recovery Time Objective (RTO)', rb.rtoMinutes === null ? 'Not assessed' : `${rb.rtoMinutes} min`],
+            ['Recovery Point Objective (RPO)', rb.rpoMinutes === null ? 'Not assessed' : `${rb.rpoMinutes} min`],
+            ['Predicted downtime', rb.downtimePredictionMin === null ? 'Not assessed' : `${rb.downtimePredictionMin} min`],
+            ['Snapshot coverage', rb.snapshotCoveragePct === null ? 'Not assessed' : pctText(rb.snapshotCoveragePct)],
             ['Automatic rollback ready', rb.automaticRollbackReady ? 'Yes' : 'No'],
           ],
         },

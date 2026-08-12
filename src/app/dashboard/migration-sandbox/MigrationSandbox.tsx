@@ -150,7 +150,7 @@ const DEFAULT_PIPELINE: PipelineStage[] = [
 
 const EMPTY: SandboxSnapshot = {
   generatedAt: new Date().toISOString(),
-  summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalWorkflows: 0, actualMigrations: 0, remediationWorkflows: 0, runningWorkflows: 0, completedWorkflows: 0, failedWorkflows: 0, queuedWorkflows: 0, pausedWorkflows: 0, blockedWorkflows: 0, averageWorkflowProgress: 0, backgroundEngine: 'idle', lastMigrationEventAt: null, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, openVulnerabilities: 0, pqcReadiness: 0, riskScore: 100, complianceScore: 0, expiringCerts: 0, lastScanAt: null, completionRate: 0, workflowCompletionRate: 0 },
+  summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalWorkflows: 0, actualMigrations: 0, remediationWorkflows: 0, runningWorkflows: 0, completedWorkflows: 0, failedWorkflows: 0, queuedWorkflows: 0, pausedWorkflows: 0, blockedWorkflows: 0, averageWorkflowProgress: 0, backgroundEngine: 'idle', lastMigrationEventAt: null, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, mediumExposures: 0, gradedObservations: 0, gradedObservationsSource: 'none', openVulnerabilities: 0, pqcReadiness: 0, hasReadinessBaseline: false, quantumRiskScore: null, quantumRiskLevel: 'Not assessed', quantumRiskSource: 'not-assessed', complianceScore: 0, expiringCerts: 0, nonPqcCerts: 0, certsNeedingRotation: 0, lastScanAt: null, completionRate: 0, workflowCompletionRate: 0 },
   simulations: [],
   history: [],
   workflows: [],
@@ -974,18 +974,29 @@ function SophiaPanel({ sophia, pendingAction }: { sophia: SophiaPayload; pending
         </SectionHead>
         <p className="text-xs leading-relaxed text-white/65">{sophia.executiveSummary}</p>
 
+        {/* Four higher-is-better confidences plus quantum risk, which is
+            LOWER-better and on the platform's canonical scale — so it carries its
+            direction in the label and inverts its own colour ramp. A null score
+            renders "—", never 0. */}
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           {[
             { label: 'Migration Confidence', value: sophia.migrationConfidencePct, color: sophia.migrationConfidencePct >= 70 ? GREEN : sophia.migrationConfidencePct >= 45 ? GOLD : RED },
             { label: 'Compatibility Score', value: sophia.compatibilityScorePct, color: sophia.compatibilityScorePct >= 70 ? GREEN : GOLD },
-            { label: 'Risk Score', value: sophia.riskScorePct, color: sophia.riskScorePct >= 70 ? GREEN : sophia.riskScorePct >= 40 ? GOLD : RED },
-            { label: 'Rollback Confidence', value: sophia.rollbackConfidencePct, color: sophia.rollbackConfidencePct >= 70 ? GREEN : GOLD },
+            {
+              label: 'Quantum Risk (lower is better)',
+              value: sophia.quantumRiskScore,
+              color: sophia.quantumRiskScore === null ? 'rgba(148,163,184,0.7)'
+                : sophia.quantumRiskScore >= 60 ? RED : sophia.quantumRiskScore >= 30 ? GOLD : GREEN,
+            },
+            { label: 'Rollback Confidence', value: sophia.rollbackConfidencePct, color: (sophia.rollbackConfidencePct ?? 0) >= 70 ? GREEN : GOLD },
             { label: 'AI Confidence', value: sophia.aiConfidencePct, color: sophia.aiConfidencePct >= 70 ? GREEN : BLUE },
           ].map((score) => (
             <div key={score.label} className="rounded-xl border border-white/8 bg-white/[0.02] p-3">
               <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">{score.label}</div>
-              <div className="mt-1 font-mono text-2xl font-black" style={{ color: score.color }}>{score.value}%</div>
-              <div className="mt-1.5"><ProgressBar value={score.value} color={score.color} /></div>
+              <div className="mt-1 font-mono text-2xl font-black" style={{ color: score.color }}>
+                {score.value === null || score.value === undefined ? '—' : score.label.startsWith('Quantum Risk') ? `${score.value}/100` : `${score.value}%`}
+              </div>
+              <div className="mt-1.5"><ProgressBar value={score.value ?? 0} color={score.color} /></div>
             </div>
           ))}
         </div>
@@ -1950,10 +1961,10 @@ export default function MigrationSandbox() {
               <MetricTile label="Migration Confidence" value={pct(data.sophia?.migrationConfidencePct ?? 0)} detail={data.sophia?.verdict === 'ready' ? 'Evidence-backed' : data.sophia?.verdict === 'at_risk' ? 'Blockers present' : 'Building evidence'} icon={Target} color={(data.sophia?.migrationConfidencePct ?? 0) >= 70 ? GREEN : (data.sophia?.migrationConfidencePct ?? 0) >= 45 ? GOLD : RED} />
               <MetricTile label="Production Readiness" value={data.approvalGate?.simulationStatus ?? 'PENDING'} detail={data.approvalGate?.productionReady ? 'Approved + gates pass' : `${data.approvalGate?.counts.approved ?? 0} approval(s)`} icon={ShieldCheck} color={data.approvalGate?.simulationStatus === 'PASS' ? GREEN : data.approvalGate?.simulationStatus === 'FAILED' ? RED : BLUE} />
               <MetricTile label="Compatibility Score" value={pct(data.sophia?.compatibilityScorePct ?? 0)} detail="Protocol + library fit" icon={Cpu} color={(data.sophia?.compatibilityScorePct ?? 0) >= 70 ? GREEN : GOLD} />
-              <MetricTile label="Rollback Confidence" value={pct(data.rollbackAnalysis?.successProbabilityPct ?? 0)} detail={`RTO ${data.rollbackAnalysis?.rtoMinutes ?? 0}m · RPO ${data.rollbackAnalysis?.rpoMinutes ?? 0}m`} icon={RotateCcw} color={(data.rollbackAnalysis?.successProbabilityPct ?? 0) >= 70 ? GREEN : GOLD} />
+              <MetricTile label="Rollback Confidence" value={data.rollbackAnalysis?.successProbabilityPct == null ? 'Not assessed' : pct(data.rollbackAnalysis.successProbabilityPct)} detail={`RTO ${data.rollbackAnalysis?.rtoMinutes ?? '—'}m · RPO ${data.rollbackAnalysis?.rpoMinutes ?? '—'}`} icon={RotateCcw} color={(data.rollbackAnalysis?.successProbabilityPct ?? 0) >= 70 ? GREEN : GOLD} />
               <MetricTile label="AI Confidence" value={pct(data.sophia?.aiConfidencePct ?? 0)} detail="Evidence depth" icon={Bot} color={(data.sophia?.aiConfidencePct ?? 0) >= 70 ? GREEN : PURPLE} />
               <MetricTile label="Performance Impact" value={benchmarkHandshake ? `${benchmarkHandshake.deltaPct > 0 ? '+' : ''}${benchmarkHandshake.deltaPct}%` : '--'} detail="TLS handshake (modeled)" icon={Gauge} color={benchmarkHandshake?.improved ? GREEN : GOLD} />
-              <MetricTile label="Downtime Prediction" value={`${data.rollbackAnalysis?.downtimePredictionMin ?? 0}m`} detail={`${data.failurePrediction?.overallFailureProbabilityPct ?? 0}% failure probability`} icon={Clock3} color={(data.rollbackAnalysis?.downtimePredictionMin ?? 0) > 20 ? RED : (data.rollbackAnalysis?.downtimePredictionMin ?? 0) > 5 ? GOLD : GREEN} />
+              <MetricTile label="Downtime Prediction" value={data.rollbackAnalysis?.downtimePredictionMin == null ? '—' : `${data.rollbackAnalysis.downtimePredictionMin}m`} detail={`${data.failurePrediction?.overallFailureProbabilityPct ?? 0}% failure probability`} icon={Clock3} color={(data.rollbackAnalysis?.downtimePredictionMin ?? 0) > 20 ? RED : (data.rollbackAnalysis?.downtimePredictionMin ?? 0) > 5 ? GOLD : GREEN} />
               <MetricTile label="Migration Duration" value={benchmarkDuration ? `${Math.round(benchmarkDuration.after)}m` : '--'} detail="Per asset (modeled)" icon={Zap} color={CYAN} />
               <MetricTile label="Affected Assets" value={fmt(s.vulnerableAssets)} detail={`${fmt(s.totalAssets)} total in twin`} icon={Boxes} color={s.vulnerableAssets > 0 ? ORANGE : GREEN} />
               <MetricTile label="Critical Risks" value={fmt(s.criticalExposures)} detail={s.criticalExposures > 0 ? 'Blocking approval' : 'None open'} icon={ShieldAlert} color={s.criticalExposures > 0 ? RED : GREEN} />
@@ -1983,22 +1994,33 @@ export default function MigrationSandbox() {
                   <SectionHead icon={BarChart3}>Readiness Scores</SectionHead>
                   <div className="grid grid-cols-3 gap-2">
                     <div className="relative flex justify-center py-2">
-                      <ScoreGauge value={s.pqcReadiness} size={100} label="PQC Ready" />
+                      <ScoreGauge value={s.hasReadinessBaseline ? s.pqcReadiness : null} size={100} label="PQC Ready" />
                     </div>
                     <div className="relative flex justify-center py-2">
-                      <ScoreGauge value={s.riskScore} size={100} label="Risk Score" />
+                      {/* Lower is better, same scale and direction as the QR Engine. */}
+                      <ScoreGauge value={s.quantumRiskScore} size={100} label="Quantum Risk" lowerBetter />
                     </div>
                     <div className="relative flex justify-center py-2">
                       <ScoreGauge value={data.complianceScore} size={100} label="Compliance" />
                     </div>
                   </div>
+                  <div className="mt-1 text-center text-[9px] text-white/35">
+                    Quantum Risk {s.quantumRiskScore === null ? 'not assessed' : `${s.quantumRiskScore}/100 · ${s.quantumRiskLevel} (lower is better)`}
+                  </div>
 
                   <div className="mt-4 space-y-2">
-                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">Quick Risk Summary</div>
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">
+                      Quick Risk Summary
+                      <span className="ml-1 normal-case text-white/25">· {fmt(s.gradedObservations)} de-duplicated observations</span>
+                    </div>
                     {[
                       { label: 'Critical Exposures', value: s.criticalExposures, color: RED },
                       { label: 'High Exposures', value: s.highExposures, color: ORANGE },
+                      // Two distinct facts. They used to be summed and shown as
+                      // "Expiring Certificates", contradicting the failure
+                      // prediction on this same page ("0 expiring and 2 non-PQC").
                       { label: 'Expiring Certificates', value: s.expiringCerts, color: GOLD },
+                      { label: 'Classical Certificates', value: s.nonPqcCerts, color: GOLD },
                       { label: 'Open Vulnerabilities', value: s.openVulnerabilities, color: ORANGE },
                     ].map((r) => (
                       <div key={r.label} className="flex items-center justify-between text-xs">
@@ -2220,11 +2242,16 @@ export default function MigrationSandbox() {
           <>
             {data.rollbackAnalysis && (
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-6">
-                <MetricTile label="Rollback Success" value={pct(data.rollbackAnalysis.successProbabilityPct)} detail={`${data.rollbackAnalysis.simulationsWithSnapshots}/${data.rollbackAnalysis.totalSandboxSimulations} sims with snapshots`} icon={RotateCcw} color={data.rollbackAnalysis.successProbabilityPct >= 70 ? GREEN : GOLD} />
-                <MetricTile label="RTO" value={`${data.rollbackAnalysis.rtoMinutes}m`} detail="Recovery Time Objective" icon={Clock3} color={data.rollbackAnalysis.rtoMinutes <= 15 ? GREEN : GOLD} />
-                <MetricTile label="RPO" value={`${data.rollbackAnalysis.rpoMinutes}m`} detail="Recovery Point Objective" icon={Save} color={data.rollbackAnalysis.rpoMinutes <= 5 ? GREEN : GOLD} />
-                <MetricTile label="Downtime Prediction" value={`${data.rollbackAnalysis.downtimePredictionMin}m`} detail="If rollback triggers" icon={AlertTriangle} color={data.rollbackAnalysis.downtimePredictionMin > 20 ? RED : data.rollbackAnalysis.downtimePredictionMin > 5 ? GOLD : GREEN} />
-                <MetricTile label="Snapshot Coverage" value={pct(data.rollbackAnalysis.snapshotCoveragePct)} detail="Simulations protected" icon={Shield} color={data.rollbackAnalysis.snapshotCoveragePct >= 50 ? GREEN : ORANGE} />
+                {/* Rollback confidence is DEMONSTRATED by rehearsal. Without a
+                    simulation there is nothing to measure — "0%" would be
+                    indistinguishable from a rehearsal that failed every time,
+                    and an unmeasured RPO of "0m" reads as the best possible
+                    recovery point objective. Both render "Not assessed". */}
+                <MetricTile label="Rollback Success" value={data.rollbackAnalysis.successProbabilityPct === null ? 'Not assessed' : pct(data.rollbackAnalysis.successProbabilityPct)} detail={data.rollbackAnalysis.assessed ? `${data.rollbackAnalysis.simulationsWithSnapshots}/${data.rollbackAnalysis.totalSandboxSimulations} sims with snapshots` : 'Run a simulation to rehearse rollback'} icon={RotateCcw} color={(data.rollbackAnalysis.successProbabilityPct ?? 0) >= 70 ? GREEN : GOLD} />
+                <MetricTile label="RTO" value={data.rollbackAnalysis.rtoMinutes === null ? '—' : `${data.rollbackAnalysis.rtoMinutes}m`} detail="Recovery Time Objective (twin-derived plan)" icon={Clock3} color={(data.rollbackAnalysis.rtoMinutes ?? 999) <= 15 ? GREEN : GOLD} />
+                <MetricTile label="RPO" value={data.rollbackAnalysis.rpoMinutes === null ? 'Not assessed' : `${data.rollbackAnalysis.rpoMinutes}m`} detail="Recovery Point Objective" icon={Save} color={data.rollbackAnalysis.rpoMinutes === null ? GOLD : data.rollbackAnalysis.rpoMinutes <= 5 ? GREEN : GOLD} />
+                <MetricTile label="Downtime Prediction" value={data.rollbackAnalysis.downtimePredictionMin === null ? '—' : `${data.rollbackAnalysis.downtimePredictionMin}m`} detail="If rollback triggers" icon={AlertTriangle} color={(data.rollbackAnalysis.downtimePredictionMin ?? 0) > 20 ? RED : (data.rollbackAnalysis.downtimePredictionMin ?? 0) > 5 ? GOLD : GREEN} />
+                <MetricTile label="Snapshot Coverage" value={data.rollbackAnalysis.snapshotCoveragePct === null ? 'Not assessed' : pct(data.rollbackAnalysis.snapshotCoveragePct)} detail="Simulations protected" icon={Shield} color={(data.rollbackAnalysis.snapshotCoveragePct ?? 0) >= 50 ? GREEN : ORANGE} />
                 <MetricTile label="Auto-Rollback" value={data.rollbackAnalysis.automaticRollbackReady ? 'READY' : 'NOT READY'} detail={data.rollbackAnalysis.automaticRollbackReady ? 'Coverage + clean history' : 'Raise snapshot coverage'} icon={Zap} color={data.rollbackAnalysis.automaticRollbackReady ? GREEN : ORANGE} />
               </div>
             )}
@@ -2314,19 +2341,25 @@ export default function MigrationSandbox() {
           <>
             <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
               <Panel className="p-5">
-                <SectionHead icon={ShieldCheck}>Compliance Score</SectionHead>
+                <SectionHead icon={ShieldCheck}>Crypto Posture Score</SectionHead>
                 <div className="relative flex justify-center py-4">
-                  <ScoreGauge value={data.complianceScore} size={160} label="Overall Compliance" />
+                  <ScoreGauge value={data.complianceScore} size={160} label="Posture Indicators" />
                 </div>
+                {/* These are screening indicators over cryptographic evidence, not
+                    compliance verdicts — a formula over exposure counts cannot decide
+                    whether an organisation meets HIPAA or PCI DSS. The panel used to
+                    claim "every status traces to live tenant evidence" while printing
+                    "HIPAA · non-compliant" from `100 - critical*22 - high*8`. */}
                 <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center text-[11px] leading-relaxed text-white/45">
-                  Validated continuously against NIST PQC, NSA CNSA 2.0, FIPS 140-3/203-205, ISO 27001, PCI DSS, SOC 2, HIPAA,
-                  GDPR, and CISA quantum-readiness guidance — every status traces to live tenant evidence.
+                  Cryptographic screening indicators against the control families that depend on crypto posture — each row
+                  states the measurement it was decided from. These are not compliance verdicts: control evidence and
+                  attestation live in the Compliance dashboard.
                 </div>
               </Panel>
 
               <Panel className="p-5">
-                <SectionHead icon={BookOpen} suffix={<Pill className="border-white/10 bg-white/5 text-white/40">{fmt(data.complianceItems.length)} frameworks</Pill>}>
-                  Governance Validation
+                <SectionHead icon={BookOpen} suffix={<Pill className="border-white/10 bg-white/5 text-white/40">{fmt(data.complianceItems.length)} control families</Pill>}>
+                  Cryptographic Posture Indicators
                 </SectionHead>
                 <div className="space-y-2">
                   {data.complianceItems.map((ci) => (
@@ -2335,13 +2368,14 @@ export default function MigrationSandbox() {
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold text-white/80">{ci.framework}</span>
                           <Pill className={cn(
-                            ci.status === 'compliant' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' :
+                            ci.status === 'met' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' :
                             ci.status === 'partial' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' :
                             ci.status === 'pending' ? 'border-sky-500/25 bg-sky-500/10 text-sky-300' :
                             'border-red-500/30 bg-red-500/10 text-red-300'
-                          )}>{ci.status}</Pill>
+                          )}>{ci.status === 'met' ? 'indicator met' : ci.status === 'not-met' ? 'indicator not met' : ci.status === 'pending' ? 'no evidence' : 'partial'}</Pill>
                         </div>
                         <div className="mt-0.5 text-[11px] text-white/35">{ci.control}</div>
+                        {ci.basis && <div className="mt-1 text-[10px] font-mono text-white/25">{ci.basis}</div>}
                       </div>
                       <div className="text-right">
                         <div className="font-mono text-lg font-black" style={{ color: ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED }}>{ci.score}</div>

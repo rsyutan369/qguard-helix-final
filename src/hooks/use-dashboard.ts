@@ -3,11 +3,20 @@ import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 
 export interface DashboardSummary {
+  /** Canonical 0–100, LOWER-better — same scale/direction as the executive KPI. */
   quantumRiskScore: number
   riskBand: string
+  /** Canonical 0–100, HIGHER-better posture composite. */
+  quantumReadinessScore: number
+  readinessBand: string
+  /** False = nothing measured yet; render "No baseline", never the 0. */
+  hasBaseline: boolean
   riskTrend: number
   vulnerableAssetsCount: number
+  /** Distinct subjects with a risk signal in the last 7 days (⊆ vulnerableAssetsCount). */
   newVulnerableAssets: number
+  /** Raw signal count for the same window — what drives `riskTrend`. */
+  newFindings: number
   totalCbomItems: number
   activeMigrations: number
   failedMigrations: number
@@ -35,22 +44,14 @@ export interface SecurityEvent {
   isRead: boolean
 }
 
-export interface ExposureNode {
-  id: string
-  name: string
-  type: string
-  environment: string
-  criticality: string
-  status: string
-  riskScore: number
-  color: string
-}
-
-export interface ExposureEdge {
-  source: string
-  target: string
-  type: string
-}
+/**
+ * The exposure-map node/edge shapes are declared ONCE, in the API-contract lib.
+ * They used to be re-declared here, and the two copies had already drifted
+ * (`color` existed on one side only). Re-exported so existing importers of
+ * `@/hooks/use-dashboard` keep working.
+ */
+export type { ExposureNode, ExposureNodeEvidence, ExposureEdge } from '@/lib/dashboard-service'
+import type { ExposureNode, ExposureEdge } from '@/lib/dashboard-service'
 
 export interface ExposureMap {
   nodes: ExposureNode[]

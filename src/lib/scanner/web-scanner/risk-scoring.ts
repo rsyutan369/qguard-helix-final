@@ -4,6 +4,7 @@
  */
 
 import { buildPublishedCategories, publishedPostureScore } from './published-scoring'
+import type { EdgeIntelligence } from './edge-intelligence-model'
 import type {
   WebScanRiskApplicability,
   WebScanFinding,
@@ -278,7 +279,17 @@ export function calculateRiskScore(
   apiResult: ApiSecurityResult | null,
   repoResult: GitRepoScanResult | null,
   webCryptoResult: WebCryptoScanResult | null,
-  ruleResults: DetectionRuleResult[]
+  ruleResults: DetectionRuleResult[],
+  /**
+   * The public-edge measurement for this target.
+   *
+   * Optional so historical callers keep compiling, but omitting it costs real
+   * accuracy: without it the published categories fall back to the socket's
+   * generic TLS 1.3 key-exchange label and a live hybrid ML-KEM endpoint is
+   * scored, graded and coloured as classical. Pass it whenever the edge phase
+   * ran. See `published-scoring.ts`.
+   */
+  edgeIntelligence?: EdgeIntelligence | null
 ): WebScanRiskScore {
   const measured = {
     certificateRisk: calculateCertificateRisk(certInfo),
@@ -313,6 +324,7 @@ export function calculateRiskScore(
     webCryptoResult,
     ruleResults,
     findings,
+    edgeIntelligence,
   })
   const posture = publishedPostureScore(scoreCategories)
   const measuredCategoryWeight = scoreCategories

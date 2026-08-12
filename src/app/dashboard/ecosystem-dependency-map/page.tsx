@@ -1,5 +1,10 @@
-import EcosystemSupplyChainModule from '../_components/EcosystemSupplyChainModule';
+import { PageErrorBoundary } from '../_components/external-trust/_shared';
+import EcosystemDependencyMap from './EcosystemDependencyMap';
 
 export default function EcosystemDependencyMapPage() {
-  return <EcosystemSupplyChainModule mode="dependency-map" />;
+  return (
+    <PageErrorBoundary page="Ecosystem Dependency Map">
+      <EcosystemDependencyMap />
+    </PageErrorBoundary>
+  );
 }

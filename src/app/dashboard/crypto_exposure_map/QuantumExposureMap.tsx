@@ -5,9 +5,11 @@ import {
   Lock, Cloud, Radio, Info, RefreshCw,
   Search, Layers, Boxes, Network, ScanLine,
   Copy, Check, ShieldAlert, ShieldCheck, GitBranch,
-  ArrowRight, ArrowLeft, ArrowUpRight, ExternalLink, Zap
+  ArrowRight, ArrowLeft, ArrowUpRight, ExternalLink, Zap,
+  HelpCircle, Radar, FileSearch
 } from 'lucide-react';
 import { ExposureNode, ExposureEdge } from '@/lib/dashboard-service';
+import { RISK_BANDS, UNASSESSED_BAND, riskBandFor, type RiskBandKey } from '@/lib/migration/asset-intelligence';
 
 interface Props {
   data: { nodes: ExposureNode[]; edges: ExposureEdge[] };
@@ -17,13 +19,21 @@ interface Props {
   onSelectNode: (node: ExposureNode | null) => void;
 }
 
-function getRiskColor(riskScore: number) {
-  if (riskScore > 10) return '#ef4444';
-  if (riskScore > 5) return '#f97316';
-  if (riskScore > 2) return '#eab308';
-  if (riskScore > 0) return '#22c55e';
-  return '#10b981';
+/**
+ * Node colour on the canonical 0–100 scale. Both this and the legend below read
+ * RISK_BANDS, so the graph cannot colour a node by one set of thresholds while
+ * the legend and the inspector describe another (which is exactly what happened
+ * when this file kept its own >10/>5/>2 table).
+ *
+ * An unassessed asset is slate — never green. "We have no evidence" is not
+ * "we verified it is safe".
+ */
+function nodeColor(node: Pick<ExposureNode, 'riskScore' | 'assessed'>) {
+  return node.assessed ? riskBandFor(node.riskScore).hex : UNASSESSED_BAND.hex;
 }
+
+/** High-risk on the canonical scale = the High band floor and above. */
+const HIGH_RISK_FLOOR = RISK_BANDS.find((b) => b.key === 'high')!.min;
 
 const TYPE_ICONS = {
   server: Server,
@@ -105,7 +115,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
     for (const n of data.nodes) {
       if (envFilter !== 'all' && (n.environment || 'unknown') !== envFilter) continue;
       if (typeFilter !== 'all' && (n.type || 'unknown') !== typeFilter) continue;
-      if (riskOnly && !(n.riskScore > 0)) continue;
+      if (riskOnly && !(n.assessed && n.riskScore > 0)) continue;
       if (q && !`${n.name} ${n.type} ${n.environment}`.toLowerCase().includes(q)) continue;
       ids.add(n.id);
     }
@@ -214,7 +224,11 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
     return () => cancelAnimationFrame(animRef.current);
   }, [drawParticles]);
 
-  const totalRisk = useMemo(() => data.nodes.filter((n) => n.riskScore > 5).length, [data.nodes]);
+  const totalRisk = useMemo(
+    () => data.nodes.filter((n) => n.assessed && n.riskScore >= HIGH_RISK_FLOOR).length,
+    [data.nodes],
+  );
+  const unassessedCount = useMemo(() => data.nodes.filter((n) => !n.assessed).length, [data.nodes]);
 
   if (loading && data.nodes.length === 0) {
     return (
@@ -311,8 +325,12 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
             {layers[key] ? '●' : '○'} {label}
           </button>
         ))}
-        <span className="ml-auto flex items-center gap-1 text-[8px] font-mono uppercase tracking-widest text-white/30">
+        <span
+          className="ml-auto flex items-center gap-1 text-[8px] font-mono uppercase tracking-widest text-white/30"
+          title={`High-risk = quantum risk score ${HIGH_RISK_FLOOR}+ across the tenant estate`}
+        >
           <ScanLine className="h-3 w-3 text-cyan-300/60" /> {shownCount}/{data.nodes.length} nodes · {totalRisk} high-risk
+          {unassessedCount > 0 && <> · {unassessedCount} unassessed</>}
         </span>
       </div>
 
@@ -364,7 +382,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
             const isSelected = selectedNode?.id === node.id;
             const isVisible = visibleIds.has(node.id);
             const dimmed = (!isVisible) || (activeNeighbors ? !activeNeighbors.has(node.id) : false);
-            const color = getRiskColor(node.riskScore);
+            const color = nodeColor(node);
             const r = isHovered ? 2.2 : 1.8;
             return (
               <g
@@ -376,7 +394,7 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
                 onClick={() => isVisible && onSelectNode(node)}
                 onMouseDown={(e) => isVisible && handleNodeMouseDown(e, node.id)}
               >
-                {layers.pulse && node.riskScore > 0 && !dimmed && (
+                {layers.pulse && node.assessed && node.riskScore > 0 && !dimmed && (
                   <circle cx={pos.x} cy={pos.y} r={r * 2.5} fill="none" stroke={color} strokeWidth="0.1" opacity={isHovered ? 0.6 : 0.2}>
                     <animate attributeName="r" values={`${r * 2};${r * 3};${r * 2}`} dur="3s" repeatCount="indefinite" />
                     <animate attributeName="opacity" values="0.3;0.05;0.3" dur="3s" repeatCount="indefinite" />
@@ -413,12 +431,17 @@ export default function QuantumExposureMap({ data, loading, onRefresh, selectedN
           ))}
         </div>
 
-        {/* Legend */}
-        <div className="absolute bottom-3 right-3 z-20 flex gap-3 text-[8px] font-bold uppercase tracking-widest">
-          <div className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-red-500" /> Critical</div>
-          <div className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-orange-500" /> High</div>
-          <div className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-yellow-500" /> Moderate</div>
-          <div className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-green-500" /> Secure</div>
+        {/* Legend — rendered FROM the canonical band table, highest risk first,
+            so it can never describe a scale the nodes are not coloured by. */}
+        <div className="absolute bottom-3 right-3 z-20 flex flex-wrap justify-end gap-x-2.5 gap-y-1 text-[8px] font-bold uppercase tracking-widest">
+          {[...RISK_BANDS].reverse().map((band) => (
+            <div key={band.key} className="flex items-center gap-1.5" title={`Quantum risk score ${band.min}–100`}>
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: band.hex }} /> {band.label}
+            </div>
+          ))}
+          <div className="flex items-center gap-1.5" title="No scanner evidence for this asset yet">
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: UNASSESSED_BAND.hex }} /> {UNASSESSED_BAND.label}
+          </div>
         </div>
       </div>
     </div>
@@ -431,39 +454,57 @@ interface InspectorProps {
   exposureMap?: { nodes: ExposureNode[]; edges: ExposureEdge[] };
 }
 
-/** Severity buckets aligned exactly with the graph's node colouring + legend. */
-type SeverityKey = 'critical' | 'high' | 'moderate' | 'secure';
-interface Severity {
-  key: SeverityKey;
+/**
+ * Presentation state for one asset's posture. Colour and label come from the
+ * canonical band table; only the icon and the copy live here, so there is no
+ * second threshold table to drift out of step with the score.
+ */
+type PostureKey = RiskBandKey | 'unassessed';
+interface AssetPosture {
+  key: PostureKey;
   label: string;
   hex: string;
-  /** 0 = Secure … 3 = Critical — the active segment on the posture meter. */
-  index: number;
-  text: string;
-  border: string;
-  bg: string;
+  assessed: boolean;
   Icon: typeof Shield;
 }
 
-function severityOf(riskScore: number): Severity {
-  if (riskScore > 10) return { key: 'critical', label: 'Critical', hex: '#ef4444', index: 3, text: 'text-red-400', border: 'border-red-500/30', bg: 'bg-red-500/10', Icon: ShieldAlert };
-  if (riskScore > 5) return { key: 'high', label: 'High', hex: '#f97316', index: 2, text: 'text-orange-400', border: 'border-orange-500/30', bg: 'bg-orange-500/10', Icon: ShieldAlert };
-  if (riskScore > 2) return { key: 'moderate', label: 'Moderate', hex: '#eab308', index: 1, text: 'text-yellow-400', border: 'border-yellow-500/30', bg: 'bg-yellow-500/10', Icon: Shield };
-  return { key: 'secure', label: 'Secure', hex: '#22c55e', index: 0, text: 'text-emerald-400', border: 'border-emerald-500/30', bg: 'bg-emerald-500/10', Icon: ShieldCheck };
-}
-
-const EXPOSURE_READ: Record<SeverityKey, string> = {
-  critical: 'Critical quantum exposure. Unresolved cryptographic risk on this asset — prioritise it for post-quantum migration.',
-  high: 'Elevated quantum exposure. Legacy or expiring cryptography detected — schedule a migration to quantum-safe algorithms.',
-  moderate: 'Moderate exposure. Monitor for cryptographic drift and plan a migration within the current cycle.',
-  secure: 'No significant quantum exposure detected. Maintain monitoring and scheduled key rotation.',
+const BAND_ICON: Record<PostureKey, typeof Shield> = {
+  critical: ShieldAlert,
+  high: ShieldAlert,
+  elevated: ShieldAlert,
+  moderate: Shield,
+  low: Shield,
+  minimal: ShieldCheck,
+  unassessed: HelpCircle,
 };
 
-const RECOMMENDED_ACTION: Record<SeverityKey, string> = {
+/** Resolve an asset's posture presentation. Unassessed is a first-class state. */
+function postureOf(node: Pick<ExposureNode, 'riskScore' | 'assessed'> | undefined): AssetPosture {
+  if (!node || !node.assessed) {
+    return { key: 'unassessed', label: UNASSESSED_BAND.label, hex: UNASSESSED_BAND.hex, assessed: false, Icon: HelpCircle };
+  }
+  const band = riskBandFor(node.riskScore);
+  return { key: band.key, label: band.label, hex: band.hex, assessed: true, Icon: BAND_ICON[band.key] };
+}
+
+const EXPOSURE_READ: Record<PostureKey, string> = {
+  critical: 'Critical quantum exposure. Unresolved quantum-vulnerable cryptography on this asset — prioritise it for post-quantum migration.',
+  high: 'High quantum exposure. Quantum-vulnerable primitives are in active use — schedule migration to quantum-safe algorithms this cycle.',
+  elevated: 'Elevated quantum exposure. Legacy or expiring cryptography detected — plan a hybrid migration before the material expires.',
+  moderate: 'Moderate exposure. Monitor for cryptographic drift and stage a migration within the current cycle.',
+  low: 'Low exposure. Residual classical cryptography observed — track it and fold it into the next migration wave.',
+  minimal: 'No quantum-vulnerable cryptography observed on this asset. Maintain monitoring and scheduled key rotation.',
+  unassessed: 'This asset has not been assessed. No scan findings, crypto inventory or runtime telemetry exist for it yet, so no posture can be claimed either way.',
+};
+
+const RECOMMENDED_ACTION: Record<PostureKey, string> = {
   critical: 'Migrate key establishment to ML-KEM-768 (FIPS 203) and signatures to ML-DSA-65 (FIPS 204). Run a hybrid X25519 + ML-KEM profile through cutover.',
   high: 'Stage a hybrid X25519 + ML-KEM rollout and rotate certificates onto quantum-safe chains before legacy material expires.',
+  elevated: 'Schedule a hybrid X25519 + ML-KEM pilot and re-issue expiring certificates onto quantum-safe chains.',
   moderate: 'Enable crypto-agility controls and pilot a hybrid X25519 + ML-KEM configuration ahead of full migration.',
-  secure: 'Maintain the quantum-safe posture. Continue drift monitoring and periodic key rotation.',
+  low: 'Fold the remaining classical primitives into the next migration wave. Keep drift monitoring enabled.',
+  minimal: 'Maintain the quantum-safe posture. Continue drift monitoring and periodic key rotation.',
+  unassessed: 'Run an authorized discovery scan against this asset to establish its cryptographic posture. No migration guidance can be given without evidence.',
 };
 
 const REL_LABELS: Record<string, string> = {
@@ -485,7 +526,8 @@ interface Connection {
   name: string;
   direction: 'out' | 'in';
   relationship: string;
-  severity: Severity;
+  posture: AssetPosture;
+  riskScore: number;
 }
 
 export function NodeInspector({ selectedNode, exposureMap }: InspectorProps) {
@@ -509,14 +551,16 @@ export function NodeInspector({ selectedNode, exposureMap }: InspectorProps) {
         name: peer?.name || peerId,
         direction: isOut ? 'out' : 'in',
         relationship: relLabel(edge.type),
-        severity: severityOf(peer?.riskScore ?? 0),
+        posture: postureOf(peer),
+        riskScore: peer?.assessed ? peer.riskScore : -1,
       });
     }
-    // De-duplicate on peer + direction, keep highest-severity edges first.
+    // De-duplicate on peer + direction, riskiest neighbours first (unassessed
+    // peers sort last — an unknown is not a low score).
     const seen = new Set<string>();
     return rows
       .filter((r) => { const k = `${r.direction}:${r.id}`; if (seen.has(k)) return false; seen.add(k); return true; })
-      .sort((a, b) => b.severity.index - a.severity.index);
+      .sort((a, b) => b.riskScore - a.riskScore);
   }, [selectedNode, exposureMap]);
 
   const copyId = useCallback(() => {
@@ -543,13 +587,16 @@ export function NodeInspector({ selectedNode, exposureMap }: InspectorProps) {
     );
   }
 
-  const sev = severityOf(selectedNode.riskScore);
-  const SEGMENTS: Array<{ key: SeverityKey; label: string; hex: string }> = [
-    { key: 'secure', label: 'Secure', hex: '#22c55e' },
-    { key: 'moderate', label: 'Moderate', hex: '#eab308' },
-    { key: 'high', label: 'High', hex: '#f97316' },
-    { key: 'critical', label: 'Critical', hex: '#ef4444' },
-  ];
+  const sev = postureOf(selectedNode);
+  const ev = selectedNode.evidence;
+  /* What produced the score — an operator who cannot trace a posture number
+     back to named evidence cannot defend it in an audit. */
+  const provenance = [
+    ev?.findings ? `${ev.findings} scan finding${ev.findings === 1 ? '' : 's'}` : null,
+    ev?.exposures ? `${ev.exposures} crypto exposure${ev.exposures === 1 ? '' : 's'}` : null,
+    ev?.components ? `${ev.components} inventory component${ev.components === 1 ? '' : 's'}` : null,
+    ev?.runtime ? `${ev.runtime} runtime event${ev.runtime === 1 ? '' : 's'}` : null,
+  ].filter(Boolean) as string[];
   const statusRaw = String(selectedNode.status || '').toLowerCase();
   const statusDot = statusRaw === 'migrated' || statusRaw === 'protected'
     ? '#10b981'
@@ -591,35 +638,124 @@ export function NodeInspector({ selectedNode, exposureMap }: InspectorProps) {
           </div>
         </div>
 
-        {/* Signature — Quantum Risk Posture band */}
-        <div className={`rounded-xl border ${sev.border} ${sev.bg} p-3.5`}>
-          <div className="flex items-center justify-between">
+        {/* Signature — Quantum Risk Posture band.
+            One bounded 0–100 score from the shared asset-intelligence engine,
+            so this reads identically on /dashboard/assets, the Migration
+            Planner and Quantum Readiness. */}
+        <div
+          className="rounded-xl border p-3.5"
+          style={{ borderColor: `${sev.hex}4d`, background: `${sev.hex}14` }}
+        >
+          <div className="flex items-center justify-between gap-2">
             <span className="text-[9px] font-black uppercase tracking-[0.2em] text-white/45">Quantum Risk Posture</span>
-            <span className={`inline-flex items-center gap-1 rounded-full border ${sev.border} px-2 py-0.5 text-[9px] font-black uppercase tracking-widest ${sev.text}`}>
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest"
+              style={{ borderColor: `${sev.hex}4d`, color: sev.hex }}
+            >
               <sev.Icon className="h-3 w-3" /> {sev.label}
             </span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-3xl font-black leading-none" style={{ color: sev.hex }}>{selectedNode.riskScore.toFixed(1)}</span>
-            <span className="text-[9px] font-bold uppercase tracking-widest text-white/35">exposure index</span>
-          </div>
-          {/* 4-segment severity meter — mirrors the graph legend */}
-          <div className="mt-3 flex gap-1">
-            {SEGMENTS.map((seg, i) => {
-              const active = i === sev.index;
-              const reached = i <= sev.index;
-              return (
-                <div key={seg.key} className="flex-1">
-                  <div
-                    className="h-1.5 rounded-full transition-all"
-                    style={{ background: reached ? seg.hex : 'rgba(255,255,255,0.08)', opacity: reached ? (active ? 1 : 0.35) : 1 }}
-                  />
-                  <div className={`mt-1 text-center text-[7px] font-bold uppercase tracking-wider ${active ? sev.text : 'text-white/25'}`}>{seg.label}</div>
+
+          {sev.assessed ? (
+            <>
+              <div className="mt-2 flex items-end justify-between gap-3">
+                <div className="flex items-baseline gap-1">
+                  <span className="text-4xl font-black leading-none tabular-nums" style={{ color: sev.hex }}>
+                    {selectedNode.riskScore}
+                  </span>
+                  <span className="text-base font-black leading-none text-white/25">/100</span>
                 </div>
-              );
-            })}
-          </div>
-          <p className="mt-3 text-[10px] leading-relaxed text-white/55">{EXPOSURE_READ[sev.key]}</p>
+                <span
+                  className="mb-0.5 shrink-0 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-white/55"
+                  title="Canonical posture — identical on the asset profile, Migration Planner and Quantum Readiness"
+                >
+                  {selectedNode.postureLabel}
+                </span>
+              </div>
+
+              {/* Continuous 0–100 meter with the canonical band ticks beneath.
+                  A real percentage of the scale, not an arbitrary index. */}
+              <div className="mt-2.5">
+                <div className="relative h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.max(2, Math.min(100, selectedNode.riskScore))}%`,
+                      background: `linear-gradient(90deg, ${sev.hex}66, ${sev.hex})`,
+                      boxShadow: `0 0 10px ${sev.hex}80`,
+                    }}
+                  />
+                </div>
+                <div className="mt-1 flex">
+                  {RISK_BANDS.map((band, i) => {
+                    const next = RISK_BANDS[i + 1];
+                    const width = ((next ? next.min : 100) - (i === 0 ? 0 : band.min)) || 1;
+                    const active = band.key === sev.key;
+                    return (
+                      <div key={band.key} style={{ flexGrow: width }} className="min-w-0 px-px">
+                        <div
+                          className="h-0.5 rounded-full"
+                          style={{ background: active ? band.hex : 'rgba(255,255,255,0.10)' }}
+                        />
+                        <div
+                          className="mt-0.5 truncate text-center text-[7px] font-bold uppercase tracking-wider"
+                          style={{ color: active ? band.hex : 'rgba(255,255,255,0.25)' }}
+                          title={`${band.label}: ${band.min}–${next ? next.min - 1 : 100}`}
+                        >
+                          {band.label}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <p className="mt-3 text-[10px] leading-relaxed text-white/55">{EXPOSURE_READ[sev.key]}</p>
+
+              {provenance.length > 0 && (
+                <p className="mt-2 flex items-start gap-1.5 border-t border-white/[0.07] pt-2 text-[9px] leading-relaxed text-white/35">
+                  <FileSearch className="mt-px h-2.5 w-2.5 shrink-0" />
+                  <span>Scored from {provenance.join(' · ')}. Highest observed severity sets the score.</span>
+                </p>
+              )}
+            </>
+          ) : (
+            /* No evidence is NOT a pass. Never render an unassessed asset as 0/Secure. */
+            <>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-black leading-none text-white/30">—</span>
+                <span className="text-[9px] font-bold uppercase tracking-widest text-white/35">no score</span>
+              </div>
+              <p className="mt-2.5 text-[10px] leading-relaxed text-white/55">{EXPOSURE_READ.unassessed}</p>
+              <a
+                href={`/dashboard/scanner?asset=${encodeURIComponent(selectedNode.id)}`}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-[9px] font-black uppercase tracking-widest text-cyan-200 no-underline transition-all hover:bg-cyan-500/20"
+              >
+                <Radar className="h-3 w-3" /> Run discovery scan
+              </a>
+            </>
+          )}
+
+          {/* Context that is deliberately NOT folded into the score. */}
+          {(ev?.openVulnerabilities > 0 || ev?.expiringCertificates > 0) && (
+            <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-white/[0.07] pt-2.5">
+              {ev.openVulnerabilities > 0 && (
+                <span className="rounded border border-orange-500/25 bg-orange-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-orange-300">
+                  {ev.openVulnerabilities} open vuln{ev.openVulnerabilities === 1 ? '' : 's'}
+                </span>
+              )}
+              {ev.expiringCertificates > 0 && (
+                <span className="rounded border border-yellow-500/25 bg-yellow-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-yellow-300">
+                  {ev.expiringCertificates} cert{ev.expiringCertificates === 1 ? '' : 's'} expiring &lt;30d
+                </span>
+              )}
+              {selectedNode.internetFacing && (
+                <span className="rounded border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-cyan-300">
+                  Internet-facing
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Asset attributes */}
@@ -661,7 +797,11 @@ export function NodeInspector({ selectedNode, exposureMap }: InspectorProps) {
                     : <ArrowLeft className="h-3 w-3 shrink-0 text-violet-300/70" />}
                   <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white/75" title={c.name}>{c.name}</span>
                   <span className="shrink-0 text-[8px] font-medium uppercase tracking-wide text-white/35">{c.relationship}</span>
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: c.severity.hex }} title={`${c.severity.label} risk`} />
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ background: c.posture.hex }}
+                    title={c.posture.assessed ? `${c.posture.label} — quantum risk ${c.riskScore}/100` : 'Not assessed — no scanner evidence'}
+                  />
                 </div>
               ))}
               {connections.length > shownConnections.length && (

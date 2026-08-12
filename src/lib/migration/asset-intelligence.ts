@@ -91,13 +91,73 @@ export function severityWeight(sev: string): number {
   return 10
 }
 
+/* ------------------------------------------------------------------ */
+/* Canonical 0–100 risk banding                                        */
+/* ------------------------------------------------------------------ */
+
+export type RiskBandKey = 'critical' | 'high' | 'elevated' | 'moderate' | 'low' | 'minimal'
+
+export interface RiskBand {
+  key: RiskBandKey
+  /** Exactly the string `levelFromRisk` returns — they are the same table. */
+  label: string
+  /** Inclusive lower bound on the canonical 0–100 scale. */
+  min: number
+  hex: string
+}
+
+/**
+ * THE risk banding table. Ordered low → high so meters and legends can render
+ * it directly, which is why the graph legend, the node colouring and the Node
+ * Inspector meter cannot disagree: they all read this one array rather than
+ * each keeping a private set of thresholds (they used to, and they drifted —
+ * the map coloured at >10/>5/>2 while the API coloured at >=3/>=2).
+ */
+export const RISK_BANDS: readonly RiskBand[] = [
+  { key: 'minimal', label: 'Minimal', min: 0, hex: '#10b981' },
+  { key: 'low', label: 'Low', min: 1, hex: '#22c55e' },
+  { key: 'moderate', label: 'Moderate', min: 20, hex: '#eab308' },
+  { key: 'elevated', label: 'Elevated', min: 40, hex: '#f59e0b' },
+  { key: 'high', label: 'High', min: 60, hex: '#f97316' },
+  { key: 'critical', label: 'Critical', min: 80, hex: '#ef4444' },
+] as const
+
+/**
+ * An asset the scanners have produced no risk evidence for. NOT a band —
+ * "we did not measure this" is a third state that must never render as a
+ * green pass (see the data-integrity contract, rule 3).
+ */
+export const UNASSESSED_BAND = { key: 'unassessed', label: 'Not Assessed', hex: '#64748b' } as const
+
+/**
+ * Map a weighted exposure load onto a canonical 0-100 risk score (lower-better).
+ *
+ * Diminishing returns rather than a linear penalty, because a linear model
+ * pegs: the Migration Sandbox formula this replaced
+ * (`100 - critical*15 - high*8 - ...`) hit its bound at seven critical
+ * exposures, so every real estate produced the same score and the metric
+ * carried no information. Strictly increasing in load and asymptotic to 100.
+ */
+export function riskScoreFromLoad(load: number, halfLife = 60) {
+  const safe = Math.max(0, Number(load) || 0)
+  return Math.max(0, Math.min(100, Math.round(100 * (1 - Math.exp(-safe / halfLife)))))
+}
+
+/** Resolve a canonical 0–100 risk score to its band. */
+export function riskBandFor(score: number): RiskBand {
+  const value = clamp(num(score))
+  // Stop above `low`: any score that is positive but under the moderate floor
+  // is Low, including fractional scores below 1. Preserves the exact `> 0`
+  // semantics callers of `levelFromRisk` have always had.
+  for (let i = RISK_BANDS.length - 1; i >= 2; i -= 1) {
+    if (value >= RISK_BANDS[i].min) return RISK_BANDS[i]
+  }
+  return value > 0 ? RISK_BANDS[1] : RISK_BANDS[0]
+}
+
+/** Canonical risk label. Derived from RISK_BANDS so the two cannot drift. */
 export function levelFromRisk(score: number): string {
-  if (score >= 80) return 'Critical'
-  if (score >= 60) return 'High'
-  if (score >= 40) return 'Elevated'
-  if (score >= 20) return 'Moderate'
-  if (score > 0) return 'Low'
-  return 'Minimal'
+  return riskBandFor(score).label
 }
 export function levelFromReadiness(score: number): string {
   if (score >= 85) return 'Quantum-Ready'
@@ -624,7 +684,9 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
   // Validation logs are not consistently asset-scoped across the platform; match
   // by asset_id when present, otherwise by the job ids belonging to the asset.
   const validationByAsset = groupBy(inputs.validationLogs, (r) => str(r.asset_id))
-  const validationByJob = groupBy(inputs.validationLogs, (r) => str(r.migration_job_id || r.job_id))
+  // migration_id is the real column on migration_validation_logs; the other two
+  // are accepted so agent-written and legacy rows keep matching.
+  const validationByJob = groupBy(inputs.validationLogs, (r) => str(r.migration_id || r.migration_job_id || r.job_id))
 
   const records: AssetMigrationRecord[] = inputs.assets.map((asset) => {
     const id = str(asset.id)

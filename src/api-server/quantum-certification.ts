@@ -136,6 +136,18 @@ function isMissingTable(error: unknown): boolean {
   return /relation .* does not exist|Could not find the table|schema cache/i.test(message)
 }
 
+// certificate_id collision: nextCertificateId() derives a sequential id from a
+// row COUNT, which is not atomic under concurrent issuance (two requests can
+// read the same count before either insert commits — a double-click on
+// "Issue Certificate", or a renew racing a fresh issue). Detect the resulting
+// unique-constraint violation so the caller can regenerate and retry instead
+// of surfacing a raw Postgres error.
+function isCertificateIdConflict(error: unknown): boolean {
+  const code = str((error as { code?: string })?.code)
+  const message = str((error as { message?: string })?.message || error)
+  return code === '23505' || /duplicate key value violates unique constraint.*certificate_id/i.test(message)
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function rows(client: any, table: string, build: (q: any) => any, onMissing?: () => void): Promise<Record<string, unknown>[]> {
   try {
@@ -308,10 +320,24 @@ export function computeTrustScore(input: {
   return Math.max(0, Math.min(1000, Math.round(parts)))
 }
 
-export function levelForScore(trustScore: number, context: { hybridImplemented: boolean; assessments: number; eligible: boolean }): CertificationLevel | null {
-  if (!context.eligible) return null
-  // Weighted-score bands with evidence gates: Silver+ requires hybrid PQC in
-  // production evidence; Diamond requires demonstrated continuous assessment.
+export function levelForScore(
+  trustScore: number,
+  context: { hybridImplemented: boolean; assessments: number; eligible: boolean; issuable: boolean },
+): CertificationLevel | null {
+  // Nothing is issued without measured evidence — a certificate over an empty
+  // estate would attest to nothing.
+  if (!context.issuable) return null
+
+  // BRONZE is a baseline ATTESTATION, not a certification: it records the
+  // posture that was actually measured (including unmet criteria) so a tenant
+  // has a verifiable starting point on day one. It deliberately does not
+  // require the certification criteria — `certified` stays false and the
+  // artifact says so.
+  if (!context.eligible) return 'bronze'
+
+  // SILVER and above are CERTIFICATION grade: every required criterion must
+  // pass, plus the weighted score band and hybrid-PQC production evidence.
+  // Diamond additionally requires demonstrated continuous assessment.
   if (trustScore >= 950 && context.hybridImplemented && context.assessments >= 3) return 'diamond'
   if (trustScore >= 900 && context.hybridImplemented) return 'platinum'
   if (trustScore >= 800 && context.hybridImplemented) return 'gold'
@@ -392,41 +418,111 @@ export async function gatherEvidence(client: any, token: string, userId: string)
   }
 }
 
+/**
+ * Canonical quantum-safe algorithm catalog, ordered MOST SPECIFIC FIRST — the
+ * first match wins and an algorithm lands in exactly one category. Previously
+ * every pattern was tested against every row, so "ML-DSA/SLH-DSA/Falcon"
+ * printed twice (once as a FIPS 204 signature, once as a FIPS 205 stateless
+ * signature) from a single observation.
+ *
+ * Patterns are anchored on token boundaries. The loose `/SHA3/` used before
+ * matched the substring inside "SHA384", which is why the TLS 1.3 cipher suite
+ * TLS_AES_256_GCM_SHA384 was certified as a "FIPS 202 hash".
+ */
 const STACK_CATEGORIES: Array<{ category: string; standard: string; match: RegExp }> = [
-  { category: 'Key Establishment', standard: 'FIPS 203', match: /ML-KEM|KYBER|X25519\+ML-KEM|X25519MLKEM/i },
-  { category: 'Digital Signatures', standard: 'FIPS 204', match: /ML-DSA|DILITHIUM|ED25519\+ML-DSA/i },
-  { category: 'Stateless Signatures', standard: 'FIPS 205', match: /SLH-DSA|SPHINCS/i },
-  { category: 'Symmetric Encryption', standard: 'FIPS 197', match: /AES-256|AES256|AES-GCM/i },
-  { category: 'Hashing', standard: 'FIPS 202', match: /SHA3|SHA-3|SHAKE/i },
-  { category: 'KDF', standard: 'SP 800-56C', match: /HKDF/i },
-  { category: 'Transport', standard: 'TLS 1.3', match: /TLS\s*1\.3|TLS1\.3|HYBRID.*TLS|TLS.*HYBRID/i },
+  // Hybrid key establishment before plain ML-KEM so the hybrid name is kept.
+  { category: 'Hybrid Key Establishment', standard: 'FIPS 203 + RFC 7748', match: /X25519[\s+_-]*ML[\s_-]*KEM|ML[\s_-]*KEM[\s+_-]*X25519|SECP256R1MLKEM|X25519KYBER/i },
+  { category: 'Key Establishment', standard: 'FIPS 203', match: /\bML[\s_-]*KEM\b|\bKYBER\b/i },
+  // ML-DSA before SLH-DSA: a combined library string such as
+  // "ML-DSA/SLH-DSA/Falcon" should report its primary, general-purpose
+  // signature scheme. A bare "SLH-DSA" does not match the ML-DSA pattern, so
+  // stateless signatures are still categorised correctly on their own.
+  { category: 'Digital Signatures', standard: 'FIPS 204', match: /\bML[\s_-]*DSA\b|\bDILITHIUM\b/i },
+  { category: 'Stateless Signatures', standard: 'FIPS 205', match: /\bSLH[\s_-]*DSA\b|\bSPHINCS\b/i },
+  { category: 'Digital Signatures', standard: 'FIPS 206 (draft)', match: /\bFALCON\b|\bFN[\s_-]*DSA\b/i },
+  // TLS 1.3 suites are cipher suites, not bare primitives — name them as such.
+  { category: 'TLS 1.3 Cipher Suite', standard: 'RFC 8446', match: /^TLS_(AES|CHACHA20)/i },
+  { category: 'Symmetric Encryption', standard: 'FIPS 197 / SP 800-38D', match: /\bAES[\s_-]?256\b|\bAES[\s_-]?256[\s_-]?GCM\b/i },
+  { category: 'Hashing', standard: 'FIPS 202', match: /\bSHA[\s_-]?3\b|\bSHA3-(224|256|384|512)\b|\bSHAKE(128|256)\b/i },
+  { category: 'Hashing', standard: 'FIPS 180-4', match: /\bSHA[\s_-]?(256|384|512)\b/i },
+  { category: 'Key Derivation', standard: 'SP 800-56C', match: /\bHKDF\b/i },
 ]
 
-function deriveCryptoStack(inventory: Record<string, unknown>[]): CertificateAlgorithm[] {
-  const seen = new Map<string, CertificateAlgorithm>()
+/**
+ * Strings the scanner writes into `crypto_inventory.algorithm` that are NOT
+ * algorithms — finding titles, gap descriptions and posture verdicts such as
+ * "No Hybrid TLS", "Missing Crypto Agility", "HNDL Risk: HIGH".
+ *
+ * These must never reach the certificate. "No Hybrid TLS" previously passed the
+ * quantum-safe test purely because it contains the substring "Hybrid", so a
+ * finding stating the estate has NO hybrid TLS was printed on the certificate
+ * as verified hybrid-TLS evidence — the exact inverse of the truth.
+ */
+const NON_ALGORITHM = /^(no|missing|weak|deprecated|expired|unsupported|insecure|classical|wide|long-term|legacy)\b|\b(gap|deadline|risk:|grade\s+[a-f]\b|attack surface|disclosure|not\s+\S+-signed|below\b|detected|strategy|compliance|policy|stapling|pinning|enabled|available)\b/i
+
+/** Trailing annotations the scanner appends; the standard is added separately. */
+const ALGORITHM_NOISE = /\s*\((?:FIPS[^)]*|Certificate|Signature|Key Exchange|\d+-bit)\)\s*$/i
+
+function normalizeAlgorithmName(raw: string): string {
+  return raw.replace(ALGORITHM_NOISE, '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * The certificate's "Verified Quantum Algorithm Stack" — quantum-safe
+ * primitives ACTUALLY observed in the tenant's cryptographic inventory.
+ *
+ * Two independent conditions must hold, so neither a mislabelled row nor a
+ * pattern false-positive alone can put an entry on a signed certificate:
+ *   1. the scanner flagged the row `is_quantum_safe = true`, and
+ *   2. the name matches the canonical catalog above.
+ */
+export function deriveCryptoStack(inventory: Record<string, unknown>[]): CertificateAlgorithm[] {
+  const seen = new Map<string, CertificateAlgorithm & { instances: number; protocols: Set<string> }>()
+
   for (const row of inventory) {
-    const algorithm = str(row.algorithm).trim()
+    // Condition 1: the inventory itself must assert quantum-safety. No name
+    // heuristic may override this — that escape hatch is what admitted the
+    // negative findings.
+    if (row.is_quantum_safe !== true || row.is_vulnerable === true) continue
+
+    const rawAlgorithm = str(row.algorithm).trim()
+    if (!rawAlgorithm || NON_ALGORITHM.test(rawAlgorithm)) continue
+
+    const algorithm = normalizeAlgorithmName(rawAlgorithm)
+    if (!algorithm) continue
+
+    // Condition 2: single-category assignment, most specific first.
+    const spec = STACK_CATEGORIES.find((c) => c.match.test(algorithm))
+    if (!spec) continue
+
+    const key = `${spec.category}:${algorithm.toUpperCase()}`
+    const existing = seen.get(key)
     const protocol = str(row.protocol).trim()
-    const combined = `${algorithm} ${protocol}`.trim()
-    if (!combined) continue
-    const quantumSafe = row.is_quantum_safe === true || /ML-KEM|ML-DSA|SLH-DSA|HYBRID|KYBER|DILITHIUM|SPHINCS/i.test(combined)
-    if (!quantumSafe && row.is_vulnerable !== false) continue
-    for (const spec of STACK_CATEGORIES) {
-      if (spec.match.test(combined)) {
-        const key = `${spec.category}:${algorithm || protocol}`
-        if (!seen.has(key)) {
-          seen.set(key, {
-            category: spec.category,
-            algorithm: algorithm || protocol,
-            standard: spec.standard,
-            verified: true,
-            evidence: `Observed in cryptographic inventory (${str(row.source) || str(row.component) || 'CBOM'})`,
-          })
-        }
-      }
+    if (existing) {
+      existing.instances += 1
+      if (protocol) existing.protocols.add(protocol)
+      continue
     }
+    seen.set(key, {
+      category: spec.category,
+      algorithm,
+      standard: spec.standard,
+      verified: true,
+      evidence: '',
+      instances: 1,
+      protocols: new Set(protocol ? [protocol] : []),
+    })
   }
-  return Array.from(seen.values()).slice(0, 24)
+
+  // Evidence names the real observation count and protocols — a reader can
+  // check the claim against the CBOM instead of taking the badge on trust.
+  return Array.from(seen.values())
+    .sort((a, b) => b.instances - a.instances || a.category.localeCompare(b.category))
+    .slice(0, 24)
+    .map(({ instances, protocols, ...entry }) => ({
+      ...entry,
+      evidence: `Observed ${instances}× in the cryptographic inventory${protocols.size ? ` over ${Array.from(protocols).sort().join(', ')}` : ''}`,
+    }))
 }
 
 function deriveDisallowedHits(inventory: Record<string, unknown>[], snapshot: Snapshot): string[] {
@@ -606,6 +702,16 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
   const requiredMet = required.filter((c) => c.met).length
   const eligible = snapshot.hasData && requiredMet === required.length
 
+  /* Issuance floor for the Bronze baseline attestation. Deliberately minimal —
+     it asks only "did we actually measure this estate?", not "is it safe". An
+     assessment must have run and produced at least one assessed asset or
+     catalogued crypto component, otherwise the certificate would attest to an
+     empty scan. This floor is NOT policy-configurable: loosening it would
+     allow an attestation over no evidence at all. */
+  const measuredAssets = num(snapshot.inventory?.assetsAssessed)
+  const measuredComponents = num(snapshot.inventory?.cryptoComponents)
+  const issuable = Boolean(snapshot.hasData) && measuredAssets + measuredComponents > 0
+
   const trustScore = computeTrustScore({
     // Customer-controlled readiness drives the trust score so provider/ecosystem
     // lag never suppresses an organization's certification standing.
@@ -617,7 +723,7 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
     validationPass,
     cryptoAgility,
   })
-  const level = levelForScore(trustScore, { hybridImplemented, assessments: evidence.assessments, eligible })
+  const level = levelForScore(trustScore, { hybridImplemented, assessments: evidence.assessments, eligible, issuable })
 
   const recommendations = checks
     .filter((c) => !c.met)
@@ -630,13 +736,14 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
 
   return {
     eligible,
+    issuable,
     evaluatedAt: new Date().toISOString(),
     hasData: Boolean(snapshot.hasData),
     requiredTotal: required.length,
     requiredMet,
     trustScore,
     level,
-    levelLabel: level ? LEVEL_LABELS[level] : eligible ? LEVEL_LABELS.bronze : 'Not Eligible',
+    levelLabel: level ? LEVEL_LABELS[level] : 'Awaiting Assessment',
     checks,
     recommendations,
     policy,
@@ -646,17 +753,26 @@ export function evaluateEligibility(evidence: EvidenceBundle, policy: Certificat
 /* ------------------------------------------------------------------ */
 /* Scope derivation (evidence-verified areas only)                     */
 /* ------------------------------------------------------------------ */
+/**
+ * Scope lines carry the measured COUNT that justified each entry, so a reader
+ * can reconcile the certificate against the CBOM rather than trust a bare
+ * label. A domain is only in scope because N of them were actually scanned.
+ */
 function deriveScope(snapshot: Snapshot): string[] {
   const inv = snapshot.inventory
+  const internetFacing = (snapshot.exposureGraph?.nodes || []).filter((n) => n.internetFacing).length
   const scope: string[] = []
-  if ((snapshot.exposureGraph?.nodes || []).some((n) => n.internetFacing)) scope.push('Internet-Facing Assets')
-  if (num(inv?.certificatesAnalyzed) > 0) scope.push('PKI & Certificate Infrastructure')
-  if (num(inv?.domainsScanned) > 0) scope.push('TLS / Transport Security')
-  if (num(inv?.cloudAccounts) > 0) scope.push('Cloud & Infrastructure')
-  if (num(inv?.identitiesAnalyzed) > 0) scope.push('Identity & Access Management')
-  if (num(inv?.cryptoComponents) > 0) scope.push('Cryptographic Inventory (CBOM)')
-  if (num(inv?.keysDiscovered) > 0) scope.push('Key Management Systems')
-  if (num(inv?.assetsAssessed) > 0) scope.push('Application & API Security')
+  const add = (label: string, count: number, unit: string) => {
+    if (count > 0) scope.push(`${label} (${count} ${unit}${count === 1 ? '' : 's'})`)
+  }
+  add('Internet-Facing Assets', internetFacing, 'asset')
+  add('PKI & Certificate Infrastructure', num(inv?.certificatesAnalyzed), 'certificate')
+  add('TLS / Transport Security', num(inv?.domainsScanned), 'endpoint')
+  add('Cloud & Infrastructure', num(inv?.cloudAccounts), 'account')
+  add('Identity & Access Management', num(inv?.identitiesAnalyzed), 'identity')
+  add('Cryptographic Inventory (CBOM)', num(inv?.cryptoComponents), 'component')
+  add('Key Management Systems', num(inv?.keysDiscovered), 'key')
+  add('Application & API Security', num(inv?.assetsAssessed), 'asset')
   return scope
 }
 
@@ -664,7 +780,7 @@ function deriveScope(snapshot: Snapshot): string[] {
 /* Certificate id + row mapping                                        */
 /* ------------------------------------------------------------------ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function nextCertificateId(client: any): Promise<string> {
+async function nextCertificateId(client: any, attempt = 0): Promise<string> {
   const year = new Date().getFullYear()
   let count = 0
   try {
@@ -673,11 +789,26 @@ async function nextCertificateId(client: any): Promise<string> {
   } catch {
     /* fall through to random suffix */
   }
-  return `${CERT_ID_PREFIX}-${year}-${String(count + 1).padStart(6, '0')}`
+  // The count-then-insert sequence below is not atomic, so a retry after a
+  // unique-constraint collision (see isCertificateIdConflict) must not just
+  // recompute the same count-derived id — that would collide again. From
+  // attempt 1 onward, widen the id with a short random tag so it cannot match
+  // the id that just won the race.
+  const sequence = String(count + 1).padStart(6, '0')
+  const suffix = attempt > 0 ? `-${Math.random().toString(36).slice(2, 6)}` : ''
+  return `${CERT_ID_PREFIX}-${year}-${sequence}${suffix}`
 }
 
 function mapCertificateRow(row: Record<string, unknown>, extras?: { signature?: Record<string, unknown> | null; algorithms?: Record<string, unknown>[]; assets?: Record<string, unknown>[] }): QuantumTrustCertificate {
   const level = str(row.level) as CertificationLevel
+  /* Read from the SIGNED canonical payload, not a mutable column — the
+     certified/baseline distinction must be the one the signature covers.
+     Certificates issued before this field existed are Silver+ only (Bronze was
+     unreachable without full eligibility), so absence means certified. */
+  const payload = (row.payload && typeof row.payload === 'object' ? row.payload : {}) as Record<string, unknown>
+  // Legacy certificates predate this field. All of them required full
+  // eligibility to be issued at all, so their absence means certified.
+  const certified = payload.certified === undefined ? true : payload.certified === true
   return {
     certificateId: str(row.certificate_id),
     organization: str(row.organization),
@@ -685,6 +816,9 @@ function mapCertificateRow(row: Record<string, unknown>, extras?: { signature?: 
     status: str(row.status) as CertificateStatus,
     level,
     levelLabel: LEVEL_LABELS[level] || str(row.level),
+    certified,
+    criteriaMet: num(payload.criteriaMet),
+    criteriaTotal: num(payload.criteriaTotal) || 10,
     trustScore: num(row.trust_score),
     overallReadiness: num(row.overall_readiness),
     quantumRisk: num(row.quantum_risk),
@@ -890,13 +1024,40 @@ function buildAdvisor(eligibility: EligibilityResult, certificate: QuantumTrustC
           ],
     }
   }
+  // Baseline path: evidence exists but certification criteria are unmet. The
+  // tenant CAN issue a Bronze attestation of measured posture today, and the
+  // copy must be explicit that it is not a quantum-secure certification.
+  if (eligibility.issuable) {
+    return {
+      headline: certificate?.status === 'active'
+        ? `Baseline attested — ${eligibility.levelLabel}`
+        : `Ready to issue your Initial Readiness attestation (Bronze)`,
+      verdict: certificate?.status === 'active' ? 'eligible' : 'not_eligible',
+      explanation: [
+        `${eligibility.requiredMet}/${eligibility.requiredTotal} certification criteria pass, so a Bronze Initial Readiness attestation can be issued now. It records the posture actually measured — it does NOT assert the estate is quantum-safe.`,
+        `Full certification (Silver and above) remains blocked by: ${failed.map((c) => c.criterion).join(', ')}.`,
+        ...failed.slice(0, 3).map((c) => `${c.criterion}: required ${c.required}, measured ${c.actual} — ${c.remediation}`),
+        `Weighted Quantum Trust Score™ is ${eligibility.trustScore}/1000. Silver needs ≥700 plus hybrid PQC evidence and every required criterion met.`,
+      ],
+      businessImpact,
+      nextSteps: certificate?.status === 'active'
+        ? [
+            { title: 'Close the certification gaps', detail: `Resolve the ${failed.length} unmet criteri${failed.length === 1 ? 'on' : 'a'} to upgrade from baseline attestation to Silver certification.`, route: '/dashboard/quantum-readiness/risk-analysis' },
+            { title: 'Keep evidence current', detail: 'Continuous monitoring re-validates the attestation on every assessment.', route: '/dashboard/scanner' },
+          ]
+        : [
+            { title: 'Issue your Initial Readiness attestation', detail: 'Generate a signed, publicly verifiable record of your measured baseline — your starting point for the migration programme.', route: '/dashboard/quantum-certification' },
+            { title: 'Then close the gaps', detail: `${failed.length} criteri${failed.length === 1 ? 'on' : 'a'} stand between you and Silver certification.`, route: '/dashboard/quantum-readiness/risk-analysis' },
+          ],
+    }
+  }
+
   return {
-    headline: `Not yet eligible — ${failed.length} required criteri${failed.length === 1 ? 'on' : 'a'} unmet`,
-    verdict: 'not_eligible',
+    headline: 'No assessment evidence yet — run a discovery scan',
+    verdict: 'no_evidence',
     explanation: [
-      `${eligibility.requiredMet}/${eligibility.requiredTotal} required criteria pass. Certification is blocked by: ${failed.map((c) => c.criterion).join(', ')}.`,
-      ...failed.slice(0, 4).map((c) => `${c.criterion}: required ${c.required}, measured ${c.actual} — ${c.remediation}`),
-      `Current weighted trust score is ${eligibility.trustScore}/1000; eligibility (not score) gates issuance.`,
+      'A certificate attests to measured evidence. No assessed assets or catalogued cryptographic components exist for this tenant yet, so there is nothing to attest to.',
+      'Run a discovery scan; once any asset or crypto component is measured you can issue a Bronze Initial Readiness attestation immediately.',
     ],
     businessImpact,
     nextSteps: eligibility.recommendations.slice(0, 4).map((r) => ({ title: r.title, detail: r.detail, route: r.route })),
@@ -1007,9 +1168,26 @@ async function issueCertificate(args: {
   if (!client) return { ok: false, status: 500, code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' }
   const missing = { schema: false }
 
+  /* Stage timings. Issuance is the engine's slowest call — a full evidence
+     rebuild, ML-DSA-65 signing and eight writes — and the first call after a
+     server restart also pays for cold module compilation. When a tenant reports
+     a slow or stuck "Issuing…", these lines name the stage instead of leaving
+     it to guesswork. */
+  const t0 = Date.now()
+  let last = t0
+  const stages: string[] = []
+  const mark = (stage: string) => {
+    const now = Date.now()
+    stages.push(`${stage}=${now - last}ms`)
+    last = now
+  }
+
   const policy = await loadPolicy(client, args.userId, missing)
+  mark('policy')
   const evidence = await gatherEvidence(client, args.token, args.userId)
+  mark('evidence')
   const eligibility = evaluateEligibility(evidence, policy)
+  mark('eligibility')
 
   // Persist the eligibility run (issue trigger) — best effort.
   try {
@@ -1031,80 +1209,118 @@ async function issueCertificate(args: {
   if (missing.schema) {
     return { ok: false, status: 503, code: 'SCHEMA_NOT_APPLIED', message: 'Certification tables missing — run supabase/quantum-certification-schema.sql in the Supabase SQL Editor.' }
   }
-  if (!eligibility.eligible) {
-    return { ok: false, status: 422, code: 'NOT_ELIGIBLE', message: 'Certification criteria not met — certificate not issued. Review the remediation recommendations.', eligibility }
+  // Only the evidence FLOOR gates issuance. A tenant that fails certification
+  // criteria still receives a Bronze baseline attestation stating its measured
+  // posture and its unmet criteria — it simply is not marked `certified`.
+  if (!eligibility.issuable) {
+    return {
+      ok: false,
+      status: 422,
+      code: 'NO_EVIDENCE',
+      message: 'No assessment evidence yet — run a discovery scan first. A certificate cannot attest to an unmeasured estate.',
+      eligibility,
+    }
   }
 
   const issuerKey = await loadIssuerKey()
   if (!issuerKey) return { ok: false, status: 503, code: 'SIGNING_KEY_UNAVAILABLE', message: 'Issuer signing key unavailable — apply the schema and retry.' }
+  mark('issuer-key')
 
   const level = eligibility.level || 'bronze'
-  const certificateId = await nextCertificateId(client)
   const issuedAt = new Date()
   const expiresAt = new Date(issuedAt.getTime() + policy.validityDays * 86400000)
   const s = evidence.snapshot.scores
   const confidence = num(evidence.report.confidenceSummary?.assessmentConfidencePct)
   const residualRisk = num(evidence.report.riskForecast?.residualRisk)
   const scope = deriveScope(evidence.snapshot)
-  const verificationUrl = verificationUrlFor(certificateId)
-
-  // Canonical signed payload — the integrity source of truth.
-  const canonicalPayload = {
-    certificateId,
-    organization: args.organization,
-    level,
-    trustScore: eligibility.trustScore,
-    overallReadiness: s.quantumReadiness,
-    quantumRisk: s.quantumRisk,
-    hndlRisk: s.hndlRisk,
-    residualRisk,
-    assessmentConfidence: confidence,
-    pqcAdoption: s.pqcAdoption,
-    issuedAt: issuedAt.toISOString(),
-    expiresAt: expiresAt.toISOString(),
-    assessmentId: evidence.latestAssessmentId,
-    assessmentVersion: `QTC-${CERTIFICATION_ENGINE_VERSION}`,
-    scope,
-    cryptoStack: evidence.cryptoStack.map((a) => ({ category: a.category, algorithm: a.algorithm, standard: a.standard })),
-    certifiedAssetCount: evidence.certifiedAssets.length,
-    issuer: ISSUER_NAME,
-    verificationUrl,
-  }
-  const { canonical, hashHex, bytes } = hashCanonical(canonicalPayload)
-  const signatureHex = signCanonical(issuerKey, bytes)
-  void canonical
-
   const residualLevel = str(evidence.report.certification?.residualRiskLevel) || (residualRisk <= 25 ? 'Low' : 'Elevated')
-  const { error: insertError } = await client.from(CERT_TABLE).insert({
-    user_id: args.userId,
-    certificate_id: certificateId,
-    organization: args.organization,
-    organization_logo: args.organizationLogo,
-    status: 'active',
-    level,
-    trust_score: eligibility.trustScore,
-    overall_readiness: s.quantumReadiness,
-    quantum_risk: s.quantumRisk,
-    hndl_risk: s.hndlRisk,
-    residual_risk: residualRisk,
-    residual_risk_level: residualLevel,
-    assessment_confidence: confidence,
-    pqc_adoption: s.pqcAdoption,
-    assessment_id: evidence.latestAssessmentId,
-    assessment_version: `QTC-${CERTIFICATION_ENGINE_VERSION}`,
-    scope,
-    payload: canonicalPayload,
-    certificate_hash: hashHex,
-    verification_url: verificationUrl,
-    issued_at: issuedAt.toISOString(),
-    expires_at: expiresAt.toISOString(),
-    renewed_from: args.renewedFrom || null,
-    last_validated_at: issuedAt.toISOString(),
-  })
-  if (insertError) {
+
+  // certificate_id is derived from a row COUNT (nextCertificateId), which is
+  // not atomic under concurrent issuance — two requests can read the same
+  // count before either insert commits (a double-click on "Issue
+  // Certificate", or a renewal racing a fresh issue) and generate the same
+  // id, which the database then rejects on the certificate_id UNIQUE
+  // constraint. Retry with a freshly regenerated (and, from attempt 1,
+  // entropy-widened) id + re-signed payload rather than surfacing that as a
+  // failure — the id is embedded in the signed payload, so a retry cannot
+  // reuse the previous hash/signature.
+  let certificateId = ''
+  let verificationUrl = ''
+  let canonicalPayload: Record<string, unknown> = {}
+  let hashHex = ''
+  let signatureHex = ''
+  const MAX_ID_ATTEMPTS = 5
+  for (let attempt = 0; attempt < MAX_ID_ATTEMPTS; attempt++) {
+    certificateId = await nextCertificateId(client, attempt)
+    verificationUrl = verificationUrlFor(certificateId)
+
+    // Canonical signed payload — the integrity source of truth.
+    canonicalPayload = {
+      certificateId,
+      organization: args.organization,
+      level,
+      /* Inside the signed payload so the distinction is tamper-evident: a Bronze
+         baseline cannot be edited into a certification claim without breaking
+         the ML-DSA-65 signature the public portal verifies. */
+      certified: eligibility.eligible,
+      criteriaMet: eligibility.requiredMet,
+      criteriaTotal: eligibility.requiredTotal,
+      trustScore: eligibility.trustScore,
+      overallReadiness: s.quantumReadiness,
+      quantumRisk: s.quantumRisk,
+      hndlRisk: s.hndlRisk,
+      residualRisk,
+      assessmentConfidence: confidence,
+      pqcAdoption: s.pqcAdoption,
+      issuedAt: issuedAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      assessmentId: evidence.latestAssessmentId,
+      assessmentVersion: `QTC-${CERTIFICATION_ENGINE_VERSION}`,
+      scope,
+      cryptoStack: evidence.cryptoStack.map((a) => ({ category: a.category, algorithm: a.algorithm, standard: a.standard })),
+      certifiedAssetCount: evidence.certifiedAssets.length,
+      issuer: ISSUER_NAME,
+      verificationUrl,
+    }
+    const { canonical, hashHex: h, bytes } = hashCanonical(canonicalPayload)
+    hashHex = h
+    signatureHex = signCanonical(issuerKey, bytes)
+    void canonical
+
+    const { error: insertError } = await client.from(CERT_TABLE).insert({
+      user_id: args.userId,
+      certificate_id: certificateId,
+      organization: args.organization,
+      organization_logo: args.organizationLogo,
+      status: 'active',
+      level,
+      trust_score: eligibility.trustScore,
+      overall_readiness: s.quantumReadiness,
+      quantum_risk: s.quantumRisk,
+      hndl_risk: s.hndlRisk,
+      residual_risk: residualRisk,
+      residual_risk_level: residualLevel,
+      assessment_confidence: confidence,
+      pqc_adoption: s.pqcAdoption,
+      assessment_id: evidence.latestAssessmentId,
+      assessment_version: `QTC-${CERTIFICATION_ENGINE_VERSION}`,
+      scope,
+      payload: canonicalPayload,
+      certificate_hash: hashHex,
+      verification_url: verificationUrl,
+      issued_at: issuedAt.toISOString(),
+      expires_at: expiresAt.toISOString(),
+      renewed_from: args.renewedFrom || null,
+      last_validated_at: issuedAt.toISOString(),
+    })
+    if (!insertError) break
     if (isMissingTable(insertError)) return { ok: false, status: 503, code: 'SCHEMA_NOT_APPLIED', message: 'Certification tables missing — run supabase/quantum-certification-schema.sql.' }
-    return { ok: false, status: 500, code: 'ISSUE_FAILED', message: insertError.message }
+    if (!isCertificateIdConflict(insertError) || attempt === MAX_ID_ATTEMPTS - 1) {
+      return { ok: false, status: 500, code: 'ISSUE_FAILED', message: insertError.message }
+    }
+    console.warn(`[certification] certificate_id collision on ${certificateId}, retrying (attempt ${attempt + 1}/${MAX_ID_ATTEMPTS})`)
   }
+  mark('sign')
 
   const chain = [
     { role: 'issuer', name: ISSUER_NAME, algorithm: 'ML-DSA-65 (FIPS 204)' },
@@ -1143,10 +1359,19 @@ async function issueCertificate(args: {
   await writeAudit(client, args.userId, { certificateId, action: event, detail: `Level ${level}, trust score ${eligibility.trustScore}/1000, expires ${expiresAt.toISOString()}`, actorEmail: args.actorEmail, ip: args.ip })
   if (args.renewedFrom) await writeNotification(client, args.userId, certificateId, 'renewed', `Certificate renewed as ${certificateId} (${LEVEL_LABELS[level]}).`)
 
-  const certRow = await rows(client, CERT_TABLE, (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(1))
-  const sigRow = await rows(client, 'certificate_signatures', (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(1))
-  const algoRows = await rows(client, 'certificate_algorithms', (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(50))
-  const assetRows = await rows(client, 'certificate_assets', (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(200))
+  mark('writes')
+
+  // Read back in parallel — these four are independent, and running them
+  // sequentially added four round-trips to the slowest call in the engine.
+  const [certRow, sigRow, algoRows, assetRows] = await Promise.all([
+    rows(client, CERT_TABLE, (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(1)),
+    rows(client, 'certificate_signatures', (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(1)),
+    rows(client, 'certificate_algorithms', (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(50)),
+    rows(client, 'certificate_assets', (q) => q.select('*').eq('user_id', args.userId).eq('certificate_id', certificateId).limit(200)),
+  ])
+  mark('readback')
+  console.info(`[certification] issued ${certificateId} (${level}) in ${Date.now() - t0}ms — ${stages.join(' ')}`)
+
   return { ok: true, certificate: mapCertificateRow(certRow[0] || {}, { signature: (sigRow[0] as Record<string, unknown>) || null, algorithms: algoRows, assets: assetRows }) }
 }
 
@@ -1432,6 +1657,9 @@ certificateVerificationRouter.get('/:certificateId', async (req: Request, res: R
       statusDetail: 'No certificate with this ID exists in the QGuard Helix registry.',
       level: null,
       levelLabel: '',
+      certified: false,
+      criteriaMet: 0,
+      criteriaTotal: 0,
       trustScore: 0,
       overallReadiness: 0,
       pqcAdoption: 0,
@@ -1469,6 +1697,10 @@ certificateVerificationRouter.get('/:certificateId', async (req: Request, res: R
   await logVerification(integrityValid && signatureValid !== false ? status : 'tampered')
 
   const level = str(cert.level) as CertificationLevel
+  // Read the certified/baseline flag from the SIGNED payload verified above,
+  // never from a mutable column — the public claim must be the signed one.
+  const signedPayload = (cert.payload && typeof cert.payload === 'object' ? cert.payload : {}) as Record<string, unknown>
+  const certified = signedPayload.certified === undefined ? true : signedPayload.certified === true
   const payload: PublicCertificateVerification = {
     found: true,
     certificateId,
@@ -1477,6 +1709,9 @@ certificateVerificationRouter.get('/:certificateId', async (req: Request, res: R
     statusDetail: integrityValid && signatureValid !== false ? statusDetail(status, str(cert.expires_at)) : 'INTEGRITY FAILURE — the stored certificate does not match its cryptographic hash/signature.',
     level,
     levelLabel: LEVEL_LABELS[level] || str(cert.level),
+    certified,
+    criteriaMet: num(signedPayload.criteriaMet),
+    criteriaTotal: num(signedPayload.criteriaTotal) || 10,
     trustScore: num(cert.trust_score),
     overallReadiness: num(cert.overall_readiness),
     pqcAdoption: num(cert.pqc_adoption),

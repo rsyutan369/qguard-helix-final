@@ -81,8 +81,11 @@ export type Recommendation = {
 export type ComplianceItem = {
   framework: string
   control: string
+  /** met | partial | not-met | pending — always derived from `score`. */
   status: string
   score: number
+  /** The measurement this indicator was decided from. */
+  basis?: string
 }
 
 export type WorkflowPhase = {
@@ -165,11 +168,26 @@ export type SandboxSummary = {
   vulnerableAssets: number
   criticalExposures: number
   highExposures: number
+  mediumExposures: number
+  /** Distinct graded scanner observations behind the severity counts above. */
+  gradedObservations: number
+  /** Which computation produced them — canonical scanner view or local fallback. */
+  gradedObservationsSource: string
   openVulnerabilities: number
   pqcReadiness: number
-  riskScore: number
+  /** False when no crypto inventory exists — readiness is then not measured. */
+  hasReadinessBaseline: boolean
+  /** 0-100, LOWER IS BETTER (same scale/direction as the QR Engine). Null = not assessed. */
+  quantumRiskScore: number | null
+  quantumRiskLevel: string
+  /** quantum-readiness-engine | sandbox-derived | not-assessed */
+  quantumRiskSource: string
   complianceScore: number
+  /** Certificates expiring soon. Distinct from `nonPqcCerts`. */
   expiringCerts: number
+  /** Classical (non-quantum-safe) certificates — migration scope, not a fault. */
+  nonPqcCerts: number
+  certsNeedingRotation: number
   lastScanAt: string | null
   completionRate: number
   workflowCompletionRate: number
@@ -325,13 +343,15 @@ export type RollbackChecklistItem = { id: string; label: string; covered: boolea
 
 export type RollbackAnalysisPayload = {
   available: boolean
-  successProbabilityPct: number
-  snapshotCoveragePct: number
+  /** Null until at least one simulation has rehearsed a rollback. */
+  successProbabilityPct: number | null
+  snapshotCoveragePct: number | null
+  assessed: boolean
   simulationsWithSnapshots: number
   totalSandboxSimulations: number
-  rtoMinutes: number
-  rpoMinutes: number
-  downtimePredictionMin: number
+  rtoMinutes: number | null
+  rpoMinutes: number | null
+  downtimePredictionMin: number | null
   automaticRollbackReady: boolean
   restorationChecklist: RollbackChecklistItem[]
   history: { rolledBackWorkflows: number; failedWorkflows: number }
@@ -346,7 +366,7 @@ export type SophiaPayload = {
   verdict: 'no_data' | 'at_risk' | 'progressing' | 'ready'
   migrationConfidencePct: number
   compatibilityScorePct: number
-  riskScorePct: number
+  quantumRiskScore: number | null
   rollbackConfidencePct: number
   aiConfidencePct: number
   recommendedSequence: SophiaSequenceStep[]
@@ -671,19 +691,34 @@ export function MetricTile({ label, value, detail, icon: Icon, color, trend }: {
   )
 }
 
-export function ScoreGauge({ value, size = 120, label }: { value: number; size?: number; label: string }) {
+/**
+ * @param value       null renders "—": an unmeasured score must never be shown
+ *                    as 0, which on a lower-better scale reads as perfect.
+ * @param lowerBetter set for risk-style scores so the colour ramp is inverted.
+ */
+export function ScoreGauge({
+  value,
+  size = 120,
+  label,
+  lowerBetter = false,
+}: { value: number | null; size?: number; label: string; lowerBetter?: boolean }) {
+  const measured = typeof value === 'number' && Number.isFinite(value)
+  const safe = measured ? Math.max(0, Math.min(100, value)) : 0
   const r = (size - 16) / 2
   const circ = 2 * Math.PI * r
-  const offset = circ - (Math.max(0, Math.min(100, value)) / 100) * circ
-  const color = value >= 80 ? GREEN : value >= 60 ? GOLD : value >= 40 ? ORANGE : RED
+  const offset = circ - (safe / 100) * circ
+  const goodness = lowerBetter ? 100 - safe : safe
+  const color = !measured ? 'rgba(148,163,184,0.5)' : goodness >= 80 ? GREEN : goodness >= 60 ? GOLD : goodness >= 40 ? ORANGE : RED
   return (
     <div className="flex flex-col items-center gap-2">
       <svg width={size} height={size} className="-rotate-90">
         <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.06)" strokeWidth={8} fill="none" />
-        <circle cx={size / 2} cy={size / 2} r={r} stroke={color} strokeWidth={8} fill="none" strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" className="transition-all duration-1000 ease-out" style={{ filter: `drop-shadow(0 0 8px ${color}66)` }} />
+        {measured && (
+          <circle cx={size / 2} cy={size / 2} r={r} stroke={color} strokeWidth={8} fill="none" strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" className="transition-all duration-1000 ease-out" style={{ filter: `drop-shadow(0 0 8px ${color}66)` }} />
+        )}
       </svg>
       <div className="absolute flex flex-col items-center justify-center" style={{ width: size, height: size }}>
-        <span className="font-mono text-2xl font-black text-white">{Math.round(value)}</span>
+        <span className="font-mono text-2xl font-black text-white">{measured ? Math.round(safe) : '—'}</span>
         <span className="text-[9px] font-bold uppercase tracking-wider text-white/40">/ 100</span>
       </div>
       <span className="text-[10px] font-bold text-white/50">{label}</span>

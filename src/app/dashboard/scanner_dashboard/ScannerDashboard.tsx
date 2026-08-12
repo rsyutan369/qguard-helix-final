@@ -2472,7 +2472,12 @@ export default function ScannerDashboard() {
               score: assessment.executive.encryptionScore,
               postQuantumReadiness: assessment.executive.postQuantumReadiness,
               gradeable: assessment.executive.gradeable,
+              /* One decomposition, one set of surface scores. The hero used to
+                 derive its own from the finding list, which is how the cards
+                 came to contradict the gauge they surround. */
+              nodeScores: assessment.nodeScores,
             }}
+            scoreComponents={assessment.scoreComponents}
             onStart={() => {
               if (targets.length === 0) {
                 showToast('Add an authorized target to the scan queue first.');
