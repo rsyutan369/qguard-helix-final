@@ -1,11 +1,11 @@
 {
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2hFSENtTWVla2hEKytoQkYxMFZtQk55b0VYOGp6bXZZYzM2ZzVYeHRaLzlQKzB0RDNLVDFXUk1YMWYxby9JWCszVGc4M24zS1h0Z01BcmdpU1dUeVFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg0MDcyMjQwCWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjIuMjhfeDY0LXNldHVwLmV4ZQpKa21NaC9SOUs4SEM0bTc5dHRib2hyVFVKN1VHNXY4ZHdjdTk3ei9lYWFJUEtEOWQ0VlcyZGIyczdmL3J4RFpIRm45TkQ4UjZOWnd3U1B6eE9VMjhEUT09Cg==",
-                                             "url":  "video/downloads/QGuard-Messaging-Setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2paMDFPNGdWamM1b0RuTlU4UHJ6WU9NT1dSNUpyeUwwWG16dXJ5QThXZXhsdXdobDFTdzBlQ01SUjN3K1FVd3hSbmF2N0ovUVhDTjZ2YjNpUzloRXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTAzNDk1CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjIuMjlfeDY0LXNldHVwLmV4ZQpRanY5SXU3dXMwY3d1bFpWVlR2bjJMMDdOSWV5WEd3QTJmNXVNNnVqQ1FrelVjN3RadlFCK1pBQXpqaHVDUy9EZ2NZcGRMVEliNE10b1hpT2JhaktBdz09Cg==",
+                                             "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
                                          }
                   },
-    "pub_date":  "2026-07-14T23:37:23Z",
-    "version":  "1.2.28",
-    "notes":  "Sharper"
+    "pub_date":  "2026-08-12T02:58:19Z",
+    "version":  "1.2.29",
+    "notes":  "Restore sign-in: point the app at the current Supabase project."
 }
