@@ -154,10 +154,34 @@ export const hndlCategorySchema = z.object({
 export type HndlCategory = z.infer<typeof hndlCategorySchema>;
 
 export const costLineSchema = z.object({ category: z.string(), costUsd: z.number() });
+export const costExclusionSchema = z.object({
+  category: z.string(),
+  reason: z.string(),
+  route: z.string().optional(),
+});
+export const budgetVarianceSchema = z.object({
+  budgetUsd: z.number(),
+  estimateUsd: z.number(),
+  varianceUsd: z.number(),
+  variancePct: z.number(),
+  status: z.enum(['within-budget', 'over-budget']),
+});
 export const costForecastSchema = z.object({
   lines: z.array(costLineSchema),
   totalUsd: z.number(),
   projectedRiskReductionValueUsd: z.number(),
+  /** Categories the evidence does not support, so they were NOT costed. */
+  excludedCategories: z.array(costExclusionSchema).default([]),
+  /** The planning assumptions behind every figure — always published with them. */
+  assumptions: z.string().default(''),
+  blendedRateUsd: z.number().default(0),
+  hoursPerWeek: z.number().default(0),
+  totalHours: z.number().default(0),
+  /** How the risk-reduction value was derived (never a bare multiple of cost). */
+  valueBasis: z.string().default(''),
+  financialExposureUsd: z.number().default(0),
+  /** Present only when the tenant supplied their own budget. */
+  budget: budgetVarianceSchema.nullable().default(null),
 });
 export type CostForecast = z.infer<typeof costForecastSchema>;
 

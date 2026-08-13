@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { describeCostAssumptions } from '@/lib/migration/cost-model';
 import {
   Badge,
   EmptyState,
@@ -182,6 +183,11 @@ export default function AiMigrationAdvisorPage() {
           </div>
         ))}
       </motion.section>
+
+      {/* "Est. Cost" above is a planning estimate — publish what it rests on. */}
+      {estimates.migrationCostUsd ? (
+        <p className="-mt-1 text-[9.5px] leading-relaxed text-white/35">{describeCostAssumptions(snapshot.costAssumptions)}</p>
+      ) : null}
 
       {generated ? (
         <>

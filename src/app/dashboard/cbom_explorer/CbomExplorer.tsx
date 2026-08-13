@@ -33,6 +33,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
+import { InventoryExportMenu } from '../_components/InventoryExportMenu';
 import { useQuantumReadiness, readinessTone } from '@/app/dashboard/quantum-readiness/_shared';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { namesCryptography as sharedNamesCryptography } from '@/lib/scanner/finding-identity';
@@ -1117,11 +1118,34 @@ export default function CbomExplorer() {
             <Plus className="h-4 w-4" />
             Add Target
           </Link>
-          <button type="button" onClick={exportSnapshot} className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-4 py-2 text-xs font-bold text-[var(--qg-dashboard-text-soft)] transition hover:border-[var(--qg-amber)]/50">
-            <Download className="h-4 w-4" />
-            Export
-            <ChevronDown className="h-3 w-3" />
-          </button>
+          <InventoryExportMenu
+            label={`Export ${filteredEntries.length === entries.length ? `${entries.length} components` : `${filteredEntries.length} shown`}`}
+            disabled={entries.length === 0}
+            build={() => ({
+              kind: 'cbom' as const,
+              summary: {
+                totalAssets: data.summary.totalAssets,
+                totalComponents: data.summary.totalComponents,
+                vulnerableAssets: data.summary.vulnerableAssets,
+                vulnerableComponents: data.summary.vulnerableComponents,
+                pqcReadyComponents: data.summary.pqcReadyComponents,
+                criticalFindings: data.summary.criticalFindings,
+                totalFindings: data.summary.totalFindings,
+                riskScore: data.summary.riskScore,
+                qScore: data.summary.qScore,
+              },
+              assets,
+              cbom: filteredEntries,
+              totalAssetsBeforeFilter: assets.length,
+              totalCbomBeforeFilter: entries.length,
+              generatedAt: new Date().toISOString(),
+              lastScanAt: latestScan || data.generatedAt || null,
+              filtered: filteredEntries.length !== entries.length,
+              filterDescription: [query && `search "${query}"`, assetFilter !== 'all' && `asset ${assetFilter}`, typeFilter !== 'all' && `type ${typeFilter}`, statusFilter !== 'all' && `status ${statusFilter}`]
+                .filter(Boolean)
+                .join(', '),
+            })}
+          />
           <button type="button" className="relative inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] text-[var(--qg-dashboard-text-soft)]">
             <Bell className="h-4 w-4" />
             {atRiskComponents > 0 && (

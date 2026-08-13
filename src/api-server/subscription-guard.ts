@@ -31,6 +31,7 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/exposure-graph', tier: 'basic' }, // Quantum Exposure Graph™ dependency & migration intelligence (QR suite)
   { prefix: '/api/v1/reports', tier: 'basic' },
   { prefix: '/api/v1/migration-planner', tier: 'basic' },
+  { prefix: '/api/v1/cost-assumptions', tier: 'basic' },
   { prefix: '/api/v1/sandbox', tier: 'basic' },
   { prefix: '/api/v1/harvest-now', tier: 'basic' },
   { prefix: '/api/v1/quantum-certification', tier: 'basic' }, // Quantum Trust Certification Engine (BASIC/PRO/ELITE)
@@ -49,6 +50,13 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/dashboard/pqauth', tier: 'pro' },
   { prefix: '/api/v1/dashboard/telemetry-correlation', tier: 'pro' },
   { prefix: '/api/v1/dashboard/quantum-risk-scoring', tier: 'pro' },
+  // Intelligence suite — the frontend routes /dashboard/drift, /dashboard/vulnerabilities
+  // and /dashboard/runtime-crypto-intel are all Pro. Without these entries the APIs
+  // behind them matched no prefix and were served ungated, so a hand-crafted request
+  // reached Pro data from a Starter account.
+  { prefix: '/api/v1/dashboard/drift', tier: 'pro' },
+  { prefix: '/api/v1/dashboard/vulnerabilities', tier: 'pro' },
+  { prefix: '/api/v1/runtime-crypto-intel', tier: 'pro' },
   { prefix: '/api/v1/dashboard/tls-telemetry', tier: 'pro' },
   { prefix: '/api/v1/dashboard/tls-orchestrator', tier: 'pro' },
   { prefix: '/api/v1/dashboard/pki-visibility', tier: 'pro' },

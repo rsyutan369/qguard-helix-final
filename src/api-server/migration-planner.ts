@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildSnapshot } from './quantum-readiness'
 import { buildReportModel } from '@/services/reporting/ReportEvidence'
+import { DEFAULT_COST_ASSUMPTIONS, normalizeToWholeHours } from '@/lib/migration/cost-model'
 import { brandingSchema } from '@/services/reporting/schemas/ReportSchema'
 import {
   buildAssetPortfolio,
@@ -126,17 +127,122 @@ function buildStrategies(snapshot: Snapshot, report: ReportModel) {
 }
 
 /* ---- What-if engine ---- */
-function buildWhatIf(snapshot: Snapshot, report: ReportModel) {
-  const cost = snapshot.estimates.migrationCostUsd || 0
+/**
+ * What-if scenarios sized from MEASURED scope.
+ *
+ * Every figure here used to be a literal: costs were fixed fractions of the
+ * programme total (0.2 / 0.25 / 0.3 / 0.22), timelines were the strings
+ * '4 Weeks' / '3 Months' / '6 Weeks' / '5 Weeks', and compliance deltas were the
+ * constants 12 / 18 / 23 / 15. None moved with the estate, so "Migrate PKI
+ * Infrastructure — $39,188, 3 Months" was printed for an estate holding three
+ * certificates. The fourth row was the worst of the set: its LABEL carried a
+ * real evidence-derived percentage while the numbers beside it did not, which
+ * made hardcoded values look measured.
+ *
+ * Each scenario now names the components it covers, and cost/timeline/risk are
+ * derived from that share of the programme. Scenarios OVERLAP (full hybrid TLS
+ * includes the external TLS work) — they are alternatives to compare, not a
+ * plan to sum, and `coverage` states the scope each one buys.
+ */
+function buildWhatIf(snapshot: Snapshot, report: ReportModel, cryptoInventory: Row[] = []) {
+  const assumptions = snapshot.costAssumptions ?? DEFAULT_COST_ASSUMPTIONS
+  const totalCost = snapshot.estimates.migrationCostUsd || 0
+  const totalWeeks = snapshot.estimates.migrationTimelineWeeks || 0
   const reduction = report.executiveBlock.expectedRiskReductionPct
-  const domainScore = (needle: string) => report.readinessDomains.find((d) => d.domain.toLowerCase().includes(needle))?.score ?? 0
-  const tlsShare = clamp(((100 - domainScore('tls')) / Math.max(1, report.readinessDomains.reduce((s, d) => s + (100 - d.score), 0))) * 100)
-  return [
-    { scenario: 'Migrate External TLS Infrastructure', riskReductionPct: clamp(reduction * 0.4), costUsd: Math.round(cost * 0.2), timelineLabel: '4 Weeks', complianceIncreasePct: 12 },
-    { scenario: 'Migrate PKI Infrastructure', riskReductionPct: clamp(reduction * 0.22), costUsd: Math.round(cost * 0.25), timelineLabel: '3 Months', complianceIncreasePct: 18 },
-    { scenario: 'Enable Full Hybrid TLS', riskReductionPct: clamp(reduction * 0.55), costUsd: Math.round(cost * 0.3), timelineLabel: '6 Weeks', complianceIncreasePct: 23 },
-    { scenario: `Migrate ${tlsShare}%-weighted TLS exposure first`, riskReductionPct: clamp(reduction * 0.45), costUsd: Math.round(cost * 0.22), timelineLabel: '5 Weeks', complianceIncreasePct: 15 },
+  const vulnerableComponents = Math.max(0, snapshot.inventory.vulnerableComponents)
+  const certificates = Math.max(0, snapshot.inventory.certificatesAnalyzed)
+
+  /* Measured scope per scenario, from the vulnerable crypto inventory.
+     Transport and PKI are disjoint here: a component is classified once, by the
+     layer that owns it, so "Transport + PKI" is a real union and not a figure
+     inflated by double-counting the same component in both. */
+  const vulnerableRows = cryptoInventory.filter(
+    (row) => row.is_vulnerable === true && row.is_quantum_safe !== true,
+  )
+  const textOf = (row: Row) => `${str(row.algorithm)} ${str(row.name)} ${str(row.item_type)} ${str(row.protocol)}`.toLowerCase()
+  const PKI_RE = /cert|x.?509|signature|sign|issuer|ecdsa-with|shad*with|rsassa/
+  const TLS_RE = /tls_|cipher|ecdhe|kem|key exchange|handshake|dhe|chacha|aes_/
+  let tlsRows = 0
+  let pkiRows = 0
+  for (const row of vulnerableRows) {
+    const text = textOf(row)
+    if (PKI_RE.test(text)) pkiRows += 1
+    else if (TLS_RE.test(text)) tlsRows += 1
+  }
+  /* Inventory ROWS are not the same unit as CBOM COMPONENTS (one component can
+     hold several rows), so the row split is converted to a share and re-expressed
+     in component space. Clamping raw row counts instead would let transport+PKI
+     exceed the estate. Falls back to zero scope when the inventory query
+     degraded, rather than reporting a confident number from no rows. */
+  const classifiedRows = tlsRows + pkiRows
+  const inComponents = (rows: number) =>
+    classifiedRows > 0 ? Math.round((rows / classifiedRows) * vulnerableComponents) : 0
+  const tlsComponents = inComponents(tlsRows)
+  const pkiComponents = Math.max(0, vulnerableComponents - tlsComponents)
+
+  /** Cost/timeline for a scenario covering `components` of the vulnerable estate. */
+  const scale = (components: number) => {
+    const share = vulnerableComponents > 0 ? Math.min(1, components / vulnerableComponents) : 0
+    const costUsd = normalizeToWholeHours(totalCost * share, assumptions)
+    const weeks = Math.max(share > 0 ? 1 : 0, Math.round(totalWeeks * share))
+    return {
+      costUsd,
+      weeks,
+      timelineLabel: weeks > 0 ? `${weeks} week${weeks === 1 ? '' : 's'}` : EVIDENCE_UNAVAILABLE,
+      share,
+    }
+  }
+
+  const scenarios = [
+    {
+      scenario: 'Enable hybrid TLS key exchange (X25519 + ML-KEM-768)',
+      components: tlsComponents,
+      coverage: `${tlsComponents} of ${vulnerableComponents} vulnerable component(s) in transport crypto`,
+    },
+    {
+      scenario: 'Modernise PKI / certificate signatures (ML-DSA-65)',
+      components: pkiComponents,
+      coverage: `${pkiComponents} of ${vulnerableComponents} vulnerable component(s) across ${certificates} discovered certificate(s)`,
+    },
+    {
+      scenario: 'Transport + PKI together',
+      components: Math.min(vulnerableComponents, tlsComponents + pkiComponents),
+      coverage: `${Math.min(vulnerableComponents, tlsComponents + pkiComponents)} of ${vulnerableComponents} vulnerable component(s)`,
+    },
+    {
+      scenario: 'Complete programme (all measured findings)',
+      components: vulnerableComponents,
+      coverage: `All ${vulnerableComponents} vulnerable component(s)`,
+    },
   ]
+
+  /* Drop a scenario whose scope has collapsed to the full programme — on a
+     small estate "Transport + PKI" IS the whole programme, and printing it twice
+     at the same price invites the reader to add them. */
+  const seen = new Set<number>()
+  return scenarios
+    .filter((entry, index) => {
+      if (index === scenarios.length - 1) return true
+      if (entry.components >= vulnerableComponents) return false
+      if (seen.has(entry.components)) return false
+      seen.add(entry.components)
+      return entry.components > 0
+    })
+    .map((entry) => {
+    const sized = scale(entry.components)
+    return {
+      scenario: entry.scenario,
+      // Risk reduction is proportional to the share of vulnerable components the
+      // scenario removes, bounded by the programme's own expected reduction.
+      riskReductionPct: clamp(reduction * sized.share),
+      costUsd: sized.costUsd,
+      timelineLabel: sized.timelineLabel,
+      // Compliance progress tracks the same measured share instead of a constant.
+      complianceIncreasePct: clamp(Math.round(sized.share * 100)),
+      coverage: entry.coverage,
+      componentsCovered: entry.components,
+    }
+  })
 }
 
 /* ---- Migration blockers (from real evidence) ---- */
@@ -238,7 +344,7 @@ async function buildPlan(token: string, userId: string) {
   const report = buildReportModel(snapshot, branding, 'migration', 'QGuard Helix')
 
   const client = createAuthClient(token)
-  const [jobs, plans, validations, events, certificates] = client
+  const [jobs, plans, validations, events, certificates, cryptoInventory] = client
     ? await Promise.all([
         safeRows(client as never, 'migration_jobs', 'id, status, progress, asset_id, job_type, created_at, updated_at', userId, 300),
         // NOTE: migration_plans has no `name` column (display name lives in
@@ -248,8 +354,13 @@ async function buildPlan(token: string, userId: string) {
         safeRows(client as never, 'migration_validation_logs', 'id, status, created_at', userId, 200),
         safeRows(client as never, 'migration_events', 'id, event_type, status, created_at', userId, 200),
         safeRows(client as never, 'certificates', 'id, common_name, name, not_after, valid_to, signature_algorithm', userId, 500),
+        // What-if scenarios are sized from the FULL vulnerable inventory, not
+        // snapshot.criticalFindings — that list is capped at 24 records and
+        // carries only critical/high, which made two different scenarios report
+        // the same scope.
+        safeRows(client as never, 'crypto_inventory', 'id, item_type, name, algorithm, protocol, exposure_level, is_vulnerable, is_quantum_safe', userId, 2500),
       ])
-    : [[], [], [], [], []]
+    : [[], [], [], [], [], []]
 
   const inv = snapshot.inventory
   // The asset migration queue is persisted as a migration_plans row (see
@@ -276,7 +387,7 @@ async function buildPlan(token: string, userId: string) {
       hndlExposure: snapshot.scores.hndlRiskLevel,
       hndlScore: snapshot.scores.hndlRisk,
       pqcAdoption: snapshot.scores.pqcAdoption,
-      criticalAssetsRemaining: snapshot.riskDistribution.critical,
+      criticalFindingsRemaining: snapshot.riskDistribution.critical,
       quantumRisk: snapshot.scores.quantumRisk,
       assetsAssessed: inv.assetsAssessed,
     },
@@ -297,7 +408,7 @@ async function buildPlan(token: string, userId: string) {
     businessImpact: report.businessImpact,
     readinessDomains: report.readinessDomains.map((d) => ({ ...d, complexity: d.score >= 65 ? 'Low' : d.score >= 40 ? 'Medium' : 'High' })),
     strategies: buildStrategies(snapshot, report),
-    whatIf: buildWhatIf(snapshot, report),
+    whatIf: buildWhatIf(snapshot, report, cryptoInventory),
     blockers,
     heatmap,
     timeline: buildTimeline(snapshot),

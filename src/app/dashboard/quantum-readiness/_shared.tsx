@@ -8,6 +8,12 @@ import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
+import {
+  DEFAULT_COST_ASSUMPTIONS,
+  resolveCostAssumptions,
+  type CostAssumptions,
+  type FinancialExposure,
+} from '@/lib/migration/cost-model';
 
 /* ------------------------------------------------------------------ */
 /* Palette                                                            */
@@ -109,6 +115,10 @@ export interface QuantumReadinessSnapshot {
   // parallelWorkstreams: parallel migration teams assumed by the timeline model
   // (1 for small estates; >1 bounds the calendar duration for large estates).
   estimates: { migrationTimelineWeeks: number; migrationCostUsd: number; parallelWorkstreams?: number };
+  /** Tenant planning assumptions every currency figure is built on. */
+  costAssumptions: CostAssumptions;
+  /** Shared exposure model — the SAME numbers the Executive Command Center shows. */
+  businessValue: FinancialExposure;
   telemetry: {
     runtimeEvents: number;
     scanResults: number;
@@ -167,6 +177,14 @@ export const EMPTY_SNAPSHOT: QuantumReadinessSnapshot = {
   exposureGraph: { nodes: [], edges: [] },
   riskTrend: [],
   estimates: { migrationTimelineWeeks: 0, migrationCostUsd: 0 },
+  costAssumptions: DEFAULT_COST_ASSUMPTIONS,
+  businessValue: {
+    financialExposureUsd: 0,
+    revenueProtectedUsd: 0,
+    criticalVulnerableAssets: 0,
+    standardVulnerableAssets: 0,
+    criticalityTagged: false,
+  },
   telemetry: {
     runtimeEvents: 0,
     scanResults: 0,
@@ -780,6 +798,8 @@ export function useQuantumReadiness() {
         riskDistribution: { ...EMPTY_SNAPSHOT.riskDistribution, ...(data.riskDistribution || {}) },
         exposureGraph: { ...EMPTY_SNAPSHOT.exposureGraph, ...(data.exposureGraph || {}) },
         estimates: { ...EMPTY_SNAPSHOT.estimates, ...(data.estimates || {}) },
+        costAssumptions: resolveCostAssumptions(data.costAssumptions as Record<string, unknown> | null),
+        businessValue: { ...EMPTY_SNAPSHOT.businessValue, ...(data.businessValue || {}) },
         telemetry: { ...EMPTY_SNAPSHOT.telemetry, ...(data.telemetry || {}) },
       });
       setState('success');

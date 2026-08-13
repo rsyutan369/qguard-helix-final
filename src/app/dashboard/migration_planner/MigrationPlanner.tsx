@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { CostAssumptionsEditor } from './CostAssumptionsEditor';
 import { motion } from 'framer-motion';
 import {
   Activity,
@@ -28,6 +29,7 @@ import {
   ShieldCheck,
   Target,
   Workflow,
+  SlidersHorizontal,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
@@ -254,6 +256,9 @@ export default function MigrationPlanner() {
   const navigate = useNavigate();
   const { session } = useAuth();
   const { plan, state, error, sseConnected, refresh } = useMigrationPlan();
+  // Cost/value assumptions drive every currency figure on this page; editing
+  // them must re-derive the plan, not just the dialog.
+  const [assumptionsOpen, setAssumptionsOpen] = useState(false);
   const [strategyKey, setStrategyKey] = useState('balanced');
   const [exporting, setExporting] = useState<string | null>(null);
   const [heatmapFilter, setHeatmapFilter] = useState<string>('all');
@@ -579,6 +584,12 @@ export default function MigrationPlanner() {
         {/* Approval workflow — executive sign-off gate */}
         <ApprovalWorkflowPanel onDecision={() => void refresh()} />
 
+        <CostAssumptionsEditor
+          open={assumptionsOpen}
+          onClose={() => setAssumptionsOpen(false)}
+          onSaved={() => void refresh()}
+        />
+
         {/* Executive hero metrics */}
         <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {[
@@ -589,7 +600,7 @@ export default function MigrationPlanner() {
             { label: 'Potential Risk Reduction', value: percentLabel(plan.hero.riskReductionPct), detail: 'Across all waves', color: GREEN, ring: plan.hero.riskReductionPct },
             { label: 'HNDL Exposure', value: plan.hero.hndlExposure, detail: `${integerFmt(plan.hero.hndlScore)}/100`, color: levelTone(plan.hero.hndlExposure), icon: AlertTriangle },
             { label: 'PQC Adoption', value: percentLabel(plan.hero.pqcAdoption), detail: 'Quantum-safe coverage', color: CYAN, ring: plan.hero.pqcAdoption },
-            { label: 'Critical Findings Remaining', value: integerFmt(plan.hero.criticalAssetsRemaining), detail: 'Highest priority', color: ORANGE, icon: ShieldAlert },
+            { label: 'Critical Findings Remaining', value: integerFmt(plan.hero.criticalFindingsRemaining), detail: 'Highest priority', color: ORANGE, icon: ShieldAlert },
           ].map((kpi) => (
             <div key={kpi.label}><MetricCard {...kpi} /></div>
           ))}
@@ -711,6 +722,7 @@ export default function MigrationPlanner() {
               {plan.whatIf.map((w) => (
                 <div key={w.scenario} className="rounded-md border border-white/8 bg-white/[0.025] p-3">
                   <div className="text-xs font-bold text-white/85">{w.scenario}</div>
+                  {w.coverage ? <div className="mt-0.5 text-[10px] text-white/40">{w.coverage}</div> : null}
                   <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
                     <span style={{ color: GREEN }}>Risk ↓ {percentLabel(w.riskReductionPct)}</span>
                     <span className="text-white/55">{usd(w.costUsd)}</span>
@@ -720,6 +732,11 @@ export default function MigrationPlanner() {
                 </div>
               ))}
             </div>
+            {/* Scenarios overlap by construction; adding them would double-count. */}
+            <p className="mt-2.5 text-[9.5px] leading-relaxed text-white/35">
+              Alternatives sized from measured component scope — compare them, do not add them. Cost and timeline scale
+              with the share of the {plan.hero.vulnerableComponents} vulnerable component(s) each one covers.
+            </p>
           </Panel>
 
           <Panel className="p-5 xl:col-span-7">
@@ -990,12 +1007,91 @@ export default function MigrationPlanner() {
           </Panel>
 
           <Panel className="p-5 xl:col-span-5">
-            <SectionTitle suffix={<Banknote className="h-4 w-4 text-white/40" />}>Cost Forecasting</SectionTitle>
+            <SectionTitle
+              suffix={
+                <button
+                  type="button"
+                  onClick={() => setAssumptionsOpen(true)}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-cyan-300/90 transition-colors hover:bg-cyan-400/10 hover:text-cyan-200"
+                >
+                  <SlidersHorizontal className="h-3 w-3" /> Assumptions
+                </button>
+              }
+            >
+              Cost Forecasting
+            </SectionTitle>
             <BarList rows={plan.costForecast.lines.map((l) => ({ label: l.category, value: l.costUsd }))} colorFor={() => EMERALD} max={Math.max(1, ...plan.costForecast.lines.map((l) => l.costUsd))} />
+
+            {/* Categories with no supporting inventory are reported, never costed:
+                a budget line for hardware the scan never found is a fabricated number. */}
+            {plan.costForecast.excludedCategories?.length ? (
+              <div className="mt-3 rounded-md border border-white/8 bg-white/[0.02] p-2.5">
+                <div className="text-[9.5px] font-bold uppercase tracking-wider text-white/40">Not costed — no evidence</div>
+                <ul className="mt-1.5 space-y-1">
+                  {plan.costForecast.excludedCategories.map((entry) => (
+                    <li key={entry.category} className="flex flex-wrap items-baseline gap-x-1.5 text-[10.5px] leading-snug">
+                      <span className="font-semibold text-white/65">{entry.category}</span>
+                      <span className="text-white/40">— {entry.reason}</span>
+                      {entry.route ? (
+                        <Link to={entry.route} className="text-cyan-300/80 underline decoration-cyan-400/30 underline-offset-2 hover:text-cyan-200">
+                          connect
+                        </Link>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <div className="rounded-md border border-white/8 bg-black/20 p-3"><div className="text-lg font-semibold" style={{ color: EMERALD }}>{usd(plan.costForecast.totalUsd)}</div><div className="text-[10px] uppercase tracking-wide text-white/45">Total Migration Cost</div></div>
-              <div className="rounded-md border border-white/8 bg-black/20 p-3"><div className="text-lg font-semibold" style={{ color: GREEN }}>{usd(plan.costForecast.projectedRiskReductionValueUsd)}</div><div className="text-[10px] uppercase tracking-wide text-white/45">Projected Risk-Reduction Value</div></div>
+              <div className="rounded-md border border-white/8 bg-black/20 p-3">
+                <div className="text-lg font-semibold" style={{ color: EMERALD }}>{usd(plan.costForecast.totalUsd)}</div>
+                <div className="text-[10px] uppercase tracking-wide text-white/45">Total Migration Cost</div>
+                {plan.costForecast.totalHours ? (
+                  <div className="mt-1 font-mono text-[9.5px] text-white/35">
+                    {plan.costForecast.totalHours.toLocaleString()} hrs × {usd(plan.costForecast.blendedRateUsd ?? 0)}/hr
+                  </div>
+                ) : null}
+              </div>
+              <div className="rounded-md border border-white/8 bg-black/20 p-3">
+                <div
+                  className="text-lg font-semibold"
+                  style={{ color: plan.costForecast.projectedRiskReductionValueUsd > 0 ? GREEN : 'rgba(255,255,255,0.45)' }}
+                >
+                  {plan.costForecast.projectedRiskReductionValueUsd > 0
+                    ? usd(plan.costForecast.projectedRiskReductionValueUsd)
+                    : 'Not modelled'}
+                </div>
+                <div className="text-[10px] uppercase tracking-wide text-white/45">Projected Risk-Reduction Value</div>
+                {plan.costForecast.valueBasis ? (
+                  <div className="mt-1 text-[9.5px] leading-snug text-white/35">{plan.costForecast.valueBasis}</div>
+                ) : null}
+              </div>
             </div>
+
+            {/* Budget variance appears only when the tenant supplied a budget. */}
+            {plan.costForecast.budget ? (
+              <div
+                className="mt-2 rounded-md border p-2.5 text-[10.5px]"
+                style={{
+                  borderColor: plan.costForecast.budget.status === 'over-budget' ? 'rgba(248,113,113,0.35)' : 'rgba(52,211,153,0.3)',
+                  backgroundColor: plan.costForecast.budget.status === 'over-budget' ? 'rgba(248,113,113,0.07)' : 'rgba(52,211,153,0.06)',
+                }}
+              >
+                <span className="font-bold" style={{ color: plan.costForecast.budget.status === 'over-budget' ? '#fca5a5' : GREEN }}>
+                  {plan.costForecast.budget.status === 'over-budget' ? 'Over budget' : 'Within budget'}
+                </span>
+                <span className="text-white/55">
+                  {' '}— estimate {usd(plan.costForecast.budget.estimateUsd)} vs approved {usd(plan.costForecast.budget.budgetUsd)} (
+                  {plan.costForecast.budget.varianceUsd >= 0 ? '+' : ''}
+                  {usd(plan.costForecast.budget.varianceUsd)}, {plan.costForecast.budget.variancePct}%)
+                </span>
+              </div>
+            ) : null}
+
+            {plan.costForecast.assumptions ? (
+              <p className="mt-2 text-[9.5px] leading-relaxed text-white/35">{plan.costForecast.assumptions}</p>
+            ) : null}
           </Panel>
         </section>
 

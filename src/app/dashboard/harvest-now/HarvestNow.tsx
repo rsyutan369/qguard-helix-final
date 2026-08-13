@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ComponentType, type ElementType, type ReactNode } from 'react';
 import {
   Activity,
   ArrowRight,
@@ -91,7 +91,7 @@ const PANEL = 'hndl-panel group relative overflow-hidden rounded-lg border borde
 /* ------------------------------------------------------------------ */
 /* Presentational primitives                                          */
 /* ------------------------------------------------------------------ */
-function SectionHeader({ icon: Icon, children, action, tone = 'cyan' }: { icon: ElementType; children: string; action?: string; tone?: Tone }) {
+function SectionHeader({ icon: Icon, children, action, tone = 'cyan' }: { icon: ComponentType<{ className?: string }>; children: string; action?: string; tone?: Tone }) {
   return (
     <div className="relative z-10 mb-2.5 flex items-center justify-between gap-3 border-b border-white/8 pb-2">
       <h2 className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-white/80">
@@ -476,10 +476,28 @@ export default function HarvestNow() {
                     <Ring value={data.forwardSecrecy.coveragePct} tone={data.forwardSecrecy.coveragePct >= 70 ? 'green' : data.forwardSecrecy.coveragePct >= 40 ? 'amber' : 'red'} label="PFS Coverage" />
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <Stat label="Protected" value={fmt(data.forwardSecrecy.assetsProtected)} tone="green" />
-                    <Stat label="Unprotected" value={fmt(data.forwardSecrecy.assetsUnprotected)} tone="red" />
+                    <Stat label="Protected" value={fmt(data.forwardSecrecy.assetsProtected)} tone="green" sub="key agreements" />
+                    <Stat label="Unprotected" value={fmt(data.forwardSecrecy.assetsUnprotected)} tone="red" sub="key agreements" />
+                    <Stat
+                      label="Assets affected"
+                      value={fmt(data.forwardSecrecy.assetsWithoutPfs ?? 0)}
+                      tone={(data.forwardSecrecy.assetsWithoutPfs ?? 0) > 0 ? 'amber' : 'green'}
+                      sub="distinct assets"
+                    />
+                    {(data.forwardSecrecy.componentsNotApplicable ?? 0) > 0 && (
+                      <Stat
+                        label="Not applicable"
+                        value={fmt(data.forwardSecrecy.componentsNotApplicable ?? 0)}
+                        tone="muted"
+                        sub="no key agreement"
+                      />
+                    )}
                   </div>
                   <div className="mt-2 space-y-1">
+                    {/* Coverage is only meaningful with its population stated. */}
+                    {data.forwardSecrecy.basis && (
+                      <p className="mb-2 text-[9px] leading-relaxed text-white/35">{data.forwardSecrecy.basis}</p>
+                    )}
                     {data.forwardSecrecy.nonPfsBreakdown.length === 0 ? (
                       <p className="text-center text-[10px] font-bold text-emerald-300/70">No non-PFS configurations detected</p>
                     ) : data.forwardSecrecy.nonPfsBreakdown.map((b) => (
@@ -506,10 +524,27 @@ export default function HarvestNow() {
                             <Badge tone={tone}>{h.estimatedFutureValue}</Badge>
                           </div>
                           <div className="mt-1 grid grid-cols-3 gap-1.5 text-[9px] font-bold">
-                            <span className="text-white/45">Exposure <span className={TONE_TEXT[tone]}>{h.exposureScore}</span></span>
+                            {/* A category the estate does not hold is NOT scored — render the
+                                absence, never a 0 that reads as "measured and safe". */}
+                            <span className="text-white/45">
+                              Exposure{' '}
+                              <span className={h.exposureScore === null ? 'text-white/30' : TONE_TEXT[tone]}>
+                                {h.exposureScore === null ? '—' : h.exposureScore}
+                              </span>
+                            </span>
                             <span className="text-white/45">Lifetime <span className="text-cyan-300">{h.confidentialityLifetimeYears}y</span></span>
-                            <span className="text-white/45">Adversary <span className="text-red-300">{h.adversaryInterestScore}</span></span>
+                            <span className="text-white/45">
+                              Adversary{' '}
+                              <span className={h.adversaryInterestScore === null ? 'text-white/30' : 'text-red-300'}>
+                                {h.adversaryInterestScore === null ? '—' : h.adversaryInterestScore}
+                              </span>
+                            </span>
                           </div>
+                          {!h.inScope && (
+                            <p className="mt-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-white/25">
+                              Not discovered in this estate — reference retention only
+                            </p>
+                          )}
                         </div>
                       );
                     })}

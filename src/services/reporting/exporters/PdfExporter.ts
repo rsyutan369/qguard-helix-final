@@ -1,6 +1,7 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, degrees, rgb, type RGB } from 'pdf-lib';
 import type { EnterpriseAssessmentReport, ReportTable } from '../schemas/ReportSchema';
 import { qrMatrix, reportVerificationUrl } from '../ReportQr';
+import { sanitizeForWinAnsi } from './pdf-text';
 import { playbookRows } from '../ReportPlaybook';
 
 /**
@@ -46,29 +47,8 @@ const STATUS_RGB: Record<string, RGB> = {
   'not-applicable': rgb(0.58, 0.639, 0.722),
 };
 
-/**
- * pdf-lib StandardFonts use WinAnsi (CP1252) and cannot encode arbitrary
- * Unicode. Map common glyphs to ASCII and drop anything outside Latin-1 so
- * evidence-derived text never breaks PDF generation.
- */
-function san(value: unknown): string {
-  return String(value ?? '')
-    .replace(/[→⇒]/g, '->')
-    .replace(/[←⇐]/g, '<-')
-    .replace(/[↔⇔]/g, '<->')
-    .replace(/™/g, '(TM)')
-    .replace(/®/g, '(R)')
-    .replace(/©/g, '(C)')
-    .replace(/[•·]/g, '-')
-    .replace(/[–—]/g, '-')
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/…/g, '...')
-    .replace(/≥/g, '>=')
-    .replace(/≤/g, '<=')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[^\x00-\xFF]/g, '');
-}
+/** Shared WinAnsi sanitiser — see exporters/pdf-text.ts for why. */
+const san = sanitizeForWinAnsi;
 
 function dataUrlToBytes(dataUrl: string): Uint8Array {
   const base64 = dataUrl.split(',')[1] || '';

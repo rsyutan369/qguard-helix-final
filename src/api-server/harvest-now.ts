@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildSnapshot } from './quantum-readiness'
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import { namesCryptography } from '@/lib/scanner/finding-identity'
 
 /**
  * QGuard Helix Quantum Threat Operations Center™ — Harvest Now, Decrypt Later.
@@ -100,6 +102,35 @@ function hasForwardSecrecy(algorithm: string, protocol: string): boolean {
   if (/ECDHE|DHE|X25519|X448|ML-KEM|KYBER|HYBRID|CURVE25519/.test(text)) return true
   if (/TLS_RSA|RSA_KEY|STATIC|\bRSA\b|SSH-RSA|SSH_RSA|RSA-PSS/.test(text)) return false
   return false
+}
+
+/**
+ * Does this inventory row record MEASURED cryptography, or a policy finding?
+ *
+ * The scanner labels each record with its class ("Cipher Suite: …",
+ * "Certificate Revocation: …"), so `namesCryptography` can tell them apart —
+ * that is what keeps "Information Disclosure" and "No OCSP Stapling" out of the
+ * algorithm panels. But a row written WITHOUT a class-prefixed name is not
+ * thereby a policy finding: absence of a label is not evidence. Fall back to
+ * reading the algorithm itself, so other writers (and fixtures) are not
+ * silently erased.
+ */
+function isMeasuredCryptography(row: Row): boolean {
+  const name = str(row.name)
+  // The class label only exists in the "<Class>: <value>" form. A name without
+  // one ("portal.acme.com", or a bare algorithm) carries no verdict either way,
+  // so it must not be read as a policy finding — judge it on its algorithm.
+  if (!name.includes(':')) return true
+  return namesCryptography(name)
+}
+
+/** Human label for an asset id, so panels name the ASSET and not the component. */
+function assetLabel(snapshot: Snapshot, assetId: string): string {
+  if (!assetId) return ''
+  const node = snapshot.exposureGraph.nodes.find((n) => str((n as unknown as Row).id) === assetId)
+  if (node?.label) return node.label
+  const asset = snapshot.topRiskAssets.find((a) => str((a as unknown as Row).id) === assetId)
+  return asset?.asset || ''
 }
 
 function isTransportComponent(algorithm: string, protocol: string, itemType: string): boolean {
@@ -457,14 +488,22 @@ function buildHarvestValue(snapshot: Snapshot, assets: Row[]) {
     const presencePct = clamp((matchCount / totalAssets) * 100)
     // Exposure scales with the tenant's HNDL risk, the category's intrinsic
     // sensitivity and how much of it sits on vulnerable crypto.
-    const exposureScore = clamp(hndl * cat.sensitivity * (0.5 + 0.5 * vulnShare))
-    const adversaryInterest = clamp(cat.sensitivity * 55 + cat.retentionYears * 0.8 + exposureScore * 0.25)
+    /* A category the estate does not hold gets NO score. Previously every
+       category was scored regardless, so a tenant with zero classified assets
+       still saw "Classified Assets — exposure 39, adversary interest 78". Those
+       are null (render as "—"), never 0: a zero would read as "measured, and
+       safe", which is a different and equally false claim. */
+    const inScope = matchCount > 0
+    const exposureScore = inScope ? clamp(hndl * cat.sensitivity * (0.5 + 0.5 * vulnShare)) : null
+    const adversaryInterest = inScope ? clamp(cat.sensitivity * 55 + cat.retentionYears * 0.8 + (exposureScore ?? 0) * 0.25) : null
     const window = riskWindowLabel(cat.retentionYears)
-    const futureValue = exposureScore >= 70 ? 'Critical' : exposureScore >= 45 ? 'High' : exposureScore >= 20 ? 'Medium' : 'Low'
+    const futureValue = !inScope
+      ? 'Not measured'
+      : (exposureScore ?? 0) >= 70 ? 'Critical' : (exposureScore ?? 0) >= 45 ? 'High' : (exposureScore ?? 0) >= 20 ? 'Medium' : 'Low'
     return {
       key: cat.key,
       label: cat.label,
-      inScope: matchCount > 0,
+      inScope,
       assetCount: matchCount,
       exposureScore,
       confidentialityLifetimeYears: cat.retentionYears,
@@ -473,7 +512,7 @@ function buildHarvestValue(snapshot: Snapshot, assets: Row[]) {
       estimatedFutureValue: futureValue,
       regulation: cat.regulation,
     }
-  }).sort((a, b) => Number(b.inScope) - Number(a.inScope) || b.adversaryInterestScore - a.adversaryInterestScore)
+  }).sort((a, b) => Number(b.inScope) - Number(a.inScope) || (b.adversaryInterestScore ?? -1) - (a.adversaryInterestScore ?? -1))
 }
 
 /* ================================================================== */
@@ -531,43 +570,92 @@ function buildBreakTimeline(snapshot: Snapshot) {
 /* ================================================================== */
 /* SECTION 7 — Forward Secrecy Coverage™                              */
 /* ================================================================== */
+/**
+ * Forward-secrecy coverage over the observations that actually determine it.
+ *
+ * The previous filter accepted anything whose text contained "tls" — and every
+ * inventory row carries protocol "TLSv1.3", so it matched 166 of 166 rows on a
+ * live tenant, including 99 `library` rows. Everything that was not recognised
+ * as ephemeral was then counted as UNPROTECTED, so the panel reported 117
+ * unprotected "assets" for a two-asset estate and listed `No OCSP Stapling`,
+ * `Information Disclosure`, `AES-256-GCM` (quantum-safe) and
+ * `TLS_AES_256_GCM_SHA384` (TLS 1.3 — forward secret by construction) as
+ * lacking forward secrecy.
+ *
+ * Now: only key-agreement-bearing observations are in scope, a bulk cipher or
+ * hash is NOT APPLICABLE rather than unprotected, and counts are reported in
+ * their true units — components measured, plus the distinct assets they sit on.
+ */
 function buildForwardSecrecy(snapshot: Snapshot, cryptoInventory: Row[], runtimeEvents: Row[]) {
-  const transport = cryptoInventory.filter((c) => isTransportComponent(str(c.algorithm), str(c.protocol), str(c.item_type)))
+  const protectedAssets = new Set<string>()
+  const unprotectedAssets = new Set<string>()
   let protectedCount = 0
+  let notApplicable = 0
   const unprotected: Array<{ asset: string; algorithm: string; protocol: string; reason: string }> = []
   const nonPfsBuckets = new Map<string, number>()
   const bump = (k: string) => nonPfsBuckets.set(k, (nonPfsBuckets.get(k) || 0) + 1)
 
-  for (const c of transport) {
-    const algo = str(c.algorithm)
-    const proto = str(c.protocol)
-    if (hasForwardSecrecy(algo, proto)) { protectedCount += 1; continue }
-    const text = `${algo} ${proto}`.toUpperCase()
-    let bucket = 'Static Key Exchange'
-    if (/TLS_RSA|TLS.*RSA/.test(text)) bucket = 'TLS_RSA'
-    else if (/SSH-?RSA|SSH_RSA/.test(text)) bucket = 'SSH_RSA'
-    else if (/VPN|IPSEC|IKEV1/.test(text)) bucket = 'Legacy VPN'
-    else if (/STATIC|RSA_KEY/.test(text)) bucket = 'Static Key Exchange'
-    else if (/RSA/.test(text)) bucket = 'Non-PFS RSA'
-    bump(bucket)
-    unprotected.push({ asset: str((c as Row).name) || str(c.asset_id) || 'Unmapped', algorithm: algo || EVIDENCE_UNAVAILABLE, protocol: proto || 'n/a', reason: `${bucket} — no ephemeral key agreement` })
-  }
-  // Reinforce with runtime telemetry (legacy events without PFS).
-  for (const e of runtimeEvents) {
-    if (e.is_legacy === true && !hasForwardSecrecy(str(e.algorithm), '')) {
-      bump('Non-PFS RSA')
+  for (const c of cryptoInventory) {
+    const anatomy = analyzeCryptoObservation(
+      { algorithm: c.algorithm, name: c.name, itemType: c.item_type, protocol: c.protocol },
+      isMeasuredCryptography(c),
+    )
+    // null = the observation has no key agreement, so it can be neither
+    // protected nor unprotected. Excluded from BOTH numerator and denominator.
+    if (anatomy.forwardSecrecy === null) { notApplicable += 1; continue }
+
+    const assetId = str(c.asset_id)
+    if (anatomy.forwardSecrecy) {
+      protectedCount += 1
+      if (assetId) protectedAssets.add(assetId)
+      continue
     }
+
+    if (assetId) unprotectedAssets.add(assetId)
+    const bucket =
+      anatomy.keyExchange === 'RSA' || /RSA key transport/i.test(anatomy.family)
+        ? 'RSA key transport (no PFS)'
+        : /Static Diffie/i.test(anatomy.family)
+          ? 'Static Diffie-Hellman'
+          : 'Non-ephemeral key exchange'
+    bump(bucket)
+    unprotected.push({
+      asset: assetLabel(snapshot, assetId) || str(c.name) || EVIDENCE_UNAVAILABLE,
+      algorithm: str(c.algorithm) || EVIDENCE_UNAVAILABLE,
+      protocol: str(c.protocol) || 'n/a',
+      reason: `${bucket} — recorded sessions stay decryptable if the long-term key is recovered`,
+    })
   }
-  const totalTransport = transport.length
-  const coveragePct = totalTransport > 0 ? clamp((protectedCount / totalTransport) * 100) : (snapshot.hasData ? clamp(snapshot.scores.pqcAdoption) : 0)
+
+  // Runtime telemetry reinforces the picture but is a different population, so
+  // it is reported separately instead of being added to the component counts.
+  let runtimeLegacyEvents = 0
+  for (const e of runtimeEvents) {
+    if (e.is_legacy !== true) continue
+    const anatomy = analyzeCryptoObservation({ algorithm: e.algorithm }, true)
+    if (anatomy.forwardSecrecy === false) runtimeLegacyEvents += 1
+  }
+
+  const measured = protectedCount + unprotected.length
+  const coveragePct = measured > 0 ? clamp((protectedCount / measured) * 100) : 0
   return {
     coveragePct,
+    // Kept for contract compatibility, but these are COMPONENT counts and the
+    // UI labels them as such.
     assetsProtected: protectedCount,
     assetsUnprotected: unprotected.length,
-    totalTransport,
+    totalTransport: measured,
+    componentsMeasured: measured,
+    componentsNotApplicable: notApplicable,
+    assetsWithPfs: protectedAssets.size,
+    assetsWithoutPfs: unprotectedAssets.size,
+    runtimeLegacyEvents,
     nonPfsBreakdown: Array.from(nonPfsBuckets.entries()).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
-    topUnprotected: unprotected.sort((a, b) => a.asset.localeCompare(b.asset)).slice(0, 8),
-    hasEvidence: totalTransport > 0,
+    topUnprotected: unprotected.slice(0, 8),
+    hasEvidence: measured > 0,
+    basis: measured > 0
+      ? `${measured} key-agreement observation(s) measured; ${notApplicable} non-key-exchange component(s) excluded as not applicable.`
+      : 'No key-agreement observations recorded — run an authorized scan.',
   }
 }
 
@@ -600,35 +688,78 @@ function algoFamily(algorithm: string): string {
   if (/SHA-?2|SHA-?256|SHA-?384|SHA-?512|SHA3/.test(a)) return 'SHA-2 / SHA-3'
   return a ? 'Other' : 'Unspecified'
 }
+/**
+ * Cryptographic Exposure Matrix — grouped by the primitive that carries the risk.
+ *
+ * Previously grouped by substring: `/AES-?256/` matched
+ * `TLS_RSA_WITH_AES_256_GCM_SHA384`, so static-RSA suites were filed under
+ * **AES-256-GCM** and one vulnerable member marked the family vulnerable. The
+ * top row of the matrix read "AES-256-GCM — Critical, quantum-vulnerable" for
+ * an algorithm on the platform's own approved list. `Zone Not DNSSEC-Signed`
+ * matched `/EC-/` and became an ECDSA algorithm, and the "Other" bucket — 16
+ * policy findings — sorted to the top.
+ *
+ * Grouping now uses the decomposed key exchange / signature primitive, policy
+ * findings are excluded outright, and `assetCount` counts ASSETS (it counted
+ * distinct component names: 16 "assets" on a two-asset tenant).
+ */
 function buildExposureMatrix(snapshot: Snapshot, cryptoInventory: Row[]) {
-  const groups = new Map<string, { algorithm: string; assets: Set<string>; count: number; vulnerable: number; internetFacing: boolean; cryptoClass: CryptoClass }>()
-  const internetAssets = new Set(snapshot.exposureGraph.nodes.filter((n) => n.internetFacing).map((n) => n.label))
+  type Group = {
+    algorithm: string
+    assets: Set<string>
+    count: number
+    internetFacing: boolean
+    cryptoClass: CryptoClass
+    kind: string
+  }
+  const groups = new Map<string, Group>()
+  const internetAssetIds = new Set(
+    snapshot.exposureGraph.nodes.filter((n) => n.internetFacing).map((n) => str((n as unknown as Row).id) || n.label),
+  )
 
-  const ingest = (algorithm: string, asset: string, isVulnerable: boolean | null, isSafe: boolean | null) => {
-    const family = algoFamily(algorithm)
-    if (family === 'Unspecified') return
-    const cls: CryptoClass = isSafe === true ? 'safe' : isVulnerable === true ? 'vulnerable' : classifyAlgorithm(algorithm)
-    const g = groups.get(family) || { algorithm: family, assets: new Set<string>(), count: 0, vulnerable: 0, internetFacing: false, cryptoClass: cls }
+  const ingest = (family: string, kind: string, cls: CryptoClass, assetId: string, assetLabelText: string) => {
+    const g = groups.get(family) || {
+      algorithm: family,
+      assets: new Set<string>(),
+      count: 0,
+      internetFacing: false,
+      cryptoClass: cls,
+      kind,
+    }
     g.count += 1
-    if (asset) g.assets.add(asset)
-    if (cls === 'vulnerable') g.vulnerable += 1
-    if (asset && internetAssets.has(asset)) g.internetFacing = true
-    // safe/vulnerable dominates unknown
-    if (cls !== 'unknown') g.cryptoClass = cls === 'vulnerable' ? 'vulnerable' : g.cryptoClass === 'vulnerable' ? 'vulnerable' : cls
+    if (assetId) g.assets.add(assetId)
+    if (assetId && (internetAssetIds.has(assetId) || internetAssetIds.has(assetLabelText))) g.internetFacing = true
+    // Worst posture within a family wins, but families no longer mix primitives.
+    if (cls === 'vulnerable') g.cryptoClass = 'vulnerable'
+    else if (g.cryptoClass !== 'vulnerable' && cls !== 'unknown') g.cryptoClass = cls
     groups.set(family, g)
   }
 
-  for (const c of cryptoInventory) ingest(str(c.algorithm), str(c.name) || str(c.asset_id), c.is_vulnerable as boolean | null, c.is_quantum_safe as boolean | null)
-  // Fold in scan findings (algorithm-level) for assets without CBOM rows.
-  for (const f of snapshot.criticalFindings) ingest(str(f.algorithm), f.asset, true, null)
+  for (const c of cryptoInventory) {
+    const anatomy = analyzeCryptoObservation(
+      { algorithm: c.algorithm, name: c.name, itemType: c.item_type, protocol: c.protocol },
+      isMeasuredCryptography(c),
+    )
+    // A configuration finding is not an algorithm and must never occupy a row
+    // in an algorithm matrix.
+    if (anatomy.kind === 'policy' || anatomy.kind === 'protocol') continue
+    const assetId = str(c.asset_id)
+    // Trust the stored verdict when the scanner recorded one; otherwise use the
+    // decomposed primitive's posture.
+    const cls: CryptoClass =
+      c.is_quantum_safe === true ? 'safe' : anatomy.quantumClass === 'hybrid' ? 'hybrid' : (anatomy.quantumClass as CryptoClass)
+    ingest(anatomy.family, anatomy.kind, cls, assetId, assetLabel(snapshot, assetId))
+  }
 
   const rows = Array.from(groups.values()).map((g) => {
-    const assetCount = g.assets.size || g.count
+    const assetCount = g.assets.size
     const criticality = g.internetFacing ? 'High' : assetCount >= 5 ? 'High' : assetCount >= 2 ? 'Medium' : 'Low'
-    const exposure = g.cryptoClass === 'safe' ? 'None' : g.cryptoClass === 'hybrid' ? 'Low' : g.internetFacing || assetCount >= 5 ? 'Critical' : 'High'
+    const exposure =
+      g.cryptoClass === 'safe' ? 'None' : g.cryptoClass === 'hybrid' ? 'Low' : g.cryptoClass === 'unknown' ? 'Unknown' : g.internetFacing ? 'Critical' : 'High'
     const priority = migrationPriority(g.cryptoClass, assetCount, g.internetFacing)
     return {
       algorithm: g.algorithm,
+      kind: g.kind,
       assetCount,
       instanceCount: g.count,
       businessCriticality: criticality,
@@ -638,7 +769,7 @@ function buildExposureMatrix(snapshot: Snapshot, cryptoInventory: Row[]) {
       priorityRank: priority.rank,
       internetFacing: g.internetFacing,
     }
-  }).sort((a, b) => b.priorityRank - a.priorityRank || b.assetCount - a.assetCount)
+  }).sort((a, b) => b.priorityRank - a.priorityRank || b.instanceCount - a.instanceCount)
   return rows
 }
 

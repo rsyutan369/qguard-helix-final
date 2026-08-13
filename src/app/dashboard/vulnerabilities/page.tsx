@@ -1,7 +1,5 @@
-'use client'
-
-import Vulnerabilities from './Vulnerabilities'
+import VulnerabilityCenter from './VulnerabilityCenter';
 
 export default function VulnerabilitiesPage() {
-  return <Vulnerabilities />
+  return <VulnerabilityCenter />;
 }

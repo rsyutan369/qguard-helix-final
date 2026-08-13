@@ -146,7 +146,56 @@ function verifyEnterprise() {
   // S6 Break timeline
   assert(r.breakTimeline.years.length >= 5 && r.breakTimeline.crqcYear === 2030, `S6 Break Timeline: ${r.breakTimeline.years.length} years, CRQC ${r.breakTimeline.crqcYear}, completion ${r.breakTimeline.migrationCompletionYear}`)
   // S7 Forward secrecy
-  assert(r.forwardSecrecy.totalTransport > 0 && r.forwardSecrecy.nonPfsBreakdown.some((b) => b.type === 'TLS_RSA'), `S7 Forward Secrecy: ${r.forwardSecrecy.coveragePct}% coverage, ${r.forwardSecrecy.assetsUnprotected} unprotected, buckets [${r.forwardSecrecy.nonPfsBreakdown.map((b) => b.type).join(', ')}]`)
+  assert(
+    r.forwardSecrecy.totalTransport > 0 && r.forwardSecrecy.nonPfsBreakdown.some((b) => /RSA key transport/i.test(b.type)),
+    `S7 Forward Secrecy: ${r.forwardSecrecy.coveragePct}% coverage, ${r.forwardSecrecy.assetsUnprotected} unprotected, buckets [${r.forwardSecrecy.nonPfsBreakdown.map((b) => b.type).join(', ')}]`,
+  )
+
+  /* ---- Accuracy guards (regressions measured on a live tenant) ---------- */
+
+  // Forward secrecy was computed over ANY row whose text contained "tls", which
+  // matched 166 of 166 inventory rows — including 99 `library` rows, plus
+  // `No OCSP Stapling`, `Information Disclosure` and `AES-256-GCM`. Only
+  // key-agreement observations may be in the denominator.
+  assert(
+    (r.forwardSecrecy.componentsMeasured ?? r.forwardSecrecy.totalTransport) <= ENTERPRISE_ROWS.cryptoInventory.length,
+    `S7 guard: measured population (${r.forwardSecrecy.componentsMeasured}) within inventory (${ENTERPRISE_ROWS.cryptoInventory.length})`,
+  )
+  const pfsNames = r.forwardSecrecy.topUnprotected.map((u) => `${u.algorithm}`).join(' | ')
+  assert(
+    !/AES-\d+-GCM|SHA-\d|OCSP|Information Disclosure|Compliance Gap/i.test(pfsNames),
+    `S7 guard: no bulk ciphers / hashes / policy findings listed as lacking forward secrecy [${pfsNames || 'none'}]`,
+  )
+
+  // The matrix grouped by substring, so `/AES-?256/` captured
+  // TLS_RSA_WITH_AES_256_GCM_SHA384 and one vulnerable member marked the family
+  // vulnerable — publishing "AES-256-GCM — Critical, quantum-vulnerable" for an
+  // algorithm on the platform's own approved list.
+  const aesRow = r.exposureMatrix.find((m) => /^AES-256/.test(m.algorithm))
+  assert(
+    !aesRow || aesRow.cryptoClass !== 'vulnerable',
+    `S8 guard: AES-256 family is not reported quantum-vulnerable (${aesRow ? aesRow.cryptoClass : 'absent'})`,
+  )
+
+  // Policy findings are not algorithms and must never occupy a matrix row.
+  const policyRow = r.exposureMatrix.find((m) => /Disclosure|OCSP|Compliance Gap|DNSSEC|Pinning|^Other$|^Unspecified$/i.test(m.algorithm))
+  assert(!policyRow, `S8 guard: no policy findings in the algorithm matrix (${policyRow ? policyRow.algorithm : 'none'})`)
+
+  // assetCount counted distinct COMPONENT NAMES, reporting 16 "assets" on a
+  // two-asset tenant.
+  const assetTotal = ENTERPRISE_SNAPSHOT.inventory.assetsAssessed
+  const overCounted = r.exposureMatrix.find((m) => m.assetCount > assetTotal)
+  assert(
+    !overCounted,
+    `S8 guard: no row claims more assets than exist (${overCounted ? `${overCounted.algorithm}=${overCounted.assetCount} > ${assetTotal}` : `max <= ${assetTotal}`})`,
+  )
+
+  // A category the estate does not hold must carry NO score — null, never 0.
+  const scoredButAbsent = r.harvestValue.find((h) => !h.inScope && h.exposureScore !== null)
+  assert(
+    !scoredButAbsent,
+    `S4 guard: out-of-scope data categories are unscored (${scoredButAbsent ? scoredButAbsent.label : 'all null'})`,
+  )
   // S8 Matrix
   const rsa = r.exposureMatrix.find((m) => m.algorithm === 'RSA-2048')
   assert(r.exposureMatrix.length > 0 && !!rsa && rsa.cryptoClass === 'vulnerable', `S8 Exposure Matrix: ${r.exposureMatrix.length} algorithms; RSA-2048 priority=${rsa?.migrationPriority}`)

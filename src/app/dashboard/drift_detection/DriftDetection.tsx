@@ -1,845 +1,503 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
-import type { LucideIcon } from 'lucide-react'
+'use client';
+
+import { useCallback, useMemo, useState } from 'react';
 import {
-  AlertTriangle,
-  Bell,
-  CalendarDays,
-  CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  Download,
-  Eye,
-  FileText,
-  Filter,
-  MoreVertical,
-  Play,
-  Plus,
-  Radio,
-  RefreshCw,
-  Settings,
-  ShieldAlert,
-  XCircle,
-} from 'lucide-react'
-import { useAuth } from '@/contexts/auth-context'
-import { supabase } from '@/lib/supabase'
-import { cn } from '@/lib/utils'
+  ArrowRight, Filter, GitCompare, History, LayoutList, RefreshCw, ScanLine,
+  Search, Sparkles, TrendingDown, X,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { askSophia } from '@/lib/sophia-bridge';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
+import { Panel } from '../_components/executive/primitives';
+import { useDriftDetection } from '@/hooks/use-drift-detection';
+import {
+  CLASS_LABEL, EMPTY_DRIFT_FILTERS, filterDriftEvents,
+  type DriftClass, type DriftEvent, type DriftFilters, type DriftIntelligence,
+} from '@/lib/drift/drift-intelligence';
+import {
+  AMBER, ConnectionLostBanner, DistributionBars, EmptyRow, GREEN, HardErrorPanel, HeaderButton,
+  IntelHeader, IntelShell, IntelTabs, KpiCard, LinkButton, NoEvidenceState, PrimaryButton, RED,
+  ScoreDial, SectionHeading, SkeletonGrid, SourceNote, StatusPill,
+  fmtInt, fullTimestamp, relativeTime,
+} from '../_components/intel/kit';
 
-type LoadState = 'loading' | 'success' | 'error'
-type DriftSeverity = 'critical' | 'high' | 'medium' | 'low'
-type DriftStatus = 'Unresolved' | 'Resolved' | 'Auto-Remediated'
+type TabKey = 'changes' | 'assets' | 'baseline';
 
-type DriftEventRow = {
-  id: string
-  severity: DriftSeverity
-  event: string
-  resource: string
-  resourceRegion: string
-  type: string
-  detectedAt: string | null
-  status: DriftStatus
-  expected: string
-  actual: string
-}
+/** Drift classes carry their own colour vocabulary — not a severity scale. */
+const CLASS_HEX: Record<DriftClass, string> = {
+  regression: RED,
+  improvement: GREEN,
+  planned: '#60a5fa',
+  coverage: '#94a3b8',
+  persistent: '#94a3b8',
+};
 
-type DriftMetricSet = {
-  unresolvedDrifts: number
-  criticalDrifts: number
-  autoRemediated: number
-  totalEvents24h: number
-  unresolvedDelta: number
-  criticalDelta: number
-  autoRemediatedDelta: number
-  totalEventsDelta: number
-  environmentRiskScore: number
-  environmentRiskDelta: number
-}
-
-type DistributionRow = {
-  severity: DriftSeverity
-  count: number
-  percent: number
-}
-
-type TrendPoint = {
-  label: string
-  critical: number
-  high: number
-  medium: number
-  low: number
-}
-
-type CategoryRow = {
-  label: string
-  count: number
-}
-
-type ActivityRow = {
-  id: string
-  title: string
-  resource: string
-  timestamp: string | null
-  severity: DriftSeverity
-  status: DriftStatus
-}
-
-type DriftSnapshot = {
-  generatedAt: string | null
-  metrics: DriftMetricSet
-  events: DriftEventRow[]
-  driftDistribution: DistributionRow[]
-  trend: TrendPoint[]
-  categories: CategoryRow[]
-  recentActivity: ActivityRow[]
-}
-
-const EMPTY_SNAPSHOT: DriftSnapshot = {
-  generatedAt: null,
-  metrics: {
-    unresolvedDrifts: 0,
-    criticalDrifts: 0,
-    autoRemediated: 0,
-    totalEvents24h: 0,
-    unresolvedDelta: 0,
-    criticalDelta: 0,
-    autoRemediatedDelta: 0,
-    totalEventsDelta: 0,
-    environmentRiskScore: 0,
-    environmentRiskDelta: 0,
-  },
-  events: [],
-  driftDistribution: [
-    { severity: 'critical', count: 0, percent: 0 },
-    { severity: 'high', count: 0, percent: 0 },
-    { severity: 'medium', count: 0, percent: 0 },
-    { severity: 'low', count: 0, percent: 0 },
-  ],
-  trend: [],
-  categories: [],
-  recentActivity: [],
-}
-
-const GOLD = '#FBBF24'
-const RED = '#EF4444'
-const ORANGE = '#F97316'
-const GREEN = '#22C55E'
-const CYAN = '#22D3EE'
-
-const SEVERITY_COLORS: Record<DriftSeverity, string> = {
-  critical: RED,
-  high: ORANGE,
-  medium: GOLD,
-  low: GREEN,
-}
-
-const GLASS_PANEL_CLASSES =
-  'group relative overflow-hidden rounded-lg border border-gold/18 bg-[#07101D]/72 backdrop-blur-xl shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(251,191,36,0.035),0_0_34px_rgba(0,0,0,0.32)] transition-all duration-500 hover:-translate-y-0.5 hover:border-gold/65 hover:bg-[#0A1728]/80 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-24px_60px_rgba(251,191,36,0.12),0_14px_42px_rgba(0,0,0,0.45),0_0_54px_rgba(251,191,36,0.32)] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[#FDE68A]/70 before:to-transparent after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-52 after:w-52 after:rounded-full after:bg-gold/10 after:blur-3xl after:transition-all group-hover:after:bg-gold/20'
-
-function numberFmt(value: number) {
-  return new Intl.NumberFormat('en-US').format(Math.max(0, Math.round(value || 0)))
-}
-
-function relativeTime(value: string | null) {
-  if (!value) return '--'
-  const ms = new Date(value).getTime()
-  if (!Number.isFinite(ms)) return '--'
-  const diff = Date.now() - ms
-  const mins = Math.max(0, Math.round(diff / 60000))
-  if (mins < 1) return 'now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  return new Date(value).toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
-}
-
-function timeOnly(value: string | null) {
-  if (!value) return '--'
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return '--'
-  return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-function dateOnly(value: string | null) {
-  if (!value) return '--'
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return '--'
-  return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })
-}
-
-function formatDelta(value: number) {
-  if (value > 0) return `+${numberFmt(value)} from yesterday`
-  if (value < 0) return `${numberFmt(value)} from yesterday`
-  return 'no change from yesterday'
-}
-
-function severityClass(severity: DriftSeverity) {
-  if (severity === 'critical') return 'border-red-500/35 bg-red-500/10 text-red-300'
-  if (severity === 'high') return 'border-orange-500/35 bg-orange-500/10 text-orange-300'
-  if (severity === 'medium') return 'border-gold/35 bg-gold/10 text-gold'
-  return 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
-}
-
-function statusClass(status: DriftStatus) {
-  if (status === 'Unresolved') return 'text-red-300'
-  if (status === 'Auto-Remediated') return 'text-cyan-300'
-  return 'text-emerald-300'
-}
-
-function statusIcon(status: DriftStatus, severity: DriftSeverity) {
-  if (status === 'Auto-Remediated') return RefreshCw
-  if (status === 'Resolved') return CheckCircle2
-  return severity === 'critical' ? AlertTriangle : ShieldAlert
-}
-
-function useDriftSnapshot() {
-  const { session, user } = useAuth()
-  const token = session?.access_token
-  const [snapshot, setSnapshot] = useState<DriftSnapshot>(EMPTY_SNAPSHOT)
-  const [state, setState] = useState<LoadState>('loading')
-  const [error, setError] = useState<string | null>(null)
-  const [sseConnected, setSseConnected] = useState(false)
-  const streamsRef = useRef<EventSource[]>([])
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const closeStreams = useCallback(() => {
-    for (const stream of streamsRef.current) stream.close()
-    streamsRef.current = []
-    setSseConnected(false)
-  }, [])
-
-  const fetchSnapshot = useCallback(async () => {
-    if (!token) return
-    setState((current) => current === 'success' ? current : 'loading')
-    try {
-      const response = await fetch('/api/v1/dashboard/drift', {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`)
-      setSnapshot(payload.data || EMPTY_SNAPSHOT)
-      setState('success')
-      setError(null)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to load drift telemetry'
-      console.error('Drift telemetry failed:', err)
-      setError(message)
-      setState('error')
-    }
-  }, [token])
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-    refreshTimerRef.current = setTimeout(() => {
-      refreshTimerRef.current = null
-      void fetchSnapshot()
-    }, 250)
-  }, [fetchSnapshot])
-
-  useEffect(() => () => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current)
-  }, [])
-
-  useEffect(() => {
-    if (!token || !user) {
-      setSnapshot(EMPTY_SNAPSHOT)
-      setState('success')
-      setError(null)
-      return
-    }
-    fetchSnapshot()
-  }, [token, user, fetchSnapshot])
-
-  useEffect(() => {
-    if (!user) return
-    const tables = [
-      'assets',
-      'asset_relationships',
-      'crypto_inventory',
-      'crypto_exposures',
-      'pqc_scan_sessions',
-      'pqc_scan_results',
-      'security_events',
-      'migration_jobs',
-      'migration_events',
-      'compliance_evidence',
-      'vulnerabilities',
-      'certificates',
-      'qrng_events',
-      'vault_audit_logs',
-      'generated_keys',
-      'runtime_crypto_events',
-      'scanner_agents',
-      'scanner_alerts',
-      'scanner_evidence',
-      'agent_heartbeats',
-      'connector_accounts',
-    ]
-
-    const channels = tables.map((table) => supabase
-      .channel(`drift-detection-${table}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` },
-        queueRefresh
-      )
-      .subscribe())
-
-    return () => {
-      for (const channel of channels) {
-        supabase.removeChannel(channel)
-      }
-    }
-  }, [user, queueRefresh])
-
-  useEffect(() => {
-    if (!token) {
-      closeStreams()
-      return
-    }
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
-
-    const connect = () => {
-      closeStreams()
-      const driftStream = new EventSource(`/api/v1/dashboard/drift/stream?token=${encodeURIComponent(token)}`)
-      const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`)
-      const scannerStream = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`)
-      streamsRef.current = [driftStream, metricsStream, scannerStream]
-
-      const markOpen = () => setSseConnected(true)
-      const scheduleReconnect = () => {
-        setSseConnected(false)
-        closeStreams()
-        if (retryTimer) clearTimeout(retryTimer)
-        retryTimer = setTimeout(connect, 10000)
-      }
-      const refreshFromStream = () => queueRefresh()
-
-      driftStream.onopen = markOpen
-      metricsStream.onopen = markOpen
-      scannerStream.onopen = markOpen
-      driftStream.onerror = scheduleReconnect
-      metricsStream.onerror = scheduleReconnect
-      scannerStream.onerror = scheduleReconnect
-      driftStream.addEventListener('drift-connected', refreshFromStream)
-      driftStream.addEventListener('drift-update', refreshFromStream)
-      driftStream.addEventListener('drift-error', refreshFromStream)
-      metricsStream.addEventListener('metrics-update', refreshFromStream)
-      metricsStream.addEventListener('runtime-crypto-update', refreshFromStream)
-      metricsStream.addEventListener('scan-complete', refreshFromStream)
-      scannerStream.addEventListener('scanner-intelligence', refreshFromStream)
-      scannerStream.addEventListener('scanner-error', refreshFromStream)
-    }
-
-    connect()
-    return () => {
-      if (retryTimer) clearTimeout(retryTimer)
-      closeStreams()
-    }
-  }, [token, queueRefresh, closeStreams])
-
-  return { snapshot, state, error, sseConnected, refresh: fetchSnapshot }
-}
-
-function GlassPanel({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <section className={cn(GLASS_PANEL_CLASSES, className)}>
-      <div className="relative z-10 h-full">{children}</div>
-    </section>
-  )
-}
-
-function SectionTitle({ icon: Icon, children, suffix }: { icon: LucideIcon; children: ReactNode; suffix?: ReactNode }) {
-  return (
-    <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="flex items-center gap-2 font-mono text-xs font-black uppercase tracking-[0.2em] text-white/75">
-        <Icon className="h-4 w-4 text-gold" />
-        {children}
-      </h2>
-      {suffix}
-    </div>
-  )
-}
-
-function HeaderButton({ icon: Icon, children, href, onClick, primary }: { icon: LucideIcon; children: ReactNode; href?: string; onClick?: () => void; primary?: boolean }) {
-  const className = cn(
-    'inline-flex h-10 items-center justify-center gap-2 rounded-md border px-4 text-xs font-black transition',
-    primary
-      ? 'border-gold bg-gold text-black shadow-[0_0_22px_rgba(251,191,36,0.35)] hover:bg-[#FFE08A]'
-      : 'border-gold/20 bg-black/20 text-white/80 hover:border-gold/60 hover:bg-gold/10 hover:text-gold'
-  )
-
-  if (href) {
-    return (
-      <a href={href} className={className}>
-        <Icon className="h-4 w-4" />
-        {children}
-      </a>
-    )
-  }
-
-  return (
-    <button type="button" onClick={onClick} className={className}>
-      <Icon className="h-4 w-4" />
-      {children}
-    </button>
-  )
-}
-
-function Sparkline({ values, color }: { values: number[]; color: string }) {
-  const width = 92
-  const height = 34
-  const max = Math.max(1, ...values)
-  const points = values.length
-    ? values.map((value, index) => {
-      const x = values.length === 1 ? width : (index / (values.length - 1)) * width
-      const y = height - (value / max) * (height - 6) - 3
-      return `${x},${y}`
-    }).join(' ')
-    : `0,${height - 3} ${width},${height - 3}`
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-9 w-24 overflow-visible">
-      <polyline points={points} fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function MetricCard({ label, value, detail, icon: Icon, tone, sparkValues }: { label: string; value: string; detail: string; icon: LucideIcon; tone: DriftSeverity | 'cyan' | 'gold'; sparkValues: number[] }) {
-  const color = tone === 'critical' ? RED : tone === 'high' ? ORANGE : tone === 'medium' || tone === 'gold' ? GOLD : tone === 'cyan' ? CYAN : GREEN
-  return (
-    <GlassPanel className="p-5">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border bg-black/25" style={{ borderColor: `${color}66`, color, boxShadow: `0 0 28px ${color}24` }}>
-            <Icon className="h-6 w-6" />
-          </div>
-          <div>
-            <div className="font-mono text-[9px] font-black uppercase tracking-[0.18em] text-white/45">{label}</div>
-            <div className="mt-2 font-mono text-3xl font-black leading-none text-white">{value}</div>
-            <div className={cn('mt-2 text-[10px] font-bold', detail.startsWith('+') ? 'text-emerald-300' : detail.startsWith('-') ? 'text-red-300' : 'text-white/45')}>{detail}</div>
-          </div>
-        </div>
-        <div className="hidden self-end md:block">
-          <Sparkline values={sparkValues} color={color} />
-        </div>
-      </div>
-    </GlassPanel>
-  )
-}
-
-function DriftDonut({ distribution }: { distribution: DistributionRow[] }) {
-  const total = Math.max(1, distribution.reduce((sum, row) => sum + row.count, 0))
-  let cursor = 0
-  const segments = distribution.map((row) => {
-    const start = cursor
-    const size = (row.count / total) * 100
-    cursor += size
-    return `${SEVERITY_COLORS[row.severity]} ${start}% ${cursor}%`
-  })
-  const gradient = `conic-gradient(${segments.join(', ') || '#334155 0 100%'})`
-
-  return (
-    <div className="grid gap-5 sm:grid-cols-[150px_minmax(0,1fr)]">
-      <div className="flex justify-center">
-        <div className="relative flex h-32 w-32 items-center justify-center rounded-full" style={{ background: gradient }}>
-          <div className="absolute inset-5 rounded-full bg-[#07101D] shadow-[inset_0_0_24px_rgba(0,0,0,0.55)]" />
-          <div className="relative text-center">
-            <div className="font-mono text-3xl font-black text-white">{numberFmt(distribution.reduce((sum, row) => sum + row.count, 0))}</div>
-            <div className="text-[10px] text-white/45">Total</div>
-          </div>
-        </div>
-      </div>
-      <div className="space-y-3 self-center">
-        {distribution.map((row) => (
-          <div key={row.severity} className="flex items-center gap-3 text-sm">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: SEVERITY_COLORS[row.severity] }} />
-            <span className="flex-1 capitalize text-white/65">{row.severity}</span>
-            <span className="font-mono font-bold text-white">{numberFmt(row.count)} ({row.percent}%)</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TrendChart({ data }: { data: TrendPoint[] }) {
-  const width = 420
-  const height = 190
-  const pad = 28
-  const series = [
-    { key: 'critical' as const, color: RED, label: 'Critical' },
-    { key: 'high' as const, color: ORANGE, label: 'High' },
-    { key: 'medium' as const, color: GOLD, label: 'Medium' },
-    { key: 'low' as const, color: GREEN, label: 'Low' },
-  ]
-  const max = Math.max(1, ...data.flatMap((point) => series.map((item) => Number(point[item.key] || 0))))
-
-  const pathFor = (key: keyof TrendPoint) => data.map((point, index) => {
-    const x = pad + (index / Math.max(1, data.length - 1)) * (width - pad * 2)
-    const y = height - pad - (Number(point[key] || 0) / max) * (height - pad * 2)
-    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`
-  }).join(' ')
-
-  return (
-    <div>
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-48 w-full">
-        {[0, 1, 2, 3].map((line) => (
-          <line key={line} x1={pad} x2={width - pad} y1={pad + line * ((height - pad * 2) / 3)} y2={pad + line * ((height - pad * 2) / 3)} stroke="rgba(255,255,255,0.07)" />
-        ))}
-        {data.map((point, index) => {
-          const x = pad + (index / Math.max(1, data.length - 1)) * (width - pad * 2)
-          return (
-            <g key={point.label}>
-              <line x1={x} x2={x} y1={pad} y2={height - pad} stroke="rgba(255,255,255,0.05)" />
-              <text x={x} y={height - 6} textAnchor="middle" className="fill-white/45 text-[10px]">{point.label}</text>
-            </g>
-          )
-        })}
-        {series.map((item) => (
-          <path key={item.key} d={pathFor(item.key)} fill="none" stroke={item.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        ))}
-      </svg>
-      <div className="flex flex-wrap items-center gap-5 text-[10px] font-bold text-white/45">
-        {series.map((item) => (
-          <span key={item.key} className="inline-flex items-center gap-2"><span className="h-1.5 w-5 rounded-full" style={{ backgroundColor: item.color }} /> {item.label}</span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function RiskGauge({ value, delta }: { value: number; delta: number }) {
-  const angle = -120 + (Math.max(0, Math.min(100, value)) / 100) * 240
-  return (
-    <div className="flex flex-col items-center justify-center">
-      <div className="relative h-36 w-44">
-        <div className="absolute inset-x-3 bottom-0 h-32 rounded-t-full" style={{ background: `conic-gradient(from 240deg, ${GREEN} 0 33%, ${GOLD} 33% 66%, ${RED} 66% 100%)`, clipPath: 'polygon(0 0, 100% 0, 100% 70%, 0 70%)' }} />
-        <div className="absolute inset-x-7 bottom-0 h-24 rounded-t-full bg-[#07101D]" />
-        <div className="absolute left-1/2 top-20 h-1 w-16 origin-left rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.8)]" style={{ transform: `rotate(${angle}deg)` }} />
-        <div className="absolute inset-x-0 bottom-4 text-center">
-          <div className="font-mono text-4xl font-black text-white">{numberFmt(value)}<span className="text-sm text-white/40">/100</span></div>
-          <div className={cn('mt-1 text-xs font-black', value >= 70 ? 'text-orange-300' : value >= 40 ? 'text-gold' : 'text-emerald-300')}>
-            {value >= 70 ? 'High Risk' : value >= 40 ? 'Moderate Risk' : value ? 'Low Risk' : 'No Active Risk'}
-          </div>
-        </div>
-      </div>
-      <div className={cn('mt-2 text-xs font-semibold', delta > 0 ? 'text-emerald-300' : delta < 0 ? 'text-red-300' : 'text-white/40')}>{formatDelta(delta)}</div>
-    </div>
-  )
-}
-
-function EmptyState({ label }: { label: string }) {
-  return (
-    <div className="rounded-md border border-white/5 bg-white/[0.025] p-5 text-center text-xs font-semibold text-white/40">
-      {label}
-    </div>
-  )
-}
-
-function exportJson(name: string, data: unknown) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `${name}-${new Date().toISOString().slice(0, 10)}.json`
-  anchor.click()
-  URL.revokeObjectURL(url)
-}
-
+/**
+ * Cryptographic Drift Detection.
+ *
+ * Answers one question the other pages cannot: WHAT CHANGED, and was it
+ * supposed to?
+ *
+ * Drift needs a baseline, so this page refuses to report drift until two
+ * completed scans exist — the first scan's findings are an inventory, not a set
+ * of changes. And a change explained by an approved migration is reported as
+ * PLANNED, because counting successful remediation as drift trains operators to
+ * ignore the alert that matters.
+ */
 export default function DriftDetection() {
-  const { snapshot, state, error, sseConnected, refresh } = useDriftSnapshot()
-  const [tab, setTab] = useState<'all' | 'unresolved' | 'resolved'>('all')
-  const [severityFilter, setSeverityFilter] = useState<'all' | DriftSeverity>('all')
-  const [environmentFilter, setEnvironmentFilter] = useState('all')
+  const { data, state, error, live, lastGoodAt, refresh, reconnect } = useDriftDetection();
 
-  const metrics = snapshot.metrics
-  const generatedAt = useMemo(() => snapshot.generatedAt ? new Date(snapshot.generatedAt) : new Date(), [snapshot.generatedAt])
-  const environments = useMemo(() => Array.from(new Set(snapshot.events.map((event) => event.resourceRegion).filter(Boolean))).sort(), [snapshot.events])
+  const [tab, setTab] = useState<TabKey>('changes');
+  const [filters, setFilters] = useState<DriftFilters>(EMPTY_DRIFT_FILTERS);
+  const [showFilters, setShowFilters] = useState(false);
+  const [selected, setSelected] = useState<DriftEvent | null>(null);
 
-  const filteredEvents = useMemo(() => snapshot.events.filter((event) => {
-    if (tab === 'unresolved' && event.status !== 'Unresolved') return false
-    if (tab === 'resolved' && event.status === 'Unresolved') return false
-    if (severityFilter !== 'all' && event.severity !== severityFilter) return false
-    if (environmentFilter !== 'all' && event.resourceRegion !== environmentFilter) return false
-    return true
-  }), [environmentFilter, severityFilter, snapshot.events, tab])
+  const events = useMemo(() => (data ? filterDriftEvents(data.events, filters) : []), [data, filters]);
+  const ask = useCallback((question: string) => askSophia(question, sophiaContext(data)), [data]);
+  const patch = useCallback((next: Partial<DriftFilters>) => setFilters((c) => ({ ...c, ...next })), []);
 
-  const sparkValues = useMemo(() => snapshot.trend.map((point) => point.critical + point.high + point.medium + point.low), [snapshot.trend])
-
-  const cards = [
-    { label: 'Unresolved Drifts', value: numberFmt(metrics.unresolvedDrifts), detail: formatDelta(metrics.unresolvedDelta), icon: AlertTriangle, tone: 'critical' as const, sparkValues },
-    { label: 'Critical Drifts', value: numberFmt(metrics.criticalDrifts), detail: formatDelta(metrics.criticalDelta), icon: XCircle, tone: 'critical' as const, sparkValues: snapshot.trend.map((point) => point.critical) },
-    { label: 'Auto-Remediated', value: numberFmt(metrics.autoRemediated), detail: formatDelta(metrics.autoRemediatedDelta), icon: RefreshCw, tone: 'cyan' as const, sparkValues: sparkValues.map((value) => Math.max(0, value - metrics.criticalDrifts)) },
-    { label: 'Total Events (24h)', value: numberFmt(metrics.totalEvents24h), detail: formatDelta(metrics.totalEventsDelta), icon: Eye, tone: 'gold' as const, sparkValues },
-  ]
-
-  const tabs = [
-    { key: 'all' as const, label: 'All Events', count: snapshot.events.length },
-    { key: 'unresolved' as const, label: 'Unresolved', count: snapshot.events.filter((event) => event.status === 'Unresolved').length },
-    { key: 'resolved' as const, label: 'Resolved', count: snapshot.events.filter((event) => event.status !== 'Unresolved').length },
-  ]
+  const showSkeleton = state === 'loading' && !data;
+  const showHardError = state === 'error' && !data;
+  const noBaseline = Boolean(data && !data.hasBaseline);
 
   return (
-    <main className="min-h-screen space-y-4 bg-[#02070E] p-3 text-white md:p-4">
-      <header className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div>
-          <h1 className="font-mono text-3xl font-black uppercase tracking-tight text-white md:text-4xl">Drift <span className="text-gold">Detection</span></h1>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/58">Continuous monitoring for cryptographic configuration drift, algorithm downgrades, and policy violations.</p>
-        </div>
+    <IntelShell name="drift-shell">
+      <WorkflowRail activeStage="monitoring" />
 
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={refresh}
-            className="inline-flex h-10 items-center gap-2 rounded-md border border-gold/20 bg-black/20 px-4 text-xs font-black text-white/80 transition hover:border-gold/60 hover:bg-gold/10 hover:text-gold"
-          >
-            <span className={cn('h-2 w-2 rounded-full', sseConnected ? 'bg-emerald-400 shadow-[0_0_12px_rgba(34,197,94,0.9)]' : 'bg-slate-500')} />
-            {sseConnected ? 'Live Telemetry' : state === 'loading' ? 'Syncing' : 'Refresh'}
+      <IntelHeader
+        title="Cryptographic"
+        accent="Drift Detection"
+        subtitle="See what changed in your cryptography since the last scan, whether the change was planned, and what needs attention."
+        icon={GitCompare}
+        live={live}
+        lastUpdated={data?.generatedAt ?? lastGoodAt}
+        connecting={state === 'loading' && !data}
+      >
+        <HeaderButton onClick={() => setShowFilters((v) => !v)} icon={Filter} active={showFilters}>Filters</HeaderButton>
+        <button
+          type="button"
+          onClick={() => ask('What changed in my cryptography since the last scan, and was any of it unplanned?')}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/45 bg-violet-500/12 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-violet-200 transition hover:bg-violet-500/22"
+        >
+          <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Ask Sophia
+        </button>
+        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={state === 'loading'}>Refresh</PrimaryButton>
+      </IntelHeader>
+
+      {data && !live && state !== 'loading' ? (
+        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} />
+      ) : null}
+
+      {showHardError ? (
+        <HardErrorPanel
+          title="Drift Assessment Unavailable"
+          message="QGuard Helix could not compare your scan history. No values are shown rather than presenting zeros as fact."
+          error={error}
+          onRetry={reconnect}
+        />
+      ) : null}
+
+      {showSkeleton ? <SkeletonGrid cards={4} panels={2} /> : null}
+
+      {noBaseline && data ? (
+        <NoEvidenceState
+          icon={ScanLine}
+          title="No Baseline to Compare Against"
+          body={data.baseline.note}
+          bullets={[
+            'Drift is change from a known baseline — it needs two observations of the same estate at two points in time.',
+            'The findings from a single scan are an inventory, not a set of changes; they are shown on the Vulnerability Center.',
+            'Once a second scan completes, this page reports what appeared, what disappeared, and which changes an approved migration explains.',
+          ]}
+          actions={[
+            { href: '/dashboard/scanner', label: 'Run a Scan', primary: true },
+            { href: '/dashboard/vulnerabilities', label: 'Vulnerability Center' },
+          ]}
+        />
+      ) : null}
+
+      {data && data.hasBaseline ? (
+        <>
+          <section aria-label="Drift metrics" className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-6">
+            <KpiCard label="Regressions" value={fmtInt(data.kpis.regressions)} detail="unplanned, posture worsened" color={data.kpis.regressions > 0 ? RED : GREEN} />
+            <KpiCard label="Improvements" value={fmtInt(data.kpis.improvements)} detail="unplanned, posture improved" color={GREEN} />
+            <KpiCard label="Planned" value={fmtInt(data.kpis.planned)} detail="explained by a migration" color="#60a5fa" footnote="not counted as drift" />
+            <KpiCard label="Unplanned" value={fmtInt(data.kpis.unplannedChanges)} detail="changes with no approved plan" color={data.kpis.unplannedChanges > 0 ? AMBER : GREEN} />
+            <KpiCard label="Assets Changed" value={fmtInt(data.kpis.assetsChanged)} detail="since the baseline scan" color="#22d3ee" />
+            <KpiCard label="Runtime Downgrades" value={fmtInt(data.kpis.runtimeDowngrades)} detail="observed by the collector" color={data.kpis.runtimeDowngrades > 0 ? RED : GREEN} />
+          </section>
+
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <StabilityPanel data={data} />
+            <Panel className="p-5">
+              <SectionHeading title="Change Breakdown" icon={LayoutList} />
+              <DistributionBars
+                rows={data.summary.map((r) => ({ key: r.key, label: r.label, glyph: r.glyph, count: r.count, percent: r.percent }))}
+                total={data.events.length}
+                unitLabel="Detected changes"
+              />
+              <p className="mt-4 border-t border-white/8 pt-3 text-[10px] leading-relaxed text-white/30">
+                Planned changes are shown for completeness but excluded from the unplanned-change count. A successful
+                migration is the system working, not drift.
+              </p>
+            </Panel>
+          </div>
+
+          <IntelTabs<TabKey>
+            idPrefix="drift"
+            active={tab}
+            onChange={setTab}
+            tabs={[
+              { key: 'changes' as TabKey, label: 'Changes', badge: data.kpis.regressions || undefined },
+              { key: 'assets' as TabKey, label: 'By Asset' },
+              { key: 'baseline' as TabKey, label: 'Baseline' },
+            ]}
+          />
+
+          {showFilters ? (
+            <FilterBar data={data} filters={filters} onChange={patch} onClear={() => setFilters(EMPTY_DRIFT_FILTERS)} count={events.length} />
+          ) : null}
+
+          {tab === 'changes' ? (
+            <div id="drift-panel-changes" role="tabpanel" aria-labelledby="drift-tab-changes" className="space-y-4">
+              <Panel className="p-5">
+                <SectionHeading title="Detected Changes" icon={GitCompare} meta={`${fmtInt(events.length)} of ${fmtInt(data.events.length)}`} />
+                {events.length === 0 ? (
+                  <EmptyRow>
+                    {data.events.length === 0
+                      ? 'No cryptographic change was detected between the two most recent scans.'
+                      : 'No change matched the current filters.'}
+                  </EmptyRow>
+                ) : (
+                  <div className="space-y-2">
+                    {events.map((event) => <ChangeRow key={event.id} event={event} onSelect={setSelected} />)}
+                  </div>
+                )}
+              </Panel>
+            </div>
+          ) : null}
+
+          {tab === 'assets' ? (
+            <div id="drift-panel-assets" role="tabpanel" aria-labelledby="drift-tab-assets" className="space-y-4">
+              <Panel className="p-5">
+                <SectionHeading title="Change by Asset" icon={LayoutList} meta={`${fmtInt(data.byAsset.length)} assets`} />
+                {data.byAsset.length === 0 ? (
+                  <EmptyRow>No asset changed between the two most recent scans.</EmptyRow>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[600px] border-collapse text-left">
+                      <caption className="sr-only">Assets ranked by unplanned regression count</caption>
+                      <thead>
+                        <tr className="border-b border-white/10 text-[8.5px] font-black uppercase tracking-[0.14em] text-white/35">
+                          <th scope="col" className="py-2 pr-3 font-black">Asset</th>
+                          <th scope="col" className="py-2 pr-3 font-black">Environment</th>
+                          <th scope="col" className="py-2 pr-3 font-black text-right">Regressions</th>
+                          <th scope="col" className="py-2 pr-3 font-black text-right">Improvements</th>
+                          <th scope="col" className="py-2 pr-3 font-black text-right">Planned</th>
+                          <th scope="col" className="py-2 font-black text-right">Net</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.byAsset.map((row) => (
+                          <tr key={row.assetName} className="border-b border-white/5 last:border-0">
+                            <td className="max-w-[220px] truncate py-2.5 pr-3 text-[12px] font-semibold text-white/85">{row.assetName}</td>
+                            <td className="py-2.5 pr-3 text-[11px] text-white/50">{row.environment}</td>
+                            <td className="py-2.5 pr-3 text-right font-mono text-[11.5px]" style={{ color: row.regressions > 0 ? RED : 'rgba(255,255,255,0.4)' }}>{fmtInt(row.regressions)}</td>
+                            <td className="py-2.5 pr-3 text-right font-mono text-[11.5px]" style={{ color: row.improvements > 0 ? GREEN : 'rgba(255,255,255,0.4)' }}>{fmtInt(row.improvements)}</td>
+                            <td className="py-2.5 pr-3 text-right font-mono text-[11.5px] text-blue-300">{fmtInt(row.planned)}</td>
+                            <td className="py-2.5 text-right font-mono text-[12px] font-black" style={{ color: row.netChange < 0 ? RED : row.netChange > 0 ? GREEN : 'rgba(255,255,255,0.4)' }}>
+                              {row.netChange > 0 ? '+' : ''}{row.netChange}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Panel>
+            </div>
+          ) : null}
+
+          {tab === 'baseline' ? (
+            <div id="drift-panel-baseline" role="tabpanel" aria-labelledby="drift-tab-baseline" className="space-y-4">
+              <Panel className="p-5">
+                <SectionHeading title="Comparison Window" icon={History} />
+                <div className="grid gap-3 md:grid-cols-2">
+                  {([
+                    ['Baseline scan', data.baseline.baselineSessionId, data.baseline.baselineAt],
+                    ['Current scan', data.baseline.currentSessionId, data.baseline.currentAt],
+                  ] as Array<[string, string | null, string | null]>).map(([label, id, at]) => (
+                    <div key={label} className="rounded-xl border border-white/10 bg-black/20 p-4">
+                      <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">{label}</div>
+                      <div className="mt-1 font-mono text-[12px] text-white/75">{id ? id.slice(0, 8) : '—'}</div>
+                      <div className="mt-1 text-[11px] text-white/45">{fullTimestamp(at)}</div>
+                      <div className="mt-0.5 text-[10px] text-white/30">{relativeTime(at)}</div>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-[11px] leading-relaxed text-white/45">{data.baseline.note}</p>
+                <div className="mt-2 text-[10px] text-white/30">
+                  {fmtInt(data.baseline.totalSessions)} scan session(s) recorded; the two most recent completed scans are compared.
+                </div>
+              </Panel>
+
+              {data.postureDelta ? (
+                <Panel className="p-5">
+                  <SectionHeading title="Posture Movement" icon={TrendingDown} meta="baseline → current" />
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {([
+                      ['Findings at baseline', fmtInt(data.postureDelta.baselineFindings), 'rgba(255,255,255,0.75)'],
+                      ['Findings now', fmtInt(data.postureDelta.currentFindings), data.postureDelta.delta > 0 ? RED : GREEN],
+                      ['Vulnerable at baseline', fmtInt(data.postureDelta.baselineVulnerable), 'rgba(255,255,255,0.75)'],
+                      ['Vulnerable now', fmtInt(data.postureDelta.currentVulnerable), data.postureDelta.currentVulnerable > data.postureDelta.baselineVulnerable ? RED : GREEN],
+                    ] as Array<[string, string, string]>).map(([label, value, hex]) => (
+                      <div key={label} className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2.5">
+                        <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">{label}</div>
+                        <div className="mt-1 font-mono text-[20px] font-black" style={{ color: hex }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-[10px] leading-relaxed text-white/30">
+                    Two measured points, not a trend line. Vulnerability is classified by the shared cipher-suite
+                    decomposer, so an algorithm reads the same here as on every other page.
+                  </p>
+                </Panel>
+              ) : null}
+            </div>
+          ) : null}
+
+          <SourceNote>{data.evidence.note}</SourceNote>
+        </>
+      ) : null}
+
+      <ChangeDrawer event={selected} onClose={() => setSelected(null)} onAsk={ask} />
+    </IntelShell>
+  );
+}
+
+/* ================================================================== */
+
+function StabilityPanel({ data }: { data: DriftIntelligence }) {
+  const s = data.stability;
+  return (
+    <Panel className="p-5">
+      <SectionHeading title="Cryptographic Stability" icon={GitCompare} meta={`baseline ${relativeTime(data.baseline.baselineAt)}`} />
+      <div className="flex flex-col items-center gap-5 sm:flex-row">
+        <ScoreDial score={s.score} level={s.level} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] font-semibold leading-relaxed text-white/75">{s.statement}</p>
+          <div className="mt-3 rounded-lg border border-white/10 bg-black/25 p-3">
+            <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">How this is calculated</div>
+            <p className="mt-1 text-[11px] leading-relaxed text-white/50">{s.basis}</p>
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ChangeRow({ event, onSelect }: { event: DriftEvent; onSelect: (e: DriftEvent) => void }) {
+  const hex = CLASS_HEX[event.driftClass];
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(event)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(event); } }}
+      className="cursor-pointer rounded-lg border border-white/8 bg-white/[0.02] p-3 outline-none transition hover:border-white/15 focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+      aria-label={`${CLASS_LABEL[event.driftClass]}: ${event.summary}`}
+    >
+      <div className="flex flex-wrap items-start gap-3">
+        <span className="mt-0.5 text-[13px] leading-none" style={{ color: hex }} aria-hidden="true">
+          {event.driftClass === 'regression' ? '●' : event.driftClass === 'improvement' ? '✓' : event.driftClass === 'coverage' ? '◇' : '◐'}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12.5px] font-black text-white/90">{event.summary}</span>
+            <span
+              className="rounded-full border px-2 py-0.5 text-[8.5px] font-black uppercase tracking-wider"
+              style={{ borderColor: `${hex}55`, backgroundColor: `${hex}16`, color: hex }}
+            >
+              {CLASS_LABEL[event.driftClass]}
+            </span>
+            {event.driftClass === 'regression' ? <StatusPill level={event.severity} /> : null}
+          </div>
+
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
+            <span className={cn(event.before ? 'text-white/55' : 'text-white/25')}>{event.before ?? 'not present'}</span>
+            <ArrowRight className="h-3 w-3 text-white/25" aria-hidden="true" />
+            <span className={cn(event.after ? 'text-white/80' : 'text-white/25')}>{event.after ?? 'no longer detected'}</span>
+          </div>
+
+          <div className="mt-1 flex flex-wrap gap-x-2 text-[10.5px] text-white/40">
+            <span className="font-semibold text-white/60">{event.assetName}</span>
+            {event.environment !== 'unspecified' ? <span>· {event.environment}</span> : null}
+            <span>· {relativeTime(event.detectedAt)}</span>
+            {event.explainedBy ? <span>· explained by {event.explainedBy}</span> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FilterBar({
+  data, filters, onChange, onClear, count,
+}: {
+  data: DriftIntelligence;
+  filters: DriftFilters;
+  onChange: (n: Partial<DriftFilters>) => void;
+  onClear: () => void;
+  count: number;
+}) {
+  const select = (label: string, key: keyof DriftFilters, options: string[]) => (
+    <div className="flex min-w-0 flex-col gap-1">
+      <label htmlFor={`drift-${key}`} className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/35">{label}</label>
+      <select
+        id={`drift-${key}`}
+        value={filters[key] as string}
+        onChange={(e) => onChange({ [key]: e.target.value } as Partial<DriftFilters>)}
+        className="rounded-lg border border-white/12 bg-[#0b1424] px-2.5 py-1.5 text-[11px] font-semibold text-white/80 outline-none transition focus-visible:border-cyan-400/50 focus-visible:ring-2 focus-visible:ring-cyan-300/40"
+      >
+        <option value="all">All</option>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+  return (
+    <Panel className="p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex min-w-[220px] flex-1 flex-col gap-1">
+          <label htmlFor="drift-search" className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/35">Search</label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/30" aria-hidden="true" />
+            <input
+              id="drift-search"
+              type="search"
+              value={filters.search}
+              onChange={(e) => onChange({ search: e.target.value })}
+              placeholder="Search assets, algorithms…"
+              className="w-full rounded-lg border border-white/12 bg-[#0b1424] py-1.5 pl-8 pr-2.5 text-[11.5px] text-white/85 outline-none transition placeholder:text-white/25 focus-visible:border-cyan-400/50 focus-visible:ring-2 focus-visible:ring-cyan-300/40"
+            />
+          </div>
+        </div>
+        {select('Change type', 'driftClass', data.filters.classes)}
+        {select('Environment', 'environment', data.filters.environments)}
+        {select('Severity', 'severity', ['critical', 'high', 'medium', 'low'])}
+        <div className="flex items-center gap-2 pb-0.5">
+          <span className="font-mono text-[10px] text-white/35">{fmtInt(count)} changes</span>
+          <button type="button" onClick={onClear} className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1.5 text-[9.5px] font-black uppercase tracking-wider text-white/55 transition hover:bg-white/[0.08]">
+            <X className="h-3 w-3" aria-hidden="true" /> Clear
           </button>
-          <HeaderButton icon={Download} onClick={() => exportJson('drift-detection-report', snapshot)}>Export Report</HeaderButton>
-          <HeaderButton icon={Plus} href="/dashboard/scanner" primary>New Scan</HeaderButton>
-          <button type="button" className="relative flex h-10 w-10 items-center justify-center rounded-md border border-gold/15 bg-black/20 text-gold hover:border-gold/50">
-            <Bell className="h-4 w-4" />
-            {metrics.criticalDrifts > 0 && <span className="absolute -right-1 -top-1 rounded-full bg-gold px-1.5 text-[9px] font-black text-black">{numberFmt(metrics.criticalDrifts)}</span>}
-          </button>
-          <div className="hidden items-center gap-2 border-l border-white/8 pl-5 xl:flex">
-            <div className="font-mono text-[10px] font-bold uppercase text-white/60">
-              <div>{generatedAt.toLocaleTimeString('en-US', { hour12: false })} UTC</div>
-              <div className="text-white/35">{generatedAt.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}</div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ChangeDrawer({ event, onClose, onAsk }: { event: DriftEvent | null; onClose: () => void; onAsk: (q: string) => void }) {
+  if (!event) return null;
+  const hex = CLASS_HEX[event.driftClass];
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/55" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div role="dialog" aria-modal="true" aria-label={`Change detail: ${event.summary}`} className="flex h-full w-full max-w-[500px] flex-col overflow-y-auto border-l border-white/12 bg-[#0b1424] shadow-2xl">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-white/10 bg-[#0b1424]/95 px-5 py-4 backdrop-blur">
+          <div className="min-w-0">
+            <h2 className="text-[15px] font-black leading-snug text-white">{event.summary}</h2>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className="rounded-full border px-2 py-0.5 text-[8.5px] font-black uppercase tracking-wider" style={{ borderColor: `${hex}55`, backgroundColor: `${hex}16`, color: hex }}>
+                {CLASS_LABEL[event.driftClass]}
+              </span>
+              {event.driftClass === 'regression' ? <StatusPill level={event.severity} /> : null}
             </div>
           </div>
-          <a href="/dashboard/quantum-governance" className="flex h-10 w-10 items-center justify-center rounded-md border border-gold/20 bg-black/20 text-gold transition hover:border-gold/60 hover:bg-gold/10" aria-label="Open drift policy settings">
-            <Settings className="h-4 w-4" />
-          </a>
+          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg border border-white/12 bg-white/[0.04] p-1.5 text-white/50 transition hover:bg-white/[0.08]">
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
-      </header>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {cards.map((card) => (
-          <div key={card.label}>
-            <MetricCard {...card} />
+        <div className="space-y-4 px-5 py-5">
+          <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+            <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">Before → After</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[12px]">
+              <span className={cn('rounded border px-2 py-1', event.before ? 'border-white/10 bg-white/[0.03] text-white/60' : 'border-white/5 text-white/25')}>
+                {event.before ?? 'not present'}
+              </span>
+              <ArrowRight className="h-3.5 w-3.5 text-white/25" aria-hidden="true" />
+              <span className={cn('rounded border px-2 py-1', event.after ? 'border-cyan-400/30 bg-cyan-500/10 text-cyan-200' : 'border-white/5 text-white/25')}>
+                {event.after ?? 'no longer detected'}
+              </span>
+            </div>
           </div>
-        ))}
-      </div>
 
-      <GlassPanel className="p-4">
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_210px_210px_210px_140px]">
-          <div className="flex flex-wrap gap-2">
-            {tabs.map((item) => (
-              <button
-                type="button"
-                key={item.key}
-                onClick={() => setTab(item.key)}
-                className={cn(
-                  'rounded-md border px-4 py-2 text-xs font-black transition',
-                  tab === item.key ? 'border-gold/55 bg-gold/10 text-gold shadow-[0_0_18px_rgba(251,191,36,0.18)]' : 'border-white/10 bg-black/15 text-white/45 hover:border-gold/30 hover:text-white/70'
-                )}
-              >
-                {item.label} ({numberFmt(item.count)})
-              </button>
+          <div className="grid grid-cols-2 gap-4">
+            {([
+              ['Asset', event.assetName],
+              ['Environment', event.environment],
+              ['Owner', event.owner],
+              ['Detected', relativeTime(event.detectedAt)],
+            ] as Array<[string, string]>).map(([label, value]) => (
+              <div key={label}>
+                <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">{label}</div>
+                <div className="mt-0.5 text-[12px] text-white/80">{value}</div>
+              </div>
             ))}
           </div>
 
-          <div className="inline-flex items-center justify-between rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/70">
-            <span>Last 24 hours</span>
-            <CalendarDays className="h-4 w-4 text-gold" />
+          <div>
+            <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">Why it matters</div>
+            <p className="mt-1 text-[12px] leading-relaxed text-white/60">{event.why}</p>
           </div>
-          <select value={environmentFilter} onChange={(event) => setEnvironmentFilter(event.target.value)} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/70 outline-none focus:border-gold/40">
-            <option value="all">All Environments</option>
-            {environments.map((environment) => <option key={environment} value={environment}>{environment}</option>)}
-          </select>
-          <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value as 'all' | DriftSeverity)} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/70 outline-none focus:border-gold/40">
-            <option value="all">All Severity</option>
-            <option value="critical">Critical</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-          <button type="button" className="inline-flex items-center justify-center gap-2 rounded-md border border-gold/25 bg-black/20 px-3 py-2 text-xs font-black text-gold hover:bg-gold/10">
-            <Filter className="h-4 w-4" />
-            Filters
-          </button>
-        </div>
-      </GlassPanel>
 
-      <div className="space-y-4">
-        <GlassPanel className="p-5">
-          <SectionTitle icon={Radio}>Drift Events</SectionTitle>
-          {filteredEvents.length === 0 ? (
-            <EmptyState label="No drift events match the current filters." />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] border-collapse text-left">
-                <thead>
-                  <tr className="border-b border-white/8 bg-white/[0.025]">
-                    {['Severity', 'Event', 'Resource', 'Type', 'Detected At', 'Status', 'Actions'].map((header) => (
-                      <th key={header} className="px-3 py-3 font-mono text-[9px] font-black uppercase tracking-wider text-white/45">{header}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {filteredEvents.slice(0, 8).map((event) => (
-                    <tr key={event.id} className="transition hover:bg-gold/[0.04]">
-                      <td className="px-3 py-3">
-                        <span className={cn('inline-flex items-center gap-2 rounded border px-2 py-1 font-mono text-[9px] font-black uppercase tracking-wider', severityClass(event.severity))}>
-                          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: SEVERITY_COLORS[event.severity] }} />
-                          {event.severity}
-                        </span>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="text-sm font-black text-white/88">{event.event}</div>
-                        <div className="mt-1 text-[10px] text-white/45">Expected: {event.expected}</div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="text-xs font-black text-white/80">{event.resource}</div>
-                        <div className="mt-1 text-[10px] text-white/45">{event.resourceRegion}</div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <span className="rounded border border-gold/20 bg-gold/10 px-2 py-1 font-mono text-[9px] font-black uppercase tracking-wider text-gold">{event.type}</span>
-                      </td>
-                      <td className="px-3 py-3 font-mono text-xs text-white/60">
-                        <div>{timeOnly(event.detectedAt)}</div>
-                        <div className="mt-1 text-white/35">{dateOnly(event.detectedAt)}</div>
-                      </td>
-                      <td className={cn('px-3 py-3 text-xs font-black', statusClass(event.status))}>{event.status}</td>
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-2">
-                          <a href="/dashboard/runtime-telemetry" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-gold hover:border-gold/40" aria-label={`Inspect ${event.event}`}>
-                            <Play className="h-3.5 w-3.5" />
-                          </a>
-                          <button type="button" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/20 text-gold hover:border-gold/40" aria-label={`Actions for ${event.event}`}>
-                            <MoreVertical className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="mt-4 flex items-center justify-between border-t border-white/5 pt-3 text-xs text-white/45">
-            <span>Showing {numberFmt(Math.min(8, filteredEvents.length))} of {numberFmt(filteredEvents.length)} events</span>
-            <div className="flex items-center gap-2">
-              <button type="button" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 text-white/35"><ChevronLeft className="h-4 w-4" /></button>
-              <span className="rounded border border-gold/40 px-2 py-1 font-mono text-gold">1</span>
-              <button type="button" className="flex h-7 w-7 items-center justify-center rounded border border-white/10 text-white/35"><ChevronRight className="h-4 w-4" /></button>
-            </div>
+          <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/[0.07] p-3.5">
+            <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-cyan-300/80">Recommended action</div>
+            <p className="mt-1 text-[12px] leading-relaxed text-white/80">{event.recommendedAction}</p>
           </div>
-        </GlassPanel>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(320px,0.8fr)_minmax(320px,0.85fr)_minmax(360px,1fr)]">
-          <GlassPanel className="p-5">
-            <SectionTitle icon={Eye}>Drift Distribution</SectionTitle>
-            <DriftDonut distribution={snapshot.driftDistribution} />
-          </GlassPanel>
-
-          <GlassPanel className="p-5">
-            <SectionTitle icon={Radio} suffix={<a href="/dashboard/audit-vault" className="rounded border border-gold/30 px-3 py-1.5 text-[10px] font-black text-gold hover:bg-gold/10">View All</a>}>
-              Recent Activity
-            </SectionTitle>
-            {snapshot.recentActivity.length === 0 ? (
-              <EmptyState label="No recent drift activity yet." />
-            ) : (
-              <div className="space-y-3">
-                {snapshot.recentActivity.map((activity) => {
-                  const Icon = statusIcon(activity.status, activity.severity)
-                  return (
-                    <div key={activity.id} className="grid grid-cols-[24px_minmax(0,1fr)_64px] gap-3 border-b border-white/5 pb-3 last:border-b-0 last:pb-0">
-                      <Icon className={cn('mt-1 h-4 w-4', activity.status === 'Resolved' ? 'text-emerald-300' : activity.status === 'Auto-Remediated' ? 'text-cyan-300' : activity.severity === 'critical' ? 'text-red-300' : 'text-orange-300')} />
-                      <div className="min-w-0">
-                        <div className="truncate text-xs font-bold text-white/80">{activity.title}</div>
-                        <div className="mt-1 truncate text-[10px] text-white/40">{activity.resource}</div>
-                      </div>
-                      <div className="font-mono text-[10px] text-white/55">{timeOnly(activity.timestamp)}</div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </GlassPanel>
-
-          <GlassPanel className="p-5">
-            <SectionTitle icon={Settings}>Quick Actions</SectionTitle>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                { label: 'Run Drift Scan', detail: 'Scan environments', href: '/dashboard/scanner', icon: Radio },
-                { label: 'View Policies', detail: 'Manage drift policies', href: '/dashboard/quantum-governance', icon: FileText },
-                { label: 'Auto-Remediation', detail: 'Configure actions', href: '/dashboard/pqc-orchestration', icon: RefreshCw },
-                { label: 'Generate Report', detail: 'Export drift report', onClick: () => exportJson('drift-detection-report', snapshot), icon: FileText },
-              ].map((action) => {
-                const Icon = action.icon
-                const content = (
-                  <>
-                    <Icon className="h-5 w-5 text-gold" />
-                    <div>
-                      <div className="text-xs font-black text-white/90">{action.label}</div>
-                      <div className="mt-1 text-[10px] text-white/45">{action.detail}</div>
-                    </div>
-                  </>
-                )
-                return action.href ? (
-                  <a key={action.label} href={action.href} className="flex items-center gap-3 rounded-md border border-white/10 bg-white/[0.025] p-4 transition hover:border-gold/40 hover:bg-gold/[0.06]">
-                    {content}
-                  </a>
-                ) : (
-                  <button key={action.label} type="button" onClick={action.onClick} className="flex items-center gap-3 rounded-md border border-white/10 bg-white/[0.025] p-4 text-left transition hover:border-gold/40 hover:bg-gold/[0.06]">
-                    {content}
-                  </button>
-                )
-              })}
+          {event.explainedBy ? (
+            <div className="rounded-xl border border-blue-400/25 bg-blue-500/[0.07] p-3.5">
+              <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-blue-300/80">Planned change</div>
+              <p className="mt-1 text-[11.5px] leading-relaxed text-white/70">
+                This change is explained by {event.explainedBy}, so it is not counted as drift.
+              </p>
             </div>
-          </GlassPanel>
+          ) : null}
+
+          {event.evidence.length ? (
+            <div className="rounded-xl border border-white/10 bg-black/20 p-3.5">
+              <div className="text-[8.5px] font-black uppercase tracking-[0.16em] text-white/30">Evidence</div>
+              <ul className="mt-2 space-y-1">
+                {event.evidence.map((line, i) => <li key={i} className="text-[11px] leading-relaxed text-white/45">· {line}</li>)}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2 border-t border-white/8 pt-3">
+            <LinkButton href={event.href}>Open asset</LinkButton>
+            <LinkButton href="/dashboard/runtime-crypto-intel" tone="ghost">Runtime telemetry</LinkButton>
+            <LinkButton href="/dashboard/vulnerabilities" tone="ghost">Vulnerabilities</LinkButton>
+            <button
+              type="button"
+              onClick={() => onAsk(`On ${event.assetName}, ${event.summary}. Was this change expected, and what should I do about it?`)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/45 bg-violet-500/12 px-3 py-2 text-[9.5px] font-black uppercase tracking-wider text-violet-200 transition hover:bg-violet-500/22"
+            >
+              <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Ask Sophia
+            </button>
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,0.65fr)_minmax(260px,0.55fr)]">
-        <GlassPanel className="p-5">
-          <SectionTitle icon={Radio}>Drift Trends <span className="text-white/35">(7 Days)</span></SectionTitle>
-          <TrendChart data={snapshot.trend} />
-        </GlassPanel>
-
-        <GlassPanel className="p-5">
-          <SectionTitle icon={Filter}>Top Drift Categories</SectionTitle>
-          {snapshot.categories.length === 0 ? (
-            <EmptyState label="No drift categories detected." />
-          ) : (
-            <div className="space-y-4">
-              {snapshot.categories.map((category, index) => {
-                const color = [RED, ORANGE, GOLD, CYAN, '#A855F7'][index] || GOLD
-                const max = Math.max(1, snapshot.categories[0]?.count || 1)
-                return (
-                  <div key={category.label} className="grid grid-cols-[minmax(0,1fr)_36px] items-center gap-3 text-xs">
-                    <div>
-                      <div className="mb-2 flex justify-between text-white/65">
-                        <span>{category.label}</span>
-                      </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-white/7">
-                        <div className="h-full rounded-full" style={{ width: `${(category.count / max) * 100}%`, backgroundColor: color, boxShadow: `0 0 12px ${color}66` }} />
-                      </div>
-                    </div>
-                    <span className="font-mono font-black text-white">{numberFmt(category.count)}</span>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </GlassPanel>
-
-        <GlassPanel className="p-5">
-          <SectionTitle icon={ShieldAlert}>Environment Risk Score</SectionTitle>
-          <RiskGauge value={metrics.environmentRiskScore} delta={metrics.environmentRiskDelta} />
-        </GlassPanel>
-      </div>
-
-      <footer className="flex flex-col gap-2 border-t border-white/5 pt-3 text-[10px] font-mono uppercase tracking-wider text-white/30 md:flex-row md:items-center md:justify-between">
-        <span>{error ? `Telemetry warning: ${error}` : 'Drift telemetry synchronized'}</span>
-        <span>Live stream: {sseConnected ? 'connected' : 'standby'} / Snapshot: {snapshot.generatedAt ? relativeTime(snapshot.generatedAt) : 'pending'}</span>
-        {state === 'loading' && <span>Loading drift telemetry...</span>}
-      </footer>
-    </main>
-  )
+function sophiaContext(data: DriftIntelligence | null): string {
+  if (!data) return 'Drift Detection — no data loaded.';
+  if (!data.hasBaseline) return 'Drift Detection — no baseline yet; fewer than two completed scans exist, so no drift can be measured.';
+  return [
+    'Page: Cryptographic Drift Detection.',
+    `Comparing scan ${data.baseline.baselineSessionId?.slice(0, 8)} (${data.baseline.baselineAt}) with ${data.baseline.currentSessionId?.slice(0, 8)} (${data.baseline.currentAt}).`,
+    `Stability ${data.stability.score ?? 'n/a'}/100 (${data.stability.level}).`,
+    `${data.kpis.regressions} regression(s), ${data.kpis.improvements} unplanned improvement(s), ${data.kpis.planned} planned change(s), ${data.kpis.runtimeDowngrades} runtime downgrade(s).`,
+    data.events[0] ? `Most important: ${data.events[0].summary}.` : 'No change detected.',
+  ].join(' ');
 }

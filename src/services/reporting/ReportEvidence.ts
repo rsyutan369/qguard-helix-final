@@ -1,6 +1,14 @@
 import { v4 as uuidv4 } from 'uuid';
 import { addWeeks, format } from 'date-fns';
 import type { QuantumReadinessSnapshot } from '@/app/dashboard/quantum-readiness/_shared';
+import {
+  DEFAULT_COST_ASSUMPTIONS,
+  allocateCostCategories,
+  buildBudgetVariance,
+  describeCostAssumptions,
+  formatUsd,
+  projectedRiskReductionValueUsd,
+} from '@/lib/migration/cost-model';
 // Runtime-only function import; the ReportScope↔ReportEvidence cycle is safe
 // because both modules only export hoisted functions consumed at call time.
 import { buildReportScope } from './ReportScope';
@@ -644,38 +652,79 @@ export function buildHndlCategories(snapshot: QuantumReadinessSnapshot): HndlCat
 /* Cost forecast (Enhancement #5)                                     */
 /* ------------------------------------------------------------------ */
 export function buildCostForecast(snapshot: QuantumReadinessSnapshot): CostForecast {
+  const assumptions = snapshot.costAssumptions ?? DEFAULT_COST_ASSUMPTIONS;
   const rawTotal = snapshot.estimates.migrationCostUsd || 0;
   if (!rawTotal) {
-    return { lines: [{ category: EVIDENCE_UNAVAILABLE, costUsd: 0 }], totalUsd: 0, projectedRiskReductionValueUsd: 0 };
+    return {
+      lines: [{ category: EVIDENCE_UNAVAILABLE, costUsd: 0 }],
+      totalUsd: 0,
+      projectedRiskReductionValueUsd: 0,
+      excludedCategories: [],
+      assumptions: describeCostAssumptions(assumptions),
+      blendedRateUsd: assumptions.blendedRateUsd,
+      hoursPerWeek: assumptions.hoursPerWeek,
+      totalHours: 0,
+      valueBasis: EVIDENCE_UNAVAILABLE,
+      financialExposureUsd: 0,
+      budget: null,
+    };
   }
-  const rate = BLENDED_RATE_USD;
+
+  const rate = assumptions.blendedRateUsd;
   // Labour hours are the primitive. Each line cost = hours × rate EXACTLY, and
-  // line items sum to the displayed total, so the per-line formulas reconcile
-  // (previously hours were rounded but cost kept the raw ratio → "217 × 165 =
-  // 35,864", which is arithmetically false).
+  // line items sum to the displayed total, so the per-line formulas reconcile.
   const totalHours = Math.max(1, Math.round(rawTotal / rate));
-  const split: Array<[string, number]> = [
-    ['Infrastructure / TLS Upgrades', 0.22],
-    ['PKI & Certificate Modernization', 0.18],
-    ['Cloud / KMS', 0.1],
-    ['HSM', 0.08],
-    ['Validation & Testing', 0.12],
-    ['Staff Time & Training', 0.18],
-    ['Consulting', 0.06],
-    ['Operations & Support', 0.06],
-  ];
-  const alloc = split.map(([category, ratio]) => ({ category, hours: Math.round(totalHours * ratio) }));
-  // Push any integer-rounding remainder onto the largest line so Σ hours ==
-  // totalHours and Σ costUsd == totalUsd exactly.
+
+  /* Only categories the evidence supports are costed. A tenant with no HSM and
+     no connected cloud account previously still saw "HSM $12,540" and
+     "Cloud / KMS $15,675" — 18% of the programme budget assigned to hardware the
+     scan never found. Rule 3: unmeasured renders as unmeasured, with a reason,
+     and its weight is redistributed rather than filled in. */
+  const { applicable, excluded } = allocateCostCategories({
+    vulnerableComponents: snapshot.inventory.vulnerableComponents,
+    certificatesAnalyzed: snapshot.inventory.certificatesAnalyzed,
+    keysDiscovered: snapshot.inventory.keysDiscovered,
+    cloudAccounts: snapshot.inventory.cloudAccounts,
+    assetsAssessed: snapshot.inventory.assetsAssessed,
+  });
+
+  const alloc = applicable.map((entry) => ({ category: entry.category, hours: Math.round(totalHours * entry.weight) }));
+  // Push integer-rounding remainder onto the largest line so Σ hours == totalHours
+  // and Σ costUsd == totalUsd exactly.
   const remainder = totalHours - alloc.reduce((sum, a) => sum + a.hours, 0);
   if (remainder !== 0 && alloc.length) {
-    const largest = alloc.reduce((mi, a, i, arr) => (a.hours > arr[mi].hours ? i : mi), 0);
+    const largest = alloc.reduce((mi, a, index, arr) => (a.hours > arr[mi].hours ? index : mi), 0);
     alloc[largest].hours = Math.max(0, alloc[largest].hours + remainder);
   }
   const lines = alloc.map((a) => ({ category: a.category, costUsd: a.hours * rate }));
   const totalUsd = lines.reduce((sum, l) => sum + l.costUsd, 0);
-  const reductionPct = clamp(((snapshot.scores.quantumRisk - Math.max(10, snapshot.scores.quantumRisk * 0.25)) / Math.max(1, snapshot.scores.quantumRisk)) * 100);
-  return { lines, totalUsd, projectedRiskReductionValueUsd: Math.round(totalUsd * (reductionPct / 100) * 3) };
+
+  /* Value of the risk removed.
+     This used to be `totalUsd × reductionPct × 3`. Because reductionPct saturates
+     at 75% for any tenant whose quantumRisk exceeds 40, that collapsed to a fixed
+     2.25 × cost for nearly everyone, and it claimed a return larger than the
+     total exposure the platform itself computed. Value is now a fraction OF the
+     shared exposure model (the same one the Executive Command Center prints),
+     hard-capped by it. */
+  const { reductionPct } = reductionTargets(snapshot);
+  const financialExposureUsd = snapshot.businessValue?.financialExposureUsd ?? 0;
+  const valueBasis = financialExposureUsd > 0
+    ? `${reductionPct}% of ${formatUsd(financialExposureUsd, assumptions.currency)} modelled exposure across ${snapshot.inventory.quantumVulnerableAssets} quantum-vulnerable asset(s)`
+    : 'Not modelled — no asset value assumptions or no vulnerable assets recorded';
+
+  return {
+    lines,
+    totalUsd,
+    projectedRiskReductionValueUsd: projectedRiskReductionValueUsd(financialExposureUsd, reductionPct),
+    excludedCategories: excluded,
+    assumptions: describeCostAssumptions(assumptions),
+    blendedRateUsd: rate,
+    hoursPerWeek: assumptions.hoursPerWeek,
+    totalHours,
+    valueBasis,
+    financialExposureUsd,
+    budget: buildBudgetVariance(totalUsd, assumptions),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1049,6 +1098,9 @@ export function buildAdvisorValidation(snapshot: QuantumReadinessSnapshot, advis
 // FTE over the programme window, the units enterprise planners actually staff
 // against ("511 hours" alone under-informs resourcing decisions).
 export function buildCostBreakdown(snapshot: QuantumReadinessSnapshot, costForecast: CostForecast): CostBreakdown {
+  // Tenant rate, so the printed "hrs × rate = cost" formula is the same
+  // arithmetic the forecast performed.
+  const BLENDED_RATE_USD = costForecast.blendedRateUsd || (snapshot.costAssumptions ?? DEFAULT_COST_ASSUMPTIONS).blendedRateUsd;
   const windowWeeks = Math.max(1, snapshot.estimates.migrationTimelineWeeks || 1);
   const round1 = (n: number) => Math.round(n * 10) / 10;
   const round2 = (n: number) => Math.round(n * 100) / 100;

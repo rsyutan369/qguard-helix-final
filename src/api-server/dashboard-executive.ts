@@ -17,6 +17,11 @@
  */
 import { createAuthClient } from '@/lib/supabase-server'
 import { buildSnapshot } from './quantum-readiness'
+import {
+  DEFAULT_COST_ASSUMPTIONS,
+  buildFinancialExposure,
+  describeCostAssumptions,
+} from '@/lib/migration/cost-model'
 import { buildWorkflowState } from './migration-workflow'
 
 type Row = Record<string, any>
@@ -476,13 +481,21 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
   /* ---- Business impact (DISCLOSED model over real counts) --------- */
   const applications = categoryCounts.get('applications')?.count || 0
   const applicationsAtRisk = categoryCounts.get('applications')?.atRisk || 0
-  // Per-asset value weights (USD) — transparent planning assumptions, not telemetry.
-  const VALUE_PER_CRITICAL = 250000
-  const VALUE_PER_STANDARD = 40000
-  const criticalVulnerable = Math.min(vulnerableAssets, missionCriticalTagged)
-  const standardVulnerable = Math.max(0, vulnerableAssets - criticalVulnerable)
-  const financialExposure = criticalVulnerable * VALUE_PER_CRITICAL + standardVulnerable * VALUE_PER_STANDARD
-  const revenueProtected = inv.pqcReadyAssets * VALUE_PER_STANDARD + Math.min(inv.pqcReadyAssets, missionCriticalTagged) * (VALUE_PER_CRITICAL - VALUE_PER_STANDARD)
+  /* Per-asset value weights come from the tenant's own assumptions and the model
+     is shared with the Migration Planner — the two pages used to run separate
+     value models and print contradicting figures (exposure $80,000 beside a
+     "risk-reduction value" of $352,688). One model, one set of numbers. */
+  const costAssumptions = snap.costAssumptions ?? DEFAULT_COST_ASSUMPTIONS
+  const VALUE_PER_CRITICAL = costAssumptions.valuePerCriticalAssetUsd
+  const VALUE_PER_STANDARD = costAssumptions.valuePerStandardAssetUsd
+  const exposure = snap.businessValue ?? buildFinancialExposure(
+    { vulnerableAssets, taggedCriticalAssets: missionCriticalTagged, pqcReadyAssets: inv.pqcReadyAssets },
+    costAssumptions,
+  )
+  const criticalVulnerable = exposure.criticalVulnerableAssets
+  const standardVulnerable = exposure.standardVulnerableAssets
+  const financialExposure = exposure.financialExposureUsd
+  const revenueProtected = exposure.revenueProtectedUsd
   const businessImpact = {
     modeled: true,
     financialExposure,
@@ -497,7 +510,10 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     riskTrendDelta: snap.riskTrend.length >= 2 ? snap.riskTrend[snap.riskTrend.length - 1].risk - snap.riskTrend[snap.riskTrend.length - 2].risk : 0,
     projectedRoiPct: financialExposure > 0 ? clampPct((financialExposure / Math.max(1, snap.estimates.migrationCostUsd || financialExposure)) * 100) : 0,
     migrationCostUsd: snap.estimates.migrationCostUsd,
-    assumptions: `Modelled from real asset counts. Critical-asset value $${VALUE_PER_CRITICAL.toLocaleString()} (business-criticality-tagged), standard $${VALUE_PER_STANDARD.toLocaleString()}; cutover ~15 min/asset. Planning estimate, not measured revenue.`,
+    assumptions: `${describeCostAssumptions(costAssumptions)} Cutover ~15 min/asset.`,
+    // Untagged estates value every asset at the STANDARD rate, which understates
+    // exposure — say so rather than letting the figure imply full coverage.
+    criticalityTagged: exposure.criticalityTagged,
   }
 
   /* ---- KPI cards (12) — real values, trends, targets, sparklines -- */

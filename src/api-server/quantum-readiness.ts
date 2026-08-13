@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
+import { buildFinancialExposure, migrationCostUsd as computeMigrationCostUsd } from '@/lib/migration/cost-model'
+import { loadCostAssumptions } from './cost-assumptions'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildScannerIntelligence } from './scanner'
 import { buildSharedResponsibility } from '@/lib/shared-responsibility'
@@ -132,6 +134,11 @@ export async function buildSnapshot(token: string, userId: string) {
 async function computeSnapshot(token: string, userId: string) {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+
+  // Tenant planning assumptions (rate, hours/week, per-asset values, budget).
+  // Falls back to published defaults when unset or when the schema is not yet
+  // applied, so cost surfaces degrade to defaults rather than to nothing.
+  const costAssumptions = await loadCostAssumptions(token, userId)
 
   const [
     assets,
@@ -399,8 +406,14 @@ async function computeSnapshot(token: string, userId: string) {
   const footprint = clamp((assetsAssessed / 50) * 20 + (certificatesAnalyzed / 50) * 15 + (cloudAccounts / 5) * 15)
   const migrationComplexity = hasData ? Math.round(clamp(dependencyDepth * 0.4 + footprint * 0.4 + vulnerableShare * 0.2)) : 0
 
-  const remaining = vulnerable + quantumVulnerableAssets
-  const migrationEffort = hasData ? Math.round(clamp((remaining / Math.max(1, totalCrypto + assetsAssessed)) * 100)) : 0
+  /* Migration scope is measured in COMPONENTS. `quantumVulnerableAssets` used to
+     be added to `vulnerable` here, which mixes units (assets + components) AND
+     double-counts — those assets are vulnerable precisely BECAUSE of the
+     components already counted. Assets now enter through a per-asset cutover
+     overhead below, which is a real and separately-scaled cost. */
+  const remaining = vulnerable
+  const cutoverAssets = quantumVulnerableAssets
+  const migrationEffort = hasData ? Math.round(clamp((remaining / Math.max(1, totalCrypto)) * 100)) : 0
 
   // Effort scales linearly with remaining scope; CALENDAR duration must not — a
   // large estate runs parallel migration workstreams (app teams migrate their
@@ -410,10 +423,25 @@ async function computeSnapshot(token: string, userId: string) {
   // multi-year calendar instead of an absurd multi-thousand-week single lane.
   // For small estates (1 workstream) the numbers are identical to the original
   // model.
-  const effortWeeks = remaining * 0.6 * (1 + migrationComplexity / 200)
+  // Component work + bounded per-asset cutover/validation overhead (0.2 wk each):
+  // change windows, scheduling and post-change verification are paid per asset
+  // however many components it carries.
+  const effortWeeks = (remaining * 0.6 + cutoverAssets * 0.2) * (1 + migrationComplexity / 200)
   const parallelWorkstreams = Math.min(64, Math.max(1, Math.ceil(effortWeeks / 104)))
   const migrationTimelineWeeks = hasData ? Math.max(remaining > 0 ? 2 : 0, Math.round(effortWeeks / parallelWorkstreams)) : 0
-  const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * parallelWorkstreams * 38 * 165) : 0
+  // Rate and hours/week are TENANT assumptions, not platform constants
+  // (src/lib/migration/cost-model.ts). Defaults apply until a tenant sets theirs.
+  const migrationCostUsd = computeMigrationCostUsd(migrationTimelineWeeks, parallelWorkstreams, costAssumptions)
+
+  /* Business value — ONE model, shared with the Executive Command Center, so the
+     planner and the executive page can no longer publish different exposure. */
+  const businessCriticalTagged = assets.filter((a) =>
+    ['critical', 'high'].includes(String((a as Record<string, unknown>).criticality || '').toLowerCase()),
+  ).length
+  const businessValue = buildFinancialExposure(
+    { vulnerableAssets: quantumVulnerableAssets, taggedCriticalAssets: businessCriticalTagged, pqcReadyAssets },
+    costAssumptions,
+  )
 
   // ---- Factor breakdowns ------------------------------------------------
   // Terminology: this factor measures the CBOM component share (pqcReady /
@@ -675,6 +703,8 @@ async function computeSnapshot(token: string, userId: string) {
     exposureGraph: { nodes, edges },
     riskTrend,
     estimates: { migrationTimelineWeeks, migrationCostUsd, parallelWorkstreams },
+    costAssumptions,
+    businessValue,
     telemetry: {
       runtimeEvents: runtimeEvents.length,
       scanResults: scanResults.length,

@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { sha3_256 } from '@noble/hashes/sha3.js'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { namesCryptography } from '@/lib/scanner/finding-identity'
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import type {
   MigrationSnapshot,
   SnapshotAuditEntry,
@@ -97,6 +99,30 @@ async function captureCryptoState(client: any, userId: string, assetId: string |
 }
 
 /** Pure crypto-state derivation from evidence rows (offline-testable). */
+/**
+ * Does this inventory row actually name cryptography?
+ *
+ * TWO gates, because either alone leaks finding titles into the snapshot:
+ *
+ *  1. `namesCryptography` reads the scanner's own class prefix, rejecting
+ *     `API Security: …`, `DNS Security: …`, `Rule (…): …` outright.
+ *  2. `analyzeCryptoObservation` must then decompose the algorithm string to
+ *     a real primitive. Gate 1 alone still admits rows filed under a crypto
+ *     class whose algorithm column holds a title — on a live tenant
+ *     `Key Exchange: HNDL Risk: HIGH` and `Certificate: Expired Certificate`
+ *     both passed gate 1.
+ */
+function rowNamesCryptography(row: Record<string, unknown>): boolean {
+  if (!namesCryptography(str(row.name))) return false
+  const anatomy = analyzeCryptoObservation({
+    algorithm: str(row.algorithm),
+    name: str(row.name),
+    itemType: str(row.item_type),
+    protocol: str(row.protocol),
+  })
+  return anatomy.kind !== 'policy'
+}
+
 export function deriveCryptoState(
   inventory: Record<string, unknown>[],
   certs: Record<string, unknown>[],
@@ -104,14 +130,16 @@ export function deriveCryptoState(
   jobMeta: Record<string, unknown>,
   assetId: string | null,
 ): SnapshotCryptoState {
+  const cryptoRows = inventory.filter(rowNamesCryptography)
+  const policyRecordsExcluded = inventory.length - cryptoRows.length
   const algorithms = Array.from(new Set([
-    ...inventory.map((i) => str(i.algorithm)).filter(Boolean),
+    ...cryptoRows.map((i) => str(i.algorithm)).filter(Boolean),
     ...certs.map((c) => str(c.algorithm)).filter(Boolean),
     ...(str(jobMeta.fromAlgo || jobMeta.from_algorithm) ? [str(jobMeta.fromAlgo || jobMeta.from_algorithm)] : []),
   ])).slice(0, 40)
 
-  const cipherSuites = Array.from(new Set(inventory.filter((i) => /cipher|tls|kex/i.test(str(i.item_type) + str(i.protocol))).map((i) => str(i.algorithm)).filter(Boolean))).slice(0, 20)
-  const tlsRow = inventory.find((i) => /tls/i.test(str(i.protocol) + str(i.item_type)))
+  const cipherSuites = Array.from(new Set(cryptoRows.filter((i) => /cipher|tls|kex/i.test(str(i.item_type) + str(i.protocol))).map((i) => str(i.algorithm)).filter(Boolean))).slice(0, 20)
+  const tlsRow = cryptoRows.find((i) => /tls/i.test(str(i.protocol) + str(i.item_type)))
   const issuers = Array.from(new Set(certs.map((c) => str(c.issuer)).filter(Boolean))).slice(0, 20)
 
   const target = rec(jobMeta.target)
@@ -127,6 +155,7 @@ export function deriveCryptoState(
     keys: keys.slice(0, 30).map((k) => ({ algorithm: str(k.algorithm) || 'unknown', bitLength: k.bit_length != null ? num(k.bit_length) : null, status: str(k.status) || 'active' })),
     configuration: { version: str(jobMeta.configurationVersion) || null, paths: configPaths, source: assetId ? 'crypto-inventory + certificate + key evidence' : 'job metadata' },
     componentCount: inventory.length + certs.length + keys.length,
+    policyRecordsExcluded,
   }
 }
 
@@ -455,16 +484,82 @@ router.post('/:snapshotId/restore', async (req: Request, res: Response) => {
       return res.status(409).json({ error: { code: 'INTEGRITY_FAILED', message: 'Snapshot integrity verification failed — restore blocked.' } })
     }
 
-    // Drive the existing rollback path on the linked migration job.
+    /*
+     * Executor gate.
+     *
+     * Restoring a snapshot means pushing the recorded configuration BACK on to
+     * the asset, and that needs something able to act on it: an enrolled
+     * collector agent on the host, or a cloud connector with scoped write
+     * permissions. With neither, the platform can record the operator's intent
+     * and mark the plan rolled back, but it CANNOT change the asset.
+     *
+     * This route previously wrote `restorationStatus: 'completed'` and an audit
+     * line reading "Restored <asset> to configuration <version>" in every case,
+     * including tenants with zero agents and zero connectors. That is a
+     * compliance record asserting a change that never happened.
+     */
+    const assetId = existing.asset_id ? str(existing.asset_id) : null
+    const activeSince = new Date(Date.now() - 15 * 60_000).toISOString()
+    const [agents, connectors] = await Promise.all([
+      rows(client, 'scanner_agents', (q) => q.select('id, status, last_seen_at').eq('user_id', user!.id).eq('status', 'active').gte('last_seen_at', activeSince).limit(5)),
+      rows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', user!.id).eq('status', 'connected').limit(5)),
+    ])
+    const executor = agents.length
+      ? { kind: 'agent' as const, id: str(agents[0].id), label: 'collector agent' }
+      : connectors.length
+        ? { kind: 'connector' as const, id: str(connectors[0].id), label: `${str(connectors[0].provider) || 'cloud'} connector` }
+        : null
+
     const jobId = existing.migration_job_id ? str(existing.migration_job_id) : null
     if (jobId) {
       const job = (await rows(client, 'migration_jobs', (q) => q.select('metadata').eq('user_id', user!.id).eq('id', jobId).limit(1)))[0]
       const meta = rec(job?.metadata)
-      await client.from('migration_jobs').update({ status: 'rolled_back', metadata: { ...meta, rolledBackFrom: snapshotId, rolledBackAt: new Date().toISOString(), rollbackReason: reason }, updated_at: new Date().toISOString() }).eq('id', jobId).eq('user_id', user!.id)
+      await client.from('migration_jobs').update({
+        status: executor ? 'rolled_back' : 'rollback_requested',
+        metadata: { ...meta, rolledBackFrom: snapshotId, rolledBackAt: new Date().toISOString(), rollbackReason: reason, rollbackExecutor: executor?.kind ?? null },
+        updated_at: new Date().toISOString(),
+      }).eq('id', jobId).eq('user_id', user!.id)
     }
-    await client.from(SNAP_TABLE).update({ status: 'restored', restored_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', existing.id).eq('user_id', user!.id)
-    await writeAudit(client, user!.id, { snapshotId, migrationJobId: jobId, action: 'restored', actor: user!.email || 'owner', reason, detail: `Restored ${str(existing.asset_name)} to configuration ${str(existing.configuration_version)}`, approvalStatus: 'owner-approved', validationResult: 'n/a', restorationStatus: 'completed', integrityStatus: 'verified' })
-    res.json({ data: { snapshotId, status: 'restored', jobId } })
+
+    // `restored` asserts the asset now matches the snapshot. Only an executor
+    // can make that true, so without one the snapshot stays restorable and the
+    // request is recorded as pending.
+    await client.from(SNAP_TABLE).update({
+      status: executor ? 'restored' : 'restorable',
+      restored_at: executor ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', existing.id).eq('user_id', user!.id)
+
+    const detail = executor
+      ? `Rollback of ${str(existing.asset_name)} to configuration ${str(existing.configuration_version)} dispatched to the ${executor.label}. Awaiting execution confirmation.`
+      : `Rollback of ${str(existing.asset_name)} to configuration ${str(existing.configuration_version)} RECORDED BUT NOT APPLIED — no collector agent or cloud connector is available to act on this asset. The snapshot remains restorable.`
+
+    await writeAudit(client, user!.id, {
+      snapshotId,
+      migrationJobId: jobId,
+      action: 'restored',
+      actor: user!.email || 'owner',
+      reason,
+      detail,
+      approvalStatus: 'owner-approved',
+      validationResult: 'n/a',
+      restorationStatus: executor ? 'dispatched' : 'awaiting-executor',
+      integrityStatus: 'verified',
+    })
+
+    res.json({
+      data: {
+        snapshotId,
+        status: executor ? 'dispatched' : 'awaiting-executor',
+        jobId,
+        assetId,
+        executor: executor ? { kind: executor.kind, label: executor.label } : null,
+        applied: Boolean(executor),
+        message: executor
+          ? `Rollback dispatched to the ${executor.label}. The asset is updated once the executor confirms.`
+          : 'No collector agent or cloud connector is available for this asset, so nothing was changed on it. The rollback intent and the snapshot are recorded; enrol a collector to execute it.',
+      },
+    })
   } catch (error) {
     console.error('snapshot restore failed:', error)
     res.status(500).json({ error: { code: 'RESTORE_FAILED', message: 'Unable to restore snapshot' } })

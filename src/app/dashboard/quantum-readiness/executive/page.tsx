@@ -16,6 +16,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { describeCostAssumptions } from '@/lib/migration/cost-model';
 import {
   Badge,
   EmptyState,
@@ -122,6 +123,11 @@ export default function ExecutiveDashboardPage() {
             <BigStat icon={CalendarClock} label="Est. Timeline" value={estimates.migrationTimelineWeeks ? `${integerFmt(estimates.migrationTimelineWeeks)}w` : '—'} color={BLUE} sub="To quantum-safe" />
             <BigStat icon={Banknote} label="Est. Investment" value={estimates.migrationCostUsd ? currencyFmt(estimates.migrationCostUsd) : '—'} color={EMERALD} sub="Migration program" />
           </div>
+          {/* A currency figure without its inputs is indistinguishable from a
+              measurement. Publish the assumptions beside it, everywhere. */}
+          {estimates.migrationCostUsd ? (
+            <p className="mt-3 text-[9.5px] leading-relaxed text-white/35">{describeCostAssumptions(snapshot.costAssumptions)}</p>
+          ) : null}
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MiniStat label="PQC Adoption" value={percentLabel(scores.pqcAdoption)} color={GREEN} />
             <MiniStat label="Vulnerable Assets" value={integerFmt(inventory.quantumVulnerableAssets)} color={RED} />

@@ -1,16 +1,20 @@
 import express from 'express'
 import dashboardRoutes from './dashboard'
 import telemetryCorrelationRoutes from './telemetry-correlation'
-import quantumRiskScoringRoutes from './quantum-risk-scoring'
+import quantumRiskScoringRoutes from './quantum-risk-intel'
 import quantumReadinessRoutes from './quantum-readiness'
 import exposureGraphRoutes from './exposure-graph'
 import reportsRoutes from './reports'
 import migrationPlannerRoutes from './migration-planner'
+import costAssumptionsRoutes from './cost-assumptions'
 import harvestNowRoutes from './harvest-now'
 import quantumCertificationRoutes, { certificateVerificationRouter } from './quantum-certification'
 import quantumRemediationRoutes from './quantum-remediation'
 import migrationWorkflowRoutes from './migration-workflow'
 import cryptoAgilityRoutes from './crypto-agility'
+import runtimeCryptoIntelRoutes from './runtime-crypto-intel'
+import vulnerabilityCenterRoutes from './vulnerability-center'
+import driftDetectionRoutes from './drift-detection'
 import externalTrustRoutes from './external-trust'
 import migrationIntelligenceRoutes from './migration-intelligence'
 import tlsTelemetryRoutes from './tls-telemetry'
@@ -774,11 +778,15 @@ export function createApiServer() {
   app.use('/api/v1/exposure-graph', exposureGraphRoutes)
   app.use('/api/v1/reports', reportsRoutes)
   app.use('/api/v1/migration-planner', migrationPlannerRoutes)
+  app.use('/api/v1/cost-assumptions', costAssumptionsRoutes)
   app.use('/api/v1/harvest-now', harvestNowRoutes)
   app.use('/api/v1/quantum-certification', quantumCertificationRoutes)
   app.use('/api/v1/quantum-remediation', quantumRemediationRoutes)
   app.use('/api/v1/migration-workflow', migrationWorkflowRoutes)
   app.use('/api/v1/crypto-agility', cryptoAgilityRoutes)
+  app.use('/api/v1/runtime-crypto-intel', runtimeCryptoIntelRoutes)
+  app.use('/api/v1/dashboard/vulnerabilities', vulnerabilityCenterRoutes)
+  app.use('/api/v1/dashboard/drift', driftDetectionRoutes)
   app.use('/api/v1/external-trust', externalTrustRoutes)
   app.use('/api/v1/migration-intelligence', migrationIntelligenceRoutes)
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)

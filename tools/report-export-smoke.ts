@@ -18,6 +18,7 @@ import { attachIntegrity } from '../src/services/reporting/ReportEngine';
 import { buildReportScope, listSnapshotAssets, scopeSnapshotToAssets } from '../src/services/reporting/ReportScope';
 import { exportReport } from '../src/services/reporting/ReportExporter';
 import { reportVerificationUrl } from '../src/services/reporting/ReportQr';
+import { DEFAULT_COST_ASSUMPTIONS, buildFinancialExposure } from '../src/lib/migration/cost-model';
 import { brandingSchema, REPORT_FORMATS, enterpriseAssessmentReportSchema } from '../src/services/reporting/schemas/ReportSchema';
 
 const ENTERPRISE: QuantumReadinessSnapshot = {
@@ -91,6 +92,8 @@ const ENTERPRISE: QuantumReadinessSnapshot = {
     { label: 'Wk 8', readiness: 26, risk: 58 },
   ],
   estimates: { migrationTimelineWeeks: 26, migrationCostUsd: 163020 },
+  costAssumptions: DEFAULT_COST_ASSUMPTIONS,
+  businessValue: buildFinancialExposure({ vulnerableAssets: 4, taggedCriticalAssets: 1, pqcReadyAssets: 2 }, DEFAULT_COST_ASSUMPTIONS),
   telemetry: {
     runtimeEvents: 4200, scanResults: 980, scanSessions: 12, securityEvents: 140,
     certificates: 18, keys: 31, assets: 24, connectors: 4, latestEventAt: new Date().toISOString(),

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { getToken, getServerUser, getServiceClient, createAuthClient } from '@/lib/supabase-server'
 import { buildExecutiveSnapshot } from './dashboard-executive'
+import { classifyCryptoRootCause } from '@/lib/crypto-root-cause'
 import {
   deriveAssetPostureModel,
   isInternetFacing,
@@ -3923,78 +3924,16 @@ function fingerprintPart(value: unknown) {
 }
 
 function vulnerabilityRootCause(row: any) {
-  const text = [
-    row.title,
-    row.description,
-    row.algorithm,
-    row.type,
-    row.source,
-    row.remediation,
-  ].map((value) => String(value || '').toLowerCase()).join(' ')
-
-  if (/no forward secrecy|forward secrecy|ephemeral key exchange|rsa key exchange|weak key exchange|diffie|dh-?\d|dhe|ecdh|tls_rsa|key exchange/.test(text)) {
-    return {
-      ruleId: 'weak-key-exchange',
-      title: 'Weak Key Exchange Algorithm',
-      type: 'Key Exchange Risk',
-      description: 'No ephemeral key exchange - past traffic can be decrypted if the private key is compromised.',
-      remediation: 'Disable RSA/static DH key exchange and require TLS 1.3 or ECDHE with a PQC/hybrid KEM migration path.',
-    }
-  }
-  if (/tls\s*1\.[01]|tls-?1\.[01]|ssl|legacy protocol/.test(text)) {
-    return {
-      ruleId: 'legacy-tls-protocol',
-      title: 'Legacy TLS Protocol',
-      type: 'Protocol Risk',
-      description: 'Legacy TLS or SSL protocol support was observed on this asset.',
-      remediation: 'Disable SSL, TLS 1.0, and TLS 1.1; enforce TLS 1.2+ with TLS 1.3 preferred.',
-    }
-  }
-  if (/sha-?1|md5|legacy mac|weak hash/.test(text)) {
-    return {
-      ruleId: 'weak-hash-or-mac',
-      title: 'Weak Hash Or MAC Algorithm',
-      type: 'Hash Risk',
-      description: 'A weak hash or MAC primitive was observed in cryptographic telemetry.',
-      remediation: 'Retire SHA-1/MD5 MAC usage and enforce SHA-384, SHA-3, or approved AEAD suites.',
-    }
-  }
-  if (/cbc|3des|des|rc4|weak cipher|legacy cipher/.test(text)) {
-    return {
-      ruleId: 'weak-cipher-suite',
-      title: 'Weak Cipher Suite',
-      type: 'Cipher Suite Risk',
-      description: 'A legacy or non-AEAD cipher suite was observed on this asset.',
-      remediation: 'Disable CBC, RC4, DES, and 3DES suites; prefer AES-256-GCM or ChaCha20-Poly1305.',
-    }
-  }
-  if (/certificate|cert|x509|issuer|subject|pki|pinning/.test(text)) {
-    return {
-      ruleId: 'certificate-risk',
-      title: 'Certificate Risk',
-      type: 'Certificate Risk',
-      description: 'Certificate telemetry indicates a weak, expiring, or non-PQC-ready trust object.',
-      remediation: 'Rotate the certificate and plan ML-DSA or hybrid certificate adoption.',
-    }
-  }
-  if (/random|rng|entropy/.test(text)) {
-    return {
-      ruleId: 'weak-randomness',
-      title: 'Weak Random Number Generator',
-      type: 'Entropy Risk',
-      description: 'Weak or insufficient entropy was observed in cryptographic telemetry.',
-      remediation: 'Move key generation and nonce generation to approved QRNG or CSPRNG sources.',
-    }
-  }
-  if (/hndl|harvest|shadow|downgrade|runtime/.test(text)) {
-    return {
-      ruleId: 'runtime-crypto-exposure',
-      title: 'Runtime Crypto Exposure',
-      type: 'Runtime Exposure',
-      description: 'Runtime telemetry indicates a harvest-now or downgrade-sensitive cryptographic exposure.',
-      remediation: 'Open live migration controls and migrate the affected flow to a PQC or hybrid profile.',
-    }
-  }
+  // Shared classifier — one routing rule, read path and write path both use it.
+  const classified = classifyCryptoRootCause({
+    title: row.title,
+    description: row.description,
+    algorithm: row.algorithm,
+    type: row.type,
+    source: row.source,
+    remediation: row.remediation,
+  })
+  if (classified) return classified
 
   const type = row.type || vulnerabilityType(`${row.title || ''} ${row.description || ''} ${row.algorithm || ''}`)
   const title = vulnerabilityTitle(row.title || type || row.description)

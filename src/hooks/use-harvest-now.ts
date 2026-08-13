@@ -123,10 +123,11 @@ export interface HarvestValueRow {
   label: string;
   inScope: boolean;
   assetCount: number;
-  exposureScore: number;
+  /** null = category not present in the estate, so it was NOT scored. */
+  exposureScore: number | null;
   confidentialityLifetimeYears: number;
   confidentialityLabel: string;
-  adversaryInterestScore: number;
+  adversaryInterestScore: number | null;
   estimatedFutureValue: string;
   regulation: string;
 }
@@ -151,16 +152,27 @@ export interface BreakTimelineYear {
 
 export interface ForwardSecrecy {
   coveragePct: number;
+  /** COMPONENT counts — key-agreement observations, not assets. */
   assetsProtected: number;
   assetsUnprotected: number;
   totalTransport: number;
+  componentsMeasured?: number;
+  /** Bulk ciphers, hashes and policy records: no key agreement to assess. */
+  componentsNotApplicable?: number;
+  assetsWithPfs?: number;
+  assetsWithoutPfs?: number;
+  runtimeLegacyEvents?: number;
   nonPfsBreakdown: Array<{ type: string; count: number }>;
   topUnprotected: Array<{ asset: string; algorithm: string; protocol: string; reason: string }>;
   hasEvidence: boolean;
+  /** States the population measured, so coverage is auditable. */
+  basis?: string;
 }
 
 export interface ExposureMatrixRow {
   algorithm: string;
+  /** cipher-suite | key-exchange | signature | certificate | symmetric | hash */
+  kind?: string;
   assetCount: number;
   instanceCount: number;
   businessCriticality: string;
@@ -293,7 +305,7 @@ export const EMPTY_HNDL: HndlIntelligence = {
   harvestValue: [],
   shelfLife: [],
   breakTimeline: { currentYear: new Date().getFullYear(), crqcYear: 2030, migrationDeadlineYear: 2029, migrationCompletionYear: 2029, yearsRemaining: 0, currentRisk: 0, projectedRiskAtCrqc: 0, years: [] },
-  forwardSecrecy: { coveragePct: 0, assetsProtected: 0, assetsUnprotected: 0, totalTransport: 0, nonPfsBreakdown: [], topUnprotected: [], hasEvidence: false },
+  forwardSecrecy: { coveragePct: 0, assetsProtected: 0, assetsUnprotected: 0, totalTransport: 0, componentsMeasured: 0, componentsNotApplicable: 0, assetsWithPfs: 0, assetsWithoutPfs: 0, runtimeLegacyEvents: 0, nonPfsBreakdown: [], topUnprotected: [], hasEvidence: false, basis: '' },
   exposureMatrix: [],
   capturedData: { lines: [], totalTb: 0, totalGb: 0, hasEvidence: false },
   futureDecryptable: { totalDataAtRiskTb: 0, projectedDecryptableTb: 0, highValueDataPct: 0, criticalConfidentialAssets: 0, vulnerableSharePct: 0, trend: [], hasEvidence: false },

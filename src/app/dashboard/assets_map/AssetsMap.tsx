@@ -1,13 +1,13 @@
 import { Fragment, useMemo, useState } from 'react';
-import { Search, Filter, Shield, AlertTriangle, ChevronRight, ChevronDown, Globe, Server, Loader2, RefreshCw, ExternalLink, Eye, Download } from 'lucide-react';
+import { Search, Filter, Shield, AlertTriangle, ChevronRight, ChevronDown, Globe, Server, Loader2, RefreshCw, ExternalLink, Eye } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
+import { InventoryExportMenu } from '../_components/InventoryExportMenu';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { useMigrationWorkflow } from '@/hooks/use-migration-workflow';
 import { useQuantumReadiness } from '@/app/dashboard/quantum-readiness/_shared';
 
 type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
-type ExportFormat = 'csv' | 'json' | 'pdf';
 
 type CryptoInventoryItem = {
   id?: string;
@@ -294,201 +294,6 @@ function worstComponentSeverity(asset: AssetRecord): RiskLevel | null {
   return levels.length === 0 ? null : highestRiskLevel(levels);
 }
 
-function exportFileName(format: ExportFormat) {
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  return `qguard-assets-findings-${stamp}.${format}`;
-}
-
-function csvCell(value: unknown) {
-  const text = String(value ?? '').replace(/\r?\n/g, ' ');
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function exportRows(selectedAssets: AssetRecord[]) {
-  return selectedAssets.flatMap((asset) => {
-    const inventory = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory : [];
-    const rows = inventory.length ? inventory : [null];
-    return rows.map((item) => ({
-      assetId: asset.id,
-      assetName: asset.name,
-      type: labelize(asset.type),
-      target: assetTarget(asset),
-      riskLevel: assetRiskLevel(asset).toUpperCase(),
-      riskScore: asset.riskScore,
-      qScore: asset.qScore,
-      compliance: asset.complianceStatus,
-      status: asset.status,
-      lastScanned: formatDate(asset.lastScanned),
-      findingId: item?.id || '',
-      algorithm: item ? cryptoLabel(item) : '',
-      category: item ? labelize(item.item_type || item.protocol || 'cryptography') : '',
-      exposureLevel: item ? labelize(item.exposure_level || (item.is_vulnerable ? 'vulnerable' : 'safe')) : '',
-      vulnerable: item ? Boolean(item.is_vulnerable) : false,
-      quantumSafe: item ? Boolean(item.is_quantum_safe) : false,
-      evidence: item ? metadataText(item, 'evidence', '') : '',
-      recommendation: item ? metadataText(item, 'recommendation', '') : '',
-    }));
-  });
-}
-
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-function exportCsv(selectedAssets: AssetRecord[]) {
-  const rows = exportRows(selectedAssets);
-  const headers = [
-    'assetId',
-    'assetName',
-    'type',
-    'target',
-    'riskLevel',
-    'riskScore',
-    'qScore',
-    'compliance',
-    'status',
-    'lastScanned',
-    'findingId',
-    'algorithm',
-    'category',
-    'exposureLevel',
-    'vulnerable',
-    'quantumSafe',
-    'evidence',
-    'recommendation',
-  ];
-  const csv = [
-    headers.join(','),
-    ...rows.map((row) => headers.map((header) => csvCell(row[header as keyof typeof row])).join(',')),
-  ].join('\n');
-  downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), exportFileName('csv'));
-}
-
-function exportJson(selectedAssets: AssetRecord[]) {
-  const payload = {
-    generatedAt: new Date().toISOString(),
-    assetCount: selectedAssets.length,
-    findingRows: exportRows(selectedAssets).length,
-    assets: selectedAssets.map((asset) => ({
-      ...asset,
-      computedRiskLevel: assetRiskLevel(asset),
-      target: assetTarget(asset),
-      vulnerableComponents: vulnerableComponents(asset),
-      detectionSignals: detectionSignals(asset),
-    })),
-  };
-  downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }), exportFileName('json'));
-}
-
-function pdfSafe(value: unknown) {
-  return String(value ?? '')
-    .normalize('NFKD')
-    .replace(/[^\x20-\x7E]/g, '')
-    .replace(/[\\()]/g, '\\$&');
-}
-
-function wrapPdfLine(value: string, maxLength = 92) {
-  const words = value.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let current = '';
-  for (const word of words) {
-    const next = current ? `${current} ${word}` : word;
-    if (next.length > maxLength && current) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = next;
-    }
-  }
-  if (current) lines.push(current);
-  return lines.length ? lines : [''];
-}
-
-function buildPdf(selectedAssets: AssetRecord[]) {
-  const lines: string[] = [
-    'QGuard Asset Inventory and Findings Report',
-    `Generated: ${new Date().toLocaleString()}`,
-    `Assets: ${selectedAssets.length}`,
-    '',
-  ];
-  for (const asset of selectedAssets) {
-    const components = vulnerableComponents(asset);
-    const signals = detectionSignals(asset);
-    const totalComponents = Array.isArray(asset.cryptoInventory) ? asset.cryptoInventory.length : 0;
-    lines.push(`${asset.name} | ${assetRiskLevel(asset).toUpperCase()} | Risk ${asset.riskScore}/100 | ${assetTarget(asset)}`);
-    lines.push(`Compliance: ${asset.complianceStatus} | Components: ${totalComponents} | Vulnerable components: ${components.length} | Detection signals: ${signals.length}`);
-    if (components.length === 0) {
-      lines.push('No vulnerable cryptographic components currently detected.');
-    } else {
-      for (const item of components.slice(0, 8)) {
-        const evidenceCount = signalsForComponent(asset, item).length;
-        lines.push(`- ${cryptoLabel(item)} | ${labelize(item.exposure_level || 'vulnerable')}${evidenceCount > 0 ? ` | ${evidenceCount} detection signal(s)` : ''}`);
-        lines.push(`  Recommendation: ${metadataText(item, 'recommendation', 'Review against NIST PQC migration policy.')}`);
-      }
-      if (components.length > 8) lines.push(`  +${components.length - 8} additional vulnerable component(s).`);
-    }
-    lines.push('');
-  }
-
-  const pageLines: string[][] = [];
-  let currentPage: string[] = [];
-  for (const line of lines.flatMap((line) => wrapPdfLine(line))) {
-    if (currentPage.length >= 50) {
-      pageLines.push(currentPage);
-      currentPage = [];
-    }
-    currentPage.push(line);
-  }
-  if (currentPage.length) pageLines.push(currentPage);
-
-  const objects: string[] = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '',
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
-  ];
-  const pageIds: number[] = [];
-  for (const [pageIndex, page] of pageLines.entries()) {
-    const content = [
-      'q',
-      'BT',
-      '/F1 16 Tf',
-      `42 752 Td (${pdfSafe(pageIndex === 0 ? page[0] : 'QGuard Asset Inventory and Findings Report')}) Tj`,
-      'ET',
-      ...page.slice(pageIndex === 0 ? 1 : 0).map((line, index) => `BT /F1 ${line.startsWith('- ') || line.startsWith('  ') ? 9 : 10} Tf 42 ${724 - index * 13} Td (${pdfSafe(line)}) Tj ET`),
-      'Q',
-    ].join('\n');
-    const pageId = objects.length + 1;
-    const contentId = pageId + 1;
-    pageIds.push(pageId);
-    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`);
-    objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
-  }
-  objects[1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`;
-
-  let pdf = '%PDF-1.4\n';
-  const offsets = [0];
-  objects.forEach((object, index) => {
-    offsets[index + 1] = pdf.length;
-    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-  const xrefOffset = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  pdf += offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  return new Blob([pdf], { type: 'application/pdf' });
-}
-
-function exportPdf(selectedAssets: AssetRecord[]) {
-  downloadBlob(buildPdf(selectedAssets), exportFileName('pdf'));
-}
-
 function formatDate(value: string) {
   if (!value) return 'N/A';
   const date = new Date(value);
@@ -529,7 +334,6 @@ export default function AssetsMap() {
   const [riskFilter, setRiskFilter] = useState<RiskLevel | null>(null);
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
   const [expandedCryptoAssetIds, setExpandedCryptoAssetIds] = useState<Set<string>>(() => new Set());
-  const [exportOpen, setExportOpen] = useState(false);
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set());
 
   // Per-asset lifecycle position from the platform workflow engine (same
@@ -607,14 +411,6 @@ export default function AssetsMap() {
     });
   };
 
-  const handleExport = (format: ExportFormat) => {
-    if (exportAssets.length === 0) return;
-    if (format === 'csv') exportCsv(exportAssets);
-    if (format === 'json') exportJson(exportAssets);
-    if (format === 'pdf') exportPdf(exportAssets);
-    setExportOpen(false);
-  };
-
   return (
     <div className="p-6 lg:p-8 space-y-6 min-h-screen">
       <WorkflowRail activeStage="discovery" tone="adaptive" />
@@ -650,35 +446,42 @@ export default function AssetsMap() {
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setExportOpen((value) => !value)}
-              disabled={exportAssets.length === 0}
-              className="flex items-center gap-2 rounded-lg border border-gold/25 bg-gold/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-gold transition hover:border-gold/60 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Export {selectedAssets.length > 0 ? `${selectedAssets.length} selected` : `${filteredAssets.length} shown`}
-            </button>
-            {exportOpen && (
-              <div className="absolute right-0 top-full z-40 mt-2 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl dark:border-gold/20 dark:bg-[#070b18]">
-                {[
-                  ['csv', 'CSV spreadsheet'],
-                  ['json', 'JSON evidence bundle'],
-                  ['pdf', 'Professional PDF'],
-                ].map(([format, label]) => (
-                  <button
-                    key={format}
-                    type="button"
-                    onClick={() => handleExport(format as ExportFormat)}
-                    className="block w-full px-4 py-3 text-left text-[11px] font-black uppercase tracking-wider text-slate-600 transition hover:bg-gold/10 hover:text-gold dark:text-white/65"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <InventoryExportMenu
+            label={`Export ${selectedAssets.length > 0 ? `${selectedAssets.length} selected` : `${filteredAssets.length} shown`}`}
+            disabled={exportAssets.length === 0}
+            build={() => {
+              // The CBOM rows carried BY the exported assets, so an asset export
+              // is auditable down to the component without pulling the estate.
+              const exportedIds = new Set(exportAssets.map((asset) => String(asset.id)));
+              const scopedCbom = (data.cbom?.entries ?? []).filter((entry: { sourceAssetId?: unknown; sourceAsset?: unknown }) =>
+                exportedIds.has(String(entry.sourceAssetId ?? '')) ||
+                exportAssets.some((asset) => String(asset.name) === String(entry.sourceAsset ?? '')),
+              );
+              const filtered = exportAssets.length !== assets.length;
+              return {
+                kind: 'assets' as const,
+                summary: {
+                  totalAssets: data.summary.totalAssets,
+                  totalComponents: data.summary.totalComponents,
+                  vulnerableAssets: data.summary.vulnerableAssets,
+                  vulnerableComponents: data.summary.vulnerableComponents,
+                  pqcReadyComponents: data.summary.pqcReadyComponents,
+                  criticalFindings: data.summary.criticalFindings,
+                  totalFindings: data.summary.totalFindings,
+                  riskScore: data.summary.riskScore,
+                  qScore: data.summary.qScore,
+                },
+                assets: exportAssets,
+                cbom: scopedCbom,
+                totalAssetsBeforeFilter: assets.length,
+                totalCbomBeforeFilter: data.cbom?.entries?.length ?? 0,
+                generatedAt: new Date().toISOString(),
+                lastScanAt: data.generatedAt || null,
+                filtered,
+                filterDescription: selectedAssets.length > 0 ? 'user selection' : searchQuery ? `search "${searchQuery}"` : 'active filters',
+              };
+            }}
+          />
           <button onClick={refresh} className="flex items-center gap-2 rounded-lg border border-gold/20 bg-gold/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-gold">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>

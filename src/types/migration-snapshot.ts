@@ -12,7 +12,18 @@ export type SnapshotTrigger = 'pre_migration' | 'manual' | 'scheduled';
 
 /** Captured cryptographic + configuration state (metadata only). */
 export interface SnapshotCryptoState {
+  /**
+   * MEASURED cryptography only. The scanner writes policy/configuration
+   * findings into the same table with the finding TITLE in the algorithm
+   * column, so a raw read captures "No CAA Issuance Policy" and
+   * "Missing X-Frame-Options" as algorithms. A snapshot is the restore
+   * source of truth and its integrity hash covers this list, so it must
+   * contain cryptography and nothing else.
+   */
   algorithms: string[];
+  /** Policy/configuration records excluded from `algorithms`, counted so the
+   *  capture is auditable rather than silently lossy. */
+  policyRecordsExcluded?: number;
   tls: { version: string | null; cipherSuites: string[]; group: string | null };
   pki: { issuers: string[]; certificateCount: number };
   certificates: Array<{ name: string; algorithm: string; keySize: number | null; notAfter: string | null }>;

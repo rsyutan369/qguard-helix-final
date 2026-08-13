@@ -64,6 +64,9 @@ export interface WhatIfScenario {
   costUsd: number;
   timelineLabel: string;
   complianceIncreasePct: number;
+  /** Measured scope this scenario buys — scenarios overlap and must not be summed. */
+  coverage?: string;
+  componentsCovered?: number;
 }
 
 export interface MigrationBlocker {
@@ -109,7 +112,7 @@ export interface MigrationPlan {
     hndlExposure: string;
     hndlScore: number;
     pqcAdoption: number;
-    criticalAssetsRemaining: number;
+    criticalFindingsRemaining: number;
     quantumRisk: number;
     assetsAssessed: number;
   };
@@ -158,7 +161,20 @@ export interface MigrationPlan {
   };
   timeline: TimelinePhase[];
   compliance: Array<{ framework: string; control: string; status: string; detail: string }>;
-  costForecast: { lines: Array<{ category: string; costUsd: number }>; totalUsd: number; projectedRiskReductionValueUsd: number };
+  costForecast: {
+    lines: Array<{ category: string; costUsd: number }>;
+    totalUsd: number;
+    projectedRiskReductionValueUsd: number;
+    /** Categories with no supporting inventory — reported, never costed. */
+    excludedCategories?: Array<{ category: string; reason: string; route?: string }>;
+    assumptions?: string;
+    blendedRateUsd?: number;
+    hoursPerWeek?: number;
+    totalHours?: number;
+    valueBasis?: string;
+    financialExposureUsd?: number;
+    budget?: { budgetUsd: number; estimateUsd: number; varianceUsd: number; variancePct: number; status: 'within-budget' | 'over-budget' } | null;
+  };
   riskEngine: { categories: RiskCategory[]; overall: number; overallLevel: string; explanation: string };
   riskForecast: { currentRisk: number; targetRisk: number; reductionPct: number; residualRisk: number; month12: number; month24: number; month36: number };
   migrationJobs: Array<{ id: string; status: string; progress: number; jobType: string; updatedAt: string }>;
@@ -174,7 +190,7 @@ export const EMPTY_PLAN: MigrationPlan = {
   hero: {
     readinessScore: 0, readinessLevel: 'Not Started', assetsRequiringMigration: 0, vulnerableComponents: 0,
     durationWeeks: 0, durationLabel: 'Evidence Not Available', costUsd: 0, costLabel: 'Evidence Not Available',
-    riskReductionPct: 0, hndlExposure: 'Minimal', hndlScore: 0, pqcAdoption: 0, criticalAssetsRemaining: 0, quantumRisk: 0, assetsAssessed: 0,
+    riskReductionPct: 0, hndlExposure: 'Minimal', hndlScore: 0, pqcAdoption: 0, criticalFindingsRemaining: 0, quantumRisk: 0, assetsAssessed: 0,
   },
   stages: [],
   advisor: { recommendation: '', reason: '', affectedAssets: [], riskReductionPct: 0, costUsd: 0, timelineWeeks: 0, complexity: '', successProbabilityPct: 0, confidencePct: 0, deepLink: '/dashboard/quantum-readiness/ai-migration-advisor' },
@@ -189,7 +205,7 @@ export const EMPTY_PLAN: MigrationPlan = {
   heatmap: { ready: 0, needsValidation: 0, needsUpgrade: 0, blocked: 0, unknown: 0, rows: [] },
   timeline: [],
   compliance: [],
-  costForecast: { lines: [], totalUsd: 0, projectedRiskReductionValueUsd: 0 },
+  costForecast: { lines: [], totalUsd: 0, projectedRiskReductionValueUsd: 0, excludedCategories: [], assumptions: '', budget: null },
   riskEngine: { categories: [], overall: 0, overallLevel: 'Moderate', explanation: '' },
   riskForecast: { currentRisk: 0, targetRisk: 0, reductionPct: 0, residualRisk: 0, month12: 0, month24: 0, month36: 0 },
   migrationJobs: [],

@@ -34,15 +34,26 @@ function bytes(n: number) {
   const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)))
   return `${(n / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${u[i]}`
 }
+/**
+ * Relative time in BOTH directions.
+ *
+ * The past-only version returned 'just now' for every future timestamp: a
+ * negative diff floors below 1 minute, so a snapshot with 90 days of
+ * retention left rendered "Expires just now" directly beneath
+ * "Retention 90d".
+ */
 function rel(value: string | null) {
   if (!value) return '—'
-  const diff = Date.now() - Date.parse(value)
-  if (!Number.isFinite(diff)) return '—'
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return '—'
+  const diff = Date.now() - parsed
+  const future = diff < 0
+  const m = Math.floor(Math.abs(diff) / 60000)
+  const suffix = (text: string) => (future ? `in ${text}` : `${text} ago`)
+  if (m < 1) return future ? 'in under a minute' : 'just now'
+  if (m < 60) return suffix(`${m}m`)
   const h = Math.floor(m / 60)
-  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`
+  return h < 24 ? suffix(`${h}h`) : suffix(`${Math.floor(h / 24)}d`)
 }
 function fullDate(value: string | null) {
   if (!value) return 'Never'
@@ -68,10 +79,10 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
   const [compareMode, setCompareMode] = useState(false)
   const [compareIds, setCompareIds] = useState<string[]>([])
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null)
-  const [toast, setToast] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null)
+  const [toast, setToast] = useState<{ tone: 'ok' | 'warn' | 'bad'; text: string } | null>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
 
-  const showToast = (tone: 'ok' | 'bad', text: string) => { setToast({ tone, text }); setTimeout(() => setToast(null), 3200) }
+  const showToast = (tone: 'ok' | 'warn' | 'bad', text: string) => { setToast({ tone, text }); setTimeout(() => setToast(null), tone === 'warn' ? 7000 : 3200) }
 
   useEffect(() => { if (open) closeRef.current?.focus() }, [open])
   useEffect(() => {
@@ -110,10 +121,27 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
     URL.revokeObjectURL(url)
   }
 
+  /*
+   * Report what actually happened, not what was requested.
+   *
+   * A restore only changes the asset when an executor — an enrolled collector
+   * agent or a cloud connector — can act on it. The server says which case
+   * occurred; echoing "asset reverting to pre-migration state" regardless told
+   * operators on agent-less tenants that a rollback had taken effect when
+   * nothing outside the database had moved.
+   */
   const doRestore = async (id: string) => {
     const r = await snap.restoreSnapshot(id, 'Restore from Snapshot Management')
     setConfirmRestore(null)
-    showToast(r.ok ? 'ok' : 'bad', r.ok ? `Restored ${id} — asset reverting to pre-migration state.` : r.message || 'Restore failed')
+    if (!r.ok) {
+      showToast('bad', r.message || 'Restore failed')
+      return
+    }
+    const result = r.snapshot as unknown as { applied?: boolean; message?: string } | undefined
+    showToast(
+      result?.applied ? 'ok' : 'warn',
+      result?.message || `Restore of ${id} recorded.`,
+    )
   }
 
   const s = snap.data.summary
@@ -171,8 +199,8 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
       {open ? (
         <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Snapshot Management">
           {toast ? (
-            <div className={`fixed bottom-6 right-6 z-[60] flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold shadow-2xl backdrop-blur-xl ${toast.tone === 'ok' ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-100' : 'border-red-400/30 bg-red-500/15 text-red-100'}`}>
-              {toast.tone === 'ok' ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />} {toast.text}
+            <div className={`fixed bottom-6 right-6 z-[60] flex max-w-md items-start gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold shadow-2xl backdrop-blur-xl ${toast.tone === 'ok' ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-100' : toast.tone === 'warn' ? 'border-amber-400/35 bg-amber-500/15 text-amber-100' : 'border-red-400/30 bg-red-500/15 text-red-100'}`}>
+              {toast.tone === 'ok' ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : toast.tone === 'warn' ? <AlertTriangle className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />} <span className="leading-snug">{toast.text}</span>
             </div>
           ) : null}
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => onOpenChange(false)} aria-hidden="true" />
@@ -303,6 +331,11 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
                         {confirmRestore === selected.snapshotId ? (
                           <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/[0.08] p-3">
                             <div className="text-[12px] font-bold text-emerald-100">Restore {selected.assetName} to this snapshot?</div>
+                            <p className="mt-1 text-[11px] font-medium leading-relaxed text-white/55">
+                              Applying a snapshot to the asset requires an enrolled collector agent or a cloud connector with write
+                              scope. Without one, the rollback is recorded and the migration plan is marked rolled back, but nothing
+                              on the asset changes.
+                            </p>
                             <p className="mt-1 text-[11px] text-white/55">The linked migration job will roll back to the captured pre-migration state. Integrity is re-verified before restoring.</p>
                             <div className="mt-2 flex gap-2">
                               <button type="button" onClick={() => void doRestore(selected.snapshotId)} disabled={snap.busy} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-400/15 px-3 py-1.5 text-xs font-black text-emerald-200 disabled:opacity-50">{snap.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />} Confirm Restore</button>

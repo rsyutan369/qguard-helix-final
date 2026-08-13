@@ -1,0 +1,561 @@
+'use client';
+
+import type { ReactNode } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import { AlertTriangle, ChevronRight, RefreshCw, WifiOff } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Panel } from '../executive/primitives';
+
+/**
+ * Shared enterprise UI kit for the Intelligence dashboards.
+ *
+ * Quantum Risk Scoring, Vulnerabilities, Drift Detection and Telemetry
+ * Correlation are four views of the same estate, so they must look and behave
+ * like one product: the same header, the same live-state vocabulary, the same
+ * empty and error states, the same rule that an unmeasured value renders as an
+ * em dash rather than a zero.
+ *
+ * Every component here is presentational. Not one of them computes a number.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Palette                                                             */
+/* ------------------------------------------------------------------ */
+
+export const GREEN = '#34d399';
+export const BLUE = '#60a5fa';
+export const AMBER = '#fbbf24';
+export const ORANGE = '#fb923c';
+export const RED = '#f87171';
+export const SLATE = '#94a3b8';
+export const CYAN = '#22d3ee';
+export const VIOLET = '#a78bfa';
+
+/** Risk is never carried by colour alone — every level ships a glyph and a word. */
+export const LEVEL_HEX: Record<string, string> = {
+  critical: RED,
+  high: ORANGE,
+  elevated: AMBER,
+  medium: AMBER,
+  moderate: AMBER,
+  low: GREEN,
+  minimal: GREEN,
+  clear: GREEN,
+  unassessed: SLATE,
+  unknown: SLATE,
+};
+
+export const LEVEL_GLYPH: Record<string, string> = {
+  critical: '●',
+  high: '●',
+  elevated: '◐',
+  medium: '◐',
+  moderate: '◐',
+  low: '✓',
+  minimal: '✓',
+  clear: '✓',
+  unassessed: '?',
+  unknown: '?',
+};
+
+export function levelHex(level: string | null | undefined): string {
+  const key = String(level ?? '').toLowerCase();
+  for (const [name, hex] of Object.entries(LEVEL_HEX)) if (key.includes(name)) return hex;
+  return SLATE;
+}
+
+export function levelGlyph(level: string | null | undefined): string {
+  const key = String(level ?? '').toLowerCase();
+  for (const [name, glyph] of Object.entries(LEVEL_GLYPH)) if (key.includes(name)) return glyph;
+  return '?';
+}
+
+/* ------------------------------------------------------------------ */
+/* Formatting                                                          */
+/* ------------------------------------------------------------------ */
+
+export function fmtInt(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return new Intl.NumberFormat('en-US').format(Math.round(value));
+}
+
+export function fmtCompact(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  if (Math.abs(value) >= 1000) return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+  return fmtInt(value);
+}
+
+/** An unmeasured percentage renders as an em dash. Never as 0%. */
+export function fmtPct(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return `${Math.round(value)}%`;
+}
+
+export function fmtScore(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return String(Math.round(value));
+}
+
+export function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return 'never';
+  const diff = Date.now() - then;
+  if (diff < 5000) return 'just now';
+  if (diff < 60_000) return `${Math.max(1, Math.floor(diff / 1000))}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+export function fullTimestamp(iso: string | null | undefined): string {
+  if (!iso) return 'Not recorded';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'Not recorded';
+  return date.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+/* ------------------------------------------------------------------ */
+/* Shell + theme                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Page shell. Owns the dark navy base, the light-theme overrides and the
+ * reduced-motion opt-out, so no page has to restate them.
+ */
+export function IntelShell({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <div className={`intel-shell ${name} min-h-screen space-y-4 p-3 lg:p-5`}>
+      <style>{`
+        .intel-shell { background: var(--qg-dashboard-bg, #0a1020); }
+        .qg-theme-light .intel-shell [class*="bg-black/"] { background-color: rgba(255,255,255,0.55) !important; }
+        .qg-theme-light .intel-shell [class*="bg-[#0b1424]"] { background-color: rgba(255,255,255,0.92) !important; }
+        .qg-theme-light .intel-shell [class*="border-white/"] { border-color: rgba(9,13,22,0.10) !important; }
+        .qg-theme-light .intel-shell .text-white { color: var(--qg-dashboard-text) !important; }
+        .qg-theme-light .intel-shell [class*="text-white/"] { color: var(--qg-dashboard-text-soft) !important; }
+        .qg-theme-light .intel-shell .text-cyan-200,
+        .qg-theme-light .intel-shell .text-cyan-300 { color: #0e7490 !important; }
+        .qg-theme-light .intel-shell .text-emerald-200,
+        .qg-theme-light .intel-shell .text-emerald-300 { color: #047857 !important; }
+        .qg-theme-light .intel-shell .text-amber-200,
+        .qg-theme-light .intel-shell .text-amber-300 { color: #b45309 !important; }
+        .qg-theme-light .intel-shell .text-red-200,
+        .qg-theme-light .intel-shell .text-red-300 { color: #dc2626 !important; }
+        .qg-theme-light .intel-shell .text-violet-200,
+        .qg-theme-light .intel-shell .text-violet-300 { color: #7c3aed !important; }
+        .qg-theme-light .intel-shell input::placeholder { color: rgba(9,13,22,0.35) !important; }
+        @media (prefers-reduced-motion: reduce) {
+          .intel-shell *, .intel-shell *::before, .intel-shell *::after {
+            animation-duration: 0.001ms !important;
+            transition-duration: 0.001ms !important;
+          }
+        }
+      `}</style>
+      {children}
+    </div>
+  );
+}
+
+export function IntelHeader({
+  title, accent, subtitle, icon: Icon, live, lastUpdated, connecting, children,
+}: {
+  title: string;
+  accent: string;
+  subtitle: string;
+  icon: LucideIcon;
+  live: boolean;
+  lastUpdated: string | null;
+  connecting?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="flex flex-col gap-3 border-b border-white/10 pb-3.5 xl:flex-row xl:items-end xl:justify-between">
+      <div className="flex items-center gap-3">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 text-cyan-300 shadow-[0_0_28px_rgba(34,211,238,0.2)]">
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </div>
+        <div className="min-w-0">
+          <h1 className="text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]">
+            {title} <span className="text-cyan-300">{accent}</span>
+          </h1>
+          <p className="mt-1.5 max-w-3xl text-[12px] font-medium leading-relaxed text-white/45">{subtitle}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-col items-end">
+          <span
+            role="status"
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest',
+              live ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-400/40 bg-amber-500/10 text-amber-300',
+            )}
+          >
+            <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-400' : 'bg-amber-300')} aria-hidden="true" />
+            {connecting ? 'Connecting' : live ? 'Live' : 'Connection lost'}
+          </span>
+          <span className="mt-1 font-mono text-[9.5px] text-white/30">Last updated: {relativeTime(lastUpdated)}</span>
+        </div>
+        {children}
+      </div>
+    </header>
+  );
+}
+
+export function HeaderButton({
+  onClick, icon: Icon, children, active, disabled, spin,
+}: {
+  onClick: () => void;
+  icon: LucideIcon;
+  children: ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  spin?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-[9px] font-black uppercase tracking-wider transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70 disabled:cursor-not-allowed disabled:opacity-40',
+        active ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-200' : 'border-white/12 bg-white/[0.04] text-white/60 hover:bg-white/[0.08]',
+      )}
+    >
+      <Icon className={cn('h-3.5 w-3.5', spin && 'animate-spin')} aria-hidden="true" />
+      {children}
+    </button>
+  );
+}
+
+export function PrimaryButton({ onClick, icon: Icon, children, spin }: { onClick: () => void; icon: LucideIcon; children: ReactNode; spin?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+    >
+      <Icon className={cn('h-3.5 w-3.5', spin && 'animate-spin')} aria-hidden="true" />
+      {children}
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Tabs                                                                */
+/* ------------------------------------------------------------------ */
+
+export function IntelTabs<T extends string>({
+  tabs, active, onChange, idPrefix,
+}: {
+  tabs: Array<{ key: T; label: string; badge?: number }>;
+  active: T;
+  onChange: (key: T) => void;
+  idPrefix: string;
+}) {
+  return (
+    <div role="tablist" aria-label="Views" className="flex flex-wrap gap-1.5 border-b border-white/10 pb-1">
+      {tabs.map((tab) => (
+        <button
+          key={tab.key}
+          type="button"
+          role="tab"
+          id={`${idPrefix}-tab-${tab.key}`}
+          aria-selected={active === tab.key}
+          aria-controls={`${idPrefix}-panel-${tab.key}`}
+          onClick={() => onChange(tab.key)}
+          className={cn(
+            'rounded-t-lg border-b-2 px-4 py-2 text-[10.5px] font-black uppercase tracking-wider transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
+            active === tab.key ? 'border-cyan-400 text-cyan-200' : 'border-transparent text-white/40 hover:text-white/70',
+          )}
+        >
+          {tab.label}
+          {tab.badge ? <span className="ml-1.5 rounded-full bg-red-500/20 px-1.5 py-0.5 font-mono text-[9px] text-red-300">{tab.badge}</span> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Section heading                                                     */
+/* ------------------------------------------------------------------ */
+
+export function SectionHeading({
+  title, icon: Icon, meta, action, id,
+}: {
+  title: string;
+  icon: LucideIcon;
+  meta?: ReactNode;
+  action?: ReactNode;
+  id?: string;
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 id={id} className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-white/70">
+        <Icon className="h-3.5 w-3.5 text-cyan-300" aria-hidden="true" />
+        {title}
+        {meta ? <span className="ml-1 font-mono text-[10px] font-medium normal-case tracking-normal text-white/35">{meta}</span> : null}
+      </h2>
+      {action}
+    </div>
+  );
+}
+
+export function LinkButton({ href, children, tone = 'neutral' }: { href: string; children: ReactNode; tone?: 'neutral' | 'ghost' }) {
+  return (
+    <a
+      href={href}
+      className={cn(
+        'inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[9.5px] font-black uppercase tracking-wider no-underline transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
+        tone === 'neutral'
+          ? 'border border-cyan-400/40 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20'
+          : 'border border-white/12 bg-white/[0.04] text-white/60 hover:bg-white/[0.08]',
+      )}
+    >
+      {children}
+      <ChevronRight className="h-3 w-3" aria-hidden="true" />
+    </a>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Data display                                                        */
+/* ------------------------------------------------------------------ */
+
+export function KpiCard({
+  label, value, unit, detail, color, footnote, href,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  detail: string;
+  color: string;
+  footnote?: string;
+  href?: string;
+}) {
+  const body = (
+    <>
+      <div className="text-[9px] font-black uppercase tracking-[0.16em] text-white/45">{label}</div>
+      <div className="mt-2 flex items-baseline gap-1.5">
+        <span className="font-mono text-[30px] font-black leading-none tracking-tight" style={{ color }}>{value}</span>
+        {unit ? <span className="font-mono text-[13px] font-black" style={{ color }}>{unit}</span> : null}
+      </div>
+      <div className="mt-2 text-[10.5px] leading-snug text-white/45">{detail}</div>
+      {footnote ? <div className="mt-2 text-[9.5px] leading-snug text-white/30">{footnote}</div> : null}
+    </>
+  );
+  return href ? <Panel className="p-4" href={href} label={label}>{body}</Panel> : <Panel className="p-4">{body}</Panel>;
+}
+
+export function Meter({ value, color, label }: { value: number; color: string; label?: string }) {
+  return (
+    <div
+      className="h-1.5 w-full overflow-hidden rounded-full bg-white/8"
+      role="meter"
+      aria-valuenow={Math.round(value)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={label}
+    >
+      <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} />
+    </div>
+  );
+}
+
+/** Score dial. Renders an em dash, not an empty ring, when the score is null. */
+export function ScoreDial({
+  score, level, size = 136, caption,
+}: {
+  score: number | null;
+  level: string;
+  size?: number;
+  caption?: string;
+}) {
+  const hex = score === null ? SLATE : levelHex(level);
+  const radius = 54;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <div className="relative grid shrink-0 place-items-center" style={{ width: size, height: size }}>
+      <svg viewBox="0 0 120 120" className="h-full w-full -rotate-90" aria-hidden="true">
+        <circle cx="60" cy="60" r={radius} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="9" />
+        {score !== null ? (
+          <circle
+            cx="60" cy="60" r={radius} fill="none" stroke={hex} strokeWidth="9" strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference - (circumference * Math.max(0, Math.min(100, score))) / 100}
+            style={{ transition: 'stroke-dashoffset 700ms ease' }}
+          />
+        ) : null}
+      </svg>
+      <div className="absolute inset-0 grid place-items-center text-center">
+        <div>
+          <div className="font-mono text-[32px] font-black leading-none" style={{ color: hex }}>{fmtScore(score)}</div>
+          <div className="mt-1 text-[9.5px] font-black uppercase tracking-[0.16em]" style={{ color: hex }}>
+            {score === null ? 'NO DATA' : level.toUpperCase()}
+          </div>
+          {caption ? <div className="mt-1 text-[9px] text-white/30">{caption}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function DistributionBars({
+  rows, total, unitLabel,
+}: {
+  rows: Array<{ key: string; label: string; glyph: string; count: number; percent: number }>;
+  total: number;
+  unitLabel: string;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-[9px] font-black uppercase tracking-[0.16em] text-white/35">{unitLabel}</span>
+        <span className="font-mono text-[10px] text-white/35">{fmtInt(total)} total</span>
+      </div>
+      <dl className="space-y-2.5">
+        {rows.map((row) => (
+          <div key={row.key} className="grid grid-cols-[minmax(0,1fr)_auto_46px] items-center gap-3">
+            <dt className="flex items-center gap-1.5 truncate text-[11.5px] text-white/60">
+              <span aria-hidden="true" style={{ color: levelHex(row.key) }}>{row.glyph}</span>
+              {row.label}
+            </dt>
+            <dd className="font-mono text-[10.5px] text-white/35">{fmtInt(row.count)}</dd>
+            <dd className="text-right font-mono text-[12px] font-black" style={{ color: levelHex(row.key) }}>{fmtPct(row.percent)}</dd>
+            <div className="col-span-3">
+              <Meter value={row.percent} color={levelHex(row.key)} label={`${row.label} share`} />
+            </div>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+export function StatusPill({ level, label }: { level: string; label?: string }) {
+  const hex = levelHex(level);
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-[9.5px] font-black uppercase tracking-wider"
+      style={{ borderColor: `${hex}55`, backgroundColor: `${hex}16`, color: hex }}
+    >
+      <span aria-hidden="true">{levelGlyph(level)}</span>
+      {label ?? level}
+    </span>
+  );
+}
+
+export function EmptyRow({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-dashed border-white/12 px-4 py-6 text-center text-[11px] leading-relaxed text-white/40">
+      {children}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Page states                                                         */
+/* ------------------------------------------------------------------ */
+
+export function ConnectionLostBanner({ lastGoodAt, error, onReconnect }: { lastGoodAt: string | null; error: string | null; onReconnect: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+      <WifiOff className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[11.5px] font-black text-amber-200">Connection lost — this is the last successful sync, not live data</div>
+        <div className="truncate text-[10px] text-white/45">Last update {relativeTime(lastGoodAt)}{error ? ` · ${error}` : ''}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onReconnect}
+        className="rounded border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/70"
+      >
+        Reconnect
+      </button>
+    </div>
+  );
+}
+
+export function HardErrorPanel({ title, message, error, onRetry }: { title: string; message: string; error: string | null; onRetry: () => void }) {
+  return (
+    <Panel className="p-8 text-center">
+      <AlertTriangle className="mx-auto h-8 w-8 text-red-400" aria-hidden="true" />
+      <h2 className="mt-3 text-[16px] font-black text-white">{title}</h2>
+      <p className="mx-auto mt-1.5 max-w-lg text-[11.5px] leading-relaxed text-white/45">{message}</p>
+      {error ? <p className="mx-auto mt-2 max-w-lg rounded-lg border border-white/10 bg-black/25 p-2.5 font-mono text-[10px] text-red-300">{error}</p> : null}
+      <div className="mt-4 flex flex-wrap justify-center gap-2">
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-cyan-200"
+        >
+          <RefreshCw className="h-3 w-3" aria-hidden="true" /> Retry
+        </button>
+        <a href="/dashboard/quantum-readiness" className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/5 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-white/60 no-underline">
+          View Quantum Readiness
+        </a>
+      </div>
+    </Panel>
+  );
+}
+
+export function NoEvidenceState({
+  icon: Icon, title, body, bullets, actions,
+}: {
+  icon: LucideIcon;
+  title: string;
+  body: string;
+  bullets?: string[];
+  actions: Array<{ href: string; label: string; primary?: boolean }>;
+}) {
+  return (
+    <Panel className="p-8 text-center">
+      <Icon className="mx-auto h-9 w-9 text-cyan-300/60" aria-hidden="true" />
+      <h2 className="mt-3 text-[18px] font-black text-white">{title}</h2>
+      <p className="mx-auto mt-2 max-w-2xl text-[12px] leading-relaxed text-white/50">{body}</p>
+      {bullets?.length ? (
+        <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-white/10 bg-black/25 p-4 text-left">
+          <ul className="space-y-1.5 text-[11px] leading-relaxed text-white/50">
+            {bullets.map((bullet, index) => <li key={index}>· {bullet}</li>)}
+          </ul>
+        </div>
+      ) : null}
+      <div className="mt-5 flex flex-wrap justify-center gap-2">
+        {actions.map((action) => (
+          <a
+            key={action.href}
+            href={action.href}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-lg px-4 py-2.5 text-[10px] font-black uppercase tracking-wider no-underline transition',
+              action.primary
+                ? 'border border-cyan-400/50 bg-cyan-500/15 text-cyan-200 hover:bg-cyan-500/25'
+                : 'border border-white/12 bg-white/5 text-white/60 hover:bg-white/10',
+            )}
+          >
+            {action.label}
+          </a>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+export function SkeletonGrid({ cards = 5, panels = 2 }: { cards?: number; panels?: number }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-5">
+        {Array.from({ length: cards }).map((_, index) => <div key={index} className="h-[118px] animate-pulse rounded-xl border border-white/10 bg-white/[0.03]" />)}
+      </div>
+      <div className={cn('grid gap-4', panels > 1 && 'xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]')}>
+        {Array.from({ length: panels }).map((_, index) => <div key={index} className="h-[300px] animate-pulse rounded-xl border border-white/10 bg-white/[0.03]" />)}
+      </div>
+      <div className="h-[320px] animate-pulse rounded-xl border border-white/10 bg-white/[0.03]" />
+    </div>
+  );
+}
+
+/** Provenance footnote — states which module owns a number. */
+export function SourceNote({ children }: { children: ReactNode }) {
+  return <p className="px-1 pb-2 text-[10px] leading-relaxed text-white/25">{children}</p>;
+}

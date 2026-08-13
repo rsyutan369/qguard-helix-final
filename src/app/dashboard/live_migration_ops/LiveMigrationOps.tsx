@@ -38,6 +38,8 @@ import { WorkflowRail } from '@/components/workflow/WorkflowRail'
 import { useMigrationWorkflow } from '@/hooks/use-migration-workflow'
 import LiveMigrationEnhancements, { type LiveMigrationEnhancementsProps } from './_enhancements'
 import { SnapshotManager } from './_snapshots'
+import { ReportExportMenu } from '../_components/InventoryExportMenu'
+import { buildMigrationReport } from '@/services/reporting/MigrationReport'
 import OrchestrationPanel from './_orchestration'
 import { Archive } from 'lucide-react'
 
@@ -1534,10 +1536,33 @@ export default function LiveMigrationOperations() {
             <ArrowDownToLine className="h-3.5 w-3.5" />
             Export Logs
           </button>
-          <button type="button" disabled={actionPending === 'export:json'} onClick={() => downloadExport('json')} className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/20 bg-white/[0.035] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55 disabled:opacity-50">
-            <FileText className="h-3.5 w-3.5" />
-            Generate Report
-          </button>
+          {/*
+            Enterprise report — PDF / Excel / Word / HTML / CSV / JSON from the
+            SHARED exporters that already back the Assets register and the CBOM
+            Explorer. Built from `filteredJobs`, i.e. exactly the rows on screen,
+            so the document cannot disagree with the view it was launched from.
+          */}
+          <ReportExportMenu
+            label="Generate Report"
+            align="left"
+            disabled={loading}
+            title="Export live migration report"
+            note="Plan state and execution evidence are reported separately, so a job marked complete without a collector is never presented as an applied change."
+            className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/20 bg-white/[0.035] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55 disabled:opacity-50"
+            buildReport={() =>
+              buildMigrationReport({
+                generatedAt: new Date().toISOString(),
+                planId,
+                summary: snapshot.summary,
+                jobs: filteredJobs,
+                totalJobsBeforeFilter: snapshot.jobs.length,
+                filtered: filter !== 'all',
+                filterDescription: filter !== 'all' ? `status = ${filter}` : undefined,
+                timeline: snapshot.timeline,
+                telemetry: snapshot.telemetry,
+              })
+            }
+          />
           <a href="/dashboard/audit-vault" className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/20 bg-white/[0.035] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
             <ShieldCheck className="h-3.5 w-3.5" />
             Audit Trail

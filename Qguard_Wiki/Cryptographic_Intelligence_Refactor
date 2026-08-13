@@ -1,0 +1,1212 @@
+# QGUARD HELIX
+
+# RUNTIME CRYPTOGRAPHIC INTELLIGENCE — SIMPLIFIED ENTERPRISE REFactor
+
+Refactor the existing Qguard Helix page:
+
+`/dashboard/runtime-crypto-intel`
+
+into a **simple, professional, easy-to-understand Runtime Cryptographic Intelligence dashboard**.
+
+The page must provide real-time visibility into cryptographic activity without overwhelming users with unnecessary technical information.
+
+The primary goal is:
+
+> **Show users what cryptography is running, whether it is quantum-safe, what needs attention, and what action they should take.**
+
+Do NOT turn this into a complex SIEM.
+
+Do NOT expose every raw telemetry field.
+
+Do NOT create unnecessary tabs, charts, controls, or configuration screens.
+
+Focus only on information that helps users understand and act.
+
+---
+
+# 1. PAGE TITLE
+
+Use:
+
+## Runtime Cryptographic Intelligence
+
+Subtitle:
+
+> **Monitor cryptographic activity in real time, identify quantum risks, and verify your PQC migration.**
+
+At the top-right:
+
+```text
+● LIVE
+Last updated: 2 seconds ago
+```
+
+Buttons:
+
+```text
+[Refresh]
+[Filters]
+```
+
+Keep the header clean.
+
+---
+
+# 2. PRIMARY USER QUESTIONS
+
+The page must immediately answer:
+
+### 1. What is happening?
+
+Show current cryptographic activity.
+
+### 2. Is my environment quantum-safe?
+
+Show the current quantum security state.
+
+### 3. What is wrong?
+
+Show the most important runtime findings.
+
+### 4. What should I fix first?
+
+Prioritize the most important risks.
+
+### 5. Is my migration working?
+
+Show whether runtime cryptography matches the expected configuration.
+
+Everything on the page should support these five questions.
+
+---
+
+# 3. SIMPLE KPI CARDS
+
+Create only **five** KPI cards.
+
+### Crypto Activity
+
+```text
+Crypto Activity
+1.8M
+operations today
+```
+
+### Quantum Safe
+
+```text
+Quantum Safe
+68%
+runtime operations
+```
+
+### Hybrid PQC
+
+```text
+Hybrid PQC
+21%
+runtime operations
+```
+
+### Quantum Risk
+
+```text
+Quantum Risk
+11%
+vulnerable operations
+```
+
+### Active Issues
+
+```text
+Active Issues
+7
+2 Critical
+```
+
+Do not show dozens of metrics.
+
+The user should understand the dashboard in less than 10 seconds.
+
+---
+
+# 4. MAIN SECTION — RUNTIME SECURITY STATUS
+
+Create a large central card:
+
+## Runtime Security Status
+
+Show a simple overall state:
+
+```text
+        RUNTIME SECURITY
+
+             82%
+
+           GOOD
+
+Most cryptographic activity is
+currently using approved algorithms.
+```
+
+Possible states:
+
+```text
+EXCELLENT
+GOOD
+ATTENTION
+HIGH RISK
+CRITICAL
+```
+
+Below it show:
+
+```text
+Quantum Safe       68%
+Hybrid PQC         21%
+Quantum Vulnerable 11%
+Unknown             0%
+```
+
+Use clear labels.
+
+Do not make the user interpret a complicated score.
+
+---
+
+# 5. LIVE CRYPTO ACTIVITY
+
+Create a simple activity table.
+
+Title:
+
+## Live Cryptographic Activity
+
+Show only the information users actually need:
+
+| Time     | Application  | Operation    | Algorithm        | Status   |
+| -------- | ------------ | ------------ | ---------------- | -------- |
+| 19:42:12 | Payment API  | TLS          | X25519ML-KEM-768 | ✓ Safe   |
+| 19:42:10 | Auth Service | Signing      | ML-DSA-65        | ✓ Safe   |
+| 19:42:08 | Legacy API   | Key Exchange | X25519           | ⚠ Review |
+| 19:42:05 | Partner API  | Signing      | RSA-2048         | 🔴 Risk  |
+
+Use friendly labels:
+
+```text
+✓ Quantum Safe
+✓ Hybrid PQC
+⚠ Needs Review
+🔴 Quantum Risk
+```
+
+Avoid exposing raw technical telemetry by default.
+
+---
+
+# 6. CLICK AN EVENT FOR DETAILS
+
+When a user clicks an activity, open a simple detail drawer.
+
+Example:
+
+```text
+Legacy API
+
+Cryptographic Activity
+────────────────────────
+
+Operation
+Key Exchange
+
+Algorithm
+X25519
+
+Quantum Status
+⚠ Quantum Vulnerable
+
+Risk
+HIGH
+
+Why?
+X25519 is not resistant to future
+quantum attacks.
+
+Recommended Action
+Enable a hybrid PQC key exchange.
+
+[View Asset]
+[Create Migration Task]
+```
+
+Only show advanced technical information under:
+
+```text
+View Technical Details
+```
+
+Advanced details may include:
+
+* TLS version
+* library
+* certificate
+* source
+* destination
+* timestamp
+* event ID
+
+Keep them hidden by default.
+
+---
+
+# 7. TOP RUNTIME RISKS
+
+Create:
+
+## Attention Required
+
+Show only the **top 5 most important issues**.
+
+Example:
+
+```text
+🔴 RSA-2048 detected
+Payment API
+Quantum vulnerable
+
+[View]
+```
+
+```text
+🟠 PQC fallback detected
+Partner API
+Hybrid negotiation failed
+
+[Investigate]
+```
+
+```text
+🟡 Legacy TLS configuration
+Legacy API
+Migration recommended
+
+[View]
+```
+
+Each issue must contain:
+
+* What happened
+* Where
+* Risk
+* Recommended action
+
+Do not show unnecessary technical details.
+
+---
+
+# 8. SIMPLE RISK PRIORITIZATION
+
+Sort findings:
+
+```text
+CRITICAL
+HIGH
+MEDIUM
+LOW
+```
+
+But prioritize by actual impact.
+
+For example:
+
+```text
+RSA-2048 on Payment API
+```
+
+should rank higher than:
+
+```text
+RSA-2048 on Development Server
+```
+
+Consider:
+
+* Asset criticality
+* Quantum vulnerability
+* Data sensitivity
+* External exposure
+* Runtime frequency
+* Migration status
+
+Do not generate random scores.
+
+---
+
+# 9. PQC ADOPTION
+
+Create a simple visual:
+
+## Post-Quantum Adoption
+
+```text
+PQC Adoption
+
+████████████████░░░░ 68%
+
+68% Quantum Safe
+21% Hybrid
+11% Classical / Vulnerable
+```
+
+Below:
+
+```text
++8% since last month
+```
+
+if historical data exists.
+
+If historical data does not exist, don't invent the comparison.
+
+---
+
+# 10. EXPECTED VS ACTUAL
+
+This should be one of the most important features.
+
+Create:
+
+## Runtime Configuration
+
+Show:
+
+```text
+Payment API
+
+Expected
+──────────────────
+TLS 1.3
+X25519ML-KEM-768
+ML-DSA-65
+AES-256-GCM
+
+Actual
+──────────────────
+TLS 1.3             ✓
+X25519ML-KEM-768    ✓
+ML-DSA-65           ✓
+AES-256-GCM         ✓
+
+STATUS
+✓ MATCHING
+```
+
+For a problem:
+
+```text
+Legacy API
+
+Expected
+──────────────────
+TLS 1.3
+X25519ML-KEM-768
+
+Actual
+──────────────────
+TLS 1.2             🔴
+X25519               🔴
+
+STATUS
+⚠ CONFIGURATION DRIFT
+```
+
+This allows users to immediately understand:
+
+> **What should be happening vs what is actually happening.**
+
+---
+
+# 11. MIGRATION VERIFICATION
+
+Create a small section:
+
+## PQC Migration Verification
+
+Example:
+
+```text
+Last Migration
+
+Payment API
+
+Before
+RSA-2048
+
+After
+ML-DSA-65
+
+Runtime Verification
+✓ PASSED
+
+Sessions Verified
+48,293
+
+Fallback
+0
+
+Status
+✓ Migration Confirmed
+```
+
+Buttons:
+
+```text
+[View Migration]
+```
+
+Link this to the existing Migration Planner / Live Migration modules.
+
+Do not recreate migration functionality here.
+
+---
+
+# 12. QUANTUM RISK
+
+Create a simple card:
+
+## Quantum Risk
+
+```text
+HIGH
+
+11% of runtime cryptographic
+operations are currently quantum vulnerable.
+```
+
+Break down only:
+
+```text
+🔴 Critical       2
+🟠 High           4
+🟡 Medium         8
+🟢 Safe         126
+```
+
+Button:
+
+```text
+[View Quantum Risks]
+```
+
+Link to the appropriate Qguard Helix risk/exposure page.
+
+---
+
+# 13. HARVEST-NOW RISK
+
+Keep this simple.
+
+Create:
+
+## Harvest-Now Risk
+
+Example:
+
+```text
+3 High-Risk Assets
+
+Sensitive encrypted data is currently
+using classical key exchange.
+
+Highest Risk:
+Customer Data API
+
+[View HNDL Risks]
+```
+
+Link to:
+
+`/dashboard/harvest-now`
+
+Do not duplicate the Harvest Now Risk Engine.
+
+---
+
+# 14. SOPHIA AI INSIGHT
+
+Use only one compact AI section.
+
+## Sophia's Insight
+
+Example:
+
+```text
+✦ Sophia
+
+I detected 7 runtime cryptographic issues.
+
+The most important is the Payment API,
+which is still using RSA-2048 for signatures.
+
+Recommended:
+Complete the planned ML-DSA migration.
+
+[Investigate]
+```
+
+Rules:
+
+* Sophia must use real tenant data.
+* Never invent telemetry.
+* Never claim a migration succeeded without evidence.
+* Show the evidence behind important conclusions.
+* Keep AI explanations short.
+
+Add:
+
+```text
+[Ask Sophia]
+```
+
+for deeper investigation.
+
+---
+
+# 15. SIMPLE FILTERS
+
+Do not create a huge filter system.
+
+Provide only:
+
+### Environment
+
+```text
+All
+Production
+Staging
+Development
+```
+
+### Risk
+
+```text
+All
+Critical
+High
+Medium
+Low
+```
+
+### Quantum Status
+
+```text
+All
+Quantum Safe
+Hybrid
+Vulnerable
+```
+
+### Time
+
+```text
+Last 15 minutes
+Last hour
+24 hours
+7 days
+```
+
+That's enough for the main dashboard.
+
+---
+
+# 16. SEARCH
+
+Provide one simple search box:
+
+```text
+Search applications, algorithms, certificates...
+```
+
+Examples:
+
+```text
+Payment API
+RSA-2048
+ML-KEM
+Certificate
+Legacy API
+```
+
+Search results should link to the appropriate asset/event.
+
+---
+
+# 17. SIMPLE PAGE STRUCTURE
+
+The final page should look approximately like:
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Runtime Cryptographic Intelligence             ● LIVE        │
+│ Monitor cryptographic activity...             [Filters]      │
+├──────────────────────────────────────────────────────────────┤
+│ Crypto Activity │ Quantum Safe │ Hybrid │ Risk │ Issues     │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│ Runtime Security Status              Quantum Risk             │
+│                                                              │
+│          82%                           HIGH                   │
+│          GOOD                          11% vulnerable         │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│ Live Cryptographic Activity                                  │
+│                                                              │
+│ Time     Application    Operation    Algorithm       Status   │
+│ 19:42    Payment API    TLS          ML-KEM          ✓ Safe   │
+│ 19:41    Auth Service   Signing      ML-DSA          ✓ Safe   │
+│ 19:40    Legacy API     Key Exchange X25519          ⚠ Risk   │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│ Attention Required                                           │
+│                                                              │
+│ 🔴 RSA-2048 detected — Payment API                            │
+│ 🟠 PQC fallback — Partner API                                │
+│ 🟡 Legacy TLS — Legacy API                                   │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│ PQC Adoption                       Runtime Configuration     │
+│ 68% Quantum Safe                   Payment API               │
+│ ████████████████░░░░               ✓ Configuration Matching │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│ PQC Migration Verification                                   │
+│ Payment API → ML-DSA-65 → ✓ Verified                         │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│ Harvest-Now Risk                     Sophia's Insight         │
+│ 3 High-Risk Assets                   7 issues detected        │
+│ [View Risks]                         [Investigate]            │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# 18. PAGE TABS
+
+Keep tabs to an absolute minimum.
+
+Use only:
+
+```text
+Overview
+Activity
+Risks
+```
+
+### Overview
+
+Everything described above.
+
+### Activity
+
+Detailed runtime event history.
+
+### Risks
+
+Detailed findings and remediation.
+
+Do NOT create separate tabs for:
+
+* Algorithms
+* Certificates
+* Libraries
+* Protocols
+* Policies
+* Performance
+* Baselines
+* CBOM
+* Digital Twin
+
+Those belong in their respective Qguard Helix modules.
+
+Runtime Crypto Intelligence should **summarize and link to them**, not duplicate them.
+
+---
+
+# 19. INTEGRATION WITH EXISTING QGUARD HELIX MODULES
+
+Runtime Crypto Intelligence should act as a **runtime visibility layer**.
+
+Connect to:
+
+```text
+PQC Scanner
+      ↓
+CBOM
+      ↓
+Runtime Crypto Intelligence
+      ↓
+Quantum Exposure
+      ↓
+Harvest Now
+      ↓
+Migration Planner
+      ↓
+Live Migration
+      ↓
+Runtime Verification
+```
+
+When appropriate, provide links:
+
+```text
+[View Asset]
+[View CBOM]
+[View Quantum Risk]
+[View HNDL Risk]
+[View Migration]
+[Ask Sophia]
+```
+
+Do not duplicate those modules.
+
+---
+
+# 20. REAL-TIME TELEMETRY
+
+The dashboard must support real-time updates using the existing Qguard Helix telemetry infrastructure.
+
+Prefer existing:
+
+* SSE
+* WebSocket
+* Supabase Realtime
+* Existing telemetry/event bus
+
+Do not create a new realtime architecture if one already exists.
+
+Show:
+
+```text
+● LIVE
+Last updated: 2 seconds ago
+```
+
+If disconnected:
+
+```text
+● CONNECTION LOST
+
+Last update:
+2 minutes ago
+
+[Reconnect]
+```
+
+Never pretend stale data is live.
+
+---
+
+# 21. MULTI-TENANT SECURITY
+
+Every runtime query must be tenant scoped.
+
+Verify:
+
+* Tenant isolation
+* Authentication
+* RBAC
+* API authorization
+* Realtime authorization
+* Search authorization
+* Export authorization
+* AI authorization
+
+Never expose another tenant's telemetry.
+
+---
+
+# 22. DATA PRIVACY
+
+Runtime telemetry must not expose:
+
+* Private keys
+* Secrets
+* Passwords
+* Tokens
+* Plaintext sensitive data
+
+Show metadata only.
+
+Example:
+
+```text
+Key:
+REDACTED
+```
+
+not actual key material.
+
+---
+
+# 23. NO FAKE DATA
+
+Do not hardcode:
+
+```text
+82%
+1.8M
+68%
+7 issues
+```
+
+Those are only examples.
+
+Production values must come from real Qguard Helix telemetry.
+
+If no telemetry exists:
+
+```text
+No runtime telemetry available.
+
+Connect a telemetry source to begin monitoring.
+```
+
+During development, mock data may be used only behind an explicit development-only flag.
+
+Never silently show fake production telemetry.
+
+---
+
+# 24. SIMPLE COLOR SYSTEM
+
+Use the existing Qguard Helix theme.
+
+Semantic colors:
+
+```text
+Green  = Quantum Safe
+Blue   = Hybrid PQC
+Yellow = Attention
+Orange = High Risk
+Red    = Critical
+Gray   = Unknown
+```
+
+Do not overuse neon effects.
+
+The page should feel professional enough for:
+
+* CISOs
+* Security Architects
+* SOC Analysts
+* IT Analysts
+* Infrastructure Teams
+* Executives
+
+---
+
+# 25. ACCESSIBILITY
+
+Ensure:
+
+* Keyboard navigation
+* Clear focus states
+* Accessible tables
+* Proper headings
+* Tooltips
+* Color + text indicators
+* Reduced motion
+* Sufficient contrast
+
+Never communicate risk through color alone.
+
+Use:
+
+```text
+🔴 CRITICAL
+🟠 HIGH
+🟡 ATTENTION
+🟢 SAFE
+```
+
+---
+
+# 26. PERFORMANCE
+
+The dashboard must remain responsive.
+
+Use:
+
+* Server-side pagination
+* Virtualized activity lists
+* Debounced search
+* Aggregated metrics
+* Lazy-loaded details
+* Efficient realtime updates
+* Cached summary metrics
+
+Do not download thousands of events just to display the latest 20.
+
+---
+
+# 27. ERROR AND EMPTY STATES
+
+### No telemetry
+
+```text
+No Runtime Telemetry
+
+Qguard Helix has not received runtime
+cryptographic telemetry for this environment.
+
+[Configure Telemetry]
+```
+
+### No risks
+
+```text
+✓ No Runtime Risks
+
+No significant cryptographic risks were
+detected during the selected period.
+```
+
+### Connection failure
+
+```text
+Runtime Telemetry Unavailable
+
+The telemetry connection has been interrupted.
+
+[Reconnect]
+```
+
+---
+
+# 28. COMPONENT STRUCTURE
+
+Keep the implementation modular.
+
+Suggested components:
+
+```text
+RuntimeCryptoIntelPage
+├── RuntimeHeader
+├── RuntimeKPIs
+├── RuntimeSecurityStatus
+├── QuantumRiskCard
+├── LiveCryptoActivity
+├── CryptoEventDrawer
+├── AttentionRequired
+├── PQCAdoptionCard
+├── RuntimeConfiguration
+├── MigrationVerification
+├── HNDLRiskCard
+├── SophiaInsight
+├── RuntimeFilters
+└── RuntimeSearch
+```
+
+Do not create a single massive page component.
+
+Reuse existing Qguard Helix components wherever possible.
+
+---
+
+# 29. DATA MODEL
+
+Use existing runtime telemetry models if they already exist.
+
+If new types are required, keep them simple.
+
+Example:
+
+```text
+RuntimeCryptoEvent
+
+id
+timestamp
+assetId
+assetName
+operation
+algorithm
+protocol
+quantumStatus
+risk
+```
+
+For detailed investigation, additional metadata can be loaded on demand.
+
+Do not send every technical field to the initial dashboard payload.
+
+---
+
+# 30. IMPORTANT UX RULE
+
+The default dashboard should NOT make users understand:
+
+* cryptographic primitives
+* KEM internals
+* signature mathematics
+* protocol internals
+* raw telemetry schemas
+
+Instead show:
+
+```text
+WHAT HAPPENED
+      ↓
+IS IT SAFE?
+      ↓
+WHY?
+      ↓
+WHAT SHOULD I DO?
+```
+
+Example:
+
+```text
+RSA-2048 detected
+
+🔴 Quantum Vulnerable
+
+Why?
+RSA is vulnerable to future quantum attacks.
+
+Impact:
+Payment API
+
+Action:
+Migrate to ML-DSA.
+
+[Create Migration Task]
+```
+
+That is the desired user experience.
+
+---
+
+# 31. DEFINITION OF DONE
+
+The refactor is complete when:
+
+## User Experience
+
+* [ ] Page is immediately understandable
+* [ ] User can understand overall security status in seconds
+* [ ] Important risks are obvious
+* [ ] Technical details are available but not overwhelming
+* [ ] Actions are clear
+* [ ] Navigation to related Qguard Helix modules works
+
+## Runtime
+
+* [ ] Real-time telemetry
+* [ ] Live connection status
+* [ ] Data freshness
+* [ ] Activity stream
+* [ ] Event details
+
+## Quantum Intelligence
+
+* [ ] Quantum-safe classification
+* [ ] Hybrid PQC classification
+* [ ] Quantum-vulnerable detection
+* [ ] Quantum risk summary
+* [ ] HNDL risk summary
+
+## Migration
+
+* [ ] Expected vs actual
+* [ ] Configuration drift
+* [ ] Migration verification
+* [ ] Link to Migration Planner
+* [ ] Runtime confirmation
+
+## AI
+
+* [ ] Sophia insight
+* [ ] Evidence-based responses
+* [ ] No fabricated telemetry
+
+## Security
+
+* [ ] Tenant isolation
+* [ ] RBAC
+* [ ] No secrets exposed
+* [ ] No private key material exposed
+
+## Quality
+
+* [ ] No TypeScript errors
+* [ ] No console errors
+* [ ] No broken existing routes
+* [ ] Production build succeeds
+* [ ] Existing Qguard Helix functionality remains intact
+* [ ] Responsive
+* [ ] Accessible
+
+---
+
+# 32. FINAL DESIGN PHILOSOPHY
+
+Do not make this page a complicated cryptographic monitoring console.
+
+Make it a **simple decision-making dashboard**.
+
+The user should look at the page and immediately understand:
+
+```text
+┌─────────────────────────────┐
+│                             │
+│      WHAT IS HAPPENING?     │
+│             ↓               │
+│      RUNTIME ACTIVITY       │
+│                             │
+│      IS IT SAFE?            │
+│             ↓               │
+│      QUANTUM RISK           │
+│                             │
+│      WHAT IS WRONG?         │
+│             ↓               │
+│      TOP RISKS              │
+│                             │
+│      WHAT SHOULD I DO?      │
+│             ↓               │
+│      RECOMMENDED ACTION     │
+│                             │
+│      DID IT WORK?           │
+│             ↓               │
+│      MIGRATION VERIFIED     │
+│                             │
+└─────────────────────────────┘
+```
+
+The guiding principle for the entire implementation is:
+
+# SEE → UNDERSTAND → ACT → VERIFY
+
+**SEE**
+What cryptography is running?
+
+**UNDERSTAND**
+Is it quantum-safe and why does it matter?
+
+**ACT**
+What should the user fix?
+
+**VERIFY**
+Did the migration actually change runtime behavior?
+
+Build `/dashboard/runtime-crypto-intel` around this workflow.
+
+Do not add functionality merely because it is technically possible. Every component must have a clear user benefit.
+
+The final result should feel like a **clean, premium, enterprise security product**, not a crowded technical monitoring console.

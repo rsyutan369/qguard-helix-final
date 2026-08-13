@@ -1,0 +1,2859 @@
+# QGUARD HELIX — PQAUTH IDENTITY MIGRATION ENGINE
+
+## Enterprise-Grade Refactor, Integration, Backend Wiring, SSE, Telemetry & UX Implementation Specification
+
+You are working on the **QGuard Helix Quantum Cyber Defense Platform**.
+
+Your task is to comprehensively review, refactor, enhance, integrate, and production-harden the entire **PQAuth Identity Migration Engine**.
+
+The objective is to transform the current PQAuth module into a **premium, enterprise-grade, simple-to-understand identity security command center** for post-quantum migration.
+
+Do NOT treat each page as an isolated UI.
+
+The entire module must operate as **one connected Identity Migration Intelligence system**, backed by the user's actual discovered/scanned assets, cryptographic findings, dependencies, certificates, identity providers, authentication flows, keys, tokens, APIs, runtime telemetry, and migration state.
+
+---
+
+# 1. PRIMARY OBJECTIVE
+
+Build/refactor the following PQAuth module:
+
+```text
+/dashboard/pqauth
+/dashboard/pqauth/discovery
+/dashboard/pqauth/trust-graph
+/dashboard/pqauth/token-intelligence
+/dashboard/pqauth/compatibility
+/dashboard/pqauth/migration-center
+/dashboard/pqauth/digital-twin
+/dashboard/pqauth/runtime-telemetry
+```
+
+The module represents:
+
+# PQAUTH
+
+## Identity Migration Engine™
+
+Enterprise command center for:
+
+* OAuth 2.0
+* OpenID Connect / OIDC
+* SAML
+* JWT / JWS / JWE
+* Access Tokens
+* ID Tokens
+* Refresh Tokens
+* Opaque Tokens
+* API Authentication
+* Machine Identity
+* Service Identity
+* Workload Identity
+* Certificates
+* Signing Keys
+* Identity Providers
+* Authorization Servers
+* Resource Servers
+* API Gateways
+* WAFs
+* Load Balancers
+* Service Meshes
+* Mobile Applications
+* Cloud Identity
+* Federation
+* Trust Chains
+* Post-Quantum Cryptography migration
+
+The system must help users:
+
+```text
+DISCOVER
+    ↓
+UNDERSTAND
+    ↓
+ASSESS
+    ↓
+SIMULATE
+    ↓
+MIGRATE
+    ↓
+VALIDATE
+    ↓
+MONITOR
+    ↓
+PROVE READINESS
+```
+
+---
+
+# 2. CRITICAL ARCHITECTURAL REQUIREMENT
+
+Do NOT create disconnected mock data for individual pages.
+
+All PQAuth pages must consume a **shared PQAuth domain model**.
+
+Create or refactor a central PQAuth data layer responsible for:
+
+```text
+Identity Assets
+Crypto Assets
+Certificates
+Signing Keys
+JWT Configurations
+OAuth Clients
+OIDC Providers
+SAML Providers
+API Gateways
+Resource Servers
+Applications
+Mobile Apps
+Service Accounts
+Machine Identities
+Workload Identities
+Trust Relationships
+Authentication Flows
+Authorization Flows
+Token Flows
+Crypto Algorithms
+PQC Algorithms
+Migration Plans
+Migration Tasks
+Compatibility Results
+Digital Twin State
+Runtime Events
+Telemetry
+Findings
+Risk Scores
+Evidence
+```
+
+Every page must derive its information from this shared state.
+
+---
+
+# 3. SOURCE OF TRUTH
+
+Establish a clear hierarchy:
+
+```text
+Actual Scanner / Discovery Data
+        ↓
+Normalized Asset Inventory
+        ↓
+PQAuth Identity Model
+        ↓
+Crypto Intelligence
+        ↓
+Trust Graph
+        ↓
+Compatibility Engine
+        ↓
+Migration Engine
+        ↓
+Digital Twin
+        ↓
+Runtime Telemetry
+        ↓
+PQAuth Dashboard
+```
+
+Never allow manually generated page-specific numbers to contradict actual scan results.
+
+If a backend value is unavailable:
+
+* display `Unknown`
+* display `Not Observed`
+* display `Awaiting Evidence`
+* or display `Not Assessed`
+
+DO NOT fabricate:
+
+* asset counts
+* vulnerability counts
+* PQC readiness
+* certificates
+* algorithms
+* token statistics
+* migration percentages
+* telemetry
+* risk scores
+
+---
+
+# 4. GLOBAL PQAUTH DATA CONTRACT
+
+Create a normalized domain model similar to:
+
+```typescript
+type PQAuthAsset = {
+  id: string
+  tenantId: string
+  name: string
+  type:
+    | "identity_provider"
+    | "oauth_server"
+    | "oidc_provider"
+    | "saml_provider"
+    | "application"
+    | "api"
+    | "api_gateway"
+    | "resource_server"
+    | "mobile_app"
+    | "service"
+    | "machine_identity"
+    | "workload_identity"
+    | "certificate"
+    | "signing_key"
+    | "service_account"
+
+  environment: "production" | "staging" | "development"
+  owner?: string
+  provider?: string
+
+  cryptoAlgorithms: CryptoAlgorithm[]
+  certificates: CertificateReference[]
+  signingKeys: SigningKeyReference[]
+
+  authenticationProtocols: string[]
+  tokenTypes: string[]
+
+  quantumRisk: "critical" | "high" | "medium" | "low" | "unknown"
+  pqcReadiness: number | null
+
+  discoveredAt: string
+  lastSeenAt: string
+  source: string
+}
+```
+
+Also create normalized structures for:
+
+```text
+PQAuthFinding
+PQAuthTrustRelationship
+PQAuthToken
+PQAuthCertificate
+PQAuthSigningKey
+PQAuthMigrationTask
+PQAuthCompatibilityResult
+PQAuthRuntimeEvent
+PQAuthTelemetrySnapshot
+PQAuthDigitalTwin
+```
+
+Use strong TypeScript typing.
+
+Avoid `any`.
+
+---
+
+# 5. GLOBAL UI/UX DIRECTION
+
+The UI must feel like:
+
+* enterprise cybersecurity platform
+* premium
+* modern
+* technically sophisticated
+* calm
+* trustworthy
+* easy to understand
+* information-dense without being overwhelming
+
+Do NOT create a cyberpunk dashboard filled with unnecessary neon effects.
+
+Use visual hierarchy.
+
+Prioritize:
+
+```text
+What is happening?
+What is at risk?
+What should I do?
+Why does it matter?
+What happens next?
+```
+
+Every technical concept should have a human-readable explanation.
+
+Example:
+
+Instead of:
+
+```text
+ML-KEM-768 / RSA-2048 / RS256
+```
+
+show:
+
+```text
+RSA-2048
+Quantum Exposure: High
+Migration Target: ML-KEM-768 Hybrid
+Reason: Vulnerable to future cryptographically relevant quantum attacks
+```
+
+---
+
+# 6. GLOBAL STATUS MODEL
+
+Standardize status terminology across all pages.
+
+Use:
+
+```text
+Quantum Safe
+PQC Ready
+PQC Compatible
+Hybrid Ready
+Migration Required
+Quantum Vulnerable
+Critical Exposure
+Partially Assessed
+Awaiting Evidence
+Not Observed
+Unknown
+```
+
+Do not use different terminology on different pages for the same state.
+
+---
+
+# 7. GLOBAL RISK MODEL
+
+Use consistent risk classification:
+
+```text
+CRITICAL
+HIGH
+MEDIUM
+LOW
+INFO
+UNKNOWN
+```
+
+Risk must be calculated from actual evidence where possible.
+
+Consider:
+
+```text
+Cryptographic Vulnerability
+Key Size
+Algorithm Type
+Authentication Importance
+Asset Criticality
+Internet Exposure
+Token Lifetime
+Trust Dependency
+Certificate Expiration
+Migration Complexity
+Runtime Usage
+Harvest-Now-Decrypt-Later Exposure
+Dependency Count
+```
+
+Do not create arbitrary scores simply to make the dashboard look populated.
+
+---
+
+# 8. GLOBAL PAGE HEADER
+
+Every PQAuth page should contain a consistent header:
+
+```text
+PQAuth
+Identity Migration Engine™
+
+[Environment]
+[Last Scan]
+[Live]
+[Refresh]
+[Export]
+```
+
+Where appropriate:
+
+```text
+Data Source:
+Scanner
+CBOM
+Certificate Inventory
+Runtime Telemetry
+Identity Discovery
+Migration Engine
+```
+
+Show:
+
+```text
+Last synchronized:
+X minutes ago
+```
+
+If SSE is connected:
+
+```text
+● Live
+```
+
+If disconnected:
+
+```text
+○ Reconnecting
+```
+
+If unavailable:
+
+```text
+○ Offline
+```
+
+---
+
+# 9. PAGE 1 — PQAUTH COMMAND CENTER
+
+Route:
+
+```text
+/dashboard/pqauth
+```
+
+This is the executive/operational overview.
+
+It should answer:
+
+> "What is the current post-quantum state of my identity infrastructure?"
+
+## Hero
+
+Display:
+
+```text
+PQAuth Identity Migration Engine™
+
+Understand, secure, and migrate your identity infrastructure for the post-quantum era.
+
+[Run Assessment]
+[View Migration Plan]
+[Explore Identity Graph]
+```
+
+---
+
+## Executive KPI Cards
+
+Show only meaningful metrics:
+
+```text
+Identity Assets
+Quantum-Vulnerable Assets
+PQC Ready
+Hybrid Ready
+Migration Required
+Critical Trust Paths
+Active Migration Tasks
+Runtime Identity Events
+```
+
+Each KPI must link to its corresponding page.
+
+---
+
+## PQAuth Readiness Score
+
+Display:
+
+```text
+Identity PQC Readiness
+72 / 100
+```
+
+But calculate it from real evidence.
+
+Break down:
+
+```text
+Identity Providers
+Authentication
+Tokens
+Certificates
+Signing Keys
+APIs
+Machine Identity
+Trust Chains
+Runtime
+Migration Progress
+```
+
+Use a simple visual.
+
+---
+
+## Quantum Exposure Summary
+
+Show:
+
+```text
+Critical
+High
+Medium
+Low
+```
+
+Clicking a severity must filter relevant assets.
+
+---
+
+## Top Identity Risks
+
+Show the highest-priority findings.
+
+Example:
+
+```text
+RSA-2048 signing key used by production OIDC provider
+Critical
+Used by 37 applications
+
+RS256 JWT signing detected
+High
+12 APIs affected
+
+Legacy certificate chain
+High
+8 dependent services
+```
+
+---
+
+## Recommended Actions
+
+Create an intelligent prioritized action list:
+
+```text
+1. Migrate critical OIDC signing keys
+2. Assess RS256 JWT dependencies
+3. Validate gateway PQC compatibility
+4. Review high-risk trust paths
+5. Begin hybrid authentication rollout
+```
+
+---
+
+## Migration Progress
+
+Show:
+
+```text
+Discovery
+██████████ 100%
+
+Assessment
+████████░░ 80%
+
+Simulation
+██████░░░░ 60%
+
+Migration
+████░░░░░░ 40%
+
+Validation
+██░░░░░░░░ 20%
+```
+
+Use actual backend state.
+
+---
+
+# 10. PAGE 2 — IDENTITY DISCOVERY ENGINE
+
+Route:
+
+```text
+/dashboard/pqauth/discovery
+```
+
+Purpose:
+
+> Discover every identity-related asset and cryptographic dependency.
+
+Sections:
+
+```text
+Identity Inventory
+Authentication Providers
+OAuth / OIDC Clients
+SAML Integrations
+Applications
+APIs
+Machine Identities
+Service Accounts
+Certificates
+Signing Keys
+Token Issuers
+Resource Servers
+Gateways
+```
+
+---
+
+## Discovery KPI
+
+Display:
+
+```text
+Assets Discovered
+Identity Providers
+Applications
+APIs
+Certificates
+Signing Keys
+OAuth Clients
+Machine Identities
+```
+
+---
+
+## Identity Inventory Table
+
+Columns:
+
+```text
+Asset
+Type
+Provider
+Protocol
+Environment
+Crypto
+Quantum Risk
+PQC Readiness
+Dependencies
+Last Seen
+```
+
+Support:
+
+* search
+* filtering
+* sorting
+* severity filtering
+* environment filtering
+* provider filtering
+* protocol filtering
+
+---
+
+## Asset Detail Drawer
+
+Clicking an asset opens a detailed panel.
+
+Show:
+
+```text
+Overview
+Authentication
+Cryptography
+Certificates
+Keys
+Tokens
+Dependencies
+Trust Relationships
+Findings
+Evidence
+Runtime Usage
+Migration Status
+```
+
+---
+
+## Discovery Evidence
+
+Every discovered object should show:
+
+```text
+Source
+Evidence
+First Seen
+Last Seen
+Confidence
+Scanner / Connector
+```
+
+Never imply discovery confidence if no evidence exists.
+
+---
+
+# 11. PAGE 3 — IDENTITY TRUST FABRIC
+
+Route:
+
+```text
+/dashboard/pqauth/trust-graph
+```
+
+Purpose:
+
+> Visualize how identity trust flows through the enterprise.
+
+Entities:
+
+```text
+User
+Application
+Mobile App
+Identity Provider
+OAuth Authorization Server
+OIDC Provider
+SAML IdP
+API
+Resource Server
+Gateway
+WAF
+Certificate
+Signing Key
+Machine Identity
+Service Account
+Workload
+Cloud Provider
+```
+
+Relationships:
+
+```text
+AUTHENTICATES
+AUTHORIZES
+ISSUES_TOKEN
+VALIDATES_TOKEN
+SIGNS
+TRUSTS
+FEDERATES_WITH
+CALLS
+DEPENDS_ON
+USES_CERTIFICATE
+USES_KEY
+ROUTES_TO
+```
+
+---
+
+## Graph Controls
+
+Provide:
+
+```text
+Search
+Zoom
+Pan
+Reset
+Fit Graph
+Filter
+Risk Filter
+Environment
+Asset Type
+Protocol
+Crypto Algorithm
+```
+
+---
+
+## Critical Path Mode
+
+Allow users to select:
+
+```text
+Show Critical Trust Paths
+```
+
+Highlight paths containing:
+
+* quantum-vulnerable cryptography
+* expired certificates
+* weak signing algorithms
+* unsupported PQC
+* single points of failure
+* high-value identity providers
+
+---
+
+## Graph Detail Panel
+
+Selecting a node shows:
+
+```text
+Asset
+Risk
+Protocol
+Algorithms
+Certificates
+Keys
+Dependents
+Dependencies
+Trust Relationships
+Runtime Usage
+Migration Status
+```
+
+---
+
+## Trust Risk
+
+Show:
+
+```text
+Critical Trust Path
+12 dependent applications
+RSA signing dependency
+No PQC support observed
+Migration required
+```
+
+---
+
+# 12. PAGE 4 — JWT & TOKEN INTELLIGENCE
+
+Route:
+
+```text
+/dashboard/pqauth/token-intelligence
+```
+
+Purpose:
+
+> Analyze token cryptography, token flows, and post-quantum migration impact.
+
+Support:
+
+```text
+JWT
+JWS
+JWE
+Opaque Tokens
+Access Tokens
+ID Tokens
+Refresh Tokens
+Client Assertions
+Bearer Tokens
+Proof-of-Possession Tokens
+```
+
+---
+
+## Token Inventory
+
+Columns:
+
+```text
+Token
+Issuer
+Type
+Algorithm
+Key
+Lifetime
+Audience
+Applications
+Risk
+PQC Readiness
+```
+
+---
+
+## Algorithm Intelligence
+
+Detect:
+
+```text
+RS256
+RS384
+RS512
+PS256
+ES256
+ES384
+ES512
+EdDSA
+HS256
+Other observed algorithms
+```
+
+Map them to:
+
+```text
+Quantum Risk
+Migration Recommendation
+PQC Compatibility
+Hybrid Strategy
+```
+
+Do not automatically claim a JWT algorithm is replaced by ML-KEM.
+
+Clearly distinguish:
+
+```text
+Key Encapsulation
+Digital Signature
+Symmetric Encryption
+Hashing
+```
+
+For example:
+
+```text
+JWT signing:
+RSA / ECDSA / EdDSA
+
+Potential PQ signature migration:
+ML-DSA
+
+JWT encryption / key establishment:
+Potential ML-KEM or hybrid architecture
+```
+
+---
+
+## Token Size Impact
+
+Create:
+
+```text
+Current Token Size
+Estimated Hybrid Size
+Estimated PQC Size
+Header Impact
+Signature Impact
+Network Impact
+Gateway Compatibility
+```
+
+Use this to identify:
+
+```text
+Cookie limits
+HTTP header limits
+Proxy limits
+Gateway limits
+Mobile constraints
+```
+
+Only calculate estimates using clearly documented algorithm/key assumptions.
+
+---
+
+## Token Flow Visualization
+
+Show:
+
+```text
+Client
+ ↓
+Authorization Server
+ ↓
+Token
+ ↓
+API Gateway
+ ↓
+Resource Server
+ ↓
+Authorization
+```
+
+Highlight cryptographic operations.
+
+---
+
+# 13. PAGE 5 — PQC COMPATIBILITY ASSESSMENT
+
+Route:
+
+```text
+/dashboard/pqauth/compatibility
+```
+
+Purpose:
+
+> Determine whether identity infrastructure can support post-quantum cryptography.
+
+Assess:
+
+```text
+Applications
+APIs
+Identity Providers
+Authorization Servers
+Resource Servers
+API Gateways
+WAF
+Load Balancers
+Service Meshes
+Mobile Apps
+Cloud Platforms
+SDKs
+Libraries
+TLS
+Certificates
+JWT
+OAuth
+OIDC
+SAML
+```
+
+---
+
+## Compatibility Matrix
+
+Columns:
+
+```text
+Component
+Current Crypto
+PQC Capability
+Hybrid Capability
+Target Algorithm
+Blocking Issue
+Risk
+Status
+```
+
+Statuses:
+
+```text
+Compatible
+Hybrid Compatible
+Partially Compatible
+Not Compatible
+Unknown
+```
+
+---
+
+## Detailed Compatibility
+
+For each component:
+
+```text
+Current State
+Required Changes
+Supported Algorithms
+Unsupported Algorithms
+Dependencies
+Potential Breaking Changes
+Recommended Migration Path
+Validation Method
+```
+
+---
+
+## Compatibility Gates
+
+Create:
+
+```text
+PASS
+WARN
+FAIL
+UNKNOWN
+```
+
+Example:
+
+```text
+TLS 1.3                 PASS
+Hybrid TLS              PASS
+JWT signing             WARN
+Gateway header size     WARN
+Mobile SDK              FAIL
+Certificate chain       WARN
+```
+
+---
+
+# 14. PAGE 6 — AUTONOMOUS IDENTITY MIGRATION ORCHESTRATOR
+
+Route:
+
+```text
+/dashboard/pqauth/migration-center
+```
+
+Purpose:
+
+> Safely move identity infrastructure from classical cryptography toward PQC and hybrid cryptography.
+
+Migration must NOT mean "change everything immediately."
+
+Use phased migration.
+
+---
+
+## Migration Lifecycle
+
+```text
+DISCOVER
+   ↓
+ASSESS
+   ↓
+PLAN
+   ↓
+SIMULATE
+   ↓
+PREPARE
+   ↓
+CANARY
+   ↓
+ROLLOUT
+   ↓
+VALIDATE
+   ↓
+MONITOR
+   ↓
+COMPLETE
+```
+
+---
+
+## Migration Dashboard
+
+Show:
+
+```text
+Overall Migration Progress
+Assets Ready
+Assets Blocked
+Assets In Progress
+Validation Required
+Rollback Available
+Critical Blockers
+```
+
+---
+
+## Migration Plans
+
+Each plan should include:
+
+```text
+Plan ID
+Target Asset
+Current Algorithm
+Target Algorithm
+Migration Strategy
+Dependencies
+Risk
+Owner
+Status
+Created
+Last Updated
+```
+
+---
+
+## Migration Strategies
+
+Support:
+
+```text
+Hybrid First
+Dual Stack
+Canary
+Blue/Green
+Phased
+Parallel Validation
+Emergency Rollback
+```
+
+---
+
+## Migration Task Details
+
+Each task:
+
+```text
+Task
+Asset
+Current State
+Target State
+Preconditions
+Dependencies
+Validation
+Rollback
+Owner
+Evidence
+Status
+```
+
+---
+
+## Migration Gates
+
+Never allow automatic promotion without validation.
+
+Use:
+
+```text
+Preflight Gate
+Compatibility Gate
+Simulation Gate
+Canary Gate
+Runtime Health Gate
+Security Gate
+Rollback Gate
+Final Validation Gate
+```
+
+Each gate should clearly show:
+
+```text
+PASS
+FAIL
+WARNING
+BLOCKED
+NOT RUN
+```
+
+---
+
+# 15. PAGE 7 — IDENTITY DIGITAL TWIN
+
+Route:
+
+```text
+/dashboard/pqauth/digital-twin
+```
+
+Purpose:
+
+> Safely simulate identity migration before touching production.
+
+The Digital Twin must be based on actual discovered assets.
+
+Do not create fictional infrastructure.
+
+---
+
+## Twin Overview
+
+Show:
+
+```text
+Assets Cloned
+Identity Providers
+Applications
+APIs
+Trust Relationships
+Certificates
+Signing Keys
+JWT Flows
+OAuth Flows
+SAML Flows
+Dependencies
+Coverage
+Fidelity
+```
+
+---
+
+## Twin Fidelity
+
+Display:
+
+```text
+Twin Coverage: 94%
+Evidence Fidelity: 91%
+Runtime Correlation: 87%
+```
+
+Only calculate these from real evidence.
+
+---
+
+## Simulation
+
+Allow:
+
+```text
+Select Asset
+Select Migration
+Select Algorithm
+Select Environment
+Run Simulation
+```
+
+---
+
+## Failure Prediction
+
+Analyze:
+
+```text
+Token Size Increase
+Unsupported Algorithms
+Certificate Compatibility
+Gateway Limits
+Application Breakage
+SDK Compatibility
+Trust Chain Failure
+Signature Validation Failure
+Key Rotation Issues
+Latency
+Mobile Compatibility
+Service Mesh Compatibility
+```
+
+Show:
+
+```text
+Probability
+Impact
+Evidence
+Affected Assets
+Recommended Remediation
+```
+
+---
+
+## Before / After
+
+Provide comparison:
+
+```text
+CURRENT
+RSA-2048
+RS256
+TLS 1.3
+Classical Certificate
+
+VS
+
+TARGET
+Hybrid / PQC
+ML-DSA
+Hybrid TLS
+PQC-Compatible Certificate Strategy
+```
+
+---
+
+## Simulation Results
+
+Show:
+
+```text
+PASS
+WARN
+FAIL
+```
+
+and:
+
+```text
+Predicted Impact
+Affected Assets
+Migration Blockers
+Recommended Actions
+```
+
+---
+
+# 16. PAGE 8 — RUNTIME IDENTITY TELEMETRY
+
+Route:
+
+```text
+/dashboard/pqauth/runtime-telemetry
+```
+
+Purpose:
+
+> Observe real-time identity behavior after and during migration.
+
+Use SSE/WebSocket where appropriate.
+
+---
+
+## Runtime Events
+
+Track:
+
+```text
+Authentication
+Authorization
+Token Issuance
+Token Validation
+Token Refresh
+JWT Validation
+Signature Verification
+Certificate Usage
+Key Usage
+Trust Failures
+Authentication Failures
+Authorization Failures
+Identity Drift
+Algorithm Changes
+Certificate Changes
+Key Rotation
+Migration Events
+Rollback Events
+```
+
+---
+
+## Real-Time KPIs
+
+Display:
+
+```text
+Auth Requests/sec
+Token Validation/sec
+Failure Rate
+P95 Latency
+P99 Latency
+Active Identity Providers
+Active Certificates
+Active Signing Keys
+PQC Operations
+Hybrid Operations
+Classical Crypto Operations
+```
+
+Do not display metrics that the backend cannot actually produce.
+
+---
+
+## Live Event Stream
+
+Show:
+
+```text
+14:32:01
+OIDC token validation
+Application: Payments API
+Algorithm: RS256
+Risk: HIGH
+
+14:32:04
+Certificate used
+Gateway: API-GW-01
+Certificate: cert-123
+Status: Valid
+
+14:32:09
+PQC handshake observed
+Service: Auth Gateway
+Algorithm: Hybrid
+Status: SUCCESS
+```
+
+---
+
+# 17. SSE / REAL-TIME ARCHITECTURE
+
+Implement a centralized SSE architecture.
+
+Example:
+
+```text
+GET /api/pqauth/events
+```
+
+or the project's existing equivalent.
+
+Events should be typed.
+
+Example:
+
+```typescript
+type PQAuthEvent =
+  | {
+      type: "asset.updated"
+      assetId: string
+      timestamp: string
+    }
+  | {
+      type: "finding.created"
+      findingId: string
+      timestamp: string
+    }
+  | {
+      type: "migration.progress"
+      migrationId: string
+      progress: number
+      timestamp: string
+    }
+  | {
+      type: "runtime.identity_event"
+      eventId: string
+      timestamp: string
+    }
+  | {
+      type: "certificate.changed"
+      certificateId: string
+      timestamp: string
+    }
+  | {
+      type: "trust.updated"
+      relationshipId: string
+      timestamp: string
+    }
+```
+
+Frontend must subscribe to SSE through a reusable hook:
+
+```text
+usePQAuthSSE()
+```
+
+Implement:
+
+```text
+Connection
+Reconnection
+Backoff
+Heartbeat
+Event Validation
+Event Deduplication
+Cleanup
+Tenant Isolation
+Authentication
+```
+
+Do not create an SSE connection separately on every page.
+
+Use one shared provider/context where appropriate.
+
+---
+
+# 18. REQUIRED REACT HOOKS
+
+Create/reuse centralized hooks.
+
+Examples:
+
+```text
+usePQAuthOverview()
+usePQAuthAssets()
+usePQAuthDiscovery()
+usePQAuthTrustGraph()
+usePQAuthTokens()
+usePQAuthCompatibility()
+usePQAuthMigration()
+usePQAuthDigitalTwin()
+usePQAuthRuntimeTelemetry()
+usePQAuthSSE()
+usePQAuthReadiness()
+usePQAuthFindings()
+usePQAuthCertificates()
+usePQAuthSigningKeys()
+```
+
+Hooks must:
+
+* use real backend APIs
+* handle loading
+* handle errors
+* handle empty states
+* cache where appropriate
+* invalidate after mutations
+* synchronize SSE events
+* respect tenant isolation
+
+Avoid duplicated API logic inside components.
+
+---
+
+# 19. DATA SYNCHRONIZATION
+
+The following must always agree:
+
+```text
+PQC Scanner
+Assets & CBOM
+Certificate Inventory
+Quantum Readiness
+Harvest Now Risk
+Runtime Crypto Telemetry
+PQAuth Discovery
+PQAuth Trust Graph
+PQAuth Token Intelligence
+PQAuth Compatibility
+PQAuth Migration Center
+PQAuth Digital Twin
+PQAuth Runtime Telemetry
+```
+
+Example:
+
+If the scanner discovers:
+
+```text
+api.example.com
+RSA-2048
+RS256
+Production
+High Risk
+```
+
+then PQAuth Discovery must show the same asset.
+
+Token Intelligence must recognize the relevant token/signing relationship.
+
+Trust Graph must show the dependency.
+
+Compatibility must assess it.
+
+Migration Center must be able to create a migration action.
+
+Digital Twin must be able to simulate it.
+
+Runtime Telemetry must correlate actual usage if runtime evidence exists.
+
+---
+
+# 20. CROSS-MODULE INTEGRATION
+
+Integrate with existing QGuard Helix modules where APIs already exist.
+
+Potential sources:
+
+```text
+PQC Scanner
+Assets & CBOM
+Quantum Readiness Assessment Engine
+Quantum Exposure Graph
+Harvest Now Risk Engine
+Runtime Crypto Telemetry
+Certificate Inventory
+Migration Planner
+Live Migration Operations
+Migration Sandbox
+```
+
+Do NOT duplicate backend logic unnecessarily.
+
+Create adapters/normalizers where existing APIs have different schemas.
+
+---
+
+# 21. TENANT SECURITY
+
+Every request must be scoped to the authenticated tenant.
+
+Never allow:
+
+```text
+tenant A
+```
+
+to access:
+
+```text
+tenant B
+```
+
+Validate tenant context server-side.
+
+Do not rely solely on frontend filtering.
+
+---
+
+# 22. ERROR HANDLING
+
+Every page must have:
+
+## Loading State
+
+Use skeletons rather than blank screens.
+
+## Empty State
+
+Example:
+
+```text
+No identity assets discovered yet.
+
+Run Identity Discovery to begin building your PQAuth inventory.
+```
+
+## Error State
+
+Example:
+
+```text
+Unable to load identity telemetry.
+
+The runtime telemetry service is currently unavailable.
+
+[Retry]
+```
+
+## Offline State
+
+Clearly indicate when SSE/backend connectivity is unavailable.
+
+---
+
+# 23. PERFORMANCE
+
+The module must remain responsive with:
+
+```text
+1,000+
+10,000+
+100,000+
+```
+
+identity-related records where applicable.
+
+Use:
+
+```text
+Pagination
+Virtualized Tables
+Graph Clustering
+Lazy Loading
+Memoization
+Incremental Fetching
+Debounced Search
+Server-Side Filtering
+```
+
+Do not load massive datasets into the browser unnecessarily.
+
+---
+
+# 24. GRAPH PERFORMANCE
+
+For large trust graphs:
+
+* cluster nodes
+* collapse low-value relationships
+* lazy-load relationships
+* support filtering
+* avoid rendering thousands of edges at once
+
+Provide:
+
+```text
+High-Level View
+Application View
+Identity Provider View
+Critical Path View
+Asset View
+```
+
+---
+
+# 25. ACCESSIBILITY
+
+All pages must support:
+
+```text
+Keyboard navigation
+ARIA labels
+Focus states
+Readable contrast
+Screen-reader compatible tables
+Accessible dialogs
+Accessible graphs where practical
+```
+
+Never communicate information using color alone.
+
+Example:
+
+```text
+● Critical
+▲ Warning
+✓ Healthy
+```
+
+---
+
+# 26. RESPONSIVE DESIGN
+
+Support:
+
+```text
+Desktop
+Laptop
+Tablet
+```
+
+Prioritize desktop enterprise SOC usage but ensure smaller screens remain usable.
+
+---
+
+# 27. UX SIMPLIFICATION
+
+Do not expose every technical field immediately.
+
+Use progressive disclosure.
+
+Primary view:
+
+```text
+What
+Risk
+Why
+Action
+Status
+```
+
+Advanced view:
+
+```text
+Cryptographic Metadata
+Key Details
+Token Claims
+Trust Relationships
+Protocol Details
+Evidence
+Raw Telemetry
+```
+
+Use:
+
+```text
+View Details
+Advanced
+Technical Evidence
+```
+
+rather than overwhelming users.
+
+---
+
+# 28. EXPLAINABILITY
+
+Every important score must explain:
+
+```text
+Why is this risky?
+What evidence supports this?
+What should I do?
+What happens if I ignore it?
+```
+
+Example:
+
+```text
+Why High Risk?
+
+RS256 signing is used by a production OIDC provider.
+37 applications depend on this issuer.
+No PQC-compatible signing strategy has been observed.
+
+Recommended Action:
+Validate ML-DSA-compatible identity architecture and begin hybrid migration testing.
+```
+
+---
+
+# 29. CRYPTOGRAPHIC ACCURACY
+
+Be extremely careful with PQC terminology.
+
+Distinguish:
+
+```text
+ML-KEM
+```
+
+for key encapsulation / key establishment,
+
+from:
+
+```text
+ML-DSA
+```
+
+for digital signatures.
+
+Also distinguish:
+
+```text
+Classical
+Hybrid
+PQC
+```
+
+and:
+
+```text
+Encryption
+Key Exchange
+Digital Signature
+Hash
+MAC
+Certificate
+Token Signing
+Token Encryption
+```
+
+Never label ML-KEM as a JWT signing algorithm.
+
+Never imply that simply changing TLS automatically makes JWT signing post-quantum safe.
+
+---
+
+# 30. QGUARD HELIX PREFERRED CRYPTOGRAPHIC STACK
+
+Where architecture requires PQC recommendations, align with the platform's preferred cryptographic direction:
+
+```text
+ML-KEM-768
+X25519 + ML-KEM-768
+ML-KEM-1024 for high-security / Quantum Vault contexts
+
+ML-DSA-65
+Ed25519 + ML-DSA hybrid
+
+AES-256-GCM
+
+HKDF-SHA3-256
+HKDF-SHA-256 fallback
+
+SHA3-256
+SHA3-512
+
+TLS 1.3
+Hybrid TLS where supported
+```
+
+Do not hard-code these recommendations where the actual environment dictates otherwise.
+
+Recommendations must be contextual.
+
+---
+
+# 31. SECURITY PRINCIPLES
+
+Do not implement:
+
+```text
+Automatic destructive migration
+Blind production crypto replacement
+Unvalidated algorithm changes
+Unreviewed key rotation
+Unsafe certificate replacement
+```
+
+Migration operations should support:
+
+```text
+Preview
+Approval
+Preflight
+Simulation
+Canary
+Validation
+Rollback
+Audit
+```
+
+---
+
+# 32. AUDITABILITY
+
+Record important actions:
+
+```text
+Who
+What
+When
+Why
+Asset
+Previous State
+New State
+Result
+Evidence
+```
+
+Examples:
+
+```text
+Migration Plan Created
+Migration Approved
+Simulation Started
+Simulation Failed
+Canary Started
+Canary Passed
+Rollback Executed
+Certificate Updated
+Signing Key Rotated
+```
+
+---
+
+# 33. PAGE-TO-PAGE NAVIGATION
+
+Create a logical workflow.
+
+Example:
+
+```text
+Discovery
+   ↓
+Asset Details
+   ↓
+Trust Graph
+   ↓
+Token Intelligence
+   ↓
+Compatibility
+   ↓
+Digital Twin
+   ↓
+Migration Center
+   ↓
+Runtime Telemetry
+```
+
+Context should persist when navigating.
+
+Example:
+
+Clicking:
+
+```text
+RSA-2048 OIDC Provider
+```
+
+from Discovery should allow the user to open:
+
+```text
+Trust Graph
+Token Intelligence
+Compatibility
+Digital Twin
+Migration
+Runtime Telemetry
+```
+
+with the same asset already selected/filter-applied.
+
+---
+
+# 34. DEEP LINKING
+
+Support URL state where appropriate.
+
+Examples:
+
+```text
+/pqauth/discovery?asset=abc123
+
+/pqauth/trust-graph?asset=abc123
+
+/pqauth/token-intelligence?issuer=abc123
+
+/pqauth/compatibility?asset=abc123
+
+/pqauth/migration-center?asset=abc123
+
+/pqauth/digital-twin?asset=abc123
+
+/pqauth/runtime-telemetry?asset=abc123
+```
+
+This enables cross-module workflows and sharing.
+
+---
+
+# 35. FILTER CONSISTENCY
+
+Use consistent filters:
+
+```text
+Environment
+Severity
+Asset Type
+Protocol
+Provider
+Algorithm
+PQC Status
+Migration Status
+Owner
+Last Seen
+```
+
+Where filters apply, preserve them during navigation.
+
+---
+
+# 36. EXPORT
+
+Where appropriate provide:
+
+```text
+Export CSV
+Export JSON
+Export PDF
+```
+
+Exports must contain actual backend data.
+
+Never generate placeholder reports.
+
+---
+
+# 37. BACKEND API REVIEW
+
+Before changing frontend code:
+
+1. Inspect existing backend endpoints.
+2. Identify PQAuth endpoints.
+3. Identify scanner endpoints.
+4. Identify asset inventory endpoints.
+5. Identify CBOM endpoints.
+6. Identify certificate endpoints.
+7. Identify telemetry endpoints.
+8. Identify migration endpoints.
+9. Identify SSE endpoints.
+10. Identify authentication/tenant context.
+
+Document:
+
+```text
+Existing Endpoint
+Purpose
+Request
+Response
+Authentication
+Tenant Scope
+Used By
+```
+
+Reuse existing APIs whenever possible.
+
+Only create new endpoints when functionality genuinely does not exist.
+
+---
+
+# 38. BACKEND CONTRACT VALIDATION
+
+Every frontend API response must be validated.
+
+Use:
+
+```text
+Zod
+```
+
+or the project's existing runtime schema validation.
+
+Do not blindly trust API payloads.
+
+Normalize inconsistent backend structures before rendering.
+
+---
+
+# 39. SSE VALIDATION
+
+Verify:
+
+```text
+SSE endpoint exists
+Authentication works
+Tenant filtering works
+Events are typed
+Events contain timestamps
+Events contain stable IDs
+Events are not duplicated
+Reconnect works
+Disconnect works
+Heartbeat works
+```
+
+Test:
+
+```text
+Backend event
+   ↓
+SSE
+   ↓
+React hook
+   ↓
+Cache/state update
+   ↓
+UI update
+```
+
+The UI should visibly update without a manual page refresh.
+
+---
+
+# 40. REAL-TIME CONSISTENCY TEST
+
+Perform a complete test:
+
+1. Create/update an identity asset.
+2. Backend emits an event.
+3. PQAuth SSE receives it.
+4. Discovery updates.
+5. Trust Graph updates.
+6. Token Intelligence updates if relevant.
+7. Compatibility updates if relevant.
+8. Migration state updates if relevant.
+9. Runtime Telemetry reflects runtime evidence.
+10. Dashboard KPIs update.
+
+There must be no stale conflicting values.
+
+---
+
+# 41. MOCK DATA POLICY
+
+During development, clearly separate:
+
+```text
+REAL DATA
+```
+
+from:
+
+```text
+DEMO / MOCK DATA
+```
+
+Production pages must never silently display mock data.
+
+If demo mode exists:
+
+```text
+Demo Mode
+```
+
+must be visibly indicated.
+
+---
+
+# 42. COMPONENT ARCHITECTURE
+
+Create reusable components such as:
+
+```text
+PQAuthPageHeader
+PQAuthKpiCard
+PQAuthRiskBadge
+PQAuthStatusBadge
+PQAuthReadinessScore
+PQAuthAssetTable
+PQAuthAssetDrawer
+PQAuthFindingList
+PQAuthEvidencePanel
+PQAuthTimeline
+PQAuthTrustGraph
+PQAuthTokenFlow
+PQAuthCompatibilityMatrix
+PQAuthMigrationTimeline
+PQAuthMigrationGate
+PQAuthSimulationPanel
+PQAuthTelemetryStream
+PQAuthConnectionStatus
+PQAuthEmptyState
+PQAuthErrorState
+PQAuthSkeleton
+```
+
+Avoid duplicating visual logic.
+
+---
+
+# 43. DESIGN SYSTEM
+
+Use the existing QGuard Helix design system.
+
+Maintain:
+
+```text
+Typography
+Spacing
+Cards
+Buttons
+Badges
+Tables
+Dialogs
+Tabs
+Charts
+Navigation
+Dark/Light theme
+```
+
+Do not introduce a second unrelated visual language.
+
+---
+
+# 44. DASHBOARD INFORMATION HIERARCHY
+
+Every page should generally follow:
+
+```text
+HEADER
+↓
+SUMMARY
+↓
+RISK / STATUS
+↓
+PRIMARY WORKSPACE
+↓
+DETAILS
+↓
+EVIDENCE
+```
+
+Avoid showing 20 charts above the actual operational content.
+
+---
+
+# 45. CHARTS
+
+Charts must answer a question.
+
+Useful charts:
+
+```text
+PQC Readiness
+Risk Distribution
+Migration Progress
+Crypto Algorithm Distribution
+Token Algorithm Distribution
+Identity Provider Distribution
+Runtime Authentication Health
+PQC vs Classical Usage
+```
+
+Avoid decorative charts.
+
+---
+
+# 46. SEARCH
+
+Implement global PQAuth search where practical.
+
+Search:
+
+```text
+Asset Name
+Hostname
+Application
+API
+Issuer
+Certificate
+Key ID
+Token Issuer
+Client ID
+Algorithm
+Finding
+Migration ID
+```
+
+Results should identify:
+
+```text
+Type
+Risk
+Environment
+Status
+```
+
+---
+
+# 47. COMMAND CENTER ACTIONS
+
+The main PQAuth dashboard should expose only high-value actions:
+
+```text
+Run Identity Discovery
+Review Critical Risks
+Assess Compatibility
+Simulate Migration
+Create Migration Plan
+View Runtime Events
+```
+
+Avoid cluttering the dashboard with low-level controls.
+
+---
+
+# 48. SECURITY FINDINGS
+
+Findings must contain:
+
+```text
+ID
+Title
+Severity
+Asset
+Description
+Evidence
+Impact
+Recommendation
+Affected Dependencies
+First Seen
+Last Seen
+Status
+```
+
+Statuses:
+
+```text
+Open
+Acknowledged
+In Progress
+Resolved
+Accepted Risk
+False Positive
+```
+
+---
+
+# 49. OWNERSHIP
+
+Where asset ownership exists:
+
+```text
+Owner
+Team
+Business Unit
+Environment
+```
+
+Migration tasks should be assignable.
+
+---
+
+# 50. PRODUCTION READINESS
+
+Before considering the implementation complete, verify:
+
+```text
+No broken routes
+No console errors
+No TypeScript errors
+No failed API requests
+No hydration errors
+No infinite render loops
+No duplicate SSE connections
+No memory leaks
+No stale data bugs
+No fake metrics
+No inconsistent risk scores
+No tenant isolation issues
+No broken loading states
+No broken empty states
+No broken error states
+```
+
+---
+
+# 51. TESTING
+
+Create/execute tests for:
+
+## Unit
+
+```text
+Risk calculations
+Readiness calculations
+Data normalization
+Token analysis
+Compatibility mapping
+Migration state
+SSE event parsing
+```
+
+## Integration
+
+```text
+API → Hook
+API → Component
+SSE → Hook → UI
+Scanner → PQAuth
+Migration → Runtime
+Digital Twin → Migration
+```
+
+## E2E
+
+Test:
+
+```text
+Discovery
+Asset selection
+Trust graph
+Token analysis
+Compatibility
+Simulation
+Migration
+Runtime telemetry
+```
+
+---
+
+# 52. FINAL CROSS-PAGE VALIDATION
+
+After implementation, select at least one real discovered identity asset.
+
+Follow it through:
+
+```text
+Discovery
+↓
+Trust Graph
+↓
+Token Intelligence
+↓
+Compatibility
+↓
+Digital Twin
+↓
+Migration Center
+↓
+Runtime Telemetry
+↓
+PQAuth Dashboard
+```
+
+Confirm that:
+
+* asset identity is consistent
+* risk is consistent
+* algorithms are consistent
+* dependencies are consistent
+* migration status is consistent
+* timestamps are consistent
+* evidence is consistent
+* tenant context is consistent
+
+---
+
+# 53. IMPORTANT IMPLEMENTATION RULE
+
+DO NOT simply make the pages visually attractive.
+
+The primary objective is:
+
+```text
+DATA CORRECTNESS
++
+SYSTEM INTEGRATION
++
+CRYPTOGRAPHIC ACCURACY
++
+REAL-TIME SYNCHRONIZATION
++
+OPERATIONAL USABILITY
++
+ENTERPRISE UX
+```
+
+Visual polish comes after functional correctness.
+
+---
+
+# 54. IMPLEMENTATION WORKFLOW
+
+Follow this order:
+
+## PHASE 1 — AUDIT
+
+Inspect:
+
+```text
+All 8 PQAuth pages
+Existing components
+Existing hooks
+API routes
+Backend services
+Supabase schema
+SSE implementation
+Scanner integration
+CBOM
+Certificate inventory
+Runtime telemetry
+Migration APIs
+Digital Twin
+Authentication
+Tenant context
+```
+
+Do not modify anything yet.
+
+Create an internal dependency map.
+
+---
+
+## PHASE 2 — DATA CONTRACT
+
+Identify:
+
+```text
+Source of Truth
+Data Models
+API Contracts
+SSE Events
+Relationships
+IDs
+Tenant Boundaries
+```
+
+Normalize them.
+
+---
+
+## PHASE 3 — SHARED PQAUTH DATA LAYER
+
+Implement/refactor:
+
+```text
+API client
+Types
+Schemas
+Hooks
+Query cache
+SSE provider
+Normalization
+Error handling
+```
+
+---
+
+## PHASE 4 — SHARED UI SYSTEM
+
+Create reusable:
+
+```text
+Headers
+KPI cards
+Tables
+Drawers
+Risk badges
+Readiness components
+Evidence panels
+Loading states
+Error states
+```
+
+---
+
+## PHASE 5 — REFACTOR EACH PAGE
+
+Implement in this order:
+
+```text
+1. PQAuth Command Center
+2. Discovery
+3. Trust Graph
+4. Token Intelligence
+5. Compatibility
+6. Digital Twin
+7. Migration Center
+8. Runtime Telemetry
+```
+
+---
+
+## PHASE 6 — CROSS-LINKING
+
+Connect all pages using shared IDs and deep links.
+
+---
+
+## PHASE 7 — REAL-TIME
+
+Implement and validate SSE.
+
+---
+
+## PHASE 8 — DATA VALIDATION
+
+Compare frontend values with backend/scanner values.
+
+---
+
+## PHASE 9 — UX POLISH
+
+Improve:
+
+```text
+Spacing
+Typography
+Hierarchy
+Animations
+Loading
+Transitions
+Charts
+Tables
+Responsive behavior
+```
+
+Animations must remain subtle and professional.
+
+---
+
+# 55. ACCEPTANCE CRITERIA
+
+The implementation is complete only when:
+
+### Architecture
+
+* [ ] All eight routes work.
+* [ ] Shared PQAuth data layer exists.
+* [ ] No duplicated API logic.
+* [ ] Strong TypeScript typing is used.
+* [ ] API schemas are validated.
+* [ ] Tenant isolation is enforced.
+
+### Data
+
+* [ ] Real scanner data is displayed.
+* [ ] CBOM data is synchronized.
+* [ ] Certificate data is synchronized.
+* [ ] Runtime telemetry is synchronized.
+* [ ] Migration state is synchronized.
+* [ ] Digital Twin uses actual discovered assets.
+* [ ] No fabricated production metrics.
+
+### Real-Time
+
+* [ ] SSE works.
+* [ ] Reconnection works.
+* [ ] Events are deduplicated.
+* [ ] UI updates without refresh.
+* [ ] Connection status is visible.
+
+### PQAuth
+
+* [ ] Identity Discovery works.
+* [ ] Trust Graph works.
+* [ ] Token Intelligence works.
+* [ ] Compatibility Assessment works.
+* [ ] Migration Center works.
+* [ ] Digital Twin works.
+* [ ] Runtime Telemetry works.
+* [ ] Main Command Center aggregates them correctly.
+
+### UX
+
+* [ ] Premium enterprise appearance.
+* [ ] Simple terminology.
+* [ ] Progressive disclosure.
+* [ ] Clear actions.
+* [ ] Consistent status model.
+* [ ] Consistent risk model.
+* [ ] Consistent navigation.
+* [ ] Responsive.
+* [ ] Accessible.
+
+### Security
+
+* [ ] Tenant isolation verified.
+* [ ] Authentication verified.
+* [ ] No sensitive information leaked through client-side logs.
+* [ ] No insecure migration actions.
+* [ ] Migration requires validation gates.
+* [ ] Audit trail exists for important operations.
+
+### Quality
+
+* [ ] No TypeScript errors.
+* [ ] No lint errors.
+* [ ] No console errors.
+* [ ] No hydration errors.
+* [ ] No broken API requests.
+* [ ] No duplicate SSE connections.
+* [ ] No obvious performance regressions.
+
+---
+
+# 56. FINAL DELIVERABLE
+
+After implementation, provide a concise engineering summary containing:
+
+```text
+1. What was audited
+2. What was changed
+3. New components
+4. New hooks
+5. API integrations
+6. SSE integrations
+7. Data sources
+8. Cross-page synchronization
+9. Security improvements
+10. Testing performed
+11. Remaining limitations
+```
+
+Also identify any backend functionality that does not currently exist and therefore requires backend implementation.
+
+DO NOT hide missing backend functionality behind mock data.
+
+If a backend capability is missing, explicitly report:
+
+```text
+BACKEND GAP
+
+Capability:
+Required Endpoint:
+Required Data:
+Required SSE Event:
+Frontend Dependency:
+Recommended Implementation:
+```
+
+---
+
+# FINAL PRODUCT VISION
+
+The finished PQAuth module should feel like a single enterprise system:
+
+```text
+                 PQAUTH
+        Identity Migration Engine™
+
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+    DISCOVERY      TRUST FABRIC   TOKEN INTELLIGENCE
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+               COMPATIBILITY
+                       │
+                DIGITAL TWIN
+                       │
+              MIGRATION CENTER
+                       │
+             RUNTIME TELEMETRY
+                       │
+                       ▼
+             PQC IDENTITY READINESS
+```
+
+The user should be able to enter PQAuth and immediately understand:
+
+```text
+WHAT DO I HAVE?
+        ↓
+WHAT IS VULNERABLE?
+        ↓
+WHAT DEPENDS ON IT?
+        ↓
+CAN I MIGRATE?
+        ↓
+WHAT WILL BREAK?
+        ↓
+HOW DO I SAFELY MIGRATE?
+        ↓
+DID THE MIGRATION WORK?
+        ↓
+IS THE ENVIRONMENT STILL SAFE?
+```
+
+The result must be **premium, enterprise-grade, technically accurate, operationally useful, real-time, evidence-driven, and simple enough for security leaders while still providing deep technical information to engineers.**
+
+Do not sacrifice correctness for visual polish.
+
+Do not sacrifice usability for technical complexity.
+
+Do not sacrifice security for automation.
+
+Build the PQAuth Identity Migration Engine as a **production-grade unified subsystem of QGuard Helix**.

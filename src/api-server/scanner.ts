@@ -4,6 +4,7 @@ import { getToken, getServerUser, createAuthClient, getServiceClient } from '@/l
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { persistableTelemetry } from '@/lib/scanner/session-payload'
 import { findingIdentityKey, richerText } from '@/lib/scanner/finding-identity'
+import { classifyCryptoRootCause } from '@/lib/crypto-root-cause'
 import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
 import { repositoryProvider } from '@/lib/scanner/web-scanner/repo-scanner'
 import type {
@@ -1057,52 +1058,17 @@ function scannerSeverityRank(severity: unknown) {
 }
 
 function scannerRootCause(finding: DefensiveFinding) {
-  const text = `${finding.algorithm} ${finding.category} ${finding.status} ${finding.description} ${finding.recommendation}`.toLowerCase()
-  if (/no forward secrecy|forward secrecy|ephemeral key exchange|rsa key exchange|weak key exchange|diffie|dh-?\d|dhe|ecdh|tls_rsa|key exchange/.test(text)) {
-    return {
-      ruleId: 'weak-key-exchange',
-      title: 'Weak Key Exchange Algorithm',
-      type: 'Key Exchange Risk',
-      description: 'No ephemeral key exchange - past traffic can be decrypted if the private key is compromised.',
-      remediation: 'Disable RSA/static DH key exchange and require TLS 1.3 or ECDHE with a PQC/hybrid KEM migration path.',
-    }
-  }
-  if (/tls\s*1\.[01]|tls-?1\.[01]|ssl|legacy protocol/.test(text)) {
-    return {
-      ruleId: 'legacy-tls-protocol',
-      title: 'Legacy TLS Protocol',
-      type: 'Protocol Risk',
-      description: 'Legacy TLS or SSL protocol support was observed on this asset.',
-      remediation: 'Disable SSL, TLS 1.0, and TLS 1.1; enforce TLS 1.2+ with TLS 1.3 preferred.',
-    }
-  }
-  if (/sha-?1|md5|legacy mac|weak hash/.test(text)) {
-    return {
-      ruleId: 'weak-hash-or-mac',
-      title: 'Weak Hash Or MAC Algorithm',
-      type: 'Hash Risk',
-      description: 'A weak hash or MAC primitive was observed in cryptographic telemetry.',
-      remediation: 'Retire SHA-1/MD5 MAC usage and enforce SHA-384, SHA-3, or approved AEAD suites.',
-    }
-  }
-  if (/cbc|3des|des|rc4|weak cipher|legacy cipher/.test(text)) {
-    return {
-      ruleId: 'weak-cipher-suite',
-      title: 'Weak Cipher Suite',
-      type: 'Cipher Suite Risk',
-      description: 'A legacy or non-AEAD cipher suite was observed on this asset.',
-      remediation: 'Disable CBC, RC4, DES, and 3DES suites; prefer AES-256-GCM or ChaCha20-Poly1305.',
-    }
-  }
-  if (/certificate|cert|x509|issuer|subject|pki|pinning/.test(text)) {
-    return {
-      ruleId: 'certificate-risk',
-      title: 'Certificate Risk',
-      type: 'Certificate Risk',
-      description: 'Certificate telemetry indicates a weak, expiring, or non-PQC-ready trust object.',
-      remediation: 'Rotate the certificate and plan ML-DSA or hybrid certificate adoption.',
-    }
-  }
+  // Shared classifier — see src/lib/crypto-root-cause.ts for why the old inline
+  // regex filed every ECDHE suite under "no ephemeral key exchange".
+  const classified = classifyCryptoRootCause({
+    algorithm: finding.algorithm,
+    category: finding.category,
+    status: finding.status,
+    description: finding.description,
+    recommendation: finding.recommendation,
+  })
+  if (classified) return classified
+
   const fallback = finding.category || finding.algorithm || 'crypto-review'
   return {
     ruleId: scannerFingerprintPart(fallback),
@@ -1153,6 +1119,14 @@ async function upsertVulnerabilityFinding(
       ? evidenceList
       : [...evidenceList, evidence]
     const nextSeverity = scannerSeverityRank(severity) > scannerSeverityRank(existing.severity) ? severity : existing.severity
+    // A bucket row summarises many algorithms, so a singular `algorithm` on it
+    // is a category error: spreading `commonMetadata` on every upsert left whichever
+    // finding was written last owning the row. Publish the singular field only
+    // when the bucket is genuinely about one algorithm, and always publish the
+    // full set so readers can expand it rather than guess.
+    const nextAlgorithms = Array.from(
+      new Set(nextEvidence.map((item: any) => String(item?.algorithm || item?.label || '')).filter(Boolean)),
+    )
     await client.from('vulnerabilities').update({
       title: root.title,
       description: root.description,
@@ -1165,6 +1139,8 @@ async function upsertVulnerabilityFinding(
         rootCause: root.ruleId,
         vulnerabilityType: root.type,
         remediation: root.remediation || finding.recommendation,
+        algorithm: nextAlgorithms.length === 1 ? nextAlgorithms[0] : null,
+        algorithms: nextAlgorithms,
         evidence: nextEvidence,
         evidenceCount: nextEvidence.length,
         lastObservedAt: now,
@@ -1188,6 +1164,7 @@ async function upsertVulnerabilityFinding(
       rootCause: root.ruleId,
       vulnerabilityType: root.type,
       remediation: root.remediation || finding.recommendation,
+      algorithms: [String(evidence.algorithm || evidence.label || '')].filter(Boolean),
       evidence: [evidence],
       evidenceCount: 1,
       firstObservedAt: now,
@@ -2524,6 +2501,36 @@ function dedupeKeyForCryptoItem(item: any) {
     .join(':')
 }
 
+/**
+ * Dedupe key for a VULNERABILITY (an observation), as opposed to
+ * `dedupeKeyForCryptoItem` which keys a CBOM COMPONENT.
+ *
+ * The distinction matters because `item_type` is a component property but not an
+ * observation property: the three writers file one cipher suite as "rsa"
+ * (crypto_exposures), "Cipher Suite" (pqc_scan_results) and "algorithm"
+ * (crypto_inventory) — the exact split `finding-identity.ts` documents as
+ * unusable for identity. Keying the vulnerability list on it listed a single
+ * accepted suite twice, so an asset with 4 critical suites rendered 6 critical
+ * evidence rows beneath a headline that correctly said 4.
+ *
+ * Components still key on `item_type` (a CBOM entry legitimately distinguishes
+ * them); observations key on what was found and where.
+ */
+function dedupeKeyForVulnerability(item: any) {
+  const metadata = item?.metadata || {}
+  // Scoped to one asset already, so identity is WHAT was found. `protocol` is
+  // dropped for the same reason as `item_type`: crypto_exposures leaves it null
+  // where crypto_inventory sets "TLS", which re-split the rows this key exists
+  // to join. This matches `findingIdentityKey`, so the evidence list and the
+  // merged finding counts describe the same observations.
+  return [
+    item?.asset_id,
+    item?.algorithm || metadata.algorithm || item?.detected_value || item?.title || item?.name,
+  ]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .join(':')
+}
+
 function groupCryptoInventory(items: any[]) {
   const grouped = new Map<string, any>()
 
@@ -2639,50 +2646,157 @@ function exposureToVulnerability(row: any): AssetVulnerabilityItem | null {
   }
 }
 
-function vulnerabilityRowToItem(row: any): AssetVulnerabilityItem | null {
-  if (!vulnerabilityStatusIsOpen(row.status)) return null
+/**
+ * Expand one stored root-cause row back into the observations it summarises.
+ *
+ * `vulnerabilities` holds ONE row per (asset, root cause): the eight cipher
+ * suites that share a key-exchange weakness collapse into a single
+ * "Weak Key Exchange Algorithm" row whose severity is the strongest member's
+ * and whose `metadata.algorithm` is whichever member was upserted last.
+ *
+ * Republishing that row as a single item made the bucket masquerade as one
+ * algorithm: `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` inherited the bucket's
+ * CRITICAL severity and its "no ephemeral key exchange" description, then won
+ * the cross-source merge in `mergeScannerFindings` (identity is the algorithm,
+ * severity is the max, and the longer text wins) — overwriting the accurate
+ * per-suite record that `crypto_inventory` already held. One phantom critical
+ * appeared on every surface that reads scanner findings, and a forward-secret
+ * suite was published as having no forward secrecy.
+ *
+ * The row carries its own evidence list, so expand it: every observation keeps
+ * the severity and description it was measured with, and each one merges with
+ * its matching inventory row instead of one arbitrary member absorbing the lot.
+ */
+function vulnerabilityRowToItems(row: any): AssetVulnerabilityItem[] {
+  if (!vulnerabilityStatusIsOpen(row.status)) return []
 
   const metadata = row.metadata || {}
   const timestamp = row.updated_at || row.created_at || new Date().toISOString()
-  const algorithm = metadata.algorithm || row.title || metadata.detected_value || 'Vulnerability'
-  return {
-    id: `vulnerability-${row.id}`,
+  const evidence = Array.isArray(metadata.evidence)
+    ? metadata.evidence.filter((entry: any) => entry && typeof entry === 'object')
+    : []
+
+  const baseMetadata = { ...metadata }
+  delete baseMetadata.evidence
+
+  const toItem = (
+    algorithm: string,
+    name: string,
+    severity: unknown,
+    description: unknown,
+    extra: Record<string, unknown>,
+    idSuffix: string,
+  ): AssetVulnerabilityItem => ({
+    id: `vulnerability-${row.id}${idSuffix}`,
     user_id: row.user_id,
     asset_id: row.asset_id,
     item_type: metadata.category || row.source || 'vulnerability',
-    name: row.title || `${metadata.category || 'Vulnerability'}: ${algorithm}`,
+    name,
     algorithm,
     key_size: typeof metadata.keySize === 'number' ? metadata.keySize : null,
     protocol: metadata.protocol || null,
-    exposure_level: row.severity || metadata.severity || 'moderate',
+    exposure_level: String(severity || row.severity || metadata.severity || 'moderate'),
     is_vulnerable: true,
     is_quantum_safe: false,
     metadata: {
-      ...metadata,
+      ...baseMetadata,
+      ...extra,
       source: row.source || 'vulnerabilities',
       vulnerabilityId: row.id,
+      rootCause: metadata.rootCause,
+      rootCauseTitle: row.title,
       status: row.status || 'open',
-      description: row.description,
-      evidence: metadata.evidence || row.description || 'Open vulnerability record linked to this asset.',
-      recommendation: metadata.recommendation || replacementFor(String(algorithm || '')) || 'Create a PQC remediation plan for this vulnerability.',
-      pqcReplacement: metadata.pqcReplacement || replacementFor(String(algorithm || '')),
+      // `detectionMethod` participates in finding identity. The bucket row's copy
+      // is last-writer-wins like `algorithm`, so stamping it onto a member split
+      // that member off from the very observation it describes and republished it
+      // as a second finding ("ECDSA P-256 (Certificate)" appeared twice: once as
+      // cert-analysis, once as risk-calculation). What we honestly know is that
+      // this copy came OUT OF the vulnerabilities table — a storage source, which
+      // `findingIdentityKey` deliberately excludes so storage views collapse.
+      detectionMethod: 'vulnerabilities',
+      description: String(description || row.description || ''),
+      evidence: String(description || row.description || 'Open vulnerability record linked to this asset.'),
+      recommendation:
+        metadata.recommendation || replacementFor(algorithm) || 'Create a PQC remediation plan for this vulnerability.',
+      pqcReplacement: metadata.pqcReplacement || replacementFor(algorithm),
     },
     discovered_at: timestamp,
     created_at: row.created_at || timestamp,
+  })
+
+  if (evidence.length) {
+    return evidence.map((entry: any, index: number) => {
+      const algorithm = String(entry.algorithm || entry.label || row.title || 'Vulnerability')
+      return toItem(
+        algorithm,
+        String(entry.label || algorithm),
+        // Each observation keeps its OWN measured severity. Falling back to the
+        // row severity here would re-apply the bucket maximum to every member.
+        entry.severity,
+        entry.description,
+        {
+          location: entry.location || metadata.location || null,
+          detectedAt: entry.detectedAt || metadata.lastObservedAt,
+          scanId: entry.scanId || metadata.scanId,
+          scanSessionId: entry.scanSessionId || metadata.scanSessionId,
+        },
+        `-${index}`,
+      )
+    })
   }
+
+  // Single-observation row: `metadata.algorithm` is unambiguous here because
+  // nothing else was folded into it.
+  const algorithm = String(metadata.algorithm || row.title || metadata.detected_value || 'Vulnerability')
+  return [
+    toItem(
+      algorithm,
+      row.title || `${metadata.category || 'Vulnerability'}: ${algorithm}`,
+      row.severity,
+      row.description,
+      {},
+      '',
+    ),
+  ]
 }
 
 function buildAssetVulnerabilities(assetId: string, crypto: any[], exposures: any[], results: any[], vulnerabilityRows: any[]) {
-  const candidates = [
+  /* `crypto_inventory`, `crypto_exposures` and `pqc_scan_results` are PRIMARY:
+     the scanner writes every observation to them as it is measured.
+     `vulnerabilities` is DERIVED — one row per (asset, root cause), aggregating
+     observations the primary tables already hold.
+
+     Per `qguard-data-integrity` Rule 8 a derived record must never re-enter as
+     raw input, because it cannot re-enter faithfully: the row carries one
+     severity (the bucket maximum), one description (the bucket's) and one
+     detection method (whichever member was upserted last). Admitting it as a
+     peer let a bucket masquerade as a member — an ECDHE suite inherited the
+     static-RSA bucket's CRITICAL severity and its "no ephemeral key exchange"
+     text, then won the merge against the accurate inventory row.
+
+     So derived rows may ENRICH an observation, never ADD one. Anything the
+     primary tables already describe is dropped here and their measured record
+     stands. */
+  const primary = [
     ...crypto.filter((item) => item.is_vulnerable && !item.is_quantum_safe).map(inventoryToVulnerability),
     ...exposures.map(exposureToVulnerability).filter(Boolean),
     ...results.map(resultToVulnerability).filter(Boolean),
-    ...vulnerabilityRows.map(vulnerabilityRowToItem).filter(Boolean),
+  ] as AssetVulnerabilityItem[]
+
+  const observationKey = (item: AssetVulnerabilityItem) =>
+    `${item.asset_id}:${String(item.algorithm || '').trim().toLowerCase()}`
+  const primaryObservations = new Set(primary.map(observationKey))
+
+  const candidates = [
+    ...primary,
+    ...vulnerabilityRows
+      .flatMap(vulnerabilityRowToItems)
+      .filter((item) => !primaryObservations.has(observationKey(item))),
   ] as AssetVulnerabilityItem[]
 
   const grouped = new Map<string, AssetVulnerabilityItem>()
   for (const item of candidates.filter((candidate) => candidate.asset_id === assetId)) {
-    const key = dedupeKeyForCryptoItem(item)
+    const key = dedupeKeyForVulnerability(item)
     const current = grouped.get(key)
     if (!current) {
       grouped.set(key, { ...item, instances: Number(item.instances || 1) })
