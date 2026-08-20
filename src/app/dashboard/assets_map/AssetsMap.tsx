@@ -1,14 +1,18 @@
 /**
  * Assets & CBOM — the tenant's authorized cryptographic asset register.
  *
- * Presentation is deliberately identical to the CBOM Explorer: the same
- * `--qg-*` design tokens, the same panel/metric/section grammar, the same
- * command-bar header and the same Quantum Readiness reconciliation block. The
- * two pages describe ONE estate from two angles (assets vs. components), so a
- * user moving between them should never have to re-learn the surface — and,
- * because both read the same shared scanner-intelligence snapshot and the same
- * QR Engine snapshot, the figures on each are the same numbers under the same
- * names.
+ * Presentation follows the CBOM Explorer: the same `--qg-*` design tokens,
+ * the same panel/metric/section grammar, the same command-bar header and the
+ * same Quantum Readiness reconciliation block. The two pages describe ONE
+ * estate from two angles (assets vs. components), so a user moving between
+ * them should never have to re-learn the surface — and, because both read the
+ * same shared scanner-intelligence snapshot and the same QR Engine snapshot,
+ * the figures on each are the same numbers under the same names.
+ *
+ * One deliberate local departure from CBOM: cards and panels here are flat,
+ * not glass. No backdrop blur and no glow-on-hover — panelClass below uses a
+ * solid surface tone and a plain, neutral shadow instead of the frosted-glass
+ * + ambient-glow treatment, by explicit request for this page.
  *
  * Every figure below originates from authenticated scanner APIs, the workflow
  * engine, or the Quantum Readiness & Assessment Engine. Nothing here is
@@ -132,12 +136,16 @@ const VIEW_COPY: Record<AssetView, { title: string; description: string; criteri
 };
 
 /**
- * Shared panel grammar with the CBOM Explorer. Both pages compose from these two
- * classes only, so a change to the platform surface lands on both at once
- * instead of drifting apart into two hand-tuned themes.
+ * Panel grammar for this page — deliberately flat: a solid panel tone, a plain
+ * border, and a neutral, non-colored elevation shadow. No backdrop blur and no
+ * ambient/hover glow, by request: the frosted-glass card treatment and the
+ * light-bloom that appeared on hover read as decoration on an enterprise
+ * console, not as information, so both are gone here. Every other page
+ * (including CBOM) is unaffected — this is a local override, not a change to
+ * the shared `--qg-*` tokens.
  */
 const panelClass =
-  'relative overflow-hidden rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] shadow-[var(--qg-panel-shadow)] backdrop-blur-xl transition-all duration-300';
+  'relative overflow-hidden rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-dashboard-surface-strong)] shadow-sm transition-colors duration-200';
 
 const subtlePanelClass =
   'rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)]';
@@ -726,7 +734,7 @@ export default function AssetsMap() {
             <Target className="h-4 w-4" />
             Scan Targets
           </Link>
-          <Link to="/dashboard/scanner" className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-amber)]/40 bg-[var(--qg-amber)] px-4 py-2 text-xs font-black text-[var(--qg-on-accent)] shadow-[0_0_18px_color-mix(in_srgb,var(--qg-amber)_28%,transparent)] transition hover:brightness-110">
+          <Link to="/dashboard/scanner" className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-amber)]/40 bg-[var(--qg-amber)] px-4 py-2 text-xs font-black text-[var(--qg-on-accent)] transition-colors hover:bg-[var(--qg-amber)]/90">
             <Plus className="h-4 w-4" />
             Add Target
           </Link>
@@ -1174,7 +1182,7 @@ export default function AssetsMap() {
                       }}
                       tabIndex={0}
                       aria-expanded={isExpanded}
-                      className={`group cursor-pointer bg-[var(--qg-card-bg)] outline-none transition-all hover:bg-[var(--qg-card-bg-strong)] focus-visible:ring-2 focus-visible:ring-[var(--qg-focus-ring)] ${isExpanded ? 'bg-[var(--qg-card-bg-strong)]' : ''}`}
+                      className={`group cursor-pointer bg-[var(--qg-dashboard-surface)] outline-none transition-colors hover:bg-[var(--qg-dashboard-surface-strong)] focus-visible:ring-2 focus-visible:ring-[var(--qg-focus-ring)] ${isExpanded ? 'bg-[var(--qg-dashboard-surface-strong)]' : ''}`}
                     >
                       <td className={`rounded-l-lg border-y border-l p-4 ${isExpanded ? 'border-[var(--qg-amber)]/40' : 'border-[var(--qg-card-border)]'}`}>
                         <div className="flex items-center gap-3">
