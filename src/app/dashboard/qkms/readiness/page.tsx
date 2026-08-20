@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsReadiness from '../../_components/qkms/QkmsReadiness';
 
-export default function QkmsReadinessPage() {
-  return <QkmsDashboard mode="readiness" />;
+export default function Page() {
+  return <QkmsReadiness />;
 }

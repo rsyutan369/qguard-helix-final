@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 .report-smoke/
+
+# Agent runtime bundle - rebuilt by "npm run agent:release" (chained from prebuild)
+tools/qguard-agent/dist/

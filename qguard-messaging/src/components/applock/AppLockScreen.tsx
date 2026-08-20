@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Delete, LockKeyhole, ShieldAlert } from "lucide-react";
 
 type Mode = "setup" | "unlock";
 
@@ -121,61 +122,178 @@ export function AppLockScreen(props: AppLockScreenProps) {
   }, [mode, stage]);
 
   return (
-    <div className="flex min-h-screen w-screen flex-col items-center justify-center bg-canvas px-6 py-10">
-      <div className="flex w-full max-w-sm flex-col items-center gap-8">
-        <div className="text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500/20 to-cyan-500/5 text-2xl">🔐</div>
-          <h1 className="text-xl font-bold text-ink-950">{heading}</h1>
-          {subheading && <p className="mt-1 text-sm text-ink-600">{subheading}</p>}
+    <div className="qg-stage relative flex min-h-[100dvh] w-screen flex-col items-center justify-center overflow-hidden px-6 py-10">
+      {/* Ambient light */}
+      <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden>
+        <span
+          className="qg-orb"
+          style={{
+            width: 320, height: 320, top: -130, left: -100,
+            background: "radial-gradient(circle, var(--qg-flux), transparent 68%)", opacity: 0.3,
+          }}
+        />
+        <span
+          className="qg-orb"
+          style={{
+            width: 300, height: 300, bottom: -130, right: -90,
+            background: "radial-gradient(circle, var(--qg-helix), transparent 68%)", opacity: 0.28,
+            animationDelay: "-7s",
+          }}
+        />
+      </div>
+
+      <div className="flex w-full max-w-[21rem] flex-col items-center gap-7">
+        <div className="qg-rise text-center" style={{ ["--qg-i" as string]: 0 }}>
+          <span
+            className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-[20px]"
+            style={{
+              background: "var(--qg-panel)",
+              border: "1px solid var(--qg-hairline)",
+              color: "var(--qg-helix)",
+              boxShadow: "var(--qg-glow)",
+            }}
+          >
+            <LockKeyhole size={26} strokeWidth={1.7} />
+          </span>
+          <h1 className="qg-display text-[21px] leading-tight">{heading}</h1>
+          {subheading && (
+            <p className="mt-1.5 text-[13px] leading-snug" style={{ color: "var(--qg-text-2)" }}>{subheading}</p>
+          )}
+          {mode === "unlock" && props.email && (
+            <p className="qg-mono mt-1.5 truncate text-[11px]" style={{ color: "var(--qg-text-3)" }}>{props.email}</p>
+          )}
         </div>
 
         {rootWarning && (
-          <div className="w-full rounded-lg border border-amber-300/40 bg-amber-50/60 px-3 py-2 text-center text-xs font-medium text-amber-700">
-            This device appears rooted. Your session remains encrypted, but rooted devices are higher risk.
+          <div
+            className="qg-rise flex w-full items-start gap-2 rounded-2xl p-3 text-[11.5px] leading-snug"
+            style={{
+              ["--qg-i" as string]: 1,
+              background: "var(--qg-warn-wash)",
+              border: "1px solid var(--qg-hairline)",
+              color: "var(--qg-warn)",
+            }}
+          >
+            <ShieldAlert size={14} className="mt-px shrink-0" />
+            <span>This device appears rooted. Your session stays encrypted, but rooted devices carry more risk.</span>
           </div>
         )}
 
         {mode === "setup" && stage === "choose" ? (
-          <div className="flex w-full flex-col gap-3">
-            <button onClick={() => { setChosenDigits(4); setStage("enter"); }} className="rounded-xl border border-line bg-white px-4 py-4 text-center text-sm font-semibold text-ink-950 hover:border-cyan-400">
-              4-digit PIN
+          <div className="qg-rise flex w-full flex-col gap-2.5" style={{ ["--qg-i" as string]: 2 }}>
+            <button
+              onClick={() => { setChosenDigits(6); setStage("enter"); }}
+              className="qg-card qg-card-press qg-focusable flex items-center justify-between px-4 py-4 text-left"
+            >
+              <span>
+                <span className="qg-display block text-[14px]">6-digit PIN</span>
+                <span className="mt-0.5 block text-[11.5px]" style={{ color: "var(--qg-text-3)" }}>
+                  A million combinations. Recommended.
+                </span>
+              </span>
+              <span className="qg-pill qg-tone-info">Recommended</span>
             </button>
-            <button onClick={() => { setChosenDigits(6); setStage("enter"); }} className="rounded-xl border border-line bg-white px-4 py-4 text-center text-sm font-semibold text-ink-950 hover:border-cyan-400">
-              6-digit PIN <span className="text-ink-500">(recommended)</span>
+            <button
+              onClick={() => { setChosenDigits(4); setStage("enter"); }}
+              className="qg-card qg-card-press qg-focusable flex items-center justify-between px-4 py-4 text-left"
+            >
+              <span>
+                <span className="qg-display block text-[14px]">4-digit PIN</span>
+                <span className="mt-0.5 block text-[11.5px]" style={{ color: "var(--qg-text-3)" }}>
+                  Faster to enter, easier to guess.
+                </span>
+              </span>
             </button>
           </div>
         ) : (
           <>
-            <div className={`flex items-center justify-center gap-3 ${shake ? "animate-[shake_0.5s]" : ""}`}>
-              {Array.from({ length: digits }).map((_, i) => (
-                <span key={i} className={`h-4 w-4 rounded-full border transition-colors ${i < entry.length ? "border-cyan-500 bg-cyan-500" : "border-line bg-transparent"}`} />
-              ))}
+            <div className={`flex items-center justify-center gap-3.5 ${shake ? "animate-[shake_0.5s]" : ""}`}>
+              {Array.from({ length: digits }).map((_, i) => {
+                const filled = i < entry.length;
+                return (
+                  <span
+                    key={i}
+                    className="rounded-full transition-all duration-200"
+                    style={{
+                      height: filled ? 13 : 11,
+                      width: filled ? 13 : 11,
+                      background: filled
+                        ? "linear-gradient(140deg, var(--qg-flux), var(--qg-helix))"
+                        : "transparent",
+                      border: filled ? "none" : "1.5px solid var(--qg-hairline-strong)",
+                      boxShadow: filled ? "var(--qg-glow)" : "none",
+                    }}
+                  />
+                );
+              })}
             </div>
 
-            {error && <p className="text-center text-sm font-medium text-rose-500">{error}</p>}
-            {lockoutRemaining > 0 && <p className="text-center text-sm font-medium text-amber-600">Too many attempts. Try again in {lockoutRemaining}s.</p>}
-            {mode === "unlock" && typeof attemptsRemaining === "number" && attemptsRemaining < 5 && lockoutRemaining === 0 && (
-              <p className="text-center text-xs text-ink-500">{attemptsRemaining} attempt(s) remaining</p>
-            )}
+            <div className="flex min-h-[18px] flex-col items-center gap-1">
+              {error && (
+                <p className="text-center text-[12.5px] font-semibold" style={{ color: "var(--qg-alert)" }}>{error}</p>
+              )}
+              {lockoutRemaining > 0 && (
+                <p className="text-center text-[12.5px] font-semibold" style={{ color: "var(--qg-warn)" }}>
+                  Too many attempts. Try again in {lockoutRemaining}s.
+                </p>
+              )}
+              {mode === "unlock" && typeof attemptsRemaining === "number" && attemptsRemaining < 5 && lockoutRemaining === 0 && (
+                <p className="qg-mono text-center text-[11px]" style={{ color: "var(--qg-text-3)" }}>
+                  {attemptsRemaining} attempt{attemptsRemaining === 1 ? "" : "s"} remaining
+                </p>
+              )}
+            </div>
 
-            <div className="grid grid-cols-3 gap-4">
-              {["1","2","3","4","5","6","7","8","9"].map((n) => (
-                <button key={n} disabled={disabled} onClick={() => press(n)} className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-line bg-white text-2xl font-medium text-ink-950 transition active:scale-95 disabled:opacity-40">
+            <div className="grid w-full grid-cols-3 gap-3.5">
+              {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((n) => (
+                <button
+                  key={n}
+                  disabled={disabled}
+                  onClick={() => press(n)}
+                  className="qg-focusable qg-num mx-auto flex h-[68px] w-[68px] items-center justify-center rounded-full text-[24px] transition-transform duration-150 active:scale-90 disabled:opacity-35"
+                  style={{
+                    background: "var(--qg-panel)",
+                    border: "1px solid var(--qg-hairline)",
+                    color: "var(--qg-text)",
+                    boxShadow: "var(--qg-shadow)",
+                  }}
+                >
                   {n}
                 </button>
               ))}
               <span />
-              <button disabled={disabled} onClick={() => press("0")} className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-line bg-white text-2xl font-medium text-ink-950 transition active:scale-95 disabled:opacity-40">0</button>
-              <button disabled={disabled || entry.length === 0} onClick={back} className="mx-auto flex h-16 w-16 items-center justify-center rounded-full text-xl text-ink-500 transition active:scale-95 disabled:opacity-30">⌫</button>
+              <button
+                disabled={disabled}
+                onClick={() => press("0")}
+                className="qg-focusable qg-num mx-auto flex h-[68px] w-[68px] items-center justify-center rounded-full text-[24px] transition-transform duration-150 active:scale-90 disabled:opacity-35"
+                style={{
+                  background: "var(--qg-panel)",
+                  border: "1px solid var(--qg-hairline)",
+                  color: "var(--qg-text)",
+                  boxShadow: "var(--qg-shadow)",
+                }}
+              >
+                0
+              </button>
+              <button
+                disabled={disabled || entry.length === 0}
+                onClick={back}
+                aria-label="Delete last digit"
+                className="qg-focusable mx-auto flex h-[68px] w-[68px] items-center justify-center rounded-full transition-transform duration-150 active:scale-90 disabled:opacity-25"
+                style={{ color: "var(--qg-text-3)" }}
+              >
+                <Delete size={22} />
+              </button>
             </div>
-
-            {/* Biometric slot (fast-follow) — disabled placeholder */}
-            <button disabled className="text-xs text-ink-500 opacity-40">Unlock with biometrics (coming soon)</button>
           </>
         )}
 
         {mode === "unlock" && onUsePassword && (
-          <button onClick={onUsePassword} className="text-sm font-medium text-cyan-600 hover:underline">
+          <button
+            onClick={onUsePassword}
+            className="qg-focusable text-[13px] font-semibold"
+            style={{ color: "var(--qg-helix)" }}
+          >
             Sign in with password instead
           </button>
         )}

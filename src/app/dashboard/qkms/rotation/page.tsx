@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsRotation from '../../_components/qkms/QkmsRotation';
 
-export default function QkmsRotationPage() {
-  return <QkmsDashboard mode="rotation" />;
+export default function Page() {
+  return <QkmsRotation />;
 }

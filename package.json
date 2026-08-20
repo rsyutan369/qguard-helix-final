@@ -12,7 +12,12 @@
     "agent:scan": "tsx tools/qguard-agent/agent.ts scan",
     "agent:watch": "tsx tools/qguard-agent/agent.ts watch",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "agent:release": "node tools/build-agent-release.mjs",
+    "agent:test": "node tools/agent-installer-tests/e2e-lifecycle.mjs",
+    "agent:test:artifacts": "node tools/agent-installer-tests/verify-artifact-syntax.mjs",
+    "prebuild": "npm run agent:release",
+    "agent:test:isolation": "node tools/agent-installer-tests/verify-tenant-isolation.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.1068.0",

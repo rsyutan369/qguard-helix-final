@@ -17,14 +17,29 @@ import vulnerabilityCenterRoutes from './vulnerability-center'
 import driftDetectionRoutes from './drift-detection'
 import externalTrustRoutes from './external-trust'
 import migrationIntelligenceRoutes from './migration-intelligence'
-import tlsTelemetryRoutes from './tls-telemetry'
-import pkiVisibilityRoutes from './pki-visibility'
+import {
+  tlsTelemetryRoutes,
+  pkiVisibilityRoutes,
+  protocolAnalyticsRoutes,
+  tlsOrchestratorRoutes,
+} from './tls-pki'
 import ecosystemSupplyChainRoutes from './ecosystem-supply-chain'
-import trustStateDiscoveryRoutes from './trust-state-discovery'
-import { protocolAnalyticsRoutes, encryptionMonitoringRoutes } from './crypto-operations-dashboard'
+import encryptionMonitoringRoutes from './encryption-monitoring'
 import { zeroTrustRoutes } from './trust-center-dashboard'
-import { quantumGovernanceRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance-dashboard'
-import { runtimeTelemetryRoutes, certificateTelemetryRoutes, multiCloudTelemetryRoutes } from './observability-dashboard'
+// Enterprise Governance Command Layer — one model, four projections. Replaces
+// the old governance-dashboard.ts (which returned the SAME payload for all
+// three of its routes) and the compliance builder inside dashboard.ts.
+import { complianceRoutes, quantumGovernanceRoutes, auditVaultRoutes, regulatoryMappingRoutes } from './governance'
+// The Cryptographic Trust & Telemetry Command Center: four dashboards, one
+// per-tenant model, so certificate/asset/cloud counts cannot disagree between
+// them or with PKI Visibility, Quantum Readiness and Assets.
+import {
+  certificateTelemetryRoutes,
+  multiCloudTelemetryRoutes,
+  trustDashboardRoutes,
+  trustStateDiscoveryRoutes,
+} from './trust-fabric'
+import runtimeTelemetryRoutes from './runtime-telemetry'
 import qkmsRoutes from './qkms-dashboard'
 import pqauthRoutes from './pqauth-dashboard'
 import authRoutes from './auth'
@@ -37,6 +52,7 @@ import adminRoutes from './admin'
 import scannerRoutes from './scanner'
 import publicScanRoutes from './public-scan'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
+import agentInstallerRoutes from './agent-installer'
 import serviceRecordRoutes from './service-records'
 import migrationRoutes from './migration'
 import migrationSnapshotRoutes from './migration-snapshots'
@@ -789,14 +805,19 @@ export function createApiServer() {
   app.use('/api/v1/dashboard/drift', driftDetectionRoutes)
   app.use('/api/v1/external-trust', externalTrustRoutes)
   app.use('/api/v1/migration-intelligence', migrationIntelligenceRoutes)
+  // TLS & PKI Intelligence Command Center - four projections of one model.
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
-  app.use('/api/v1/dashboard/tls-orchestrator', tlsTelemetryRoutes)
+  app.use('/api/v1/dashboard/tls-orchestrator', tlsOrchestratorRoutes)
   app.use('/api/v1/dashboard/pki-visibility', pkiVisibilityRoutes)
   app.use('/api/v1/dashboard/ecosystem-supply-chain', ecosystemSupplyChainRoutes)
+  app.use('/api/v1/dashboard/trust-dashboard', trustDashboardRoutes)
   app.use('/api/v1/dashboard/trust-state-discovery', trustStateDiscoveryRoutes)
   app.use('/api/v1/dashboard/protocol-analytics', protocolAnalyticsRoutes)
   app.use('/api/v1/dashboard/encryption-monitoring', encryptionMonitoringRoutes)
   app.use('/api/v1/dashboard/zero-trust', zeroTrustRoutes)
+  // Governance layer is mounted BEFORE the generic /api/v1/dashboard router so
+  // /dashboard/compliance resolves here rather than to the retired builder.
+  app.use('/api/v1/dashboard/compliance', complianceRoutes)
   app.use('/api/v1/dashboard/quantum-governance', quantumGovernanceRoutes)
   app.use('/api/v1/dashboard/audit-vault', auditVaultRoutes)
   app.use('/api/v1/dashboard/regulatory-mapping', regulatoryMappingRoutes)
@@ -818,6 +839,7 @@ export function createApiServer() {
   app.use('/api/v1/revenue', revenueRoutes)
   app.use('/api/v1/admin', adminRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
+  app.use('/api/v1/agent-installer', agentInstallerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)
   app.use('/api/v1/copilot', copilotRoutes)
   app.use('/api/v1', serviceRecordRoutes)

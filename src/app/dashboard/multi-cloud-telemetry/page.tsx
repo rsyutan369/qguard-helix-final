@@ -1,5 +1,5 @@
-import ObservabilityDashboard from '../_components/ObservabilityDashboard';
+import MultiCloudTelemetry from './MultiCloudTelemetry';
 
 export default function MultiCloudTelemetryPage() {
-  return <ObservabilityDashboard mode="cloud" />;
+  return <MultiCloudTelemetry />;
 }

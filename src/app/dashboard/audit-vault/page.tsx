@@ -1,5 +1,7 @@
-import GovernanceDashboard from '../_components/GovernanceDashboard';
+'use client'
+
+import AuditVault from './AuditVault'
 
 export default function AuditVaultPage() {
-  return <GovernanceDashboard mode="audit" />;
+  return <AuditVault />
 }

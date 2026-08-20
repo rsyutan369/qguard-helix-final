@@ -42,6 +42,9 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
 hkdf = "0.12"
+# PBKDF2-HMAC-SHA3-256 for reading web-vault v1.1 .qgkey bundles (see
+# crypto::portable_identity). Already in the lockfile as an hkdf dependency.
+hmac = "0.12"
 sha3 = "0.10"
 # PORTABLE (`clean`) PQC implementations ONLY. These crates' DEFAULT features
 # include `neon`, which on aarch64 compiles the optimized Keccak from

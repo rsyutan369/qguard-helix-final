@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsInventory from '../../_components/qkms/QkmsInventory';
 
-export default function QkmsInventoryPage() {
-  return <QkmsDashboard mode="inventory" />;
+export default function Page() {
+  return <QkmsInventory />;
 }

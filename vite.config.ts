@@ -310,6 +310,23 @@ export default defineConfig(({mode}) => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
+      watch: {
+        // The Tauri/Android build trees are GENERATED output, not source, and
+        // together hold ~29k files (target/ alone is ~26k). Chokidar was walking
+        // and watching every one of them, which burned CPU in the dev server and
+        // — because they are inside the Vite root — made every incremental cargo
+        // or gradle build trigger a full browser page reload, e.g.
+        //   [vite] (client) page reload
+        //     qguard-messaging/src-tauri/gen/android/build/reports/problems/problems-report.html
+        // Nothing here is ever imported by the web app, so ignoring it costs no
+        // reactivity. Keep this list to generated artefacts only.
+        ignored: [
+          '**/qguard-messaging/src-tauri/target/**',
+          '**/qguard-messaging/src-tauri/gen/**',
+          '**/dist/**',
+          '**/.next/**',
+        ],
+      },
     },
     preview: {
       // The full CSP travels in the built index.html as a <meta> (script hashes

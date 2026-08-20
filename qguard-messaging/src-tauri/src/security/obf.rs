@@ -94,6 +94,20 @@ pub fn enterprise_wrap_info() -> Vec<u8> { deobf(ENTERPRISE_WRAP_INFO) }
 const HYBRID_WRAP_INFO: &[u8] = &[43, 81, 180, 255, 9, 118, 201, 229, 57, 203, 77, 15, 182, 54, 146, 230, 88, 48, 226, 222, 17, 110, 207, 36, 180, 146, 113, 30, 165, 64, 55, 137, 35, 27, 183, 175];
 pub fn hybrid_wrap_info() -> Vec<u8> { deobf(HYBRID_WRAP_INFO) }
 
+// --- Portable Hybrid Identity (.qgkey) ------------------------------------
+// Domain separation for the passphrase-protected identity bundle, the ML-KEM
+// encapsulation that seals a per-file key to a recipient identity, and the HKDF
+// step that turns that shared secret into the AES-256-GCM wrapping key.
+
+const PORTABLE_IDENTITY_BUNDLE_INFO: &[u8] = &[11,113,180,255,9,118,201,221,47,219,75,7,176,119,146,165,101,49,245,192,23,110,200,56,180,162,97,19,174,90,55,214,44,7];
+pub fn portable_identity_bundle_info() -> Vec<u8> { deobf(PORTABLE_IDENTITY_BUNDLE_INFO) }
+
+const PORTABLE_IDENTITY_KEM_INFO: &[u8] = &[11,113,180,255,9,118,201,221,47,219,75,7,176,119,146,165,101,49,245,192,23,110,200,56,180,171,81,48,231,64,99];
+pub fn portable_identity_kem_info() -> Vec<u8> { deobf(PORTABLE_IDENTITY_KEM_INFO) }
+
+const PORTABLE_IDENTITY_WRAP_INFO: &[u8] = &[11,113,180,255,9,118,201,221,47,219,75,7,176,119,146,165,101,49,245,192,23,110,200,56,180,183,102,28,186,27,36,202];
+pub fn portable_identity_wrap_info() -> Vec<u8> { deobf(PORTABLE_IDENTITY_WRAP_INFO) }
+
 /// OS keychain service identifier, reconstructed from its obfuscated form.
 pub fn keyring_service() -> String {
     String::from_utf8(keyring_service_bytes())
@@ -133,6 +147,9 @@ mod tests {
         assert_eq!(file_recovery_wrap(), b"QGuard-recovery-wrap-v1".to_vec());
         assert_eq!(enterprise_wrap_info(), b"qguard-vault-recovery-pqc-wrap-v1".to_vec());
         assert_eq!(hybrid_wrap_info(), b"qguard-hybrid-enterprise-recovery-v1".to_vec());
+        assert_eq!(portable_identity_bundle_info(), b"QGuard-Portable-Identity-Bundle-v1".to_vec());
+        assert_eq!(portable_identity_kem_info(), b"QGuard-Portable-Identity-KEM-v1".to_vec());
+        assert_eq!(portable_identity_wrap_info(), b"QGuard-Portable-Identity-Wrap-v1".to_vec());
         assert_eq!(keyring_service(), "QGuard Messaging Device Keys");
     }
 }

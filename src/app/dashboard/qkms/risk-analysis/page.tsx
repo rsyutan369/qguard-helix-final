@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsRiskAnalysis from '../../_components/qkms/QkmsRiskAnalysis';
 
-export default function QkmsRiskAnalysisPage() {
-  return <QkmsDashboard mode="risk-analysis" />;
+export default function Page() {
+  return <QkmsRiskAnalysis />;
 }

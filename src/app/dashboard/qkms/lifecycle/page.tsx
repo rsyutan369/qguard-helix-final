@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsLifecycle from '../../_components/qkms/QkmsLifecycle';
 
-export default function QkmsLifecyclePage() {
-  return <QkmsDashboard mode="lifecycle" />;
+export default function Page() {
+  return <QkmsLifecycle />;
 }

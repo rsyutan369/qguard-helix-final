@@ -1,0 +1,788 @@
+# Enterprise Trust & Cryptographic Telemetry Dashboard — Enhancement & Refactor
+
+Kindly **enhance, refactor, fully wire, and production-harden** the following Qguard Helix dashboard pages:
+
+### Target Pages
+
+1. `http://localhost:3000/dashboard/trust-dashboard`
+2. `http://localhost:3000/dashboard/trust-state-discovery`
+3. `http://localhost:3000/dashboard/certificate-telemetry`
+4. `http://localhost:3000/dashboard/multi-cloud-telemetry`
+
+These pages must function as a **unified Enterprise Cryptographic Trust & Telemetry intelligence layer**, not as isolated dashboards.
+
+---
+
+# 1. PRIMARY OBJECTIVE
+
+Transform these pages into a **Premium, Enterprise-Grade, Real-Time Cryptographic Trust Monitoring Platform**.
+
+The pages must provide users with a clear and actionable view of:
+
+* Current cryptographic trust posture
+* Trust-state discovery
+* Certificate lifecycle health
+* TLS and certificate compliance
+* Certificate expiration risk
+* Trust-chain validity
+* Cross-cloud cryptographic visibility
+* Distributed encryption activity
+* Cloud-native cryptographic events
+* Regional cryptographic posture
+* Quantum-vulnerable cryptographic assets
+* Cryptographic anomalies and risks
+* Migration/readiness impact
+* Real-time changes across discovered assets
+
+All information displayed must be based on the user's **actual authenticated tenant data, discovered assets, scanner results, certificate telemetry, cloud telemetry, and backend events**.
+
+Do **NOT** use static/mock/demo data in production-facing functionality.
+
+---
+
+# 2. REAL-TIME DATA ARCHITECTURE
+
+Ensure complete and correct integration between:
+
+**Backend → APIs → Hooks → SSE/WebSockets → State Management → Frontend Components**
+
+The implementation must be properly wired end-to-end.
+
+### Requirements
+
+* Connect every metric and visualization to the appropriate backend source.
+* Implement production-ready React hooks for all required data.
+* Implement SSE for real-time telemetry/events where appropriate.
+* Automatically update affected UI components when backend data changes.
+* Handle connection lifecycle correctly.
+* Handle reconnects and transient failures.
+* Prevent duplicate SSE connections.
+* Prevent memory leaks.
+* Properly unsubscribe/cleanup listeners.
+* Display connection status where useful.
+* Provide graceful loading, empty, stale, and error states.
+* Ensure real-time events invalidate or refresh affected cached data.
+* Avoid unnecessary polling when SSE/event streaming is available.
+* Maintain tenant isolation at every data layer.
+
+Example architecture:
+
+```text
+Scanner / Agents / Cloud Connectors
+              ↓
+        Backend Services
+              ↓
+        Event / Telemetry Layer
+              ↓
+       REST / API / SSE
+              ↓
+       React Query / Hooks
+              ↓
+       Dashboard State
+              ↓
+     Real-Time UI Components
+```
+
+---
+
+# 3. TRUST DASHBOARD
+
+## `/dashboard/trust-dashboard`
+
+Refactor this page into the **central Cryptographic Trust Command Center**.
+
+It should provide a high-level enterprise view of the organization's current trust posture.
+
+### Include
+
+* Overall Cryptographic Trust Score
+* Quantum Readiness / PQC Trust Score
+* Certificate Health Score
+* TLS Security Score
+* Trust-Chain Health
+* Cryptographic Compliance Score
+* Cloud Trust Score
+* Regional Trust Score
+* Critical Trust Findings
+* Active Cryptographic Risks
+* Expiring Certificates
+* Invalid/Weak Certificate Chains
+* Deprecated Cryptographic Algorithms
+* Quantum-Vulnerable Assets
+* Recent Cryptographic Events
+* Recent Trust-State Changes
+* Cloud Cryptographic Events
+* Regional Risk Distribution
+* Trust posture trend over time
+
+### Executive KPIs
+
+Display concise enterprise KPIs such as:
+
+* Total Crypto Assets
+* Total Certificates
+* Active Certificates
+* Expiring Soon
+* Expired
+* Invalid
+* Weak / Deprecated
+* Quantum Vulnerable
+* PQC Ready
+* Hybrid Ready
+* TLS 1.3 Coverage
+* Trust-Chain Failures
+* Cloud Assets Monitored
+* Active Critical Findings
+
+Every KPI must link to the underlying detailed records.
+
+---
+
+# 4. TRUST STATE DISCOVERY
+
+## `/dashboard/trust-state-discovery`
+
+Build this as the **Cryptographic Trust Discovery & Relationship Intelligence Center**.
+
+The purpose is to determine the actual trust state of discovered infrastructure.
+
+### Discover and correlate
+
+* Certificates
+* Certificate Authorities
+* Root CAs
+* Intermediate CAs
+* TLS endpoints
+* Services
+* Domains
+* Applications
+* APIs
+* Cloud resources
+* Kubernetes workloads
+* Containers
+* Load balancers
+* Gateways
+* Identity systems
+* Encryption services
+* Key-management systems
+* Cryptographic algorithms
+* Trust relationships
+
+### Trust Relationship Visualization
+
+Provide an interactive relationship/graph view:
+
+```text
+Root CA
+   ↓
+Intermediate CA
+   ↓
+Certificate
+   ↓
+TLS Endpoint
+   ↓
+Service
+   ↓
+Application
+   ↓
+Cloud Resource
+```
+
+Allow users to inspect:
+
+* Who trusts whom
+* Which certificate protects which service
+* Which CA issued the certificate
+* Where certificates are deployed
+* Which assets depend on a certificate
+* Which assets are affected by certificate expiration
+* Which trust relationships are weak or broken
+* Which assets use quantum-vulnerable cryptography
+
+### Trust-State Classification
+
+Classify discovered assets into states such as:
+
+* Trusted
+* Healthy
+* Degraded
+* At Risk
+* Critical
+* Unknown
+* Expired
+* Invalid
+* Quantum Vulnerable
+* PQC Ready
+* Migration Required
+
+---
+
+# 5. CERTIFICATE TELEMETRY
+
+## `/dashboard/certificate-telemetry`
+
+Build this as the **Enterprise Certificate Lifecycle & TLS Intelligence Center**.
+
+### Certificate Inventory
+
+Display real certificate data including:
+
+* Common Name
+* SANs
+* Issuer
+* Subject
+* Serial Number
+* Algorithm
+* Key Size
+* Signature Algorithm
+* TLS Version
+* Valid From
+* Valid Until
+* Remaining Days
+* Certificate Status
+* Trust-Chain Status
+* Deployment Status
+* Asset Association
+* Environment
+* Cloud Provider
+* Region
+
+### Expiration Intelligence
+
+Provide intelligent categories:
+
+* Expired
+* Critical — ≤ 7 days
+* High Risk — ≤ 30 days
+* Warning — ≤ 60 days
+* Healthy — > 60 days
+
+Include:
+
+* Expiration timeline
+* Upcoming expirations
+* Expiration trends
+* Renewal status
+* Renewal failures
+* Certificates without owners
+* Certificates without deployment mapping
+
+### Trust-Chain Validation
+
+Validate:
+
+* Root CA
+* Intermediate CA
+* Chain completeness
+* Chain ordering
+* Signature validity
+* Certificate validity
+* Revocation state where supported
+* Hostname/SAN matching
+* Algorithm strength
+* Key strength
+* TLS compatibility
+
+Clearly explain why a certificate or trust chain is failing.
+
+---
+
+# 6. MULTI-CLOUD TELEMETRY
+
+## `/dashboard/multi-cloud-telemetry`
+
+Build this as the **Cross-Cloud Cryptographic Visibility & Distributed Encryption Monitoring Center**.
+
+Support a normalized architecture for cloud environments such as:
+
+* AWS
+* Microsoft Azure
+* Google Cloud
+* Kubernetes
+* Private Cloud
+* Hybrid Cloud
+* Other supported cloud connectors
+
+Do not assume a cloud asset exists unless it actually exists in the user's tenant data.
+
+### Display
+
+* Cloud Provider
+* Account / Subscription / Project
+* Region
+* Resource
+* Service
+* Encryption State
+* Encryption Algorithm
+* Key Management Provider
+* Certificate
+* TLS Configuration
+* Cryptographic Risk
+* Compliance State
+* PQC Readiness
+* Last Seen
+* Last Telemetry Event
+
+### Cross-Cloud Intelligence
+
+Provide comparisons such as:
+
+```text
+AWS
+├── Regions
+├── Encrypted Resources
+├── Certificates
+├── KMS Usage
+└── Cryptographic Risks
+
+Azure
+├── Regions
+├── Key Vault
+├── Certificates
+└── Cryptographic Risks
+
+GCP
+├── Regions
+├── KMS
+├── Certificates
+└── Cryptographic Risks
+```
+
+Include:
+
+* Cross-cloud trust posture
+* Regional trust posture
+* Encryption coverage
+* Weak cryptography distribution
+* Quantum-vulnerable cryptography distribution
+* Certificate distribution
+* TLS posture
+* KMS usage
+* Cryptographic events
+* Configuration drift
+* Regional anomalies
+
+---
+
+# 7. CROSS-PAGE DATA CONSISTENCY
+
+This is extremely important.
+
+All four pages must operate from the **same underlying source of truth**.
+
+Do NOT allow:
+
+* Different asset counts between pages
+* Different certificate counts
+* Different risk scores
+* Different severity classifications
+* Different cloud asset totals
+* Different PQC classifications
+* Different timestamps
+* Different tenant data
+* Duplicate records caused by independent frontend logic
+
+For example:
+
+If the system reports:
+
+**1,245 discovered assets**
+
+that value must reconcile with the inventory/scanner/CBOM/readiness systems wherever the same scope is being measured.
+
+If there are:
+
+**137 certificates**
+
+the certificate telemetry, trust dashboard, trust discovery, CBOM, scanner, and related pages must use the same underlying certificate records.
+
+---
+
+# 8. ALIGNMENT WITH OTHER QGUARD HELIX MODULES
+
+Ensure these pages are properly integrated with and aligned to existing Qguard Helix modules, including where applicable:
+
+* PQC Scanner
+* Assets & CBOM
+* Quantum Readiness
+* Quantum Exposure Graph
+* Migration Planner
+* Live Migration
+* Runtime Cryptographic Intelligence
+* Harvest Now Risk Engine
+* PQAuth Identity Migration Engine
+* Quantum Trust Fabric
+* Certificate / TLS monitoring
+* Cloud security telemetry
+* Agent / Collector telemetry
+* Compliance / Governance
+* Reporting
+
+Do not create competing or duplicate versions of the same data.
+
+Reuse existing:
+
+* API contracts
+* Database entities
+* Hooks
+* Types
+* Scoring logic
+* Severity models
+* Asset identifiers
+* Tenant identifiers
+* Event schemas
+* Telemetry models
+
+where they already exist.
+
+---
+
+# 9. REAL-TIME EVENT SYSTEM
+
+Implement real-time event handling for events such as:
+
+* New asset discovered
+* Asset removed
+* Certificate discovered
+* Certificate expiring
+* Certificate expired
+* Certificate renewed
+* Trust-chain failure
+* TLS configuration changed
+* Cryptographic algorithm changed
+* Quantum-vulnerable asset detected
+* PQC migration completed
+* Cloud resource discovered
+* Cloud encryption changed
+* Regional trust posture changed
+* Scanner completed
+* Agent telemetry received
+* Critical finding created/resolved
+
+The dashboard should update automatically without requiring a manual page refresh.
+
+---
+
+# 10. FILTERING & INVESTIGATION
+
+Provide enterprise-grade filtering.
+
+Users should be able to filter by:
+
+* Asset
+* Asset type
+* Certificate
+* Domain
+* Application
+* Environment
+* Cloud provider
+* Account
+* Subscription
+* Project
+* Region
+* Severity
+* Risk
+* Algorithm
+* TLS version
+* Certificate status
+* Trust state
+* PQC readiness
+* Compliance state
+* Time range
+
+Filters should remain synchronized between relevant widgets and data tables.
+
+---
+
+# 11. DRILL-DOWN EXPERIENCE
+
+Every important metric should be actionable.
+
+Example:
+
+```text
+137 Certificates
+      ↓
+Click
+      ↓
+Certificate Inventory
+      ↓
+Select Certificate
+      ↓
+Certificate Details
+      ↓
+Trust Chain
+      ↓
+Affected Assets
+      ↓
+Risk / Finding
+      ↓
+Recommended Remediation
+```
+
+Users should never be shown a number without a way to understand **what contributes to that number**.
+
+---
+
+# 12. ENTERPRISE UX / UI
+
+Make the entire experience **Premium, Modern, Professional, and Enterprise Grade**.
+
+Use the existing Qguard Helix design system and visual language.
+
+Prioritize:
+
+* Clean information hierarchy
+* Executive-friendly dashboards
+* Security-operations usability
+* High information density without clutter
+* Responsive layouts
+* Accessible components
+* Consistent typography
+* Consistent spacing
+* Consistent cards
+* Consistent status indicators
+* Consistent severity colors
+* Interactive charts
+* Professional tables
+* Smooth animations
+* Real-time status indicators
+
+Avoid excessive visual effects that reduce usability.
+
+The interface should feel comparable to a mature enterprise security platform.
+
+---
+
+# 13. LOADING / ERROR / EMPTY STATES
+
+Every data component must handle:
+
+### Loading
+
+Show appropriate skeletons instead of blank areas.
+
+### Empty
+
+Clearly explain:
+
+> No telemetry or discovered assets are currently available for this scope.
+
+Do not display fake data.
+
+### Error
+
+Provide:
+
+* Clear error message
+* Retry action
+* Last successful update when available
+* Backend/API error diagnostics where appropriate
+
+### Stale Data
+
+Clearly indicate when telemetry has not been updated recently.
+
+---
+
+# 14. SECURITY & MULTI-TENANCY
+
+Ensure all data is scoped to the authenticated user/tenant.
+
+Never expose another tenant's:
+
+* Assets
+* Certificates
+* Cloud resources
+* Telemetry
+* Findings
+* Events
+* Scores
+* Reports
+
+Validate authorization on the backend rather than relying exclusively on frontend filtering.
+
+---
+
+# 15. PERFORMANCE
+
+The pages must remain responsive with enterprise-scale datasets.
+
+Implement where appropriate:
+
+* Server-side pagination
+* Virtualized tables
+* Efficient queries
+* Incremental loading
+* Cached queries
+* Query invalidation
+* Debounced search
+* Efficient SSE subscriptions
+* Lazy loading
+* Chart data aggregation
+* Avoid unnecessary rerenders
+
+Do not load thousands of records into the browser unnecessarily.
+
+---
+
+# 16. DATA QUALITY & RECONCILIATION
+
+Implement reconciliation checks where appropriate.
+
+The system should be able to identify:
+
+* Missing asset relationships
+* Duplicate certificates
+* Orphan certificates
+* Missing cloud mappings
+* Missing trust relationships
+* Stale telemetry
+* Conflicting asset states
+* Inconsistent certificate states
+* Unknown cryptographic algorithms
+
+Where discrepancies exist, clearly identify the source and state rather than silently producing inconsistent results.
+
+---
+
+# 17. BACKEND INTEGRATION
+
+Inspect the existing backend before implementing new logic.
+
+Identify existing:
+
+* API endpoints
+* Database tables
+* Supabase queries
+* Services
+* Event streams
+* SSE endpoints
+* WebSocket endpoints
+* Telemetry processors
+* Scanner results
+* Certificate collectors
+* Cloud connectors
+* Hooks
+* Type definitions
+
+Reuse existing functionality whenever possible.
+
+Only create new APIs/services when genuinely required.
+
+---
+
+# 18. FRONTEND ENGINEERING
+
+Refactor the frontend into reusable components where appropriate.
+
+Create reusable components for:
+
+* Trust score cards
+* Risk cards
+* Certificate status
+* Expiration indicators
+* Trust-chain visualization
+* Cloud posture
+* Regional posture
+* Telemetry event stream
+* Asset tables
+* Risk tables
+* Timeline charts
+* Empty states
+* Loading states
+* Error states
+
+Avoid duplicating the same business logic across multiple pages.
+
+Centralize shared logic into reusable hooks/services.
+
+---
+
+# 19. TESTING & VALIDATION
+
+After implementation, verify the complete flow:
+
+```text
+Real Asset
+   ↓
+Scanner / Agent / Connector
+   ↓
+Backend
+   ↓
+Database
+   ↓
+Telemetry/Event Stream
+   ↓
+API/SSE
+   ↓
+React Hook
+   ↓
+Dashboard
+```
+
+Test:
+
+* Initial page load
+* Authentication
+* Tenant isolation
+* API responses
+* SSE connection
+* SSE reconnect
+* Real-time updates
+* Filtering
+* Pagination
+* Drill-down
+* Error handling
+* Empty states
+* Large datasets
+* Cross-page consistency
+* Data reconciliation
+* Responsive UI
+
+Ensure there are no:
+
+* Broken hooks
+* Missing API calls
+* Hardcoded metrics
+* Fake telemetry
+* Mock production data
+* Console errors
+* React warnings
+* Duplicate SSE connections
+* Memory leaks
+* Broken navigation
+* Stale dashboard values
+
+---
+
+# 20. FINAL ACCEPTANCE CRITERIA
+
+Consider this implementation complete only when:
+
+* All four pages are fully functional.
+* Frontend and backend are properly connected.
+* Hooks are correctly implemented.
+* SSE/real-time telemetry works reliably.
+* Actual tenant assets and scanner results are displayed.
+* No production-facing mock data remains.
+* All pages use consistent data sources.
+* Metrics reconcile across Qguard Helix modules.
+* Trust relationships are traceable.
+* Certificate lifecycle intelligence is functional.
+* Multi-cloud telemetry is normalized and actionable.
+* Users can drill from KPI → asset → finding → remediation.
+* Loading, empty, stale, and error states are implemented.
+* Tenant isolation is enforced.
+* Performance is suitable for enterprise datasets.
+* UI is polished and consistent with Qguard Helix.
+* No broken links, hooks, API calls, or console errors remain.
+* The implementation is production-ready.
+
+## Important Principle
+
+**The dashboard must reflect reality, not simulate reality.**
+
+Every number, score, certificate, asset, event, risk, trust relationship, cloud resource, and telemetry record shown to the user must be traceable back to the user's **actual discovered assets, scanner results, backend telemetry, database records, or real-time events**.
+
+Build these four pages as one **unified Cryptographic Trust & Telemetry Intelligence platform**, with a single source of truth and consistent real-time state across the entire Qguard Helix ecosystem.

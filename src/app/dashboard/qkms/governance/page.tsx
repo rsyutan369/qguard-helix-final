@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsGovernance from '../../_components/qkms/QkmsGovernance';
 
-export default function QkmsGovernancePage() {
-  return <QkmsDashboard mode="governance" />;
+export default function Page() {
+  return <QkmsGovernance />;
 }

@@ -185,12 +185,23 @@ export function deriveWorkflowState(inputs: WorkflowInputs): MigrationWorkflowSt
     ),
     makeStage(
       'monitoring',
-      m.runtimeMeasured ? 'active' : inputs.scanSessions >= 2 ? 'active' : 'pending',
-      m.runtimeMeasured ? 100 : inputs.scanSessions >= 2 ? 60 : 0,
-      m.runtimeMeasured ? 'Runtime telemetry live' : `${inputs.scanSessions} scan session${inputs.scanSessions === 1 ? '' : 's'}`,
-      m.runtimeMeasured
+      // "Live" requires telemetry to be CURRENT, not merely to exist. Testing
+      // `runtimeMeasured` alone claimed "streaming — continuously monitored" on
+      // a tenant whose newest runtime event was 15 hours old and whose only
+      // collector had never sent a heartbeat — a claim Runtime Telemetry
+      // contradicts from the same evidence.
+      m.runtimeFresh || m.runtimeMeasured ? 'active' : inputs.scanSessions >= 2 ? 'active' : 'pending',
+      m.runtimeFresh ? 100 : m.runtimeMeasured ? 70 : inputs.scanSessions >= 2 ? 60 : 0,
+      m.runtimeFresh
+        ? 'Runtime telemetry live'
+        : m.runtimeMeasured
+          ? 'Runtime telemetry stale'
+          : `${inputs.scanSessions} scan session${inputs.scanSessions === 1 ? '' : 's'}`,
+      m.runtimeFresh
         ? 'Runtime cryptographic telemetry is streaming — posture is continuously monitored.'
-        : 'Connect runtime telemetry for continuous cryptographic monitoring.',
+        : m.runtimeMeasured
+          ? 'Runtime telemetry has been received but is no longer current. Check collector health in Runtime Telemetry.'
+          : 'Connect runtime telemetry for continuous cryptographic monitoring.',
     ),
     makeStage(
       'certification',

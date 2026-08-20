@@ -1,0 +1,621 @@
+/* =============================================================================
+   COLD FUSION - mobile design system (Android build + narrow windows)
+   =============================================================================
+   A cryptographic instrument panel, not a consumer app.
+
+   Every token below is defined for BOTH themes. Light is a clean-room
+   counterpart - white panels, hairline rules, saturated accents - rather than
+   an inverted dark theme.
+
+   Mobile surfaces consume these vars directly instead of Tailwind color
+   utilities, so they are unaffected by the `.theme-dark ... !important`
+   overrides in globals.css (those exist to retrofit the desktop pages).
+
+   Loaded from main.tsx AFTER globals.css.
+   ========================================================================== */
+
+:root {
+  /* Surfaces */
+  --qg-canvas: #eef3fc;
+  --qg-canvas-deep: #e4ebf9;
+  --qg-panel: #ffffff;
+  --qg-panel-soft: #f5f8ff;
+  --qg-panel-glass: rgba(255, 255, 255, 0.82);
+  --qg-hairline: rgba(10, 30, 70, 0.10);
+  --qg-hairline-strong: rgba(10, 30, 70, 0.17);
+
+  /* Ink */
+  --qg-text: #050c1b;
+  --qg-text-2: #42506b;
+  --qg-text-3: #74829e;
+
+  /* Signal palette */
+  --qg-helix: #1d5bf0;         /* primary - the reference blue */
+  --qg-helix-bright: #4c8dff;
+  --qg-flux: #6d28d9;          /* brand violet continuity */
+  --qg-plasma: #0e9f86;        /* verified / safe */
+  --qg-warn: #b45309;
+  --qg-alert: #d01a46;
+  --qg-helix-wash: rgba(29, 91, 240, 0.10);
+  --qg-plasma-wash: rgba(14, 159, 134, 0.12);
+  --qg-warn-wash: rgba(180, 83, 9, 0.11);
+  --qg-alert-wash: rgba(208, 26, 70, 0.10);
+
+  /* Graphic-only tones. Arcs and dots are shapes, not text, so they can run
+     brighter than the label colours above — which have to clear the 4.5:1
+     contrast floor at 11px and therefore read muddy when used as strokes. */
+  --qg-g-ok: #12b394;
+  --qg-g-info: #2563eb;
+  --qg-g-warn: #e2810b;
+  --qg-g-alert: #e11d48;
+
+  /* CTA fill. Kept separate from --qg-flux/--qg-helix because those are tuned
+     for TEXT on each theme — the dark-mode violet is deliberately pale, which
+     turns a button fill pastel. */
+  --qg-cta-from: #6d28d9;
+  --qg-cta-mid: #2563eb;
+  --qg-cta-to: #3b82f6;
+
+  /* Elevation */
+  --qg-shadow: 0 14px 34px -20px rgba(9, 22, 52, 0.42);
+  --qg-shadow-lift: 0 26px 60px -28px rgba(9, 22, 52, 0.50);
+  --qg-glow: 0 18px 40px -20px rgba(29, 91, 240, 0.50);
+  --qg-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+
+  /* Ambient stage light */
+  --qg-stage:
+    radial-gradient(900px 520px at 12% -8%, rgba(29, 91, 240, 0.13), transparent 62%),
+    radial-gradient(760px 520px at 104% 8%, rgba(109, 40, 217, 0.10), transparent 58%),
+    radial-gradient(900px 640px at 50% 108%, rgba(14, 159, 134, 0.09), transparent 62%);
+
+  /* Type roles. No webfonts: the CSP is default-src self and the Android build
+     ships offline, so personality comes from scale, weight and tracking rather
+     than a downloaded face. */
+  --qg-font-display: "SF Pro Display", "Segoe UI Variable Display", Inter, Roboto, system-ui, sans-serif;
+  --qg-font-mono: "JetBrains Mono", "SF Mono", Consolas, ui-monospace, monospace;
+}
+
+.theme-dark {
+  --qg-canvas: #04070f;
+  --qg-canvas-deep: #020409;
+  --qg-panel: #0a1120;
+  --qg-panel-soft: #0d1626;
+  --qg-panel-glass: rgba(11, 19, 36, 0.78);
+  --qg-hairline: rgba(124, 163, 255, 0.14);
+  --qg-hairline-strong: rgba(124, 163, 255, 0.24);
+
+  --qg-text: #eaf1ff;
+  --qg-text-2: #9fb2d4;
+  --qg-text-3: #64789e;
+
+  --qg-helix: #4c8dff;
+  --qg-helix-bright: #8ab6ff;
+  --qg-flux: #a78bfa;
+  --qg-plasma: #2de1c2;
+  --qg-warn: #f5b544;
+  --qg-alert: #ff5c7a;
+  --qg-helix-wash: rgba(76, 141, 255, 0.14);
+  --qg-plasma-wash: rgba(45, 225, 194, 0.13);
+  --qg-warn-wash: rgba(245, 181, 68, 0.13);
+  --qg-alert-wash: rgba(255, 92, 122, 0.13);
+
+  --qg-g-ok: #2de1c2;
+  --qg-g-info: #4c8dff;
+  --qg-g-warn: #f5b544;
+  --qg-g-alert: #ff5c7a;
+
+  --qg-cta-from: #7c3aed;
+  --qg-cta-mid: #3b82f6;
+  --qg-cta-to: #4c8dff;
+
+  --qg-shadow: 0 16px 40px -22px rgba(0, 0, 0, 0.85);
+  --qg-shadow-lift: 0 30px 70px -30px rgba(0, 0, 0, 0.9);
+  --qg-glow: 0 20px 48px -22px rgba(76, 141, 255, 0.65);
+  --qg-inset: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  --qg-stage:
+    radial-gradient(920px 560px at 10% -10%, rgba(76, 141, 255, 0.22), transparent 60%),
+    radial-gradient(780px 560px at 106% 6%, rgba(139, 92, 246, 0.18), transparent 56%),
+    radial-gradient(1000px 700px at 50% 112%, rgba(45, 225, 194, 0.10), transparent 60%);
+}
+
+/* --- Stage ---------------------------------------------------------------- */
+
+/* NOTE: .qg-stage deliberately does NOT set `position`. This file loads after
+   Tailwind's utility layer, so a `position` here would beat an equally-specific
+   `fixed`/`absolute` utility on the same element and silently collapse the
+   element to static flow. Callers must supply their own positioning class —
+   `relative`, `fixed`, or `absolute` — which also gives ::before/::after the
+   containing block they need. */
+.qg-stage {
+  background-color: var(--qg-canvas);
+  color: var(--qg-text);
+  isolation: isolate;
+}
+
+.qg-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background: var(--qg-stage);
+  pointer-events: none;
+}
+
+/* Faint coordinate grid - reads as an instrument backdrop, masked at the top so
+   it never competes with content further down the scroll. */
+.qg-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image:
+    linear-gradient(var(--qg-hairline) 1px, transparent 1px),
+    linear-gradient(90deg, var(--qg-hairline) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, #000 0%, transparent 78%);
+}
+
+/* --- Type ----------------------------------------------------------------- */
+
+.qg-display {
+  font-family: var(--qg-font-display);
+  font-weight: 700;
+  letter-spacing: -0.032em;
+  color: var(--qg-text);
+}
+
+/* Wide-tracked mono micro-labels are where the instrument-panel voice lives. */
+.qg-eyebrow {
+  font-family: var(--qg-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--qg-text-3);
+}
+
+.qg-mono {
+  font-family: var(--qg-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.qg-num {
+  font-family: var(--qg-font-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.05em;
+  font-weight: 700;
+}
+
+.qg-text-2 { color: var(--qg-text-2); }
+.qg-text-3 { color: var(--qg-text-3); }
+
+/* --- Surfaces ------------------------------------------------------------- */
+
+.qg-card {
+  position: relative;
+  border: 1px solid var(--qg-hairline);
+  border-radius: 20px;
+  background: var(--qg-panel);
+  box-shadow: var(--qg-shadow), var(--qg-inset);
+}
+
+.theme-dark .qg-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%),
+    var(--qg-panel);
+}
+
+.qg-card-press {
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1), border-color 220ms ease, box-shadow 220ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.qg-card-press:active {
+  transform: scale(0.978);
+  border-color: var(--qg-hairline-strong);
+}
+
+.qg-glass {
+  background: var(--qg-panel-glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+}
+
+/* --- Controls ------------------------------------------------------------- */
+
+.qg-icon-btn {
+  display: inline-flex;
+  height: 38px;
+  width: 38px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  border: 1px solid var(--qg-hairline);
+  background: var(--qg-panel-soft);
+  color: var(--qg-text-2);
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), color 200ms ease, border-color 200ms ease, background-color 200ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.qg-icon-btn:active {
+  transform: scale(0.92);
+  color: var(--qg-helix);
+  border-color: var(--qg-helix);
+  background: var(--qg-helix-wash);
+}
+
+.qg-btn {
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 16px;
+  padding: 14px 20px;
+  font-family: var(--qg-font-display);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+  border: 1px solid transparent;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(102deg, var(--qg-cta-from) 0%, var(--qg-cta-mid) 52%, var(--qg-cta-to) 100%);
+  box-shadow: var(--qg-glow), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 200ms ease, opacity 200ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.qg-btn:active:not(:disabled) { transform: scale(0.975); }
+.qg-btn:disabled { opacity: 0.5; }
+
+/* A single slow specular pass - the button reads as lit glass, not a flat fill. */
+.qg-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 32%, rgba(255, 255, 255, 0.34) 48%, transparent 64%);
+  transform: translateX(-120%);
+  animation: qg-sheen 5.5s ease-in-out 1.2s infinite;
+  pointer-events: none;
+}
+
+.qg-btn-quiet {
+  background: var(--qg-panel-soft);
+  color: var(--qg-text-2);
+  border-color: var(--qg-hairline);
+  box-shadow: none;
+}
+
+.qg-btn-quiet::after { display: none; }
+
+/* --- Status vocabulary ---------------------------------------------------- */
+
+.qg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-family: var(--qg-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.qg-tone-ok    { color: var(--qg-plasma); background: var(--qg-plasma-wash); border-color: rgba(14, 159, 134, 0.28); }
+.qg-tone-info  { color: var(--qg-helix);  background: var(--qg-helix-wash);  border-color: rgba(29, 91, 240, 0.28); }
+.qg-tone-warn  { color: var(--qg-warn);   background: var(--qg-warn-wash);   border-color: rgba(180, 83, 9, 0.30); }
+.qg-tone-alert { color: var(--qg-alert);  background: var(--qg-alert-wash);  border-color: rgba(208, 26, 70, 0.30); }
+.qg-tone-mute  { color: var(--qg-text-3); background: var(--qg-panel-soft);  border-color: var(--qg-hairline); }
+
+.theme-dark .qg-tone-ok    { border-color: rgba(45, 225, 194, 0.30); }
+.theme-dark .qg-tone-info  { border-color: rgba(76, 141, 255, 0.32); }
+.theme-dark .qg-tone-warn  { border-color: rgba(245, 181, 68, 0.32); }
+.theme-dark .qg-tone-alert { border-color: rgba(255, 92, 122, 0.32); }
+
+/* --- Bottom navigation ---------------------------------------------------- */
+
+.qg-nav {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  max-width: 26rem;
+  padding: 6px;
+  border-radius: 22px;
+  border: 1px solid var(--qg-hairline);
+  background: var(--qg-panel-glass);
+  box-shadow: var(--qg-shadow-lift), var(--qg-inset);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  backdrop-filter: blur(22px) saturate(1.5);
+}
+
+/* One shared indicator slides between tabs rather than each tab fading its own
+   background - the movement itself shows where you came from. */
+.qg-nav-pill {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  border-radius: 16px;
+  background: linear-gradient(140deg, var(--qg-cta-from), var(--qg-cta-to));
+  box-shadow: var(--qg-glow);
+  transition: transform 420ms cubic-bezier(0.22, 1.2, 0.36, 1);
+  pointer-events: none;
+}
+
+.qg-nav-item {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 9px 2px 8px;
+  font-family: var(--qg-font-display);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--qg-text-3);
+  background: transparent;
+  border: 0;
+  transition: color 300ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.qg-nav-item[data-active="true"] { color: #ffffff; }
+.qg-nav-item svg { transition: transform 420ms cubic-bezier(0.22, 1.2, 0.36, 1); }
+.qg-nav-item[data-active="true"] svg { transform: translateY(-1px) scale(1.06); }
+
+.qg-badge {
+  position: absolute;
+  top: 2px;
+  right: calc(50% - 21px);
+  display: flex;
+  height: 16px;
+  min-width: 16px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--qg-alert);
+  color: #ffffff;
+  font-family: var(--qg-font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--qg-panel);
+}
+
+/* --- Sheet ---------------------------------------------------------------- */
+
+.qg-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 5, 12, 0.62);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: qg-fade 220ms ease-out;
+}
+
+.qg-sheet {
+  position: relative;
+  width: 100%;
+  max-width: 26rem;
+  border: 1px solid var(--qg-hairline);
+  border-bottom: 0;
+  border-radius: 28px 28px 0 0;
+  background: var(--qg-panel);
+  box-shadow: var(--qg-shadow-lift);
+  animation: qg-sheet-in 360ms cubic-bezier(0.22, 1.1, 0.36, 1);
+}
+
+.theme-dark .qg-sheet {
+  background:
+    linear-gradient(180deg, rgba(76, 141, 255, 0.09), transparent 30%),
+    var(--qg-panel);
+}
+
+.qg-grabber {
+  height: 4px;
+  width: 40px;
+  border-radius: 999px;
+  background: var(--qg-hairline-strong);
+}
+
+/* --- Tiles ---------------------------------------------------------------- */
+
+.qg-tile-chip {
+  display: flex;
+  height: 38px;
+  width: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid var(--qg-hairline);
+  background: var(--qg-helix-wash);
+}
+
+/* --- Motion --------------------------------------------------------------- */
+
+@keyframes qg-fade { from { opacity: 0; } to { opacity: 1; } }
+
+@keyframes qg-sheet-in {
+  from { opacity: 0; transform: translateY(26px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes qg-rise {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes qg-sheen {
+  0%        { transform: translateX(-120%); }
+  38%, 100% { transform: translateX(120%); }
+}
+
+@keyframes qg-orbit { to { transform: rotate(360deg); } }
+
+@keyframes qg-breathe {
+  0%, 100% { opacity: 0.5;  transform: scale(0.94); }
+  50%      { opacity: 0.95; transform: scale(1.06); }
+}
+
+@keyframes qg-breathe-soft {
+  0%, 100% { opacity: 0.13; transform: scale(0.94); }
+  50%      { opacity: 0.24; transform: scale(1.06); }
+}
+
+@keyframes qg-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(4%, -5%, 0) scale(1.09); }
+}
+
+@keyframes qg-blip {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+@keyframes qg-draw { to { stroke-dashoffset: var(--qg-dash-to, 0); } }
+
+@keyframes qg-slide-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Staggered section entrance. Children set --qg-i to their index. */
+.qg-rise {
+  opacity: 0;
+  animation: qg-rise 620ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: calc(var(--qg-i, 0) * 70ms);
+}
+
+.qg-slide {
+  opacity: 0;
+  animation: qg-slide-in 520ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: calc(var(--qg-i, 0) * 60ms);
+}
+
+.qg-orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(58px);
+  pointer-events: none;
+  animation: qg-drift 16s ease-in-out infinite;
+}
+
+.qg-live-dot {
+  height: 7px;
+  width: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: currentColor;
+  animation: qg-blip 2.4s ease-in-out infinite;
+}
+
+/* --- Helix Reactor (signature) -------------------------------------------- */
+
+.qg-reactor { position: relative; display: grid; place-items: center; }
+
+.qg-reactor-halo {
+  position: absolute;
+  inset: 6%;
+  border-radius: 999px;
+  background: radial-gradient(circle, var(--qg-halo-color, rgba(76, 141, 255, 0.55)), transparent 68%);
+  filter: blur(20px);
+  /* Light mode gets a whisper of tint: on a white card a full glow turns into a
+     cloud that swallows the score in the middle. Dark mode gets the real glow. */
+  animation: qg-breathe-soft 7s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.theme-dark .qg-reactor-halo {
+  animation: qg-breathe 7s ease-in-out infinite;
+}
+
+/* The "mark" variant is a hero, not a background: it carries the full glow in
+   both themes, because nothing sits on top of it that has to stay legible. */
+.qg-reactor--mark .qg-reactor-halo {
+  inset: -2%;
+  filter: blur(30px);
+  animation: qg-breathe 7s ease-in-out infinite;
+}
+
+/* A slower counter-rotating pass gives the mark depth — two arcs crossing read
+   as a sphere, one arc reads as a loading spinner. */
+.qg-reactor-sweep-reverse {
+  position: absolute;
+  inset: 9%;
+  border-radius: 999px;
+  background: conic-gradient(from 180deg, transparent 0deg, var(--qg-flux) 34deg, transparent 78deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  animation: qg-orbit 9s linear infinite reverse;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+/* The outer sweep turns only while the live stream is connected, so the motion
+   itself is a truthful status readout rather than decoration. */
+.qg-reactor-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg, transparent 0deg, var(--qg-sweep-color, rgba(76, 141, 255, 0.9)) 42deg, transparent 96deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  animation: qg-orbit 5.5s linear infinite;
+  pointer-events: none;
+}
+
+.qg-reactor-arc {
+  stroke-dashoffset: var(--qg-dash-from, 0);
+  animation: qg-draw 1400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: calc(220ms + var(--qg-i, 0) * 130ms);
+}
+
+/* --- Accessibility floor -------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .qg-rise,
+  .qg-slide,
+  .qg-orb,
+  .qg-live-dot,
+  .qg-sheet,
+  .qg-scrim,
+  .qg-btn::after,
+  .qg-reactor-sweep,
+  .qg-reactor-sweep-reverse,
+  .qg-reactor-halo,
+  .qg-reactor-arc {
+    animation: none !important;
+  }
+
+  .qg-rise,
+  .qg-slide { opacity: 1; transform: none; }
+  .qg-reactor-arc { stroke-dashoffset: var(--qg-dash-to, 0); }
+  .qg-nav-pill { transition: none; }
+}
+
+.qg-focusable:focus-visible {
+  outline: 2px solid var(--qg-helix);
+  outline-offset: 2px;
+  border-radius: 14px;
+}
+
+/* Hide scrollbars on touch surfaces without losing scrollability. */
+.qg-scroll { scrollbar-width: none; }
+.qg-scroll::-webkit-scrollbar { width: 0; height: 0; }

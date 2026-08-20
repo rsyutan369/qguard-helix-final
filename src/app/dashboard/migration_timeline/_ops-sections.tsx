@@ -1000,7 +1000,7 @@ export function ComplianceStrip() {
         <div className="flex flex-wrap gap-1.5">
           {COMPLIANCE_STANDARDS.map((s) => <Chip key={s} tone="info">{s}</Chip>)}
         </div>
-        <a href="/dashboard/compliance_dashboard" className="ml-auto inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:text-cyan-200">Evidence <ChevronRight className="h-3 w-3" /></a>
+        <a href="/dashboard/compliance" className="ml-auto inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-cyan-300 hover:text-cyan-200">Evidence <ChevronRight className="h-3 w-3" /></a>
       </div>
     </Panel>
   );

@@ -3045,6 +3045,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hmac",
  "jni 0.21.1",
  "keyring",
  "ndk-context",

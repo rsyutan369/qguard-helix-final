@@ -1,5 +1,5 @@
-import CryptoOperationsDashboard from '../_components/CryptoOperationsDashboard';
+import EncryptionMonitoring from './EncryptionMonitoring';
 
 export default function EncryptionMonitoringPage() {
-  return <CryptoOperationsDashboard mode="encryption" />;
+  return <EncryptionMonitoring />;
 }

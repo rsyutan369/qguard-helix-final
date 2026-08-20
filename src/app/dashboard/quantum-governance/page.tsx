@@ -1,5 +1,7 @@
-import GovernanceDashboard from '../_components/GovernanceDashboard';
+'use client'
+
+import QuantumGovernanceCenter from './QuantumGovernanceCenter'
 
 export default function QuantumGovernancePage() {
-  return <GovernanceDashboard mode="quantum" />;
+  return <QuantumGovernanceCenter />
 }

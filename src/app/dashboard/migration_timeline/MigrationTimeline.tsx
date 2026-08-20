@@ -166,7 +166,7 @@ export default function MigrationTimeline() {
       ['/dashboard/migration-planner', 'Open: Migration Planner'],
       ['/dashboard/migration-sandbox', 'Open: Migration Sandbox (Digital Twin)'],
       ['/dashboard/quantum-readiness', 'Open: Quantum Readiness'],
-      ['/dashboard/compliance_dashboard', 'Open: Compliance'],
+      ['/dashboard/compliance', 'Open: Compliance'],
     ];
     return [
       { id: 'refresh', label: 'Refresh all evidence', hint: 'sync', run: refreshAll },

@@ -1,5 +1,5 @@
-import QkmsDashboard from '../../_components/QkmsDashboard';
+import QkmsOverview from '../../_components/qkms/QkmsOverview';
 
-export default function QkmsOverviewPage() {
-  return <QkmsDashboard mode="overview" />;
+export default function Page() {
+  return <QkmsOverview />;
 }

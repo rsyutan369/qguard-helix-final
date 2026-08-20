@@ -1,0 +1,1585 @@
+# Qguard Helix Lightweight Agent & Collector Installer
+
+## Enterprise-Grade Agent Deployment, Enrollment, Scanning, Telemetry & Migration Control Plane
+
+Build and implement a **premium, enterprise-grade Lightweight Agent / Collector / Patcher / Operator installation system** for Qguard Helix.
+
+The primary installation and management page must be:
+
+`http://localhost:3000/downloads`
+
+The system must integrate seamlessly with:
+
+`http://localhost:3000/dashboard/scanner?tab=agents`
+
+and the existing:
+
+`http://localhost:3000/dashboard/live-migration`
+
+The objective is to allow customers to securely generate, download, install, enroll, verify, operate, update, and manage lightweight Qguard Helix agents across their endpoints, servers, cloud workloads, containers, Kubernetes environments, and other authorized assets.
+
+---
+
+# 1. Core Objective
+
+When an authenticated tenant creates an Agent / Collector / Patcher / Operator from:
+
+`/dashboard/scanner?tab=agents`
+
+the user must be able to:
+
+1. Generate an agent.
+2. Assign the agent to a tenant.
+3. Assign it to an asset, asset group, environment, or scope.
+4. Select the appropriate agent capability.
+5. Generate a secure enrollment token.
+6. Download the appropriate installer.
+7. Install the lightweight agent on the target device.
+8. Automatically enroll the agent.
+9. Establish a secure authenticated connection with Qguard Helix.
+10. Verify connectivity.
+11. Run an initial discovery/crypto scan.
+12. Stream telemetry to the backend.
+13. Display accurate results in the Qguard Helix dashboard.
+14. Detect cryptographic and quantum-vulnerability exposure.
+15. Support approved remediation and migration operations.
+16. Receive agent upgrades securely.
+17. Report health, version, capabilities, and execution status.
+18. Provide complete audit evidence for every operation.
+
+This must behave as a **real operational system**, not a mock UI or static download page.
+
+---
+
+# 2. Supported Agent Types
+
+Design the architecture so Qguard Helix can support multiple lightweight agent roles.
+
+### Collector
+
+Responsible for:
+
+* Asset discovery
+* Cryptographic inventory
+* Algorithm detection
+* Certificate discovery
+* TLS configuration inspection
+* PKI inspection
+* Key metadata discovery
+* Application/runtime crypto discovery
+* Dependency discovery
+* CBOM evidence collection
+* Runtime cryptographic telemetry
+* System metadata
+* Network/service metadata where authorized
+
+### Scanner Agent
+
+Responsible for:
+
+* Quantum-vulnerable cryptography detection
+* Classical cryptography detection
+* PQC detection
+* Hybrid cryptography detection
+* Certificate analysis
+* TLS analysis
+* PKI analysis
+* Weak algorithm detection
+* Deprecated algorithm detection
+* Key-size analysis
+* Signature algorithm analysis
+* Encryption algorithm analysis
+* Cryptographic dependency discovery
+* Application crypto inventory
+
+### Patcher / Remediation Agent
+
+Responsible for approved remediation tasks such as:
+
+* Configuration updates
+* Certificate deployment
+* Certificate replacement
+* Cryptographic configuration changes
+* TLS configuration updates
+* Application configuration updates
+* Approved dependency/configuration changes
+
+All remediation must be:
+
+* Explicitly authorized
+* Tenant-scoped
+* Asset-scoped
+* Auditable
+* Reversible where technically possible
+* Validated after execution
+
+### Migration Operator
+
+Responsible for approved migration workflows used by:
+
+`/dashboard/live-migration`
+
+Examples:
+
+* Classical → Hybrid
+* RSA/ECC → PQC-compatible configuration
+* X25519 → X25519 + ML-KEM-768
+* Classical signature → Ed25519 + ML-DSA
+* Certificate migration
+* TLS migration
+* PKI migration
+
+The Operator must never perform destructive migration merely because a migration job exists.
+
+Every migration operation must respect:
+
+* Approval
+* Policy
+* Scope
+* Connector permissions
+* Asset ownership
+* Allowed paths
+* Rollback configuration
+* Validation requirements
+
+---
+
+# 3. Lightweight Architecture
+
+The agent must remain genuinely lightweight.
+
+Avoid turning the endpoint agent into a large security platform.
+
+The architecture should preferably contain:
+
+### Agent Core
+
+Responsible for:
+
+* Enrollment
+* Authentication
+* Heartbeat
+* Job polling
+* Secure command handling
+* Capability reporting
+* Configuration
+* Version management
+* Telemetry
+* Local execution control
+
+### Collector Modules
+
+Load only when required.
+
+Examples:
+
+* crypto_inventory
+* tls_inventory
+* certificate_inventory
+* pki_inventory
+* filesystem_crypto
+* application_crypto
+* runtime_crypto
+* package_inventory
+* container_inventory
+* kubernetes_inventory
+
+Use modular architecture so unnecessary components are not always running.
+
+---
+
+# 4. Platform Support
+
+The Downloads page must support platform-specific installation.
+
+### Linux
+
+Provide:
+
+* Shell installer
+* Package installation where appropriate
+* systemd service
+* Architecture detection
+* x86_64
+* ARM64
+
+### Windows
+
+Provide:
+
+* PowerShell installer
+* Windows service
+* x64 support
+* Secure environment-variable/configuration handling
+
+### Docker
+
+Provide:
+
+* Docker image
+* Docker Compose example where appropriate
+* Environment configuration
+* Secure enrollment
+
+### Kubernetes
+
+Provide:
+
+* Helm installation
+* Kubernetes manifests where appropriate
+* Namespace configuration
+* ServiceAccount/RBAC configuration
+* Secure enrollment
+
+### PowerShell
+
+Provide a dedicated PowerShell installation method.
+
+### Cloud-Init
+
+Provide cloud-init deployment for supported Linux cloud instances.
+
+Do not expose fake download buttons.
+
+Every installer button must correspond to a real generated artifact or a valid installation workflow.
+
+---
+
+# 5. Downloads Page
+
+Build:
+
+`/downloads`
+
+as a premium enterprise deployment center.
+
+The page should clearly communicate:
+
+## Qguard Helix Agent Deployment
+
+"Deploy a lightweight quantum-security collector to your environment."
+
+Display:
+
+* Agent name
+* Agent type
+* Agent ID
+* Tenant
+* Environment
+* Assigned asset
+* Version
+* Platform
+* Architecture
+* Status
+* Last heartbeat
+* Last scan
+* Enrollment state
+* Connection state
+* Capabilities
+* Created date
+
+---
+
+# 6. Installation Workflow
+
+Implement a guided workflow:
+
+### Step 1 — Select Agent
+
+Choose:
+
+* Collector
+* Scanner
+* Patcher
+* Migration Operator
+
+### Step 2 — Select Target
+
+Choose:
+
+* Windows
+* Linux
+* Docker
+* Kubernetes
+* PowerShell
+* Cloud-Init
+
+### Step 3 — Configure Scope
+
+Allow:
+
+* Asset
+* Asset group
+* Environment
+* Allowed paths
+* Scan scope
+* Crypto discovery scope
+* Migration permissions
+
+### Step 4 — Generate Enrollment
+
+Generate a secure, tenant-scoped enrollment credential.
+
+Display:
+
+**Enrollment Token — SHOWN ONCE**
+
+The token must:
+
+* Be cryptographically random
+* Be scoped to the tenant
+* Be scoped to the agent
+* Have an expiration
+* Support rotation
+* Support revocation
+* Never be stored in plaintext if avoidable
+* Never appear in logs
+* Never be exposed through frontend source code
+
+Provide:
+
+* Copy
+* Reveal only once
+* Rotate
+* Revoke
+
+---
+
+# 7. Installation Command
+
+Generate platform-specific installation commands.
+
+Example Windows workflow:
+
+```powershell
+$env:QGUARD_TENANT_ID="..."
+$env:QGUARD_AGENT_ID="..."
+$env:QGUARD_AGENT_TOKEN="..."
+$env:QGUARD_API_URL="..."
+irm <secure-installer-endpoint> | iex
+```
+
+However, do NOT blindly execute remote scripts without appropriate security controls.
+
+Prefer:
+
+1. Download installer
+2. Verify signature/checksum
+3. Install
+4. Enroll
+5. Start service
+6. Verify connection
+
+Display:
+
+* Installation command
+* Download button
+* Copy button
+* Checksum
+* Signature
+* Version
+* Release date
+
+---
+
+# 8. Installer Button
+
+The "Installer" button shown in the current Quick Start UI must actually work.
+
+It should:
+
+1. Detect the selected platform.
+2. Generate or retrieve the correct installer.
+3. Bind it to the selected agent.
+4. Include the correct tenant/agent enrollment configuration.
+5. Provide integrity information.
+6. Download the real installer.
+7. Track the installation event.
+
+Do not implement this as a placeholder button.
+
+---
+
+# 9. Quick Start Integration
+
+Integrate the installer into the existing Quick Start workflow:
+
+### 1. Create Collector
+
+Completed when the agent exists.
+
+### 2. Install Collector
+
+Show:
+
+* Enrollment Token
+* Platform selector
+* Installation instructions
+* Installer download
+* Command
+* Checksum
+* Agent ID
+
+### 3. Verify Connection
+
+The system must automatically detect:
+
+* Agent heartbeat
+* Agent registration
+* Agent version
+* Hostname
+* Platform
+* IP/network metadata where authorized
+* Capabilities
+* Connection status
+
+Display:
+
+**Connected / Connecting / Offline / Error**
+
+### 4. Run First Scan
+
+Once the agent is connected:
+
+* Enable "Run First Scan"
+* Start discovery
+* Stream progress
+* Display findings in real time
+
+---
+
+# 10. Real-Time Connection Verification
+
+Do not rely exclusively on manual refresh.
+
+Implement real-time backend → frontend updates using the existing Qguard Helix realtime architecture.
+
+Use:
+
+* SSE where appropriate
+* Supabase Realtime where appropriate
+* WebSocket only where justified
+
+The frontend must receive events such as:
+
+```text
+agent.created
+agent.installation_started
+agent.enrollment_started
+agent.enrolled
+agent.connected
+agent.disconnected
+agent.heartbeat
+agent.scan_started
+agent.scan_progress
+agent.scan_completed
+agent.finding_detected
+agent.migration_started
+agent.migration_progress
+agent.migration_completed
+agent.upgrade_available
+agent.upgrade_started
+agent.upgrade_completed
+agent.error
+```
+
+Ensure events are:
+
+* Tenant scoped
+* Authenticated
+* Authorized
+* Ordered where necessary
+* Idempotent
+* Reconnect-safe
+
+---
+
+# 11. Agent Dashboard
+
+Enhance:
+
+`/dashboard/scanner?tab=agents`
+
+into the central Agent Management Console.
+
+Each agent should display:
+
+* Agent name
+* Agent ID
+* Type
+* Host
+* Platform
+* Version
+* Status
+* Health
+* Last heartbeat
+* Last scan
+* Findings
+* Quantum risk
+* PQC readiness
+* Capabilities
+* Current task
+* Assigned asset
+* Environment
+* Owner
+
+Statuses:
+
+* Online
+* Offline
+* Installing
+* Enrolling
+* Scanning
+* Updating
+* Migrating
+* Error
+* Disabled
+* Revoked
+
+---
+
+# 12. Agent Detail View
+
+Create a professional detail drawer/page containing:
+
+### Overview
+
+* Agent health
+* Version
+* Connection
+* Host
+* Environment
+* Asset
+
+### Capabilities
+
+Example:
+
+* Crypto Discovery
+* Certificate Discovery
+* TLS Inspection
+* PKI Discovery
+* Runtime Crypto
+* CBOM
+* Remediation
+* Migration
+* Telemetry
+
+### Activity
+
+Show chronological activity:
+
+```text
+11:43 Agent connected
+11:44 Initial inventory started
+11:45 RSA-2048 detected
+11:45 ECDSA detected
+11:46 TLS 1.3 detected
+11:46 Certificate inventory completed
+11:47 Quantum exposure calculated
+```
+
+### Findings
+
+Display findings linked to the actual asset.
+
+---
+
+# 13. Cryptographic Intelligence
+
+The agent must collect accurate cryptographic evidence.
+
+Detect where technically possible:
+
+### Algorithms
+
+* RSA
+* ECC
+* ECDSA
+* ECDH
+* Ed25519
+* X25519
+* AES
+* ChaCha20
+* SHA-2
+* SHA-3
+* ML-KEM
+* ML-DSA
+* Hybrid algorithms
+* Other supported cryptographic primitives
+
+### PQC
+
+Detect:
+
+* ML-KEM-768
+* ML-KEM-1024
+* ML-DSA-65
+* Hybrid X25519 + ML-KEM
+* Ed25519 + ML-DSA
+* TLS hybrid configurations
+
+Do not claim PQC support merely because a configuration file contains a string.
+
+Findings must be based on actual evidence.
+
+---
+
+# 14. Certificate & PKI Intelligence
+
+The agent must discover authorized certificates and PKI evidence.
+
+Collect:
+
+* Certificate subject
+* SAN
+* Issuer
+* Serial
+* Validity
+* Key type
+* Key size
+* Signature algorithm
+* Chain
+* TLS usage
+* Application association
+* Expiration
+* Trust status
+* PQC readiness
+* Quantum vulnerability
+
+Feed the results into:
+
+* Certificate Dashboard
+* PKI Dashboard
+* CBOM
+* Quantum Readiness
+* Migration Planner
+* Live Migration
+* Reports
+
+---
+
+# 15. Quantum Vulnerability Detection
+
+Create a deterministic detection engine.
+
+Do not rely on generic AI guesses for cryptographic findings.
+
+Classify findings such as:
+
+### Quantum Vulnerable
+
+Examples:
+
+* RSA
+* ECDSA
+* ECDH
+* classical DH
+* other public-key systems vulnerable to Shor's algorithm
+
+### Quantum Resilient
+
+Examples:
+
+* AES-256
+* SHA-3
+* approved PQC algorithms
+
+### Hybrid
+
+Examples:
+
+* X25519 + ML-KEM-768
+* Ed25519 + ML-DSA
+
+### Unknown
+
+When evidence is insufficient.
+
+Never fabricate certainty.
+
+Every finding should contain:
+
+* Detection
+* Evidence
+* Source
+* Algorithm
+* Location
+* Asset
+* Confidence
+* Risk
+* Quantum classification
+* Recommended remediation
+
+---
+
+# 16. Evidence-Based Results
+
+Every dashboard result must be traceable to evidence.
+
+For every finding provide:
+
+```text
+Finding
+Algorithm
+Asset
+Source
+Evidence
+Detection Method
+Timestamp
+Agent ID
+Collector Version
+Confidence
+Risk
+Recommendation
+```
+
+Example:
+
+```text
+Algorithm: RSA-2048
+Asset: www.example.com
+Source: TLS Certificate
+Agent: qguard-agent-001
+Evidence: Certificate public key algorithm
+Detected: 2026-08-14 11:45:23
+Classification: Quantum Vulnerable
+Risk: High
+Recommendation: Migrate to quantum-safe certificate/signature strategy
+```
+
+Do not generate fake evidence.
+
+---
+
+# 17. Dashboard Synchronization
+
+All agent-generated results must propagate correctly into the existing Qguard Helix UI.
+
+Wire backend data into:
+
+* Dashboard cards
+* Scanner
+* Assets
+* CBOM
+* Certificates
+* PKI
+* Quantum Readiness
+* Quantum Exposure Graph
+* Migration Planner
+* Live Migration
+* Runtime Cryptographic Intelligence
+* Reports
+* Compliance
+* Agent Console
+
+Do not duplicate conflicting state between modules.
+
+Use a canonical backend data model.
+
+---
+
+# 18. Live Migration Integration
+
+The Agent must integrate with:
+
+`/dashboard/live-migration`
+
+For migration jobs such as:
+
+```text
+Classical Crypto
+      ↓
+X25519 + ML-KEM-768
+```
+
+the workflow should be:
+
+```text
+Migration Job
+      ↓
+Agent Selection
+      ↓
+Agent Claim
+      ↓
+Preflight
+      ↓
+Backup
+      ↓
+Key Generation
+      ↓
+Hybrid Handshake
+      ↓
+Configuration/Certificate Deployment
+      ↓
+Validation
+      ↓
+Cutover
+      ↓
+Post-Migration Verification
+      ↓
+Monitoring
+```
+
+The existing Live Migration UI currently shows states such as:
+
+* Waiting
+* Unassigned
+* Pending
+* Agent Status
+* Current Step
+* Validation Logs
+* Local Config Ownership
+* Connector / Operator Credentials
+
+The Agent system must provide the backend state required to make these cards accurate.
+
+---
+
+# 19. Agent Claiming
+
+Agents should securely claim eligible jobs.
+
+A job must not automatically execute on every connected agent.
+
+Use:
+
+* Agent capability matching
+* Asset matching
+* Tenant matching
+* Scope matching
+* Policy matching
+* Approval status
+* Allowed paths
+* Connector authorization
+
+Example:
+
+```text
+Migration Job
+     ↓
+Target Asset = cloudflare.com
+     ↓
+Eligible Agent = Agent-001
+     ↓
+Capability Match = YES
+     ↓
+Policy Match = YES
+     ↓
+Approval = YES
+     ↓
+Agent Claims Job
+```
+
+---
+
+# 20. Local Configuration Ownership
+
+Support the existing concept shown in Live Migration:
+
+**Local Config Ownership**
+
+The agent may only modify local configuration when:
+
+* It is running on the correct asset
+* The target path is explicitly allowed
+* The job contains the approved path/configPath
+* The operation is authorized
+* The user/tenant has approved the operation
+
+Never allow unrestricted filesystem modification.
+
+---
+
+# 21. Secure Connector / Operator Credentials
+
+Do not place cloud provider secrets inside agent configuration.
+
+Use a secure connector model.
+
+Credentials should remain:
+
+* Backend-controlled
+* Tenant-scoped
+* Least privilege
+* Rotatable
+* Auditable
+
+The agent receives only the minimum operation necessary.
+
+---
+
+# 22. Agent Upgrade System
+
+Implement a secure agent update mechanism.
+
+Display:
+
+```text
+Current Version: 1.4.2
+Latest Version: 1.5.0
+Status: Update Available
+```
+
+Support:
+
+* Automatic update policy
+* Manual update
+* Scheduled update
+* Rollback
+* Version pinning
+* Upgrade history
+
+Verify:
+
+* Package signature
+* SHA-256/SHA-3 checksum
+* Version authenticity
+* Compatibility
+
+Do not allow arbitrary binaries to be pushed to agents.
+
+---
+
+# 23. Agent Security
+
+The agent itself is part of the security boundary.
+
+Implement:
+
+* Mutual authentication where supported
+* Short-lived credentials
+* Token rotation
+* Revocation
+* TLS 1.3
+* Secure local configuration
+* Secure credential storage
+* Least privilege
+* Signed releases
+* Integrity verification
+* Replay protection
+* Request authentication
+* Command authorization
+* Audit logging
+
+Never log:
+
+* Enrollment tokens
+* Private keys
+* Secrets
+* Provider credentials
+* API secrets
+
+---
+
+# 24. Agent Health Monitoring
+
+Create agent health telemetry:
+
+* CPU
+* Memory
+* Disk
+* Process health
+* Version
+* Heartbeat
+* Connection latency
+* Last scan
+* Scan duration
+* Error count
+* Queue depth
+* Current job
+* Upgrade status
+
+Do not collect unnecessary personal data.
+
+---
+
+# 25. Backend API
+
+Create or refactor APIs for:
+
+```text
+POST   /api/agents
+GET    /api/agents
+GET    /api/agents/:id
+PATCH  /api/agents/:id
+DELETE /api/agents/:id
+
+POST   /api/agents/:id/enrollment
+POST   /api/agents/:id/rotate-token
+POST   /api/agents/:id/revoke
+
+POST   /api/agents/:id/scan
+GET    /api/agents/:id/scans
+
+GET    /api/agents/:id/findings
+
+POST   /api/agents/:id/jobs
+GET    /api/agents/:id/jobs
+
+POST   /api/agents/:id/upgrade
+POST   /api/agents/:id/disable
+POST   /api/agents/:id/enable
+
+GET    /api/agents/:id/health
+GET    /api/agents/:id/telemetry
+
+GET    /api/agent-releases
+GET    /api/agent-releases/:platform
+```
+
+Adapt these to the existing Qguard Helix backend architecture rather than blindly creating duplicate endpoints.
+
+---
+
+# 26. Database Model
+
+Use a clean relational model.
+
+Potential entities:
+
+```text
+agents
+agent_enrollments
+agent_capabilities
+agent_heartbeats
+agent_versions
+agent_releases
+agent_jobs
+agent_job_events
+agent_findings
+agent_telemetry
+agent_installations
+agent_audit_events
+agent_scopes
+agent_permissions
+```
+
+All records must include appropriate:
+
+* tenant_id
+* created_at
+* updated_at
+* agent_id
+* asset_id where applicable
+
+Implement strict tenant isolation.
+
+---
+
+# 27. Frontend Hooks
+
+Create/refactor hooks such as:
+
+```text
+useAgents()
+useAgent()
+useAgentEnrollment()
+useAgentHealth()
+useAgentTelemetry()
+useAgentJobs()
+useAgentFindings()
+useAgentInstallation()
+useAgentUpgrade()
+useAgentEvents()
+useAgentSSE()
+```
+
+Hooks must:
+
+* Handle loading
+* Handle errors
+* Handle reconnects
+* Handle stale data
+* Handle optimistic updates where safe
+* Invalidate caches correctly
+* Respect tenant boundaries
+
+---
+
+# 28. SSE / Realtime Architecture
+
+Implement production-quality realtime behavior.
+
+Requirements:
+
+* Automatic reconnect
+* Exponential backoff
+* Event deduplication
+* Last-event recovery
+* Connection status
+* Heartbeat
+* Tenant authorization
+* Event filtering
+* Graceful disconnect
+
+Frontend must never display "Connected" when the backend connection is actually unavailable.
+
+---
+
+# 29. Accuracy & Data Integrity
+
+This is critical.
+
+Do not build simulated success states.
+
+The system must distinguish:
+
+```text
+Detected
+Verified
+Pending
+Unknown
+Failed
+Not Supported
+Not Scanned
+```
+
+Never convert:
+
+```text
+Unknown
+```
+
+into:
+
+```text
+Quantum Safe
+```
+
+Never convert:
+
+```text
+Pending
+```
+
+into:
+
+```text
+Completed
+```
+
+Never show:
+
+```text
+0 vulnerabilities
+```
+
+when the asset has not actually been scanned.
+
+Instead display:
+
+**Not Yet Assessed**
+
+---
+
+# 30. Premium Enterprise UI
+
+The interface should feel like a modern enterprise cybersecurity control plane.
+
+Use the existing Qguard Helix visual language:
+
+* Dark enterprise interface
+* Cyan/teal quantum-security accents
+* Clear typography
+* Dense but readable information
+* Minimal unnecessary decoration
+* High information hierarchy
+* Responsive layouts
+* Professional status indicators
+* Tooltips
+* Empty states
+* Skeleton loaders
+* Error states
+* Confirmation dialogs
+* Audit information
+
+Avoid excessive animations.
+
+Animations should communicate:
+
+* Connection
+* Progress
+* Processing
+* State transition
+
+not simply decoration.
+
+---
+
+# 31. Downloads Page UX
+
+Recommended structure:
+
+## Header
+
+**Qguard Helix Agent Center**
+
+Subtitle:
+
+"Deploy lightweight collectors and operators to discover, validate, and protect your cryptographic environment."
+
+---
+
+## Deployment Summary
+
+Cards:
+
+* Agents
+* Online
+* Offline
+* Scanning
+* Updates Available
+* Active Jobs
+
+---
+
+## Deploy New Agent
+
+Button:
+
+**+ Create Agent**
+
+Wizard:
+
+```text
+Agent Type
+    ↓
+Target Platform
+    ↓
+Scope
+    ↓
+Permissions
+    ↓
+Enrollment
+    ↓
+Install
+    ↓
+Verify
+```
+
+---
+
+## Existing Agents
+
+Table:
+
+| Agent | Type | Host | Platform | Version | Status | Last Seen | Risk | Actions |
+| ----- | ---- | ---- | -------- | ------- | ------ | --------- | ---- | ------- |
+
+Actions:
+
+* View
+* Scan
+* Upgrade
+* Pause
+* Disable
+* Revoke
+* Rotate Token
+* Remove
+
+---
+
+# 32. Installer Experience
+
+After clicking Install:
+
+Display a clear guided experience.
+
+### Install
+
+```text
+1. Download installer
+2. Verify package
+3. Install agent
+4. Start service
+5. Agent enrolls automatically
+6. Verify connection
+7. Run first scan
+```
+
+Display live status.
+
+Example:
+
+```text
+✓ Installer downloaded
+✓ Package verified
+✓ Agent installed
+✓ Agent service started
+✓ Enrollment successful
+✓ Backend connection established
+→ Waiting for first scan
+```
+
+---
+
+# 33. First Scan
+
+After successful enrollment:
+
+Show:
+
+**Run First Scan**
+
+The scan should report progress:
+
+```text
+Connecting to agent
+      ↓
+Collecting system inventory
+      ↓
+Discovering cryptography
+      ↓
+Inspecting certificates
+      ↓
+Analyzing TLS
+      ↓
+Building CBOM
+      ↓
+Calculating quantum exposure
+      ↓
+Publishing findings
+      ↓
+Scan complete
+```
+
+Results must stream into the dashboard.
+
+---
+
+# 34. Failure Handling
+
+Implement professional failure states.
+
+Examples:
+
+### Enrollment Failed
+
+Show:
+
+* Reason
+* Agent ID
+* Timestamp
+* Suggested action
+* Retry
+
+### Agent Offline
+
+Show:
+
+* Last heartbeat
+* Last known version
+* Last known host
+* Troubleshooting steps
+
+### Scan Failed
+
+Show:
+
+* Failed stage
+* Error
+* Partial results
+* Retry
+
+### Migration Failed
+
+Show:
+
+* Failed step
+* Validation result
+* Rollback state
+* Recommended action
+
+Never silently fail.
+
+---
+
+# 35. Audit & Compliance
+
+Every important agent operation must produce an audit event.
+
+Examples:
+
+```text
+agent_created
+agent_token_generated
+agent_installed
+agent_enrolled
+agent_connected
+agent_scan_started
+agent_scan_completed
+finding_created
+migration_requested
+migration_approved
+migration_started
+migration_completed
+agent_upgraded
+agent_revoked
+agent_disabled
+```
+
+Include:
+
+* Tenant
+* User
+* Agent
+* Asset
+* Timestamp
+* Operation
+* Result
+* Correlation ID
+
+---
+
+# 36. Testing Requirements
+
+Before considering the feature complete, test the complete lifecycle.
+
+### Agent Lifecycle
+
+```text
+Create
+→ Generate Token
+→ Download
+→ Install
+→ Enroll
+→ Connect
+→ Heartbeat
+→ Scan
+→ Findings
+→ Dashboard
+→ Upgrade
+→ Revoke
+```
+
+### Scanner Lifecycle
+
+```text
+Agent
+→ Discovery
+→ Crypto Detection
+→ Certificate Detection
+→ TLS Detection
+→ PQC Detection
+→ CBOM
+→ Quantum Risk
+→ Dashboard
+```
+
+### Migration Lifecycle
+
+```text
+Migration Job
+→ Agent Eligibility
+→ Agent Claim
+→ Preflight
+→ Execute
+→ Validate
+→ Complete/Rollback
+→ Telemetry
+→ Dashboard
+```
+
+Test:
+
+* Windows
+* Linux
+* Docker
+* Kubernetes
+* Offline agent
+* Expired token
+* Revoked token
+* Token rotation
+* Network interruption
+* SSE disconnect
+* Backend restart
+* Agent restart
+* Duplicate events
+* Failed migration
+* Failed scan
+* Partial scan
+* Upgrade failure
+* Rollback
+
+---
+
+# 37. Important Implementation Rule
+
+Before creating new architecture, inspect the existing Qguard Helix codebase.
+
+Identify and reuse:
+
+* Existing agent APIs
+* Existing scanner services
+* Existing migration APIs
+* Existing Supabase schema
+* Existing SSE infrastructure
+* Existing authentication
+* Existing tenant isolation
+* Existing asset model
+* Existing CBOM model
+* Existing certificate model
+* Existing PKI model
+* Existing telemetry model
+* Existing Live Migration state machine
+* Existing hooks
+
+Do not create parallel duplicate systems.
+
+Refactor existing infrastructure where possible.
+
+---
+
+# 38. Definition of Done
+
+This feature is complete only when:
+
+* `/downloads` is fully functional.
+* Agent creation from `/dashboard/scanner?tab=agents` works.
+* Real installers can be generated/downloaded.
+* Enrollment works.
+* Token rotation works.
+* Token revocation works.
+* Agents authenticate securely.
+* Agent heartbeats reach the backend.
+* Agent health appears correctly in the UI.
+* First scan works.
+* Cryptographic discovery works.
+* Certificate discovery works.
+* TLS discovery works.
+* PQC detection works.
+* Quantum vulnerability detection works.
+* Findings are evidence-based.
+* CBOM is updated.
+* PKI data is updated.
+* Dashboard cards reflect backend truth.
+* SSE/realtime updates work.
+* Live Migration can correctly identify and claim eligible agents.
+* Migration progress is streamed to the UI.
+* Validation results are displayed accurately.
+* Agent upgrades work.
+* Failed operations are visible.
+* Audit logs are generated.
+* Tenant isolation is enforced.
+* No secrets are exposed.
+* No fake/simulated scan results are used.
+* No placeholder functionality remains.
+
+---
+
+# Final Engineering Principle
+
+Qguard Helix Agent is not merely a downloadable executable.
+
+It is the **trusted execution and evidence-collection layer between the customer's real infrastructure and the Qguard Helix Quantum Cyber Defense Platform.**
+
+Therefore prioritize:
+
+**Security → Accuracy → Evidence → Authorization → Reliability → Realtime Telemetry → Usability → Performance**
+
+Every result shown in the Qguard Helix dashboard must ultimately be traceable to:
+
+**Real Asset → Real Agent → Real Evidence → Real Backend State → Real Dashboard Result**
+
+Build this as a production-ready enterprise security subsystem, not a prototype.

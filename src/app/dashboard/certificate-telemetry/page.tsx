@@ -1,5 +1,5 @@
-import ObservabilityDashboard from '../_components/ObservabilityDashboard';
+import CertificateTelemetry from './CertificateTelemetry';
 
 export default function CertificateTelemetryPage() {
-  return <ObservabilityDashboard mode="certificate" />;
+  return <CertificateTelemetry />;
 }

@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { supabaseFetch } from './supabase-fetch'
 
 type HeaderLikeRequest = {
   headers: {
@@ -103,7 +104,7 @@ export async function getServerUserFromToken(token: string | null) {
     return null
   }
 
-  const client = createClient(config.url, config.serviceKey)
+  const client = createClient(config.url, config.serviceKey, { global: { fetch: supabaseFetch } })
   const { data: { user }, error } = await client.auth.getUser(token)
   
   if (!error && user) {
@@ -112,7 +113,7 @@ export async function getServerUserFromToken(token: string | null) {
 
   const fallback = fallbackConfig()
   if (config.source !== 'fallback' && hasConfig(fallback)) {
-    const fallbackClient = createClient(fallback.url, fallback.serviceKey)
+    const fallbackClient = createClient(fallback.url, fallback.serviceKey, { global: { fetch: supabaseFetch } })
     const fallbackResult = await fallbackClient.auth.getUser(token)
     return fallbackResult.error ? null : fallbackResult.data.user
   }

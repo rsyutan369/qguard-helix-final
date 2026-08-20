@@ -21,6 +21,7 @@ import QguardMessagingSecureChat from './app/qguard-messaging/secure-chat/page';
 import QguardMessagingQuantumVault from './app/qguard-messaging/quantum-vault/page';
 import QuantumReadinessAssessmentPage from './app/quantum-readiness-assessment/page';
 import PublicScanPage from './app/public-scan/page';
+import DownloadsPage from './app/downloads/page';
 import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
@@ -31,7 +32,7 @@ import MigrationIntelligencePage from './app/dashboard/migration-intelligence/pa
 import PqcOnboardingPage from './app/dashboard/pqc-onboarding/page';
 import CbomExplorer from './app/dashboard/cbom_explorer/page';
 import MigrationTimeline from './app/dashboard/migration_timeline/page';
-import ComplianceDashboard from './app/dashboard/compliance_dashboard/page';
+import CompliancePage from './app/dashboard/compliance/page';
 import LiveMigrationOps from './app/dashboard/live_migration_ops/page';
 import DriftDetection from './app/dashboard/drift_detection/page';
 import ScannerDashboard from './app/dashboard/scanner_dashboard/page';
@@ -89,6 +90,7 @@ import QFeaturesPage from './app/dashboard/q-features/page';
 import EcosystemDependencyMapPage from './app/dashboard/ecosystem-dependency-map/page';
 import VendorPqcReadinessPage from './app/dashboard/vendor-pqc-readiness/page';
 import TrustChainAnalyzerPage from './app/dashboard/trust-chain-analyzer/page';
+import TrustDashboardPage from './app/dashboard/trust-dashboard/page';
 import TrustStateDiscoveryPage from './app/dashboard/trust-state-discovery/page';
 import HybridCryptoCompatibilityLabPage from './app/dashboard/hybrid-crypto-lab/page';
 import PQAuthPage from './app/dashboard/pqauth/page';
@@ -133,6 +135,9 @@ export default function App() {
           <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />
           <Route path="/quantum-readiness-assessment" element={<QuantumReadinessAssessmentPage />} />
           {/* Public Quantum Exposure Assessment™ — anonymous edge scanner. */}
+          {/* Qguard Helix Agent Center - lightweight agent deployment (Pro+) */}
+          <Route path="/downloads" element={<DownloadsPage />} />
+          <Route path="/agent-center" element={<Navigate to="/downloads" replace />} />
           <Route path="/public-scan" element={<PublicScanPage />} />
           <Route path="/public-scanner" element={<Navigate to="/public-scan" replace />} />
           <Route path="/scan" element={<Navigate to="/public-scan" replace />} />
@@ -177,8 +182,9 @@ export default function App() {
           <Route path="migration-timeline" element={<MigrationTimeline />} />
           <Route path="migration_timeline" element={<MigrationTimeline />} />
 
-          <Route path="compliance" element={<ComplianceDashboard />} />
-          <Route path="compliance_dashboard" element={<ComplianceDashboard />} />
+          <Route path="compliance" element={<CompliancePage />} />
+          {/* Legacy path kept so bookmarks resolve to the Compliance Command Center. */}
+          <Route path="compliance_dashboard" element={<CompliancePage />} />
 
           <Route path="live-ops" element={<LiveMigrationOps />} />
           <Route path="live-migration" element={<LiveMigrationOps />} />
@@ -238,6 +244,7 @@ export default function App() {
           <Route path="ecosystem-dependency-map" element={<EcosystemDependencyMapPage />} />
           <Route path="vendor-pqc-readiness" element={<VendorPqcReadinessPage />} />
           <Route path="trust-chain-analyzer" element={<TrustChainAnalyzerPage />} />
+          <Route path="trust-dashboard" element={<TrustDashboardPage />} />
           <Route path="trust-state-discovery" element={<TrustStateDiscoveryPage />} />
           <Route path="hybrid-crypto-lab" element={<HybridCryptoCompatibilityLabPage />} />
           <Route path="pqauth" element={<PQAuthPage />} />

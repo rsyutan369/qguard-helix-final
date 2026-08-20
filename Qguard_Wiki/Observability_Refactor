@@ -1,0 +1,785 @@
+# Enterprise TLS & PKI Intelligence — Refactor, Wire, Synchronize & Enhance
+
+Kindly **enhance, refactor, and fully integrate** the following Qguard Helix dashboard pages:
+
+* `http://localhost:3000/dashboard/tls-telemetry`
+* `http://localhost:3000/dashboard/pki-visibility`
+* `http://localhost:3000/dashboard/protocol-analytics`
+* `http://localhost:3000/dashboard/tls-orchestrator`
+
+The goal is to turn these four pages into a **single, cohesive Enterprise TLS/PKI Intelligence and Orchestration system**.
+
+Do not treat these pages as isolated dashboards. They must share the same authenticated tenant context, asset inventory, scan results, cryptographic findings, certificates, TLS observations, protocol telemetry, PQC posture, and remediation state.
+
+---
+
+# 1. Core Requirement — Real Data Only
+
+All information displayed on these pages must be based on the user's **actual authenticated tenant data**.
+
+Do NOT use:
+
+* Hardcoded dashboard statistics
+* Fake assets
+* Mock TLS connections
+* Static certificate records
+* Placeholder vulnerabilities
+* Random generated telemetry
+* Fake PQC adoption percentages
+* Demo-only charts
+* Artificial protocol results
+
+If real data is unavailable, clearly show:
+
+**No Data Available**
+
+or
+
+**Awaiting Telemetry**
+
+rather than inventing results.
+
+Every metric, table, chart, finding, certificate, protocol observation, and recommendation must be traceable back to actual backend data.
+
+---
+
+# 2. Backend ↔ Frontend Integration
+
+Audit and refactor the complete data flow:
+
+**Scanner / Agents / Collectors**
+→ **Backend APIs**
+→ **Database**
+→ **Real-Time Event / SSE Layer**
+→ **React Hooks**
+→ **Dashboard Components**
+
+Ensure all four pages are properly wired to the existing backend architecture.
+
+Audit:
+
+* API endpoints
+* API clients
+* React hooks
+* Server-Sent Events (SSE)
+* WebSocket connections if already implemented
+* polling mechanisms
+* authentication
+* tenant isolation
+* loading states
+* error handling
+* retry behavior
+* cache invalidation
+* real-time updates
+* database queries
+* data normalization
+* TypeScript types/interfaces
+
+Remove dead, duplicated, disconnected, or obsolete data sources.
+
+Do not create a second competing data model if the platform already has an existing source of truth.
+
+---
+
+# 3. Shared Source of Truth
+
+The four pages must consume compatible data from the same underlying tenant and asset model.
+
+Ensure consistent identifiers for:
+
+* Asset ID
+* Host ID
+* Device ID
+* Service ID
+* Certificate ID
+* Endpoint ID
+* Scan ID
+* Finding ID
+* Tenant ID
+* Agent/Collector ID
+
+A finding shown on one page must refer to the **same underlying finding** when displayed elsewhere.
+
+Example:
+
+If `/dashboard/tls-telemetry` identifies:
+
+`RSA-2048 certificate on asset ABC`
+
+then `/dashboard/pki-visibility` and `/dashboard/protocol-analytics` must reference the same asset/certificate/finding rather than creating separate records.
+
+---
+
+# 4. Cross-Page Synchronization
+
+These four pages must be tightly synchronized.
+
+## TLS Telemetry
+
+Focus on:
+
+* Runtime TLS visibility
+* TLS connection telemetry
+* Encryption coverage
+* Cipher suites
+* TLS versions
+* Key exchange
+* Authentication algorithms
+* Certificate usage
+* PQC/hybrid TLS usage
+* Weak cryptographic configurations
+* Connection health
+* Runtime cryptographic weaknesses
+
+## PKI Visibility
+
+Focus on:
+
+* Certificate inventory
+* Certificate lifecycle
+* Expiration
+* Issuers
+* Subject/SAN
+* Trust chains
+* Root/intermediate CA relationships
+* Certificate algorithms
+* Key sizes
+* Signature algorithms
+* Weak/legacy certificates
+* Certificate dependencies
+* PQC readiness
+* Migration priority
+
+## Protocol Analytics
+
+Focus on:
+
+* TLS protocol versions
+* Handshake behavior
+* Cipher negotiation
+* Key exchange
+* Signature algorithms
+* Downgrade signals
+* Legacy protocol usage
+* Handshake failures
+* Protocol anomalies
+* Hybrid TLS adoption
+* PQC negotiation
+* Quantum-safe protocol posture
+
+## TLS Orchestrator
+
+Focus on:
+
+* TLS configuration management
+* Migration actions
+* TLS/PQC policy enforcement
+* Hybrid TLS rollout
+* Certificate replacement
+* Endpoint remediation
+* Migration readiness
+* Configuration drift
+* Deployment status
+* Validation
+* Rollback
+* Remediation workflow
+
+---
+
+# 5. PQC TLS Posture Dashboard
+
+Create a unified **PQC TLS Posture Dashboard** across these pages.
+
+Primary message:
+
+**End-to-End Visibility | Hybrid TLS | NIST/CNSA 2.0 Ready**
+
+Display meaningful enterprise metrics such as:
+
+* Total TLS-enabled assets
+* TLS 1.3 adoption
+* Legacy TLS usage
+* PQC/hybrid TLS adoption
+* X25519 usage
+* X25519 + ML-KEM usage
+* ML-KEM usage
+* Classical-only endpoints
+* Quantum-vulnerable endpoints
+* Weak cipher configurations
+* Certificate algorithms at risk
+* Certificates approaching expiration
+* Handshake failures
+* Downgrade signals
+* Configuration drift
+* Migration-ready assets
+* Assets requiring remediation
+
+Only display metrics that can be calculated from actual tenant data.
+
+---
+
+# 6. Real-Time Updates
+
+Implement or repair SSE-based real-time synchronization.
+
+When new telemetry, scans, certificates, assets, findings, or migration events arrive, the relevant pages should automatically update without requiring a full browser refresh.
+
+Examples:
+
+New scan completed
+→ asset inventory updates
+
+New certificate discovered
+→ PKI Visibility updates
+
+New TLS telemetry received
+→ TLS Telemetry updates
+
+New handshake observation
+→ Protocol Analytics updates
+
+TLS configuration changed
+→ TLS Orchestrator updates
+
+PQC migration completed
+→ PQC posture and migration metrics update
+
+Ensure SSE connections have:
+
+* Proper authentication
+* Tenant isolation
+* Connection lifecycle management
+* Reconnection handling
+* Backoff
+* Cleanup on unmount
+* Duplicate-event protection
+* Event validation
+* Error handling
+
+Avoid unnecessary API requests or duplicate SSE connections.
+
+---
+
+# 7. React Hooks
+
+Audit and standardize hooks used by these pages.
+
+Prefer reusable hooks such as:
+
+* `useTlsTelemetry()`
+* `usePkiVisibility()`
+* `useProtocolAnalytics()`
+* `useTlsOrchestrator()`
+* `usePqcTlsPosture()`
+* `useTenantAssets()`
+* `useCryptoFindings()`
+* `useCertificates()`
+* `useRealtimeTelemetry()`
+
+Reuse existing hooks when available.
+
+Do not create duplicate hooks that retrieve the same backend information differently.
+
+Hooks must correctly handle:
+
+* loading
+* success
+* empty state
+* errors
+* retries
+* stale data
+* real-time updates
+* tenant changes
+* authentication changes
+
+---
+
+# 8. Cross-Dashboard Consistency
+
+Ensure these pages remain aligned with the rest of Qguard Helix.
+
+Cross-check against:
+
+* PQC Scanner
+* Assets & CBOM
+* Quantum Readiness
+* Migration Planner
+* Live Migration
+* Runtime Cryptographic Intelligence
+* Harvest Now Risk
+* Quantum Certification
+* PQAuth Identity Migration Engine
+* Agent/Collector telemetry
+* Security findings
+
+If an asset is classified as quantum-vulnerable in one module, the related TLS/PKI pages should reflect that same classification where applicable.
+
+If an asset becomes PQC-ready after migration, its posture should update consistently across all relevant modules.
+
+---
+
+# 9. Enterprise-Grade UX
+
+Refactor the UI to feel like a **premium enterprise cybersecurity command center**, not a collection of generic analytics pages.
+
+Use:
+
+* Clear information hierarchy
+* Minimal visual clutter
+* Professional typography
+* Consistent spacing
+* Consistent cards
+* Consistent status indicators
+* High-quality data tables
+* Useful charts only
+* Responsive layouts
+* Accessible controls
+* Clear empty states
+* Clear loading states
+* Clear error states
+* Tooltips for technical terminology
+* Drill-down capability
+* Search and filtering
+* Sorting
+* Pagination where necessary
+* Time-range selection where applicable
+
+Do not overload the interface with unnecessary widgets.
+
+Prioritize information that helps users:
+
+**Understand → Investigate → Prioritize → Remediate → Verify**
+
+---
+
+# 10. TLS Telemetry Page
+
+Refactor `/dashboard/tls-telemetry` into a real-time TLS observability console.
+
+Include:
+
+### Overview
+
+* TLS connections
+* Active assets
+* TLS 1.3 percentage
+* PQC/hybrid percentage
+* Legacy TLS percentage
+* Weak configuration count
+* Handshake failures
+* Downgrade signals
+
+### Telemetry Timeline
+
+Display actual TLS events over time.
+
+### Asset Telemetry
+
+Show:
+
+* Asset
+* Endpoint
+* TLS version
+* Cipher
+* Key exchange
+* Signature
+* Certificate
+* PQC status
+* Last observed
+* Risk
+
+### Investigation
+
+Allow users to drill into an individual asset/connection and view the underlying telemetry evidence.
+
+---
+
+# 11. PKI Visibility Page
+
+Refactor `/dashboard/pki-visibility` into an enterprise PKI intelligence console.
+
+Include:
+
+### Certificate Inventory
+
+* Certificate
+* Asset
+* Subject
+* SAN
+* Issuer
+* Expiration
+* Algorithm
+* Key size
+* Signature algorithm
+* Trust status
+* PQC status
+* Risk
+
+### Lifecycle
+
+Show:
+
+* Valid
+* Expiring soon
+* Expired
+* Revoked
+* Unknown
+
+### Trust Chain
+
+Provide an interactive view of:
+
+Root CA
+→ Intermediate CA
+→ Certificate
+→ Asset/Service
+
+### Quantum Readiness
+
+Identify certificates using cryptography that requires migration.
+
+---
+
+# 12. Protocol Analytics Page
+
+Refactor `/dashboard/protocol-analytics` into a protocol intelligence console.
+
+Include:
+
+* TLS version distribution
+* Cipher distribution
+* Key-exchange distribution
+* Signature algorithm distribution
+* TLS 1.3 adoption
+* Hybrid TLS adoption
+* Legacy protocol usage
+* Handshake failures
+* Downgrade indicators
+* Protocol anomalies
+* PQC adoption trend
+
+Allow users to drill from:
+
+**Protocol → Asset → Endpoint → Evidence**
+
+---
+
+# 13. TLS Orchestrator Page
+
+Refactor `/dashboard/tls-orchestrator` into the operational control plane.
+
+The orchestrator should consume the findings from the other TLS/PKI modules.
+
+Show:
+
+### Migration Queue
+
+Assets requiring:
+
+* TLS upgrade
+* Certificate replacement
+* Cipher update
+* Key exchange migration
+* Hybrid TLS enablement
+* PQC migration
+* Configuration remediation
+
+### Status
+
+* Not Started
+* Planned
+* Ready
+* In Progress
+* Validating
+* Completed
+* Failed
+* Rolled Back
+
+### Actions
+
+Where backend capabilities already exist, support:
+
+* Create migration plan
+* Start remediation
+* Apply policy
+* Validate configuration
+* Re-scan
+* Compare before/after
+* Roll back
+* View evidence
+
+Do not expose UI actions that are not actually supported by the backend.
+
+---
+
+# 14. Evidence-Driven Findings
+
+Every important security finding should provide evidence.
+
+Example:
+
+**Finding:** Legacy TLS configuration detected
+
+Show:
+
+* Asset
+* Endpoint
+* Observed protocol
+* Observed timestamp
+* Evidence source
+* Scan/telemetry ID
+* Risk
+* Impact
+* Recommended remediation
+* Current migration status
+
+Avoid vague statements such as:
+
+"Your TLS configuration is vulnerable."
+
+Instead show the actual evidence supporting the finding.
+
+---
+
+# 15. Risk & PQC Classification
+
+Use consistent classifications across all four pages.
+
+Suggested statuses:
+
+* Quantum Safe
+* PQC Ready
+* Hybrid Ready
+* Migration Required
+* Quantum Vulnerable
+* Legacy
+* Critical
+* Unknown
+
+Ensure the same asset does not receive contradictory classifications between pages unless the underlying evidence genuinely differs.
+
+---
+
+# 16. Data Freshness
+
+Clearly communicate data freshness.
+
+Show:
+
+* Last updated
+* Last scan
+* Last telemetry received
+* Last certificate observation
+* Last configuration change
+
+Where appropriate:
+
+**Live**
+
+**Updated 12 seconds ago**
+
+**Last observed 5 minutes ago**
+
+Never imply real-time visibility if the backend data is actually stale.
+
+---
+
+# 17. Performance
+
+Ensure the refactor does not negatively impact application performance.
+
+Optimize:
+
+* API requests
+* SSE connections
+* React rendering
+* expensive calculations
+* charts
+* large tables
+* filtering
+* sorting
+* database queries
+
+Use pagination/virtualization for large datasets where appropriate.
+
+Do not load thousands of records into the browser unnecessarily.
+
+---
+
+# 18. Security
+
+Maintain strict tenant isolation.
+
+Every request must respect the authenticated user's:
+
+* Tenant ID
+* User ID
+* Permissions
+* Roles
+* Asset scope
+
+Never allow one tenant to access another tenant's TLS telemetry, certificates, assets, findings, or orchestration data.
+
+Validate all SSE events and API responses against the authenticated tenant context.
+
+---
+
+# 19. Error & Empty States
+
+Every page must gracefully handle:
+
+### Loading
+
+Display a professional skeleton/loading state.
+
+### No Data
+
+Display:
+
+**No TLS/PKI telemetry available yet.**
+
+Explain what the user needs to do next.
+
+### Error
+
+Display a useful error message and retry option.
+
+### Offline / SSE Disconnected
+
+Clearly indicate:
+
+**Real-time connection unavailable**
+
+and automatically attempt reconnection.
+
+---
+
+# 20. Navigation & Drill-Down
+
+Users should be able to navigate naturally between related information.
+
+Examples:
+
+TLS Telemetry finding
+→ Open Asset
+
+Asset
+→ View Certificate
+
+Certificate
+→ View PKI chain
+
+PKI finding
+→ Open Protocol Analytics
+
+Protocol issue
+→ Open TLS Orchestrator
+
+Orchestrator finding
+→ Migration Planner
+
+Migration completed
+→ Re-scan / Validate
+
+This should create a continuous workflow:
+
+**Discover → Analyze → Prioritize → Orchestrate → Migrate → Validate**
+
+---
+
+# 21. Architecture Refactor
+
+Before implementing UI changes, inspect the existing codebase.
+
+Identify:
+
+* Existing API endpoints
+* Existing services
+* Existing database schemas
+* Existing Supabase queries
+* Existing SSE infrastructure
+* Existing hooks
+* Existing TypeScript types
+* Existing shared UI components
+* Existing asset models
+* Existing scanner results
+* Existing crypto findings
+
+Reuse existing architecture wherever possible.
+
+Do not duplicate backend logic simply to make a page work.
+
+If an existing API or hook is incorrect, refactor it at the source so other modules benefit from the correction.
+
+---
+
+# 22. No Fake Functionality
+
+This is critical.
+
+Do not create buttons that appear functional but do nothing.
+
+Do not create:
+
+* Fake migrations
+* Fake scans
+* Fake certificate replacements
+* Fake telemetry
+* Fake remediation
+* Fake progress bars
+* Fake SSE events
+
+Every operational action must call a real backend implementation.
+
+If functionality does not yet exist, clearly label it as unavailable or implement the required backend functionality properly.
+
+---
+
+# 23. Final Acceptance Criteria
+
+Consider this implementation complete only when:
+
+* [ ] All four pages are fully functional.
+* [ ] All pages use authenticated tenant data.
+* [ ] No hardcoded production metrics remain.
+* [ ] Backend APIs are correctly connected.
+* [ ] React hooks are correctly wired.
+* [ ] SSE/real-time updates work correctly.
+* [ ] Data remains synchronized between all four pages.
+* [ ] Asset IDs and finding IDs remain consistent.
+* [ ] TLS findings match the actual scanner/telemetry results.
+* [ ] PKI information matches actual certificate data.
+* [ ] Protocol analytics reflects actual observations.
+* [ ] TLS Orchestrator consumes actual findings and migration state.
+* [ ] PQC posture is calculated from real evidence.
+* [ ] Cross-dashboard data remains consistent with Qguard Helix.
+* [ ] Tenant isolation is enforced.
+* [ ] Loading, empty, error, and disconnected states work correctly.
+* [ ] Drill-down navigation works.
+* [ ] Tables, charts, filters, and search work correctly.
+* [ ] No fake buttons or simulated backend actions remain.
+* [ ] No duplicate/conflicting data sources remain.
+* [ ] Performance is acceptable with large asset inventories.
+* [ ] UI is responsive and accessible.
+* [ ] The overall experience is premium, professional, and enterprise-grade.
+
+---
+
+# Final Objective
+
+Transform these four pages from separate dashboards into a unified:
+
+## **Qguard Helix TLS & PKI Intelligence Command Center**
+
+The user should be able to move seamlessly through:
+
+**TLS Telemetry**
+→ **PKI Visibility**
+→ **Protocol Analytics**
+→ **TLS Orchestrator**
+→ **Migration**
+→ **Validation**
+
+All information must be **real, tenant-specific, evidence-driven, synchronized, and continuously updated**.
+
+The final implementation should feel like a production-grade enterprise cybersecurity platform with a single coherent source of truth for TLS, PKI, protocol security, and post-quantum migration readiness.

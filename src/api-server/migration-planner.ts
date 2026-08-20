@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { buildSnapshot } from './quantum-readiness'
 import { buildReportModel } from '@/services/reporting/ReportEvidence'
 import { DEFAULT_COST_ASSUMPTIONS, normalizeToWholeHours } from '@/lib/migration/cost-model'
@@ -540,7 +541,10 @@ async function writeQueue(client: any, userId: string, assetIds: string[], email
  * so the list and the detail pane can never show different numbers.
  */
 const PORTFOLIO_TTL_MS = 15_000
-const portfolioCache = new Map<string, { at: number; promise: Promise<AssetPortfolio> }>()
+// Single-flight per tenant: an in-flight build is shared even past the TTL, so a
+// slow window can no longer be duplicated into a query storm by the next SSE
+// poll. See lib/single-flight-cache.ts.
+const portfolioCache = createSingleFlightCache<AssetPortfolio>(PORTFOLIO_TTL_MS)
 
 async function computePortfolio(token: string, userId: string): Promise<AssetPortfolio> {
   const client = createAuthClient(token)
@@ -597,16 +601,7 @@ async function computePortfolio(token: string, userId: string): Promise<AssetPor
  * evidence. Sharing the cache is what keeps asset facts identical across pages.
  */
 export async function buildPortfolio(token: string, userId: string, force = false): Promise<AssetPortfolio> {
-  const cached = portfolioCache.get(userId)
-  if (!force && cached && Date.now() - cached.at < PORTFOLIO_TTL_MS) return cached.promise
-  const promise = computePortfolio(token, userId)
-  portfolioCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => portfolioCache.delete(userId))
-  if (portfolioCache.size > 500) {
-    const now = Date.now()
-    for (const [key, value] of portfolioCache) if (now - value.at > PORTFOLIO_TTL_MS) portfolioCache.delete(key)
-  }
-  return promise
+  return portfolioCache.get(userId, () => computePortfolio(token, userId), force)
 }
 
 /** Selector row — the bounded projection the asset list renders. */

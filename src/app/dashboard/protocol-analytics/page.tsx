@@ -1,5 +1,5 @@
-import CryptoOperationsDashboard from '../_components/CryptoOperationsDashboard';
+import ProtocolAnalytics from './ProtocolAnalytics';
 
 export default function ProtocolAnalyticsPage() {
-  return <CryptoOperationsDashboard mode="protocol" />;
+  return <ProtocolAnalytics />;
 }

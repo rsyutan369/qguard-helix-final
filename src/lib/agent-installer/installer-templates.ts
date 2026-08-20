@@ -1,0 +1,942 @@
+/**
+ * Qguard Helix Agent — installer artifact generators.
+ *
+ * Every generator returns a REAL, runnable artifact (spec §4, §7, §8): the
+ * script downloads the published single-file agent runtime from this tenant's
+ * own control plane, verifies its SHA-256 against the checksum embedded at
+ * generation time, writes a 0600 configuration file, registers a supervised
+ * service and reports each installation phase back to the backend.
+ *
+ * Pure functions — no Node or browser APIs — so the API server can render them
+ * and the frontend can display/checksum them identically.
+ *
+ * Security posture (spec §23):
+ *  - the enrollment token is written only to a root/Administrator-owned 0600
+ *    configuration file, never echoed to stdout and never sent in a URL;
+ *  - the runtime is fetched over the tenant's API URL with agent credentials in
+ *    headers and rejected unless its digest matches;
+ *  - no remote `curl | sh` bootstrap: download, verify, then execute.
+ */
+
+import {
+  AGENT_MIN_NODE_MAJOR,
+  AGENT_RUNTIME_FILENAME,
+  agentPlatform,
+  agentRole,
+  type AgentPlatform,
+  type AgentRole,
+} from './agent-release'
+
+export interface InstallerPolicy {
+  intervalSeconds: number
+  allowedTargets: string[]
+  allowedPaths: string[]
+  scanTypes: string[]
+  alertThreshold: string
+}
+
+export interface InstallerContext {
+  apiUrl: string
+  tenantId: string
+  agentId: string
+  agentToken: string
+  agentName: string
+  role: AgentRole
+  environment: string
+  version: string
+  /** SHA-256 (hex) of the published runtime bundle this installer will accept. */
+  runtimeSha256: string
+  policy: InstallerPolicy
+  /** Set when the operator explicitly authorised configuration remediation. */
+  remediationEnabled: boolean
+  /** Set when the operator explicitly authorised Live Migration execution. */
+  migrationEnabled: boolean
+  generatedAt: string
+  generatedBy: string
+}
+
+const RUNTIME_PATH = '/api/v1/agent-installer/runtime'
+const EVENT_PATH = '/api/v1/agent-installer/installation-event'
+const SELF_PATH = '/api/v1/agent-installer/self'
+
+function stripTrailingSlash(url: string) {
+  return url.replace(/\/+$/, '')
+}
+
+/**
+ * Identity fields (URL, ids, token, version, digest) are machine-generated and
+ * must be embedded verbatim. Anything outside their alphabet means the caller
+ * passed something it should not have, so fail loudly rather than emit a script
+ * that could be injected into.
+ */
+function safeValue(value: string, field: string) {
+  const text = String(value ?? '')
+  if (/["'`$\\\r\n]/.test(text)) {
+    throw new Error(`Installer field ${field} contains characters that cannot be embedded safely`)
+  }
+  return text
+}
+
+/**
+ * Operator-supplied scope values (allowed paths, allowed targets, names) legitimately
+ * contain Windows backslashes and colons, so they cannot use the strict validator.
+ * Strip every character that is meaningful to a shell, to PowerShell, or to a YAML
+ * scalar; backslash survives and is escaped per-format at embed time.
+ */
+/** Characters that are meaningful to a shell, PowerShell or a YAML scalar. */
+const SHELL_META = new Set(['"', "'", '`', '$', ';', '|', '&', '<', '>'])
+function sanitizeScalar(value: unknown): string {
+  const text = String(value ?? '')
+  let out = ''
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    if (code < 32 || code === 127) { out += ' '; continue }
+    if (SHELL_META.has(char)) continue
+    out += char
+  }
+  return out.trim()
+}
+function sanitizeList(values: string[]): string[] {
+  return (values || []).map(sanitizeScalar).filter(Boolean)
+}
+
+/** Backslashes are escape characters inside a double-quoted YAML scalar. */
+function yamlScalar(value: string) {
+  return value.replace(/\\/g, '\\\\')
+}
+
+interface NormalisedContext extends InstallerContext {
+  apiUrl: string
+  runtimeUrl: string
+  eventUrl: string
+  selfUrl: string
+  /** Shell/PowerShell-safe CSVs (embedded in quoted heredocs and single quotes). */
+  scanTypesCsv: string
+  allowedTargetsCsv: string
+  allowedPathsCsv: string
+  /** Same CSVs with backslashes escaped for double-quoted YAML scalars. */
+  scanTypesYaml: string
+  allowedTargetsYaml: string
+  allowedPathsYaml: string
+  roleLabel: string
+}
+
+function normalise(context: InstallerContext): NormalisedContext {
+  const apiUrl = stripTrailingSlash(safeValue(context.apiUrl, 'apiUrl'))
+  const policy = context.policy || {
+    intervalSeconds: 60,
+    allowedTargets: [],
+    allowedPaths: [],
+    scanTypes: [],
+    alertThreshold: 'moderate',
+  }
+  const scanTypesCsv = sanitizeList(policy.scanTypes).join(',')
+  const allowedTargetsCsv = sanitizeList(policy.allowedTargets).join(',')
+  const allowedPathsCsv = sanitizeList(policy.allowedPaths).join(',')
+
+  return {
+    ...context,
+    apiUrl,
+    tenantId: safeValue(context.tenantId, 'tenantId'),
+    agentId: safeValue(context.agentId, 'agentId'),
+    agentToken: safeValue(context.agentToken, 'agentToken'),
+    agentName: sanitizeScalar(context.agentName) || 'Qguard Helix Agent',
+    environment: sanitizeScalar(context.environment) || 'production',
+    version: safeValue(context.version, 'version'),
+    runtimeSha256: safeValue(context.runtimeSha256, 'runtimeSha256'),
+    generatedAt: sanitizeScalar(context.generatedAt),
+    generatedBy: sanitizeScalar(context.generatedBy),
+    runtimeUrl: `${apiUrl}${RUNTIME_PATH}`,
+    eventUrl: `${apiUrl}${EVENT_PATH}`,
+    selfUrl: `${apiUrl}${SELF_PATH}`,
+    scanTypesCsv,
+    allowedTargetsCsv,
+    allowedPathsCsv,
+    scanTypesYaml: yamlScalar(scanTypesCsv),
+    allowedTargetsYaml: yamlScalar(allowedTargetsCsv),
+    allowedPathsYaml: yamlScalar(allowedPathsCsv),
+    roleLabel: agentRole(context.role).label,
+  }
+}
+
+function headerBanner(context: NormalisedContext, comment: string) {
+  return [
+    `${comment} Qguard Helix Lightweight Agent installer`,
+    `${comment} Role         : ${context.roleLabel}`,
+    `${comment} Agent        : ${context.agentName} (${context.agentId})`,
+    `${comment} Environment  : ${context.environment}`,
+    `${comment} Version      : ${context.version}`,
+    `${comment} Control plane: ${context.apiUrl}`,
+    `${comment} Generated    : ${context.generatedAt}`,
+    `${comment}`,
+    `${comment} This file contains a tenant enrollment credential. Treat it as a secret:`,
+    `${comment} do not commit it, share it, or store it outside your secret manager.`,
+    `${comment} Rotate the token from the Qguard Helix Agent Center if it is exposed.`,
+  ].join('\n')
+}
+
+/* ------------------------------------------------------------------ */
+/* Linux — systemd                                                     */
+/* ------------------------------------------------------------------ */
+
+function linuxInstaller(context: NormalisedContext) {
+  return `#!/usr/bin/env bash
+${headerBanner(context, '#')}
+
+set -euo pipefail
+
+API_URL="${context.apiUrl}"
+TENANT_ID="${context.tenantId}"
+AGENT_ID="${context.agentId}"
+AGENT_TOKEN="${context.agentToken}"
+AGENT_VERSION="${context.version}"
+RUNTIME_SHA256="${context.runtimeSha256}"
+INSTALL_DIR="/opt/qguard-agent"
+CONFIG_DIR="/etc/qguard-agent"
+CONFIG_FILE="$CONFIG_DIR/agent.env"
+RUNTIME_FILE="$INSTALL_DIR/${AGENT_RUNTIME_FILENAME}"
+SERVICE_NAME="qguard-agent"
+
+log()  { printf '\\033[36m[qguard]\\033[0m %s\\n' "$1"; }
+ok()   { printf '\\033[32m  OK\\033[0m %s\\n' "$1"; }
+fail() { printf '\\033[31m  FAILED\\033[0m %s\\n' "$1" >&2; }
+
+# Phase reporting. Never prints or logs the token; failures are non-fatal so a
+# transient control-plane outage cannot block a local installation.
+report() {
+  curl -fsS -m 15 -X POST "${context.eventUrl}" \\
+    -H "content-type: application/json" \\
+    -H "x-qguard-agent-id: $AGENT_ID" \\
+    -H "x-qguard-agent-token: $AGENT_TOKEN" \\
+    -d "{\\"phase\\":\\"$1\\",\\"detail\\":\\"$2\\",\\"platform\\":\\"linux\\",\\"version\\":\\"$AGENT_VERSION\\"}" \\
+    >/dev/null 2>&1 || true
+}
+
+on_error() {
+  fail "Installation aborted on line $1"
+  report "failed" "installer aborted at line $1"
+  exit 1
+}
+trap 'on_error $LINENO' ERR
+
+if [ "$(id -u)" -ne 0 ]; then
+  fail "Run this installer as root (sudo ./$(basename "$0"))."
+  exit 1
+fi
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64)   ARCH_LABEL="x86_64" ;;
+  aarch64|arm64)  ARCH_LABEL="aarch64" ;;
+  *) fail "Unsupported architecture: $ARCH (x86_64 and aarch64 are supported)."; exit 1 ;;
+esac
+log "Host: $(uname -s) $ARCH_LABEL / $(hostname)"
+report "installation_started" "$ARCH_LABEL"
+
+# --- 1. Node.js runtime ------------------------------------------------------
+ensure_node() {
+  if command -v node >/dev/null 2>&1; then
+    local major
+    major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+    if [ "$major" -ge ${AGENT_MIN_NODE_MAJOR} ]; then
+      ok "Node.js $(node -v) present"
+      return 0
+    fi
+    log "Node.js $(node -v) is older than v${AGENT_MIN_NODE_MAJOR}; installing a supported runtime"
+  else
+    log "Node.js not found; installing"
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq nodejs || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q nodejs || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q nodejs || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache nodejs || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install nodejs || true
+  fi
+
+  if ! command -v node >/dev/null 2>&1; then
+    fail "Node.js ${AGENT_MIN_NODE_MAJOR}+ is required and could not be installed automatically."
+    fail "Install it from https://nodejs.org/en/download and re-run this installer."
+    report "failed" "node runtime unavailable"
+    exit 1
+  fi
+  ok "Node.js $(node -v) installed"
+}
+ensure_node
+
+for tool in curl sha256sum; do
+  command -v "$tool" >/dev/null 2>&1 || { fail "Required tool missing: $tool"; exit 1; }
+done
+
+# --- 2. Download the agent runtime ------------------------------------------
+install -d -m 0755 "$INSTALL_DIR"
+install -d -m 0700 "$CONFIG_DIR"
+TMP_RUNTIME="$(mktemp)"
+log "Downloading agent runtime v$AGENT_VERSION"
+curl -fsSL -m 120 "${context.runtimeUrl}" \\
+  -H "x-qguard-agent-id: $AGENT_ID" \\
+  -H "x-qguard-agent-token: $AGENT_TOKEN" \\
+  -o "$TMP_RUNTIME"
+ok "Runtime downloaded ($(wc -c < "$TMP_RUNTIME") bytes)"
+report "runtime_downloaded" "$AGENT_VERSION"
+
+# --- 3. Verify integrity -----------------------------------------------------
+ACTUAL_SHA="$(sha256sum "$TMP_RUNTIME" | awk '{print $1}')"
+if [ "$ACTUAL_SHA" != "$RUNTIME_SHA256" ]; then
+  rm -f "$TMP_RUNTIME"
+  fail "Checksum mismatch. Expected $RUNTIME_SHA256, got $ACTUAL_SHA."
+  fail "The package was NOT installed. Re-generate the installer from the Agent Center."
+  report "failed" "runtime checksum mismatch"
+  exit 1
+fi
+ok "SHA-256 verified"
+report "package_verified" "$RUNTIME_SHA256"
+
+install -m 0644 "$TMP_RUNTIME" "$RUNTIME_FILE"
+rm -f "$TMP_RUNTIME"
+
+# --- 4. Configuration (0600, root-owned) ------------------------------------
+umask 077
+cat > "$CONFIG_FILE" <<'QGUARD_CONFIG_EOF'
+QGUARD_API_URL=${context.apiUrl}
+QGUARD_TENANT_ID=${context.tenantId}
+QGUARD_AGENT_ID=${context.agentId}
+QGUARD_AGENT_TOKEN=${context.agentToken}
+QGUARD_AGENT_ROLE=${context.role}
+QGUARD_AGENT_ENVIRONMENT=${context.environment}
+QGUARD_AGENT_VERSION=${context.version}
+QGUARD_SCAN_TYPES=${context.scanTypesCsv}
+QGUARD_ALLOWED_TARGETS=${context.allowedTargetsCsv}
+QGUARD_ALLOWED_PATHS=${context.allowedPathsCsv}
+QGUARD_ENABLE_REMEDIATION=${context.remediationEnabled ? 'true' : 'false'}
+QGUARD_ENABLE_CONFIG_PATCHES=${context.remediationEnabled ? 'true' : 'false'}
+QGUARD_ENABLE_MIGRATION=${context.migrationEnabled ? 'true' : 'false'}
+QGUARD_NATIVE_RUNTIME_ENABLED=true
+QGUARD_CONFIG_EOF
+chmod 0600 "$CONFIG_FILE"
+chown root:root "$CONFIG_FILE"
+ok "Configuration written to $CONFIG_FILE (0600 root)"
+
+# --- 5. systemd service ------------------------------------------------------
+NODE_BIN="$(command -v node)"
+cat > "/etc/systemd/system/$SERVICE_NAME.service" <<QGUARD_UNIT_EOF
+[Unit]
+Description=Qguard Helix Lightweight Agent (${context.roleLabel})
+Documentation=${context.apiUrl}/downloads
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$CONFIG_FILE
+ExecStart=$NODE_BIN $RUNTIME_FILE watch
+Restart=always
+RestartSec=15
+User=root
+WorkingDirectory=$INSTALL_DIR
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+QGUARD_UNIT_EOF
+
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+ok "systemd unit installed"
+report "agent_installed" "$RUNTIME_FILE"
+
+systemctl restart "$SERVICE_NAME"
+sleep 2
+if systemctl is-active --quiet "$SERVICE_NAME"; then
+  ok "Service $SERVICE_NAME started"
+  report "service_started" "systemd"
+else
+  fail "Service failed to start. Inspect: journalctl -u $SERVICE_NAME -n 50"
+  report "failed" "service did not start"
+  exit 1
+fi
+
+# --- 6. Verify the control plane sees this agent -----------------------------
+log "Verifying backend connection"
+CONNECTED="no"
+for attempt in $(seq 1 20); do
+  RESPONSE="$(curl -fsS -m 10 "${context.selfUrl}" \\
+    -H "x-qguard-agent-id: $AGENT_ID" \\
+    -H "x-qguard-agent-token: $AGENT_TOKEN" 2>/dev/null || echo '')"
+  case "$RESPONSE" in
+    *'"connected":true'*) CONNECTED="yes"; break ;;
+  esac
+  sleep 3
+done
+
+if [ "$CONNECTED" = "yes" ]; then
+  ok "Backend connection established"
+  echo
+  log "Installation complete. Open ${context.apiUrl}/downloads to run the first scan."
+else
+  fail "The agent installed and started, but no heartbeat has reached the control plane yet."
+  fail "Check outbound HTTPS access to ${context.apiUrl} and: journalctl -u $SERVICE_NAME -n 50"
+  echo
+  log "The Agent Center will show 'Connecting' until the first heartbeat arrives."
+fi
+`
+}
+
+/* ------------------------------------------------------------------ */
+/* Windows — scheduled task supervised service                         */
+/* ------------------------------------------------------------------ */
+
+function windowsInstaller(context: NormalisedContext) {
+  return `#Requires -Version 5.1
+${headerBanner(context, '#')}
+
+[CmdletBinding()]
+param(
+  [switch] $Uninstall
+)
+
+$ErrorActionPreference = 'Stop'
+
+$ApiUrl        = '${context.apiUrl}'
+$TenantId      = '${context.tenantId}'
+$AgentId       = '${context.agentId}'
+$AgentToken    = '${context.agentToken}'
+$AgentVersion  = '${context.version}'
+$RuntimeSha256 = '${context.runtimeSha256}'
+$InstallDir    = Join-Path $env:ProgramData 'QGuardHelix\\Agent'
+$ConfigFile    = Join-Path $InstallDir 'agent.env'
+$RuntimeFile   = Join-Path $InstallDir '${AGENT_RUNTIME_FILENAME}'
+$TaskName      = 'QGuardHelixAgent'
+
+function Write-Step($Message) { Write-Host "[qguard] $Message" -ForegroundColor Cyan }
+function Write-Ok($Message)   { Write-Host "  OK     $Message" -ForegroundColor Green }
+function Write-Fail($Message) { Write-Host "  FAILED $Message" -ForegroundColor Red }
+
+# Phase reporting. Never writes the token to the console or to a URL.
+function Report-Phase($Phase, $Detail) {
+  try {
+    $body = @{ phase = $Phase; detail = "$Detail"; platform = 'windows'; version = $AgentVersion } | ConvertTo-Json -Compress
+    Invoke-RestMethod -Method Post -Uri "${context.eventUrl}" -TimeoutSec 15 -ContentType 'application/json' \`
+      -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken } -Body $body | Out-Null
+  } catch { }
+}
+
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  Write-Fail 'Run this installer from an elevated PowerShell session (Run as Administrator).'
+  exit 1
+}
+
+if ($Uninstall) {
+  Write-Step 'Removing Qguard Helix agent'
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
+  Write-Ok 'Agent removed. Revoke the agent from the Agent Center to invalidate its token.'
+  exit 0
+}
+
+Write-Step "Host: $env:COMPUTERNAME ($env:PROCESSOR_ARCHITECTURE)"
+Report-Phase 'installation_started' $env:PROCESSOR_ARCHITECTURE
+
+# --- 1. Node.js runtime ------------------------------------------------------
+function Resolve-NodePath {
+  $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  foreach ($candidate in @("$env:ProgramFiles\\nodejs\\node.exe", "\${env:ProgramFiles(x86)}\\nodejs\\node.exe")) {
+    if (Test-Path $candidate) { return $candidate }
+  }
+  return $null
+}
+
+$NodePath = Resolve-NodePath
+if ($NodePath) {
+  $nodeMajor = 0
+  try { $nodeMajor = [int]((& $NodePath -p 'process.versions.node.split(".")[0]') 2>$null) } catch { }
+  if ($nodeMajor -lt ${AGENT_MIN_NODE_MAJOR}) { $NodePath = $null; Write-Step "Installed Node.js is older than v${AGENT_MIN_NODE_MAJOR}" }
+}
+
+if (-not $NodePath) {
+  Write-Step 'Installing Node.js LTS via winget'
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    try {
+      winget install --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements | Out-Null
+    } catch { }
+    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+    $NodePath = Resolve-NodePath
+  }
+}
+
+if (-not $NodePath) {
+  Write-Fail "Node.js ${AGENT_MIN_NODE_MAJOR}+ is required and could not be installed automatically."
+  Write-Fail 'Install it from https://nodejs.org/en/download and re-run this installer.'
+  Report-Phase 'failed' 'node runtime unavailable'
+  exit 1
+}
+Write-Ok "Node.js runtime: $NodePath"
+
+# --- 2. Download the agent runtime ------------------------------------------
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$TempRuntime = Join-Path $env:TEMP ("qguard-agent-" + [guid]::NewGuid().ToString('N') + '.cjs')
+Write-Step "Downloading agent runtime v$AgentVersion"
+try {
+  Invoke-WebRequest -Uri "${context.runtimeUrl}" -OutFile $TempRuntime -TimeoutSec 120 -UseBasicParsing \`
+    -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken }
+} catch {
+  Write-Fail "Runtime download failed: $($_.Exception.Message)"
+  Report-Phase 'failed' 'runtime download failed'
+  exit 1
+}
+Write-Ok "Runtime downloaded ($((Get-Item $TempRuntime).Length) bytes)"
+Report-Phase 'runtime_downloaded' $AgentVersion
+
+# --- 3. Verify integrity -----------------------------------------------------
+$ActualSha = (Get-FileHash -Path $TempRuntime -Algorithm SHA256).Hash.ToLower()
+if ($ActualSha -ne $RuntimeSha256.ToLower()) {
+  Remove-Item -Force $TempRuntime
+  Write-Fail "Checksum mismatch. Expected $RuntimeSha256, got $ActualSha."
+  Write-Fail 'The package was NOT installed. Re-generate the installer from the Agent Center.'
+  Report-Phase 'failed' 'runtime checksum mismatch'
+  exit 1
+}
+Write-Ok 'SHA-256 verified'
+Report-Phase 'package_verified' $RuntimeSha256
+
+Move-Item -Force $TempRuntime $RuntimeFile
+
+# --- 4. Configuration (Administrators + SYSTEM only) ------------------------
+$configLines = @(
+  "QGUARD_API_URL=${context.apiUrl}",
+  "QGUARD_TENANT_ID=${context.tenantId}",
+  "QGUARD_AGENT_ID=${context.agentId}",
+  "QGUARD_AGENT_TOKEN=${context.agentToken}",
+  "QGUARD_AGENT_ROLE=${context.role}",
+  "QGUARD_AGENT_ENVIRONMENT=${context.environment}",
+  "QGUARD_AGENT_VERSION=${context.version}",
+  "QGUARD_SCAN_TYPES=${context.scanTypesCsv}",
+  "QGUARD_ALLOWED_TARGETS=${context.allowedTargetsCsv}",
+  "QGUARD_ALLOWED_PATHS=${context.allowedPathsCsv}",
+  "QGUARD_ENABLE_REMEDIATION=${context.remediationEnabled ? 'true' : 'false'}",
+  "QGUARD_ENABLE_CONFIG_PATCHES=${context.remediationEnabled ? 'true' : 'false'}",
+  "QGUARD_ENABLE_MIGRATION=${context.migrationEnabled ? 'true' : 'false'}",
+  "QGUARD_NATIVE_RUNTIME_ENABLED=true"
+)
+Set-Content -Path $ConfigFile -Value $configLines -Encoding ASCII -Force
+
+# Strip inheritance so only SYSTEM and Administrators can read the token.
+$acl = Get-Acl $ConfigFile
+$acl.SetAccessRuleProtection($true, $false)
+$acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+foreach ($identity in @('NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators')) {
+  $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')
+  $acl.AddAccessRule($rule)
+}
+Set-Acl -Path $ConfigFile -AclObject $acl
+Write-Ok "Configuration written to $ConfigFile (SYSTEM + Administrators only)"
+
+# --- 5. Supervised startup task (runs as SYSTEM, restarts on failure) -------
+$action = New-ScheduledTaskAction -Execute $NodePath -Argument "\`"$RuntimeFile\`" watch" -WorkingDirectory $InstallDir
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$taskPrincipal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable \`
+  -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $taskPrincipal \`
+  -Settings $settings -Description 'Qguard Helix Lightweight Agent (${context.roleLabel})' -Force | Out-Null
+Write-Ok "Startup task '$TaskName' registered (SYSTEM, highest privileges)"
+Report-Phase 'agent_installed' $RuntimeFile
+
+Start-ScheduledTask -TaskName $TaskName
+Start-Sleep -Seconds 3
+$taskState = (Get-ScheduledTask -TaskName $TaskName).State
+if ($taskState -eq 'Running' -or $taskState -eq 'Ready') {
+  Write-Ok "Agent service started (state: $taskState)"
+  Report-Phase 'service_started' "scheduled-task:$taskState"
+} else {
+  Write-Fail "Agent task is in state '$taskState'."
+  Report-Phase 'failed' "scheduled task state $taskState"
+}
+
+# --- 6. Verify the control plane sees this agent -----------------------------
+Write-Step 'Verifying backend connection'
+$connected = $false
+for ($i = 0; $i -lt 20; $i++) {
+  try {
+    $status = Invoke-RestMethod -Method Get -Uri "${context.selfUrl}" -TimeoutSec 10 \`
+      -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken }
+    if ($status.data.connected -eq $true) { $connected = $true; break }
+  } catch { }
+  Start-Sleep -Seconds 3
+}
+
+if ($connected) {
+  Write-Ok 'Backend connection established'
+  Write-Step "Installation complete. Open ${context.apiUrl}/downloads to run the first scan."
+} else {
+  Write-Fail 'The agent installed and started, but no heartbeat has reached the control plane yet.'
+  Write-Fail "Check outbound HTTPS access to ${context.apiUrl}, then review the task history in Task Scheduler."
+  Write-Step "The Agent Center will show 'Connecting' until the first heartbeat arrives."
+}
+`
+}
+
+/* ------------------------------------------------------------------ */
+/* PowerShell — portable, no installation                              */
+/* ------------------------------------------------------------------ */
+
+function powershellPortable(context: NormalisedContext) {
+  return `#Requires -Version 5.1
+${headerBanner(context, '#')}
+#
+# Portable runner: downloads the agent runtime to a temporary directory, verifies
+# it, and runs a single collection cycle in the foreground. Nothing is installed
+# and no service is registered. Use qguard-agent-install.ps1 for a persistent
+# deployment.
+
+[CmdletBinding()]
+param(
+  [ValidateSet('scan','watch')]
+  [string] $Mode = 'scan'
+)
+
+$ErrorActionPreference = 'Stop'
+
+$AgentId       = '${context.agentId}'
+$AgentToken    = '${context.agentToken}'
+$RuntimeSha256 = '${context.runtimeSha256}'
+
+$node = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $node) {
+  Write-Host 'Node.js ${AGENT_MIN_NODE_MAJOR}+ is required on PATH. Install from https://nodejs.org/en/download' -ForegroundColor Red
+  exit 1
+}
+
+$workDir = Join-Path $env:TEMP ('qguard-agent-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+$runtime = Join-Path $workDir '${AGENT_RUNTIME_FILENAME}'
+
+Write-Host '[qguard] Downloading agent runtime v${context.version}' -ForegroundColor Cyan
+Invoke-WebRequest -Uri "${context.runtimeUrl}" -OutFile $runtime -TimeoutSec 120 -UseBasicParsing \`
+  -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken }
+
+$actual = (Get-FileHash -Path $runtime -Algorithm SHA256).Hash.ToLower()
+if ($actual -ne $RuntimeSha256.ToLower()) {
+  Remove-Item -Recurse -Force $workDir
+  Write-Host "  FAILED Checksum mismatch. Expected $RuntimeSha256, got $actual." -ForegroundColor Red
+  exit 1
+}
+Write-Host '  OK     SHA-256 verified' -ForegroundColor Green
+
+$env:QGUARD_API_URL                 = '${context.apiUrl}'
+$env:QGUARD_TENANT_ID               = '${context.tenantId}'
+$env:QGUARD_AGENT_ID                = $AgentId
+$env:QGUARD_AGENT_TOKEN             = $AgentToken
+$env:QGUARD_AGENT_ROLE              = '${context.role}'
+$env:QGUARD_AGENT_ENVIRONMENT       = '${context.environment}'
+$env:QGUARD_AGENT_VERSION           = '${context.version}'
+$env:QGUARD_SCAN_TYPES              = '${context.scanTypesCsv}'
+$env:QGUARD_ALLOWED_TARGETS         = '${context.allowedTargetsCsv}'
+$env:QGUARD_ALLOWED_PATHS           = '${context.allowedPathsCsv}'
+$env:QGUARD_ENABLE_REMEDIATION      = '${context.remediationEnabled ? 'true' : 'false'}'
+$env:QGUARD_ENABLE_CONFIG_PATCHES   = '${context.remediationEnabled ? 'true' : 'false'}'
+$env:QGUARD_ENABLE_MIGRATION        = '${context.migrationEnabled ? 'true' : 'false'}'
+$env:QGUARD_NATIVE_RUNTIME_ENABLED  = 'true'
+
+try {
+  & $node.Source $runtime $Mode
+} finally {
+  Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
+  Remove-Item Env:\\QGUARD_AGENT_TOKEN -ErrorAction SilentlyContinue
+}
+`
+}
+
+/* ------------------------------------------------------------------ */
+/* Docker — compose                                                    */
+/* ------------------------------------------------------------------ */
+
+function dockerCompose(context: NormalisedContext) {
+  // `$$VAR` escapes Compose interpolation so the value is resolved by the
+  // container shell from the environment block rather than substituted here.
+  return `${headerBanner(context, '#')}
+#
+# Start:  docker compose -f ${agentPlatform('docker').filename} up -d
+# Logs:   docker compose -f ${agentPlatform('docker').filename} logs -f
+# Stop:   docker compose -f ${agentPlatform('docker').filename} down
+
+services:
+  qguard-agent:
+    image: node:22-alpine
+    container_name: qguard-agent
+    restart: unless-stopped
+    read_only: false
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      QGUARD_API_URL: "${context.apiUrl}"
+      QGUARD_TENANT_ID: "${context.tenantId}"
+      QGUARD_AGENT_ID: "${context.agentId}"
+      QGUARD_AGENT_TOKEN: "${context.agentToken}"
+      QGUARD_AGENT_ROLE: "${context.role}"
+      QGUARD_AGENT_ENVIRONMENT: "${context.environment}"
+      QGUARD_AGENT_VERSION: "${context.version}"
+      QGUARD_SCAN_TYPES: "${context.scanTypesYaml}"
+      QGUARD_ALLOWED_TARGETS: "${context.allowedTargetsYaml}"
+      QGUARD_ALLOWED_PATHS: "${context.allowedPathsYaml}"
+      QGUARD_ENABLE_REMEDIATION: "${context.remediationEnabled ? 'true' : 'false'}"
+      QGUARD_ENABLE_CONFIG_PATCHES: "${context.remediationEnabled ? 'true' : 'false'}"
+      QGUARD_ENABLE_MIGRATION: "${context.migrationEnabled ? 'true' : 'false'}"
+      QGUARD_NATIVE_RUNTIME_ENABLED: "true"
+      QGUARD_RUNTIME_SHA256: "${context.runtimeSha256}"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        echo "[qguard] downloading agent runtime v${context.version}"
+        wget -q --header="x-qguard-agent-id: $$QGUARD_AGENT_ID" \\
+             --header="x-qguard-agent-token: $$QGUARD_AGENT_TOKEN" \\
+             -O /tmp/${AGENT_RUNTIME_FILENAME} "${context.runtimeUrl}"
+        echo "$$QGUARD_RUNTIME_SHA256  /tmp/${AGENT_RUNTIME_FILENAME}" | sha256sum -c - \\
+          || { echo "[qguard] FAILED checksum mismatch - refusing to run"; exit 1; }
+        echo "[qguard] SHA-256 verified"
+        exec node /tmp/${AGENT_RUNTIME_FILENAME} watch
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f ${AGENT_RUNTIME_FILENAME} > /dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+`
+}
+
+/* ------------------------------------------------------------------ */
+/* Kubernetes                                                          */
+/* ------------------------------------------------------------------ */
+
+function kubernetesManifest(context: NormalisedContext) {
+  const b64 = (value: string) => value // stringData keeps values readable; k8s encodes on write
+  return `${headerBanner(context, '#')}
+#
+# Apply:  kubectl apply -f ${agentPlatform('kubernetes').filename}
+# Status: kubectl -n qguard-helix get pods -l app=qguard-agent
+# Logs:   kubectl -n qguard-helix logs -l app=qguard-agent -f
+# Remove: kubectl delete -f ${agentPlatform('kubernetes').filename}
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qguard-helix
+  labels:
+    app.kubernetes.io/part-of: qguard-helix
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qguard-agent
+  namespace: qguard-helix
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: qguard-agent-credentials
+  namespace: qguard-helix
+type: Opaque
+stringData:
+  QGUARD_AGENT_ID: "${b64(context.agentId)}"
+  QGUARD_AGENT_TOKEN: "${b64(context.agentToken)}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qguard-agent-config
+  namespace: qguard-helix
+data:
+  QGUARD_API_URL: "${context.apiUrl}"
+  QGUARD_TENANT_ID: "${context.tenantId}"
+  QGUARD_AGENT_ROLE: "${context.role}"
+  QGUARD_AGENT_ENVIRONMENT: "${context.environment}"
+  QGUARD_AGENT_VERSION: "${context.version}"
+  QGUARD_SCAN_TYPES: "${context.scanTypesYaml}"
+  QGUARD_ALLOWED_TARGETS: "${context.allowedTargetsYaml}"
+  QGUARD_ALLOWED_PATHS: "${context.allowedPathsYaml}"
+  QGUARD_ENABLE_REMEDIATION: "${context.remediationEnabled ? 'true' : 'false'}"
+  QGUARD_ENABLE_CONFIG_PATCHES: "${context.remediationEnabled ? 'true' : 'false'}"
+  QGUARD_ENABLE_MIGRATION: "${context.migrationEnabled ? 'true' : 'false'}"
+  QGUARD_NATIVE_RUNTIME_ENABLED: "true"
+  QGUARD_RUNTIME_SHA256: "${context.runtimeSha256}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qguard-agent
+  namespace: qguard-helix
+  labels:
+    app: qguard-agent
+    app.kubernetes.io/name: qguard-agent
+    app.kubernetes.io/version: "${context.version}"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qguard-agent
+  template:
+    metadata:
+      labels:
+        app: qguard-agent
+    spec:
+      serviceAccountName: qguard-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: agent
+          image: node:22-alpine
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: qguard-agent-config
+            - secretRef:
+                name: qguard-agent-credentials
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "[qguard] downloading agent runtime v${context.version}"
+              wget -q --header="x-qguard-agent-id: $QGUARD_AGENT_ID" \\
+                   --header="x-qguard-agent-token: $QGUARD_AGENT_TOKEN" \\
+                   -O /tmp/${AGENT_RUNTIME_FILENAME} "${context.runtimeUrl}"
+              echo "$QGUARD_RUNTIME_SHA256  /tmp/${AGENT_RUNTIME_FILENAME}" | sha256sum -c - \\
+                || { echo "[qguard] FAILED checksum mismatch - refusing to run"; exit 1; }
+              echo "[qguard] SHA-256 verified"
+              exec node /tmp/${AGENT_RUNTIME_FILENAME} watch
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "96Mi"
+            limits:
+              cpu: "500m"
+              memory: "384Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+`
+}
+
+/* ------------------------------------------------------------------ */
+/* Cloud-init                                                          */
+/* ------------------------------------------------------------------ */
+
+function cloudInit(context: NormalisedContext) {
+  const install = linuxInstaller(context)
+    .split('\n')
+    .map((line) => (line ? `      ${line}` : ''))
+    .join('\n')
+
+  return `#cloud-config
+${headerBanner(context, '#')}
+#
+# Paste into the instance User Data field at launch. The agent is installed,
+# verified and started on first boot.
+
+package_update: true
+packages:
+  - curl
+  - coreutils
+
+write_files:
+  - path: /opt/qguard-agent/bootstrap-install.sh
+    permissions: '0700'
+    owner: root:root
+    content: |
+${install}
+
+runcmd:
+  - [ bash, /opt/qguard-agent/bootstrap-install.sh ]
+  - [ rm, -f, /opt/qguard-agent/bootstrap-install.sh ]
+
+final_message: "Qguard Helix agent provisioning finished after $UPTIME seconds"
+`
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                          */
+/* ------------------------------------------------------------------ */
+
+export interface GeneratedInstaller {
+  platform: AgentPlatform
+  filename: string
+  contentType: string
+  language: string
+  content: string
+  /** Command the operator runs after saving the file. */
+  runCommand: string
+  privileges: string
+  prerequisites: string[]
+  service: string
+  architectures: string[]
+}
+
+const GENERATORS: Record<AgentPlatform, (context: NormalisedContext) => string> = {
+  linux: linuxInstaller,
+  windows: windowsInstaller,
+  powershell: powershellPortable,
+  docker: dockerCompose,
+  kubernetes: kubernetesManifest,
+  'cloud-init': cloudInit,
+}
+
+export function generateInstaller(platformId: AgentPlatform, context: InstallerContext): GeneratedInstaller {
+  const platform = agentPlatform(platformId)
+  const normalised = normalise(context)
+  const generator = GENERATORS[platform.id]
+  const content = generator(normalised)
+  return {
+    platform: platform.id,
+    filename: platform.filename,
+    contentType: platform.contentType,
+    language: platform.language,
+    content,
+    runCommand: platform.runCommand(platform.filename),
+    privileges: platform.privileges,
+    prerequisites: platform.prerequisites,
+    service: platform.service,
+    architectures: platform.architectures,
+  }
+}
+
+/**
+ * Short, copy-pasteable command shown next to the download button. It does NOT
+ * contain the enrollment token — the token lives only inside the downloaded
+ * artifact (spec §6: never expose the token through a URL or frontend source).
+ */
+export function installQuickCommand(platformId: AgentPlatform): string {
+  const platform = agentPlatform(platformId)
+  return platform.runCommand(platform.filename)
+}

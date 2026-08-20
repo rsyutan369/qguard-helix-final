@@ -371,10 +371,21 @@ export function useAgentCollector(enabled: boolean) {
       .map((e) => e.observed_at || e.created_at)
       .filter(Boolean)
       .sort((x, y) => Date.parse(String(y)) - Date.parse(String(x)))[0] || null;
+    /*
+     * A collector that has NEVER sent a heartbeat is awaiting installation — it
+     * is not "offline", which means it checked in and then stopped. Folding the
+     * two together made this page report 3 offline collectors while the Agent
+     * Center reported 3 awaiting install, for the same three rows (spec §17,
+     * §29: one canonical state, and absence of data is never a status claim).
+     */
+    const awaitingInstall = agents.filter(
+      (agent) => !agent.last_seen_at && !agent.revoked_at && agent.status !== 'revoked',
+    ).length;
     return {
       registered: agents.length,
       online,
-      offline: Math.max(0, agents.length - online - revoked),
+      awaitingInstall,
+      offline: Math.max(0, agents.length - online - revoked - awaitingInstall),
       revoked,
       assetsDiscovered: distinctAssets,
       quantumRisks: openAlerts.length,

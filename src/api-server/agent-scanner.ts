@@ -18,6 +18,13 @@ import {
   cloudSdkPatchAdapterReadiness,
   executeCloudConnectorPatch,
 } from './cloud-patch-adapters'
+import {
+  HEARTBEAT_ONLINE_WINDOW_MS,
+  MAX_COMMAND_HISTORY,
+  type AgentEventName,
+} from '@/lib/agent-installer/agent-release'
+import { publishAgentEvent } from './agent-event-bus'
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
 
 const router = Router()
@@ -1348,13 +1355,166 @@ async function processEvidenceBatch(
   }
 
   const links = await persistEvidenceFindings(client, userId, insertedEvidence, enrichedFindings, sourceLabel, options)
+  const certificates = await persistCertificateEvidence(client, userId, insertedEvidence, sourceLabel)
 
   return {
     evidenceCount: insertedEvidence.length,
     findingCount: enrichedFindings.length,
     scanner2,
     links,
+    certificates,
   }
+}
+
+/**
+ * Materialises observed X.509 certificates into the canonical `certificates`
+ * table so the Certificate and PKI dashboards see agent-discovered PKI instead
+ * of only connector-sourced inventory (spec §14).
+ *
+ * Rules:
+ *  - keyed on (user_id, serial_number) with the SHA-256 fingerprint as the
+ *    tiebreaker, so a repeat scan UPDATES the row rather than duplicating it;
+ *  - `is_quantum_safe` is written only when the signing/public-key algorithm is
+ *    actually determined. An algorithm we could not classify stays NULL — never
+ *    coerced to `true` (spec §29) and never to `false`, which would publish a
+ *    vulnerability we did not observe;
+ *  - every row records the agent, evidence id and observation time so a finding
+ *    remains traceable to the evidence that produced it (spec §16).
+ */
+async function persistCertificateEvidence(
+  client: SupabaseClient | null,
+  userId: string,
+  evidence: ScannerEvidenceRecord[],
+  sourceLabel: string,
+) {
+  const certificateEvidence = evidence.filter(
+    (item) => item.evidenceType === 'tls-certificate' && item.certificateFingerprint,
+  )
+  if (!client || certificateEvidence.length === 0) return { inserted: 0, updated: 0 }
+
+  let inserted = 0
+  let updated = 0
+  const now = new Date().toISOString()
+
+  for (const item of certificateEvidence) {
+    const raw = asRecord(item.rawEvidence)
+    const subject = cleanString(typeof raw.subject === 'string' ? raw.subject : JSON.stringify(raw.subject ?? ''), 500)
+    const issuer = cleanString(typeof raw.issuer === 'string' ? raw.issuer : JSON.stringify(raw.issuer ?? ''), 500)
+    const serial = cleanString(raw.serialNumber, 200) || item.certificateFingerprint!.slice(0, 64)
+    const notBefore = parseCertificateDate(raw.validFrom)
+    const notAfter = parseCertificateDate(raw.validTo)
+    const algorithm = cleanString(item.observedAlgorithm, 120) || 'Unknown'
+
+    // One classifier for the whole platform — no rival quantum-posture model.
+    const anatomy = analyzeCryptoObservation({ name: algorithm, algorithm }, true)
+    const quantumSafe =
+      anatomy.quantumClass === 'safe' ? true : anatomy.quantumClass === 'vulnerable' ? false : null
+
+    const expiringSoon = notAfter
+      ? Date.parse(notAfter) - Date.now() < 30 * 24 * 60 * 60 * 1000 && Date.parse(notAfter) > Date.now()
+      : null
+    const expired = notAfter ? Date.parse(notAfter) < Date.now() : false
+
+    const metadata = {
+      source: sourceLabel,
+      agentId: item.agentId || null,
+      evidenceId: item.id || null,
+      evidenceType: item.evidenceType,
+      fingerprintSha256: item.certificateFingerprint,
+      host: item.host || null,
+      port: item.port || null,
+      target: item.target || null,
+      publicKeyType: raw.publicKeyType ?? null,
+      publicKeyDetails: raw.publicKeyDetails ?? null,
+      confidence: item.confidence || 'high',
+      observedAt: item.observedAt || now,
+      detectionMethod: 'agent-tls-handshake-observation',
+      quantumClassification:
+        anatomy.quantumClass === 'safe'
+          ? 'Quantum Resilient'
+          : anatomy.quantumClass === 'hybrid'
+            ? 'Hybrid'
+            : anatomy.quantumClass === 'vulnerable'
+              ? 'Quantum Vulnerable'
+              : 'Unknown',
+      cryptoFamily: anatomy.family,
+    }
+
+    const { data: existing, error: lookupError } = await client
+      .from('certificates')
+      .select('id, metadata')
+      .eq('user_id', userId)
+      .eq('serial_number', serial)
+      .limit(1)
+      .maybeSingle()
+
+    if (lookupError && !isMissingRuntimeTable(lookupError)) {
+      console.warn('[agent-scanner] certificate lookup failed:', lookupError.message)
+      continue
+    }
+
+    const assetId = await resolveAssetIdByName(client, userId, item.assetName)
+    const row = {
+      user_id: userId,
+      asset_id: assetId,
+      name: item.assetName || subject || serial,
+      algorithm,
+      key_size: item.keySize ?? null,
+      issuer,
+      subject,
+      serial_number: serial,
+      not_before: notBefore,
+      not_after: notAfter,
+      is_quantum_safe: quantumSafe,
+      is_expiring_soon: expiringSoon,
+      status: expired ? 'expired' : 'active',
+      updated_at: now,
+    }
+
+    if (existing?.id) {
+      const { error } = await client
+        .from('certificates')
+        .update({ ...row, metadata: { ...(existing.metadata || {}), ...metadata } })
+        .eq('id', existing.id)
+        .eq('user_id', userId)
+      if (error && !isMissingRuntimeTable(error)) {
+        console.warn('[agent-scanner] certificate update failed:', error.message)
+      } else if (!error) {
+        updated += 1
+      }
+    } else {
+      const { error } = await client.from('certificates').insert({ ...row, metadata })
+      if (error && !isMissingRuntimeTable(error)) {
+        console.warn('[agent-scanner] certificate insert failed:', error.message)
+      } else if (!error) {
+        inserted += 1
+      }
+    }
+  }
+
+  return { inserted, updated }
+}
+
+/** Node's X509 `validFrom`/`validTo` are RFC-822 style strings, not ISO. */
+function parseCertificateDate(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return null
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null
+}
+
+async function resolveAssetIdByName(client: SupabaseClient, userId: string, assetName: string | null | undefined) {
+  const name = cleanString(assetName, 255)
+  if (!name) return null
+  const { data, error } = await client
+    .from('assets')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('name', name)
+    .limit(1)
+    .maybeSingle()
+  if (error && !isMissingRuntimeTable(error)) return null
+  return data?.id || null
 }
 
 function asRecord(value: unknown): Record<string, any> {
@@ -2140,6 +2300,36 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
   const token = generateAgentToken()
   const tokenHash = hashToken(token)
   const policy = normalizePolicy(req.body?.policy || {})
+
+  /*
+   * Asset binding must be verified, not trusted. `metadata` is caller-supplied and
+   * was spread in verbatim, so a tenant could bind their agent to ANOTHER tenant's
+   * asset UUID. That never granted them the other tenant's data (every read filters
+   * on user_id), but it would plant a foreign asset reference in their own
+   * inventory, reports and migration scope. Reject it outright rather than silently
+   * dropping it, so the caller learns the binding did not take.
+   */
+  const requestedAssetId = cleanString(req.body?.metadata?.assetId, 80)
+  let resolvedAsset: { id: string; name: string; type: string | null } | null = null
+  if (requestedAssetId && client) {
+    const { data: asset, error: assetError } = await client
+      .from('assets')
+      .select('id, name, type')
+      .eq('id', requestedAssetId)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle()
+    if (assetError && !isMissingRuntimeTable(assetError)) {
+      jsonError(res, 500, 'ASSET_LOOKUP_FAILED', assetError.message)
+      return
+    }
+    if (!asset) {
+      jsonError(res, 404, 'ASSET_NOT_FOUND', 'The selected asset does not exist in this tenant')
+      return
+    }
+    resolvedAsset = asset as { id: string; name: string; type: string | null }
+  }
+
   const agentBase = {
     user_id: user.id,
     name: cleanString(req.body?.name, 255) || 'QGuard Local Agent',
@@ -2152,6 +2342,11 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
     policy,
     metadata: {
       ...(typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}),
+      // Server-resolved, never caller-asserted: the id and display name both come
+      // from the row we just proved this tenant owns.
+      assetId: resolvedAsset?.id || null,
+      assetName: resolvedAsset?.name || null,
+      assetType: resolvedAsset?.type || null,
       environment: cleanString(req.body?.environment, 80) || cleanString(req.body?.metadata?.environment, 80) || 'production',
       enrolledBy: user.id,
       remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
@@ -2274,13 +2469,65 @@ router.post('/agents/:id/revoke', requireUserAuth, async (req: AuthedRequest, re
   const client = req.client || null
   const user = req.user!
   const now = new Date().toISOString()
+
+  /*
+   * Revocation is a security control, so it must never report success it did not
+   * achieve. The tenant filter alone is not enough: an id belonging to another
+   * tenant (or a stale one) matched zero rows and still returned 200, so an
+   * operator revoking a compromised collector saw "revoked" while the agent kept
+   * running. Confirm ownership first, 404 otherwise, and report only what the
+   * write actually changed.
+   */
   if (client) {
-    await client.from('scanner_agents').update({ status: 'revoked', revoked_at: now, updated_at: now }).eq('id', req.params.id).eq('user_id', user.id)
+    const { data: agent, error: lookupError } = await client
+      .from('scanner_agents')
+      .select('id, name, status, revoked_at')
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle()
+    if (lookupError && !isMissingRuntimeTable(lookupError)) {
+      jsonError(res, 500, 'AGENT_LOOKUP_FAILED', lookupError.message)
+      return
+    }
+    if (!agent) {
+      jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+      return
+    }
+
+    const { data: updated, error } = await client
+      .from('scanner_agents')
+      .update({ status: 'revoked', revoked_at: now, updated_at: now })
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+      .select('id')
+    if (error) {
+      jsonError(res, 500, 'AGENT_REVOKE_FAILED', error.message)
+      return
+    }
+    if (!updated || updated.length === 0) {
+      jsonError(res, 500, 'AGENT_REVOKE_FAILED', 'Revocation did not modify the agent record')
+      return
+    }
+
+    await recordAgentAudit(client, {
+      userId: user.id,
+      action: 'scanner_agent_revoked',
+      entityType: 'scanner_agent',
+      entityId: req.params.id,
+      details: { agentName: agent.name, revokedAt: now, previousStatus: agent.status },
+    })
+    publishAgentEvent(user.id, 'agent.disconnected', req.params.id, { reason: 'revoked', revokedAt: now })
   } else {
     const agent = memoryStore.agents.find((item) => item.id === req.params.id && item.user_id === user.id)
-    if (agent) Object.assign(agent, { status: 'revoked', revoked_at: now, updated_at: now })
+    if (!agent) {
+      jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+      return
+    }
+    Object.assign(agent, { status: 'revoked', revoked_at: now, updated_at: now })
   }
-  res.json({ data: { agentId: req.params.id, status: 'revoked' } })
+
+  res.json({ data: { agentId: req.params.id, status: 'revoked', revokedAt: now } })
 })
 
 router.post('/agents/:id/token/rotate', requireUserAuth, async (req: AuthedRequest, res) => {
@@ -2293,7 +2540,7 @@ router.post('/agents/:id/token/rotate', requireUserAuth, async (req: AuthedReque
   if (client) {
     const { data: agent, error: lookupError } = await client
       .from('scanner_agents')
-      .select('id, user_id, name, status')
+      .select('id, user_id, name, status, metadata')
       .eq('id', req.params.id)
       .eq('user_id', user.id)
       .limit(1)
@@ -2310,7 +2557,14 @@ router.post('/agents/:id/token/rotate', requireUserAuth, async (req: AuthedReque
         status: agent.status === 'revoked' ? 'active' : agent.status,
         revoked_at: null,
         updated_at: now,
-        metadata: { rotatedAt: now, rotatedBy: user.id },
+        /*
+         * MERGE, never replace. This column carries the agent's role, environment,
+         * assigned asset and its bounded command queue/history — writing a bare
+         * `{ rotatedAt, rotatedBy }` silently wiped all of it, so rotating a token
+         * turned a Migration Operator back into an unassigned collector and
+         * discarded any queued work.
+         */
+        metadata: { ...(agent.metadata || {}), rotatedAt: now, rotatedBy: user.id },
       })
       .eq('id', req.params.id)
       .eq('user_id', user.id)
@@ -2350,13 +2604,21 @@ router.delete('/agents/:id', requireUserAuth, async (req: AuthedRequest, res) =>
   const user = req.user!
 
   if (client) {
-    const { error } = await client
+    // `delete ... eq(user_id)` on someone else's id removes nothing but still
+    // returned 200 and wrote an audit row claiming a deletion that never
+    // happened. Confirm ownership, then report only the rows actually removed.
+    const { data: deleted, error } = await client
       .from('scanner_agents')
       .delete()
       .eq('id', req.params.id)
       .eq('user_id', user.id)
+      .select('id, name')
     if (error) {
       jsonError(res, 500, 'AGENT_DELETE_FAILED', error.message)
+      return
+    }
+    if (!deleted || deleted.length === 0) {
+      jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
       return
     }
     await client.from('audit_logs').insert({
@@ -2364,9 +2626,14 @@ router.delete('/agents/:id', requireUserAuth, async (req: AuthedRequest, res) =>
       action: 'scanner_agent_deleted',
       entity_type: 'scanner_agent',
       entity_id: req.params.id,
-      details: { deletedAt: new Date().toISOString() },
+      details: { deletedAt: new Date().toISOString(), agentName: deleted[0]?.name || null },
     })
   } else {
+    const owned = memoryStore.agents.some((item) => item.id === req.params.id && item.user_id === user.id)
+    if (!owned) {
+      jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+      return
+    }
     memoryStore.agents = memoryStore.agents.filter((item) => !(item.id === req.params.id && item.user_id === user.id))
     memoryStore.policies = memoryStore.policies.filter((item) => !(item.agent_id === req.params.id && item.user_id === user.id))
   }
@@ -3249,19 +3516,182 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
     Object.assign(agent, { status: req.body?.status || 'active', last_seen_at: now, updated_at: now })
   }
 
+  // A heartbeat after silence IS the connection event — the Agent Center shows
+  // "Connected" only once this has actually arrived (spec §10, §28).
+  const wasConnected = agent.last_seen_at
+    ? Date.now() - Date.parse(agent.last_seen_at) <= HEARTBEAT_ONLINE_WINDOW_MS
+    : false
+  publishAgentEvent(agent.user_id, wasConnected ? 'agent.heartbeat' : 'agent.connected', agent.id, {
+    status: cleanString(req.body?.status, 50) || 'active',
+    hostname: cleanString(req.body?.hostname, 255) || agent.hostname,
+    version: cleanString(req.body?.version, 100) || agent.version,
+    phase: typeof telemetry === 'object' ? (telemetry as any).phase || null : null,
+  })
+
   res.json({ data: { status: 'accepted', observedAt: now } })
 })
 
 router.get('/agent/policy', requireAgentAuth, async (req: AgentRequest, res) => {
   const client = req.client || null
   const agent = req.agent!
+
+  /*
+   * The policy poll doubles as the command channel. Commands live in the agent
+   * row's own metadata (bounded queue) rather than a parallel jobs table, so
+   * tenant isolation is structural — an agent can only ever read the queue that
+   * hangs off its own record. Handing them out marks them `delivered`; the agent
+   * acknowledges completion through /agent/commands/:id/ack.
+   */
+  const queue: any[] = Array.isArray(agent.metadata?.commandQueue) ? agent.metadata.commandQueue : []
+  const deliverable = queue.filter((item) => item?.status === 'queued' || item?.status === 'delivered')
+
+  if (client && deliverable.length > 0) {
+    const now = new Date().toISOString()
+    const updatedQueue = queue.map((item) =>
+      item?.status === 'queued' ? { ...item, status: 'delivered', deliveredAt: now } : item,
+    )
+    const { error } = await client
+      .from('scanner_agents')
+      .update({ metadata: { ...(agent.metadata || {}), commandQueue: updatedQueue }, updated_at: now })
+      .eq('id', agent.id)
+      .eq('user_id', agent.user_id)
+    if (error && !isMissingRuntimeTable(error)) {
+      console.warn('[agent-scanner] command delivery update failed:', error.message)
+    }
+  }
+
+  const commands = deliverable.map((item) => ({
+    id: item.id,
+    type: item.type,
+    queuedAt: item.queuedAt,
+    payload: item.payload || {},
+  }))
+
   if (client) {
     const { data } = await client.from('scanner_agent_policies').select('*').eq('agent_id', agent.id).eq('user_id', agent.user_id).eq('enabled', true).limit(1).maybeSingle()
-    res.json({ data: { policy: data ? normalizePolicy(data) : normalizePolicy(agent.policy || {}) } })
+    res.json({ data: { policy: data ? normalizePolicy(data) : normalizePolicy(agent.policy || {}), commands } })
     return
   }
   const policy = memoryStore.policies.find((item) => item.agent_id === agent.id && item.user_id === agent.user_id)
-  res.json({ data: { policy: normalizePolicy(policy || agent.policy || {}) } })
+  res.json({ data: { policy: normalizePolicy(policy || agent.policy || {}), commands } })
+})
+
+/**
+ * Command acknowledgement. Moves a delivered command through running ->
+ * completed/failed and files the finished record into a bounded history so the
+ * Agent Center shows real execution state instead of an optimistic "requested".
+ */
+router.post('/agent/commands/:id/ack', requireAgentAuth, async (req: AgentRequest, res) => {
+  const client = req.client || null
+  const agent = req.agent!
+  const commandId = cleanString(req.params.id, 120)
+  const status = cleanString(req.body?.status, 30) || ''
+  if (!commandId) {
+    jsonError(res, 400, 'COMMAND_REQUIRED', 'Command id is required')
+    return
+  }
+  if (!['running', 'completed', 'failed'].includes(status)) {
+    jsonError(res, 400, 'INVALID_COMMAND_STATUS', 'status must be running, completed or failed')
+    return
+  }
+
+  const queue: any[] = Array.isArray(agent.metadata?.commandQueue) ? agent.metadata.commandQueue : []
+  const history: any[] = Array.isArray(agent.metadata?.commandHistory) ? agent.metadata.commandHistory : []
+  const command = queue.find((item) => item?.id === commandId)
+  if (!command) {
+    jsonError(res, 404, 'COMMAND_NOT_FOUND', 'Command is not queued for this agent')
+    return
+  }
+
+  const now = new Date().toISOString()
+  const errorMessage = cleanString(req.body?.error, 500)
+  const result = typeof req.body?.result === 'object' && req.body.result ? req.body.result : null
+  const settled = status === 'completed' || status === 'failed'
+  const updated = { ...command, status, completedAt: settled ? now : null, result, error: errorMessage }
+
+  const nextQueue = settled ? queue.filter((item) => item?.id !== commandId) : queue.map((item) => (item?.id === commandId ? updated : item))
+  const nextHistory = settled ? [updated, ...history].slice(0, MAX_COMMAND_HISTORY) : history
+
+  if (client) {
+    const { error } = await client
+      .from('scanner_agents')
+      .update({
+        metadata: { ...(agent.metadata || {}), commandQueue: nextQueue, commandHistory: nextHistory },
+        updated_at: now,
+      })
+      .eq('id', agent.id)
+      .eq('user_id', agent.user_id)
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'COMMAND_ACK_FAILED', error.message)
+      return
+    }
+    await client.from('agent_heartbeats').insert({
+      user_id: agent.user_id,
+      agent_id: agent.id,
+      status: `command:${command.type}:${status}`,
+      telemetry: { commandId, type: command.type, status, result, error: errorMessage },
+      observed_at: now,
+    })
+  }
+
+  const eventName: AgentEventName =
+    command.type === 'upgrade'
+      ? status === 'completed'
+        ? 'agent.upgrade_completed'
+        : status === 'failed'
+          ? 'agent.error'
+          : 'agent.upgrade_started'
+      : status === 'completed'
+        ? 'agent.scan_completed'
+        : status === 'failed'
+          ? 'agent.error'
+          : 'agent.scan_started'
+  publishAgentEvent(agent.user_id, eventName, agent.id, { commandId, type: command.type, status, error: errorMessage })
+
+  res.json({ data: { accepted: true, commandId, status, observedAt: now } })
+})
+
+/**
+ * Live scan progress. Persisted as an ordered heartbeat row (so the activity
+ * timeline and the Agent Center replay identically after a refresh) and pushed
+ * onto the realtime bus for the open SSE streams.
+ */
+router.post('/agent/scan-progress', requireAgentAuth, async (req: AgentRequest, res) => {
+  const client = req.client || null
+  const agent = req.agent!
+  const stage = cleanString(req.body?.stage, 60)
+  const message = cleanString(req.body?.message, 300)
+  const progressRaw = Number(req.body?.progress)
+  const progress = Number.isFinite(progressRaw) ? Math.max(0, Math.min(100, Math.round(progressRaw))) : null
+  if (!stage) {
+    jsonError(res, 400, 'STAGE_REQUIRED', 'stage is required')
+    return
+  }
+
+  const now = new Date().toISOString()
+  const metadata = typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}
+
+  if (client) {
+    const { error } = await client.from('agent_heartbeats').insert({
+      user_id: agent.user_id,
+      agent_id: agent.id,
+      status: 'scan_progress',
+      telemetry: { stage, progress, message, ...metadata },
+      observed_at: now,
+    })
+    if (error && !isMissingRuntimeTable(error)) {
+      console.warn('[agent-scanner] scan progress insert failed:', error.message)
+    }
+  }
+
+  publishAgentEvent(
+    agent.user_id,
+    stage === 'scan_complete' ? 'agent.scan_completed' : 'agent.scan_progress',
+    agent.id,
+    { stage, progress, message, ...metadata },
+  )
+
+  res.json({ data: { accepted: true, stage, progress, observedAt: now } })
 })
 
 router.post('/agent/telemetry', requireAgentAuth, async (req: AgentRequest, res) => {

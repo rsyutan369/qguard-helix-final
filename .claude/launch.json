@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "qguard-messaging",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd qguard-messaging && npm run dev"],
+      "port": 5174
     }
   ]
 }

@@ -44,6 +44,11 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
 
   // PRO — Discovery (remaining) / Operations / Ecosystem / Intelligence / PQAuth / Observability / Trust Center
   { prefix: '/api/v1/agent-scanner', tier: 'pro' }, // Agent Collector Scanners (scanner "Agents" tab) — Pro+ only
+  // Agent Center (/downloads): installer generation, releases, commands, health.
+  // Same tier as agent-scanner — deploying an agent must not be reachable from a
+  // plan that cannot operate one. The agent-credentialed sub-paths below are
+  // exempt: an installed agent authenticates with its own token, not a session.
+  { prefix: '/api/v1/agent-installer', tier: 'pro' },
   { prefix: '/api/v1/migration', tier: 'pro' }, // timeline / phases / live-migration (NOT migration-planner: longer prefix wins)
   { prefix: '/api/v1/migration-snapshots', tier: 'pro' }, // Snapshot Management for safe rollback (live-migration)
   { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (live-migration)
@@ -64,6 +69,10 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/dashboard/encryption-monitoring', tier: 'pro' },
   { prefix: '/api/v1/dashboard/ecosystem-supply-chain', tier: 'pro' },
   { prefix: '/api/v1/dashboard/trust-state-discovery', tier: 'pro' },
+  // Trust Dashboard: its frontend route is Pro in subscription-access.ts. The
+  // API had no entry at all until the Trust Fabric refactor gave the page a
+  // backend, so gate it to the same tier as the UI it serves.
+  { prefix: '/api/v1/dashboard/trust-dashboard', tier: 'pro' },
   { prefix: '/api/v1/dashboard/zero-trust', tier: 'pro' },
   // Crypto Agility Command Center™ — the frontend route /dashboard/crypto-agility
   // is Pro; both its API surfaces are gated here so a hand-crafted request is
@@ -76,6 +85,11 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/dashboard/ecosystem-supply-chain', tier: 'pro' },
 
   // ELITE — Governance / Telemetry / QKMS
+  // The Compliance Command Center's frontend route (/dashboard/compliance) is
+  // Elite in subscription-access.ts, but its API matched no prefix here and was
+  // served UNGATED — a hand-crafted request reached Elite compliance data from
+  // any signed-in account. Held to the same tier as the UI it serves.
+  { prefix: '/api/v1/dashboard/compliance', tier: 'elite' },
   { prefix: '/api/v1/dashboard/quantum-governance', tier: 'elite' },
   { prefix: '/api/v1/dashboard/audit-vault', tier: 'elite' },
   { prefix: '/api/v1/dashboard/regulatory-mapping', tier: 'elite' },

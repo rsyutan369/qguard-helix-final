@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { buildFinancialExposure, migrationCostUsd as computeMigrationCostUsd } from '@/lib/migration/cost-model'
 import { loadCostAssumptions } from './cost-assumptions'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { buildScannerIntelligence } from './scanner'
 import { buildSharedResponsibility } from '@/lib/shared-responsibility'
 import { buildOwnershipInputs } from './shared-responsibility-inputs'
@@ -116,19 +117,16 @@ async function exactCount(client: any, table: string, userId: string, refine?: (
  * is below every consumer's own refresh cadence. Failures are never cached.
  */
 const SNAPSHOT_CACHE_TTL_MS = 15_000
-const snapshotCache = new Map<string, { at: number; promise: ReturnType<typeof computeSnapshot> }>()
+// Single-flight: one build per tenant, shared even past the TTL while it is
+// still running. The previous Map stamped `at` at build START, so a build slower
+// than the TTL was duplicated by the next SSE poll — the amplifier behind the
+// connect-timeout storm. See lib/single-flight-cache.ts.
+const snapshotCache = createSingleFlightCache<Awaited<ReturnType<typeof computeSnapshot>>>(
+  SNAPSHOT_CACHE_TTL_MS,
+)
 
 export async function buildSnapshot(token: string, userId: string) {
-  const cached = snapshotCache.get(userId)
-  if (cached && Date.now() - cached.at < SNAPSHOT_CACHE_TTL_MS) return cached.promise
-  const promise = computeSnapshot(token, userId)
-  snapshotCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => snapshotCache.delete(userId))
-  if (snapshotCache.size > 500) {
-    const now = Date.now()
-    for (const [key, value] of snapshotCache) if (now - value.at > SNAPSHOT_CACHE_TTL_MS) snapshotCache.delete(key)
-  }
-  return promise
+  return snapshotCache.get(userId, () => computeSnapshot(token, userId))
 }
 
 async function computeSnapshot(token: string, userId: string) {
@@ -384,6 +382,21 @@ async function computeSnapshot(token: string, userId: string) {
   // scoring an unmeasured factor.
   const runtimeMeasured = runtimeEvents.length > 0
   const runtimeVisibility = runtimeMeasured ? 100 : 0
+  /**
+   * Newest runtime observation, published so consumers can distinguish
+   * "telemetry exists" from "telemetry is CURRENT".
+   *
+   * `runtimeMeasured` alone is true for a single event of any age, which let
+   * the workflow rail claim "Runtime telemetry live — posture is continuously
+   * monitored" on a tenant whose newest event was 15 hours old and whose only
+   * collector had never sent a heartbeat. This value is additive: it does not
+   * change the readiness blend above, only what consumers are able to assert.
+   */
+  const latestRuntimeEventMs = runtimeEvents.reduce((best, event) => {
+    const ms = Math.max(Date.parse(str(event.observed_at)) || 0, Date.parse(str(event.created_at)) || 0)
+    return ms > best ? ms : best
+  }, 0)
+  const latestRuntimeEventAt = latestRuntimeEventMs ? new Date(latestRuntimeEventMs).toISOString() : null
   const governanceMaturity = scanSessions.length > 0 ? 60 : 0
 
   const readinessWeightSum = runtimeMeasured ? 1 : 0.85
@@ -715,6 +728,8 @@ async function computeSnapshot(token: string, userId: string) {
       assets: assetsAssessed,
       connectors: cloudAccounts,
       latestEventAt: lastAssessmentAt,
+      /** Newest RUNTIME observation specifically — see the note at its source. */
+      latestRuntimeEventAt,
     },
   }
 }

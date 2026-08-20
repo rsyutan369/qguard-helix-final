@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient, User } from '@supabase/supabase-js'
 import type { Request } from 'express'
+import { supabaseFetch } from './supabase-fetch'
 
 type SupabaseSource = 'primary' | 'fallback'
 
@@ -100,7 +101,11 @@ function createAuthClientForConfig(token: string, config: ServerSupabaseConfig):
       persistSession: false,
     },
     global: {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` },
+      // Bounded + retrying transport. Without it a dashboard's 12-54 query
+      // fan-out opens that many simultaneous TLS handshakes and undici's 10s
+      // connect timeout blanks the page. See lib/supabase-fetch.ts.
+      fetch: supabaseFetch,
     }
   })
 }
@@ -116,7 +121,8 @@ export function getServiceClient(): SupabaseClient | null {
     return null
   }
   return createClient(config.url, config.serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false }
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: supabaseFetch },
   })
 }
 
@@ -176,6 +182,7 @@ function verifyClientFor(config: ServerSupabaseConfig): SupabaseClient | null {
   if (!client) {
     client = createClient(config.url, config.anonKey, {
       auth: { autoRefreshToken: false, persistSession: false },
+      global: { fetch: supabaseFetch },
     })
     verifyClients.set(key, client)
   }

@@ -31,6 +31,7 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 use crate::crypto::hybrid_kex::{decapsulate, encapsulate, LocalKemKeypair};
+use crate::crypto::portable_identity;
 use crate::crypto::signatures::{dual_verify, dual_sign_87, dual_verify_87, VaultSigningKeypair};
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::vault_recovery;
@@ -41,9 +42,21 @@ const MAGIC: &[u8; 8] = b"QGUARDVS";
 /// v1: device wrap only. v2: adds an optional quantum-safe recovery-key wrap so
 /// files survive total device loss. v3: introduces the Vault Master Key (VMK)
 /// envelope (FEK wrapped by VMK; VMK protected by ML-KEM-1024 / recovery /
-/// enterprise) and signs with ML-DSA-87. All versions are accepted on decrypt;
-/// new files are always written as v3.
+/// enterprise) and signs with ML-DSA-87. v4: adds Portable Hybrid Identity
+/// recipient wraps (the per-file FEK sealed to another person's identity) plus
+/// an optional sender attestation. All versions are accepted on decrypt; a
+/// container is written as v4 only when it is sealed for a recipient, and as v3
+/// otherwise.
 pub const STREAM_VERSION: u8 = 3;
+/// Version stamped on containers that carry Portable Hybrid Identity recipient
+/// wraps. Kept distinct from [`STREAM_VERSION`] so ordinary device-sealed
+/// containers keep producing byte-identical signable bytes.
+pub const STREAM_VERSION_RECIPIENT: u8 = 4;
+/// Highest container version this build can read.
+pub const MAX_STREAM_VERSION: u8 = STREAM_VERSION_RECIPIENT;
+/// Defensive cap on how many identities one container may be sealed to. Each
+/// wrap adds ~3 KB of header, and the header itself is capped at 1 MiB.
+pub const MAX_RECIPIENTS: usize = 64;
 pub const CHUNK_SIZE: usize = 1024 * 1024; // 1 MiB plaintext per chunk
 const MAX_HEADER_LEN: usize = 1024 * 1024; // signed header is a few KB; cap defensively
 const MAX_FRAME_CIPHERTEXT: usize = CHUNK_SIZE + 64;
@@ -58,6 +71,47 @@ pub struct EnterpriseRecipient<'a> {
     pub x25519_public: &'a [u8],
     pub mlkem_public: &'a [u8],
     pub recovery_secret: Option<&'a [u8; KEY_SIZE]>,
+}
+
+/// One Portable Hybrid Identity this container is sealed to (v4).
+///
+/// Security note — this wrap seals the **per-file FEK**, never the Vault Master
+/// Key. The device/recovery/enterprise wraps above all protect the VMK, which
+/// unlocks every file the owner has; handing that to a share recipient would
+/// give them the whole vault. A recipient gets exactly one file's key.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecipientWrap {
+    /// SHA3-256 over the recipient's four public keys (hex).
+    pub recipient_fingerprint: String,
+    /// Recipient's own label, carried so the sender's UI can list who a
+    /// container was sealed for. Non-authoritative display text.
+    #[serde(default)]
+    pub label: String,
+    /// e.g. `X25519+ML-KEM-1024/HKDF-SHA3-256/AES-256-GCM`.
+    pub algorithm: String,
+    pub kem_ciphertext: HybridCiphertext,
+    pub salt: Vec<u8>,
+    pub wrapped_key: EncryptedEnvelope,
+}
+
+/// What a sealed container carries about who created it, plus the sender's KEM
+/// public keys so the recipient can recompute the attested fingerprint.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SenderIdentity {
+    pub x25519_public: Vec<u8>,
+    pub mlkem_public: Vec<u8>,
+    pub attestation: portable_identity::SenderAttestation,
+}
+
+/// Sharing parameters for [`encrypt_stream_with_progress`]. `None` (the default)
+/// produces an ordinary v3 device-sealed container.
+#[derive(Default)]
+pub struct SharingOptions<'a> {
+    /// Identities the per-file key is additionally sealed to.
+    pub recipients: &'a [portable_identity::RecipientPublicKeys],
+    /// The sender's unlocked identity, used to attest authorship. Optional: a
+    /// container can be sealed for a recipient without naming its sender.
+    pub sender: Option<&'a portable_identity::PortableIdentity>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +158,13 @@ pub struct StreamHeader {
     /// v3 Ed25519 + ML-DSA-87 header signature (absent on v1/v2 containers).
     #[serde(default)]
     pub header_signature_v3: Option<DualSignature87>,
+    /// v4 only: Portable Hybrid Identity recipients the per-file FEK is sealed
+    /// to. Empty on every v1/v2/v3 container.
+    #[serde(default)]
+    pub recipient_wraps: Vec<RecipientWrap>,
+    /// v4 only: who sealed this container, signed by their portable identity.
+    #[serde(default)]
+    pub sender_identity: Option<SenderIdentity>,
 }
 
 /// Public, non-secret summary returned to callers after a stream operation.
@@ -116,6 +177,31 @@ pub struct StreamSummary {
     pub original_size: u64,
     pub total_chunks: u64,
     pub suite: AlgorithmSuite,
+    /// Fingerprints of every Portable Hybrid Identity this container is sealed
+    /// to. Empty for ordinary device-only containers.
+    #[serde(default)]
+    pub sealed_for: Vec<SealedRecipient>,
+    /// Set once a sender attestation has been cryptographically **verified**.
+    /// A present-but-invalid attestation makes the whole operation fail, so this
+    /// is never a mere claim.
+    #[serde(default)]
+    pub verified_sender: Option<VerifiedSender>,
+}
+
+/// Non-secret display record of one recipient a container is sealed to.
+#[derive(Clone, Debug, Serialize)]
+pub struct SealedRecipient {
+    pub fingerprint: String,
+    pub label: String,
+    pub algorithm: String,
+}
+
+/// A sender attestation that verified against the container's signed header.
+#[derive(Clone, Debug, Serialize)]
+pub struct VerifiedSender {
+    pub fingerprint: String,
+    pub label: String,
+    pub signature_algorithm: String,
 }
 
 impl StreamSummary {
@@ -128,6 +214,16 @@ impl StreamSummary {
             original_size: header.original_size,
             total_chunks: header.total_chunks,
             suite: header.suite.clone(),
+            sealed_for: header
+                .recipient_wraps
+                .iter()
+                .map(|wrap| SealedRecipient {
+                    fingerprint: wrap.recipient_fingerprint.clone(),
+                    label: wrap.label.clone(),
+                    algorithm: wrap.algorithm.clone(),
+                })
+                .collect(),
+            verified_sender: None,
         }
     }
 }
@@ -250,7 +346,136 @@ fn header_signable(header: &StreamHeader) -> Vec<u8> {
         }
         data.extend_from_slice(&header.signer_mldsa87_public);
     }
+    // v4 additionally authenticates every Portable Hybrid Identity recipient
+    // wrap and the sender attestation's public fields (its own signature is
+    // excluded, so the attestation and the header signature cover identical
+    // bytes). Appended only for v4, so v1/v2/v3 containers still verify against
+    // their original signatures byte-for-byte.
+    if header.version >= 4 {
+        data.extend_from_slice(&(header.recipient_wraps.len() as u32).to_be_bytes());
+        for wrap in &header.recipient_wraps {
+            data.extend_from_slice(wrap.recipient_fingerprint.as_bytes());
+            data.push(0);
+            data.extend_from_slice(wrap.label.as_bytes());
+            data.push(0);
+            data.extend_from_slice(wrap.algorithm.as_bytes());
+            data.push(0);
+            data.extend_from_slice(&wrap.kem_ciphertext.x25519_ephemeral_public);
+            data.extend_from_slice(&wrap.kem_ciphertext.ml_kem_ciphertext);
+            data.extend_from_slice(wrap.kem_ciphertext.suite.pq_kem.as_bytes());
+            data.extend_from_slice(&wrap.salt);
+            data.extend_from_slice(&wrap.wrapped_key.nonce);
+            data.extend_from_slice(&wrap.wrapped_key.ciphertext);
+            data.extend_from_slice(&wrap.wrapped_key.tag);
+        }
+        match &header.sender_identity {
+            Some(sender) => {
+                data.push(4);
+                data.extend_from_slice(&sender.x25519_public);
+                data.extend_from_slice(&sender.mlkem_public);
+                data.extend_from_slice(sender.attestation.identity_fingerprint.as_bytes());
+                data.push(0);
+                data.extend_from_slice(sender.attestation.label.as_bytes());
+                data.push(0);
+                data.extend_from_slice(sender.attestation.signature_algorithm.as_bytes());
+                data.push(0);
+                data.extend_from_slice(&sender.attestation.ed25519_public);
+                data.extend_from_slice(&sender.attestation.mldsa_public);
+            }
+            None => data.push(0),
+        }
+    }
     data
+}
+
+/// AAD binding one recipient wrap to its container AND to that exact recipient,
+/// so a wrap cannot be lifted into another container or re-pointed at a
+/// different identity.
+fn recipient_wrap_aad(file_id: &str, owner_user_id: &str, recipient_fingerprint: &str) -> Vec<u8> {
+    format!("QGuard-Vault-Recipient-FEK-v1:{file_id}:{owner_user_id}:{recipient_fingerprint}")
+        .into_bytes()
+}
+
+/// Seal the per-file key to one Portable Hybrid Identity: hybrid encapsulation
+/// (X25519 + ML-KEM) → HKDF-SHA3-256 with a per-wrap salt → AES-256-GCM.
+fn wrap_fek_for_recipient(
+    recipient: &portable_identity::RecipientPublicKeys,
+    file_key: &[u8; KEY_SIZE],
+    file_id: &str,
+    owner_user_id: &str,
+) -> Result<RecipientWrap> {
+    let (kem_ciphertext, mut shared) = encapsulate(
+        &recipient.x25519_public,
+        &recipient.mlkem_public,
+        &crate::security::obf::portable_identity_kem_info(),
+    )?;
+    let mut salt = [0u8; 16];
+    use rand::RngCore;
+    rand::rngs::OsRng.fill_bytes(&mut salt);
+    let wrap_key = crate::crypto::kdf::derive_32_with_salt(
+        &salt,
+        &shared,
+        &crate::security::obf::portable_identity_wrap_info(),
+    );
+    shared.zeroize();
+    let mut wrap_key = wrap_key?;
+    let wrapped_key = symmetric::encrypt(
+        &wrap_key,
+        file_key,
+        &recipient_wrap_aad(file_id, owner_user_id, &recipient.fingerprint),
+    );
+    wrap_key.zeroize();
+
+    Ok(RecipientWrap {
+        recipient_fingerprint: recipient.fingerprint.clone(),
+        label: recipient.label.clone().unwrap_or_default(),
+        algorithm: format!(
+            "X25519+{}/HKDF-SHA3-256/AES-256-GCM",
+            kem_ciphertext.suite.pq_kem
+        ),
+        kem_ciphertext,
+        salt: salt.to_vec(),
+        wrapped_key: wrapped_key?,
+    })
+}
+
+/// Recover the per-file key from a recipient wrap using an unlocked identity.
+fn unwrap_fek_for_recipient(
+    identity: &portable_identity::PortableIdentity,
+    wrap: &RecipientWrap,
+    file_id: &str,
+    owner_user_id: &str,
+) -> Result<[u8; KEY_SIZE]> {
+    let mut shared = decapsulate(
+        &identity.kem.x25519_secret,
+        &identity.kem.mlkem_secret,
+        &wrap.kem_ciphertext,
+        &crate::security::obf::portable_identity_kem_info(),
+    )?;
+    let wrap_key = crate::crypto::kdf::derive_32_with_salt(
+        &wrap.salt,
+        &shared,
+        &crate::security::obf::portable_identity_wrap_info(),
+    );
+    shared.zeroize();
+    let mut wrap_key = wrap_key?;
+    let unwrapped = symmetric::decrypt(
+        &wrap_key,
+        &wrap.wrapped_key,
+        &recipient_wrap_aad(file_id, owner_user_id, &wrap.recipient_fingerprint),
+    );
+    wrap_key.zeroize();
+    let mut bytes = unwrapped?;
+    if bytes.len() != KEY_SIZE {
+        bytes.zeroize();
+        return Err(QGuardError::Crypto(
+            "recipient-unwrapped file key is invalid".to_string(),
+        ));
+    }
+    let mut key = [0u8; KEY_SIZE];
+    key.copy_from_slice(&bytes);
+    bytes.zeroize();
+    Ok(key)
 }
 
 fn total_chunks_for(original_size: u64) -> u64 {
@@ -349,6 +574,7 @@ pub fn encrypt_stream<R: Read, W: Write>(
         vault_signer,
         recovery_wrap_key,
         enterprise,
+        None,
         &mut |_| {},
     )
 }
@@ -372,10 +598,17 @@ pub fn encrypt_stream_with_progress<R: Read, W: Write>(
     vault_signer: &VaultSigningKeypair,
     recovery_wrap_key: Option<&[u8; KEY_SIZE]>,
     enterprise: Option<&EnterpriseRecipient>,
+    sharing: Option<&SharingOptions>,
     progress: &mut dyn FnMut(VaultProgress),
 ) -> Result<StreamSummary> {
     let file_id = Uuid::new_v4().to_string();
     let total_chunks = total_chunks_for(original_size);
+    let recipients = sharing.map(|s| s.recipients).unwrap_or(&[]);
+    if recipients.len() > MAX_RECIPIENTS {
+        return Err(QGuardError::InvalidInput(format!(
+            "a container can be sealed to at most {MAX_RECIPIENTS} identities"
+        )));
+    }
 
     let emit = |progress: &mut dyn FnMut(VaultProgress),
                 phase: &str,
@@ -435,8 +668,66 @@ pub fn encrypt_stream_with_progress<R: Read, W: Write>(
         emit(progress, "recovery_wrap", "VMK sealed to recovery recipient · ML-KEM-1024 / HKDF-SHA3-256", 0, 0, "info");
     }
 
+    // Portable Hybrid Identity recipients. These seal the per-file FEK — never
+    // the VMK — so a recipient can open this one container and nothing else.
+    // Duplicate fingerprints are collapsed so a container never carries two
+    // wraps for the same identity.
+    let mut recipient_wraps = Vec::with_capacity(recipients.len());
+    let mut seen_fingerprints = std::collections::HashSet::new();
+    for recipient in recipients {
+        if !seen_fingerprints.insert(recipient.fingerprint.clone()) {
+            continue;
+        }
+        recipient_wraps.push(wrap_fek_for_recipient(
+            recipient,
+            &file_key,
+            &file_id,
+            owner_user_id,
+        )?);
+    }
+    if !recipient_wraps.is_empty() {
+        emit(
+            progress,
+            "recipient_wrap",
+            &format!(
+                "Per-file key sealed to {} portable {} · X25519 + ML-KEM-1024 / HKDF-SHA3-256",
+                recipient_wraps.len(),
+                if recipient_wraps.len() == 1 { "identity" } else { "identities" },
+            ),
+            0,
+            0,
+            "info",
+        );
+    }
+
+    let version = if recipient_wraps.is_empty() {
+        STREAM_VERSION
+    } else {
+        STREAM_VERSION_RECIPIENT
+    };
+
+    // A sender attestation only means something on a container someone else will
+    // open, so it rides along with the recipient wraps.
+    let sender_identity = match sharing.and_then(|s| s.sender) {
+        Some(identity) if version >= STREAM_VERSION_RECIPIENT => Some(SenderIdentity {
+            x25519_public: identity.kem.x25519_public.clone(),
+            mlkem_public: identity.kem.mlkem_public.clone(),
+            // Placeholder signature; replaced below once the canonical bytes exist.
+            attestation: portable_identity::SenderAttestation {
+                identity_fingerprint: identity.fingerprint(),
+                label: identity.label.clone().unwrap_or_default(),
+                signature_algorithm: identity.signature_algorithm().to_string(),
+                ed25519_public: identity.signer.ed25519_public.clone(),
+                mldsa_public: identity.signer.mldsa87_public.clone(),
+                ed25519_signature: Vec::new(),
+                mldsa_signature: Vec::new(),
+            },
+        }),
+        _ => None,
+    };
+
     let mut header = StreamHeader {
-        version: STREAM_VERSION,
+        version,
         file_id: file_id.clone(),
         kind: kind.to_string(),
         name: name.to_string(),
@@ -460,8 +751,26 @@ pub fn encrypt_stream_with_progress<R: Read, W: Write>(
             ml_dsa_65: Vec::new(),
         },
         header_signature_v3: None,
+        recipient_wraps,
+        sender_identity,
     };
+    // `header_signable` excludes every signature field, so the device signature
+    // and the sender attestation authenticate exactly the same canonical bytes.
     let signable = header_signable(&header);
+    if let (Some(sender), Some(identity)) = (
+        header.sender_identity.as_mut(),
+        sharing.and_then(|s| s.sender),
+    ) {
+        sender.attestation = portable_identity::attest(identity, &signable)?;
+        emit(
+            progress,
+            "attest",
+            "Sender attestation signed · Ed25519 + ML-DSA-87 portable identity",
+            0,
+            0,
+            "info",
+        );
+    }
     header.header_signature_v3 = Some(dual_sign_87(
         &vault_signer.ed25519_secret,
         &vault_signer.mldsa87_secret,
@@ -539,11 +848,26 @@ fn read_and_verify_header<R: Read>(reader: &mut R) -> Result<StreamHeader> {
     read_exact_buf(reader, &mut header_bytes)?;
     let header: StreamHeader = serde_json::from_slice(&header_bytes)
         .map_err(|e| QGuardError::Crypto(format!("vault stream header decode failed: {e}")))?;
-    if header.version == 0 || header.version > STREAM_VERSION {
+    if header.version == 0 || header.version > MAX_STREAM_VERSION {
         return Err(QGuardError::Crypto(format!(
-            "unsupported vault stream version {}",
+            "unsupported vault stream version {} — update QGuard Messaging to open it",
             header.version
         )));
+    }
+    // Recipient wraps and sender attestations are only inside the signature's
+    // reach from v4 on. Refuse them on an older version rather than reading
+    // unauthenticated key material.
+    if header.version < 4 && (!header.recipient_wraps.is_empty() || header.sender_identity.is_some())
+    {
+        return Err(QGuardError::Crypto(
+            "vault container declares recipient material below version 4 — refusing to trust it"
+                .to_string(),
+        ));
+    }
+    if header.recipient_wraps.len() > MAX_RECIPIENTS {
+        return Err(QGuardError::Crypto(
+            "vault container declares an implausible number of recipients".to_string(),
+        ));
     }
 
     // Authenticate the header (wrapped key(s) + metadata + total_chunks) before
@@ -599,6 +923,42 @@ fn resolve_file_key(header: &StreamHeader, unwrapped: [u8; KEY_SIZE]) -> Result<
     key.copy_from_slice(&bytes);
     bytes.zeroize();
     Ok(key)
+}
+
+/// Verify the sender attestation, if this container carries one.
+///
+/// An attestation that fails to verify is a hard error, not a downgrade: the
+/// container claims an author, so returning the plaintext while quietly dropping
+/// an unverifiable claim would let a forged sender name reach the user.
+fn verified_sender_for(header: &StreamHeader) -> Result<Option<VerifiedSender>> {
+    let Some(sender) = header.sender_identity.as_ref() else {
+        return Ok(None);
+    };
+    portable_identity::verify_attestation(
+        &sender.attestation,
+        &header_signable(header),
+        &sender.x25519_public,
+        &sender.mlkem_public,
+    )?;
+    Ok(Some(VerifiedSender {
+        fingerprint: sender.attestation.identity_fingerprint.clone(),
+        label: sender.attestation.label.clone(),
+        signature_algorithm: sender.attestation.signature_algorithm.clone(),
+    }))
+}
+
+/// Read + authenticate a container's header WITHOUT decrypting any content, so
+/// the UI can show who a `.qvault` is sealed for and who sealed it before the
+/// user commits to a destination folder.
+///
+/// This reveals nothing a holder of the file could not already parse: everything
+/// returned is public header metadata whose integrity is proven by the header
+/// signature.
+pub fn inspect_stream<R: Read>(reader: &mut R) -> Result<StreamSummary> {
+    let header = read_and_verify_header(reader)?;
+    let mut summary = StreamSummary::from_header(&header);
+    summary.verified_sender = verified_sender_for(&header)?;
+    Ok(summary)
 }
 
 /// Decrypt and stream out every chunk once the per-file key has been recovered.

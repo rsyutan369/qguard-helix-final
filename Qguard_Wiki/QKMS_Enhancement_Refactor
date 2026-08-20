@@ -1,0 +1,1117 @@
+# Qguard Helix — Enterprise QKMS Command Center
+
+## Refactor, Integrate, Synchronize & Enhance
+
+Kindly **enhance, refactor, and fully integrate** the following QKMS pages:
+
+* `http://localhost:3000/dashboard/qkms/overview`
+* `http://localhost:3000/dashboard/qkms/inventory`
+* `http://localhost:3000/dashboard/qkms/lifecycle`
+* `http://localhost:3000/dashboard/qkms/governance`
+* `http://localhost:3000/dashboard/qkms/rotation`
+* `http://localhost:3000/dashboard/qkms/readiness`
+* `http://localhost:3000/dashboard/qkms/risk-analysis`
+
+The objective is to transform these pages into a unified, **premium, enterprise-grade Quantum Key Management System (QKMS) Command Center**.
+
+These must NOT behave as seven independent dashboards.
+
+They must operate as one integrated QKMS platform with a **shared source of truth**, consistent key/asset identities, synchronized state, real-time telemetry, audit evidence, and accurate PQC migration status.
+
+---
+
+# 1. QKMS Core Purpose
+
+The QKMS Command Center must provide a complete enterprise view of:
+
+* Cryptographic key inventory
+* Key ownership
+* Key classification
+* Key usage
+* Key custody
+* Key storage
+* Key lifecycle
+* Key rotation
+* Key expiration
+* Key governance
+* HSM/KMS/Vault integration
+* Entropy/QRNG readiness
+* Cryptographic algorithm posture
+* PQC readiness
+* Migration gate status
+* Key-related risk
+* Remediation
+* Audit evidence
+
+The primary workflow should be:
+
+**Discover → Inventory → Classify → Govern → Monitor → Rotate → Assess → Migrate → Validate → Audit**
+
+---
+
+# 2. Critical Requirement — Use Real Tenant Data
+
+All QKMS information must be based on the user's:
+
+* Authenticated tenant
+* Actual assets
+* Actual scanned results
+* Actual discovered cryptographic keys
+* Actual certificates
+* Actual runtime telemetry
+* Actual applications/services
+* Actual key usage
+* Actual findings
+* Actual migration state
+* Actual backend records
+
+Do NOT use fake production data.
+
+Do NOT hardcode:
+
+* Key counts
+* Risk scores
+* PQC percentages
+* Rotation statistics
+* Expiration counts
+* Algorithm distributions
+* Migration readiness
+* Compliance status
+* Audit status
+
+If no data exists, show a meaningful empty state such as:
+
+**No Cryptographic Keys Discovered**
+
+or
+
+**Awaiting Key Inventory Data**
+
+Do not fabricate results to make the dashboard appear populated.
+
+---
+
+# 3. Single Source of Truth
+
+All seven pages must use a consistent underlying QKMS data model.
+
+Maintain consistent identifiers for:
+
+* Tenant ID
+* Key ID
+* Key version ID
+* Asset ID
+* Service ID
+* Application ID
+* Certificate ID
+* Owner ID
+* Policy ID
+* Rotation Job ID
+* Finding ID
+* Migration ID
+* Audit Evidence ID
+
+A key shown on Inventory must be the **same key** referenced by:
+
+* Lifecycle
+* Governance
+* Rotation
+* Readiness
+* Risk Analysis
+* Overview
+
+Do not create separate or duplicated representations of the same key.
+
+---
+
+# 4. Backend ↔ Frontend Integration
+
+Audit and repair the entire QKMS data flow:
+
+**Scanner / Agent / Collector / Runtime Telemetry**
+→ **Backend Services**
+→ **Database**
+→ **QKMS APIs**
+→ **SSE / Real-Time Event Layer**
+→ **React Hooks**
+→ **QKMS UI**
+
+Verify:
+
+* API endpoints
+* Database queries
+* Tenant filtering
+* Authentication
+* Authorization
+* React hooks
+* TypeScript models
+* SSE events
+* Real-time subscriptions
+* Cache invalidation
+* Loading states
+* Error handling
+* Retry behavior
+* Data normalization
+
+Reuse existing backend infrastructure where possible.
+
+Do not create duplicate APIs or competing sources of truth simply to make a page work.
+
+---
+
+# 5. Real-Time Synchronization
+
+The QKMS pages must remain synchronized in real time.
+
+Use the existing SSE/realtime infrastructure where available.
+
+When a key-related event occurs, the appropriate pages must update automatically.
+
+Examples:
+
+### New Key Discovered
+
+Inventory updates
+→ Overview updates
+→ Risk Analysis recalculates
+→ Lifecycle records the key
+→ Readiness evaluates PQC posture
+
+### Key Rotated
+
+Rotation Center updates
+→ Lifecycle updates
+→ Inventory updates key version
+→ Risk Analysis updates
+→ Governance audit evidence updates
+
+### Key Expires
+
+Lifecycle updates
+→ Rotation Center marks key as due/overdue
+→ Risk Analysis increases risk if appropriate
+→ Overview updates metrics
+
+### Key Migrated to PQC
+
+Readiness updates
+→ Inventory updates algorithm
+→ Risk Analysis recalculates
+→ Overview updates PQC posture
+→ Migration status updates
+
+### Policy Changed
+
+Governance updates
+→ affected keys are re-evaluated
+→ risk posture updates
+→ readiness gates update where applicable
+
+---
+
+# 6. SSE / Real-Time Requirements
+
+Ensure SSE connections are implemented correctly.
+
+They must support:
+
+* Authenticated connections
+* Tenant isolation
+* Event validation
+* Reconnection
+* Exponential backoff
+* Connection status
+* Duplicate-event protection
+* Event ordering where required
+* Cleanup on component unmount
+* Error handling
+* Efficient subscriptions
+
+Avoid:
+
+* Multiple duplicate SSE connections
+* Memory leaks
+* Repeated event processing
+* Unnecessary full-page refreshes
+* Excessive API polling
+
+Display a subtle status indicator such as:
+
+**Live**
+
+or
+
+**Real-Time Connection**
+
+when appropriate.
+
+If disconnected:
+
+**Real-Time Connection Lost — Reconnecting…**
+
+---
+
+# 7. React Hooks
+
+Audit and standardize the QKMS hooks.
+
+Reuse existing hooks when possible.
+
+Potential shared hooks include:
+
+* `useQkmsOverview()`
+* `useKeyInventory()`
+* `useKeyLifecycle()`
+* `useKeyGovernance()`
+* `useKeyRotation()`
+* `usePqcKeyReadiness()`
+* `useKeyRiskAnalysis()`
+* `useKeyTelemetry()`
+* `useQkmsRealtime()`
+
+Hooks must correctly handle:
+
+* Loading
+* Success
+* Empty state
+* Errors
+* Retries
+* Stale data
+* Real-time updates
+* Tenant changes
+* Authentication changes
+
+Do not create multiple hooks that independently retrieve the same key data using different logic.
+
+---
+
+# 8. QKMS Overview
+
+Refactor:
+
+`/dashboard/qkms/overview`
+
+into the primary **QKMS Command Center**.
+
+It should provide a concise executive and operational overview.
+
+Display only metrics calculated from real data.
+
+Potential metrics:
+
+* Total Keys
+* Active Keys
+* Expired Keys
+* Keys Expiring Soon
+* Keys Due for Rotation
+* Overdue Rotations
+* Weak/Deprecated Keys
+* High/Critical Risk Keys
+* PQC-Ready Keys
+* PQC Migration Required
+* Hybrid-Capable Keys
+* Custody Gaps
+* Governance Violations
+* HSM/KMS Coverage
+* Audit Readiness
+
+Include:
+
+### Key Posture
+
+Overall cryptographic key health.
+
+### Lifecycle Posture
+
+Creation → Active → Rotation → Expiry → Decommission.
+
+### PQC Posture
+
+Classical → Hybrid → PQC-ready → Migrated.
+
+### Risk Posture
+
+Low → Medium → High → Critical.
+
+### Migration Gate
+
+Show whether the tenant is:
+
+* Blocked
+* At Risk
+* Ready
+* Partially Ready
+* Migration Ready
+
+Every number must drill down to the underlying keys/assets.
+
+---
+
+# 9. Key Inventory
+
+Refactor:
+
+`/dashboard/qkms/inventory`
+
+into the authoritative **Key Inventory**.
+
+Provide:
+
+* Key ID
+* Key type
+* Algorithm
+* Key size
+* Version
+* Owner
+* Asset
+* Application/service
+* Environment
+* Storage backend
+* HSM/KMS/Vault
+* Usage
+* Created
+* Last used
+* Last rotated
+* Expiration
+* PQC status
+* Risk
+* Lifecycle state
+
+Support:
+
+* Search
+* Filtering
+* Sorting
+* Pagination
+* Algorithm filtering
+* Owner filtering
+* Asset filtering
+* Risk filtering
+* Lifecycle filtering
+* PQC filtering
+* Expiration filtering
+
+Clicking a key should open a detailed key inspection view.
+
+---
+
+# 10. Key Detail Inspection
+
+The key detail view should provide a complete evidence-driven profile.
+
+Show:
+
+### Identity
+
+* Key ID
+* Version
+* Owner
+* Asset
+* Service
+* Application
+
+### Cryptography
+
+* Algorithm
+* Key size
+* Usage
+* Signature/encryption purpose
+* PQC classification
+
+### Lifecycle
+
+* Created
+* Activated
+* Last used
+* Last rotated
+* Next rotation
+* Expiration
+* Decommission status
+
+### Custody
+
+* Storage backend
+* HSM/KMS/Vault
+* Key location
+* Access controls
+
+### Relationships
+
+Show relationships between:
+
+**Key → Certificate → Service → Asset → Application**
+
+### Evidence
+
+Provide:
+
+* Source
+* Scan ID
+* Telemetry ID
+* Observation time
+* Finding ID
+
+---
+
+# 11. Key Lifecycle
+
+Refactor:
+
+`/dashboard/qkms/lifecycle`
+
+into a complete lifecycle control plane.
+
+Visualize:
+
+**Created → Classified → Active → In Use → Rotation Due → Rotated → Retired → Decommissioned**
+
+Track:
+
+* Key age
+* Key version
+* Usage
+* Rotation history
+* Expiration
+* Decommission status
+* Orphaned keys
+* Unused keys
+* Long-lived keys
+* Keys exceeding policy age
+
+Identify:
+
+* Expired keys
+* Keys approaching expiration
+* Overdue rotation
+* Never-rotated keys
+* Excessively old keys
+* Orphaned keys
+
+---
+
+# 12. Governance
+
+Refactor:
+
+`/dashboard/qkms/governance`
+
+into the central **QKMS Governance and Policy Center**.
+
+Include:
+
+### Policies
+
+* Key age policies
+* Rotation policies
+* Algorithm policies
+* Key storage policies
+* Ownership policies
+* HSM requirements
+* PQC policies
+* Decommission policies
+
+### Storage
+
+Track:
+
+* HSM
+* KMS
+* Vault
+* Software keystore
+* Unknown/unmanaged storage
+
+### Governance Violations
+
+Examples:
+
+* Key stored outside approved backend
+* Missing owner
+* Unsupported algorithm
+* Rotation policy violation
+* Excessive key age
+* Missing HSM protection
+* Unmanaged key
+
+### Entropy / QRNG
+
+Track actual platform capability and configuration where available.
+
+Clearly distinguish:
+
+**Detected**
+
+**Configured**
+
+**Available**
+
+**Not Available**
+
+Do not claim QRNG support unless actual evidence exists.
+
+---
+
+# 13. Rotation Center
+
+Refactor:
+
+`/dashboard/qkms/rotation`
+
+into an operational **Key Rotation Center**.
+
+Show:
+
+* Rotation health
+* Rotation success rate
+* Rotation failures
+* Due keys
+* Overdue keys
+* Expiring keys
+* Upcoming rotations
+* Active rotation jobs
+* Completed rotations
+* Failed rotations
+
+Rotation workflow:
+
+**Identify → Schedule → Execute → Validate → Record Evidence**
+
+Every rotation job should have:
+
+* Job ID
+* Key ID
+* Owner
+* Asset
+* Previous version
+* New version
+* Start time
+* Completion time
+* Status
+* Validation status
+* Audit evidence
+
+Only expose execution controls when the backend actually supports them.
+
+Never simulate a successful rotation.
+
+---
+
+# 14. PQC Readiness
+
+Refactor:
+
+`/dashboard/qkms/readiness`
+
+into the **PQC Key Readiness & Migration Gate Center**.
+
+Evaluate actual cryptographic usage against supported PQC strategies.
+
+Include:
+
+### PQC Algorithms
+
+* ML-KEM
+* ML-DSA
+* SLH-DSA
+
+Also support the platform's approved hybrid strategies where implemented.
+
+For TLS-related key usage, distinguish between:
+
+* Classical
+* Hybrid
+* PQC-capable
+* PQC-enabled
+
+Do not label an asset "PQC Ready" merely because it has a PQC-compatible algorithm available.
+
+Readiness must be evidence-driven.
+
+---
+
+# 15. Migration Gate
+
+Provide explicit migration gate decisions.
+
+Possible states:
+
+### BLOCKED
+
+Critical dependencies or incompatible systems prevent migration.
+
+### NOT READY
+
+Required prerequisites are missing.
+
+### READY
+
+Required technical and governance conditions are satisfied.
+
+### MIGRATION IN PROGRESS
+
+Migration has started.
+
+### MIGRATED
+
+Migration completed and validated.
+
+### VALIDATION REQUIRED
+
+Migration occurred but evidence/validation is incomplete.
+
+Each gate decision must explain:
+
+**Why?**
+
+**What evidence supports it?**
+
+**What is blocking it?**
+
+**What action is required?**
+
+---
+
+# 16. Key Risk Analysis
+
+Refactor:
+
+`/dashboard/qkms/risk-analysis`
+
+into the centralized **Cryptographic Key Risk Intelligence Center**.
+
+Risk scoring should consider actual evidence such as:
+
+* Weak algorithm
+* Deprecated algorithm
+* Excessive key age
+* Expiration proximity
+* Rotation failure
+* Missing owner
+* Unknown custody
+* Software-only storage
+* Missing HSM protection
+* Excessive exposure
+* Runtime usage
+* High-value asset association
+* PQC migration status
+* Governance violations
+
+Use consistent severity:
+
+* Critical
+* High
+* Medium
+* Low
+* Informational
+
+Every risk score must be explainable.
+
+Do not simply display a number.
+
+Show:
+
+**Risk Score → Contributing Factors → Evidence → Recommended Action**
+
+---
+
+# 17. Cross-Page Consistency
+
+This is a critical requirement.
+
+The same key must have consistent information throughout QKMS.
+
+For example:
+
+If Inventory says:
+
+**Key A — RSA-2048 — High Risk**
+
+then Risk Analysis must reference that same Key A.
+
+If Rotation Center shows:
+
+**Key A — Rotation Overdue**
+
+Lifecycle must also show the key as rotation overdue.
+
+If Readiness determines:
+
+**Key A — PQC Migration Required**
+
+Overview must include it in the corresponding PQC metric.
+
+If Governance identifies:
+
+**Key A — Custody Violation**
+
+Risk Analysis must reflect the associated governance risk.
+
+---
+
+# 18. Integration With Other Qguard Helix Modules
+
+QKMS must remain aligned with the rest of the platform.
+
+Cross-check and synchronize where applicable with:
+
+* PQC Scanner
+* Assets & CBOM
+* TLS Telemetry
+* PKI Visibility
+* Protocol Analytics
+* TLS Orchestrator
+* Runtime Cryptographic Intelligence
+* Quantum Readiness
+* Migration Planner
+* Live Migration
+* Harvest Now Risk
+* Quantum Certification
+* PQAuth Identity Migration Engine
+* Agent/Collector telemetry
+
+A key discovered by the scanner should eventually be visible in QKMS when the data represents a managed cryptographic key.
+
+A certificate using a particular key should reference the same underlying key identity wherever possible.
+
+---
+
+# 19. Evidence-Driven Architecture
+
+Every important QKMS finding should be traceable to evidence.
+
+For example:
+
+**Finding: RSA-2048 key requires PQC migration**
+
+Display:
+
+* Key ID
+* Asset
+* Application
+* Algorithm
+* Key usage
+* Observation source
+* Scan/telemetry ID
+* Observation timestamp
+* Risk
+* PQC requirement
+* Migration recommendation
+* Current migration state
+
+Avoid generic statements without evidence.
+
+---
+
+# 20. Data Freshness
+
+Clearly communicate when information was last observed.
+
+Use:
+
+* Last Updated
+* Last Scanned
+* Last Used
+* Last Rotated
+* Last Telemetry
+* Last Policy Evaluation
+
+Examples:
+
+**Live**
+
+**Updated 8 seconds ago**
+
+**Last observed 3 minutes ago**
+
+Never present stale data as real-time.
+
+---
+
+# 21. Enterprise Security
+
+Maintain strict multi-tenant isolation.
+
+Every request must enforce:
+
+* Tenant ID
+* User identity
+* Role
+* Permission
+* Asset scope
+
+A user must never be able to access another tenant's:
+
+* Keys
+* Key metadata
+* Rotation jobs
+* Certificates
+* Risk findings
+* Governance policies
+* Audit evidence
+* Migration state
+
+Validate tenant ownership at the backend, not only in the frontend.
+
+---
+
+# 22. Audit Readiness
+
+QKMS should provide strong audit evidence.
+
+Where supported, track:
+
+* Who
+* What
+* When
+* Where
+* Why
+* Previous state
+* New state
+* Evidence source
+* Action result
+
+Important operations should produce auditable records.
+
+Examples:
+
+* Key creation
+* Key rotation
+* Key deletion
+* Policy changes
+* Ownership changes
+* Algorithm changes
+* Migration actions
+* Governance decisions
+
+---
+
+# 23. Premium Enterprise UI
+
+The interface should feel like a **high-end enterprise cryptographic security platform**.
+
+Use:
+
+* Clear visual hierarchy
+* Professional typography
+* Consistent spacing
+* Consistent Qguard Helix design language
+* High-quality tables
+* Clear risk indicators
+* Minimal but meaningful charts
+* Advanced filtering
+* Drill-down navigation
+* Responsive design
+* Accessible components
+* Strong empty states
+* Professional loading states
+* Clear error states
+
+Avoid excessive:
+
+* Decorative widgets
+* Redundant charts
+* Giant numbers without context
+* Unnecessary animations
+* Fake activity feeds
+* Visual clutter
+
+The interface should prioritize:
+
+**Understand → Investigate → Decide → Act → Verify**
+
+---
+
+# 24. No Fake Functionality
+
+Do not create UI controls that only appear functional.
+
+Do NOT simulate:
+
+* Key rotation
+* Key creation
+* Key deletion
+* Migration
+* Validation
+* Risk reduction
+* Audit events
+* PQC enablement
+
+If the backend does not support an operation, clearly indicate that the operation is unavailable or implement the required backend functionality properly.
+
+---
+
+# 25. Performance
+
+The QKMS platform must remain responsive with large enterprise inventories.
+
+Optimize:
+
+* Database queries
+* API requests
+* SSE subscriptions
+* React rendering
+* Tables
+* Filtering
+* Sorting
+* Charts
+* Aggregations
+
+Use:
+
+* Pagination
+* Server-side filtering
+* Server-side aggregation
+* Virtualized tables where appropriate
+* Efficient caching
+
+Do not load an entire enterprise key inventory into the browser unnecessarily.
+
+---
+
+# 26. Loading, Empty, Error & Connection States
+
+Every page must properly support:
+
+### Loading
+
+Professional skeleton UI.
+
+### Empty
+
+Example:
+
+**No Cryptographic Keys Discovered**
+
+Explain what the user should do next.
+
+### Error
+
+Provide a clear explanation and retry action.
+
+### Real-Time Disconnected
+
+Display:
+
+**Real-Time Connection Lost — Reconnecting…**
+
+Do not silently display stale data as if it were live.
+
+---
+
+# 27. Navigation & Workflow
+
+Create seamless navigation between the seven QKMS pages.
+
+Example:
+
+**Overview**
+→ Key Inventory
+→ Key Detail
+→ Lifecycle
+→ Rotation
+→ Risk Analysis
+→ PQC Readiness
+→ Governance
+
+And:
+
+**Risk Finding**
+→ Key
+→ Asset
+→ Certificate
+→ Application
+→ Migration Plan
+→ Validation
+
+The user should never feel that they are moving between disconnected systems.
+
+---
+
+# 28. Architecture Cleanup
+
+Before making UI changes, inspect the existing implementation.
+
+Identify:
+
+* Duplicate API calls
+* Duplicate hooks
+* Stale components
+* Mock data
+* Hardcoded metrics
+* Unused components
+* Broken SSE subscriptions
+* Incorrect tenant filtering
+* Inconsistent TypeScript models
+* Conflicting risk calculations
+* Duplicate database queries
+* Dead code
+
+Refactor the underlying architecture where necessary.
+
+Prefer fixing the source of the problem instead of adding frontend workarounds.
+
+---
+
+# 29. Final Acceptance Criteria
+
+The implementation is complete only when:
+
+* [ ] All seven QKMS pages are functional.
+* [ ] All pages use authenticated tenant data.
+* [ ] No fake production metrics remain.
+* [ ] No mock cryptographic keys are displayed.
+* [ ] Backend APIs are properly wired.
+* [ ] React hooks are properly wired.
+* [ ] SSE/realtime updates function correctly.
+* [ ] Data is synchronized across all seven pages.
+* [ ] Key IDs remain consistent everywhere.
+* [ ] Key lifecycle state is consistent.
+* [ ] Rotation state is consistent.
+* [ ] Governance violations are reflected in risk.
+* [ ] PQC readiness is evidence-driven.
+* [ ] Migration gates are explainable.
+* [ ] Risk scores are explainable.
+* [ ] Audit evidence is traceable.
+* [ ] QKMS data aligns with scanner and telemetry results.
+* [ ] QKMS data aligns with TLS/PKI modules where applicable.
+* [ ] Tenant isolation is enforced server-side.
+* [ ] Loading states work.
+* [ ] Empty states work.
+* [ ] Error states work.
+* [ ] SSE disconnect/reconnect works.
+* [ ] Search and filtering work.
+* [ ] Drill-down navigation works.
+* [ ] No fake operational buttons remain.
+* [ ] Large inventories remain performant.
+* [ ] UI is responsive and accessible.
+* [ ] The overall experience is premium and enterprise-grade.
+
+---
+
+# Final Objective
+
+Transform the seven pages into a unified:
+
+## **Qguard Helix QKMS Command Center**
+
+The final system should provide a single, trustworthy view of the enterprise cryptographic key estate.
+
+The complete user journey should be:
+
+**Discover Keys**
+→ **Inventory**
+→ **Classify**
+→ **Assess Lifecycle**
+→ **Govern**
+→ **Monitor Rotation**
+→ **Analyze Risk**
+→ **Evaluate PQC Readiness**
+→ **Pass Migration Gate**
+→ **Migrate**
+→ **Validate**
+→ **Produce Audit Evidence**
+
+Most importantly:
+
+**Every result must come from the user's actual tenant data, actual assets, actual scans, actual telemetry, and actual backend state.**
+
+The seven pages must be **matched, aligned, synchronized, and tallied with each other and with the broader Qguard Helix platform**, creating one authoritative and continuously updated source of truth for enterprise cryptographic key management and post-quantum migration readiness.

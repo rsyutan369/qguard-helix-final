@@ -76,35 +76,6 @@ export const TRUST_CENTER_TABLES = [
   'compliance_evidence',
 ] as const;
 
-export const QKMS_TABLES = [
-  'assets',
-  'generated_keys',
-  'crypto_inventory',
-  'crypto_exposures',
-  'certificates',
-  'runtime_crypto_events',
-  'scanner_evidence',
-  'scanner_alerts',
-  'pqc_scan_sessions',
-  'pqc_scan_results',
-  'migration_jobs',
-  'compliance_evidence',
-  'vault_audit_logs',
-  'qrng_events',
-  'scanner_agents',
-  'connector_accounts',
-  'agent_heartbeats',
-  'security_events',
-  'vulnerabilities',
-  'audit_logs',
-  'scanner_agent_policies',
-  'qkms_keys',
-  'qkms_policies',
-  'qkms_rotation_jobs',
-  'qkms_audit_events',
-  'qkms_storage_backends',
-] as const;
-
 export const PQAUTHTABLES = [
   'assets',
   'asset_relationships',

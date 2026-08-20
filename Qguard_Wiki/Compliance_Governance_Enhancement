@@ -1,0 +1,775 @@
+# Enterprise Governance, Compliance & Audit Command Layer — Full Enhancement & Refactoring
+
+Kindly **enhance, refactor, fully wire, and production-harden** the following Qguard Helix dashboard pages:
+
+* `http://localhost:3000/dashboard/compliance`
+* `http://localhost:3000/dashboard/quantum-governance`
+* `http://localhost:3000/dashboard/audit-vault`
+* `http://localhost:3000/dashboard/regulatory-mapping`
+
+These pages must operate as a **unified, enterprise-grade Governance, Compliance, Audit, Regulatory Mapping, and Quantum-Readiness Command Layer**.
+
+The four modules must not behave as isolated dashboards. They must be **fully interconnected and synchronized with the same authenticated tenant, assets, scan results, cryptographic inventory, CBOM, PQC readiness assessments, policies, findings, remediation state, evidence, audit events, and runtime telemetry**.
+
+---
+
+## 1. Core Objective
+
+Build a premium enterprise governance layer that provides a single source of truth for:
+
+* Enterprise Crypto Governance
+* Post-Quantum Cryptography (PQC) Readiness
+* Quantum Risk Management
+* Regulatory & Framework Mapping
+* Compliance Control Coverage
+* Policy Management and Enforcement
+* Audit Evidence Management
+* Immutable Audit Trails
+* Evidence Retention
+* Cryptographic Custody
+* Runtime Cryptographic Risk
+* Asset Compliance
+* Finding and Remediation Tracking
+* Executive Governance Reporting
+
+Every displayed metric, chart, status, finding, asset, control, evidence item, and risk score must be derived from **actual authenticated tenant data**.
+
+**Do not use fake, hardcoded, static, mock, or randomly generated production-looking data.**
+
+If real tenant data does not exist, clearly display an appropriate empty/loading/unavailable state rather than fabricating results.
+
+---
+
+# 2. REAL-TIME DATA INTEGRITY & SOURCE OF TRUTH
+
+All four pages must consume the same authoritative backend data sources.
+
+Ensure the frontend is correctly connected to the backend through:
+
+* API endpoints
+* React hooks
+* Server-Sent Events (SSE)
+* WebSocket/realtime mechanisms where already supported
+* React Query/SWR or the project's existing data-fetching layer
+* Authentication/session context
+* Tenant context
+* Asset context
+* Scan-result services
+* Telemetry services
+* Compliance services
+* Governance services
+* Audit services
+* Regulatory mapping services
+
+Every page must reflect the **current state of the authenticated tenant**.
+
+### Critical requirement
+
+The following must remain synchronized across all four pages:
+
+`Assets → Scans → Crypto Inventory → CBOM → PQC Findings → Risk → Controls → Compliance → Regulatory Mapping → Evidence → Audit Trail → Governance`
+
+If an asset changes on one page, dependent information must automatically reflect that change throughout the platform.
+
+---
+
+# 3. SERVER-SENT EVENTS / REAL-TIME SYNCHRONIZATION
+
+Implement and verify proper SSE integration wherever backend SSE endpoints are available.
+
+SSE should support real-time updates for events such as:
+
+* Scan completed
+* Asset discovered
+* Asset removed
+* Cryptographic algorithm detected
+* Vulnerable algorithm detected
+* PQC readiness changed
+* Finding created
+* Finding resolved
+* Finding severity changed
+* Compliance control changed
+* Evidence generated
+* Evidence updated
+* Evidence expired
+* Policy violation detected
+* Policy status changed
+* Regulatory mapping changed
+* Audit event created
+* Runtime cryptographic telemetry received
+* Certificate changes
+* Key lifecycle events
+* Trust posture changes
+* Risk score changes
+* Migration status changes
+
+Implement:
+
+* SSE connection lifecycle management
+* Automatic reconnection
+* Backoff/retry
+* Connection status
+* Event validation
+* Duplicate event protection
+* Event ordering where required
+* Cache invalidation
+* State reconciliation
+* Tenant isolation
+* Proper cleanup/unsubscription
+* Error handling
+
+Do not create multiple unnecessary SSE connections for the same data source.
+
+---
+
+# 4. CROSS-PAGE DATA CONSISTENCY
+
+These pages must be treated as one integrated system.
+
+### Compliance
+
+Should consume actual:
+
+* Assets
+* Findings
+* Controls
+* Policies
+* Evidence
+* Framework mappings
+* PQC readiness
+* Cryptographic posture
+* Remediation status
+
+### Quantum Governance
+
+Should consume actual:
+
+* Cryptographic inventory
+* CBOM
+* Vulnerable algorithms
+* Quantum exposure
+* PQC readiness
+* Migration status
+* Risk scores
+* Crypto policies
+* Runtime telemetry
+* Asset criticality
+* Dependency relationships
+
+### Audit Vault
+
+Should consume actual:
+
+* Audit events
+* Evidence
+* Evidence hashes
+* Evidence timestamps
+* Evidence source
+* Evidence ownership
+* Access history
+* Retention state
+* Integrity verification
+* Cryptographic custody information
+* Policy changes
+* Administrative actions
+* Compliance activities
+
+### Regulatory Mapping
+
+Should consume actual:
+
+* Regulatory frameworks
+* Requirements
+* Controls
+* Control implementations
+* Assets
+* Findings
+* Evidence
+* Compliance status
+* Evidence freshness
+* Exceptions
+* Remediation status
+* PQC/cryptographic requirements
+
+---
+
+# 5. COMPLIANCE COMMAND CENTER
+
+Refactor `/dashboard/compliance` into a true enterprise compliance command center.
+
+Include only meaningful, actionable information.
+
+### Executive Metrics
+
+Provide real-time KPIs such as:
+
+* Overall Compliance Score
+* Control Coverage
+* Compliant Controls
+* Partially Compliant Controls
+* Non-Compliant Controls
+* Critical Compliance Gaps
+* Evidence Coverage
+* Evidence Freshness
+* Open Findings
+* Critical Findings
+* Overdue Remediation
+* Policy Violations
+* PQC Compliance Readiness
+
+### Control Management
+
+Provide:
+
+* Control inventory
+* Control status
+* Control owner
+* Related assets
+* Related findings
+* Related evidence
+* Framework mappings
+* Last validation
+* Evidence freshness
+* Remediation status
+
+Allow users to drill down from:
+
+`Framework → Requirement → Control → Asset → Finding → Evidence`
+
+### Compliance Gap Analysis
+
+Identify:
+
+* Missing controls
+* Weak controls
+* Failed controls
+* Expired evidence
+* Missing evidence
+* Unmapped assets
+* Unresolved findings
+* PQC-related compliance gaps
+
+---
+
+# 6. QUANTUM GOVERNANCE COMMAND CENTER
+
+Refactor `/dashboard/quantum-governance` into the central governance layer for cryptographic and post-quantum risk.
+
+Track:
+
+* Total cryptographic assets
+* Quantum-vulnerable assets
+* PQC-ready assets
+* Migration-in-progress assets
+* Non-compliant cryptographic assets
+* Critical crypto findings
+* Vulnerable algorithms
+* Deprecated algorithms
+* Weak key sizes
+* Certificate risks
+* PQC adoption
+* Hybrid cryptography adoption
+* Crypto policy violations
+
+### Governance Policies
+
+Support policy visibility and management for:
+
+* Approved algorithms
+* Forbidden algorithms
+* Minimum key strength
+* TLS requirements
+* PQC requirements
+* Certificate requirements
+* Key lifecycle requirements
+* Encryption requirements
+* Cryptographic agility
+* Data classification
+* Quantum-risk thresholds
+
+### Risk Governance
+
+Provide:
+
+* Quantum Risk Score
+* Cryptographic Risk Score
+* Governance Score
+* PQC Readiness Score
+* Asset Criticality
+* Risk trend
+* Top risk domains
+* Top affected assets
+* Risk ownership
+* Recommended actions
+
+Every score must be calculated from actual backend data and use a consistent scoring model throughout Qguard Helix.
+
+---
+
+# 7. AUDIT VAULT
+
+Refactor `/dashboard/audit-vault` into an enterprise-grade cryptographic audit and evidence repository.
+
+The Audit Vault must provide strong integrity and traceability.
+
+Track:
+
+* Audit events
+* Evidence objects
+* Evidence metadata
+* Evidence source
+* Evidence owner
+* Creation timestamp
+* Last modification
+* Retention period
+* Evidence status
+* Integrity status
+* Hash/fingerprint
+* Related control
+* Related framework
+* Related asset
+* Related finding
+* Related remediation
+* Access history
+* Custody history
+
+### Evidence Integrity
+
+Where supported by the backend, provide:
+
+* Cryptographic hash
+* Integrity verification
+* Immutable event history
+* Chain-of-custody
+* Timestamp
+* Evidence provenance
+* Verification status
+
+Never claim evidence is immutable or cryptographically verified unless the backend actually provides that guarantee.
+
+### Audit Timeline
+
+Provide a searchable chronological audit timeline covering:
+
+* Login/authentication events
+* Administrative actions
+* Policy changes
+* Asset changes
+* Scan events
+* Finding changes
+* Compliance changes
+* Evidence changes
+* Regulatory mapping changes
+* Migration events
+* Key/certificate events
+
+---
+
+# 8. REGULATORY MAPPING
+
+Refactor `/dashboard/regulatory-mapping` into a comprehensive regulatory and control-mapping engine.
+
+Support framework/control relationships such as:
+
+`Regulation → Requirement → Control → Asset → Finding → Evidence`
+
+Display:
+
+* Framework coverage
+* Requirement coverage
+* Control coverage
+* Compliance percentage
+* Missing controls
+* Missing evidence
+* Evidence freshness
+* Failed controls
+* Exceptions
+* Open findings
+* Remediation status
+
+The architecture should allow additional frameworks and regulations to be added without requiring major frontend restructuring.
+
+Do not hardcode framework results into the UI.
+
+---
+
+# 9. UNIFIED EVIDENCE MODEL
+
+Ensure Compliance, Quantum Governance, Audit Vault, and Regulatory Mapping reference the same evidence model.
+
+An evidence record should be traceable to:
+
+* Tenant
+* Asset
+* Scan
+* Finding
+* Control
+* Framework
+* Requirement
+* Policy
+* User/action
+* Timestamp
+* Source
+* Integrity metadata
+
+Users should be able to navigate between related records.
+
+Example:
+
+`Compliance Gap`
+→ `Control`
+→ `Requirement`
+→ `Affected Asset`
+→ `Crypto Finding`
+→ `Scan Result`
+→ `Evidence`
+→ `Audit Event`
+
+---
+
+# 10. TENANT ISOLATION & SECURITY
+
+All backend requests must be scoped to the authenticated tenant.
+
+Verify:
+
+* Authentication
+* Authorization
+* Tenant ID propagation
+* RBAC
+* Permission checks
+* API authorization
+* Database-level isolation
+* Row-Level Security where applicable
+* SSE tenant isolation
+* Evidence access control
+* Audit access control
+
+Never allow one tenant to access another tenant's:
+
+* Assets
+* Findings
+* Evidence
+* Audit events
+* Policies
+* Compliance results
+* Regulatory mappings
+* Telemetry
+* Governance data
+
+Do not trust tenant identifiers supplied solely by the frontend.
+
+---
+
+# 11. FRONTEND ARCHITECTURE
+
+Refactor the frontend to avoid duplicated business logic.
+
+Create reusable components/hooks where appropriate.
+
+Examples:
+
+* `useCompliance()`
+* `useQuantumGovernance()`
+* `useAuditVault()`
+* `useRegulatoryMapping()`
+* `useComplianceControls()`
+* `useEvidence()`
+* `useAuditEvents()`
+* `useCryptoGovernance()`
+* `usePQCReadiness()`
+* `useRealtimeTelemetry()`
+* `useSSE()`
+
+Use the existing project architecture where possible rather than introducing unnecessary frameworks.
+
+Ensure:
+
+* Loading states
+* Empty states
+* Error states
+* Retry states
+* Offline/reconnecting states
+* Permission states
+* Stale-data indicators
+* Last-updated timestamps
+
+---
+
+# 12. PERFORMANCE
+
+Ensure the pages remain responsive with large enterprise datasets.
+
+Implement where appropriate:
+
+* Pagination
+* Server-side filtering
+* Server-side sorting
+* Search
+* Virtualized tables
+* Incremental loading
+* Caching
+* Query deduplication
+* Lazy loading
+* Efficient SSE updates
+* Selective cache invalidation
+
+Do not load an entire enterprise asset inventory into the browser unnecessarily.
+
+---
+
+# 13. PREMIUM ENTERPRISE UX/UI
+
+Redesign/refine the pages to feel like a **premium enterprise cybersecurity command platform**.
+
+Maintain Qguard Helix visual identity while improving:
+
+* Information hierarchy
+* Typography
+* Spacing
+* Cards
+* Tables
+* Charts
+* Status indicators
+* Risk visualization
+* Navigation
+* Drill-down workflows
+* Filters
+* Search
+* Tooltips
+* Detail drawers
+* Modals
+* Empty states
+* Loading skeletons
+* Error handling
+
+The UI should be:
+
+* Professional
+* Clean
+* High-density but readable
+* Executive-friendly
+* SOC/security-team friendly
+* Accessible
+* Responsive
+* Consistent across all four pages
+
+Avoid unnecessary visual decoration that does not communicate security, governance, compliance, or operational information.
+
+---
+
+# 14. GLOBAL FILTERING
+
+Provide consistent filtering across the governance layer where applicable:
+
+* Asset
+* Environment
+* Cloud
+* Region
+* Business unit
+* Application
+* Criticality
+* Risk level
+* Compliance status
+* PQC readiness
+* Framework
+* Control
+* Finding severity
+* Time range
+
+Filters must produce consistent results across the relevant pages.
+
+---
+
+# 15. DRILL-DOWN & NAVIGATION
+
+Every important metric should be actionable.
+
+For example:
+
+`Critical Compliance Gaps: 27`
+
+Clicking it should show the actual 27 records.
+
+Likewise:
+
+`PQC At Risk: 43`
+
+should open the actual affected assets/findings.
+
+Support navigation such as:
+
+`Dashboard → Finding → Asset → Scan → Evidence → Control → Framework`
+
+Preserve context when navigating between pages.
+
+---
+
+# 16. DATA RECONCILIATION
+
+Implement safeguards to prevent inconsistent numbers between dashboards.
+
+For example:
+
+If Compliance reports:
+
+`142 cryptographic assets`
+
+Quantum Governance should not independently report:
+
+`137 cryptographic assets`
+
+unless there is an explicitly documented difference in scope/filtering.
+
+Ensure metrics are derived from common backend sources and consistent query definitions.
+
+Where metrics intentionally differ, clearly show the applied scope/filter.
+
+---
+
+# 17. REAL-TIME STATUS
+
+Display appropriate real-time indicators such as:
+
+* Live
+* Syncing
+* Reconnecting
+* Last updated
+* Data freshness
+* Backend unavailable
+* Telemetry delayed
+
+Do not falsely display "Live" when the SSE/backend connection is unavailable.
+
+---
+
+# 18. NO MOCK DATA
+
+This is a strict requirement.
+
+Remove or replace:
+
+* Hardcoded metrics
+* Fake assets
+* Fake findings
+* Fake compliance percentages
+* Random charts
+* Placeholder audit events
+* Static evidence
+* Simulated telemetry
+* Fake regulatory mappings
+
+Use actual backend/tenant data.
+
+For development-only mocks that already exist, isolate them behind an explicit development-only mechanism and ensure production paths never use them.
+
+---
+
+# 19. BACKEND VALIDATION
+
+Do not limit this task to frontend UI.
+
+Inspect the backend APIs/services used by these pages and verify:
+
+* Endpoint correctness
+* Request parameters
+* Response schemas
+* Authentication
+* Authorization
+* Tenant filtering
+* Pagination
+* Sorting
+* Filtering
+* Error handling
+* SSE implementation
+* Event payloads
+* Database queries
+* Data relationships
+
+If an API required by the page is missing or incomplete, implement the required backend functionality following the existing project architecture.
+
+Do not create frontend-only simulations to hide missing backend functionality.
+
+---
+
+# 20. CROSS-MODULE ALIGNMENT
+
+Verify that these pages correctly consume data from related Qguard Helix modules, including where applicable:
+
+* Asset Discovery
+* PQC Scanner
+* Assets & CBOM
+* Quantum Readiness Assessment Engine
+* Migration Planner
+* Live Migration
+* Runtime Cryptographic Intelligence
+* Certificate Telemetry
+* Trust State Discovery
+* Multi-Cloud Telemetry
+* PQAuth
+* Quantum Trust Fabric
+* Harvest Now Risk Engine
+* Policy Engine
+* Risk Engine
+* Evidence/Reporting systems
+
+The governance layer should become the **aggregation and decision layer**, not a duplicate data silo.
+
+---
+
+# 21. ACCEPTANCE CRITERIA
+
+Before considering the implementation complete, verify all of the following:
+
+* [ ] All four pages load successfully.
+* [ ] No console errors.
+* [ ] No broken API calls.
+* [ ] No broken hooks.
+* [ ] No broken SSE connections.
+* [ ] SSE reconnects correctly after interruption.
+* [ ] Real tenant data is displayed.
+* [ ] No fake production data remains.
+* [ ] Tenant isolation is enforced.
+* [ ] RBAC/permissions are respected.
+* [ ] Compliance data matches backend results.
+* [ ] Quantum Governance data matches actual crypto/PQC results.
+* [ ] Audit Vault reflects actual audit/evidence records.
+* [ ] Regulatory Mapping reflects actual control/evidence relationships.
+* [ ] Cross-page navigation works.
+* [ ] Drill-downs display the correct underlying records.
+* [ ] Filters work correctly.
+* [ ] Search works correctly.
+* [ ] Pagination works correctly.
+* [ ] Loading states work correctly.
+* [ ] Empty states work correctly.
+* [ ] Error states work correctly.
+* [ ] Real-time updates propagate correctly.
+* [ ] Metrics remain synchronized across pages.
+* [ ] Evidence relationships are traceable.
+* [ ] Audit events are traceable.
+* [ ] Compliance controls are traceable to evidence.
+* [ ] Regulatory requirements are traceable to controls.
+* [ ] Controls are traceable to affected assets/findings.
+* [ ] PQC governance reflects actual cryptographic inventory.
+* [ ] Risk scores use consistent backend calculations.
+* [ ] No unnecessary duplicate data-fetching occurs.
+* [ ] No memory leaks from SSE/subscriptions.
+* [ ] Large datasets remain performant.
+* [ ] UI is responsive.
+* [ ] UI meets premium enterprise cybersecurity standards.
+
+---
+
+# 22. FINAL IMPLEMENTATION REQUIREMENT
+
+Do not simply redesign the existing screens.
+
+**Inspect → Understand → Refactor → Wire → Integrate → Synchronize → Validate → Harden.**
+
+The final result should feel like a **single unified enterprise governance operating system for Qguard Helix**, where Compliance, Quantum Governance, Audit Vault, and Regulatory Mapping continuously consume and reconcile the same authoritative tenant data.
+
+The most important principle is:
+
+> **One Tenant → One Source of Truth → One Connected Governance Layer → Real-Time Evidence → Actionable Risk → Auditable Compliance.**
+
+Everything displayed to the user must be explainable, traceable, current, and backed by actual system data.

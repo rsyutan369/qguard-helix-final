@@ -1,5 +1,5 @@
-import ObservabilityDashboard from '../_components/ObservabilityDashboard';
+import RuntimeTelemetry from './RuntimeTelemetry';
 
 export default function RuntimeTelemetryPage() {
-  return <ObservabilityDashboard mode="runtime" />;
+  return <RuntimeTelemetry />;
 }

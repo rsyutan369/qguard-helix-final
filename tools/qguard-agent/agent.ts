@@ -1,5 +1,5 @@
 import { createHash, X509Certificate } from 'node:crypto'
-import { promises as fs } from 'node:fs'
+import { promises as fs, readFileSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -197,21 +197,148 @@ const CONFIG_EXTENSIONS = new Set(['.conf', '.config', '.cfg', '.json', '.yaml',
 const SSH_KEY_FILE_NAMES = new Set(['authorized_keys', 'known_hosts', 'id_rsa.pub', 'id_ecdsa.pub', 'id_ed25519.pub'])
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage', '.turbo', '.cache'])
 
+/**
+ * Configuration file support.
+ *
+ * Installed deployments (systemd, the Windows startup task, containers) cannot
+ * rely on an interactive shell's environment, so the agent reads a KEY=value
+ * configuration file written by the installer at 0600/SYSTEM-only permissions
+ * and merges it into process.env BEFORE any credential is resolved. An explicit
+ * environment variable always wins over the file so operators can override a
+ * single setting without editing the installed config.
+ */
+function configFileCandidates(): string[] {
+  const explicit = process.env.QGUARD_CONFIG
+  const candidates: string[] = []
+  if (explicit) candidates.push(explicit)
+  if (process.platform === 'win32') {
+    const programData = process.env.ProgramData || 'C:\\ProgramData'
+    candidates.push(path.join(programData, 'QGuardHelix', 'Agent', 'agent.env'))
+  } else {
+    candidates.push('/etc/qguard-agent/agent.env')
+    candidates.push('/opt/qguard-agent/agent.env')
+  }
+  candidates.push(path.join(process.cwd(), 'qguard-agent.env'))
+  return candidates
+}
+
+function loadConfigFile(): string | null {
+  for (const candidate of configFileCandidates()) {
+    let contents: string
+    try {
+      contents = readFileSync(candidate, 'utf8')
+    } catch {
+      continue
+    }
+    for (const rawLine of contents.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#')) continue
+      const separator = line.indexOf('=')
+      if (separator <= 0) continue
+      const key = line.slice(0, separator).trim()
+      const value = line.slice(separator + 1).trim().replace(/^["']|["']$/g, '')
+      if (!key.startsWith('QGUARD_')) continue
+      if (process.env[key] === undefined || process.env[key] === '') process.env[key] = value
+    }
+    return candidate
+  }
+  return null
+}
+
+const CONFIG_FILE_PATH = loadConfigFile()
+
+function csvEnv(name: string): string[] {
+  return (process.env[name] || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, '')
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
+/** Injected at bundle time by tools/build-agent-release.mjs; falls back for `tsx` runs. */
+const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.0'
+const AGENT_ROLE = (process.env.QGUARD_AGENT_ROLE || 'collector').toLowerCase()
 const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
 const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
+const MIGRATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_MIGRATION || '')
 const MAX_REMEDIATION_JOBS = Math.max(1, Math.min(5, Number(process.env.QGUARD_MAX_REMEDIATION_JOBS || 2)))
+const AGENT_STARTED_AT = Date.now()
+
+/** Counters surfaced through heartbeat telemetry (spec §24 — agent health). */
+const agentHealth = {
+  scanCount: 0,
+  errorCount: 0,
+  lastScanStartedAt: null as string | null,
+  lastScanDurationMs: null as number | null,
+  lastError: null as string | null,
+  currentJob: null as string | null,
+  queueDepth: 0,
+}
 
 function isoNow() {
   return new Date().toISOString()
 }
 
+/**
+ * Host health snapshot. Deliberately limited to process/host resource counters —
+ * no user, file or personal data is collected (spec §24).
+ */
+function hostHealthTelemetry(): Record<string, unknown> {
+  const totalMemory = os.totalmem()
+  const freeMemory = os.freemem()
+  const load = os.loadavg()
+  const cpus = os.cpus() || []
+  const memoryUsage = process.memoryUsage()
+  return {
+    agentVersion: AGENT_VERSION,
+    agentRole: AGENT_ROLE,
+    configSource: CONFIG_FILE_PATH ? 'config-file' : 'environment',
+    host: {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      release: os.release(),
+      arch: os.arch(),
+      cpuCount: cpus.length,
+      cpuModel: cpus[0]?.model || null,
+      uptimeSeconds: Math.round(os.uptime()),
+      loadAverage1m: Number.isFinite(load[0]) ? Number(load[0].toFixed(2)) : null,
+    },
+    memory: {
+      totalBytes: totalMemory,
+      freeBytes: freeMemory,
+      usedPercent: totalMemory > 0 ? Math.round(((totalMemory - freeMemory) / totalMemory) * 100) : null,
+      agentRssBytes: memoryUsage.rss,
+      agentHeapUsedBytes: memoryUsage.heapUsed,
+    },
+    process: {
+      pid: process.pid,
+      nodeVersion: process.versions.node,
+      agentUptimeSeconds: Math.round((Date.now() - AGENT_STARTED_AT) / 1000),
+    },
+    counters: {
+      scanCount: agentHealth.scanCount,
+      errorCount: agentHealth.errorCount,
+      queueDepth: agentHealth.queueDepth,
+      lastScanStartedAt: agentHealth.lastScanStartedAt,
+      lastScanDurationMs: agentHealth.lastScanDurationMs,
+      lastError: agentHealth.lastError,
+      currentJob: agentHealth.currentJob,
+    },
+    capabilities: {
+      remediation: REMEDIATION_ENABLED,
+      configPatches: CONFIG_PATCHES_ENABLED,
+      migration: MIGRATION_ENABLED,
+    },
+  }
+}
+
 function requireEnrollment() {
   if (!AGENT_ID || !AGENT_TOKEN) {
     console.error('QGuard agent is not enrolled. Set QGUARD_AGENT_ID and QGUARD_AGENT_TOKEN before running.')
-    console.error(`Enroll from the dashboard API, then run: QGUARD_AGENT_ID=<id> QGUARD_AGENT_TOKEN=<token> npm run agent:scan`)
+    console.error('Install a generated package from the Qguard Helix Agent Center (/downloads), or set the')
+    console.error('variables manually: QGUARD_AGENT_ID=<id> QGUARD_AGENT_TOKEN=<token> npm run agent:scan')
     process.exit(1)
   }
 }
@@ -221,9 +348,10 @@ async function requestJson<T>(pathName: string, init: RequestInit = {}): Promise
     ...init,
     headers: {
       'content-type': 'application/json',
-      'user-agent': `qguard-local-agent/${process.env.npm_package_version || '0.1.0'}`,
+      'user-agent': `qguard-helix-agent/${AGENT_VERSION} (${AGENT_ROLE}; ${os.platform()}-${os.arch()})`,
       'x-qguard-agent-id': AGENT_ID,
       'x-qguard-agent-token': AGENT_TOKEN,
+      'x-qguard-agent-version': AGENT_VERSION,
       ...(init.headers || {}),
     },
   })
@@ -235,9 +363,24 @@ async function requestJson<T>(pathName: string, init: RequestInit = {}): Promise
   return payload as T
 }
 
+/** Commands queued for this agent by the control plane (scan now, upgrade, disable). */
+interface AgentCommand {
+  id: string
+  type: string
+  queuedAt?: string
+  payload?: Record<string, unknown>
+}
+
+let pendingCommands: AgentCommand[] = []
+
 async function pullPolicy(): Promise<AgentPolicy> {
-  const payload = await requestJson<{ data?: { policy?: Partial<AgentPolicy> } }>('/api/v1/agent-scanner/agent/policy')
+  const payload = await requestJson<{ data?: { policy?: Partial<AgentPolicy>; commands?: AgentCommand[] } }>(
+    '/api/v1/agent-scanner/agent/policy',
+  )
   const policy = payload.data?.policy || {}
+  // The policy poll doubles as the command channel — one round trip, no extra endpoint.
+  pendingCommands = Array.isArray(payload.data?.commands) ? payload.data!.commands! : []
+  agentHealth.queueDepth = pendingCommands.length
   return {
     enabled: policy.enabled !== false,
     intervalSeconds: Math.max(30, Math.min(60, Number(policy.intervalSeconds || 60))),
@@ -248,6 +391,23 @@ async function pullPolicy(): Promise<AgentPolicy> {
   }
 }
 
+async function acknowledgeCommand(
+  commandId: string,
+  status: 'running' | 'completed' | 'failed',
+  result?: Record<string, unknown>,
+  error?: string,
+) {
+  try {
+    await requestJson('/api/v1/agent-scanner/agent/commands/' + encodeURIComponent(commandId) + '/ack', {
+      method: 'POST',
+      body: JSON.stringify({ status, result: result || null, error: error || null, observedAt: isoNow() }),
+    })
+  } catch (ackError) {
+    // Never let an acknowledgement failure abort the work that already succeeded.
+    console.warn(`Command acknowledgement failed for ${commandId}: ${(ackError as Error).message}`)
+  }
+}
+
 async function sendHeartbeat(status: string, telemetry: Record<string, unknown> = {}) {
   await requestJson('/api/v1/agent-scanner/agent/heartbeat', {
     method: 'POST',
@@ -255,10 +415,27 @@ async function sendHeartbeat(status: string, telemetry: Record<string, unknown> 
       status,
       hostname: os.hostname(),
       platform: `${os.platform()} ${os.release()} ${os.arch()}`,
-      version: process.env.npm_package_version || '0.1.0',
-      telemetry,
+      version: AGENT_VERSION,
+      telemetry: { ...hostHealthTelemetry(), ...telemetry },
     }),
   })
+}
+
+/**
+ * Streams a named scan stage to the control plane so the Agent Center can render
+ * live progress (spec §33). Failures are swallowed: progress reporting must never
+ * be able to fail a scan that is otherwise succeeding.
+ */
+async function reportScanStage(stage: string, progress: number, message: string, metadata: Record<string, unknown> = {}) {
+  const clamped = Math.max(0, Math.min(100, Math.round(progress)))
+  try {
+    await requestJson('/api/v1/agent-scanner/agent/scan-progress', {
+      method: 'POST',
+      body: JSON.stringify({ stage, progress: clamped, message, metadata, observedAt: isoNow() }),
+    })
+  } catch {
+    // Control plane unreachable for this frame; the next heartbeat carries the state.
+  }
 }
 
 async function sendTelemetry(eventType: string, message: string, metadata: Record<string, unknown> = {}) {
@@ -1615,24 +1792,41 @@ async function executePendingRemediations(policy: AgentPolicy) {
   }
 }
 
-async function scanOnce() {
+async function scanOnce(policyOverride?: AgentPolicy) {
   requireEnrollment()
-  const policy = await pullPolicy()
+  const policy = policyOverride || await pullPolicy()
   if (!policy.enabled) {
     await sendHeartbeat('disabled', { reason: 'policy_disabled' })
     console.log('Agent policy is disabled. No scan performed.')
     return
   }
 
+  const scanStartedAt = Date.now()
+  agentHealth.lastScanStartedAt = isoNow()
+
   const scanTypes = new Set(policy.scanTypes.map((item) => item.toLowerCase()))
-  await sendHeartbeat('active', { phase: 'starting', allowedTargets: policy.allowedTargets.length, allowedPaths: policy.allowedPaths.length })
+  await sendHeartbeat('scanning', { phase: 'starting', allowedTargets: policy.allowedTargets.length, allowedPaths: policy.allowedPaths.length })
   await sendTelemetry('agent_scan_started', 'Local scanner evidence collection started', {
     scanTypes: [...scanTypes],
     allowedTargets: policy.allowedTargets.length,
     allowedPaths: policy.allowedPaths.length,
   })
+  await reportScanStage('connecting', 2, 'Connecting to agent', {
+    hostname: os.hostname(),
+    scanTypes: [...scanTypes],
+  })
+  await reportScanStage('system_inventory', 8, 'Collecting system inventory', {
+    platform: `${os.platform()} ${os.release()} ${os.arch()}`,
+    cpuCount: (os.cpus() || []).length,
+  })
 
   const evidence: ScannerEvidence[] = []
+  const targetCount = policy.allowedTargets.length
+  let targetsDone = 0
+
+  if (targetCount > 0) {
+    await reportScanStage('discovering_cryptography', 15, 'Discovering cryptography on authorized targets', { targets: targetCount })
+  }
 
   for (const rawTarget of policy.allowedTargets) {
     const target = parseTarget(rawTarget)
@@ -1647,12 +1841,28 @@ async function scanOnce() {
         evidence.push(...await scanSshTarget(target))
       }
     } catch (error) {
+      agentHealth.errorCount += 1
+      agentHealth.lastError = (error as Error).message
       await sendTelemetry('agent_target_scan_failed', `Target scan failed: ${target.original}`, {
         target: target.original,
         error: (error as Error).message,
       })
       console.warn(`Target scan failed for ${target.original}: ${(error as Error).message}`)
     }
+    targetsDone += 1
+    // 15% -> 45% across the authorised target sweep (TLS certificates + SSH).
+    await reportScanStage(
+      target.type === 'ssh' ? 'analyzing_tls' : 'inspecting_certificates',
+      15 + Math.round((targetsDone / Math.max(1, targetCount)) * 30),
+      target.type === 'ssh' ? `Analyzing SSH key exchange on ${target.host}` : `Inspecting certificates and TLS on ${target.host}`,
+      { target: target.original, evidenceSoFar: evidence.length },
+    )
+  }
+
+  const pathCount = policy.allowedPaths.length
+  let pathsDone = 0
+  if (pathCount > 0) {
+    await reportScanStage('discovering_cryptography', 50, 'Discovering cryptography in authorized paths', { paths: pathCount })
   }
 
   for (const root of policy.allowedPaths) {
@@ -1660,15 +1870,27 @@ async function scanOnce() {
       console.log(`Scanning authorized local path ${root}`)
       evidence.push(...await scanAllowedPath(root, scanTypes))
     } catch (error) {
+      agentHealth.errorCount += 1
+      agentHealth.lastError = (error as Error).message
       await sendTelemetry('agent_path_scan_failed', `Path scan failed: ${root}`, {
         path: root,
         error: (error as Error).message,
       })
       console.warn(`Path scan failed for ${root}: ${(error as Error).message}`)
     }
+    pathsDone += 1
+    // 50% -> 70% across the authorised filesystem sweep.
+    await reportScanStage(
+      'discovering_cryptography',
+      50 + Math.round((pathsDone / Math.max(1, pathCount)) * 20),
+      `Scanned authorized path ${root}`,
+      { path: root, evidenceSoFar: evidence.length },
+    )
   }
 
+  await reportScanStage('building_cbom', 75, 'Building CBOM from collected evidence', { evidenceCount: evidence.length })
   await uploadEvidence(evidence)
+  await reportScanStage('calculating_exposure', 85, 'Calculating quantum exposure', { evidenceCount: evidence.length })
   const evidenceRuntimeEvents = runtimeEventsEnabled(scanTypes) ? evidence.map(runtimeEventFromEvidence) : []
   let nativeRuntimeEvents: NativeRuntimeEvent[] = []
   let nativeCollectorDiagnostics: unknown[] = []
@@ -1698,7 +1920,15 @@ async function scanOnce() {
 
   const runtimeEvents = [...evidenceRuntimeEvents, ...nativeRuntimeEvents]
   await uploadRuntimeEvents(runtimeEvents)
+  await reportScanStage('publishing_findings', 92, 'Publishing findings to the control plane', {
+    evidenceCount: evidence.length,
+    runtimeEventCount: runtimeEvents.length,
+  })
   const remediationJobs = await executePendingRemediations(policy)
+
+  agentHealth.scanCount += 1
+  agentHealth.lastScanDurationMs = Date.now() - scanStartedAt
+
   await sendHeartbeat('active', {
     phase: 'completed',
     evidenceCount: evidence.length,
@@ -1712,19 +1942,133 @@ async function scanOnce() {
     runtimeEventCount: runtimeEvents.length,
     nativeRuntimeEventCount: nativeRuntimeEvents.length,
     remediationJobs,
+    durationMs: agentHealth.lastScanDurationMs,
+  })
+  await reportScanStage('scan_complete', 100, 'Scan complete', {
+    evidenceCount: evidence.length,
+    runtimeEventCount: runtimeEvents.length,
+    remediationJobs,
+    durationMs: agentHealth.lastScanDurationMs,
   })
   console.log(`QGuard agent scan complete. Uploaded ${evidence.length} evidence record(s), ${runtimeEvents.length} runtime event(s), and processed ${remediationJobs} remediation job(s).`)
+  return { evidenceCount: evidence.length, runtimeEventCount: runtimeEvents.length, remediationJobs }
+}
+
+/**
+ * Executes the commands the control plane queued for this agent. Each command is
+ * acknowledged with a running -> completed/failed transition so the Agent Center
+ * can show real execution state rather than an optimistic "requested".
+ */
+async function drainCommands(policy: AgentPolicy): Promise<{ scanned: boolean }> {
+  if (pendingCommands.length === 0) return { scanned: false }
+  const commands = [...pendingCommands]
+  pendingCommands = []
+  let scanned = false
+
+  for (const command of commands) {
+    agentHealth.currentJob = `${command.type}:${command.id}`
+    await acknowledgeCommand(command.id, 'running')
+    try {
+      switch (command.type) {
+        case 'scan':
+        case 'rescan_validation': {
+          const result = await scanOnce(policy)
+          scanned = true
+          await acknowledgeCommand(command.id, 'completed', result || {})
+          break
+        }
+        case 'disable': {
+          await sendHeartbeat('disabled', { reason: 'operator_disabled', commandId: command.id })
+          await acknowledgeCommand(command.id, 'completed', { disabled: true })
+          console.log('Agent disabled by operator command; collection paused until re-enabled.')
+          break
+        }
+        case 'enable': {
+          await sendHeartbeat('active', { reason: 'operator_enabled', commandId: command.id })
+          await acknowledgeCommand(command.id, 'completed', { enabled: true })
+          break
+        }
+        case 'upgrade': {
+          // The agent never self-replaces its binary: an upgrade is applied by the
+          // platform's own installer/service manager, which verifies the signed
+          // digest first (spec §22 — no arbitrary binaries pushed to agents).
+          const targetVersion = String(command.payload?.targetVersion || '')
+          await acknowledgeCommand(command.id, 'completed', {
+            acknowledged: true,
+            currentVersion: AGENT_VERSION,
+            targetVersion,
+            appliesVia: process.platform === 'win32' ? 'scheduled-task reinstall' : 'systemd package reinstall',
+            note: 'Re-run the generated installer to apply. The runtime does not self-replace.',
+          })
+          console.log(`Upgrade to ${targetVersion || 'latest'} acknowledged. Re-run the installer to apply it.`)
+          break
+        }
+        default: {
+          await acknowledgeCommand(command.id, 'failed', undefined, `Unsupported command type: ${command.type}`)
+        }
+      }
+    } catch (error) {
+      agentHealth.errorCount += 1
+      agentHealth.lastError = (error as Error).message
+      await acknowledgeCommand(command.id, 'failed', undefined, (error as Error).message)
+      console.warn(`Command ${command.type} (${command.id}) failed: ${(error as Error).message}`)
+    } finally {
+      agentHealth.currentJob = null
+    }
+  }
+
+  return { scanned }
 }
 
 async function watch() {
   requireEnrollment()
   for (;;) {
-    const policy = await pullPolicy()
-    await scanOnce()
-    const intervalMs = Math.max(30, Math.min(60, Number(policy.intervalSeconds || 60))) * 1000
+    let intervalSeconds = 60
+    try {
+      const policy = await pullPolicy()
+      intervalSeconds = Number(policy.intervalSeconds || 60)
+      // Operator-queued work runs first so "Run scan" feels immediate. If it
+      // already ran a full scan, this cycle's scheduled scan is redundant —
+      // running it anyway would double every evidence upload.
+      const { scanned } = await drainCommands(policy)
+      if (!policy.enabled) {
+        await sendHeartbeat('disabled', { reason: 'policy_disabled' })
+      } else if (!scanned) {
+        await scanOnce(policy)
+      }
+    } catch (error) {
+      // A single failed cycle must never terminate a supervised service: log it,
+      // report it, and try again on the next interval.
+      agentHealth.errorCount += 1
+      agentHealth.lastError = (error as Error).message
+      console.error(`Scan cycle failed: ${(error as Error).message}`)
+      try {
+        await sendHeartbeat('error', { error: (error as Error).message })
+      } catch {
+        // Control plane unreachable — retry on the next cycle.
+      }
+    }
+    const intervalMs = Math.max(30, Math.min(60, intervalSeconds)) * 1000
     console.log(`Next scan scheduled in ${Math.round(intervalMs / 1000)} seconds.`)
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
+}
+
+async function printStatus() {
+  requireEnrollment()
+  const policy = await pullPolicy()
+  console.log(`QGuard Helix Agent ${AGENT_VERSION} (${AGENT_ROLE})`)
+  console.log(`  Agent ID       : ${AGENT_ID}`)
+  console.log(`  Control plane  : ${API_URL}`)
+  console.log(`  Config source  : ${CONFIG_FILE_PATH || 'environment variables'}`)
+  console.log(`  Policy enabled : ${policy.enabled}`)
+  console.log(`  Interval       : ${policy.intervalSeconds}s`)
+  console.log(`  Allowed targets: ${policy.allowedTargets.length}`)
+  console.log(`  Allowed paths  : ${policy.allowedPaths.length}`)
+  console.log(`  Scan types     : ${policy.scanTypes.join(', ') || 'none'}`)
+  console.log(`  Queued commands: ${pendingCommands.length}`)
+  await sendHeartbeat('active', { phase: 'status_check' })
+  console.log('  Heartbeat      : delivered')
 }
 
 async function main() {
@@ -1734,11 +2078,22 @@ async function main() {
     return
   }
   if (mode === 'scan') {
-    await scanOnce()
+    requireEnrollment()
+    const policy = await pullPolicy()
+    const { scanned } = await drainCommands(policy)
+    if (!scanned) await scanOnce(policy)
+    return
+  }
+  if (mode === 'status') {
+    await printStatus()
+    return
+  }
+  if (mode === 'version' || mode === '--version' || mode === '-v') {
+    console.log(AGENT_VERSION)
     return
   }
 
-  console.error('Usage: npm run agent:scan or npm run agent:watch')
+  console.error('Usage: qguard-agent <scan|watch|status|version>')
   process.exit(1)
 }
 

@@ -407,6 +407,12 @@ export interface CriteriaMeasures {
   expiredCertificates: number
   validationPass: boolean
   runtimeMeasured: boolean
+  /**
+   * Runtime telemetry is not merely present but CURRENT (newest observation
+   * within 6 hours). `runtimeMeasured` is true for a single event of any age,
+   * which is not enough to claim continuous monitoring.
+   */
+  runtimeFresh: boolean
 }
 
 interface CriterionSpec {
@@ -549,6 +555,8 @@ export function applyImpact(m: CriteriaMeasures, baseline: CriteriaMeasures, imp
   if (impact.runtimeTelemetryConnected && !m.runtimeMeasured) {
     readiness = readiness * 0.85 + 15
     next.runtimeMeasured = true
+    // Deliberately NOT setting runtimeFresh: connecting telemetry makes it
+    // measured, but freshness is only established by an actual recent event.
   }
   next.readiness = clamp(Math.round(readiness))
 
@@ -1539,6 +1547,11 @@ export async function assembleEvidence(token: string, userId: string): Promise<R
     expiredCertificates: evidence.expiredCertificates,
     validationPass,
     runtimeMeasured: num(snapshot.telemetry?.runtimeEvents) > 0,
+    runtimeFresh: (() => {
+      const at = snapshot.telemetry?.latestRuntimeEventAt
+      const ms = at ? Date.parse(String(at)) : 0
+      return Number.isFinite(ms) && ms > 0 && Date.now() - ms < 6 * 60 * 60 * 1000
+    })(),
   }
 
   return {
