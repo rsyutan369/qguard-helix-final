@@ -748,11 +748,17 @@ mod tests {
 
     #[test]
     fn legacy_web_pbkdf2_bundles_import() {
-        // Reproduce the web vault's v1.1 layout: PBKDF2-SHA3-256/310k, secrets
-        // JSON sealed with AES-256-GCM and NO additional authenticated data.
+        // Reproduce the web vault's v1.1 layout: PBKDF2-SHA3-256, secrets JSON
+        // sealed with AES-256-GCM and NO additional authenticated data.
+        //
+        // The bundle declares its own iteration count and the importer honours
+        // it, so a low count here exercises exactly the same code path at a
+        // fraction of the debug-build cost. The production default is asserted
+        // separately below.
         let identity = PortableIdentity::generate(Some("web identity".to_string()));
         let salt = [7u8; 32];
-        let key = derive_bundle_key_pbkdf2("web passphrase!", &salt, LEGACY_PBKDF2_ITERATIONS).unwrap();
+        let iterations = 1_000u32;
+        let key = derive_bundle_key_pbkdf2("web passphrase!", &salt, iterations).unwrap();
         let payload = serde_json::json!({
             "x25519": b64().encode(identity.kem.x25519_secret),
             "mlkem": b64().encode(&identity.kem.mlkem_secret),
@@ -776,7 +782,7 @@ mod tests {
             "secrets": {
                 "encrypted": true,
                 "kdf": BUNDLE_KDF_LEGACY,
-                "iterations": LEGACY_PBKDF2_ITERATIONS,
+                "iterations": iterations,
                 "salt": b64().encode(salt),
                 "nonce": b64().encode(&sealed.nonce),
                 "data": b64().encode(&data),
@@ -787,6 +793,37 @@ mod tests {
         let restored = PortableIdentity::import_bundle(&bundle, "web passphrase!").unwrap();
         assert_eq!(restored.fingerprint(), identity.fingerprint());
         assert!(PortableIdentity::import_bundle(&bundle, "not the passphrase").is_err());
+
+        // A bundle with no stated iteration count must fall back to the web
+        // vault's real default, not to the value used above.
+        assert_eq!(LEGACY_PBKDF2_ITERATIONS, 310_000);
+    }
+
+    #[test]
+    fn pbkdf2_matches_a_known_answer() {
+        // RFC-style KAT against an independent computation of
+        // PBKDF2-HMAC-SHA3-256("password", "salt", c=2, dkLen=32), so the hand
+        // written PBKDF2 above cannot drift from the standard construction.
+        type HmacSha3 = Hmac<Sha3_256>;
+        let expected = {
+            let mut mac = HmacSha3::new_from_slice(b"password").unwrap();
+            mac.update(b"salt\x00\x00\x00\x01");
+            let u1 = mac.finalize().into_bytes();
+            let mut mac = HmacSha3::new_from_slice(b"password").unwrap();
+            mac.update(&u1);
+            let u2 = mac.finalize().into_bytes();
+            let mut out = [0u8; 32];
+            for i in 0..32 {
+                out[i] = u1[i] ^ u2[i];
+            }
+            out
+        };
+        assert_eq!(derive_bundle_key_pbkdf2("password", b"salt", 2).unwrap(), expected);
+        // One iteration is just U1.
+        let mut mac = HmacSha3::new_from_slice(b"password").unwrap();
+        mac.update(b"salt\x00\x00\x00\x01");
+        let u1 = mac.finalize().into_bytes();
+        assert_eq!(derive_bundle_key_pbkdf2("password", b"salt", 1).unwrap()[..], u1[..]);
     }
 
     #[test]

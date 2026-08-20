@@ -248,6 +248,13 @@ pub struct AppState {
     /// In-memory Session Encryption Key while the app is PIN-unlocked (None =
     /// locked). Zeroized on lock / background / sign-out.
     pub applock_sek: Mutex<Option<[u8; crate::crypto::symmetric::KEY_SIZE]>>,
+    /// Portable Hybrid Identity unlocked for this session (None = locked).
+    ///
+    /// Held in memory only — the `.qgkey` bundle itself is never copied into the
+    /// app's data directory, so an identity survives exactly as long as the user
+    /// keeps it unlocked. Dropped (and its secrets zeroized by the inner
+    /// keypairs' `Drop`) on manual lock, workspace lock, and sign-out.
+    pub portable_identity: Mutex<Option<crate::crypto::portable_identity::PortableIdentity>>,
 }
 
 impl AppState {
@@ -275,6 +282,7 @@ impl AppState {
             vault_session: Mutex::new(None),
             workspace_unlocked: Mutex::new(HashSet::new()),
             applock_sek: Mutex::new(None),
+            portable_identity: Mutex::new(None),
         })
     }
 
@@ -954,6 +962,44 @@ impl AppState {
             .ok_or_else(|| QGuardError::Trust("Quantum Vault is locked — unlock it to continue".to_string()))
     }
 
+    /// Hold an unlocked Portable Hybrid Identity for this session, replacing any
+    /// identity already unlocked (whose secrets are zeroized as it drops).
+    pub fn set_portable_identity(
+        &self,
+        identity: crate::crypto::portable_identity::PortableIdentity,
+    ) -> Result<()> {
+        *self
+            .portable_identity
+            .lock()
+            .map_err(|_| QGuardError::Storage("portable identity lock poisoned".to_string()))? =
+            Some(identity);
+        Ok(())
+    }
+
+    /// The unlocked Portable Hybrid Identity, or an error naming what to do.
+    pub fn unlocked_portable_identity(
+        &self,
+    ) -> Result<crate::crypto::portable_identity::PortableIdentity> {
+        self.portable_identity
+            .lock()
+            .map_err(|_| QGuardError::Storage("portable identity lock poisoned".to_string()))?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                QGuardError::Trust(
+                    "No portable identity is unlocked — generate or import a .qgkey first"
+                        .to_string(),
+                )
+            })
+    }
+
+    /// Drop the unlocked identity (its keypairs zeroize their secrets on drop).
+    pub fn clear_portable_identity(&self) {
+        if let Ok(mut guard) = self.portable_identity.lock() {
+            guard.take();
+        }
+    }
+
     /// Zeroize + drop the unlocked VMK (vault re-locks).
     pub fn clear_vault_session(&self) -> Result<()> {
         if let Ok(mut guard) = self.vault_session.lock() {
@@ -999,6 +1045,9 @@ impl AppState {
     /// the VMK, clear decrypted chat plaintext, and forget all unlocked scopes.
     pub fn lock_all_workspaces(&self) {
         let _ = self.clear_vault_session();
+        // An unlocked portable identity is share key material, so it locks with
+        // the vault rather than outliving it.
+        self.clear_portable_identity();
         self.clear_chat_session();
         if let Ok(mut set) = self.workspace_unlocked.lock() {
             set.clear();

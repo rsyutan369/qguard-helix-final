@@ -33,6 +33,7 @@ import { open as openDialog } from "@/lib/tauri-dialog";
 import { withNativeDialog } from "@/lib/native-dialog-guard";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { loadAccountRecovery, publishAccountRecovery, type AccountRecoveryRecord } from "@/lib/account-recovery";
+import PortableIdentityPanel from "@/components/vault/PortableIdentityPanel";
 import { supabase } from "@/lib/supabase";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
 import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, overallPercent } from "@/lib/vault-progress";
@@ -2065,12 +2066,30 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         </div>
       )}
 
-      {/* Panel 3 — Vault Explorer */}
+      {/* Panel 3 — Portable Hybrid Identity (share with other people) */}
+      <PortableIdentityPanel
+        userId={userId}
+        appendLog={appendLog}
+        pushActivity={pushActivity}
+        runVaultStream={runVaultStream}
+        chooseDestinationFolder={chooseDestinationFolder}
+        prepareDestination={prepareDestination}
+        resolveSourceName={resolveSourceName}
+        vaultBusy={localVaultBusy !== null}
+        onContainerWritten={(summary, kind) => {
+          // A sealed container is a real .qvault this device produced, so it
+          // belongs in the Explorer exactly like any other. An opened one is
+          // somebody else's container being restored, not vault inventory.
+          if (kind === "sealed") upsertRegistryFromSummary(summary, "encrypted");
+        }}
+      />
+
+      {/* Panel 4 — Vault Explorer */}
       <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-violet-600 text-sm font-bold text-white shadow-tight">3</span>
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-violet-600 text-sm font-bold text-white shadow-tight">4</span>
               <div>
                 <h2 className="text-sm font-bold text-ink-950">Vault Explorer</h2>
                 <div className="mt-1 text-xs text-ink-600">Your encrypted .qvault files and folders on this device.</div>

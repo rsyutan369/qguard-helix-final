@@ -25,6 +25,7 @@ use commands::messaging::*;
 use commands::security::*;
 use commands::calls::*;
 use commands::vault::*;
+use commands::vault_identity::*;
 use commands::workspace::*;
 use state::AppState;
 use tauri::Manager;
@@ -213,6 +214,19 @@ pub fn run() {
             vault_decrypt_folder_path_with_recovery,
             vault_decrypt_path_with_enterprise,
             vault_decrypt_folder_path_with_enterprise,
+            // Portable Hybrid Identity - seal containers to other people.
+            vault_identity_generate,
+            vault_identity_import,
+            vault_identity_status,
+            vault_identity_lock,
+            vault_identity_export_public,
+            vault_parse_recipient,
+            vault_load_recipient_file,
+            vault_seal_path,
+            vault_seal_folder_path,
+            vault_inspect_sealed,
+            vault_open_sealed_path,
+            vault_open_sealed_folder_path,
             workspace_status,
             workspace_setup_credential,
             workspace_unlock,

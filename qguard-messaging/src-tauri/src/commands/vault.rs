@@ -39,7 +39,7 @@ pub struct VaultLocalStreamSummary {
 }
 
 impl VaultLocalStreamSummary {
-    fn from_stream(summary: StreamSummary, source_path: String, output_path: String) -> Self {
+    pub(crate) fn from_stream(summary: StreamSummary, source_path: String, output_path: String) -> Self {
         Self {
             file_id: summary.file_id,
             kind: summary.kind,
@@ -56,16 +56,16 @@ impl VaultLocalStreamSummary {
 
 /// Local device crypto material: signer + the device KEM keys (current first,
 /// then any rotated/legacy keys) used to wrap/unwrap vault objects on-device.
-struct LocalVaultContext {
-    user_id: String,
-    device_id: String,
+pub(crate) struct LocalVaultContext {
+    pub(crate) user_id: String,
+    pub(crate) device_id: String,
     /// Vault Master Key + the ML-DSA-87 vault signing key (loaded-or-created).
-    vault_master: PersistedVaultMaster,
-    kem_x25519_public: Vec<u8>,
-    kem_mlkem_public: Vec<u8>,
-    recipient_kems: Vec<LocalKemKeypair>,
+    pub(crate) vault_master: PersistedVaultMaster,
+    pub(crate) kem_x25519_public: Vec<u8>,
+    pub(crate) kem_mlkem_public: Vec<u8>,
+    pub(crate) recipient_kems: Vec<LocalKemKeypair>,
     /// Personal-mode recovery wrap key for this user, if configured.
-    recovery_wrap_key: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
+    pub(crate) recovery_wrap_key: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
     /// Enterprise/hybrid recovery recipient, if configured.
     enterprise_recipient: Option<EnterpriseRecipientOwned>,
 }
@@ -78,7 +78,7 @@ struct EnterpriseRecipientOwned {
     recovery_secret: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
 }
 
-fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
+pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
     state.require_auth()?;
     let user_id = state.user_id()?;
     let identity_bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
@@ -149,7 +149,7 @@ fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
 }
 
 impl LocalVaultContext {
-    fn enterprise(&self) -> Option<vault_stream::EnterpriseRecipient<'_>> {
+    pub(crate) fn enterprise(&self) -> Option<vault_stream::EnterpriseRecipient<'_>> {
         self.enterprise_recipient.as_ref().map(|e| vault_stream::EnterpriseRecipient {
             x25519_public: &e.x25519_public,
             mlkem_public: &e.mlkem_public,
@@ -165,7 +165,7 @@ fn part_path(dest_path: &str) -> String {
 /// Opens a vault source for reading — a plain filesystem path, or (Android) a
 /// Storage Access Framework `content://` document URI resolved to a real file
 /// descriptor through the platform content resolver.
-fn open_vault_source(source_path: &str, context: &str) -> Result<File> {
+pub(crate) fn open_vault_source(source_path: &str, context: &str) -> Result<File> {
     if content_uri::is_content_uri(source_path) {
         content_uri::open_read(source_path)
     } else {
@@ -176,7 +176,7 @@ fn open_vault_source(source_path: &str, context: &str) -> Result<File> {
 /// Display name for a vault source: content URIs are asked for their provider
 /// DISPLAY_NAME (falling back to the decoded URI tail), plain paths use the
 /// basename.
-fn vault_source_name(source_path: &str) -> String {
+pub(crate) fn vault_source_name(source_path: &str) -> String {
     if content_uri::is_content_uri(source_path) {
         if let Ok((Some(name), _)) = content_uri::stat(source_path) {
             return name;
@@ -196,13 +196,13 @@ fn vault_source_name(source_path: &str) -> String {
 /// SAF `content://` documents (created by the system save dialog) cannot be
 /// renamed onto, so the stream writes straight into the document's fd; a failed
 /// stream truncates the document back to empty instead of deleting it.
-enum VaultDest {
+pub(crate) enum VaultDest {
     Native { tmp: String, dest: String },
     Content { uri: String },
 }
 
 impl VaultDest {
-    fn create(dest_path: &str) -> Result<(File, VaultDest)> {
+    pub(crate) fn create(dest_path: &str) -> Result<(File, VaultDest)> {
         if content_uri::is_content_uri(dest_path) {
             let file = content_uri::open_write_truncate(dest_path)?;
             Ok((file, VaultDest::Content { uri: dest_path.to_string() }))
@@ -215,7 +215,7 @@ impl VaultDest {
     }
 
     /// Publishes the finished output (native: rename the temp over the target).
-    fn commit(self) -> Result<()> {
+    pub(crate) fn commit(self) -> Result<()> {
         match self {
             VaultDest::Native { tmp, dest } => std::fs::rename(&tmp, &dest)
                 .map_err(|e| QGuardError::Storage(format!("finalize output: {e}"))),
@@ -224,7 +224,7 @@ impl VaultDest {
     }
 
     /// Discards the partial output after a failed stream (best effort).
-    fn abort(self) {
+    pub(crate) fn abort(self) {
         match self {
             VaultDest::Native { tmp, .. } => {
                 let _ = std::fs::remove_file(&tmp);
@@ -246,7 +246,7 @@ impl VaultDest {
 /// delivery stalls, and the UI freezes. Every stream command below is therefore
 /// async and does its file I/O + crypto inside `spawn_blocking`, keeping the
 /// event loop free and progress events flowing in real time.
-async fn run_stream_blocking<T, F>(job: F) -> Result<T>
+pub(crate) async fn run_stream_blocking<T, F>(job: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
@@ -315,6 +315,7 @@ pub async fn vault_encrypt_path(
                 &ctx.vault_master.signer,
                 ctx.recovery_wrap_key.as_ref(),
                 ctx.enterprise().as_ref(),
+                None, // sharing: owner-sealed container, no portable-identity recipients
                 &mut |p| { let _ = on_progress.send(p); },
             ) {
                 Ok(summary) => match writer.flush() {
@@ -451,6 +452,7 @@ pub async fn vault_encrypt_folder_path(
                 &ctx.vault_master.signer,
                 ctx.recovery_wrap_key.as_ref(),
                 ctx.enterprise().as_ref(),
+                None, // sharing: owner-sealed container, no portable-identity recipients
                 &mut |p| { let _ = on_progress.send(p); },
             ) {
                 Ok(summary) => match writer.flush() {
