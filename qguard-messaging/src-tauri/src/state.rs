@@ -99,18 +99,62 @@ impl PersistedVaultRecovery {
     }
 }
 
-/// Device-local, encrypted-at-rest Vault Master Key (VMK) + the vault's ML-DSA-87
-/// signing keypair. The VMK wraps every per-file key (FEK) in the user's vault;
-/// it is generated once and reused so it acts as a true master key. Both live
-/// under the same OS-keychain-held DEK as the device key material — never sent to
-/// a server. Mirrors the `PersistedVaultRecovery` storage pattern (no `Drop` impl,
-/// matching that type; `VaultSigningKeypair` zeroizes its own secrets on drop).
+/// The Vault Master Key (VMK), the vault's ML-DSA-87 signing keypair, and the
+/// vault's own ML-KEM-1024 key-wrapping keypair.
+///
+/// The VMK wraps every per-file key (FEK) in the user's vault; it is generated
+/// once and reused so it acts as a true master key. Once vault unlock is
+/// configured this whole struct is stored **wrapped under the user's
+/// password/PIN** (`WorkspaceCredential::wrapped_master`), and
+/// `delete_vault_master_file` removes the pre-unlock keychain copy — so the
+/// unlock secret is a real cryptographic gate rather than a UI check.
+///
+/// (No `Drop` impl, matching `PersistedVaultRecovery`; `VaultSigningKeypair` and
+/// `LocalKemKeypair` zeroize their own secrets on drop.)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PersistedVaultMaster {
     pub version: u8,
     pub vmk: [u8; crate::crypto::symmetric::KEY_SIZE],
     pub signer: VaultSigningKeypair,
+    /// The ML-KEM-1024 keypair a new container's device wrap is sealed to.
+    ///
+    /// Before this existed the device wrap was sealed to the *messaging* device
+    /// identity key, which is protected by the OS keychain alone. That made the
+    /// vault password bypassable: anyone able to read the keychain and the app
+    /// data directory could decapsulate any container's wrap, recover the VMK,
+    /// and decrypt the whole vault without ever knowing the password. Keeping
+    /// the vault's wrapping keypair inside this password-wrapped struct means a
+    /// new container's wrap can only be opened by someone who unlocked the
+    /// vault.
+    ///
+    /// `None` on masters created before this field; `ensure_vault_kem` fills it
+    /// in on first use. Containers sealed before the upgrade stay openable —
+    /// their wrap is still tried against the device identity keys, and the VMK
+    /// path opens them regardless.
+    #[serde(default)]
+    pub vault_kem: Option<LocalKemKeypair>,
     pub configured_at: chrono::DateTime<Utc>,
+}
+
+impl PersistedVaultMaster {
+    /// This vault's ML-KEM-1024 key-wrapping keypair, creating one the first
+    /// time a master from before the field existed is used. Returns whether a
+    /// keypair was created, so the caller can re-seal the master under the
+    /// user's unlock secret.
+    ///
+    /// When both a password and a PIN are configured, whichever is used first
+    /// creates and stores the keypair; the other credential still holds a copy
+    /// of the master without one and will create its own on its next unlock.
+    /// That divergence is harmless: the VMK is identical in both, and the VMK is
+    /// what actually opens a container — the device wrap is only a convenience
+    /// path, and `LocalVaultContext` tries every keypair it holds.
+    pub fn ensure_vault_kem(&mut self) -> bool {
+        if self.vault_kem.is_some() {
+            return false;
+        }
+        self.vault_kem = Some(LocalKemKeypair::generate());
+        true
+    }
 }
 
 /// One unlock credential (password or PIN) for a protected workspace scope.
@@ -768,9 +812,10 @@ impl AppState {
             return Ok(material);
         }
         Ok(PersistedVaultMaster {
-            version: 1,
+            version: 2,
             vmk: crate::crypto::symmetric::random_key(),
             signer: VaultSigningKeypair::generate(),
+            vault_kem: Some(LocalKemKeypair::generate()),
             configured_at: Utc::now(),
         })
     }

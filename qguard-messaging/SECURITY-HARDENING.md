@@ -66,3 +66,64 @@ set the env var without performing the transform.
   originals, so cryptographic domain separation is unchanged.
 * `src-tauri/examples/release_integrity.rs` - keygen / pubkey / sign tool used by
   the release script to produce the signed integrity manifest.
+## Quantum Vault cryptography
+
+The Quantum Vault (`.qvault` containers, Portable Hybrid Identities, sealing and
+opening) is built from these primitives and nothing else:
+
+| Purpose | Algorithm |
+|---|---|
+| Key encapsulation | X25519 + **ML-KEM-1024** (FIPS 203, `pqcrypto-mlkem`) |
+| Container signature | Ed25519 + **ML-DSA-87** (FIPS 204 Level 5) |
+| Bulk content | **AES-256-GCM**, one key per file, re-keyed per container |
+| Key derivation | **HKDF-SHA3-256** |
+| Password stretching | **Argon2id** (64 MiB, t=3, p=1) → HKDF-SHA3-256 |
+
+ML-KEM is used for **key encapsulation only** — it never encrypts file content.
+Content is always AES-256-GCM, chunk by chunk, with each chunk's AAD bound to the
+container's file id, chunk index and total chunk count, so a container cannot be
+truncated, extended or have its chunks reordered without detection.
+
+### FIPS 203 conformance
+
+The ML-KEM implementation is `pqcrypto-mlkem` (PQClean, final FIPS 203).
+
+Builds up to and including 1.2.29 reached ML-KEM through `pqcrypto-kyber`
+0.8.1. Despite the name that crate is **not** round-3 Kyber — it vendors
+PQClean's ML-KEM *initial public draft*. The only divergence from the final
+standard is key generation: the IPD expands a seed as `G(d)` where FIPS 203
+specifies `G(d ‖ k)`. Encapsulation, decapsulation, and the public key / secret
+key / ciphertext encodings are byte-identical, which is why:
+
+* key material and containers written by earlier builds keep opening unchanged
+  (pinned by a known-answer vector in `src/crypto/testdata/`, exercised by
+  `pre_migration_key_material_still_decapsulates`), and
+* Portable Hybrid Identities interoperate in both directions with the web
+  vault's `@noble/post-quantum` ML-KEM-1024.
+
+What the move buys is conformance: seed-to-key expansion now matches the
+published standard, so FIPS 203 keygen test vectors pass.
+
+### What it takes to open a container
+
+On v3 containers the per-file key is wrapped by the Vault Master Key, and the
+VMK is sealed under the user's vault password (Argon2id → HKDF-SHA3-256 →
+AES-256-GCM). The VMK path is the primary way the app opens a container, so the
+password is a genuine cryptographic gate, not a UI check.
+
+The container also carries an ML-KEM wrap of the VMK. That wrap is sealed to the
+**vault's own ML-KEM keypair**, which is stored inside the same password-wrapped
+vault master. Previously it was sealed to the messaging device identity key,
+whose secret is protected by the OS keychain alone — which meant someone with
+the app data directory and keychain access could recover the VMK and decrypt the
+whole vault without the password. Containers written before this change are
+still wrapped that way; re-protect them with **Re-protect / rewrap** to move them
+onto the password-gated keypair.
+
+### Messaging vs. the vault
+
+Messaging and calls share the same hybrid KEM code and are equally on FIPS 203
+ML-KEM after this change. Their prekeys are published to the relay, and because
+encapsulation and decapsulation are unchanged, devices on older builds
+interoperate with updated ones in both directions — no fleet split, no schema
+change.

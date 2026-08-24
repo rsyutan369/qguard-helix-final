@@ -57,7 +57,18 @@ sha3 = "0.10"
 # x86_64 emulator). The `clean` C implementations use only baseline ARMv8-A and
 # run on every CPU. Keep `std`; drop `neon`/`avx2` (PQC keygen/sign are
 # infrequent here, so the portable-vs-SIMD perf difference is imperceptible).
-pqcrypto-kyber = { version = "0.8", default-features = false, features = ["std"] }
+#
+# ML-KEM comes from `pqcrypto-mlkem`, NOT `pqcrypto-kyber`. Both wrap PQClean,
+# and both are genuinely ML-KEM rather than round-3 Kyber -- `pqcrypto-kyber`
+# 0.8.1 vendors PQClean's ML-KEM *initial public draft* under the historical
+# KYBER1024 symbol names. The one place the IPD and the final FIPS 203 standard
+# differ is key generation: the final standard expands the seed as G(d || k),
+# appending the parameter-set byte, while the IPD uses G(d). Encapsulation,
+# decapsulation and every encoding are identical, so the swap is transparent to
+# key material and containers already on disk (proved by the known-answer vector
+# in crypto/testdata) -- but only `pqcrypto-mlkem` is conformant end to end, and
+# only it can pass a FIPS 203 keygen test vector.
+pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 

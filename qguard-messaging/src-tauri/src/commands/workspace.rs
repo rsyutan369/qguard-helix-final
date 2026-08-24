@@ -3,8 +3,9 @@
 //! device or is sent to a server).
 //!
 //! * Both scopes store only a salt + a derived verifier (never the secret).
-//! * The **vault** scope additionally wraps the Vault Master Key (VMK) under a
-//!   password/PIN-derived key, so unlocking cryptographically decrypts the VMK
+//! * The **vault** scope additionally wraps the Vault Master Key (VMK) — and
+//!   the vault's ML-KEM-1024 key-wrapping keypair — under a password/PIN-derived
+//!   key, so unlocking cryptographically decrypts them
 //!   (`password -> Argon2id -> HKDF-SHA3-256 -> unlock key -> VMK`). The legacy
 //!   keychain-only VMK copy is deleted at setup, so vault access truly requires
 //!   the secret.
@@ -262,13 +263,17 @@ pub async fn workspace_setup_credential(
             first_vault_setup = true;
             state.load_or_generate_vault_master(&user_id)
         };
-        let master = match master {
+        let mut master = match master {
             Ok(m) => m,
             Err(e) => {
                 ikm.zeroize();
                 return Err(e);
             }
         };
+        // A master migrated from the pre-unlock keychain copy has no vault
+        // key-wrapping keypair yet. Create it before wrapping, so the credential
+        // written here already carries one.
+        master.ensure_vault_kem();
         let wrapped = wrap_master_under_ikm(&salt, &ikm, &master);
         let wrapped = match wrapped {
             Ok(w) => w,
@@ -376,6 +381,7 @@ async fn unlock_with_secret(
 
     // For the vault, the real unlock is decrypting the VMK with the derived key.
     let mut unlocked_master: Option<PersistedVaultMaster> = None;
+    let mut vault_kem_created = false;
     if scope_name == SCOPE_VAULT {
         let envelope = match credential.wrapped_master.as_ref() {
             Some(e) => e,
@@ -406,13 +412,36 @@ async fn unlock_with_secret(
         let master = serde_json::from_slice(&plaintext)
             .map_err(|e| QGuardError::Storage(format!("decode unlocked vault master: {e}")));
         plaintext.zeroize();
-        let master: PersistedVaultMaster = match master {
+        let mut master: PersistedVaultMaster = match master {
             Ok(m) => m,
             Err(e) => {
                 ikm.zeroize();
                 return Err(e);
             }
         };
+        // Masters created before the vault owned its own key-wrapping keypair
+        // get one here, re-sealed under the secret that was just proven. New
+        // containers are then wrapped to a key that lives behind the unlock
+        // secret instead of behind the OS keychain. Best-effort: if the re-seal
+        // fails the session still works and the next unlock retries, and nothing
+        // already encrypted depends on it.
+        if master.ensure_vault_kem() {
+            vault_kem_created = true;
+            match wrap_master_under_ikm(&credential.salt, &ikm, &master) {
+                Ok(wrapped) => {
+                    let mut upgraded = credential.clone();
+                    upgraded.wrapped_master = Some(wrapped);
+                    match method {
+                        METHOD_PASSWORD => record.password = Some(upgraded),
+                        METHOD_PIN => record.pin = Some(upgraded),
+                        _ => {}
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("vault key-wrapping keypair could not be persisted: {error}");
+                }
+            }
+        }
         unlocked_master = Some(master);
     }
     ikm.zeroize();
@@ -452,6 +481,12 @@ async fn unlock_with_secret(
         }
     }
 
+    if vault_kem_created {
+        state.audit_info(
+            "vault_kem_created",
+            "Vault key-wrapping keypair (ML-KEM-1024) created and sealed under the unlock secret",
+        );
+    }
     if let Some(master) = unlocked_master {
         state.set_vault_session(master)?;
     }
@@ -579,11 +614,13 @@ pub async fn workspace_reset_vault(
         }
     }
 
-    // Fresh master: a new VMK + new ML-DSA-87 signer, wrapped under the new secret.
+    // Fresh master: a new VMK, a new ML-DSA-87 signer and a new ML-KEM-1024
+    // key-wrapping keypair, all wrapped under the new secret.
     let new_master = PersistedVaultMaster {
-        version: 1,
+        version: 2,
         vmk: symmetric::random_key(),
         signer: VaultSigningKeypair::generate(),
+        vault_kem: Some(crate::crypto::hybrid_kex::LocalKemKeypair::generate()),
         configured_at: Utc::now(),
     };
     let salt = random_salt();
@@ -704,9 +741,10 @@ mod tests {
         // re-sealed under Argon2id, and the hardened credential recovers the
         // exact same VMK afterwards.
         let master = PersistedVaultMaster {
-            version: 1,
+            version: 2,
             vmk: symmetric::random_key(),
             signer: VaultSigningKeypair::generate(),
+            vault_kem: Some(crate::crypto::hybrid_kex::LocalKemKeypair::generate()),
             configured_at: Utc::now(),
         };
         let secret = b"an-older-strong-secret-42";
@@ -769,9 +807,10 @@ mod tests {
         // The vault-reset wrap must behave exactly like the setup wrap: the new
         // master is recoverable with the new secret and no other.
         let master = PersistedVaultMaster {
-            version: 1,
+            version: 2,
             vmk: symmetric::random_key(),
             signer: VaultSigningKeypair::generate(),
+            vault_kem: Some(crate::crypto::hybrid_kex::LocalKemKeypair::generate()),
             configured_at: Utc::now(),
         };
         let salt = random_salt();

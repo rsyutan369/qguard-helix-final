@@ -17,6 +17,21 @@
 //!              extension proof. v1/v2 (FEK wrapped directly to the device) are
 //!              still accepted on decrypt; new files are always written as v3.
 //!
+//! # What actually has to be known to open a container
+//!
+//! On v3+ the FEK is wrapped by the VMK, and the VMK is itself sealed under the
+//! user's vault password (Argon2id -> HKDF-SHA3-256 -> AES-256-GCM, see
+//! `commands::workspace`). [`decrypt_stream_with_vmk`] is therefore the primary
+//! owner path and the one the app tries first: it needs the unlock secret and
+//! nothing else.
+//!
+//! The KEM wrap in the header is a secondary path. It is sealed to the vault's
+//! own ML-KEM keypair, which lives inside that same password-wrapped master —
+//! so for a container written by a build that has one, the KEM wrap is not a way
+//! around the password either. Containers written before that keypair existed
+//! were wrapped to the messaging device identity key, whose secret is protected
+//! by the OS keychain alone; `vault_rewrap_path` re-seals them.
+//!
 //! On-disk layout:
 //! ```text
 //! MAGIC(8) | u32 header_len | header JSON | [ u32 ct_len | nonce(12) | tag(16) | ciphertext ]*
@@ -1060,6 +1075,88 @@ fn decrypt_chunks<R: Read, W: Write>(
     Ok(StreamSummary::from_header(header))
 }
 
+/// Stream-decrypt a container using the **Vault Master Key** directly.
+///
+/// This is the owner's primary path on v3+ containers and the strongest one: the
+/// VMK is only available after the vault password/PIN has cryptographically
+/// unlocked it, so opening a container this way genuinely requires the user's
+/// secret. It also needs no KEM keypair at all, which makes it immune to device
+/// key rotation.
+///
+/// v1/v2 containers have no VMK layer — their FEK is wrapped straight to the
+/// device — so this reports that clearly and the caller falls back to the KEM
+/// path.
+pub fn decrypt_stream_with_vmk<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    vmk: &[u8; KEY_SIZE],
+) -> Result<StreamSummary> {
+    decrypt_stream_with_vmk_with_progress(reader, writer, vmk, &mut |_| {})
+}
+
+/// Same as [`decrypt_stream_with_vmk`] but reports real per-phase progress.
+pub fn decrypt_stream_with_vmk_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    vmk: &[u8; KEY_SIZE],
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let header = read_and_verify_header(reader)?;
+    if header.version < STREAM_VERSION {
+        return Err(QGuardError::NotFound(
+            "this container predates the Vault Master Key envelope; open it with the device key or a recovery key".to_string(),
+        ));
+    }
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "verify".into(),
+        message: "Header verified · Ed25519 + ML-DSA-87 signature valid".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
+
+    // `resolve_file_key` unwraps `fek_wrapped_by_vmk` with the VMK. Its AES-GCM
+    // tag, over AAD binding file id + owner, is what proves this VMK belongs to
+    // this container — a wrong VMK fails here rather than yielding garbage.
+    let mut file_key = resolve_file_key(&header, *vmk)?;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "unwrap_fek".into(),
+        message: "Per-file key unwrapped from the Vault Master Key · streaming decrypt".into(),
+        processed_bytes: 0,
+        total_bytes: header.original_size,
+        chunk_index: 0,
+        total_chunks: header.total_chunks,
+        level: "info".into(),
+    });
+    // Established before any plaintext is written — see `decrypt_stream_with_progress`.
+    let verified_sender = match verified_sender_for(&header) {
+        Ok(sender) => sender,
+        Err(error) => {
+            file_key.zeroize();
+            return Err(error);
+        }
+    };
+    let result = decrypt_chunks(reader, writer, &header, &file_key, progress);
+    file_key.zeroize();
+    let mut summary = result?;
+    summary.verified_sender = verified_sender;
+    progress(VaultProgress {
+        op: "decrypt".into(),
+        phase: "done".into(),
+        message: "Vault container fully decrypted · integrity verified".into(),
+        processed_bytes: header.original_size,
+        total_bytes: header.original_size,
+        chunk_index: header.total_chunks,
+        total_chunks: header.total_chunks,
+        level: "success".into(),
+    });
+    Ok(summary)
+}
+
 /// Stream-decrypt `reader` into `writer` using the recipient device's KEM secret.
 pub fn decrypt_stream<R: Read, W: Write>(
     reader: &mut R,
@@ -1129,10 +1226,20 @@ pub fn decrypt_stream_with_progress<R: Read, W: Write>(
         total_chunks: header.total_chunks,
         level: "info".into(),
     });
+    // Verified BEFORE any plaintext is written, matching the recipient path: a
+    // container that names an author it cannot prove must fail outright rather
+    // than hand back real content beside an unverifiable claim.
+    let verified_sender = match verified_sender_for(&header) {
+        Ok(sender) => sender,
+        Err(error) => {
+            file_key.zeroize();
+            return Err(error);
+        }
+    };
     let result = decrypt_chunks(reader, writer, &header, &file_key, progress);
     file_key.zeroize();
     let mut summary = result?;
-    summary.verified_sender = verified_sender_for(&header)?;
+    summary.verified_sender = verified_sender;
     progress(VaultProgress {
         op: "decrypt".into(),
         phase: "done".into(),
@@ -1277,6 +1384,23 @@ pub fn verify_stream_with_progress<R: Read>(
         progress(p);
     };
     decrypt_stream_with_progress(reader, &mut io::sink(), recipient, &mut relabel)
+}
+
+/// Same full verification as [`verify_stream_with_progress`], driven by the Vault
+/// Master Key so it exercises the owner's primary open path.
+pub fn verify_stream_with_vmk_with_progress<R: Read>(
+    reader: &mut R,
+    vmk: &[u8; KEY_SIZE],
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let mut relabel = |mut p: VaultProgress| {
+        p.op = "verify".into();
+        if p.phase == "done" {
+            p.message = "Integrity verified · signed header + every chunk authenticated".into();
+        }
+        progress(p);
+    };
+    decrypt_stream_with_vmk_with_progress(reader, &mut io::sink(), vmk, &mut relabel)
 }
 
 /// Stream-decrypt `reader` into `writer` using the owner's quantum-safe recovery
@@ -2081,6 +2205,89 @@ mod tests {
         let mut restored = Vec::new();
         decrypt_stream(&mut Cursor::new(sealed), &mut restored, &kem).unwrap();
         assert_eq!(restored, plaintext);
+    }
+
+    /// The Vault Master Key alone opens a v3 container — no KEM keypair needed.
+    ///
+    /// This is what makes the vault password a real cryptographic gate: the VMK
+    /// exists in memory only because the user's password/PIN decrypted it.
+    #[test]
+    fn vault_master_key_alone_opens_a_v3_container() {
+        let (kem, signer) = keypair();
+        let vmk = symmetric::random_key();
+        let plaintext = vec![7u8; CHUNK_SIZE + 128];
+        let mut sealed = Vec::new();
+        encrypt_stream(
+            &mut Cursor::new(plaintext.clone()), &mut sealed, KIND_FILE, "vmk.bin",
+            "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+            &kem.x25519_public, &kem.mlkem_public, &vmk, &signer, None, None,
+        )
+        .unwrap();
+
+        let mut restored = Vec::new();
+        decrypt_stream_with_vmk(&mut Cursor::new(sealed.clone()), &mut restored, &vmk).unwrap();
+        assert_eq!(restored, plaintext);
+
+        // A different VMK must fail on the AEAD tag of the FEK wrap, not produce
+        // garbage plaintext.
+        let mut fail = Vec::new();
+        assert!(
+            decrypt_stream_with_vmk(&mut Cursor::new(sealed), &mut fail, &symmetric::random_key())
+                .is_err()
+        );
+    }
+
+    /// A container wrapped to the vault's own keypair must NOT be openable with
+    /// some other device keypair — which is the whole point of moving the wrap
+    /// off the OS-keychain-protected messaging identity key.
+    #[test]
+    fn a_container_wrapped_to_the_vault_keypair_rejects_other_device_keys() {
+        let (vault_kem, signer) = keypair();
+        let device_identity_kem = LocalKemKeypair::generate();
+        let vmk = symmetric::random_key();
+        let plaintext = b"only the vault keypair or the VMK opens this".to_vec();
+        let mut sealed = Vec::new();
+        encrypt_stream(
+            &mut Cursor::new(plaintext.clone()), &mut sealed, KIND_FILE, "scoped.bin",
+            "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+            &vault_kem.x25519_public, &vault_kem.mlkem_public, &vmk, &signer, None, None,
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        assert!(
+            decrypt_stream(&mut Cursor::new(sealed.clone()), &mut out, &device_identity_kem)
+                .is_err(),
+            "the messaging device identity key must not unwrap a vault-keypair container"
+        );
+
+        let mut via_vault_kem = Vec::new();
+        decrypt_stream(&mut Cursor::new(sealed.clone()), &mut via_vault_kem, &vault_kem).unwrap();
+        assert_eq!(via_vault_kem, plaintext);
+
+        let mut via_vmk = Vec::new();
+        decrypt_stream_with_vmk(&mut Cursor::new(sealed), &mut via_vmk, &vmk).unwrap();
+        assert_eq!(via_vmk, plaintext);
+    }
+
+    /// v1/v2 containers have no VMK layer, so the VMK path must say so plainly
+    /// rather than failing with a confusing crypto error.
+    #[test]
+    fn vmk_path_reports_clearly_on_a_pre_v3_container() {
+        let (kem, _signer) = keypair();
+        let v2_signer = LocalSigningKeypair::generate();
+        let legacy = build_v2_container(b"old container", &kem, &v2_signer, None);
+        let mut out = Vec::new();
+        let error = decrypt_stream_with_vmk(
+            &mut Cursor::new(legacy),
+            &mut out,
+            &symmetric::random_key(),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error}").contains("predates the Vault Master Key envelope"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

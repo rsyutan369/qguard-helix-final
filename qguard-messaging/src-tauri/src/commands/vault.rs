@@ -61,8 +61,15 @@ pub(crate) struct LocalVaultContext {
     pub(crate) device_id: String,
     /// Vault Master Key + the ML-DSA-87 vault signing key (loaded-or-created).
     pub(crate) vault_master: PersistedVaultMaster,
+    /// Public half of the keypair NEW containers are wrapped to: the vault's own
+    /// ML-KEM-1024 keypair, which lives inside the password-wrapped vault master.
+    /// Falls back to the messaging device identity key only for masters created
+    /// before that keypair existed.
     pub(crate) kem_x25519_public: Vec<u8>,
     pub(crate) kem_mlkem_public: Vec<u8>,
+    /// Every keypair that could unwrap an existing container, most-preferred
+    /// first: the vault keypair, then the device identity key and any rotated
+    /// predecessors older containers were sealed to.
     pub(crate) recipient_kems: Vec<LocalKemKeypair>,
     /// Personal-mode recovery wrap key for this user, if configured.
     pub(crate) recovery_wrap_key: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
@@ -108,7 +115,21 @@ pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext>
         )
     };
 
-    let mut recipient_kems = vec![current_kem];
+    // New containers are wrapped to the vault's own keypair. It lives inside the
+    // password-wrapped vault master, so such a container cannot be opened with
+    // OS-keychain access alone — unlike the messaging device identity key that
+    // older containers were wrapped to.
+    let vault_kem = vault_master.vault_kem.clone();
+    let (wrap_x25519_public, wrap_mlkem_public) = match vault_kem.as_ref() {
+        Some(kem) => (kem.x25519_public.clone(), kem.mlkem_public.clone()),
+        None => (kem_x25519_public.clone(), kem_mlkem_public.clone()),
+    };
+
+    let mut recipient_kems = Vec::with_capacity(3);
+    if let Some(kem) = vault_kem {
+        recipient_kems.push(kem);
+    }
+    recipient_kems.push(current_kem);
     if let Ok(legacy) = state.legacy_kem_keypairs.lock() {
         recipient_kems.extend(legacy.iter().cloned());
     }
@@ -140,15 +161,37 @@ pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext>
         user_id,
         device_id: identity_bundle.device_id,
         vault_master,
-        kem_x25519_public,
-        kem_mlkem_public,
+        kem_x25519_public: wrap_x25519_public,
+        kem_mlkem_public: wrap_mlkem_public,
         recipient_kems,
         recovery_wrap_key,
         enterprise_recipient,
     })
 }
 
+/// One way this session can open a container the user owns.
+///
+/// Ordered deliberately by `owner_open_keys`: the Vault Master Key comes first
+/// because it is both the strongest path — it exists in this process only
+/// because the user cryptographically unlocked the vault with their
+/// password/PIN — and the most reliable, since it opens every v3+ container
+/// whichever device key happens to have sealed it. The KEM keypairs follow as a
+/// fallback for v1/v2 containers, which have no VMK layer at all.
+pub(crate) enum OwnerKey<'a> {
+    VaultMaster(&'a [u8; crate::crypto::symmetric::KEY_SIZE]),
+    DeviceKem(&'a LocalKemKeypair),
+}
+
 impl LocalVaultContext {
+    /// Every key this session can try when opening one of the owner's own
+    /// containers, most-preferred first.
+    pub(crate) fn owner_open_keys(&self) -> Vec<OwnerKey<'_>> {
+        let mut keys = Vec::with_capacity(self.recipient_kems.len() + 1);
+        keys.push(OwnerKey::VaultMaster(&self.vault_master.vmk));
+        keys.extend(self.recipient_kems.iter().map(OwnerKey::DeviceKem));
+        keys
+    }
+
     pub(crate) fn enterprise(&self) -> Option<vault_stream::EnterpriseRecipient<'_>> {
         self.enterprise_recipient.as_ref().map(|e| vault_stream::EnterpriseRecipient {
             x25519_public: &e.x25519_public,
@@ -364,12 +407,20 @@ pub async fn vault_decrypt_path(
     let dest_for_result = dest_path.clone();
     let summary = run_stream_blocking(move || {
         let mut last_error: Option<QGuardError> = None;
-        for kem in &ctx.recipient_kems {
+        for key in ctx.owner_open_keys() {
             let mut reader =
                 BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
             let (dest_file, dest) = VaultDest::create(&dest_path)?;
             let mut writer = BufWriter::new(dest_file);
-            match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
+            let attempt = match key {
+                OwnerKey::VaultMaster(vmk) => vault_stream::decrypt_stream_with_vmk_with_progress(
+                    &mut reader, &mut writer, vmk, &mut |p| { let _ = on_progress.send(p); },
+                ),
+                OwnerKey::DeviceKem(kem) => vault_stream::decrypt_stream_with_progress(
+                    &mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); },
+                ),
+            };
+            match attempt {
                 Ok(summary) => {
                     if let Err(e) = writer.flush() {
                         drop(writer);
@@ -399,7 +450,7 @@ pub async fn vault_decrypt_path(
     );
     state.touch_telemetry(
         "vault_decrypt",
-        "Local vault stream decrypted with device-bound ML-KEM-1024 key",
+        "Local vault stream decrypted with the password-gated Vault Master Key",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
@@ -504,11 +555,19 @@ pub async fn vault_decrypt_folder_path(
             .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
 
         let mut last_error: Option<QGuardError> = None;
-        for kem in &ctx.recipient_kems {
+        for key in ctx.owner_open_keys() {
             let mut reader =
                 BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
             let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
-            match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
+            let attempt = match key {
+                OwnerKey::VaultMaster(vmk) => vault_stream::decrypt_stream_with_vmk_with_progress(
+                    &mut reader, &mut writer, vmk, &mut |p| { let _ = on_progress.send(p); },
+                ),
+                OwnerKey::DeviceKem(kem) => vault_stream::decrypt_stream_with_progress(
+                    &mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); },
+                ),
+            };
+            match attempt {
                 Ok(summary) => {
                     writer
                         .flush()
@@ -530,7 +589,7 @@ pub async fn vault_decrypt_folder_path(
     );
     state.touch_telemetry(
         "vault_decrypt",
-        "Local folder archive restored with device-bound ML-KEM-1024 key",
+        "Local folder archive restored with the password-gated Vault Master Key",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
@@ -821,8 +880,8 @@ pub async fn vault_rewrap_path(
 }
 
 /// Fully verify a local `.qvault` container on-device: the ML-DSA-signed header,
-/// the device KEM unwrap, and every chunk's AES-256-GCM tag. Plaintext is never
-/// written anywhere — this proves the container is complete and untampered.
+/// the key unwrap, and every chunk's AES-256-GCM tag. Plaintext is never written
+/// anywhere — this proves the container is complete and untampered.
 #[tauri::command]
 pub async fn vault_verify_path(
     state: State<'_, AppState>,
@@ -833,10 +892,18 @@ pub async fn vault_verify_path(
     let source_for_result = source_path.clone();
     let summary = run_stream_blocking(move || {
         let mut last_error: Option<QGuardError> = None;
-        for kem in &ctx.recipient_kems {
+        for key in ctx.owner_open_keys() {
             let mut reader =
                 BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
-            match vault_stream::verify_stream_with_progress(&mut reader, kem, &mut |p| { let _ = on_progress.send(p); }) {
+            let attempt = match key {
+                OwnerKey::VaultMaster(vmk) => vault_stream::verify_stream_with_vmk_with_progress(
+                    &mut reader, vmk, &mut |p| { let _ = on_progress.send(p); },
+                ),
+                OwnerKey::DeviceKem(kem) => vault_stream::verify_stream_with_progress(
+                    &mut reader, kem, &mut |p| { let _ = on_progress.send(p); },
+                ),
+            };
+            match attempt {
                 Ok(summary) => return Ok(summary),
                 Err(error) => last_error = Some(error),
             }

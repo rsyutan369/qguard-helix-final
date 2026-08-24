@@ -39,7 +39,7 @@ remains reserved for a liboqs backend as a crypto-agility option.
 | Requirement (Android_Building_2)   | Fulfilled by |
 |------------------------------------|--------------|
 | NDK r27 + LLVM/Clang               | `ndk;27.2.12479018`, cargo cross-compile for 4 Android ABIs |
-| Native ML-KEM / ML-DSA             | PQClean C cores (pqcrypto-kyber / pqcrypto-mldsa) compiled by NDK clang |
+| Native ML-KEM / ML-DSA             | PQClean C cores (pqcrypto-mlkem / pqcrypto-mldsa) compiled by NDK clang |
 | JNI bridge, minimal exposure       | Tauri's generated Kotlin↔Rust JNI + `security/keystore.rs` (Android Keystore); no key material crosses into Kotlin |
 | Android Keystore                   | Hardware-backed AES-256-GCM wrapping key; see `security/keystore.rs` |
 | Secure memory                      | `zeroize` on all secret buffers; keys never logged |
