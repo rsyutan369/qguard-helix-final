@@ -25,6 +25,23 @@ pwsh tools/release.ps1 -Version 1.3.0 -Notes "What changed in this release" -Pus
 publishes it to `public/downloads/`, and syncs the website size label. `-Push`
 also commits and pushes `main`.
 
+### Release notes
+
+`-Notes` goes into `latest.json`. Installed apps show only the version number in
+the update banner, so that string is not where users learn what changed —
+[`CHANGELOG.md`](./CHANGELOG.md) is. Write the user-facing note there first,
+then pass a one-line summary to `-Notes`.
+
+For 1.3.0 that line is:
+
+```
+Quantum Vault: recipient fingerprint verification is now required before sealing, identity passphrases are checked for real strength, and ML-KEM key generation is conformant to final FIPS 203. Nothing you already have needs migrating — see CHANGELOG.md.
+```
+
+A release that changes behaviour users will *notice* needs the changelog entry
+written before the build, not after. 1.3.0 is the worked example: three enforced
+checks that each look like a regression until the reason is on the page.
+
 The built installer is always at:
 `%LOCALAPPDATA%\qguard-messaging-target\release\bundle\nsis\QGuard Messaging_<version>_x64-setup.exe`
 and copied to `public/downloads/QGuard-Messaging-Setup.exe`.
