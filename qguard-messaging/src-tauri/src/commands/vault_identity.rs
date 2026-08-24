@@ -6,6 +6,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::crypto::passphrase::{self, PassphraseStrength};
 use crate::crypto::portable_identity::{self, PortableIdentity, RecipientPublicKeys};
 use crate::error::{QGuardError, Result};
 use crate::security::content_uri;
@@ -109,6 +110,75 @@ fn write_text_dest(dest_path: &str, body: &str) -> Result<()> {
             Err(QGuardError::Storage(format!("write identity file: {e}")))
         }
     }
+}
+
+/// A generated passphrase plus the entropy it provably carries.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedPassphrase {
+    pub passphrase: String,
+    pub words: usize,
+    /// Counted, not estimated: words are drawn uniformly without replacement
+    /// from a 2048-word list.
+    pub bits: f64,
+}
+
+/// Suggest a passphrase strong enough to protect an identity bundle.
+///
+/// This is the path the UI should lead with. A `.qgkey` is attacked offline, so
+/// the passphrase is the only thing protecting every file sealed to that
+/// identity — and a phrase generated here carries entropy that is counted rather
+/// than estimated, which no human-chosen passphrase can claim.
+#[tauri::command]
+pub fn vault_passphrase_suggest(
+    state: State<'_, AppState>,
+    words: Option<usize>,
+) -> Result<SuggestedPassphrase> {
+    state.require_auth()?;
+    let words = words
+        .unwrap_or(passphrase::DEFAULT_GENERATED_WORDS)
+        .clamp(passphrase::MIN_GENERATED_WORDS, passphrase::MAX_GENERATED_WORDS);
+    Ok(SuggestedPassphrase {
+        passphrase: passphrase::generate(words)?,
+        words,
+        bits: passphrase::generated_bits(words),
+    })
+}
+
+/// Score a passphrase so the UI can show a live meter and say what is wrong
+/// *before* the user commits to it.
+///
+/// Reports only — the authoritative check runs inside `export_bundle`, so a
+/// frontend that skipped this could never write a weak bundle anyway.
+#[tauri::command]
+pub fn vault_passphrase_strength(
+    state: State<'_, AppState>,
+    passphrase_text: String,
+) -> Result<PassphraseStrength> {
+    state.require_auth()?;
+    Ok(passphrase::estimate(&passphrase_text))
+}
+
+/// The entropy floor a new identity bundle must clear, so the UI can render the
+/// target without hardcoding a number that could drift from the backend.
+#[tauri::command]
+pub fn vault_passphrase_policy(state: State<'_, AppState>) -> Result<PassphrasePolicy> {
+    state.require_auth()?;
+    Ok(PassphrasePolicy {
+        min_bits: passphrase::MIN_PASSPHRASE_BITS,
+        min_length: passphrase::MIN_PASSPHRASE_LEN,
+        default_words: passphrase::DEFAULT_GENERATED_WORDS,
+        default_words_bits: passphrase::generated_bits(passphrase::DEFAULT_GENERATED_WORDS),
+    })
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PassphrasePolicy {
+    pub min_bits: f64,
+    pub min_length: usize,
+    pub default_words: usize,
+    pub default_words_bits: f64,
 }
 
 /// Generate a fresh Portable Hybrid Identity, write its passphrase-protected
@@ -617,6 +687,13 @@ pub async fn vault_open_sealed_folder_path(
 
 #[cfg(test)]
 mod tests {
+    /// Passphrases strong enough to clear the identity-bundle entropy gate, so
+    /// these tests exercise the seal/open flow rather than the gate. Each is the
+    /// shape `crypto::passphrase::generate` produces.
+    const BOB_PASSPHRASE: &str = "harbor cinder maple quiver tundra ledger walnut";
+    const FIRST_PASSPHRASE: &str = "granite willow cobalt ember thicket sable orchard";
+    const SECOND_PASSPHRASE: &str = "meadow flint amber trellis pumice saffron lantern";
+
     use super::*;
 
     #[test]
@@ -664,7 +741,7 @@ mod tests {
 
         // --- Bob creates an identity and publishes his public bundle ---------
         let bob = PortableIdentity::generate(Some("Bob - workstation".to_string()));
-        let passphrase = "bob correct horse battery";
+        let passphrase = BOB_PASSPHRASE;
         write_text_dest(&path("bob.qgkey"), &bob.export_bundle(passphrase).unwrap()).unwrap();
         write_text_dest(&path("bob.qgpub.json"), &bob.public_recipient_json().unwrap()).unwrap();
         assert!(dir.join("bob.qgkey").is_file());
@@ -776,14 +853,14 @@ mod tests {
         let target = dir.join("identity.qgkey").to_string_lossy().to_string();
 
         let first = PortableIdentity::generate(Some("first".to_string()));
-        write_text_dest(&target, &first.export_bundle("passphrase one!!").unwrap()).unwrap();
+        write_text_dest(&target, &first.export_bundle(FIRST_PASSPHRASE).unwrap()).unwrap();
         let second = PortableIdentity::generate(Some("second".to_string()));
-        write_text_dest(&target, &second.export_bundle("passphrase two!!").unwrap()).unwrap();
+        write_text_dest(&target, &second.export_bundle(SECOND_PASSPHRASE).unwrap()).unwrap();
 
         // The second write fully replaced the first, and no temp file survived.
         let restored = PortableIdentity::import_bundle(
             &std::fs::read_to_string(&target).unwrap(),
-            "passphrase two!!",
+            SECOND_PASSPHRASE,
         )
         .unwrap();
         assert_eq!(restored.fingerprint(), second.fingerprint());

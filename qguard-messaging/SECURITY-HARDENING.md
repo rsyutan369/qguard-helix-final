@@ -78,6 +78,7 @@ opening) is built from these primitives and nothing else:
 | Bulk content | **AES-256-GCM**, one key per file, re-keyed per container |
 | Key derivation | **HKDF-SHA3-256** |
 | Password stretching | **Argon2id** (64 MiB, t=3, p=1) → HKDF-SHA3-256 |
+| Identity passphrase | **Argon2id** + a 70-bit entropy floor (see below) |
 
 ML-KEM is used for **key encapsulation only** — it never encrypts file content.
 Content is always AES-256-GCM, chunk by chunk, with each chunk's AAD bound to the
@@ -119,6 +120,40 @@ the app data directory and keychain access could recover the VMK and decrypt the
 whole vault without the password. Containers written before this change are
 still wrapped that way; re-protect them with **Re-protect / rewrap** to move them
 onto the password-gated keypair.
+
+### Identity bundle passphrases
+
+A `.qgkey` is an offline artefact: once someone has the file, nothing rate-limits
+their guessing. Argon2id at 64 MiB buys a constant factor per guess; the
+passphrase's entropy is the only thing that grows exponentially. So creating a
+bundle requires **70 bits of estimated entropy**, not a character count — a
+12-character password a person invented ("Summer2024!") clears any length rule
+and falls to a wordlist, while the same rule rejects it here.
+
+The estimator (`crypto::passphrase`) scores structure rather than characters: a
+run of letters shaped like a word costs one dictionary lookup, a four-digit run
+inside 1900–2100 costs a year, repeated symbols cost almost nothing after the
+first. Where a word model and a composition model disagree, the lower wins —
+an estimator that guesses high tells the user they are safe when they are not.
+`calibration::known_passphrases_land_where_they_should` pins the behaviour on a
+table of known inputs, including xkcd 936's own two examples.
+
+Two limits are worth knowing: there is no breach corpus, and no grammar model —
+so a long grammatical sentence scores like a long word list even though each word
+predicts the next. Both limits mean a human-chosen passphrase is worth *less*
+than the score suggests, which is why the UI leads with **Generate**: seven words
+drawn uniformly without replacement from a 2048-word list, carrying 77 bits that
+are counted rather than estimated.
+
+### Which containers still need re-protecting
+
+The app knows, rather than asking you to remember. `vault_protection_scan` reads
+each container's **header only** — one ML-KEM decapsulation regardless of whether
+the file is 4 KB or 40 GB — and reports whether its key wrap opens with the
+vault's own keypair or only with the older, keychain-reachable device key. Stale
+containers surface as a banner on the vault page and a marker on the row, and
+re-protecting rewrites only those. The encrypted chunks are copied across
+verbatim; nothing is re-encrypted and nothing is decrypted on the way.
 
 ### Messaging vs. the vault
 

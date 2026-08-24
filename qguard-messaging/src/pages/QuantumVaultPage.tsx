@@ -1,15 +1,15 @@
 import {
   AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
-  CheckCircle2,
   Copy,
   Download,
+  File as FileIcon,
   FileArchive,
   FileAudio,
-  FileCode2,
-  File as FileIcon,
   FileCheck2,
+  FileCode2,
   FileImage,
   FileSpreadsheet,
   FileText,
@@ -21,6 +21,7 @@ import {
   Loader2,
   LockKeyhole,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Terminal,
   Trash2,
@@ -87,6 +88,21 @@ interface VaultRegistryEntry {
   hidden: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Whether a container's key wrap is still reachable by a key the OS keychain
+ *  protects, rather than by the vault's password-wrapped keypair. Computed by the
+ *  backend from the container header alone, so scanning is cheap regardless of
+ *  file size. */
+interface VaultProtectionEntry {
+  sourcePath: string;
+  name: string;
+  kind: string;
+  version: number;
+  originalSize: number;
+  needsReprotect: boolean;
+  reason: string;
+  error: string | null;
 }
 
 interface VaultActivityEntry {
@@ -325,6 +341,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   const [status, setStatus] = useState("No active vault operation");
   const [terminalLogs, setTerminalLogs] = useState<VaultTerminalLog[]>([]);
   const [registry, setRegistry] = useState<VaultRegistryEntry[]>([]);
+  /** Protection state per container path, keyed by `qvaultPath`. Empty until the
+   *  first scan completes; absent entries render no badge rather than a wrong one. */
+  const [protection, setProtection] = useState<Record<string, VaultProtectionEntry>>({});
+  const [scanningProtection, setScanningProtection] = useState(false);
   const [activity, setActivity] = useState<VaultActivityEntry[]>([]);
   const [storeReady, setStoreReady] = useState(false);
 
@@ -955,6 +975,73 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     }
   }
 
+  /** Ask the backend which containers still carry the older, keychain-reachable
+   *  key wrap. Header-only, so this stays fast over a vault full of large files. */
+  const scanProtection = useCallback(async () => {
+    const paths = registry.filter((entry) => entry.status === "encrypted").map((entry) => entry.qvaultPath);
+    if (paths.length === 0) {
+      setProtection({});
+      return;
+    }
+    setScanningProtection(true);
+    try {
+      const entries = await safeInvoke<VaultProtectionEntry[]>("vault_protection_scan", { paths });
+      if (!entries) return;
+      setProtection(Object.fromEntries(entries.map((entry) => [entry.sourcePath, entry])));
+    } catch {
+      // A failed scan must not claim anything about protection either way.
+      setProtection({});
+    } finally {
+      setScanningProtection(false);
+    }
+  }, [registry]);
+
+  const staleEntries = useMemo(
+    () => registry.filter((entry) => protection[entry.qvaultPath]?.needsReprotect === true),
+    [registry, protection],
+  );
+
+  /** Re-protect exactly the containers that need it. Skipping the current ones
+   *  is not just speed: re-protecting rewrites the whole file, so doing it to
+   *  something already protected is pure risk for no gain. */
+  async function reprotectStaleFiles() {
+    if (recoveryBusy || staleEntries.length === 0) return;
+    setRecoveryBusy("rewrap");
+    setRecoveryNotice(null);
+    try {
+      setStatus(`Re-protecting ${staleEntries.length} file${staleEntries.length === 1 ? "" : "s"}`);
+      let done = 0;
+      const failures: string[] = [];
+      for (const entry of staleEntries) {
+        try {
+          await runVaultStream("vault_rewrap_path", { sourcePath: entry.qvaultPath });
+          done += 1;
+          appendLog("success", `Re-protected ${entry.name} — now sealed behind your vault password`);
+        } catch (error) {
+          failures.push(`${entry.name}: ${describeError(error)}`);
+          appendLog("error", `Re-protect failed for ${entry.name}: ${describeError(error)}`);
+        }
+      }
+      const line = `Re-protected ${done}/${staleEntries.length} file${staleEntries.length === 1 ? "" : "s"}.${failures.length ? ` Failed: ${failures.join("; ")}` : ""}`;
+      pushActivity({
+        source: "reprotect",
+        title: "Re-protect existing files",
+        detail: line,
+        status: failures.length ? "failed" : "success",
+      });
+      setStatus(failures.length ? "Some files could not be re-protected" : "Existing files re-protected");
+      setRecoveryNotice(line);
+      await scanProtection();
+    } catch (error) {
+      const message = describeError(error);
+      setStatus(message);
+      setRecoveryNotice(message);
+      appendLog("error", `Re-protect failed: ${message}`);
+    } finally {
+      setRecoveryBusy(null);
+    }
+  }
+
   async function reprotectRegistryEntry(entry: VaultRegistryEntry) {
     if (actionBusy) return;
     setActionBusy(`reprotect-${entry.id}`);
@@ -963,6 +1050,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       const summary = await runVaultStream("vault_rewrap_path", { sourcePath: entry.qvaultPath });
       updateRegistryEntry(entry.id, { suite: summary.suite, integrity: "verified" });
       appendLog("success", `Re-protected ${summary.name} (v3 VMK envelope / ML-DSA-87)`);
+      void scanProtection();
       pushActivity({ source: "reprotect", title: "File re-protected", detail: `${entry.name} upgraded to the v3 VMK envelope`, status: "success" });
       setStatus("Vault file re-protected");
     } catch (error) {
@@ -1054,10 +1142,19 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     }
   }
 
+  // Scan whenever the set of containers changes. Debounced so a burst of
+  // registry writes during a bulk encrypt does not re-scan on every file.
+  useEffect(() => {
+    if (!storeReady) return;
+    const timer = window.setTimeout(() => void scanProtection(), 400);
+    return () => window.clearTimeout(timer);
+  }, [storeReady, scanProtection]);
+
   function renderEntryActions(entry: VaultRegistryEntry) {
     const decryptBusy = actionBusy === `decrypt-${entry.id}`;
     const verifyBusy = actionBusy === `verify-${entry.id}`;
     const reprotectBusy = actionBusy === `reprotect-${entry.id}`;
+    const needsReprotect = protection[entry.qvaultPath]?.needsReprotect === true;
     const deleteBusy = actionBusy === `delete-${entry.id}`;
     const disabled = Boolean(actionBusy);
     return (
@@ -1068,7 +1165,19 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         <button type="button" disabled={disabled} onClick={() => verifyRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Verify integrity (checks every chunk, writes nothing)">
           {verifyBusy ? <Loader2 className="animate-spin" size={16} /> : <FileCheck2 size={16} />}
         </button>
-        <button type="button" disabled={disabled} onClick={() => reprotectRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Re-protect (upgrade to v3 / add recovery)">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => reprotectRegistryEntry(entry)}
+          className={`icon-button disabled:cursor-not-allowed disabled:opacity-50 ${
+            needsReprotect ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100" : ""
+          }`}
+          title={
+            needsReprotect
+              ? `${protection[entry.qvaultPath]?.reason ?? ""} Re-protect to move it behind your vault password.`
+              : "Re-protect (rewrap this container under the current vault key)"
+          }
+        >
           {reprotectBusy ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
         </button>
         <button type="button" disabled={disabled} onClick={() => setConfirmDialog({ kind: "remove", entry })} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Remove from list (keeps the file on disk)">
@@ -1345,7 +1454,25 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
       }
       if (paths.length === 0) return;
+
+      // Re-protecting rewrites the whole container, so only touch the ones that
+      // would actually gain something. A file already sealed to the vault key is
+      // left exactly as it is.
+      const scanned = await safeInvoke<VaultProtectionEntry[]>("vault_protection_scan", { paths });
+      const stale = scanned?.filter((entry) => entry.needsReprotect).map((entry) => entry.sourcePath) ?? paths;
+      const alreadyCurrent = paths.length - stale.length;
+      if (stale.length === 0) {
+        const line = `All ${paths.length} file${paths.length === 1 ? " is" : "s are"} already sealed behind your vault password — nothing to do.`;
+        setRecoveryNotice(line);
+        appendLog("info", line);
+        return;
+      }
+      paths = stale;
+
       setStatus(`Re-protecting ${paths.length} vault file${paths.length === 1 ? "" : "s"}`);
+      if (alreadyCurrent > 0) {
+        appendLog("info", `Skipped ${alreadyCurrent} file${alreadyCurrent === 1 ? "" : "s"} already protected.`);
+      }
       let protectedCount = 0;
       const failures: string[] = [];
       for (const path of paths) {
@@ -1362,6 +1489,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       pushActivity({ source: "reprotect", title: "Re-protect existing files", detail: summaryLine, status: failures.length ? "failed" : "success" });
       setStatus(failures.length ? "Some files could not be re-protected" : "Existing files re-protected");
       setRecoveryNotice(summaryLine);
+      await scanProtection();
     } catch (error) {
       const message = describeError(error);
       setStatus(message);
@@ -1423,6 +1551,46 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     // grid-cols-[minmax(0,1fr)] keeps the wide Explorer table scrolling inside
     // its card instead of inflating the page past a phone viewport.
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+      {/* Containers sealed before this build carry a key wrap the OS keychain can
+          reach without the vault password. Surfaced here rather than left for the
+          user to remember, and actionable in one click. */}
+      {staleEntries.length > 0 && (
+        <section className="shell-card border-amber-200 bg-amber-50/60 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <ShieldAlert size={20} className="mt-0.5 shrink-0 text-amber-600" />
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-ink-950">
+                  {staleEntries.length} file{staleEntries.length === 1 ? "" : "s"} still use the older key wrap
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm text-ink-700">
+                  These containers were sealed to this device&rsquo;s messaging key, which the operating
+                  system keychain can unlock without your vault password. Re-protecting reseals them to
+                  the vault&rsquo;s own key, which lives behind that password. The encrypted content is
+                  copied across untouched &mdash; nothing is re-encrypted, and nothing is decrypted on the way.
+                </p>
+                <p className="mt-1 text-xs text-ink-500">
+                  {staleEntries
+                    .slice(0, 4)
+                    .map((entry) => entry.name)
+                    .join(", ")}
+                  {staleEntries.length > 4 ? ` and ${staleEntries.length - 4} more` : ""}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={recoveryBusy !== null || Boolean(actionBusy)}
+              onClick={reprotectStaleFiles}
+              className="flex shrink-0 items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {recoveryBusy === "rewrap" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+              Re-protect {staleEntries.length} file{staleEntries.length === 1 ? "" : "s"}
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* Panel 1 — Quantum Vault Workspace */}
       <section className="shell-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

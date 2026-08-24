@@ -208,6 +208,7 @@ pub fn run() {
             vault_recovery_status,
             vault_setup_recovery,
             vault_enable_recovery_with_phrase,
+            vault_protection_scan,
             vault_rewrap_path,
             vault_verify_path,
             vault_decrypt_path_with_recovery,
@@ -215,6 +216,9 @@ pub fn run() {
             vault_decrypt_path_with_enterprise,
             vault_decrypt_folder_path_with_enterprise,
             // Portable Hybrid Identity - seal containers to other people.
+            vault_passphrase_policy,
+            vault_passphrase_suggest,
+            vault_passphrase_strength,
             vault_identity_generate,
             vault_identity_import,
             vault_identity_status,

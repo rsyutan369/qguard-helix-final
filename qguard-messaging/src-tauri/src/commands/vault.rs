@@ -800,6 +800,78 @@ pub fn vault_enable_recovery_with_phrase(
     })
 }
 
+/// One container's protection state, as the Explorer renders it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultProtectionEntry {
+    pub source_path: String,
+    pub name: String,
+    pub kind: String,
+    pub version: u8,
+    pub original_size: u64,
+    pub needs_reprotect: bool,
+    pub reason: String,
+    /// Set when the container could not be inspected at all (moved, deleted, or
+    /// not a QGuard container). Distinct from `needs_reprotect`, so the UI never
+    /// reports a missing file as an unprotected one.
+    pub error: Option<String>,
+}
+
+/// Scan containers and report which still carry the older, keychain-reachable
+/// key wrap.
+///
+/// Header-only: each container costs one ML-KEM decapsulation no matter its
+/// size, so scanning a whole vault is fast even when the files are huge. The
+/// point is that the app should *know* which containers are stale rather than
+/// asking the user to remember — and that a bulk re-protect can then rewrite
+/// only the ones that need it instead of every file it is pointed at.
+#[tauri::command]
+pub async fn vault_protection_scan(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<VaultProtectionEntry>> {
+    let ctx = local_vault_context(&state)?;
+    run_stream_blocking(move || {
+        // The vault's own keypair is the thing a current container is sealed to.
+        let vault_kem = ctx.vault_master.vault_kem.clone();
+        let mut entries = Vec::with_capacity(paths.len());
+        for source_path in paths {
+            let name = vault_source_name(&source_path);
+            let inspected = open_vault_source(&source_path, "open encrypted source")
+                .map(BufReader::new)
+                .and_then(|mut reader| {
+                    vault_stream::inspect_protection(&mut reader, vault_kem.as_ref())
+                });
+            entries.push(match inspected {
+                Ok(protection) => VaultProtectionEntry {
+                    source_path,
+                    name: protection.name,
+                    kind: protection.kind,
+                    version: protection.version,
+                    original_size: protection.original_size,
+                    needs_reprotect: protection.needs_reprotect,
+                    reason: protection.reason,
+                    error: None,
+                },
+                Err(error) => VaultProtectionEntry {
+                    source_path,
+                    name,
+                    kind: String::new(),
+                    version: 0,
+                    original_size: 0,
+                    // Unknown is not the same as stale — do not offer to rewrite
+                    // a file we could not even read.
+                    needs_reprotect: false,
+                    reason: "Could not be read.".to_string(),
+                    error: Some(error.to_string()),
+                },
+            });
+        }
+        Ok(entries)
+    })
+    .await
+}
+
 /// Re-protect an existing `.qvault` container by rebuilding it as a v3 VMK
 /// envelope (ML-KEM-1024-protected VMK + ML-DSA-87 signature) in place, adding
 /// the recovery / enterprise wraps when configured. Chunks are copied unchanged.

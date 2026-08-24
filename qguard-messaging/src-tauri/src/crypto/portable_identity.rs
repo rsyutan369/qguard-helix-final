@@ -38,6 +38,7 @@ use zeroize::Zeroize;
 use crate::crypto::hybrid_kex::LocalKemKeypair;
 use crate::crypto::kdf;
 use crate::crypto::passcode;
+use crate::crypto::passphrase;
 use crate::crypto::signatures::{
     dual_sign_87, dual_verify, dual_verify_87, VaultSigningKeypair,
 };
@@ -52,9 +53,14 @@ pub const BUNDLE_VERSION_LEGACY: &str = "1.1";
 pub const BUNDLE_KDF_CURRENT: &str = "Argon2id-HKDF-SHA3-256";
 pub const BUNDLE_KDF_LEGACY: &str = "PBKDF2-SHA3-256";
 const LEGACY_PBKDF2_ITERATIONS: u32 = 310_000;
-/// Shortest passphrase accepted for a new bundle. Matches the web vault's rule;
-/// the bundle is an offline artefact, so length is the only real defence.
-pub const MIN_PASSPHRASE_LEN: usize = 12;
+/// Shortest passphrase accepted for a new bundle.
+///
+/// Re-exported from [`crate::crypto::passphrase`], which is where the real gate
+/// lives: length alone never protected anything here. A `.qgkey` is attacked
+/// offline, so the bundle requires a minimum *entropy*
+/// ([`passphrase::MIN_PASSPHRASE_BITS`]) and this length is only a floor beneath
+/// it.
+pub const MIN_PASSPHRASE_LEN: usize = passphrase::MIN_PASSPHRASE_LEN;
 
 /// ML-DSA parameter set carried by an identity. Identities generated here are
 /// always Level 5; Level 3 appears on identities created by the web vault, which
@@ -204,12 +210,16 @@ impl PortableIdentity {
     /// Secrets are sealed with AES-256-GCM under a key stretched from the
     /// passphrase with Argon2id (64 MiB, 3 passes) and separated with
     /// HKDF-SHA3-256, so a stolen bundle costs real memory and time per guess.
+    ///
+    /// Argon2id buys a constant factor; the passphrase's entropy is what grows
+    /// exponentially, so the passphrase is gated on estimated bits rather than
+    /// character count. `crypto::passphrase::generate` is the recommended way to
+    /// satisfy it.
     pub fn export_bundle(&self, passphrase: &str) -> Result<String> {
-        if passphrase.chars().count() < MIN_PASSPHRASE_LEN {
-            return Err(QGuardError::InvalidInput(format!(
-                "identity passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
-            )));
-        }
+        // An entropy floor, not a length rule. The bundle can be ground offline
+        // for as long as an attacker likes, so what matters is how many guesses
+        // it takes — see `crypto::passphrase`.
+        passphrase::require_strong(passphrase)?;
 
         let mut salt = [0u8; 16];
         rand::rngs::OsRng.fill_bytes(&mut salt);
@@ -703,9 +713,9 @@ mod tests {
     #[test]
     fn bundle_round_trips_and_rejects_a_wrong_passphrase() {
         let identity = PortableIdentity::generate(Some("Alice - laptop".to_string()));
-        let bundle = identity.export_bundle("correct horse battery").unwrap();
+        let bundle = identity.export_bundle(TEST_PASSPHRASE).unwrap();
 
-        let restored = PortableIdentity::import_bundle(&bundle, "correct horse battery").unwrap();
+        let restored = PortableIdentity::import_bundle(&bundle, TEST_PASSPHRASE).unwrap();
         assert_eq!(restored.fingerprint(), identity.fingerprint());
         assert_eq!(restored.kem.mlkem_secret, identity.kem.mlkem_secret);
         assert_eq!(restored.signer.mldsa87_secret, identity.signer.mldsa87_secret);
@@ -715,17 +725,25 @@ mod tests {
         assert!(PortableIdentity::import_bundle(&bundle, "").is_err());
     }
 
+    /// A passphrase that clears the entropy gate, so these tests exercise the
+    /// bundle rather than the gate. Seven independent words, the shape
+    /// `crypto::passphrase::generate` produces.
+    const TEST_PASSPHRASE: &str = "ridge lantern copper vessel marble tundra harbor";
+
     #[test]
-    fn short_passphrases_are_refused() {
+    fn weak_passphrases_are_refused_however_long_they_are() {
         let identity = PortableIdentity::generate(None);
         assert!(identity.export_bundle("short").is_err());
-        assert!(identity.export_bundle("exactly12chr").is_ok());
+        // Twelve characters used to be enough. It is not: a `.qgkey` is ground
+        // offline, so the bundle now requires real entropy rather than length.
+        assert!(identity.export_bundle("exactly12chr").is_err());
+        assert!(identity.export_bundle(TEST_PASSPHRASE).is_ok());
     }
 
     #[test]
     fn a_tampered_bundle_fails_to_open() {
         let identity = PortableIdentity::generate(None);
-        let bundle = identity.export_bundle("correct horse battery").unwrap();
+        let bundle = identity.export_bundle(TEST_PASSPHRASE).unwrap();
         let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
 
         // Flip one byte of the sealed secret payload.
@@ -733,17 +751,17 @@ mod tests {
         let mut raw = b64().decode(&data).unwrap();
         raw[0] ^= 0x01;
         parsed["secrets"]["data"] = serde_json::Value::String(b64().encode(&raw));
-        assert!(PortableIdentity::import_bundle(&parsed.to_string(), "correct horse battery").is_err());
+        assert!(PortableIdentity::import_bundle(&parsed.to_string(), TEST_PASSPHRASE).is_err());
     }
 
     #[test]
     fn a_swapped_public_key_is_caught_by_pair_validation() {
         let identity = PortableIdentity::generate(None);
         let other = PortableIdentity::generate(None);
-        let bundle = identity.export_bundle("correct horse battery").unwrap();
+        let bundle = identity.export_bundle(TEST_PASSPHRASE).unwrap();
         let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
         parsed["publics"]["x25519"] = serde_json::Value::String(b64().encode(&other.kem.x25519_public));
-        assert!(PortableIdentity::import_bundle(&parsed.to_string(), "correct horse battery").is_err());
+        assert!(PortableIdentity::import_bundle(&parsed.to_string(), TEST_PASSPHRASE).is_err());
     }
 
     #[test]

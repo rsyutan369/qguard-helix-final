@@ -1024,6 +1024,102 @@ fn verified_sender_for(header: &StreamHeader) -> Result<Option<VerifiedSender>> 
     }))
 }
 
+/// How a container's key wrap is protected, and whether re-protecting it would
+/// improve that.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerProtection {
+    pub version: u8,
+    pub name: String,
+    pub kind: String,
+    pub original_size: u64,
+    /// True when this container still carries the older wrap and re-protecting
+    /// it would move it behind the vault password.
+    pub needs_reprotect: bool,
+    /// Short, non-technical explanation of `needs_reprotect`, for the UI.
+    pub reason: String,
+}
+
+/// Determine whether a container's key wrap is still reachable by a key the OS
+/// keychain protects, rather than by the vault's password-wrapped keypair.
+///
+/// This reads and authenticates the **header only** — no chunk is touched — so it
+/// costs one ML-KEM decapsulation regardless of whether the container is 4 KB or
+/// 40 GB. That is what makes it usable as a background scan over a whole vault.
+///
+/// A container needs re-protecting when either:
+///
+/// * it predates the VMK envelope (v1/v2, where the per-file key is wrapped
+///   straight to the device), or
+/// * its wrap does not open with `vault_kem` — meaning it was sealed to the
+///   messaging device identity key, whose secret the OS keychain alone guards.
+///
+/// Note this is about the *redundant* wrap, not about whether the file can be
+/// opened: the VMK path opens every v3 container either way. What re-protecting
+/// changes is whether someone holding the app data directory and keychain access
+/// could get in without the vault password.
+pub fn inspect_protection<R: Read>(
+    reader: &mut R,
+    vault_kem: Option<&LocalKemKeypair>,
+) -> Result<ContainerProtection> {
+    let header = read_and_verify_header(reader)?;
+    let mut protection = ContainerProtection {
+        version: header.version,
+        name: header.name.clone(),
+        kind: header.kind.clone(),
+        original_size: header.original_size,
+        needs_reprotect: true,
+        reason: String::new(),
+    };
+
+    if header.version < STREAM_VERSION {
+        protection.reason = format!(
+            "Sealed in an older container format (v{}) — re-protect to move it behind your vault password.",
+            header.version
+        );
+        return Ok(protection);
+    }
+
+    let Some(vault_kem) = vault_kem else {
+        protection.reason =
+            "This device has not created its vault key yet — unlock the vault, then re-protect."
+                .to_string();
+        return Ok(protection);
+    };
+
+    // Does the container's wrap actually open with the vault's own keypair? Only
+    // the AEAD tag can answer that, so try the unwrap rather than guessing.
+    let opens_with_vault_key = decapsulate(
+        &vault_kem.x25519_secret,
+        &vault_kem.mlkem_secret,
+        &header.hybrid_ciphertext,
+        &crate::security::obf::vault_stream_wrap_info(),
+    )
+    .ok()
+    .and_then(|mut secret| {
+        let wrap_aad =
+            wrap_aad_bytes(&header.file_id, &header.owner_user_id, &header.owner_device_id);
+        let opened = symmetric::decrypt(&secret, &header.wrapped_key, &wrap_aad);
+        secret.zeroize();
+        opened.ok()
+    })
+    .map(|mut bytes| {
+        let valid = bytes.len() == KEY_SIZE;
+        bytes.zeroize();
+        valid
+    })
+    .unwrap_or(false);
+
+    protection.needs_reprotect = !opens_with_vault_key;
+    protection.reason = if opens_with_vault_key {
+        "Sealed to this vault's key, which only your vault password unlocks.".to_string()
+    } else {
+        "Sealed to the older device key, which the OS keychain can reach without your vault password."
+            .to_string()
+    };
+    Ok(protection)
+}
+
 /// Read + authenticate a container's header WITHOUT decrypting any content, so
 /// the UI can show who a `.qvault` is sealed for and who sealed it before the
 /// user commits to a destination folder.
@@ -2204,6 +2300,124 @@ mod tests {
 
         let mut restored = Vec::new();
         decrypt_stream(&mut Cursor::new(sealed), &mut restored, &kem).unwrap();
+        assert_eq!(restored, plaintext);
+    }
+
+    /// A container sealed to the vault's own keypair reports itself protected;
+    /// one sealed to any other device key reports that it needs re-protecting.
+    ///
+    /// This is what lets the app *know* which containers still carry the older
+    /// keychain-reachable wrap, instead of asking the user to remember which
+    /// files predate the change.
+    #[test]
+    fn protection_scan_distinguishes_current_containers_from_stale_ones() {
+        let (vault_kem, signer) = keypair();
+        let old_device_kem = LocalKemKeypair::generate();
+        let vmk = symmetric::random_key();
+        let plaintext = b"payload".to_vec();
+
+        let seal = |wrap_to: &LocalKemKeypair| {
+            let mut out = Vec::new();
+            encrypt_stream(
+                &mut Cursor::new(plaintext.clone()), &mut out, KIND_FILE, "doc.bin",
+                "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+                &wrap_to.x25519_public, &wrap_to.mlkem_public, &vmk, &signer, None, None,
+            )
+            .unwrap();
+            out
+        };
+
+        let current = seal(&vault_kem);
+        let status = inspect_protection(&mut Cursor::new(current), Some(&vault_kem)).unwrap();
+        assert!(!status.needs_reprotect, "{}", status.reason);
+        assert_eq!(status.name, "doc.bin");
+
+        let stale = seal(&old_device_kem);
+        let status = inspect_protection(&mut Cursor::new(stale), Some(&vault_kem)).unwrap();
+        assert!(status.needs_reprotect, "{}", status.reason);
+
+        // A v2 container predates the VMK envelope entirely.
+        let v2_signer = LocalSigningKeypair::generate();
+        let legacy = build_v2_container(&plaintext, &vault_kem, &v2_signer, None);
+        let status = inspect_protection(&mut Cursor::new(legacy), Some(&vault_kem)).unwrap();
+        assert!(status.needs_reprotect);
+        assert_eq!(status.version, 2);
+
+        // With no vault keypair yet, nothing can be called current.
+        let current = seal(&vault_kem);
+        let status = inspect_protection(&mut Cursor::new(current), None).unwrap();
+        assert!(status.needs_reprotect);
+    }
+
+    /// Scanning must not read chunk data — that is what keeps it usable across a
+    /// vault full of multi-gigabyte containers.
+    #[test]
+    fn protection_scan_reads_only_the_header() {
+        let (vault_kem, signer) = keypair();
+        let vmk = symmetric::random_key();
+        let plaintext = vec![3u8; CHUNK_SIZE * 2 + 11];
+        let mut sealed = Vec::new();
+        encrypt_stream(
+            &mut Cursor::new(plaintext.clone()), &mut sealed, KIND_FILE, "big.bin",
+            "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+            &vault_kem.x25519_public, &vault_kem.mlkem_public, &vmk, &signer, None, None,
+        )
+        .unwrap();
+
+        let mut cursor = Cursor::new(sealed.clone());
+        inspect_protection(&mut cursor, Some(&vault_kem)).unwrap();
+        let consumed = cursor.position() as usize;
+        assert!(
+            consumed < sealed.len() / 4,
+            "inspection read {consumed} of {} bytes — it must stop after the header",
+            sealed.len()
+        );
+    }
+
+    /// After re-protecting, the container must report itself current — otherwise
+    /// the UI would keep offering an action that never resolves.
+    #[test]
+    fn reprotecting_clears_the_stale_flag() {
+        let (vault_kem, signer) = keypair();
+        let old_device_kem = LocalKemKeypair::generate();
+        let vmk = symmetric::random_key();
+        let plaintext = vec![9u8; CHUNK_SIZE + 3];
+
+        let mut stale = Vec::new();
+        encrypt_stream(
+            &mut Cursor::new(plaintext.clone()), &mut stale, KIND_FILE, "doc.bin",
+            "application/octet-stream", plaintext.len() as u64, "user-1", "device-1",
+            &old_device_kem.x25519_public, &old_device_kem.mlkem_public, &vmk, &signer, None, None,
+        )
+        .unwrap();
+        assert!(
+            inspect_protection(&mut Cursor::new(stale.clone()), Some(&vault_kem))
+                .unwrap()
+                .needs_reprotect
+        );
+
+        let new_vmk = symmetric::random_key();
+        let mut reprotected = Vec::new();
+        rewrap_stream_to_v3(
+            &mut Cursor::new(stale),
+            &mut reprotected,
+            &[old_device_kem.clone(), vault_kem.clone()],
+            &vault_kem.x25519_public,
+            &vault_kem.mlkem_public,
+            &new_vmk,
+            &signer,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let status =
+            inspect_protection(&mut Cursor::new(reprotected.clone()), Some(&vault_kem)).unwrap();
+        assert!(!status.needs_reprotect, "{}", status.reason);
+
+        // And the content survived the rewrite untouched.
+        let mut restored = Vec::new();
+        decrypt_stream_with_vmk(&mut Cursor::new(reprotected), &mut restored, &new_vmk).unwrap();
         assert_eq!(restored, plaintext);
     }
 

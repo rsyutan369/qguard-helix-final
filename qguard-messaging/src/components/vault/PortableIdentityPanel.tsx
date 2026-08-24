@@ -14,6 +14,7 @@ import {
   LockKeyhole,
   Send,
   ShieldCheck,
+  Sparkles,
   Trash2,
   Upload,
   UserPlus,
@@ -177,16 +178,38 @@ function basename(value: string): string {
   return value.split(/[\\/]/).filter(Boolean).pop() ?? value;
 }
 
-/** Local-only strength read-out. Length dominates for an offline bundle. */
-function passphraseStrength(value: string): { score: 0 | 1 | 2 | 3; label: string; tone: string } {
-  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((r) => r.test(value)).length;
-  if (value.length < MIN_PASSPHRASE_LEN) {
-    return { score: 0, label: `Too short — ${MIN_PASSPHRASE_LEN} characters minimum`, tone: "text-rose-600" };
-  }
-  if (value.length >= 20 && classes >= 2) return { score: 3, label: "Strong", tone: "text-emerald-600" };
-  if (value.length >= 16 || classes >= 3) return { score: 2, label: "Good", tone: "text-cyan-700" };
-  return { score: 1, label: "Acceptable — longer is better", tone: "text-amber-600" };
+/** What the backend reports about a passphrase. The estimate is computed there,
+ *  not here: the same function has to gate the bundle, and a second opinion in
+ *  the UI would eventually disagree with the one that actually decides. */
+interface PassphraseStrength {
+  bits: number;
+  fraction: number;
+  verdict: "weak" | "fair" | "strong" | "excellent";
+  acceptable: boolean;
+  issues: string[];
+  suggestion: string | null;
 }
+
+interface PassphrasePolicy {
+  minBits: number;
+  minLength: number;
+  defaultWords: number;
+  defaultWordsBits: number;
+}
+
+const VERDICT_TONE: Record<PassphraseStrength["verdict"], string> = {
+  weak: "text-rose-600",
+  fair: "text-amber-600",
+  strong: "text-emerald-600",
+  excellent: "text-emerald-600",
+};
+
+const VERDICT_BAR: Record<PassphraseStrength["verdict"], string> = {
+  weak: "bg-rose-500",
+  fair: "bg-amber-500",
+  strong: "bg-emerald-500",
+  excellent: "bg-emerald-500",
+};
 
 export default function PortableIdentityPanel({
   userId,
@@ -231,7 +254,10 @@ export default function PortableIdentityPanel({
   const [modalError, setModalError] = useState<string | null>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
 
-  const strength = passphraseStrength(passphrase);
+  const [strength, setStrength] = useState<PassphraseStrength | null>(null);
+  const [policy, setPolicy] = useState<PassphrasePolicy | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [revealPassphrase, setRevealPassphrase] = useState(false);
   const locked = identity === null;
   const anyBusy = busy !== null || vaultBusy;
   const bodyId = "portable-identity-panel-body";
@@ -243,6 +269,41 @@ export default function PortableIdentityPanel({
       setExpanded(false);
     }
   }, [expandedKey]);
+
+  // The floor comes from the backend so the number the UI shows can never drift
+  // from the one that actually gates the bundle.
+  useEffect(() => {
+    let cancelled = false;
+    void safeInvoke<PassphrasePolicy>("vault_passphrase_policy")
+      .then((value) => {
+        if (!cancelled && value) setPolicy(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Score as the user types, but only when creating — scoring a passphrase they
+  // already own tells them nothing they can act on.
+  useEffect(() => {
+    if (modal?.mode !== "create" || passphrase.length === 0) {
+      setStrength(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void safeInvoke<PassphraseStrength>("vault_passphrase_strength", { passphraseText: passphrase })
+        .then((value) => {
+          if (!cancelled && value) setStrength(value);
+        })
+        .catch(() => undefined);
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [passphrase, modal?.mode]);
 
   const toggleExpanded = useCallback(() => {
     setExpanded((open) => {
@@ -386,7 +447,7 @@ export default function PortableIdentityPanel({
       title: "Protect your new identity",
       description:
         `This passphrase encrypts the private .qgkey bundle on disk (Argon2id → HKDF-SHA3-256 → AES-256-GCM). ` +
-        `Minimum ${MIN_PASSPHRASE_LEN} characters. There is no recovery — if you lose it, containers sealed to this identity can no longer be opened.`,
+        `This file can be attacked offline, so the passphrase is what protects every container sealed to this identity — tap Generate for one that is strong by construction. There is no recovery: lose it and those containers can no longer be opened.`,
       onSubmit: async (secret) => {
         setModal(null);
         await run("generate", async () => {
@@ -683,10 +744,40 @@ export default function PortableIdentityPanel({
       .catch(() => setNotice({ tone: "error", message: "Could not copy automatically — select the fingerprint and copy it manually." }));
   }
 
+  /** Fill both fields with a generated passphrase and reveal it, because a
+   *  passphrase the user cannot see is one they cannot write down. */
+  async function generatePassphrase() {
+    if (generating) return;
+    setGenerating(true);
+    setModalError(null);
+    try {
+      const suggested = await safeInvoke<{ passphrase: string; words: number; bits: number }>(
+        "vault_passphrase_suggest",
+      );
+      if (!suggested) return;
+      setPassphrase(suggested.passphrase);
+      setConfirmPassphrase(suggested.passphrase);
+      setRevealPassphrase(true);
+    } catch (error) {
+      setModalError(describeError(error));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   function submitModal() {
     if (!modal) return;
-    if (passphrase.length < MIN_PASSPHRASE_LEN) {
-      setModalError(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`);
+    if (modal.mode === "create" && strength && !strength.acceptable) {
+      // The backend refuses this too — catching it here just saves a round trip
+      // and lets the message name the shortfall instead of the failure.
+      setModalError(
+        strength.suggestion ??
+          `This passphrase is too weak (${Math.round(strength.bits)} bits). Generate one instead.`,
+      );
+      return;
+    }
+    if (passphrase.length < (policy?.minLength ?? MIN_PASSPHRASE_LEN)) {
+      setModalError(`Passphrase must be at least ${policy?.minLength ?? MIN_PASSPHRASE_LEN} characters.`);
       return;
     }
     if (modal.mode === "create" && passphrase !== confirmPassphrase) {
@@ -696,6 +787,8 @@ export default function PortableIdentityPanel({
     const secret = passphrase;
     setPassphrase("");
     setConfirmPassphrase("");
+    setStrength(null);
+    setRevealPassphrase(false);
     setModalError(null);
     void modal.onSubmit(secret);
   }
@@ -1181,20 +1274,66 @@ export default function PortableIdentityPanel({
               }}
             >
               <div>
-                <label htmlFor="qgkey-passphrase" className="text-xs font-semibold text-ink-600">
-                  Passphrase
-                </label>
+                <div className="flex items-baseline justify-between gap-2">
+                  <label htmlFor="qgkey-passphrase" className="text-xs font-semibold text-ink-600">
+                    Passphrase
+                  </label>
+                  {modal.mode === "create" && (
+                    <button
+                      type="button"
+                      onClick={() => void generatePassphrase()}
+                      disabled={generating}
+                      className="flex items-center gap-1 text-xs font-bold text-cyan-700 hover:text-cyan-800 disabled:opacity-50"
+                    >
+                      {generating ? <Loader2 className="animate-spin" size={12} /> : <Sparkles size={12} />}
+                      Generate {policy ? `${policy.defaultWords} words` : "a strong one"}
+                    </button>
+                  )}
+                </div>
                 <input
                   id="qgkey-passphrase"
                   ref={passphraseRef}
-                  type="password"
+                  type={revealPassphrase ? "text" : "password"}
                   autoComplete={modal.mode === "create" ? "new-password" : "current-password"}
                   value={passphrase}
                   onChange={(event) => setPassphrase(event.target.value)}
                   className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm text-ink-950 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
                 />
                 {modal.mode === "create" && passphrase.length > 0 && (
-                  <div className={`mt-1 text-xs font-semibold ${strength.tone}`}>{strength.label}</div>
+                  <button
+                    type="button"
+                    onClick={() => setRevealPassphrase((value) => !value)}
+                    className="mt-1 text-xs font-semibold text-ink-500 hover:text-ink-800"
+                  >
+                    {revealPassphrase ? "Hide passphrase" : "Show passphrase"}
+                  </button>
+                )}
+                {modal.mode === "create" && strength && passphrase.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                      <div
+                        className={`h-full rounded-full transition-all ${VERDICT_BAR[strength.verdict]}`}
+                        style={{ width: `${Math.max(4, Math.round(strength.fraction * 100))}%` }}
+                      />
+                    </div>
+                    <div className={`text-xs font-semibold ${VERDICT_TONE[strength.verdict]}`}>
+                      {strength.verdict === "weak"
+                        ? "Too weak"
+                        : strength.verdict === "fair"
+                          ? "Still too weak"
+                          : "Strong enough"}{" "}
+                      — about {Math.round(strength.bits)} bits
+                      {policy ? ` of the ${Math.round(policy.minBits)} needed` : ""}
+                    </div>
+                    {strength.issues.map((issue) => (
+                      <div key={issue} className="text-xs text-ink-500">
+                        {issue}
+                      </div>
+                    ))}
+                    {strength.suggestion && (
+                      <div className="text-xs text-ink-500">{strength.suggestion}</div>
+                    )}
+                  </div>
                 )}
               </div>
               {modal.mode === "create" && (
@@ -1223,7 +1362,8 @@ export default function PortableIdentityPanel({
                 </button>
                 <button
                   type="submit"
-                  className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700"
+                  disabled={modal.mode === "create" && (!strength || !strength.acceptable)}
+                  className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {modal.mode === "create" ? "Create identity" : "Unlock"}
                 </button>

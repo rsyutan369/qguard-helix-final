@@ -1,6 +1,7 @@
 pub mod hybrid_kex;
 pub mod kdf;
 pub mod passcode;
+pub mod passphrase;
 pub mod portable_identity;
 pub mod signatures;
 pub mod symmetric;
