@@ -52,6 +52,44 @@ enum KeyMaterialStatus {
     Upgraded,
 }
 
+/// One recipient identity whose fingerprint the user has confirmed out of band.
+///
+/// A `.qgpub.json` carries no trust anchor: its self-declared fingerprint only
+/// proves the file is internally consistent, never who it belongs to. Anyone who
+/// can substitute the file in transit can have you seal to them instead, and
+/// nothing in the container would look wrong. Comparing the short fingerprint
+/// over a channel the attacker does not control is the only thing that closes
+/// that, so this record is what the user got by doing it.
+///
+/// The record is bound to the exact fingerprint, which is what makes it safe to
+/// keep: if a bundle is later swapped, its fingerprint differs and no record
+/// matches it, so the swap surfaces as "not verified" rather than inheriting the
+/// trust of the identity it replaced.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedRecipient {
+    /// Full SHA3-256 fingerprint over the recipient's four public keys, hex.
+    pub fingerprint: String,
+    /// The label the bundle carried when it was verified. Display only — the
+    /// fingerprint is what the record is keyed on.
+    pub label: Option<String>,
+    pub kem_algorithm: String,
+    pub signature_algorithm: String,
+    pub verified_at: chrono::DateTime<Utc>,
+}
+
+/// Device-local, encrypted-at-rest set of recipient fingerprints the user has
+/// confirmed out of band. Public material only — no secrets — but it is stored
+/// under the same DEK as everything else so it cannot be edited by hand to grant
+/// trust the user never gave.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PersistedRecipientTrust {
+    #[serde(default)]
+    pub version: u8,
+    #[serde(default)]
+    pub entries: Vec<VerifiedRecipient>,
+}
+
 /// Device-local, encrypted-at-rest copy of the vault recovery material. Stores
 /// only the derived AES wrapping key + a verifier — never the recovery root,
 /// which lives solely with the user. Lets this device keep adding the recovery
@@ -776,6 +814,105 @@ impl AppState {
         Ok(Some(material))
     }
 
+    fn recipient_trust_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.recipient-trust.enc"))
+    }
+
+    /// Every recipient fingerprint this user has confirmed out of band.
+    /// A missing or unreadable file means "nothing is verified yet" — never
+    /// "everything is fine", so a wiped store fails closed.
+    pub fn load_recipient_trust(&self, user_id: &str) -> Result<PersistedRecipientTrust> {
+        let path = self.recipient_trust_path(user_id);
+        if !path.exists() {
+            return Ok(PersistedRecipientTrust::default());
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| QGuardError::Storage(format!("read recipient trust: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode recipient trust: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let mut plaintext = crate::crypto::symmetric::decrypt(
+            &key,
+            &file.envelope,
+            &crate::security::obf::vault_recipient_trust_aad(),
+        )?;
+        let material: PersistedRecipientTrust = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode recipient trust payload: {e}")))?;
+        plaintext.zeroize();
+        Ok(material)
+    }
+
+    pub fn save_recipient_trust(
+        &self,
+        user_id: &str,
+        material: &PersistedRecipientTrust,
+    ) -> Result<()> {
+        let mut encoded = serde_json::to_vec(material)
+            .map_err(|e| QGuardError::Storage(format!("encode recipient trust: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let envelope = crate::crypto::symmetric::encrypt(
+            &key,
+            &encoded,
+            &crate::security::obf::vault_recipient_trust_aad(),
+        );
+        encoded.zeroize();
+        let file = EncryptedKeyMaterialFile {
+            version: 1,
+            envelope: envelope?,
+        };
+        let serialized = serde_json::to_vec(&file)
+            .map_err(|e| QGuardError::Storage(format!("encode encrypted recipient trust: {e}")))?;
+        std::fs::write(self.recipient_trust_path(user_id), &serialized)
+            .map_err(|e| QGuardError::Storage(format!("write recipient trust: {e}")))?;
+        Ok(())
+    }
+
+    /// Record that the user confirmed this fingerprint out of band. Re-verifying
+    /// an existing fingerprint refreshes its timestamp rather than duplicating it.
+    pub fn mark_recipient_verified(
+        &self,
+        user_id: &str,
+        entry: VerifiedRecipient,
+    ) -> Result<VerifiedRecipient> {
+        let mut trust = self.load_recipient_trust(user_id)?;
+        trust.version = 1;
+        trust
+            .entries
+            .retain(|existing| !existing.fingerprint.eq_ignore_ascii_case(&entry.fingerprint));
+        trust.entries.push(entry.clone());
+        self.save_recipient_trust(user_id, &trust)?;
+        Ok(entry)
+    }
+
+    /// Withdraw trust from a fingerprint. Returns whether anything was removed.
+    pub fn clear_recipient_verification(&self, user_id: &str, fingerprint: &str) -> Result<bool> {
+        let mut trust = self.load_recipient_trust(user_id)?;
+        let before = trust.entries.len();
+        trust
+            .entries
+            .retain(|existing| !existing.fingerprint.eq_ignore_ascii_case(fingerprint));
+        let removed = trust.entries.len() != before;
+        if removed {
+            self.save_recipient_trust(user_id, &trust)?;
+        }
+        Ok(removed)
+    }
+
+    pub fn recipient_verification(
+        &self,
+        user_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<VerifiedRecipient>> {
+        Ok(self
+            .load_recipient_trust(user_id)?
+            .entries
+            .into_iter()
+            .find(|entry| entry.fingerprint.eq_ignore_ascii_case(fingerprint)))
+    }
+
     fn vault_master_path(&self, user_id: &str) -> PathBuf {
         let safe_user_id = Self::safe_user_key(user_id);
         self.data_dir
@@ -1317,6 +1454,15 @@ impl AppState {
     pub fn audit_info(&self, event_type: &str, description: &str) {
         if let Ok(mut audit) = self.audit.lock() {
             audit.append(event_type, AuditSeverity::Info, description);
+        }
+    }
+
+    /// Record a security-relevant event that is not a failure of the app but is
+    /// worth a reviewer's attention — a fingerprint confirmation that did not
+    /// match, trust being withdrawn from a recipient.
+    pub fn audit_warn(&self, event_type: &str, description: &str) {
+        if let Ok(mut audit) = self.audit.lock() {
+            audit.append(event_type, AuditSeverity::Warning, description);
         }
     }
 

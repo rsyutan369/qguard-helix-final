@@ -489,6 +489,44 @@ pub fn short_fingerprint(fingerprint: &str) -> String {
         .join("-")
 }
 
+/// Shortest confirmation accepted when verifying a recipient out of band: the
+/// 16 hex characters of [`short_fingerprint`].
+///
+/// Anything less is not a comparison. Four characters collide by birthday after
+/// a few hundred identities and would let a near-miss pass; sixteen is 64 bits,
+/// which an attacker cannot grind a colliding identity for.
+pub const MIN_CONFIRMATION_CHARS: usize = 16;
+
+/// Whether what the user typed matches the fingerprint they were meant to
+/// compare against.
+///
+/// Deliberately forgiving about *format* and strict about *content*: the user is
+/// transcribing from a phone call or a video window, so dashes, spaces and case
+/// are all noise, but the digits themselves have to be right. Accepts the short
+/// form, the full 64-character fingerprint, or anything in between, as long as it
+/// is a genuine prefix of at least [`MIN_CONFIRMATION_CHARS`].
+pub fn confirmation_matches(typed: &str, fingerprint: &str) -> bool {
+    let typed = normalize_fingerprint(typed);
+    let expected = normalize_fingerprint(fingerprint);
+    if typed.len() < MIN_CONFIRMATION_CHARS || expected.len() < MIN_CONFIRMATION_CHARS {
+        return false;
+    }
+    if typed.len() > expected.len() {
+        return false;
+    }
+    expected.starts_with(&typed)
+}
+
+/// Strip the separators a person types and fold to one case, so `de80 ca7a` and
+/// `DE80-CA7A` compare equal.
+fn normalize_fingerprint(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// Parse a public recipient bundle. Accepts the public recipient JSON, a full
 /// `.qgkey` bundle (public half only), or a `{ publics: {...} }` fragment.
 ///
@@ -917,6 +955,40 @@ mod tests {
             &other.kem.mlkem_public,
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_confirmation_must_actually_match_the_fingerprint() {
+        let identity = PortableIdentity::generate(None);
+        let fingerprint = identity.fingerprint();
+        let short = short_fingerprint(&fingerprint);
+
+        // The short form as displayed, and the ways a person might retype it.
+        assert!(confirmation_matches(&short, &fingerprint));
+        assert!(confirmation_matches(&short.to_lowercase(), &fingerprint));
+        assert!(confirmation_matches(&short.replace('-', " "), &fingerprint));
+        assert!(confirmation_matches(&short.replace('-', ""), &fingerprint));
+        // The full fingerprint, for someone who pastes rather than types.
+        assert!(confirmation_matches(&fingerprint, &fingerprint));
+
+        // A different identity must never satisfy it.
+        let other = PortableIdentity::generate(None);
+        assert!(!confirmation_matches(&short_fingerprint(&other.fingerprint()), &fingerprint));
+
+        // Too short to be a comparison: a four-character prefix would collide by
+        // birthday across a few hundred identities.
+        assert!(!confirmation_matches(&short[..4], &fingerprint));
+        assert!(!confirmation_matches("", &fingerprint));
+        assert!(!confirmation_matches("----", &fingerprint));
+
+        // One wrong character anywhere fails, including the last.
+        let mut wrong: Vec<char> = short.chars().collect();
+        let last = wrong.len() - 1;
+        wrong[last] = if wrong[last] == 'A' { 'B' } else { 'A' };
+        assert!(!confirmation_matches(&wrong.into_iter().collect::<String>(), &fingerprint));
+
+        // Longer than the real fingerprint cannot be a prefix of it.
+        assert!(!confirmation_matches(&format!("{fingerprint}00"), &fingerprint));
     }
 
     #[test]

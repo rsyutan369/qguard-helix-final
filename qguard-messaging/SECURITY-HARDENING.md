@@ -155,6 +155,45 @@ containers surface as a banner on the vault page and a marker on the row, and
 re-protecting rewrites only those. The encrypted chunks are copied across
 verbatim; nothing is re-encrypted and nothing is decrypted on the way.
 
+### Verifying a recipient before sealing to them
+
+A `.qgpub.json` carries no trust anchor. Its self-declared fingerprint proves the
+file is internally consistent, never whose identity it is — so anyone who can
+substitute the bundle in transit can have you seal to them instead, and nothing
+about the resulting container looks wrong. It verifies, it opens; it just opens
+for the wrong person. Comparing the short fingerprint over a channel the attacker
+does not control is the only thing that catches this.
+
+That comparison is now a required step. Sealing is refused until the recipient's
+fingerprint has been confirmed, and the check runs in `resolve_recipients` — the
+single choke point both seal commands go through — rather than in the UI, because
+a frontend check is a prompt, not a control.
+
+Verification is a **typed comparison**, not a checkbox: the user enters what the
+recipient read out, and the backend checks it against the bundle's real
+fingerprint. A "yes, I checked" button becomes muscle memory in a week;
+transcribing sixteen characters (64 bits — short enough to read over a call,
+long enough that no one can grind a colliding identity) forces an actual look. A
+mismatch records nothing and says plainly that the bundle may not be the one they
+sent.
+
+Trust records are keyed on the **exact fingerprint** and stored encrypted at rest
+under the device DEK. Two consequences worth stating:
+
+* A substituted bundle cannot inherit the trust of the identity it replaces — its
+  fingerprint differs, so no record matches and it shows as unverified.
+* A second identity arriving under a name you already know, with different keys,
+  is called out immediately. That is what a substitution looks like from the
+  inside.
+
+Removing someone from the address book deliberately leaves their verification
+alone: that is housekeeping, not a statement about who they are. **Unverify** is
+the action for withdrawing trust, and it blocks sealing again.
+
+What this cannot do is check that you used a trustworthy channel. The record is
+your own attestation that you compared the value out of band; the app makes the
+step deliberate, binds it to one fingerprint, and refuses to seal without it.
+
 ### Messaging vs. the vault
 
 Messaging and calls share the same hybrid KEM code and are equally on FIPS 203
