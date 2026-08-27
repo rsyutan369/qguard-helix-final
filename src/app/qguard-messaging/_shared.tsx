@@ -5,13 +5,16 @@
  * CyberBackground particle field. Copy is drawn from the verified marketing docs
  * in docs/secure-chat and docs/quantum-vault.
  */
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowRight,
+  Check,
   ChevronDown,
+  Copy,
   Download,
+  FileCheck2,
   Github,
   Globe,
   Linkedin,
@@ -20,6 +23,7 @@ import {
   MessageSquareLock,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Twitter,
   X,
   type LucideIcon,
@@ -134,13 +138,24 @@ export function GhostButton({
 /**
  * Windows installer served from public/downloads (built by `npx tauri build`
  * in qguard-messaging — see Qguard_Wiki/Messaging_Installer_Distribution).
- * Update `sizeMb` when shipping a new installer build.
+ * `version`, `sizeMb` and `sha256` are all rewritten by tools/release.ps1 on
+ * each release, so they stay in lock-step with the binary actually published.
  */
 export const MESSAGING_INSTALLER = {
   href: '/downloads/QGuard-Messaging-Setup.exe',
-  version: '1.3.0',
-  sizeMb: 5,
+  version: '1.3.2',
+  sizeMb: 6,
   requirements: 'Windows 10/11 · 64-bit',
+  /**
+   * SHA-256 of the exact file served from `href`, shown to users so they can
+   * confirm their download was not altered or corrupted.
+   *
+   * Written automatically by tools/release.ps1 on every release - do NOT edit it
+   * by hand and never let it drift from the published binary. A stale hash tells
+   * an honest user their legitimate download was tampered with, which is worse
+   * than publishing no hash at all.
+   */
+  sha256: 'BAC7B2B0BD5067EFC7269BE80671C2E73541A3D257F240AAB325FBDF2CA542E7',
 };
 
 /**
@@ -311,12 +326,221 @@ export function DownloadButton({ className }: { className?: string }) {
       >
         {gating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4 transition-transform group-hover:translate-y-0.5" />}
         Download for Windows
-        <span className="ml-1 hidden rounded bg-white/15 px-2 py-0.5 font-mono text-[10px] font-bold normal-case tracking-normal sm:inline">
+        {/*
+          Background written as an arbitrary rgb() value on purpose. The light-theme
+          sheet in index.css matches `[class*="bg-white/"]` and repaints any such
+          element as a near-opaque white glass panel - which, combined with this
+          button's `[&_*]:!text-white`, rendered the version as white-on-white and
+          made it unreadable. An arbitrary value carries the same 15-18% white wash
+          without matching that selector. Do not "tidy" this back to bg-white/15.
+        */}
+        <span className="ml-1 hidden rounded bg-[rgb(255_255_255_/_0.18)] px-2 py-0.5 font-mono text-[10px] font-bold normal-case tracking-normal sm:inline">
           v{MESSAGING_INSTALLER.version} · ~{MESSAGING_INSTALLER.sizeMb} MB
         </span>
       </button>
       {planModalOpen && <PlanGateModal onClose={() => setPlanModalOpen(false)} />}
     </>
+  );
+}
+
+/**
+ * Copy-to-clipboard with a short "copied" acknowledgement, keyed by field id so
+ * several buttons can share one hook. Falls back to a hidden textarea + execCommand
+ * when the async Clipboard API is unavailable (non-secure origin, older browser).
+ */
+function useCopyField(resetMs = 2000) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copy = async (value: string, id: string) => {
+    const ack = () => {
+      setCopied(id);
+      window.setTimeout(() => setCopied((current) => (current === id ? null : current)), resetMs);
+    };
+    try {
+      await navigator.clipboard.writeText(value);
+      ack();
+      return;
+    } catch {
+      /* Clipboard API blocked - fall through to the legacy path. */
+    }
+    try {
+      const scratch = document.createElement('textarea');
+      scratch.value = value;
+      scratch.setAttribute('readonly', '');
+      scratch.style.position = 'fixed';
+      scratch.style.opacity = '0';
+      document.body.appendChild(scratch);
+      scratch.select();
+      document.execCommand('copy');
+      scratch.remove();
+      ack();
+    } catch {
+      setCopied(null); // leave the button in its idle state rather than lying
+    }
+  };
+
+  return { copied, copy };
+}
+
+/** Small square copy button used inside the integrity panel. */
+function CopyIconButton({ value, id, label, copied, onCopy }: {
+  value: string;
+  id: string;
+  label: string;
+  copied: string | null;
+  onCopy: (value: string, id: string) => void;
+}) {
+  const done = copied === id;
+  return (
+    <button
+      type="button"
+      onClick={() => onCopy(value, id)}
+      aria-label={done ? `${label} copied` : `Copy ${label}`}
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wide transition-colors duration-150',
+        done
+          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+          : 'border-slate-300 bg-white text-slate-500 hover:border-cyan-400 hover:text-cyan-700',
+      )}
+    >
+      {done ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {done ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+/**
+ * Collapsible integrity panel shown beneath the download CTA.
+ *
+ * Purpose: let someone confirm the installer they received is byte-for-byte the
+ * build we published, so a corrupted transfer, a bad mirror, or a file swapped
+ * after download is visible rather than silent.
+ *
+ * Scope is stated honestly in the UI. A checksum published on the same origin as
+ * the download proves INTEGRITY, not origin - anyone who could alter the binary
+ * on this server could alter the hash beside it. The claim in the copy is
+ * therefore limited to what the check actually establishes, and the panel points
+ * at the updater signature, which is the authenticity check that does not depend
+ * on trusting this page: its public key is compiled into the installed app, so a
+ * forged update fails verification on the user's machine.
+ */
+export function InstallerIntegrity({
+  className,
+  defaultOpen = false,
+}: {
+  className?: string;
+  /** Opt-in for contexts where verification is the point of the page. */
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const { copied, copy } = useCopyField();
+  const { sha256, version, href } = MESSAGING_INSTALLER;
+  const bodyId = useId();
+  const fileName = href.split('/').pop() || 'QGuard-Messaging-Setup.exe';
+  // Compare inside PowerShell rather than asking the reader to eyeball 64 hex
+  // characters - people skim the middle of a hash and miss exactly the kind of
+  // targeted substitution this check exists to catch. This prints True or False.
+  // Deliberately free of backslash escapes: `.\` is not needed (Get-FileHash
+  // resolves a bare relative path) and `\$` inside a template literal silently
+  // suppresses interpolation, which is easy to ship without noticing.
+  const verifyCommand = `(Get-FileHash ${fileName} -Algorithm SHA256).Hash -eq '${sha256}'`;
+
+  return (
+    <div
+      className={cn(
+        'max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white/85 shadow-[0_8px_28px_rgba(15,23,42,0.06)] backdrop-blur-sm',
+        className,
+      )}
+    >
+      {/*
+        Collapsed by default so the hero stays readable. The trigger still names
+        the checksum and the version, so the verification path is advertised even
+        when shut - a security affordance nobody can see is not much of one.
+      */}
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors duration-150 hover:bg-slate-50"
+      >
+        <FileCheck2 className="h-4 w-4 shrink-0 text-cyan-600" />
+        <span className="font-mono text-[11px] font-black uppercase tracking-[0.16em] text-slate-600">
+          Verify your download
+        </span>
+        <span className="hidden rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wide text-slate-500 sm:inline">
+          SHA-256
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[10px] font-bold text-slate-400">v{version}</span>
+        <ChevronDown
+          className={cn(
+            'h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="integrity-body"
+            id={bodyId}
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-slate-200 px-3.5 pb-4 pt-3">
+              <p className="text-[12.5px] leading-relaxed text-slate-600">
+                Check the installer you downloaded against the checksum we published for this build. A
+                match means the file is byte-for-byte ours and was not altered or corrupted on its way
+                to you.
+              </p>
+
+              <div className="mt-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                    SHA-256
+                  </span>
+                  <CopyIconButton value={sha256} id="hash" label="checksum" copied={copied} onCopy={copy} />
+                </div>
+                <code className="mt-1.5 block break-all rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[11.5px] font-semibold leading-[1.7] tracking-tight text-slate-800 sm:text-[13px]">
+                  {sha256}
+                </code>
+              </div>
+
+              <div className="mt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                    <Terminal className="h-3 w-3" />
+                    Windows PowerShell &mdash; prints True if it matches
+                  </span>
+                  <CopyIconButton value={verifyCommand} id="cmd" label="command" copied={copied} onCopy={copy} />
+                </div>
+                <code className="mt-1.5 block whitespace-pre-wrap break-all rounded-lg border border-slate-900 bg-[#040810] px-3 py-2.5 font-mono text-[11.5px] font-semibold leading-relaxed text-cyan-300 sm:text-[12px]">
+                  {verifyCommand}
+                </code>
+                <p className="mt-1.5 text-[11.5px] leading-relaxed text-slate-500">
+                  Run it in the folder you saved the installer to (usually{' '}
+                  <span className="font-mono font-semibold text-slate-600">Downloads</span>). A result of{' '}
+                  <span className="font-mono font-bold text-emerald-600">True</span> means the file matches;{' '}
+                  <span className="font-mono font-bold text-rose-600">False</span> means do not run it &mdash;
+                  download again.
+                </p>
+              </div>
+
+              <p className="mt-3 border-t border-slate-200 pt-3 text-[11.5px] leading-relaxed text-slate-500">
+                This checksum confirms the file is intact. Because it is served from this same site, it
+                is not by itself proof of origin &mdash; the stronger guarantee is that in-app updates are
+                signed, and the verification key ships inside the installed application, so an update we
+                did not sign is rejected on your machine.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 

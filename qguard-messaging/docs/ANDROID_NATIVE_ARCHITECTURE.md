@@ -39,7 +39,7 @@ remains reserved for a liboqs backend as a crypto-agility option.
 | Requirement (Android_Building_2)   | Fulfilled by |
 |------------------------------------|--------------|
 | NDK r27 + LLVM/Clang               | `ndk;27.2.12479018`, cargo cross-compile for 4 Android ABIs |
-| Native ML-KEM / ML-DSA             | PQClean C cores (pqcrypto-kyber / pqcrypto-mldsa) compiled by NDK clang |
+| Native ML-KEM / ML-DSA             | PQClean C cores (pqcrypto-mlkem / pqcrypto-mldsa, `clean` portable builds) compiled by NDK clang |
 | JNI bridge, minimal exposure       | Tauri's generated Kotlin↔Rust JNI + `security/keystore.rs` (Android Keystore); no key material crosses into Kotlin |
 | Android Keystore                   | Hardware-backed AES-256-GCM wrapping key; see `security/keystore.rs` |
 | Secure memory                      | `zeroize` on all secret buffers; keys never logged |
@@ -64,3 +64,45 @@ remains reserved for a liboqs backend as a crypto-agility option.
 | Updates            | tauri-plugin-updater (minisign)  | Signed APK / Play distribution |
 | Process/relaunch   | tauri-plugin-process             | Not registered (Android lifecycle) |
 | Capabilities       | `default.json` + `desktop.json`  | `default.json` only |
+| Runtime image      | `current_exe()`                  | mapping containing our own code (`/proc/self/maps`) |
+
+### Measuring the runtime image on Android
+
+`anti_tampering_detection` and `runtime_integrity_hash_checks` (in
+`src-tauri/src/security/mod.rs`) both hash the running image. Finding that image
+on Android is not obvious, and two plausible-looking approaches are both wrong:
+
+- **`std::env::current_exe()` is not our code.** The process executable is the
+  zygote (`/system/bin/app_process64`) — shared by every app on the device, and
+  unreadable from the app sandbox.
+- **Searching the memory map for a `.so` finds nothing on release builds.**
+  Release variants package native code with `extractNativeLibs="false"`, so no
+  standalone `.so` is ever written to disk: the library is stored *uncompressed*
+  inside the APK and mapped directly out of it, and `/proc/self/maps` names the
+  backing file — `.../base.apk`. Debug variants set `extractNativeLibs="true"`
+  (AGP does this for faster incremental installs) and do unpack a real `.so`, so
+  a name-based search passes in development and fails only once installed as a
+  release build.
+
+The app therefore identifies its image by **address containment**: it takes the
+address of a symbol inside its own library and finds the mapping whose range
+contains it. Whatever file backs that mapping is our image, whether it is an
+extracted `.so`, an in-APK `base.apk`, or some future packaging — no JNI, no APK
+layout assumptions, no filename matching. Measuring the APK is if anything the
+stronger claim: the APK is the artifact Android actually signature-verifies.
+
+If the image cannot be located, the checks report **unmeasured** rather than
+falling back to the zygote. A hash of a file that is not our code would look like
+a passing integrity check while proving nothing.
+
+The measurement is memoised for the process lifetime (`OnceLock`) and warmed on a
+background thread in `setup()`: `security_hardening_status` is a synchronous
+Tauri command, so it runs on the main thread, and the artifact is tens of
+megabytes.
+
+**Verification note:** a host `cargo check`/`cargo test` does **not** compile
+`#[cfg(target_os = "android")]` code. The maps parser is therefore also compiled
+under `#[cfg(test)]` and unit-tested against captured maps fixtures for both
+packaging layouts. For the Android code itself use
+`cargo check --lib --target aarch64-linux-android` with
+`$NDK_HOME/toolchains/llvm/prebuilt/windows-x86_64/bin` on `PATH`.

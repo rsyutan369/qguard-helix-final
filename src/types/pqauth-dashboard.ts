@@ -74,6 +74,13 @@ export type PQAuthComplianceRow = {
   evidenceCount: number;
   sourceTables: string[];
   latestAt: string | null;
+  /**
+   * True only when evidence matching THIS framework was found. When false the
+   * framework has not been assessed and the score carries no meaning — the UI
+   * must render "Not Assessed" rather than a percentage. Evidence belonging to
+   * another framework is never borrowed to stand in for this one.
+   */
+  assessed: boolean;
 };
 
 export type PQAuthCompatibilitySurface = {
@@ -84,6 +91,12 @@ export type PQAuthCompatibilitySurface = {
   icon: string;
   sourceTables: string[];
   latestAt: string | null;
+  /**
+   * True only when at least one evidence row was matched to this surface. A
+   * surface nobody has deployed (or that discovery has not reached) is NOT a
+   * passing surface, so the UI renders "Not Assessed" instead of a score.
+   */
+  assessed: boolean;
 };
 
 export type PQAuthTokenImpact = {
@@ -124,6 +137,13 @@ export type PQAuthRuntimeMetric = {
   label: string;
   value: number;
   detail: string;
+  /**
+   * True only when the value was measured from runtime telemetry. Inventory
+   * counts are never substituted for runtime observations, so when no runtime
+   * evidence exists the UI shows "Awaiting telemetry" instead of a zero that
+   * would read as "no failures".
+   */
+  measured: boolean;
 };
 
 export type PQAuthSourceHealth = {

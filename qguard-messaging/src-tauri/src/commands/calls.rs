@@ -9,7 +9,7 @@ use crate::crypto::hybrid_kex::{decapsulate, encapsulate};
 use crate::crypto::{DualSignature, HybridCiphertext};
 use crate::crypto::kdf::{hkdf_sha3_256, sha3_256};
 use crate::error::{QGuardError, Result};
-use crate::identity::verify_identity_bundle;
+use crate::identity::{verify_identity_bundle, platform_device_label};
 use crate::state::AppState;
 
 const INFO_C2A: &[u8] = b"qguard-call-media-v1:caller-to-callee";
@@ -136,7 +136,7 @@ pub async fn call_callee_setup(
 ) -> Result<CallSetup> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    state.ensure_identity(&user_id, "Windows Desktop")?;
+    state.ensure_identity(&user_id, platform_device_label())?;
     let guard = state
         .identity
         .lock()

@@ -11,7 +11,8 @@
     2. Runs tools/release-installer.ps1 (loads the updater signing key from
        src-tauri/updater-keys, builds with AV-lock retries, copies the exe to
        public/downloads, writes a signed latest.json).
-    3. Updates the website label's sizeMb to the freshly built installer.
+    3. Updates the website label's sizeMb AND the published SHA-256 checksum
+       to match the freshly built installer.
     4. With -Push: commits the release and pushes main, which triggers the
        production deploy (Cloudflare Pages -> qguardhelix.com).
 
@@ -59,7 +60,7 @@ $shared    = Join-Path $repo "src\app\qguard-messaging\_shared.tsx"
 function Set-FileRegex {
   param([string]$Path, [string]$Pattern, [string]$Replacement, [int]$Count = 0)
   if (-not (Test-Path $Path)) { throw "Missing file: $Path" }
-  $text = Get-Content -Raw $Path
+  $text = [System.IO.File]::ReadAllText($Path)
   $rx = [regex]$Pattern
   if ($rx.Matches($text).Count -eq 0) { throw "Version pattern not found in $Path" }
   $new = if ($Count -gt 0) { $rx.Replace($text, $Replacement, $Count) } else { $rx.Replace($text, $Replacement) }
@@ -84,7 +85,16 @@ $exe = Join-Path $repo "public\downloads\QGuard-Messaging-Setup.exe"
 if (Test-Path $exe) {
   $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB)
   Set-FileRegex $shared "(sizeMb:\s*)\d+" "`${1}$sizeMb"
+  # Publish the checksum of the EXACT file just copied into public/downloads, so
+  # the site's "verify your download" panel can never drift from the binary users
+  # actually receive. Derived here rather than maintained by hand: a stale hash
+  # accuses an honest download of being tampered with, which is worse than
+  # showing none. Set-FileRegex throws if the field is missing, so a renamed or
+  # deleted sha256 field fails the release loudly instead of shipping a lie.
+  $sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToUpperInvariant()
+  Set-FileRegex $shared "(sha256:\s*')[0-9A-Fa-f]{64}(')" "`${1}$sha256`${2}"
   Write-Host "[release] Website label: v$Version, ~$sizeMb MB" -ForegroundColor Cyan
+  Write-Host "[release] Published SHA256: $sha256" -ForegroundColor Cyan
 }
 
 if ($Push) {

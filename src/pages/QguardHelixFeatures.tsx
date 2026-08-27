@@ -401,13 +401,13 @@ const MODULES: ModuleEntry[] = [
     value:
       'Converts an unknown into a checklist. Every incompatible component is named before the change window instead of being discovered inside it.',
     capabilities: [
-      'Compatibility checks across applications, APIs and gateways',
-      'Mobile app, service mesh and WAF validation',
-      'Load balancer and cloud platform readiness',
+      'Six scored surfaces: applications, APIs, mobile apps, gateways and WAFs, service meshes, cloud platforms',
+      'Separate readiness scores for ML-KEM (FIPS 203), ML-DSA (FIPS 204) and SLH-DSA (FIPS 205)',
+      'Blocker count from quantum-vulnerable algorithms and token size limits',
       'Dependency analysis for components that block a cutover',
-      'Readiness verdicts backed by observed evidence',
+      'A surface with no evidence reads Not Assessed — it is never scored as if it passed',
     ],
-    benefits: ['Cutover date you can defend', 'No surprise blockers', 'Evidence per component'],
+    benefits: ['Cutover date you can defend', 'No surprise blockers', 'Unmeasured stays unmeasured'],
     useCase:
       'Your service mesh supports hybrid key exchange but an older WAF in front of it does not. You learn this in planning, and sequence the WAF upgrade first.',
     image: `${MEDIA}/compatibility.webp`,
@@ -422,19 +422,19 @@ const MODULES: ModuleEntry[] = [
     eyebrow: 'Identity Telemetry',
     title: 'Runtime Identity Telemetry',
     blurb:
-      'Watches authentication as it actually happens — tokens validated, certificates used, trust failing — so you know the identity layer is behaving, not just configured.',
+      'Watches authentication as it actually happens — tokens validated, certificates presented, trust failing — so you know the identity layer is behaving, not just configured.',
     value:
       'Configuration says what should happen. Telemetry says what did. This is the difference between believing a migration succeeded and knowing it.',
     capabilities: [
-      'Real-time authentication and authorization event telemetry',
-      'Live token validation and certificate usage monitoring',
-      'Trust failure detection as it occurs',
-      'Identity drift alerts when runtime diverges from policy',
-      'Continuous validation after each migration stage',
+      'Authentication, authorization, session and token events streamed live over SSE',
+      'Token operations and the certificates actually presented at runtime',
+      'Trust failures counted from observed downgrades, rejections and validation errors',
+      'Identity drift surfaced when shadow or legacy cryptography appears on an identity path',
+      'Every tile reads Awaiting Telemetry until real runtime evidence exists',
     ],
-    benefits: ['Proof, not assumption', 'Drift caught in minutes', 'Post-migration assurance'],
+    benefits: ['Proof, not assumption', 'Measured, never inferred', 'Post-migration assurance'],
     useCase:
-      'A partner silently reverts to an older token signing algorithm. Drift telemetry raises it the same day rather than at the next annual audit.',
+      'A partner silently reverts to an older token signing algorithm. It shows up in the drift tile as a legacy observation rather than waiting for the next annual audit.',
     image: `${MEDIA}/runtime-telemetry.webp`,
     icon: Radio,
     accent: CYAN,
@@ -458,7 +458,7 @@ const MODULES: ModuleEntry[] = [
       'Contractual obligation and evidence-request management',
       'Migration support status for each vendor',
       'Supply-chain view of quantum-vulnerable dependencies',
-      'Evidence linkage to questionnaires and architecture reviews',
+      'Nine evidence-request types tracked through a six-stage review workflow',
     ],
     benefits: ['Inherited risk visible', 'Contract leverage', 'Supplier comparison'],
     useCase:
@@ -477,18 +477,19 @@ const MODULES: ModuleEntry[] = [
     blurb:
       'Shows the cryptography your systems are running right now — not the cryptography your documentation says they run.',
     value:
-      'Most estates contain algorithms nobody remembers deploying. Seeing live cryptographic operations closes the gap between the architecture diagram and reality.',
+      'Most estates contain algorithms nobody remembers deploying. Seeing the cryptographic operations your systems actually perform closes the gap between the architecture diagram and reality.',
     capabilities: [
-      'Live cryptographic operation rates across the estate',
-      'Encryption and decryption throughput monitoring',
-      'Key usage event tracking',
-      'Post-quantum handshake observation as adoption grows',
-      'Severity-ranked alerts on unexpected algorithm use',
-      'Continuous inventory that updates itself',
+      'Live cryptographic event stream, scoped to a chosen window from 15 minutes to 30 days',
+      'Each observation judged on its risk-bearing primitive, not the cipher-suite name',
+      'Findings aggregated per asset and primitive, so one problem seen many times is one finding',
+      'Priority weighted by asset criticality and exposure, not severity alone',
+      'Post-quantum adoption measured, with a trend claimed only when both windows hold data',
+      'Migration verification that will not report success without post-cutover runtime evidence',
+      'No runtime evidence publishes no score — never a zero that reads as clean',
     ],
-    benefits: ['Reality over documentation', 'Shadow crypto exposed', 'Adoption measurable'],
+    benefits: ['Reality over documentation', 'Shadow crypto exposed', 'Silence never scored as safe'],
     useCase:
-      'A deprecated cipher reappears after a dependency upgrade. Runtime intelligence flags the operations within minutes of the deploy.',
+      'A deprecated cipher reappears after a dependency upgrade. The next observation of it lands in the event stream and is ranked against the asset it was seen on.',
     image: '/downloads/runtime1.png',
     icon: Eye,
     accent: ROSE,
@@ -501,16 +502,16 @@ const MODULES: ModuleEntry[] = [
     eyebrow: 'Trust Discovery',
     title: 'Trust-State Discovery',
     blurb:
-      'Maps the certificate and PKI trust relationships holding your estate together — including the ones no inventory ever recorded.',
+      'Maps the certificate, PKI and service trust relationships holding your estate together — including the ones no inventory ever recorded.',
     value:
       'Migrations rarely fail on the algorithm. They fail on an undocumented trust path nobody knew existed until it broke.',
     capabilities: [
-      'Interactive 3D trust graph of issuers, chains and dependants',
-      'Root, intermediate and leaf certificate hierarchy mapping',
-      'Trust findings ranked by severity and impact',
-      'Trust gate showing what a change would break',
-      'Ownership and visibility workflow across the trust fabric',
-      'Identity and machine trust relationship discovery',
+      'Interactive tiered trust graph, root authority down to cloud resource',
+      'Select any subject to see its blast radius — everything a change there would reach',
+      'Inferred nodes and edges drawn dashed, so assumed is never mistaken for measured',
+      'Trust chains ranked worst-first, with incomplete chains naming the missing tier',
+      'Owner and region on every discovered subject, with unassigned ones flagged',
+      'Discovery data-quality report naming the table each discrepancy lives in',
     ],
     benefits: ['Hidden trust surfaced', 'Breakage predicted', 'Ownership resolved'],
     useCase:
@@ -534,6 +535,7 @@ const MODULES: ModuleEntry[] = [
       'Expertise stops being a bottleneck. A compliance lead can ask the same question a cryptographer would, and get an answer they can act on and cite.',
     capabilities: [
       'Streaming answers grounded in your live tenant data',
+      'Deterministic by design — every answer is assembled from tool runs over your own records, not generated by a language model, so it cannot hallucinate a metric',
       'Evidence citations on every finding it reports',
       'Proactive insights surfaced before you ask',
       'Page-aware suggested questions as you work',
@@ -541,7 +543,7 @@ const MODULES: ModuleEntry[] = [
       'Human-in-the-loop approval before any action is taken',
       'Conversation history, pinning, search and export',
     ],
-    benefits: ['Plain-English answers', 'Always evidence-backed', 'Never acts unsupervised'],
+    benefits: ['Plain-English answers', 'Cannot invent a number', 'Never acts unsupervised'],
     useCase:
       '"Which internet-facing systems still use RSA and who owns them?" — answered in seconds, with the asset list and evidence behind it.',
     image: '/downloads/Sophia-AI_Agent_Security_Copilot.png',
@@ -655,8 +657,8 @@ const BENEFITS: Array<{ icon: LucideIcon; title: string; body: string; color: st
   },
   {
     icon: BrainCircuit,
-    title: 'Decide with AI assistance',
-    body: 'Sophia answers posture questions in plain English and always shows the evidence, so decisions are informed rather than intuitive.',
+    title: 'Decide with evidence, fast',
+    body: 'Sophia answers posture questions in plain English from your own records and always shows the evidence behind the answer, so decisions are informed rather than intuitive.',
     color: VIOLET,
   },
   {
@@ -800,7 +802,7 @@ export default function QguardHelixFeatures() {
             transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
             className="mt-6 text-4xl font-black leading-[1.05] tracking-tight text-[#f8fafc] sm:text-6xl lg:text-7xl"
           >
-            <span>Every </span>
+            <span>For Every </span>
             <AnimatePresence mode="wait">
               <motion.span
                 key={currentWord}

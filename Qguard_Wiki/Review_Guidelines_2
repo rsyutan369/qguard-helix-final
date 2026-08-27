@@ -1,0 +1,1715 @@
+# QGuard Helix — Quantum Remediation Master Audit, Accuracy, Real-Time Integration & Cross-Module Validation
+
+## ROLE
+
+Act as a **Senior Full-Stack Architect, Cybersecurity Engineer, Cryptography Engineer, QA Engineer, and Security Platform Integration Engineer**.
+
+Perform a comprehensive implementation-level audit, validation, correction, and integration review of the QGuard Helix platform, with primary focus on all pages/modules below, and every dashboard/module that contributes data, functionality, workflows, or claims to it.
+
+This is **NOT simply a UI/content review**.
+
+You must inspect the actual source code, frontend, backend, APIs, database access, hooks, services, workers, telemetry, event streams, cryptographic workflows, scan pipelines, migration workflows, and inter-module dependencies.
+
+The final system must represent the **actual operational state and capabilities of QGuard Helix**.
+
+---
+
+# 1. PRIMARY TARGET
+
+Review and validate:
+
+`http://localhost:3000/qguard-helix-features`
+
+Every text , details on this frontpage/marketing page, its said features, capability, metric, description, workflow, CTA, module reference, status, and claim displayed in this section must be:
+
+* Accurate
+* Technically correct
+* Consistent with the actual implementation
+* Connected to the appropriate backend functionality
+* Based on real application data
+* Based on actual user/tenant scanned assets where applicable
+* Real-time where the underlying capability supports real-time updates
+* Consistent with all related dashboard modules
+* Properly synchronized
+* Free from misleading claims
+* Free from production-facing mock/fake data
+
+The Quantum Remediation page must accurately describe what QGuard Helix **actually does**, not what the platform merely intends to do.
+
+---
+
+# 2. IMPORTANT — READ THE GUIDELINES FIRST
+
+Before making ANY modification, thoroughly inspect:
+
+C:\Users\HP\Music\qguard-helix-final\Qguard\_Wiki\Review_Guidelines
+c:\Users\HP\Music\qguard-helix-final\Qguard_Wiki\Review_Guidelines_2
+
+Treat the contents of this directory as a mandatory engineering and review specification.
+
+Read all relevant files contained within this directory, including:
+
+* Review guidelines
+* Architecture guidelines
+* Security requirements
+* Coding standards
+* Cryptography requirements
+* UI/UX requirements
+* Data integrity requirements
+* Testing requirements
+* Integration requirements
+* Workflow requirements
+* Any other applicable documentation
+
+Do not skip this step.
+
+First understand the existing architecture and rules.
+
+Then inspect the implementation.
+
+Then make changes.
+
+Do not blindly refactor code before understanding the existing architecture.
+
+---
+
+# 3. CRITICAL — DO NOT BREAK EXISTING FUNCTIONALITY
+
+This is a **non-breaking refactor and validation task**.
+
+DO NOT break, alter, weaken, bypass, or unintentionally modify any existing:
+
+* Workflows
+* Business logic
+* Authentication
+* Authorization
+* Tenant isolation
+* Database relationships
+* API contracts
+* API authentication
+* Encryption
+* Decryption
+* Key management
+* Key derivation
+* Cryptographic algorithms
+* PQC implementation
+* Hybrid cryptography
+* TLS configuration
+* Certificate workflows
+* PKI workflows
+* Scanner pipelines
+* Scan processing
+* Asset discovery
+* CBOM generation
+* Crypto inventory
+* Migration workflows
+* Migration state machines
+* Migration validation
+* Rollback mechanisms
+* Runtime telemetry
+* SSE
+* WebSockets
+* Event processing
+* Background workers
+* Queue processing
+* Scheduled jobs
+* Audit logging
+* Compliance evidence
+* Certification logic
+* Existing integrations
+
+Do not replace working implementations with simplified mock implementations.
+
+Do not remove existing functionality merely because it is complex.
+
+Do not rewrite cryptographic code unless absolutely necessary and fully validated.
+
+Do not change encryption algorithms, parameters, key formats, key derivation mechanisms, storage formats, or cryptographic protocols without explicit technical justification and regression testing.
+
+---
+
+# 4. FIRST PHASE — DISCOVERY ONLY
+
+Before changing code, perform a complete architecture/discovery pass.
+
+Identify:
+
+### Frontend
+
+* Next.js/React routes
+* Pages
+* Layouts
+* Components
+* Hooks
+* Context providers
+* State management
+* Query libraries
+* API clients
+* SSE clients
+* WebSocket clients
+* Realtime subscriptions
+* Data transformation utilities
+
+### Backend
+
+* API routes
+* Controllers
+* Services
+* Workers
+* Background jobs
+* Queue consumers
+* Event publishers
+* Event consumers
+* Authentication middleware
+* Authorization middleware
+* Tenant isolation logic
+
+### Database
+
+Identify relevant:
+
+* Tables
+* Views
+* Functions
+* Relationships
+* Foreign keys
+* Tenant identifiers
+* Asset identifiers
+* Scan identifiers
+* Migration identifiers
+* Telemetry identifiers
+* Certificate identifiers
+* Evidence identifiers
+* Assessment identifiers
+
+### Security
+
+Identify:
+
+* Encryption implementations
+* PQC implementations
+* Hybrid cryptography
+* Key management
+* Secrets management
+* TLS
+* Certificate validation
+* Authentication
+* Authorization
+* RBAC
+* Tenant isolation
+
+### Data Flow
+
+Map:
+
+`Scanner → Database → API → Hook → UI`
+
+and:
+
+`Backend Event → SSE/WebSocket/Realtime → Hook/State → UI`
+
+Do not modify code until these relationships are understood.
+
+---
+
+# 5. PRIMARY SOURCE OF TRUTH
+
+The actual QGuard Helix implementation and authenticated tenant data must be treated as the source of truth.
+
+Do not use marketing copy as the source of truth.
+
+Do not use hardcoded frontend values as the source of truth.
+
+Do not use mock data as the source of truth.
+
+Do not use screenshots as the source of truth.
+
+Do not infer that a capability exists merely because a button or page exists.
+
+A feature is considered implemented only when its underlying workflow actually functions.
+
+---
+
+# 6. NO FAKE / MOCK / HARDCODED PRODUCTION DATA
+
+Perform a comprehensive repository-wide search for:
+
+* mock
+* mocked
+* fake
+* demo
+* sample
+* placeholder
+* fixture
+* static
+* hardcoded
+* simulated
+* test data
+* seed data
+* random values
+* Math.random()
+* fake telemetry
+* fake assets
+* fake vulnerabilities
+* fake certificates
+* fake migration progress
+* fake readiness scores
+* fake risk scores
+* fake compliance results
+* fake vendor results
+
+For each occurrence, determine whether it is:
+
+1. Legitimate unit/integration test data
+2. Development-only seed data
+3. Demo-only functionality
+4. Production-facing fake data
+
+Do NOT blindly delete test fixtures.
+
+However, no fake/mock/demo data may be presented to users as actual production security results.
+
+If a production page currently depends on mock data, replace it with the appropriate real backend/data source.
+
+If the backend capability does not exist, implement the required functionality where feasible.
+
+If the capability cannot legitimately produce data yet, show:
+
+* Not Assessed
+* No Data
+* Awaiting Scan
+* Awaiting Telemetry
+* Pending
+* Not Available
+* Evidence Required
+
+Never fabricate a positive result.
+
+---
+
+# 7. REAL USER / TENANT DATA
+
+All operational dashboard data must be associated with the authenticated tenant/user.
+
+Verify:
+
+* tenant_id
+* user_id
+* organization_id
+* asset ownership
+* scan ownership
+* assessment ownership
+* migration ownership
+* telemetry ownership
+* certificate ownership
+* evidence ownership
+
+Ensure there is no:
+
+* Cross-tenant data leakage
+* Global shared dataset
+* Hardcoded tenant ID
+* Hardcoded organization
+* Hardcoded asset ID
+* Shared dashboard state
+* Global mock records
+
+Every relevant API and database query must enforce proper tenant isolation and authorization.
+
+---
+
+# 8. THE 15+ MODULES TO AUDIT
+
+Perform a complete implementation-level review of the following modules.
+
+---
+
+## 01. Quantum Readiness
+
+`/dashboard/quantum-readiness`
+
+Validate:
+
+* Quantum readiness assessment
+* Readiness scoring
+* Quantum exposure
+* Vulnerable algorithms
+* PQC readiness
+* Asset inventory
+* Cryptographic inventory
+* Risk classification
+* Findings
+* Recommendations
+* Remediation priorities
+* Assessment history
+* Scan timestamps
+* Evidence
+* Data freshness
+* Real-time updates
+
+The readiness score must be derived from actual platform evidence.
+
+---
+
+## 02. Migration Planner
+
+`/dashboard/migration-planner`
+
+Validate:
+
+* Asset selection
+* Migration planning
+* Risk prioritization
+* Migration priority
+* Algorithm replacement
+* PQC target selection
+* Hybrid algorithm selection
+* Dependencies
+* Migration phases
+* Migration tasks
+* Migration timeline
+* Migration status
+* Migration blockers
+* Migration recommendations
+* Impact assessment
+
+Plans must use actual discovered assets.
+
+---
+
+## 03. Migration Sandbox
+
+`/dashboard/migration-sandbox`
+
+Validate:
+
+* Migration simulation
+* Sandbox execution
+* Compatibility testing
+* Algorithm substitution
+* Before/after comparison
+* Migration validation
+* Test execution
+* Failure handling
+* Rollback simulation
+* Test evidence
+
+Clearly distinguish:
+
+**Simulation/Test**
+
+from:
+
+**Production Migration**
+
+Never present sandbox results as completed production migrations.
+
+---
+
+## 04. Migration Intelligence
+
+`/dashboard/migration-intelligence`
+
+Validate:
+
+* Migration recommendations
+* Risk intelligence
+* Dependency intelligence
+* Migration blockers
+* Compatibility analysis
+* Asset prioritization
+* PQC recommendations
+* Migration strategy
+* Risk scoring
+* Supporting evidence
+* Recommendation rationale
+
+Every recommendation should be traceable to actual data/evidence wherever applicable.
+
+---
+
+## 05. Quantum Certification
+
+`/dashboard/quantum-certification`
+
+Validate:
+
+* Certification workflow
+* Eligibility
+* Evidence requirements
+* Assessment evidence
+* Quantum-safe determination
+* Certificate generation
+* Certificate lifecycle
+* Certificate validation
+* Asset association
+* Certification history
+* Audit trail
+
+Do not label an asset as Quantum Safe or Certified unless the actual certification criteria and evidence have been satisfied.
+
+---
+
+## 06. Live Migration
+
+`/dashboard/live-migration`
+
+Validate:
+
+* Production migration execution
+* Migration jobs
+* Queuing
+* Execution
+* Progress
+* Migration stages
+* Validation
+* Failure handling
+* Rollback
+* Completion
+* Logs
+* Audit events
+* Real-time status
+
+Correctly represent:
+
+* Planned
+* Pending
+* Queued
+* Running
+* Validating
+* Completed
+* Failed
+* Rolled Back
+* Cancelled
+
+Do not simulate successful production migration.
+
+---
+
+## 07. PQAuth
+
+`/dashboard/pqauth`
+
+Validate:
+
+* PQ authentication
+* Identity migration
+* Cryptographic configuration
+* Key management
+* Authentication state
+* PQC algorithms
+* Hybrid authentication
+* Migration readiness
+* Backend integration
+* Security controls
+
+Verify that every advertised PQAuth capability corresponds to actual implementation.
+
+---
+
+## 08. PQAuth Compatibility
+
+`/dashboard/pqauth/compatibility`
+
+Validate:
+
+* Client compatibility
+* Server compatibility
+* Protocol compatibility
+* Algorithm compatibility
+* Legacy compatibility
+* PQC compatibility
+* Hybrid compatibility
+* Test execution
+* Test results
+* Failure reasons
+* Recommendations
+
+Results must be produced by actual compatibility logic.
+
+---
+
+## 09. PQAuth Runtime Telemetry
+
+`/dashboard/pqauth/runtime-telemetry`
+
+Validate:
+
+* Authentication events
+* Cryptographic events
+* Algorithm usage
+* PQC adoption
+* Hybrid authentication activity
+* Authentication failures
+* Latency
+* Runtime health
+* Event timestamps
+* Event source
+* Real-time event streaming
+
+Verify that telemetry is generated by the actual telemetry pipeline.
+
+---
+
+## 10. Runtime Cryptographic Intelligence
+
+`/dashboard/runtime-crypto-intel`
+
+Validate:
+
+* Runtime cryptographic discovery
+* Algorithm usage
+* Cryptographic events
+* Quantum-vulnerable algorithms
+* PQC usage
+* Hybrid cryptography
+* Runtime anomalies
+* Cryptographic risk
+* Event correlation
+* Threat detection
+* Intelligence
+* AI analysis where actually implemented
+* Real-time telemetry
+
+Do not label functionality as AI-powered unless actual AI processing is occurring.
+
+---
+
+## 11. Trust Dashboard
+
+`/dashboard/trust-dashboard`
+
+Validate:
+
+* Trust posture
+* Trust state
+* Certificate posture
+* Cryptographic posture
+* Runtime trust
+* Infrastructure trust
+* Trust events
+* Risk indicators
+* Cross-cloud trust data
+* Real-time updates
+
+Ensure trust metrics correlate with actual platform data.
+
+---
+
+## 12. Vendor PQC Readiness
+
+`/dashboard/vendor-pqc-readiness`
+
+Validate:
+
+* Vendor inventory
+* Vendor assessments
+* PQC support
+* Vendor readiness
+* Product/service readiness
+* Migration commitments
+* Vendor evidence
+* Vendor risk
+* Assessment status
+* Evidence freshness
+
+Do not fabricate vendor information.
+
+---
+
+## 13. Additional Quantum Remediation Modules
+
+Search the complete repository and identify all additional modules related to Quantum Remediation.
+
+Potentially related areas include:
+
+* PQC Scanner
+* Crypto Inventory
+* CBOM
+* TLS Telemetry
+* PKI Visibility
+* Certificate Telemetry
+* Protocol Analytics
+* TLS Orchestrator
+* QKMS
+* Crypto Agility
+* Harvest Now / Decrypt Later
+* Quantum Exposure
+* Compliance
+* Governance
+* Audit Vault
+* Regulatory Mapping
+* Quantum Governance
+* Runtime Crypto Intelligence
+* Trust State Discovery
+* Multi-Cloud Telemetry
+* Quantum Vault
+* PQAuth
+* Migration workflows
+
+Do not limit the audit only to the explicitly listed routes.
+
+Follow dependencies.
+
+---
+
+# 9. CROSS-MODULE DATA LINEAGE
+
+Establish a complete data lineage model.
+
+For every important metric/value determine:
+
+**Where does it originate?**
+
+**Which database table stores it?**
+
+**Which API exposes it?**
+
+**Which hook consumes it?**
+
+**Which component displays it?**
+
+**Which event updates it?**
+
+Example:
+
+`Scanner`
+
+↓
+
+`Scan Result`
+
+↓
+
+`Cryptographic Asset`
+
+↓
+
+`CBOM / Crypto Inventory`
+
+↓
+
+`Quantum Risk`
+
+↓
+
+`Quantum Readiness`
+
+↓
+
+`Migration Planner`
+
+↓
+
+`Migration Sandbox`
+
+↓
+
+`Compatibility Validation`
+
+↓
+
+`Live Migration`
+
+↓
+
+`Runtime Telemetry`
+
+↓
+
+`Post-Migration Assessment`
+
+↓
+
+`Quantum Certification`
+
+Every transition must use consistent identifiers and actual records.
+
+---
+
+# 10. CROSS-MODULE CONSISTENCY
+
+If one module reports:
+
+> RSA-2048 detected
+
+another module must not independently report:
+
+> AES-256
+
+for the same asset unless the asset legitimately contains multiple cryptographic implementations.
+
+If an asset is migrated:
+
+Before:
+
+`RSA-2048`
+
+After:
+
+`ML-KEM / Hybrid`
+
+then applicable modules must eventually reflect the new state.
+
+Verify consistency across:
+
+* Asset state
+* Crypto inventory
+* CBOM
+* Quantum readiness
+* Risk
+* Migration
+* Runtime telemetry
+* Certification
+* Compliance
+* Governance
+
+Any intentional state difference must be explainable through lifecycle timing or evidence freshness.
+
+---
+
+# 11. REAL-TIME DATA FLOW
+
+Audit every real-time mechanism.
+
+Inspect:
+
+* SSE
+* WebSockets
+* Supabase Realtime
+* Event streams
+* Polling
+* React Query
+* SWR
+* Cache invalidation
+* Background jobs
+* Queue workers
+* Event-driven updates
+
+Verify:
+
+`Backend Event → Event Stream → Frontend Hook → State → Component`
+
+For every relevant workflow.
+
+Example:
+
+### Scan completed
+
+Should update relevant:
+
+* Asset inventory
+* CBOM
+* Quantum readiness
+* Risk
+* Migration intelligence
+* Migration recommendations
+
+### Migration completed
+
+Should update:
+
+* Migration status
+* Asset cryptographic state
+* Quantum readiness
+* Risk
+* Certification eligibility
+* Runtime telemetry
+
+### Runtime event
+
+Should update:
+
+* Runtime Crypto Intelligence
+* Runtime telemetry
+* Risk posture
+* Relevant asset state
+
+---
+
+# 12. CACHE AND STATE VALIDATION
+
+Investigate stale data.
+
+Verify:
+
+* Query invalidation
+* Cache keys
+* Tenant-specific cache keys
+* Asset-specific cache keys
+* Scan-specific cache keys
+* Migration-specific cache keys
+* Revalidation
+* Optimistic updates
+* Race conditions
+* Duplicate requests
+
+Ensure data does not remain stale after:
+
+* Scan completion
+* Migration completion
+* Asset update
+* Certificate update
+* Assessment completion
+* Telemetry event
+
+---
+
+# 13. API CONTRACT VALIDATION
+
+For every relevant endpoint verify:
+
+* Request schema
+* Response schema
+* Authentication
+* Authorization
+* Tenant filtering
+* Validation
+* Error handling
+* HTTP status codes
+* Pagination
+* Sorting
+* Filtering
+* Timestamps
+* Data types
+* Null handling
+
+Make sure frontend TypeScript types match actual backend responses.
+
+Do not silently coerce invalid API responses into valid-looking UI data.
+
+---
+
+# 14. FRONTEND HOOK AUDIT
+
+For every module identify:
+
+* Data hook
+* Mutation hook
+* Query key
+* API endpoint
+* Event subscription
+* Loading state
+* Error state
+* Empty state
+* Retry behavior
+* Cache behavior
+
+Fix:
+
+* Dead hooks
+* Incorrect endpoints
+* Wrong query keys
+* Stale subscriptions
+* Duplicate subscriptions
+* Missing cleanup
+* Incorrect dependency arrays
+* Race conditions
+* Incorrect data mapping
+
+---
+
+# 15. DATABASE VALIDATION
+
+Verify relevant database structures.
+
+Check:
+
+* Referential integrity
+* Foreign keys
+* Tenant ownership
+* Asset relationships
+* Scan relationships
+* Migration relationships
+* Telemetry relationships
+* Certificate relationships
+* Evidence relationships
+* Timestamp correctness
+* Status consistency
+
+Do not modify schemas destructively.
+
+Any schema modification must be backward-compatible and justified.
+
+---
+
+# 16. SCORING ENGINE VALIDATION
+
+Audit all scoring systems.
+
+Examples:
+
+* Quantum Readiness Score
+* Quantum Exposure Score
+* Risk Score
+* Migration Priority
+* PQC Readiness
+* Vendor Readiness
+* Certification Eligibility
+* Compliance Score
+
+Verify:
+
+* Formula
+* Weighting
+* Inputs
+* Data source
+* Evidence
+* Thresholds
+* Grade mapping
+* Reproducibility
+
+The same underlying data should generate consistent results across modules.
+
+Do not use arbitrary hardcoded numbers.
+
+---
+
+# 17. STATE MACHINE VALIDATION
+
+Audit all lifecycle states.
+
+Migration example:
+
+`Planned → Approved → Queued → Running → Validating → Completed`
+
+Failure:
+
+`Running → Failed`
+
+Rollback:
+
+`Failed → Rolling Back → Rolled Back`
+
+Ensure UI status exactly reflects backend state.
+
+Do not allow frontend-only status changes to imply that an operation actually occurred.
+
+---
+
+# 18. CRYPTOGRAPHIC SAFETY
+
+This section is critical.
+
+DO NOT modify or weaken cryptographic implementations unnecessarily.
+
+Preserve the existing QGuard Helix cryptographic architecture.
+
+Verify that UI claims accurately reflect the actual implementation.
+
+Where applicable validate:
+
+* PQC algorithms
+* Hybrid cryptography
+* ML-KEM
+* ML-DSA
+* X25519
+* Ed25519
+* AES-256-GCM
+* HKDF
+* SHA-3
+* TLS 1.3
+* Hybrid TLS
+* Certificate workflows
+* Key lifecycle
+* Key rotation
+* Encryption/decryption
+* Authentication
+* Digital signatures
+
+Never claim cryptographic protection exists merely because an algorithm name appears in UI code.
+
+Verify actual implementation and execution paths.
+
+---
+
+# 19. QUANTUM-SAFE CLAIM VALIDATION
+
+Audit every occurrence of:
+
+* Quantum Safe
+* Quantum Secure
+* PQC Ready
+* Post-Quantum
+* Quantum Resistant
+* Hybrid Secure
+* Quantum Certified
+
+Determine whether the claim is:
+
+1. Evidence-backed
+2. Assessment-based
+3. Informational
+4. Planned
+5. Unsupported
+
+Unsupported claims must be corrected.
+
+Do not overstate security guarantees.
+
+---
+
+# 20. EMPTY / UNKNOWN / NOT ASSESSED STATES
+
+Use semantically correct states.
+
+### No scan
+
+`Not Assessed`
+
+### No telemetry
+
+`Awaiting Telemetry`
+
+### No assets
+
+`No Assets Discovered`
+
+### Scan running
+
+`Assessment In Progress`
+
+### Migration running
+
+`Migration In Progress`
+
+### Evidence missing
+
+`Evidence Required`
+
+### Actual failure
+
+`Failed`
+
+### Actual success
+
+`Passed` / `Completed`
+
+Never convert absence of evidence into success.
+
+Never convert absence of evidence into failure unless explicitly required by the documented assessment methodology.
+
+---
+
+# 21. UI CONTENT ACCURACY
+
+Review every text element on:
+
+`/qguard-helix-features#quantum-remediation`
+
+Check:
+
+* Titles
+* Subtitles
+* Descriptions
+* Feature cards
+* Statistics
+* Labels
+* Buttons
+* CTAs
+* Tooltips
+* Badges
+* Statuses
+* Technical terminology
+
+Every statement must match actual implementation.
+
+If a feature exists but is described incorrectly, correct the description.
+
+If a feature is implemented but missing from the page, consider adding it.
+
+If a feature is not implemented, do not present it as operational.
+
+---
+
+# 22. NAVIGATION VALIDATION
+
+Every Quantum Remediation CTA must:
+
+* Navigate correctly
+* Use the correct route
+* Preserve authentication
+* Preserve tenant context
+* Preserve relevant asset/scan IDs where required
+* Preserve workflow state where required
+
+Check for:
+
+* Broken links
+* Incorrect paths
+* Dead routes
+* Incorrect query parameters
+* Incorrect dynamic parameters
+* Missing permissions
+* Unauthorized access
+
+---
+
+# 23. SECURITY & AUTHORIZATION REGRESSION TEST
+
+Verify that the refactor does not bypass:
+
+* Authentication
+* Authorization
+* RBAC
+* Tenant isolation
+* API security
+* CSRF protections where applicable
+* Input validation
+* Server-side authorization
+
+Never rely exclusively on frontend permission checks.
+
+---
+
+# 24. ERROR HANDLING
+
+Test:
+
+* API failure
+* Database failure
+* Timeout
+* Unauthorized request
+* Forbidden request
+* Invalid response
+* Missing asset
+* Failed scan
+* Failed migration
+* Telemetry disconnect
+* SSE disconnect
+* WebSocket disconnect
+* Worker failure
+
+The UI must display a truthful state.
+
+Never switch to fake data when an API fails.
+
+---
+
+# 25. REAL-TIME DISCONNECT HANDLING
+
+For SSE/WebSocket/realtime connections:
+
+Verify:
+
+* Connection establishment
+* Authentication
+* Subscription
+* Event processing
+* Reconnection
+* Cleanup
+* Duplicate prevention
+* Backoff
+* Error handling
+* Tenant isolation
+
+When the connection fails, clearly communicate that telemetry is temporarily unavailable.
+
+Do not continue presenting stale data as live data without indicating its timestamp/freshness.
+
+---
+
+# 26. DATA FRESHNESS
+
+Where real-time data is expected, expose appropriate timestamps or freshness indicators.
+
+Examples:
+
+* Last Scan
+* Last Assessment
+* Last Telemetry Event
+* Last Migration Update
+* Last Certificate Update
+
+Avoid showing stale information as current.
+
+---
+
+# 27. END-TO-END TESTING
+
+Perform real end-to-end testing of the Quantum Remediation ecosystem.
+
+Test the complete lifecycle:
+
+### Phase 1
+
+Asset discovery
+
+↓
+
+### Phase 2
+
+Cryptographic discovery
+
+↓
+
+### Phase 3
+
+CBOM / crypto inventory
+
+↓
+
+### Phase 4
+
+Quantum readiness assessment
+
+↓
+
+### Phase 5
+
+Risk assessment
+
+↓
+
+### Phase 6
+
+Migration recommendation
+
+↓
+
+### Phase 7
+
+Migration planning
+
+↓
+
+### Phase 8
+
+Migration sandbox
+
+↓
+
+### Phase 9
+
+Compatibility testing
+
+↓
+
+### Phase 10
+
+Production migration
+
+↓
+
+### Phase 11
+
+Runtime telemetry
+
+↓
+
+### Phase 12
+
+Post-migration assessment
+
+↓
+
+### Phase 13
+
+Quantum certification
+
+Verify that all applicable records remain consistent.
+
+---
+
+# 28. BROWSER VALIDATION
+
+Use the actual running application.
+
+Test every relevant route in a real browser environment.
+
+Check:
+
+* Page loading
+* Navigation
+* Data rendering
+* Loading states
+* Empty states
+* Error states
+* Interactive controls
+* Filters
+* Search
+* Tables
+* Charts
+* Modals
+* Forms
+* Migration controls
+* Real-time updates
+* Console errors
+* Network failures
+
+Do not consider a page complete simply because it compiles.
+
+---
+
+# 29. BUILD VALIDATION
+
+Before finalizing:
+
+Run the appropriate project validation commands.
+
+At minimum verify:
+
+* TypeScript
+* ESLint
+* Build
+* Unit tests
+* Integration tests
+* Relevant E2E tests
+
+Resolve all critical errors.
+
+Do not ignore TypeScript/API contract errors.
+
+Do not suppress errors merely to achieve a successful build.
+
+---
+
+# 30. PERFORMANCE VALIDATION
+
+Ensure changes do not introduce:
+
+* Excessive API requests
+* Infinite polling
+* Duplicate requests
+* Duplicate subscriptions
+* Memory leaks
+* Large unnecessary payloads
+* Excessive database queries
+* UI freezes
+* Long blocking operations
+* Unnecessary rerenders
+
+Use appropriate caching and pagination.
+
+---
+
+# 31. DO NOT OVER-REFACTOR
+
+Do not rewrite the entire application.
+
+Do not replace working architecture simply for stylistic reasons.
+
+Prefer:
+
+1. Minimal safe changes
+2. Targeted fixes
+3. Correct integration
+4. Data-source correction
+5. Broken workflow repair
+6. Missing implementation completion
+
+Preserve existing architecture unless there is a clear technical reason to change it.
+
+---
+
+# 32. DOCUMENTATION SYNCHRONIZATION
+
+After implementation, ensure documentation and UI descriptions are synchronized with the actual product.
+
+Update only where necessary.
+
+Documentation must clearly distinguish:
+
+* Implemented
+* Operational
+* Experimental
+* Simulation
+* Planned
+* Not Available
+
+---
+
+# 33. REQUIRED AUDIT MATRIX
+
+Create an internal audit matrix for every module.
+
+Use:
+
+| Module | Route | Feature | Frontend | Hook | API | Backend | Database | Realtime | Real Data | Tenant Safe | Status | Issues |
+| ------ | ----- | ------- | -------- | ---- | --- | ------- | -------- | -------- | --------- | ----------- | ------ | ------ |
+
+Populate it for every relevant feature.
+
+This is necessary to identify disconnected or partially implemented functionality.
+
+---
+
+# 34. REQUIRED FEATURE TRACEABILITY
+
+For each feature on the Quantum Remediation page, establish:
+
+`Feature → Module → Route → Component → Hook → API → Service → Database → Event → UI`
+
+No feature should remain untraceable.
+
+If a feature cannot be traced to an actual implementation, investigate it.
+
+---
+
+# 35. REQUIRED ISSUE CLASSIFICATION
+
+Classify issues as:
+
+### CRITICAL
+
+Security vulnerability, data leakage, broken encryption, broken authentication, incorrect production security state, or severe workflow failure.
+
+### HIGH
+
+Major functionality does not work or produces materially incorrect security information.
+
+### MEDIUM
+
+Feature works but has incorrect synchronization, stale data, incomplete validation, or significant UX/data accuracy issue.
+
+### LOW
+
+Minor UI/content/integration issue with limited operational impact.
+
+---
+
+# 36. FIX PRIORITY
+
+Fix in this order:
+
+1. Security issues
+2. Cryptographic issues
+3. Data integrity issues
+4. Tenant isolation issues
+5. Backend/API issues
+6. Real-time synchronization issues
+7. Cross-module consistency issues
+8. Workflow issues
+9. Incorrect security claims
+10. UI/UX issues
+11. Documentation/content issues
+
+Do not prioritize visual polish over security or data correctness.
+
+---
+
+# 37. FINAL ACCEPTANCE CRITERIA
+
+The implementation is considered complete only when:
+
+* [ ] Review Guidelines were fully inspected.
+* [ ] Quantum Remediation page was fully audited.
+* [ ] All 15+ related modules were audited.
+* [ ] Additional dependent modules were identified.
+* [ ] All relevant frontend components were reviewed.
+* [ ] All relevant hooks were reviewed.
+* [ ] All relevant APIs were reviewed.
+* [ ] All relevant backend services were reviewed.
+* [ ] Relevant database relationships were verified.
+* [ ] Real-time mechanisms were verified.
+* [ ] Tenant isolation was verified.
+* [ ] No production-facing mock data remains.
+* [ ] No fake security metrics remain.
+* [ ] No fake scan results remain.
+* [ ] No fake migration results remain.
+* [ ] No fake telemetry remains.
+* [ ] No fake certification results remain.
+* [ ] No misleading quantum-safe claims remain.
+* [ ] Actual scanned assets drive applicable results.
+* [ ] Quantum readiness is evidence-based.
+* [ ] Migration planning uses actual assets.
+* [ ] Migration sandbox clearly represents simulation.
+* [ ] Live Migration represents actual migration state.
+* [ ] PQAuth reflects actual implementation.
+* [ ] Runtime telemetry reflects actual telemetry.
+* [ ] Trust Dashboard reflects actual trust data.
+* [ ] Vendor readiness does not fabricate vendor evidence.
+* [ ] Cross-module data is consistent.
+* [ ] Real-time updates work.
+* [ ] Cache invalidation works.
+* [ ] Empty states are accurate.
+* [ ] Error states are accurate.
+* [ ] API contracts are consistent.
+* [ ] Frontend types match backend responses.
+* [ ] Security controls remain intact.
+* [ ] Encryption remains intact.
+* [ ] PQC implementation remains intact.
+* [ ] Existing workflows remain functional.
+* [ ] No destructive database changes were introduced.
+* [ ] No unauthorized access paths were introduced.
+* [ ] Build passes.
+* [ ] TypeScript passes.
+* [ ] Lint passes.
+* [ ] Tests pass.
+* [ ] Browser validation passes.
+* [ ] No critical console errors remain.
+* [ ] No critical API errors remain.
+
+---
+
+# 38. FINAL ENGINEERING REPORT
+
+After completing the work, provide a final report with these sections:
+
+## Executive Summary
+
+Summarize the overall health of the Quantum Remediation ecosystem.
+
+## Modules Audited
+
+List every audited module and route.
+
+## Features Validated
+
+List the major capabilities successfully verified.
+
+## Issues Found
+
+For every issue provide:
+
+* Severity
+* Module
+* Route
+* Feature
+* Root cause
+* Impact
+* Resolution
+
+## Mock/Fake Data Removed
+
+Identify production-facing mock/static/fake data that was replaced.
+
+## Backend/API Changes
+
+Document backend changes.
+
+## Frontend Changes
+
+Document frontend changes.
+
+## Database Changes
+
+Document database changes.
+
+## Real-Time Changes
+
+Document SSE/WebSocket/Realtime changes.
+
+## Security Validation
+
+Document authentication, authorization, tenant isolation, and cryptographic validation.
+
+## Cross-Module Synchronization
+
+Explain how data now flows between modules.
+
+## Remaining Limitations
+
+Clearly identify anything that remains incomplete.
+
+Do not hide limitations.
+
+## Testing Results
+
+Report:
+
+* TypeScript
+* Lint
+* Build
+* Unit tests
+* Integration tests
+* E2E tests
+* Browser validation
+* API validation
+* Real-time validation
+
+---
+
+# 39. ABSOLUTE FINAL REQUIREMENT
+
+The objective is **NOT** to make the Quantum Remediation page merely look correct.
+
+The objective is to make the **actual QGuard Helix platform implementation, data, workflows, and UI accurately represent one another**.
+
+The complete chain must be trustworthy:
+
+**REAL SCANNED ASSETS**
+
+↓
+
+**REAL CRYPTOGRAPHIC FINDINGS**
+
+↓
+
+**REAL CBOM / CRYPTO INVENTORY**
+
+↓
+
+**REAL QUANTUM RISK**
+
+↓
+
+**REAL QUANTUM READINESS**
+
+↓
+
+**REAL MIGRATION INTELLIGENCE**
+
+↓
+
+**REAL MIGRATION PLAN**
+
+↓
+
+**REAL SANDBOX VALIDATION**
+
+↓
+
+**REAL COMPATIBILITY RESULTS**
+
+↓
+
+**REAL PRODUCTION MIGRATION**
+
+↓
+
+**REAL RUNTIME CRYPTO TELEMETRY**
+
+↓
+
+**REAL POST-MIGRATION STATE**
+
+↓
+
+**REAL QUANTUM CERTIFICATION**
+
+↓
+
+**REAL GOVERNANCE / COMPLIANCE EVIDENCE**
+
+Every applicable module must remain:
+
+**Accurate**
+
+**Evidence-Based**
+
+**Real-Time**
+
+**Tenant-Aware**
+
+**Secure**
+
+**Cryptographically Correct**
+
+**Cross-Module Consistent**
+
+**API-Connected**
+
+**Backend-Driven**
+
+**Production-Ready**
+
+Most importantly:
+
+> **Never make the UI look correct by hiding an underlying implementation problem. Fix the actual data flow, workflow, API, backend, database, telemetry, or integration problem.**
+
+> **Never use fake data to make a security feature appear operational.**
+
+> **Never claim a security, PQC, migration, certification, or quantum-safe capability unless the underlying implementation and evidence actually support that claim.**
+
+> **Preserve all existing working workflows, security controls, encryption, cryptography, integrations, database integrity, and application architecture while making the minimum safe changes required to achieve correctness.**

@@ -8,8 +8,33 @@ pub mod vault_recovery;
 
 use serde::{Deserialize, Serialize};
 
+/// The one KEM this build performs. ML-KEM-1024 (FIPS 203), from
+/// `pqcrypto-mlkem`. Until the FIPS 203 cutover this constant said the same
+/// thing while the code underneath ran Kyber-1024 — the label is now backed by
+/// the dependency that is actually compiled in.
 pub const CURRENT_PQ_KEM: &str = "ML-KEM-1024";
-pub const LEGACY_PQ_KEM_768: &str = "ML-KEM-768";
+
+/// What key material generated before the cutover really was. Never performed
+/// by this build; used only to identify stored material that must be re-keyed,
+/// and to describe it honestly where it is displayed.
+pub const LEGACY_PQ_KEM_PRE_FIPS: &str = "Kyber-1024 (pre-FIPS-203)";
+
+/// The standard the KEM in this build actually implements, published in
+/// `AlgorithmSuite::pq_kem_standard`.
+///
+/// `pq_kem` ALONE CANNOT BE TRUSTED to identify the KEM. Pre-cutover builds set
+/// it to "ML-KEM-1024" while running Kyber-1024, and the two have byte-identical
+/// key and ciphertext lengths -- so a peer reading `pq_kem` (or measuring a key)
+/// cannot tell whether the material it is about to encapsulate to will
+/// interoperate. Sealing across that boundary produces an envelope that decrypts
+/// to a different shared secret and dies as an unexplained AEAD failure at the
+/// far end, on both sides, with both clients still displaying "E2EE active".
+///
+/// This field is the discriminator. It is absent from every pre-cutover device
+/// row and every pre-cutover envelope, and `#[serde(default)]` turns that
+/// absence into the empty string -- which is what makes old material
+/// identifiable rather than merely indistinguishable.
+pub const CURRENT_PQ_KEM_STANDARD: &str = "FIPS-203";
 
 /// Digital signature used by the messaging identity (shared with other devices).
 pub const MESSAGING_PQ_SIGNATURE: &str = "ML-DSA-65";
@@ -26,6 +51,14 @@ pub struct AlgorithmSuite {
     pub symmetric: String,
     pub classical_signature: String,
     pub pq_signature: String,
+    /// Which standard produced the KEM material -- see `CURRENT_PQ_KEM_STANDARD`.
+    /// Empty means "written before the FIPS 203 cutover", i.e. Kyber-1024.
+    ///
+    /// Safe to add to a wire type: the suite is not part of `message_signable`
+    /// or `identity_signable`, so no existing signature covers it, and
+    /// `#[serde(default)]` keeps every already-persisted envelope decodable.
+    #[serde(default)]
+    pub pq_kem_standard: String,
 }
 
 impl Default for AlgorithmSuite {
@@ -37,7 +70,17 @@ impl Default for AlgorithmSuite {
             symmetric: "AES-256-GCM".to_string(),
             classical_signature: "Ed25519".to_string(),
             pq_signature: "ML-DSA-65".to_string(),
+            pq_kem_standard: CURRENT_PQ_KEM_STANDARD.to_string(),
         }
+    }
+}
+
+impl AlgorithmSuite {
+    /// True when this suite was written by a build whose KEM is the one this
+    /// build performs. False for anything produced before the FIPS 203 cutover,
+    /// which cannot interoperate and must never be sealed to.
+    pub fn kem_interoperates(&self) -> bool {
+        self.pq_kem == CURRENT_PQ_KEM && self.pq_kem_standard == CURRENT_PQ_KEM_STANDARD
     }
 }
 

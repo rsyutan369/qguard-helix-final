@@ -1353,12 +1353,16 @@ function QuantumSecurityUseCasesSection() {
 
       <div className="relative z-10">
         <header className="mx-auto mb-12 max-w-5xl text-center md:mb-16">
-          <div className="mb-5 flex items-center justify-center gap-4">
-            <span className="h-px w-24 bg-gradient-to-r from-transparent via-gold/70 to-transparent" />
+          <div className="mb-5 flex flex-wrap items-center justify-center gap-3 sm:gap-4">
+            <span className="hidden h-px w-24 bg-gradient-to-r from-transparent via-gold/70 to-transparent sm:block" />
             <span className="rounded-full border border-gold/25 bg-gold/10 px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-gold">
               Applied Quantum Defense
             </span>
-            <span className="h-px w-24 bg-gradient-to-r from-transparent via-gold/70 to-transparent" />
+            <span className="coming-soon-badge">
+              <span className="coming-soon-badge__dot animate-pulse" />
+              Coming Soon
+            </span>
+            <span className="hidden h-px w-24 bg-gradient-to-r from-transparent via-gold/70 to-transparent sm:block" />
           </div>
           <h3 className="text-4xl font-black uppercase leading-[1.02] tracking-[0.08em] text-white md:text-6xl">
             Quantum Encryption Services
@@ -1371,6 +1375,9 @@ function QuantumSecurityUseCasesSection() {
           </div>
           <p className="mx-auto mt-6 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">
             Harnessing quantum mechanics to build the next generation of unbreakable security.
+          </p>
+          <p className="coming-soon-note mx-auto mt-4 max-w-2xl">
+            Roadmap preview &mdash; these quantum encryption services are planned QGuard Helix capabilities. They are not yet available in the platform.
           </p>
         </header>
 
@@ -1432,14 +1439,19 @@ function QuantumSecurityUseCasesSection() {
               />
               <div className="absolute inset-0 bg-gradient-to-t from-cyber-black via-cyber-black/28 to-transparent" />
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_35%_28%,transparent_16%,rgba(0,2,5,0.28)_58%,rgba(0,2,5,0.78)_100%)]" />
+              <span className="coming-soon-badge coming-soon-badge--overlay absolute right-6 top-6">
+                <span className="coming-soon-badge__dot animate-pulse" />
+                Coming Soon
+              </span>
               <div className="absolute left-6 top-6 flex h-14 w-14 items-center justify-center rounded-xl border border-gold/35 bg-cyber-black/62 text-gold shadow-[0_0_24px_rgba(212,175,55,0.28)] backdrop-blur-xl">
                 <ActiveIcon className="h-7 w-7" />
               </div>
+              <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/40 to-transparent" />
               <div className="absolute bottom-7 left-7 right-7">
-                <h4 className="text-3xl font-black leading-none text-white md:text-4xl">
+                <h4 className="use-case-hero-title text-3xl font-black leading-none md:text-4xl">
                   {activeFeature.title}
                 </h4>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/78 md:text-base">
+                <p className="use-case-hero-desc mt-3 max-w-2xl text-sm leading-6 md:text-base">
                   {activeFeature.description}
                 </p>
               </div>
@@ -2806,7 +2818,7 @@ export default function App() {
                   },
                   {
                     title: 'Quantum Encryption Services Use Cases',
-                    description: 'Applied encryption, QRNG, authentication, tokenization, and secure communication patterns.',
+                    description: 'Coming soon - applied encryption, QRNG, authentication, tokenization, and secure communication patterns.',
                     href: '#use-cases',
                     icon: KeyRound
                   }

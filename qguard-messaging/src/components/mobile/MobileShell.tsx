@@ -44,6 +44,26 @@ const PRIMARY_TABS: { route: Page; label: string }[] = [
   { route: "settings", label: "Settings" },
 ];
 
+/**
+ * Modernist page kicker — the tracked micro-caps line that sits above the
+ * display title, naming the module's scope. Condensed from the same subtitles
+ * App.tsx already carries, so it states what the page actually is rather than
+ * inventing a claim. Rendered only under the Android skin.
+ */
+const PAGE_KICKER: Record<string, string> = {
+  dashboard: "Overview · Hybrid E2EE",
+  chat: "End-to-end encrypted · ML-KEM + X25519",
+  vault: "Local-first · On this device only",
+  keys: "Identity · Prekeys · Rotation",
+  devices: "Trust state per device",
+  verification: "Safety numbers · Fingerprints",
+  audit: "Tamper-evident local events",
+  quantum: "Post-quantum posture",
+  admin: "Organisation security posture",
+  subscription: "Plan · Billing · Activation",
+  settings: "Security · Alerts · Retention",
+};
+
 /** Compact realtime readout. Wording matches liveStatusLabel's meaning. */
 function liveTone(state: QGuardLiveStatus["state"]): { label: string; className: string } {
   switch (state) {
@@ -147,10 +167,79 @@ export default function MobileShell({
       </div>
 
       {/* Header */}
-      <header
-        className="mobile-safe-top qg-glass z-30 shrink-0 px-4 pb-3"
-        style={{ borderBottom: "1px solid var(--qg-hairline)" }}
-      >
+      <header className="z-30 shrink-0">
+
+        {/* ---- Modernist masthead (Android skin only) ----
+            An ink block behind a lit lattice, crossed once by an accent scan
+            bar, carrying the wordmark, the live tally and the two controls.
+            `.qgm-only` is display:none in every build that does not set the
+            skin attribute, so the Cold Fusion header below is untouched. */}
+        <div className="qgm-masthead qgm-only mobile-safe-top px-5 pb-3.5">
+          {/* pt-2.5 rather than a hairline gap: the wordmark is set at 800/1.0,
+              so its caps paint slightly above their line box and would graze
+              the status bar on a device reporting a small top inset. */}
+          <div className="relative flex items-center gap-2.5 pt-2.5">
+            <span className="qgm-wordmark">QGUARD</span>
+            <span className="qgm-tally" aria-hidden />
+            <span className="ml-auto flex items-center gap-2">
+              <span
+                className="qgm-kicker flex items-center gap-1.5"
+                style={{ opacity: 0.75 }}
+                title={liveStatusLabel(liveStatus.state)}
+              >
+                <span className="qg-live-dot" />
+                {live.label}
+              </span>
+              <button
+                type="button"
+                onClick={onToggleTheme}
+                className="qg-focusable"
+                aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                style={{
+                  border: "1px solid color-mix(in srgb, var(--m-on-slab) 40%, transparent)",
+                  color: "var(--m-on-slab)",
+                  background: "transparent",
+                  height: 30,
+                  width: 30,
+                  display: "grid",
+                  placeItems: "center",
+                }}
+              >
+                {theme === "light" ? <Moon size={15} /> : <Sun size={15} />}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSheetOpen(true)}
+                className="qg-focusable"
+                aria-label="Open all security modules"
+                style={{
+                  border: "1px solid color-mix(in srgb, var(--m-on-slab) 40%, transparent)",
+                  color: "var(--m-on-slab)",
+                  background: "transparent",
+                  height: 30,
+                  width: 30,
+                  display: "grid",
+                  placeItems: "center",
+                }}
+              >
+                <LayoutGrid size={15} />
+              </button>
+            </span>
+          </div>
+          <div className="qgm-kicker relative mt-1.5">Quantum-safe chat &amp; vault</div>
+        </div>
+
+        {/* ---- Modernist page identity (Android skin only) ---- */}
+        <div className="qgm-pagehead qgm-only px-5 pb-3.5 pt-2.5">
+          <div className="qgm-pagekicker truncate">{PAGE_KICKER[activePage] ?? "Secure workspace"}</div>
+          <h1 className="qgm-pagetitle mt-1.5 truncate">{title}</h1>
+        </div>
+
+        {/* ---- Cold Fusion header (desktop + narrow windows) ---- */}
+        <div
+          className="qgm-not mobile-safe-top qg-glass px-4 pb-3"
+          style={{ borderBottom: "1px solid var(--qg-hairline)" }}
+        >
         <div className="flex items-center gap-3 pt-2.5">
           <div
             className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[13px] p-1.5"
@@ -216,6 +305,7 @@ export default function MobileShell({
           >
             <LayoutGrid size={16} />
           </button>
+        </div>
         </div>
       </header>
 
@@ -297,6 +387,11 @@ export default function MobileShell({
                     key={item.module_id}
                     type="button"
                     onClick={() => navigate(item.route)}
+                    // Selection is exposed as an attribute as well as an inline
+                    // style so a skin can restate it: the Cold Fusion gradient
+                    // below resolves to a pale fill under a one-hue palette,
+                    // which would leave a white glyph on a light chip.
+                    data-module-active={active || undefined}
                     className="qg-card qg-card-press qg-focusable qg-rise flex flex-col items-center gap-2 p-3 text-center"
                     style={{
                       ["--qg-i" as string]: index,

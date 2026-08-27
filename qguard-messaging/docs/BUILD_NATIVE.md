@@ -86,8 +86,16 @@ Copy-Item $so src-tauri\gen\android\app\src\main\jniLibs\arm64-v8a\ -Force
 
 # 3. Assemble the APK, skipping the re-symlinking Rust task
 cd src-tauri\gen\android
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"   # see note below
 .\gradlew assembleArm64Debug -x rustBuildArm64Debug --console=plain
 ```
+
+**`JAVA_HOME` must point at a JDK.** It is unset on this machine, so Gradle
+auto-detects a toolchain and can land on the Adoptium *JRE*, failing with
+`Toolchain installation '...jre-17...' does not provide the required
+capabilities: [JAVA_COMPILER]`. Android Studio's bundled JBR is a full JDK and
+is the toolchain Studio itself uses. Building from inside Android Studio never
+hits this, which is why it only shows up on the CLI path.
 
 APK: `app/build/outputs/apk/arm64/debug/app-arm64-debug.apk`. For release, use
 `--target aarch64` (no `--debug`) in step 1, copy from the `release/` dir, then

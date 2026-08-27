@@ -122,8 +122,68 @@ const RELEASE_ONLY_HARDENING_IDS = new Set([
   "string_encryption",
 ]);
 
-function liveHardeningChecks(hardening: SecurityHardeningStatus): SecurityHardeningCheck[] {
+/**
+ * The checks that describe the RUNNING cryptography, with build-provenance
+ * gates removed. Exported because the phone home screen measures its Runtime
+ * layer over exactly this set: counting release metadata there made an
+ * unmeasurable build gate read as a cryptographic failure.
+ */
+export function liveHardeningChecks(hardening: SecurityHardeningStatus): SecurityHardeningCheck[] {
   return hardening.checks.filter((check) => !RELEASE_ONLY_HARDENING_IDS.has(check.id));
+}
+
+/**
+ * Event types that record a SUCCESSFUL, authenticated, user-initiated
+ * ADMINISTRATIVE action rather than evidence of a security problem.
+ *
+ * These are written to the audit chain at `warning` severity by older clients,
+ * and that severity was simply wrong: retiring a device is the exact hygiene
+ * task the dashboard itself asks the user to perform ("dormant identities ...
+ * retire them in Device Trust"), so scoring it as a security warning made the
+ * app punish the user for following its own advice. A real account reached the
+ * -20 penalty cap purely by cleaning up eight stranded reinstall rows, and read
+ * 68% with a perfectly healthy cryptographic stack.
+ *
+ * The classification lives HERE, on the read side, and not only at the point of
+ * writing, for a reason that cannot be worked around: `messaging_security_events`
+ * is a tamper-evident hash chain (`event_hash` / `previous_hash`), so the
+ * severity of rows already written can never be corrected in place without
+ * breaking the chain. The posture engine has to be able to interpret history it
+ * is not allowed to rewrite.
+ *
+ * Nothing is hidden: these events keep their full record in the audit log and on
+ * the Device Trust page. They are excluded from the SCORE, not from the ledger.
+ */
+const ADMINISTRATIVE_EVENT_TYPES = new Set([
+  "device_revoked",
+  "device_delete_requested",
+]);
+
+/**
+ * How far back a security event still describes CURRENT posture.
+ *
+ * Posture is a statement about now. Without a window, one mistyped password
+ * deducts its points forever — the score can never recover, which is both wrong
+ * and useless as a signal, because a permanently-depressed score stops telling
+ * the user anything about today.
+ */
+export const POSTURE_EVENT_WINDOW_DAYS = 30;
+
+/**
+ * Whether an event counts against the live posture score.
+ *
+ * Severity is read as well as type on purpose: `safety_number_generated` is
+ * `info` when the safety number verified and `warning` when it did not, and the
+ * failing case is a genuine posture signal. Keying on type alone would lose it.
+ */
+export function isPostureAffectingEvent(event: SecurityEvent, now: number = Date.now()): boolean {
+  if (event.severity !== "warning" && event.severity !== "critical") return false;
+  if (ADMINISTRATIVE_EVENT_TYPES.has(event.event_type)) return false;
+  const occurredAt = new Date(event.created_at).getTime();
+  // An event with no usable timestamp keeps counting rather than being dropped:
+  // the window must never become a way for a warning to disappear silently.
+  if (!Number.isFinite(occurredAt)) return true;
+  return now - occurredAt <= POSTURE_EVENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 }
 
 function hardeningWarnings(checks: SecurityHardeningCheck[]): string[] {
@@ -165,8 +225,13 @@ export function buildSecurityPosture({
   const liveHardening = liveHardeningChecks(hardening);
   const hardeningActiveCount = liveHardening.filter((check) => check.status === "active").length;
   const hardeningScore = scoreRatio(hardeningActiveCount, liveHardening.length, 35);
-  const warningEvents = securityEvents.filter((event) => event.severity === "warning");
-  const criticalEvents = securityEvents.filter((event) => event.severity === "critical");
+  // Only events that say something about CURRENT security state reach the score.
+  // See isPostureAffectingEvent: successful administrative actions and events
+  // outside the posture window are still fully recorded in the audit log, they
+  // just stop standing in for a weakness that is not there.
+  const postureEvents = securityEvents.filter((event) => isPostureAffectingEvent(event));
+  const warningEvents = postureEvents.filter((event) => event.severity === "warning");
+  const criticalEvents = postureEvents.filter((event) => event.severity === "critical");
   const cryptoTelemetryActive = telemetry.some((event) => /crypto|identity|key|vault|encrypt|decrypt|integrity/i.test(`${event.stage} ${event.detail}`));
   const auditChainActive = hardening.checks.some((check) => check.id === "tamper_evident_audit_chain" && check.status === "active");
 

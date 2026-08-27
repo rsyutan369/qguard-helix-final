@@ -19,10 +19,14 @@ const GRADIENTS = [
   "linear-gradient(135deg, #6366f1, #2563eb)", // indigo
 ];
 
-function gradientFor(seed: string): string {
+function hashOf(seed: string): number {
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  return GRADIENTS[hash % GRADIENTS.length];
+  return hash;
+}
+
+function gradientFor(seed: string): string {
+  return GRADIENTS[hashOf(seed) % GRADIENTS.length];
 }
 
 function initialsFor(name: string): string {
@@ -61,8 +65,17 @@ export function UserAvatar({ userId, name, size = 40, className = "" }: {
     <div
       title={name}
       aria-label={name}
+      // `data-avatar-tone` is the same deterministic hash reduced to two
+      // buckets, so a skin with a single accent (Android/Modernist) can still
+      // give each person a stable identity. The gradient below stays the
+      // fallback, which is what every other build renders.
+      data-avatar-tone={hashOf(userId || name) % 2}
       className={`flex shrink-0 select-none items-center justify-center rounded-full font-bold text-white ${className}`}
-      style={{ ...dimension, background: gradientFor(userId || name), fontSize: Math.max(10, Math.round(size * 0.34)) }}
+      style={{
+        ...dimension,
+        background: `var(--qg-avatar-bg, ${gradientFor(userId || name)})`,
+        fontSize: Math.max(10, Math.round(size * 0.34)),
+      }}
     >
       {initialsFor(name)}
     </div>

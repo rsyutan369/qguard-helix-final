@@ -11,7 +11,7 @@ import type { QGuardLiveStatus } from "@/lib/live-sse";
 import type { DashboardData, TrustedDevice } from "@/lib/types";
 import { UserAvatar } from "@/components/UserAvatar";
 import HelixReactor, { TONE_VAR } from "@/components/mobile/HelixReactor";
-import { buildCryptoStack, scoreVerdict, toReactorRings } from "@/lib/mobile-posture";
+import { buildCryptoPosture, completeLayerCount, scoreVerdict, toReactorRings } from "@/lib/mobile-posture";
 
 interface MobileDashboardProps {
   data: DashboardData;
@@ -133,7 +133,7 @@ function QuickTile({
  *
  * The Helix Reactor answers "am I protected right now?" in one glance, and the
  * numbered pipeline below it answers "which layer, and how do you know?" — both
- * rendered from the same buildCryptoStack() measurement, so an arc can never
+ * rendered from the same buildCryptoPosture() measurement, so an arc can never
  * contradict the row beside it.
  */
 export default function MobileDashboard({ data, liveStatus, onNavigate }: MobileDashboardProps) {
@@ -146,10 +146,16 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
   );
   const recentConversations = visibleConversations.slice(0, 4);
 
-  const layers = buildCryptoStack(data);
+  const posture = buildCryptoPosture(data);
+  const layers = posture.layers;
   const rings = toReactorRings(layers);
   const score = snapshot.quantum_safe_score;
-  const verdict = scoreVerdict(score);
+  // Layers whose measured readiness is complete. Same source as the arcs, so
+  // the Modernist core block can never disagree with the gauge beside it — and
+  // the verdict is derived from them too, so the headline cannot claim "fully
+  // protected" over a layer that is measurably incomplete.
+  const completeLayers = completeLayerCount(layers);
+  const verdict = scoreVerdict(score, layers);
 
   const tiles = [
     { icon: MessageSquarePlus, value: `${visibleConversations.length}`, label: "Conversations", route: "chat" },
@@ -170,10 +176,47 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
       <button
         type="button"
         onClick={() => onNavigate("quantum")}
-        className="qg-card qg-card-press qg-focusable qg-rise overflow-hidden p-5 text-left"
+        className="qg-card qg-card-press qg-focusable qg-rise qgm-core overflow-hidden p-5 text-left"
         style={{ ["--qg-i" as string]: 1 }}
       >
-        <div className="flex items-center justify-between gap-3">
+        {/* ---- Modernist quantum-core block (Android skin only) ----
+            Same measurement as the gauge below it: the headline, the meter
+            width and the layer count all read from buildCryptoPosture() and
+            snapshot.quantum_safe_score, so nothing here can contradict an arc. */}
+        <div className="qgm-only" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+          <span className="qgm-core-mark" aria-hidden>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <ellipse cx="12" cy="12" rx="10" ry="4.2" />
+              <ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(60 12 12)" />
+              <ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(120 12 12)" />
+              <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span className="qg-eyebrow" style={{ display: "block", color: "var(--m-a800)" }}>
+              Quantum core
+            </span>
+            <span className="qg-display mt-1.5 block text-[19px] leading-tight">
+              {score}% · {verdict.label}
+            </span>
+            <span className="qgm-meter mt-2 block">
+              <span style={{ width: `${Math.max(0, Math.min(100, score))}%` }} />
+            </span>
+            {/* The verdict is already the second half of the headline, so no
+                pill repeats it here. */}
+            <span className="mt-2 block text-[11px] leading-snug" style={{ color: "var(--m-n800)" }}>
+              {/* Name the population the layers were measured over. A bare
+                  "n of 4" with no denominator is what let a wrong measurement
+                  sit unchallenged next to a 100% headline. */}
+              {completeLayers} of {layers.length} cryptographic layers fully active
+              {posture.enrolledDevices > 0
+                ? ` across ${posture.enrolledDevices} enrolled ${posture.enrolledDevices === 1 ? "device" : "devices"}.`
+                : "."}
+            </span>
+          </span>
+        </div>
+
+        <div className="qgm-not flex items-center justify-between gap-3">
           <div className="qg-eyebrow">Quantum posture</div>
           <span className={`qg-pill qg-tone-${verdict.tone}`}>{verdict.label}</span>
         </div>
@@ -259,6 +302,29 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
           ))}
         </div>
 
+        {/* Stranded reinstall identities. These used to be divided into the
+            Identity and Handshake layers, which made a healthy account read as
+            failing. They are an inventory task, not a crypto weakness — so they
+            get their own row, their own count and their own action. */}
+        {posture.dormantIdentities > 0 && (
+          <button
+            type="button"
+            onClick={() => onNavigate("devices")}
+            className="qg-focusable mt-3 flex w-full items-center gap-3 rounded-xl p-3 text-left"
+            style={{ background: "var(--qg-warn-wash)", border: "1px solid var(--qg-hairline)" }}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="qg-display text-[12.5px] leading-tight">
+                {posture.dormantIdentities} dormant device {posture.dormantIdentities === 1 ? "identity" : "identities"}
+              </div>
+              <div className="mt-0.5 text-[11px] leading-snug" style={{ color: "var(--qg-text-3)" }}>
+                Left behind by a reinstall. They hold no keys and receive nothing — retire them in Device Trust.
+              </div>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0" style={{ color: "var(--qg-text-3)" }} aria-hidden />
+          </button>
+        )}
+
         {report.warnings.length > 0 && (
           <div
             className="mt-3 flex flex-col gap-2 rounded-xl p-3"
@@ -270,6 +336,20 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
                 <span>{warning}</span>
               </div>
             ))}
+            {/* The list is capped at two so it cannot swamp the card, but a
+                silent cap is how a score ends up unexplainable: the user sees
+                two items and a number that those two cannot account for. Say
+                how many are being withheld, and where to read them. */}
+            {report.warnings.length > 2 && (
+              <button
+                type="button"
+                onClick={() => onNavigate("quantum")}
+                className="qg-focusable self-start text-[11px] underline underline-offset-2"
+                style={{ color: "var(--qg-text-3)" }}
+              >
+                +{report.warnings.length - 2} more affecting this score
+              </button>
+            )}
           </div>
         )}
       </Section>

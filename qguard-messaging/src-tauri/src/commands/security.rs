@@ -1,4 +1,5 @@
 use serde::Serialize;
+use crate::identity::platform_device_label;
 use tauri::State;
 
 use crate::device_trust::DeviceTrustState;
@@ -141,7 +142,7 @@ pub fn security_verify_fingerprint(
     state: State<'_, AppState>,
     remote_fingerprint: String,
 ) -> Result<SafetyNumber> {
-    let local = state.ensure_identity(&state.user_id()?, "Windows Desktop")?;
+    let local = state.ensure_identity(&state.user_id()?, platform_device_label())?;
     Ok(conversation_safety_number(
         &local.fingerprint,
         &remote_fingerprint,

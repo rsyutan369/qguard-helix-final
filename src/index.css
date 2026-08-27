@@ -4012,3 +4012,110 @@ html.qg-theme-ready .qc-page * {
   pointer-events: none;
   outline: none;
 }
+
+/*
+ * Roadmap "Coming Soon" markers (homepage Quantum Encryption Services section).
+ *
+ * These deliberately avoid the bg-gold / text-gold utilities: inside a section
+ * on .qguard-home--light those are rewritten to a solid #00c5eb fill and
+ * #00a8d6 text, which would render the badge cyan-on-cyan. Colours are declared
+ * once for the dark surfaces and once for the light marketing surfaces.
+ */
+.coming-soon-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+  border-radius: 9999px;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  background: rgba(212, 175, 55, 0.12);
+  padding: 0.5rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #e9c766;
+  box-shadow: 0 0 22px rgba(212, 175, 55, 0.22);
+}
+
+.coming-soon-badge__dot {
+  flex: none;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 9999px;
+  background: #d4af37;
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.9);
+}
+
+/* Sits on top of the use-case photography, so it carries its own scrim. */
+.coming-soon-badge--overlay {
+  padding: 0.375rem 0.875rem;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(2, 6, 12, 0.72);
+  color: #ffd97a;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.coming-soon-note {
+  border-radius: 0.5rem;
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  background: rgba(212, 175, 55, 0.06);
+  padding: 0.75rem 1.25rem;
+  font-size: 0.75rem;
+  line-height: 1.5rem;
+  color: rgba(240, 214, 140, 0.88);
+}
+
+@media (min-width: 768px) {
+  .coming-soon-note {
+    font-size: 0.875rem;
+  }
+}
+
+.qguard-home--light .coming-soon-badge {
+  border-color: rgba(0, 168, 214, 0.45);
+  background: rgba(0, 197, 235, 0.12);
+  color: #0a7ea4;
+  box-shadow: 0 0 22px rgba(0, 197, 235, 0.18);
+}
+
+.qguard-home--light .coming-soon-badge__dot {
+  background: #00a8d6;
+  box-shadow: 0 0 10px rgba(0, 197, 235, 0.9);
+}
+
+.qguard-home--light .coming-soon-badge--overlay {
+  border-color: rgba(9, 13, 22, 0.18);
+  background: rgba(255, 255, 255, 0.92);
+  color: #0a7ea4;
+}
+
+.qguard-home--light .coming-soon-note {
+  border-color: rgba(0, 168, 214, 0.24);
+  background: rgba(0, 197, 235, 0.08);
+  /* !important beats the light sheet's higher-specificity `section p` colour. */
+  color: #0b6c88 !important;
+}
+
+/*
+ * Use-case hero photo overlay title/description (all 7 Quantum Encryption
+ * Services cards). This card's background is a real photograph, not the page
+ * background, so the .qguard-home--light sheet's h1-h4/p tag rules and
+ * text-white* attribute rules (which repaint text dark-navy for the light
+ * marketing surface) leave near-black text sitting on a dark photo -- close
+ * to unreadable. ID-scoping outranks those rules' specificity even though
+ * both sides use !important, so this wins in both themes.
+ */
+#use-cases .use-case-hero-title {
+  color: #ffffff !important;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.92), 0 1px 4px rgba(0, 0, 0, 0.88) !important;
+}
+
+#use-cases .use-case-hero-desc {
+  color: rgba(255, 255, 255, 0.94) !important;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.88) !important;
+}

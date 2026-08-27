@@ -1,6 +1,7 @@
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, Ban, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { inlineMediaKind } from "@/lib/attachment-media";
 import { byteaToBytes, bytesToBytea } from "@/lib/encoding";
 import {
   createSecureDecryptionStream,
@@ -14,11 +15,21 @@ import {
 import { chatControlCache, chatMessageCache, ensureChatCacheOwner } from "@/lib/chat-plaintext-cache";
 import { deriveReadState } from "@/lib/chat-read-state";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
+import { parseMessageAad } from "@/lib/message-envelope-identity";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke, invokeWithTimeout } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
 import { useCall } from "@/components/call/CallProvider";
+import { buildCallPeer } from "@/lib/call-targets";
+import {
+  CALL_RING_POLICY,
+  MESSAGE_DELIVERY_POLICY,
+  deviceTime,
+  selectDeliveryDevices,
+  type DeliverySelectionPolicy,
+} from "@/lib/delivery-devices";
+import { describeKemIncompatibility, kemInteroperates } from "@/lib/kem-suite";
 import { CallButton } from "@/components/call/CallButton";
 import { UserAvatar } from "@/components/UserAvatar";
 import { useIsMobile } from "@/lib/use-mobile";
@@ -121,7 +132,7 @@ interface ChatMessage {
   read_once: boolean;
   view_once: boolean;
   threat: ThreatAssessment;
-  status: "decrypted" | "sealed" | "failed";
+  status: "decrypted" | "sealed" | "failed" | "retired";
   authenticated: boolean;
   replay_protected: boolean;
   created_at: string;
@@ -223,6 +234,17 @@ function fromMessageKind(value: string): "Text" | "FileReference" | "VoiceNote" 
   if (value === "voice_note") return "VoiceNote";
   if (value === "system") return "System";
   return "Text";
+}
+
+/** Short label for the disappearing-message presets offered in the composer. */
+function disappearLabel(seconds: number): string {
+  if (seconds === 60) return "1m";
+  if (seconds === 300) return "5m";
+  if (seconds === 900) return "15m";
+  if (seconds === 3600) return "1h";
+  if (seconds === 86400) return "24h";
+  if (seconds === 604800) return "7d";
+  return "";
 }
 
 function messageKindLabel(kind: string): string {
@@ -666,14 +688,22 @@ function envelopeControlType(row: MessageEnvelopeRow): string | null {
 function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
   const sealed = row.sealed_sender_envelope;
   const hybrid = asRecord(sealed.hybrid_ciphertext);
+  // The identity fields the SENDER signed, taken from the AAD rather than from
+  // the row's columns. `sender_device_id` / `recipient_device_id` are FK columns
+  // declared ON DELETE SET NULL, so retiring a device nulls them in messages
+  // signed long beforehand -- and rebuilding the signable from them then fails
+  // every one of those messages with "Ed25519 signature verification failed".
+  // See parseMessageAad for why the AAD is the stricter source, not just the
+  // surviving one. Columns remain the fallback when the AAD is unreadable.
+  const signed = parseMessageAad(row.aad);
   return {
-    message_id: row.id,
-    conversation_id: row.conversation_id,
-    sender_user_id: row.sender_user_id,
-    recipient_user_id: row.recipient_user_id,
-    sender_device_id: row.sender_device_id ?? "",
-    recipient_device_id: row.recipient_device_id ?? "",
-    counter: Number(row.ratchet_counter ?? 0),
+    message_id: signed?.message_id ?? row.id,
+    conversation_id: signed?.conversation_id ?? row.conversation_id,
+    sender_user_id: signed?.sender_user_id ?? row.sender_user_id,
+    recipient_user_id: signed?.recipient_user_id ?? row.recipient_user_id,
+    sender_device_id: signed?.sender_device_id ?? row.sender_device_id ?? "",
+    recipient_device_id: signed?.recipient_device_id ?? row.recipient_device_id ?? "",
+    counter: signed?.counter ?? Number(row.ratchet_counter ?? 0),
     kind: fromMessageKind(row.message_kind),
     sealed_sender: Boolean(sealed.sealed_sender ?? true),
     envelope: {
@@ -697,7 +727,12 @@ function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
   };
 }
 
-const mlKemPublicKeyLengths = new Set([1184, 1568]);
+// ML-KEM-1024 only (1568 bytes). 1184 -- the ML-KEM-768 length -- used to be
+// accepted here, but this build's `encapsulate` refuses anything except
+// ML-KEM-1024: there is one accepted parameter set precisely so there is nothing
+// to negotiate down to. Accepting 768 here only made the UI call a device ready
+// that the backend would then refuse to seal to.
+const mlKemPublicKeyLengths = new Set([1568]);
 
 function hasValidMlKemPublicKey(bytes: number[]): boolean {
   return mlKemPublicKeyLengths.has(bytes.length);
@@ -722,54 +757,39 @@ function isTrustedDeviceForDelivery(device: TrustedDevice): boolean {
   return device.trust_state === "ThisDevice" || device.trust_state === "Trusted";
 }
 
+/**
+ * A device is only addressable if this build's KEM can actually interoperate
+ * with the one that produced its keys. See lib/kem-suite.ts: `suite.pq_kem`
+ * says "ML-KEM-1024" on pre-FIPS-203 devices too, and Kyber-1024 keys are the
+ * same length, so without this check every key/signature test above passes and
+ * we happily seal an envelope the recipient can never open.
+ */
 function isSendableDevice(device: TrustedDevice): boolean {
-  return isTrustedDeviceForDelivery(device) && hasSendableKeyBundle(device);
-}
-
-function deviceTime(value: string | null | undefined): number {
-  const parsed = new Date(value ?? "").getTime();
-  return Number.isFinite(parsed) ? parsed : 0;
+  return isTrustedDeviceForDelivery(device)
+    && hasSendableKeyBundle(device)
+    && kemInteroperates(device.suite);
 }
 
 function recordTime(record: Record<string, unknown>, key: string): number {
   return deviceTime(typeof record[key] === "string" ? String(record[key]) : null);
 }
 
-function deliveryDeviceBucket(device: TrustedDevice): string {
-  const stableLabel = device.label.trim().toLowerCase();
-  return `${device.user_id}:${stableLabel || device.fingerprint || device.device_id}`;
-}
-
-function compareDeliveryDevices(a: TrustedDevice, b: TrustedDevice, localDeviceId: string | null = null): number {
-  const aLocal = localDeviceId && a.device_id === localDeviceId ? 1 : 0;
-  const bLocal = localDeviceId && b.device_id === localDeviceId ? 1 : 0;
-  if (aLocal !== bLocal) return bLocal - aLocal;
-  const aCurrent = a.trust_state === "ThisDevice" ? 1 : 0;
-  const bCurrent = b.trust_state === "ThisDevice" ? 1 : 0;
-  if (aCurrent !== bCurrent) return bCurrent - aCurrent;
-  const lastSeenDelta = deviceTime(b.last_seen_at) - deviceTime(a.last_seen_at);
-  if (lastSeenDelta !== 0) return lastSeenDelta;
-  return deviceTime(b.created_at) - deviceTime(a.created_at);
-}
-
+/**
+ * Devices to address for `userIds`, most-likely endpoint first.
+ *
+ * Selection itself lives in lib/delivery-devices.ts (pure + unit-tested); this
+ * wrapper only applies the page's "can this device be addressed at all" filter.
+ * The policy argument matters: message delivery seals to a wide set because an
+ * envelope waits for the device, while a ring is real time and is aimed at the
+ * devices that could actually answer right now.
+ */
 function selectDeliveryDevicesForUsers(
   devices: TrustedDevice[],
   userIds: string[],
   localDeviceId: string | null = null,
+  policy: DeliverySelectionPolicy = MESSAGE_DELIVERY_POLICY,
 ): TrustedDevice[] {
-  const targetUserIds = new Set(userIds.filter(Boolean));
-  if (targetUserIds.size === 0) return [];
-
-  const selectedByBucket = new Map<string, TrustedDevice>();
-  devices
-    .filter((device) => targetUserIds.has(device.user_id) && isSendableDevice(device))
-    .sort((a, b) => compareDeliveryDevices(a, b, localDeviceId))
-    .forEach((device) => {
-      const bucket = deliveryDeviceBucket(device);
-      if (!selectedByBucket.has(bucket)) selectedByBucket.set(bucket, device);
-    });
-
-  return Array.from(selectedByBucket.values()).sort((a, b) => compareDeliveryDevices(a, b, localDeviceId));
+  return selectDeliveryDevices(devices.filter(isSendableDevice), userIds, localDeviceId, policy);
 }
 
 function envelopePrekeyId(row: MessageEnvelopeRow): string | null {
@@ -880,6 +900,9 @@ function recipientKeyBundle(device: TrustedDevice, oneTimePrekey: SignedPrekeySu
       ed25519IdentityPublic: device.ed25519_identity_public,
       mldsaIdentityPublic: device.mldsa_identity_public,
       identitySignature: device.identity_signature,
+      // Sent so the BACKEND, not just this client-side filter, decides whether
+      // an envelope is produced at all (verify_recipient_kem_interoperates).
+      suite: device.suite,
     },
     signedPrekey: {
       prekeyId: device.signed_prekey.prekey_id,
@@ -933,13 +956,30 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [viewOnce, setViewOnce] = useState(false);
   const [disappearSeconds, setDisappearSeconds] = useState(0);
   const [customExpiresAt, setCustomExpiresAt] = useState("");
+  // Collapsed by default: these five controls occupied three rows above the
+  // input, which on a phone left almost no room for the conversation itself.
+  const [composerOptionsOpen, setComposerOptionsOpen] = useState(false);
   const [attachmentBusy, setAttachmentBusy] = useState<"file" | "voice" | "download" | null>(null);
   const [recordingState, setRecordingState] = useState<"idle" | "recording" | "processing">("idle");
   const [attachmentPreviewUrls, setAttachmentPreviewUrls] = useState<Record<string, string>>({});
+  const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const [downloadedFiles, setDownloadedFiles] = useState<DownloadedAttachmentRecord[]>([]);
   const [typingIndicators, setTypingIndicators] = useState<TypingIndicator[]>([]);
   const [chatTelemetry, setChatTelemetry] = useState<ChatTelemetryEvent[]>([]);
   const [typingEnabled, setTypingEnabled] = useState(true);
+  // Anything armed here changes how the NEXT message behaves -- a burn-on-read
+  // or an expiry the sender cannot see is a trap, so whatever is active stays
+  // on screen in the collapsed summary. Only the controls are hidden, never the
+  // state they hold.
+  const composerOptionSummary = useMemo(() => {
+    const active: string[] = [];
+    if (readOnce) active.push("Read once");
+    if (viewOnce) active.push("View once");
+    if (customExpiresAt) active.push("Custom expiry");
+    else if (disappearSeconds > 0) active.push(`Disappears ${disappearLabel(disappearSeconds)}`);
+    if (!typingEnabled) active.push("Typing off");
+    return active;
+  }, [readOnce, viewOnce, customExpiresAt, disappearSeconds, typingEnabled]);
   const [conversationView, setConversationView] = useState<ConversationView>("active");
   const [openConversationMenuId, setOpenConversationMenuId] = useState<string | null>(null);
   const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
@@ -1156,23 +1196,41 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const recipientDevicesMissingPrekeys = activeRecipientUserIds.length > 0 && sendableRecipientDevices.length === 0 && recipientDevices.length > 0;
   const recipientDevicesReady = sendableRecipientDevices.length > 0;
 
+  // Peer devices dropped from delivery purely because their KEM cannot
+  // interoperate. Distinguished from "missing prekeys" because the remedy is
+  // different and lives elsewhere: nothing on THIS device can fix it, the peer
+  // has to update their app. Left unnamed, this presents as an unreachable
+  // contact with a fully green key bundle.
+  const recipientDevicesOnStaleBuild = useMemo(
+    () => recipientDevices.filter((device) => hasSendableKeyBundle(device) && !kemInteroperates(device.suite)),
+    [recipientDevices],
+  );
+
+  // True once a decrypt has actually reported a retired key in this thread, so
+  // the banner is evidence-driven rather than guessed from device metadata.
+  const retiredKeyMessageCount = useMemo(
+    () => chatMessages.filter((item) => item.conversation_id === activeConversationId && item.status === "retired").length,
+    [activeConversationId, chatMessages],
+  );
+
+  // Ring targets are chosen with the CALL policy, not the message policy: a
+  // ring is real time, so it goes to the devices that could actually answer
+  // now, while messages fan out to a wider set that includes devices which are
+  // merely away. Both come from the same selector, so a device that can receive
+  // a message can always be rung.
+  const callableRecipientDevices = useMemo(
+    () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId, CALL_RING_POLICY),
+    [activeRecipientUserIds, localDeviceId, recipientDevices],
+  );
+
   const callPeer = useMemo(() => {
     if (activeConversation?.conversation_type !== "direct") return null;
-    const device = sendableRecipientDevices[0];
-    if (!device?.identity_signature) return null;
-    return {
-      userId: device.user_id, deviceId: device.device_id,
-      x25519: Array.from(device.x25519_identity_public),
-      mlkem: Array.from(device.mlkem_identity_public),
-      ed25519: Array.from(device.ed25519_identity_public),
-      mldsa: Array.from(device.mldsa_identity_public),
-      identitySignature: {
-        ed25519: Array.from(device.identity_signature.ed25519),
-        ml_dsa_65: Array.from(device.identity_signature.ml_dsa_65),
-      },
-      displayName: activeConversation ? conversationTitle(activeConversation) : "Contact",
-    };
-  }, [activeConversation, sendableRecipientDevices]);
+    // EVERY device the peer can receive on — the same list messages fan out to.
+    // Taking [0] here (the most-recently-seen device) is what stopped calls
+    // ringing whenever the peer was using their other device; see
+    // lib/call-targets.ts for the full account.
+    return buildCallPeer(callableRecipientDevices, conversationTitle(activeConversation));
+  }, [activeConversation, callableRecipientDevices]);
 
   // App-level call engine (CallProvider): incoming calls ring on every page;
   // this page only supplies the outgoing-call target.
@@ -1298,10 +1356,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     else if (myDevices.length === 0) setStatus("Open the desktop app to activate this device");
     else if (activeConversation && activeRecipientUserIds.length === 0) setStatus("Open a contact chat before sending");
     else if (activeConversation && recipientDevices.length === 0) setStatus("Add a trusted contact device");
+    else if (activeConversation && !recipientDevicesReady && recipientDevicesOnStaleBuild.length > 0) setStatus("Recipient device is on an older build - it must update before messages can be delivered");
     else if (activeConversation && !recipientDevicesReady) setStatus("Waiting for recipient PQC prekeys");
+    else if (recipientDevicesOnStaleBuild.length > 0) setStatus("Ready - some recipient devices are on an older build and are not being delivered to");
     else if (recipientDevicesMissingPrekeys) setStatus("Ready - some trusted devices need PQC prekeys");
     else setStatus("Ready");
-  }, [activeConversation, activeRecipientUserIds.length, currentDevice, localDeviceId, localSignedPrekeyId, myDevices.length, rawLocalDevice, recipientDevices.length, recipientDevicesMissingPrekeys, recipientDevicesReady]);
+  }, [activeConversation, activeRecipientUserIds.length, currentDevice, localDeviceId, localSignedPrekeyId, myDevices.length, rawLocalDevice, recipientDevices.length, recipientDevicesMissingPrekeys, recipientDevicesOnStaleBuild.length, recipientDevicesReady]);
 
   useEffect(() => {
     attachmentPreviewUrlsRef.current = attachmentPreviewUrls;
@@ -1310,6 +1370,41 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   useEffect(() => () => {
     Object.values(attachmentPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
   }, []);
+
+  // Drop previews whose message is gone (burned, expired, deleted) or has been
+  // re-locked. Without this the decrypted blob stays alive for the rest of the
+  // session, which would let a view-once photo outlive the message that carried
+  // it - the object URL keeps the plaintext reachable until it is revoked.
+  useEffect(() => {
+    const live = new Set(
+      chatMessages.filter((item) => item.attachment).map((item) => item.client_message_id),
+    );
+    const stale = Object.keys(attachmentPreviewUrlsRef.current).filter((id) => !live.has(id));
+    if (stale.length === 0) return;
+    setAttachmentPreviewUrls((current) => {
+      const next = { ...current };
+      for (const id of stale) {
+        if (next[id]) URL.revokeObjectURL(next[id]);
+        delete next[id];
+      }
+      return next;
+    });
+  }, [chatMessages]);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const stillLive = Object.values(attachmentPreviewUrls).includes(lightbox.url);
+    if (!stillLive) setLightbox(null);
+  }, [attachmentPreviewUrls, lightbox]);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   useEffect(() => () => {
     const recorder = mediaRecorderRef.current;
@@ -1382,6 +1477,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return contact?.contact_user_id
       ?? conversation.member_user_ids.find((memberId) => memberId && memberId !== userId)
       ?? null;
+  }
+
+  /**
+   * Marker the Rust receive path puts on "this device no longer holds the key
+   * this message was sealed to". Keep in sync with `RETIRED_PREKEY_MARKER` in
+   * src-tauri/src/commands/messaging.rs.
+   */
+  const RETIRED_PREKEY_MARKER = "sealed to a retired device key";
+
+  /**
+   * A retired key is NOT a decryption failure, and rendering it as one is what
+   * made a whole re-keyed history read as a broken cipher. It means the device
+   * re-keyed after these messages were sealed — a reinstall, a rotation past
+   * the legacy window, or the FIPS 203 cutover — so the private key that could
+   * open them no longer exists anywhere. Nothing is wrong and nothing can be
+   * retried; the message is simply not readable on this device, ever.
+   */
+  function isRetiredKeyError(message: string): boolean {
+    return message.toLowerCase().includes(RETIRED_PREKEY_MARKER);
   }
 
   function describeMessageError(error: unknown): string {
@@ -1779,6 +1893,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         if (handledGroup) return;
         const failedRow = decryptRows[0];
         const failedRowSenderUserId = originalSenderUserId(failedRow);
+        const retiredKey = Boolean(lastDecryptError && isRetiredKeyError(lastDecryptError));
           hydrated.push({
             id: failedRow.id,
             client_message_id: groupId,
@@ -1797,11 +1912,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             read_once: false,
             view_once: false,
             threat: emptyThreat(),
-            status: "failed",
+            status: retiredKey ? "retired" : "failed",
             authenticated: false,
             replay_protected: false,
             created_at: failedRow.created_at,
-            error: lastDecryptError ?? "No decryptable trusted-device envelope could be recovered locally.",
+            error: retiredKey
+              ? "Encrypted to a key this device has since replaced. Nothing can recover it here."
+              : lastDecryptError ?? "No decryptable trusted-device envelope could be recovered locally.",
             can_delete: failedRowSenderUserId === userId,
           });
       } else if (isMine) {
@@ -3059,7 +3176,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           level: statusValue === "verified" ? "success" : "info",
         });
       });
-      if (attachment.kind === "voice") {
+      const mediaKind = inlineMediaKind(attachment);
+      if (mediaKind) {
+        // Images, video and audio stay in memory as an object URL and render in
+        // the conversation. They are NOT written to disk automatically: this is a
+        // disappearing-message channel, and silently dropping plaintext copies of
+        // every viewed photo into Downloads would outlive the message itself.
+        // "Save" below is the deliberate way to keep one.
         setAttachmentPreviewUrls((current) => {
           if (current[chatMessage.client_message_id]) URL.revokeObjectURL(current[chatMessage.client_message_id]);
           return {
@@ -3067,8 +3190,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             [chatMessage.client_message_id]: URL.createObjectURL(blob),
           };
         });
-        // "Listen once": decrypting a view-once voice note is the view event,
-        // so it burns the same way an opened view-once file does.
+        // Rendering it IS the view event - the rule the voice note already
+        // followed ("listen once"), now applied to images and video too.
         await markViewOnceAttachmentOpened(chatMessage);
       } else {
         downloadBlob(attachment.name, blob);
@@ -3076,7 +3199,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       }
       stream.emit({
         stage: "attachment_decrypt_completed",
-        detail: attachment.kind === "voice" ? "Voice note decrypted locally" : "Attachment restored locally",
+        detail: mediaKind ? "Decrypted locally - now visible in the conversation" : "Attachment restored locally",
         progress: 100,
         status: "complete",
         level: "success",
@@ -3091,7 +3214,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         status: "complete",
         metadata: { conversation_id: chatMessage.conversation_id, client_message_id: chatMessage.client_message_id },
       });
-      setStatus("Attachment decrypted locally");
+      setStatus(mediaKind ? "Attachment decrypted - shown in the conversation" : "Attachment decrypted locally");
     } catch (error) {
       const message = normalizeDecryptionError(error);
       stream.emit({
@@ -3105,6 +3228,23 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setMessageAction(message);
     } finally {
       setAttachmentBusy(null);
+    }
+  }
+
+  /**
+   * Write an already-decrypted preview to disk on request. Reads the bytes back
+   * out of the object URL instead of holding a second copy of the plaintext in
+   * component state, and never re-downloads or re-decrypts the ciphertext.
+   */
+  async function saveDecryptedAttachment(chatMessage: ChatMessage) {
+    const previewUrl = attachmentPreviewUrls[chatMessage.client_message_id];
+    if (!previewUrl || !chatMessage.attachment) return;
+    try {
+      const response = await fetch(previewUrl);
+      downloadBlob(chatMessage.attachment.name, await response.blob());
+      setStatus("Attachment saved");
+    } catch (error) {
+      setMessageAction(describeMessageError(error));
     }
   }
 
@@ -3825,6 +3965,39 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           {messageAction && (
             <div className="rounded-lg border border-line bg-white p-3 text-sm text-ink-600">{messageAction}</div>
           )}
+          {/* Explain a re-keyed history ONCE, here, instead of leaving the user
+              to infer it from a wall of identical failure bubbles. Driven by
+              messages that actually reported a retired key, so it never appears
+              on a healthy thread. */}
+          {retiredKeyMessageCount > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <div className="font-bold">
+                {retiredKeyMessageCount} earlier {retiredKeyMessageCount === 1 ? "message is" : "messages are"} no longer readable on this device
+              </div>
+              <div className="mt-1 leading-6">
+                They were encrypted to a device key that has since been replaced - by a reinstall, a key
+                rotation, or this build&apos;s move to ML-KEM-1024 (FIPS 203). The private key that could open
+                them no longer exists, so nothing can recover them here and no resend will help. New messages
+                are unaffected.
+              </div>
+            </div>
+          )}
+          {/* A peer on an older build looks perfectly reachable - valid keys,
+              valid signatures, right lengths - so say plainly why nothing is
+              being delivered to them. */}
+          {recipientDevicesOnStaleBuild.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <div className="font-bold">
+                {recipientDevicesOnStaleBuild.length} recipient {recipientDevicesOnStaleBuild.length === 1 ? "device is" : "devices are"} running an older build
+              </div>
+              <div className="mt-1 leading-6">
+                {recipientDevicesOnStaleBuild.map((device) => device.label).join(", ")} {recipientDevicesOnStaleBuild.length === 1 ? "is" : "are"}{" "}
+                {describeKemIncompatibility(recipientDevicesOnStaleBuild[0].suite)}. Messages are not being
+                sealed to {recipientDevicesOnStaleBuild.length === 1 ? "it" : "them"}, because anything sealed
+                now could never be opened there.
+              </div>
+            </div>
+          )}
           {messagesLoading && chatMessages.length === 0 && (
             <div className="rounded-lg border border-line bg-white p-4 text-sm text-ink-600">Loading encrypted history...</div>
           )}
@@ -3837,6 +4010,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             {chatMessages.map((chatMessage) => {
               const mine = chatMessage.sender_user_id === userId;
               const attachmentStatus = attachmentDecryptionStatus(chatMessage);
+              const attachmentMedia = chatMessage.attachment ? inlineMediaKind(chatMessage.attachment) : null;
+              const attachmentPreviewUrl = attachmentPreviewUrls[chatMessage.client_message_id];
               return (
                 <div key={chatMessage.client_message_id} className={`flex items-start gap-2 ${mine ? "justify-end" : "justify-start"}`}>
                   {!mine && (
@@ -3882,19 +4057,43 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                             <button
                               type="button"
                               disabled={attachmentBusy === "download"}
-                              onClick={() => openAttachment(chatMessage)}
+                              onClick={() => (attachmentPreviewUrl ? saveDecryptedAttachment(chatMessage) : openAttachment(chatMessage))}
+                              title={attachmentPreviewUrl ? "Save a copy to this device" : "Decrypt locally"}
                               className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${
                                 mine ? "bg-white text-violet-700 hover:bg-violet-50" : "bg-violet-600 text-white hover:bg-violet-700"
                               }`}
                             >
-                              {attachmentBusy === "download" && attachmentStatus === "decrypting" ? <Loader2 className="animate-spin" size={14} /> : attachmentStatus === "decrypted" ? <Download size={14} /> : <UnlockKeyhole size={14} />}
-                              {chatMessage.attachment.kind === "voice" && attachmentStatus === "decrypted" ? "Play" : "Decrypt"}
+                              {attachmentBusy === "download" && attachmentStatus === "decrypting" ? <Loader2 className="animate-spin" size={14} /> : attachmentPreviewUrl || attachmentStatus === "decrypted" ? <Download size={14} /> : <UnlockKeyhole size={14} />}
+                              {attachmentPreviewUrl ? "Save" : "Decrypt"}
                             </button>
                           </div>
-                          {chatMessage.attachment.kind === "voice" && attachmentPreviewUrls[chatMessage.client_message_id] && (
+                          {/*
+                            Decrypted media renders here, in the conversation. The
+                            source is an in-memory object URL - nothing is written to
+                            disk unless the reader presses Save.
+                          */}
+                          {attachmentPreviewUrl && attachmentMedia === "image" && (
+                            <img
+                              src={attachmentPreviewUrl}
+                              alt={chatMessage.attachment.name}
+                              loading="lazy"
+                              onClick={() => setLightbox({ url: attachmentPreviewUrl, name: chatMessage.attachment!.name })}
+                              className="mt-3 max-h-80 w-full cursor-zoom-in rounded-lg bg-black/5 object-contain"
+                            />
+                          )}
+                          {attachmentPreviewUrl && attachmentMedia === "video" && (
+                            <video
+                              src={attachmentPreviewUrl}
+                              controls
+                              playsInline
+                              preload="metadata"
+                              className="mt-3 max-h-80 w-full rounded-lg bg-black"
+                            />
+                          )}
+                          {attachmentPreviewUrl && attachmentMedia === "audio" && (
                             <audio
                               controls
-                              src={attachmentPreviewUrls[chatMessage.client_message_id]}
+                              src={attachmentPreviewUrl}
                               className="mt-3 w-full"
                               onEnded={() => markViewOnceAttachmentOpened(chatMessage).catch((error) => setMessageAction(describeMessageError(error)))}
                             />
@@ -3904,7 +4103,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                       {chatMessage.plaintext && <div className="whitespace-pre-wrap break-words text-sm leading-6">{chatMessage.plaintext}</div>}
                       {chatMessage.status !== "decrypted" && (
                         <div className={`mt-2 text-xs ${mine ? "text-violet-100" : "text-ink-500"}`}>
-                          {chatMessage.status === "failed" ? "Decryption failed" : "Sealed envelope"}{chatMessage.error ? ` - ${chatMessage.error}` : ""}
+                          {chatMessage.status === "failed" ? "Decryption failed" : chatMessage.status === "retired" ? "Sealed to a retired device key" : "Sealed envelope"}{chatMessage.error ? ` - ${chatMessage.error}` : ""}
                         </div>
                       )}
                       <div className={`mt-2 flex flex-wrap items-center gap-2 text-[11px] ${mine ? "text-violet-100" : "text-ink-400"}`}>
@@ -4001,7 +4200,28 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               </button>
             </div>
           )}
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setComposerOptionsOpen((value) => !value)}
+              aria-expanded={composerOptionsOpen}
+              aria-controls="composer-options"
+              className="flex w-full items-center gap-2 rounded-lg border border-line px-2 py-1 text-xs font-bold text-ink-600 transition hover:bg-white"
+            >
+              <ChevronDown
+                size={14}
+                className={`shrink-0 transition-transform ${composerOptionsOpen ? "rotate-180" : ""}`}
+                aria-hidden
+              />
+              <span className="shrink-0">Message options</span>
+              {composerOptionSummary.length > 0 && (
+                <span className="truncate rounded-md bg-violet-50 px-2 py-0.5 text-[11px] font-bold text-violet-700">
+                  {composerOptionSummary.join(" · ")}
+                </span>
+              )}
+            </button>
+            {composerOptionsOpen && (
+            <div id="composer-options" className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
               disabled={Boolean(editingMessage)}
@@ -4058,6 +4278,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               <input checked={typingEnabled} onChange={(event) => setTypingEnabled(event.target.checked)} type="checkbox" />
               Typing
             </label>
+            </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <input
@@ -4551,6 +4773,34 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             The person you message must have opened QGuard Messaging on desktop at least once so their quantum-safe keys are published.
           </div>
         </div>
+      </div>
+    )}
+    {/*
+      Full-size view for a decrypted image. Same in-memory object URL the bubble
+      uses - opening it copies nothing to disk.
+    */}
+    {lightbox && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={lightbox.name}
+        onClick={() => setLightbox(null)}
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+      >
+        <button
+          type="button"
+          aria-label="Close image"
+          onClick={() => setLightbox(null)}
+          className="absolute right-4 top-4 rounded-lg bg-white/10 p-2 text-white transition hover:bg-white/20"
+        >
+          <X size={18} />
+        </button>
+        <img
+          src={lightbox.url}
+          alt={lightbox.name}
+          onClick={(event) => event.stopPropagation()}
+          className="max-h-full max-w-full rounded-lg object-contain"
+        />
       </div>
     )}
     {/* Incoming-call modal and in-call overlay render app-wide in CallProvider. */}

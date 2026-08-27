@@ -5,10 +5,12 @@ import { buildTenantTelemetrySync } from './tenant-telemetry-sync'
 import type {
   PQAuthAlgorithmExposure,
   PQAuthCompatibilitySurface,
+  PQAuthComplianceRow,
   PQAuthCountRow,
   PQAuthDigitalTwinScenario,
   PQAuthMigrationPhase,
   PQAuthMode,
+  PQAuthRow,
   PQAuthRuntimeMetric,
   PQAuthSignal,
   PQAuthSnapshot,
@@ -597,6 +599,96 @@ function buildSourceCountRow(id: string, label: string, count: number, detail: s
   return { id, label, count, detail, status, sourceTables }
 }
 
+/* ------------------------------------------------------------------ */
+/* Evidence-honesty derivations (pure — covered by tools/pqauth-check)  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Compatibility surfaces are scored ONLY where evidence for that surface was
+ * actually matched. A surface with no matched rows has not been assessed —
+ * scoring it would convert "we never saw this" into "this looks fine", which is
+ * exactly the absence-as-success error the data-integrity contract bans.
+ */
+export function deriveCompatibilitySurfaces(
+  evidenceRows: PQAuthRow[],
+  readinessScore: number,
+  compatibilityBlockers: number,
+): PQAuthCompatibilitySurface[] {
+  return COMPATIBILITY_SURFACES.map((surface) => {
+    const matches = evidenceRows.filter((row) => surface.regex.test(rowText(row)))
+    const assessed = matches.length > 0
+    return {
+      id: surface.id,
+      label: surface.label,
+      count: matches.length,
+      score: assessed ? clamp(readinessScore - compatibilityBlockers * 4) : 0,
+      icon: surface.icon,
+      sourceTables: Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))),
+      latestAt: latestForRows(matches),
+      assessed,
+    }
+  })
+}
+
+/**
+ * A framework is scored only from evidence that names THAT framework.
+ * Previously an unmatched framework borrowed the tenant's unrelated
+ * compliance/audit/security row count and presented it as its own evidence,
+ * attributing other frameworks' records to this one. Unmatched now reports Not
+ * Assessed with zero evidence, as the governance contract requires.
+ */
+export function deriveComplianceRows(complianceEvidence: PQAuthRow[], complianceBase: number): PQAuthComplianceRow[] {
+  return COMPLIANCE_FRAMEWORKS.map((framework) => {
+    const regex = new RegExp(framework.replace(/[.\s-]+/g, '.*'), 'i')
+    const matches = complianceEvidence.filter((row) => regex.test(rowText(row)))
+    const assessed = matches.length > 0
+    return {
+      id: framework.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      label: framework,
+      score: assessed ? clamp(complianceBase + Math.min(10, matches.length * 3)) : 0,
+      evidence: assessed ? `${matches.length} evidence signal(s)` : 'No framework-specific evidence',
+      evidenceCount: matches.length,
+      sourceTables: assessed ? Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))) : [],
+      latestAt: assessed ? latestForRows(matches) : null,
+      assessed,
+    }
+  })
+}
+
+/**
+ * Runtime identity telemetry — MEASURED ONLY.
+ *
+ * These five tiles describe what the identity layer DID at runtime, so each is
+ * derived from runtime/auth event rows only. Static inventory counts
+ * (certificates held, vulnerable components discovered, algorithms present) are
+ * deliberately NOT substituted: doing so previously published the
+ * quantum-vulnerable-algorithm count as "Trust Failures" and the vulnerable
+ * component count as "Identity Drift", inventing runtime failures that were
+ * never observed. With no runtime evidence the tiles report unmeasured and the
+ * UI shows "Awaiting telemetry" rather than a zero that reads as clean.
+ */
+export function deriveRuntimeMetrics(runtimeIdentityRows: PQAuthRow[], runtimeEvents: PQAuthRow[]): PQAuthRuntimeMetric[] {
+  const truthy = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1'
+  const hasIdentityTelemetry = runtimeIdentityRows.length > 0
+  const tokenValidationEvents = runtimeIdentityRows.filter((row) => /jwt|jws|jwe|token|assertion|sign|verify|introspect/i.test(rowText(row))).length
+  const certificateUsageEvents = new Set(
+    runtimeEvents.map((row) => String(row.certificate_fingerprint || '')).filter((fingerprint) => fingerprint.length > 0),
+  ).size
+  const trustFailureEvents = runtimeIdentityRows.filter(
+    (row) => truthy(row.downgrade_detected) || /fail|failure|error|denied|reject|invalid|expired|revoked|untrusted|unauthori/i.test(rowText(row)),
+  ).length
+  const identityDriftEvents = runtimeIdentityRows.filter(
+    (row) => truthy(row.shadow_crypto) || truthy(row.is_legacy) || /drift|unexpected|unapproved|policy.?violation|deviat/i.test(rowText(row)),
+  ).length
+  return [
+    { id: 'runtime-events', label: 'Runtime Events', value: runtimeIdentityRows.length, detail: 'authentication, authorization, session and token events observed', measured: hasIdentityTelemetry },
+    { id: 'token-validation', label: 'Token Validation', value: tokenValidationEvents, detail: 'JWT, JWS, JWE and assertion operations observed at runtime', measured: hasIdentityTelemetry },
+    { id: 'certificate-usage', label: 'Certificate Usage', value: certificateUsageEvents, detail: 'distinct certificates actually presented in runtime events', measured: runtimeEvents.length > 0 },
+    { id: 'trust-failures', label: 'Trust Failures', value: trustFailureEvents, detail: 'downgrades, rejections and validation failures observed', measured: hasIdentityTelemetry },
+    { id: 'identity-drift', label: 'Identity Drift', value: identityDriftEvents, detail: 'shadow or legacy cryptography observed on identity paths', measured: hasIdentityTelemetry },
+  ]
+}
+
 async function buildPQAuthSnapshot(mode: PQAuthMode, token: string, userId: string): Promise<PQAuthSnapshot> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
@@ -775,19 +867,7 @@ async function buildPQAuthSnapshot(mode: PQAuthMode, token: string, userId: stri
   const migrationRunning = sourceRows.migrationJobs.filter((job) => normalizeJobStatus(job.status) === 'running').length
   const migrationFailed = sourceRows.migrationJobs.filter((job) => normalizeJobStatus(job.status) === 'failed').length
 
-  const compatibilitySurfaces: PQAuthCompatibilitySurface[] = COMPATIBILITY_SURFACES.map((surface) => {
-    const matches = allEvidenceRows.filter((row) => surface.regex.test(rowText(row)))
-    const score = hasEvidence ? clamp(readinessScore - (matches.length ? 0 : 8) - compatibilityBlockers * 4) : 0
-    return {
-      id: surface.id,
-      label: surface.label,
-      count: matches.length,
-      score,
-      icon: surface.icon,
-      sourceTables: Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))),
-      latestAt: latestForRows(matches),
-    }
-  })
+  const compatibilitySurfaces = deriveCompatibilitySurfaces(allEvidenceRows, readinessScore, compatibilityBlockers)
 
   const graph = buildTrustGraph({
     providers,
@@ -892,20 +972,7 @@ async function buildPQAuthSnapshot(mode: PQAuthMode, token: string, userId: stri
   }
 
   const complianceBase = hasEvidence ? clamp((readinessScore * 0.55) + ((100 - identityRiskScore) * 0.25) + (sourceRows.complianceEvidence.length ? 20 : 0)) : 0
-  const complianceRows = COMPLIANCE_FRAMEWORKS.map((framework) => {
-    const regex = new RegExp(framework.replace(/[.\s-]+/g, '.*'), 'i')
-    const matches = sourceRows.complianceEvidence.filter((row) => regex.test(rowText(row)))
-    const fallbackEvidence = sourceRows.complianceEvidence.length || sourceRows.vaultAuditLogs.length || sourceRows.securityEvents.length
-    return {
-      id: framework.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      label: framework,
-      score: hasEvidence ? clamp(complianceBase + Math.min(10, matches.length * 3)) : 0,
-      evidence: `${matches.length || fallbackEvidence} evidence signal(s)`,
-      evidenceCount: matches.length || fallbackEvidence,
-      sourceTables: matches.length ? Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))) : ['compliance_evidence'],
-      latestAt: latestForRows(matches.length ? matches : sourceRows.complianceEvidence),
-    }
-  })
+  const complianceRows = deriveComplianceRows(sourceRows.complianceEvidence, complianceBase)
 
   const phases = buildPhaseRows(hasEvidence, readinessScore, compatibilityBlockers, allEvidenceRows)
   const digitalTwinScenarios: PQAuthDigitalTwinScenario[] = [
@@ -928,13 +995,7 @@ async function buildPQAuthSnapshot(mode: PQAuthMode, token: string, userId: stri
     buildSourceCountRow('performance', 'Performance Thresholds Exceeded', compatibilityBlockers, 'Compatibility blockers requiring staged rollout', compatibilityBlockers ? 'review' : 'ready', ['pqc_scan_results', 'scanner_evidence']),
     buildSourceCountRow('trust-chain', 'Trust Chain Failures', classicalExposureSignals, 'Classical algorithm exposure in identity trust chains', classicalExposureSignals ? 'review' : 'ready', ['crypto_inventory', 'certificates']),
   ]
-  const runtimeMetrics: PQAuthRuntimeMetric[] = [
-    { id: 'runtime-events', label: 'Runtime Events', value: metrics.runtimeSignals, detail: 'authentication, authorization, token, or scanner telemetry' },
-    { id: 'token-validation', label: 'Token Validation', value: tokenRows.length, detail: 'JWS, JWE, access-token, refresh-token signals' },
-    { id: 'certificate-usage', label: 'Certificate Usage', value: sourceRows.certificates.length, detail: 'trust material evidence' },
-    { id: 'trust-failures', label: 'Trust Failures', value: compatibilityBlockers, detail: 'drift, blocker, or failure-class signals' },
-    { id: 'identity-drift', label: 'Identity Drift', value: vulnerableComponents, detail: 'vulnerable or review components' },
-  ]
+  const runtimeMetrics = deriveRuntimeMetrics(runtimeIdentityRows, sourceRows.runtimeEvents)
   const qkmsKeyDomains = [
     buildSourceCountRow('signing-keys', 'Signing Keys', tokenRows.length + countMatches(sourceRows.qkmsKeys, /sign|verify|ml-dsa|slh-dsa|ecdsa|rsa/i), 'ML-DSA verification and signing readiness', undefined, ['qkms_keys', 'generated_keys', 'runtime_crypto_events']),
     buildSourceCountRow('verification-keys', 'Verification Keys', authServices.length + countMatches(sourceRows.qkmsKeys, /verify|jwks|issuer/i), 'JWT issuer and validator ownership', undefined, ['qkms_keys', 'scanner_evidence']),

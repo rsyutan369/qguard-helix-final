@@ -4,9 +4,9 @@ use zeroize::Zeroize;
 
 use crate::crypto::hybrid_kex::{decapsulate, encapsulate};
 use crate::crypto::signatures::dual_verify;
-use crate::crypto::DualSignature;
+use crate::crypto::{AlgorithmSuite, DualSignature};
 use crate::error::{QGuardError, Result};
-use crate::identity::verify_identity_bundle;
+use crate::identity::{verify_identity_bundle, platform_device_label};
 use crate::message_crypto::{
     decrypt_message, encrypt_message, message_signable, EncryptedMessageEnvelope, MessageKind,
     MessageSigningContext,
@@ -37,6 +37,14 @@ pub struct RecipientIdentityBundle {
     pub ed25519_identity_public: Vec<u8>,
     pub mldsa_identity_public: Vec<u8>,
     pub identity_signature: DualSignature,
+    /// The suite the recipient device published when it registered.
+    ///
+    /// Carried so the KEM-compatibility gate below runs in the BACKEND. The
+    /// client filters unusable devices out of delivery too, but a check that
+    /// lives only there is advisory -- this is the one that decides whether an
+    /// envelope is produced at all.
+    #[serde(default)]
+    pub suite: Option<AlgorithmSuite>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -85,7 +93,7 @@ pub async fn messaging_send_encrypted_message(
         ));
     }
 
-    let identity_bundle = state.ensure_identity(&request.sender_user_id, "Windows Desktop")?;
+    let identity_bundle = state.ensure_identity(&request.sender_user_id, platform_device_label())?;
     verify_identity_bundle(
         &request.recipient.identity.user_id,
         &request.recipient.identity.device_id,
@@ -100,6 +108,7 @@ pub async fn messaging_send_encrypted_message(
         &request.recipient.signed_prekey,
         false,
     )?;
+    verify_recipient_kem_interoperates(&request.recipient.identity)?;
 
     let (prekey, prekey_kind) =
         if let Some(one_time_prekey) = request.recipient.one_time_prekey.as_ref() {
@@ -174,6 +183,47 @@ pub async fn messaging_send_encrypted_message(
     Ok(envelope)
 }
 
+/// The stable prefix every "this device no longer holds that key" error starts
+/// with. The UI matches on it to tell a RETIRED KEY apart from a real decrypt
+/// failure: the first is an expected, permanent consequence of the device
+/// having re-keyed (a reinstall, a rotation past the legacy window, the FIPS
+/// 203 cutover) and needs an explanation, while the second means the ciphertext
+/// or the signature did not hold up and needs alarm. Rendering both as
+/// "Decryption failed" made an entire history of re-keyed messages read as a
+/// broken cipher. Keep this string in sync with `RETIRED_PREKEY_MARKER` in
+/// src/pages/SecureChatPage.tsx.
+const RETIRED_PREKEY_MARKER: &str = "sealed to a retired device key";
+
+fn retired_prekey_error(kind: &str, prekey_id: &str) -> QGuardError {
+    QGuardError::NotFound(format!(
+        "{RETIRED_PREKEY_MARKER}: this device no longer holds the {kind} prekey {prekey_id} this message was encrypted to, so the message cannot be opened here."
+    ))
+}
+
+/// Refuse to seal to a device whose KEM this build cannot interoperate with.
+///
+/// Every signature and length check above PASSES for a pre-FIPS-203 device: its
+/// identity bundle is validly signed, and Kyber-1024 keys are exactly as long
+/// as ML-KEM-1024 ones. Encapsulating to them succeeds, produces a
+/// well-formed envelope, and yields a shared secret the recipient can never
+/// reproduce -- so the message lands in their history as a permanent decrypt
+/// failure while the sender is told it was delivered. Failing here instead
+/// turns a silent, unrecoverable data loss into an actionable message.
+fn verify_recipient_kem_interoperates(identity: &RecipientIdentityBundle) -> Result<()> {
+    let interoperates = identity
+        .suite
+        .as_ref()
+        .is_some_and(AlgorithmSuite::kem_interoperates);
+    if interoperates {
+        return Ok(());
+    }
+    Err(QGuardError::Trust(format!(
+        "recipient device {} is registered with pre-FIPS-203 key material ({}) and cannot decrypt anything this build seals. That device must update to the FIPS 203 build and re-register its keys.",
+        identity.device_id,
+        crate::crypto::LEGACY_PQ_KEM_PRE_FIPS,
+    )))
+}
+
 fn verify_recipient_prekey(
     identity: &RecipientIdentityBundle,
     prekey: &RecipientPrekeyBundle,
@@ -211,7 +261,7 @@ pub async fn messaging_receive_encrypted_message(
     state.require_user_auth(&session_user_id)?;
     let _key_scope = state.lock_key_scope()?;
 
-    let identity_bundle = state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    let identity_bundle = state.ensure_identity(&session_user_id, platform_device_label())?;
     let exact_local_device = envelope.recipient_device_id == identity_bundle.device_id;
 
     dual_verify(
@@ -261,7 +311,7 @@ pub async fn messaging_receive_encrypted_message(
                             .cloned()
                     })
                 })
-                .ok_or_else(|| QGuardError::NotFound("local signed prekey".to_string()))?;
+                .ok_or_else(|| retired_prekey_error("signed", &envelope.prekey_id))?;
             (prekey.x25519_secret, prekey.mlkem_secret.clone())
         }
         "one_time_prekey" => {
@@ -284,7 +334,7 @@ pub async fn messaging_receive_encrypted_message(
                                 .cloned()
                         })
                 })
-                .ok_or_else(|| QGuardError::NotFound("local one-time prekey".to_string()))?;
+                .ok_or_else(|| retired_prekey_error("one-time", &envelope.prekey_id))?;
             (prekey.x25519_secret, prekey.mlkem_secret.clone())
         }
         other => {

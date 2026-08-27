@@ -282,13 +282,17 @@ function ScoreRing({ value, label, inverse = false }: { value: number; label: st
   );
 }
 
-function MetricTile({ icon: Icon, label, value, detail, color = BLUE, className }: { icon: LucideIcon; label: string; value: string; detail: string; color?: string; className?: string }) {
+function MetricTile({ icon: Icon, label, value, detail, color = BLUE, className, unmeasured, unmeasuredLabel = 'Awaiting telemetry' }: { icon: LucideIcon; label: string; value: string; detail: string; color?: string; className?: string; unmeasured?: boolean; unmeasuredLabel?: string }) {
   return (
     <Panel className={cn('p-4', className)}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] font-black uppercase tracking-[0.08em] text-white/52">{label}</div>
-          <div className="mt-3 text-2xl font-semibold text-white">{value}</div>
+          {unmeasured ? (
+            <div className="mt-3 text-sm font-semibold text-white/45">{unmeasuredLabel}</div>
+          ) : (
+            <div className="mt-3 text-2xl font-semibold text-white">{value}</div>
+          )}
           <div className="mt-1 text-[10px] leading-4 text-white/42">{detail}</div>
         </div>
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md border" style={{ borderColor: `${color}45`, color, backgroundColor: `${color}12` }}>
@@ -729,14 +733,30 @@ function CompatibilityLayout({ snapshot }: { snapshot: PQAuthSnapshot }) {
         <Panel className="p-5"><SectionTitle>ML-KEM / FIPS 203</SectionTitle><ScoreRing value={snapshot.metrics.trustReadiness} label="KEX" /></Panel>
         <Panel className="p-5"><SectionTitle>ML-DSA / FIPS 204</SectionTitle><ScoreRing value={snapshot.metrics.jwtMigrationScore} label="Sign" /></Panel>
         <Panel className="p-5"><SectionTitle>SLH-DSA / FIPS 205</SectionTitle><ScoreRing value={snapshot.metrics.slhDsaReadiness} label="Anchor" /></Panel>
-        <Panel className="p-5"><SectionTitle>Compatibility Blockers</SectionTitle><ScoreRing value={snapshot.metrics.compatibilityBlockers * 12} label="Risk" inverse /></Panel>
+        {/* A blocker COUNT, shown as a count. It was previously multiplied by 12
+            and drawn as a percentage ring, which invented a risk percentage the
+            engine never produced and saturated at nine blockers. */}
+        <Panel className="p-5">
+          <SectionTitle>Compatibility Blockers</SectionTitle>
+          <div className="grid h-40 place-items-center text-center">
+            <div>
+              <div className="font-mono text-5xl font-semibold" style={{ color: snapshot.metrics.compatibilityBlockers > 0 ? ORANGE : GREEN }}>
+                {integerFmt(snapshot.metrics.compatibilityBlockers)}
+              </div>
+              <div className="mt-2 text-[10px] uppercase tracking-[0.12em] text-white/52">
+                {snapshot.metrics.compatibilityBlockers === 1 ? 'Blocker' : 'Blockers'}
+              </div>
+              <div className="mt-1 text-[10px] leading-4 text-white/38">Quantum-vulnerable algorithms and token size-impact blockers</div>
+            </div>
+          </div>
+        </Panel>
       </section>
       <Panel className="p-5">
         <SectionTitle>Compatibility Surface Assessment</SectionTitle>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {snapshot.compatibilitySurfaces.map((surface) => {
             const SurfaceIcon = iconFor(surface.icon, Boxes);
-            const color = scoreColor(surface.score);
+            const color = surface.assessed ? scoreColor(surface.score) : 'rgba(255,255,255,0.35)';
             return (
               <div key={surface.id} className="rounded-md border border-white/8 bg-white/[0.025] p-4">
                 <div className="flex items-center justify-between gap-3">
@@ -746,12 +766,22 @@ function CompatibilityLayout({ snapshot }: { snapshot: PQAuthSnapshot }) {
                     </span>
                     <span className="truncate text-sm font-semibold text-white">{surface.label}</span>
                   </div>
-                  <span className="font-mono text-sm text-white">{percentFmt(surface.score)}</span>
+                  {surface.assessed ? (
+                    <span className="font-mono text-sm text-white">{percentFmt(surface.score)}</span>
+                  ) : (
+                    <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-white/45">Not Assessed</span>
+                  )}
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
-                  <span className="block h-full rounded-full" style={{ width: `${Math.max(4, surface.score)}%`, backgroundColor: color }} />
+                  {surface.assessed ? (
+                    <span className="block h-full rounded-full" style={{ width: `${Math.max(4, surface.score)}%`, backgroundColor: color }} />
+                  ) : null}
                 </div>
-                <div className="mt-2 text-[10px] uppercase tracking-[0.08em] text-white/38">{integerFmt(surface.count)} matched evidence row(s)</div>
+                <div className="mt-2 text-[10px] uppercase tracking-[0.08em] text-white/38">
+                  {surface.assessed
+                    ? `${integerFmt(surface.count)} matched evidence row(s)`
+                    : 'No evidence discovered for this surface'}
+                </div>
               </div>
             );
           })}
@@ -874,7 +904,14 @@ function RuntimeLayout({ snapshot }: { snapshot: PQAuthSnapshot }) {
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
         {snapshot.runtimeMetrics.map((metric) => (
           <Fragment key={metric.id}>
-            <MetricTile icon={runtimeIcons[metric.id] || Activity} label={metric.label} value={compactFmt(metric.value)} detail={metric.detail} color={metric.id === 'trust-failures' ? ORANGE : metric.id === 'identity-drift' ? RED : GOLD} />
+            <MetricTile
+              icon={runtimeIcons[metric.id] || Activity}
+              label={metric.label}
+              value={compactFmt(metric.value)}
+              detail={metric.detail}
+              color={metric.id === 'trust-failures' ? ORANGE : metric.id === 'identity-drift' ? RED : GOLD}
+              unmeasured={!metric.measured}
+            />
           </Fragment>
         ))}
       </section>
@@ -917,17 +954,25 @@ function ComplianceLayout({ snapshot }: { snapshot: PQAuthSnapshot }) {
         <SectionTitle>Compliance Framework Coverage</SectionTitle>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {snapshot.complianceRows.map((row) => {
-            const color = scoreColor(row.score);
+            const color = row.assessed ? scoreColor(row.score) : 'rgba(255,255,255,0.35)';
             return (
               <div key={row.id} className="rounded-md border border-white/8 bg-white/[0.025] p-4">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm font-semibold text-white">{row.label}</span>
-                  <span className="font-mono text-sm" style={{ color }}>{percentFmt(row.score)}</span>
+                  {row.assessed ? (
+                    <span className="font-mono text-sm" style={{ color }}>{percentFmt(row.score)}</span>
+                  ) : (
+                    <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-white/45">Not Assessed</span>
+                  )}
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
-                  <span className="block h-full rounded-full" style={{ width: `${Math.max(4, row.score)}%`, backgroundColor: color }} />
+                  {row.assessed ? (
+                    <span className="block h-full rounded-full" style={{ width: `${Math.max(4, row.score)}%`, backgroundColor: color }} />
+                  ) : null}
                 </div>
-                <div className="mt-2 text-[10px] uppercase tracking-[0.08em] text-white/38">{row.evidence} / {row.sourceTables.join(', ') || 'compliance_evidence'}</div>
+                <div className="mt-2 text-[10px] uppercase tracking-[0.08em] text-white/38">
+                  {row.assessed ? `${row.evidence} / ${row.sourceTables.join(', ')}` : 'Evidence required — no record names this framework'}
+                </div>
               </div>
             );
           })}

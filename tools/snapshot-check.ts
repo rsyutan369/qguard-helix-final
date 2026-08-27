@@ -18,11 +18,18 @@ function assert(cond: boolean, label: string, extra = '') {
   if (!cond) failures += 1
 }
 
+/* `name` carries the scanner's class prefix ("Cipher Suite: ...") — that is the
+   field rowNamesCryptography() classifies on, and the one the production query
+   selects. A row without it is a POLICY record, not a cryptographic
+   observation, and is deliberately excluded from the captured state. */
 const inventory = [
-  { algorithm: 'RSA-2048', key_size: 2048, protocol: 'TLS 1.2', item_type: 'TLS Cipher Suite', is_quantum_safe: false, exposure_level: 'critical' },
-  { algorithm: 'ECDH-P256', key_size: 256, protocol: 'TLS 1.2', item_type: 'Key Exchange', is_quantum_safe: false, exposure_level: 'high' },
-  { algorithm: 'AES-128-CBC', key_size: 128, protocol: '', item_type: 'Symmetric', is_quantum_safe: false, exposure_level: 'medium' },
+  { name: 'Cipher Suite: TLS_RSA_WITH_AES_128_CBC_SHA', algorithm: 'RSA-2048', key_size: 2048, protocol: 'TLS 1.2', item_type: 'TLS Cipher Suite', is_quantum_safe: false, exposure_level: 'critical' },
+  { name: 'Key Exchange: ECDH-P256', algorithm: 'ECDH-P256', key_size: 256, protocol: 'TLS 1.2', item_type: 'Key Exchange', is_quantum_safe: false, exposure_level: 'high' },
+  { name: 'Symmetric Encryption: AES-128-CBC', algorithm: 'AES-128-CBC', key_size: 128, protocol: '', item_type: 'Symmetric', is_quantum_safe: false, exposure_level: 'medium' },
 ]
+/* A governance/policy row that names no cryptography. It must NOT reach the
+   captured state, and must be reported through policyRecordsExcluded. */
+const policyRow = { name: 'Crypto Policy: minimum key length', algorithm: 'RSA-2048', key_size: 2048, protocol: '', item_type: 'Policy', is_quantum_safe: false, exposure_level: 'low' }
 const certs = [
   { name: 'api.customer.com', algorithm: 'RSA-2048', key_size: 2048, issuer: 'Internal CA', not_after: '2026-12-31T00:00:00Z' },
   { name: 'gateway.customer.com', algorithm: 'ECDSA-P256', key_size: 256, issuer: 'Internal CA', not_after: '2027-06-30T00:00:00Z' },
@@ -42,14 +49,24 @@ assert(state.certificates.length === 2 && state.certificates[0].notAfter === '20
 assert(state.keys.length === 2 && state.pki.issuers.includes('Internal CA'), 'captures keys + PKI issuers')
 assert(state.configuration.paths.includes('/etc/nginx/conf'), 'captures configuration paths from job metadata')
 assert(state.componentCount === inventory.length + certs.length + keys.length, 'component count = inventory + certs + keys', `${state.componentCount}`)
+const withPolicy = deriveCryptoState([...inventory, policyRow], certs, keys, jobMeta, 'asset-web-01')
+assert(withPolicy.policyRecordsExcluded === 1, 'policy records are excluded from captured crypto state, and counted', `${withPolicy.policyRecordsExcluded} excluded`)
+assert(withPolicy.tls.cipherSuites.length === state.tls.cipherSuites.length, 'a policy row adds no cipher suite to the snapshot')
 
 console.log('\n[2] SHA3-256 integrity — deterministic + key-order stable')
 const h1 = hashState(state)
 const h2 = hashState(JSON.parse(JSON.stringify(state)))
 assert(h1.hash === h2.hash && h1.hash.length === 64, 'same state → same 64-hex hash', h1.hash.slice(0, 16) + '…')
 // Key order must not matter (canonical sorted-key JSON).
-const reordered = { componentCount: state.componentCount, keys: state.keys, algorithms: state.algorithms, certificates: state.certificates, tls: state.tls, pki: state.pki, configuration: state.configuration }
+/* Reversing the real key set proves order-independence without going stale as
+   SnapshotCryptoState gains fields (the previous hand-listed subset silently
+   dropped policyRecordsExcluded and failed for the wrong reason). */
+const reordered = Object.fromEntries(
+  Object.entries(state as unknown as Record<string, unknown>).reverse(),
+) as unknown as typeof state
+assert(Object.keys(reordered).length === Object.keys(state).length, 'reordered fixture covers every state field', `${Object.keys(state).length} fields`)
 assert(canonicalize(reordered) === canonicalize(state), 'canonical form is key-order independent')
+assert(hashState(reordered).hash === h1.hash, 'key order does not change the integrity hash')
 assert(h1.bytes > 0, 'size accounting is real (canonical byte length)', `${h1.bytes} bytes`)
 
 console.log('\n[3] Tamper detection — the restore integrity gate')

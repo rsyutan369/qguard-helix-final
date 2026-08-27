@@ -1,5 +1,15 @@
 // AES-256-GCM per-frame sealing for E2EE media. Nonce (12B) = contextTag(4B) | counter(8B BE).
 // Wire format: [header (headerLength, unencrypted)][ciphertext+16B tag][8B BE counter].
+//
+// The unencrypted header and the frame counter are both bound into the GCM tag
+// as additional authenticated data. They HAVE to travel in the clear — the RTP
+// depacketizer reads the header, and the counter is the nonce, so neither can be
+// encrypted — but leaving them merely unencrypted also left them unauthenticated,
+// and anything on the media path could rewrite them without detection. Flipping
+// VP8's keyframe/delta marker or rewriting the counter cannot recover plaintext,
+// but it can corrupt or stall a decoder, and "the attacker cannot read it" is not
+// the same claim as "the attacker cannot change it". As AAD they are covered by
+// the tag: any edit makes the frame fail to open, and a failed frame is dropped.
 
 /**
  * Unencrypted leading bytes the RTP (de)packetizer needs — the Chrome
@@ -24,13 +34,34 @@ function nonce(contextTag: Uint8Array, counter: bigint): Uint8Array {
   return n;
 }
 
+/**
+ * Everything that travels in the clear, in the order it appears on the wire:
+ * the codec header followed by the 8-byte counter. Both sides build this the
+ * same way from the frame they actually have, so a receiver that was handed
+ * different bytes computes different AAD and the tag check fails.
+ */
+function aad(header: Uint8Array, counter: bigint): Uint8Array {
+  const out = new Uint8Array(header.length + 8);
+  out.set(header, 0);
+  new DataView(out.buffer).setBigUint64(header.length, counter, false);
+  return out;
+}
+
 export async function sealFrame(
   key: CryptoKey, contextTag: Uint8Array, counter: bigint, headerLength: number, frame: Uint8Array,
 ): Promise<ArrayBuffer> {
   const header = frame.subarray(0, headerLength);
   const payload = frame.subarray(headerLength);
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce(contextTag, counter) as BufferSource }, key, payload as BufferSource),
+    await crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv: nonce(contextTag, counter) as BufferSource,
+        additionalData: aad(header, counter) as BufferSource,
+      },
+      key,
+      payload as BufferSource,
+    ),
   );
   const out = new Uint8Array(headerLength + ct.length + 8);
   out.set(header, 0);
@@ -47,7 +78,15 @@ export async function openFrame(
   const header = frame.subarray(0, headerLength);
   const ct = frame.subarray(headerLength, frame.length - 8);
   const pt = new Uint8Array(
-    await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce(contextTag, counter) as BufferSource }, key, ct as BufferSource),
+    await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: nonce(contextTag, counter) as BufferSource,
+        additionalData: aad(header, counter) as BufferSource,
+      },
+      key,
+      ct as BufferSource,
+    ),
   );
   const out = new Uint8Array(headerLength + pt.length);
   out.set(header, 0);

@@ -28,7 +28,8 @@ import { buildHndlIntelligence } from './harvest-now'
 import { buildWorkflowState } from './migration-workflow'
 import { buildSnapshotDashboard } from './migration-snapshots'
 import { buildAdjacency, computeBlastRadius } from '@/lib/exposure-graph-intel'
-import { ROLE_CAPABILITIES, STANDARDS, modulePath, moduleLabel } from './copilot-knowledge'
+import { ROLE_CAPABILITIES, STANDARDS, algorithmFamily, algorithmFamilyLabel, modulePath, moduleLabel } from './copilot-knowledge'
+import type { AlgorithmFamily } from './copilot-knowledge'
 import type { CopilotEvidence, CopilotRole, CopilotToolRun, CopilotToolStatus } from '@/types/copilot'
 import type { ExposureIntelligence } from '@/types/exposure-graph'
 
@@ -271,6 +272,9 @@ register({
     // the raw question. Tokens are OR-matched across name/type/environment so
     // "production server" finds environment=production OR type=server.
     const tokens = str(args.query).replace(/[,%()]/g, '').slice(0, 80).split(/\s+/).filter(Boolean).slice(0, 3)
+    // Algorithms are resolved by findAssetsUsingAlgorithm against the crypto
+    // inventory — they are NOT asset names and must never reach this ILIKE.
+
     const rows = await tenantRows(ctx, 'assets', ASSET_SELECT, (query) => {
       let built = query.order('updated_at', { ascending: false })
       if (tokens.length) {
@@ -287,6 +291,141 @@ register({
       { matches: assets.slice(0, 50), matched: assets.length, query: q, filtered },
       [ev('Assets & CBOM', 'Matching assets', String(assets.length), { detail: filtered ? `filter "${[q, args.internetFacing === true ? 'internet-facing' : '', str(args.criticality)].filter(Boolean).join(' + ')}"` : 'full inventory scan', deepLink: modulePath('assets') })],
       assets.length,
+    )
+  },
+})
+
+register({
+  name: 'findAssetsUsingAlgorithm',
+  module: 'cbom',
+  description: 'Resolve an algorithm family (RSA, ECDSA, SHA-1, 3DES, ML-KEM…) to the assets actually using it, with owner, criticality and exposure',
+  capability: 'read',
+  async execute(ctx, args) {
+    /*
+     * The question "which systems use RSA and who owns them?" is a JOIN, not a
+     * name search. It was previously answered by an ILIKE over assets.name,
+     * which can only match an asset literally CALLED "rsa" — so the answer was
+     * always "no assets match that filter" no matter how much RSA the tenant
+     * ran. Algorithms live in the cryptographic inventory and on certificates;
+     * this tool reads them there and joins back to the owning asset.
+     *
+     * Classification uses the platform-canonical `algorithmFamily()`, so a row
+     * Sophia calls RSA is the same row CBOM, Governance and the QR Engine call
+     * RSA. Matching is by FAMILY, never by substring: a naive '%dsa%' matches
+     * ECDSA and ML-DSA too, which would report post-quantum components as
+     * classical DSA.
+     */
+    const families = (Array.isArray(args.algorithms) ? args.algorithms : [])
+      .map((f) => String(f))
+      .filter(Boolean) as AlgorithmFamily[]
+    if (!families.length) {
+      return ok({ families: [], assets: [], components: 0 }, [], 0, 'No algorithm was named in the question.')
+    }
+    const wanted = new Set<string>(families)
+
+    const [inventory, certs, assets] = await Promise.all([
+      tenantRows(ctx, 'crypto_inventory', 'id, asset_id, name, item_type, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, updated_at, created_at', (q) => q, 2000),
+      tenantRows(ctx, 'certificates', 'id, asset_id, name, algorithm, key_size, issuer, not_after, updated_at, created_at', (q) => q, 800),
+      tenantRows(ctx, 'assets', ASSET_SELECT, (q) => q, 800),
+    ])
+
+    const assetById = new Map(assets.map((a) => [str(a.id), a]))
+    // A component's algorithm can be recorded on `algorithm` or embedded in the
+    // scanner's class-prefixed `name` ("Cipher Suite: TLS_RSA_WITH_..."), so
+    // both are classified and either may establish the family.
+    const familyOf = (row: Record<string, unknown>): AlgorithmFamily => {
+      const direct = algorithmFamily(str(row.algorithm))
+      if (direct !== 'unknown') return direct
+      return algorithmFamily(`${str(row.name)} ${str(row.protocol)}`)
+    }
+
+    interface Hit { family: AlgorithmFamily; label: string; kind: 'component' | 'certificate'; assetId: string; detail: string; keySize: number }
+    const hits: Hit[] = []
+    // Newest observation across the rows actually read — this is what makes the
+    // answer able to state how fresh its evidence is.
+    let observedAtMs = 0
+    const noteObserved = (row: Record<string, unknown>) => {
+      for (const field of ['updated_at', 'created_at']) {
+        const ms = new Date(str(row[field])).getTime()
+        if (Number.isFinite(ms) && ms > observedAtMs) observedAtMs = ms
+      }
+    }
+    for (const row of inventory) {
+      const family = familyOf(row)
+      if (!wanted.has(family)) continue
+      noteObserved(row)
+      hits.push({ family, label: str(row.algorithm) || str(row.name) || algorithmFamilyLabel(family), kind: 'component', assetId: str(row.asset_id), detail: str(row.item_type) || 'component', keySize: num(row.key_size) })
+    }
+    for (const row of certs) {
+      const family = familyOf(row)
+      if (!wanted.has(family)) continue
+      noteObserved(row)
+      hits.push({ family, label: str(row.algorithm) || algorithmFamilyLabel(family), kind: 'certificate', assetId: str(row.asset_id), detail: `certificate${str(row.issuer) ? ` issued by ${str(row.issuer)}` : ''}`, keySize: num(row.key_size) })
+    }
+
+    // Group by owning asset. Components whose asset_id does not resolve are
+    // reported as unattributed rather than silently dropped or attached to an
+    // arbitrary asset — the count must reconcile with the CBOM total.
+    const grouped = new Map<string, { asset: ReturnType<typeof mapAsset>; components: number; certificates: number; algorithms: Set<string> }>()
+    let unattributed = 0
+    for (const hit of hits) {
+      const raw = hit.assetId ? assetById.get(hit.assetId) : undefined
+      if (!raw) { unattributed += 1; continue }
+      const key = str(raw.id)
+      const entry = grouped.get(key) || { asset: mapAsset(raw), components: 0, certificates: 0, algorithms: new Set<string>() }
+      if (hit.kind === 'certificate') entry.certificates += 1
+      else entry.components += 1
+      entry.algorithms.add(hit.label)
+      grouped.set(key, entry)
+    }
+
+    let rows = [...grouped.values()].map((entry) => ({
+      assetId: entry.asset.id,
+      name: entry.asset.name,
+      type: entry.asset.type,
+      environment: entry.asset.environment,
+      owner: entry.asset.owner || null,
+      criticality: entry.asset.criticality,
+      internetFacing: entry.asset.internetFacing,
+      components: entry.components,
+      certificates: entry.certificates,
+      algorithms: [...entry.algorithms].slice(0, 6),
+    }))
+
+    // Scope filters are applied AFTER attribution so the answer can state both
+    // "N assets overall" and "M of them internet-facing".
+    const totalAssets = rows.length
+    if (args.internetFacing === true) rows = rows.filter((r) => r.internetFacing)
+    if (str(args.criticality)) rows = rows.filter((r) => r.criticality === str(args.criticality))
+    rows.sort((a, b) => Number(b.internetFacing) - Number(a.internetFacing) || (b.components + b.certificates) - (a.components + a.certificates))
+
+    const withOwner = rows.filter((r) => r.owner).length
+    const labels = families.map(algorithmFamilyLabel)
+    const scopeNote = args.internetFacing === true ? ' internet-facing' : ''
+
+    return ok(
+      {
+        families,
+        algorithmLabels: labels,
+        assets: rows.slice(0, 50),
+        matchedAssets: rows.length,
+        assetsBeforeScope: totalAssets,
+        components: hits.filter((h) => h.kind === 'component').length,
+        certificates: hits.filter((h) => h.kind === 'certificate').length,
+        unattributed,
+        ownersKnown: withOwner,
+        ownersUnknown: rows.length - withOwner,
+        internetFacing: rows.filter((r) => r.internetFacing).length,
+      },
+      hits.length
+        ? [ev('CBOM Explorer', `${labels.join(', ')} usage`, `${rows.length}${scopeNote} asset(s)`, {
+            detail: `${hits.filter((h) => h.kind === 'component').length} component(s), ${hits.filter((h) => h.kind === 'certificate').length} certificate(s)${unattributed ? ` · ${unattributed} not linked to an asset` : ''}`,
+            observedAt: observedAtMs ? new Date(observedAtMs).toISOString() : undefined,
+            deepLink: modulePath('cbom'),
+          })]
+        : [ev('CBOM Explorer', `${labels.join(', ')} usage`, 'none found', { detail: `no ${labels.join('/')} component or certificate exists in the current inventory`, deepLink: modulePath('cbom') })],
+      hits.length,
+      hits.length ? undefined : `No ${labels.join(' or ')} usage is recorded in the cryptographic inventory.`,
     )
   },
 })

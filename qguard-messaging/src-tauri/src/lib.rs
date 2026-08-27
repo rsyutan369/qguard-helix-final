@@ -123,6 +123,13 @@ pub fn run() {
             let state = AppState::new(data_dir)?;
             app.manage(state);
 
+            // Hash the running image now, on a background thread. It cannot
+            // change while the process lives, so it is measured once — and
+            // measuring it here keeps the read (tens of MB; the whole APK on
+            // Android) off the main thread, where the synchronous
+            // `security_hardening_status` command would otherwise do it.
+            crate::security::prime_binary_measurement();
+
             // Task 9: Grant WebView2 camera + microphone permission on Windows
             // so getUserMedia works without a user-facing OS prompt blocking the call.
             #[cfg(target_os = "windows")]
@@ -192,6 +199,8 @@ pub fn run() {
             keys_replenish_one_time_prekeys,
             keys_unlock_private_key,
             keys_rotate_prekeys,
+            keys_reset_device_identity,
+            keys_ack_superseded_device,
             messaging_send_encrypted_message,
             messaging_receive_encrypted_message,
             messaging_delete_encrypted_message,

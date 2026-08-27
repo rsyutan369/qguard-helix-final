@@ -1,0 +1,614 @@
+/* =============================================================================
+   MODERNIST - Android skin  (QGuard App.dc.html, design system "modernist")
+   =============================================================================
+   Swiss/editorial reading of the QGuard mobile app: one grotesque, zero radius,
+   hard rules instead of shadows, ink-on-paper with a single vermilion accent.
+
+   SCOPE - every rule below hangs off `html[data-qg-skin="modernist"]`, which is
+   set once from main.tsx and ONLY when isAndroidRuntime() is true. The sheet is
+   therefore completely inert on desktop, including a narrow desktop window that
+   trips the <=860px mobile shell. Nothing here is a media query.
+
+   WHAT IT TOUCHES - presentation only. No component logic, no crypto path and
+   no data binding is changed by this file. It retunes two existing vocabularies:
+
+     1. the `--qg-*` / `.qg-*` mobile system (styles/mobile.css)
+     2. the Tailwind utilities the module pages are written in (globals.css)
+
+   ...which is why every Android surface changes without any page being rewritten.
+
+   Loaded from main.tsx AFTER globals.css and mobile.css.
+   ========================================================================== */
+
+/* --- 0. Typeface ---------------------------------------------------------- */
+
+/* Archivo, the design system's face, bundled locally rather than linked.
+   The Tauri CSP is `default-src 'self'` with `font-src 'self' data:`, and the
+   Android build has to render correctly offline, so a Google Fonts <link> is
+   both blocked and wrong here. Files live in public/fonts and Vite copies them
+   into dist/ verbatim, which is what Tauri packages.
+
+   One VARIABLE file per subset covers 100-900 in ~34 KB, which is smaller than
+   the three static instances the design's own stylesheet requests (400/600/800)
+   and also serves the 500/700 steps Tailwind's font-medium/font-bold utilities
+   ask for. The vietnamese subset is deliberately not shipped - no surface in
+   this app carries Vietnamese text, and the fallback stack still covers it.
+
+   `font-display: swap` so a cold launch paints in the platform grotesque
+   immediately rather than holding the first frame blank.
+
+   Licence: SIL Open Font License 1.1 - see public/fonts/OFL.txt.
+   These faces are declared unconditionally (an at-rule cannot be scoped by a
+   selector) but are only ever *requested* by an element that resolves to the
+   Archivo family, which only happens under the Modernist skin. */
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/archivo-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/archivo-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* --- 1. Tokens - light ("paper") ------------------------------------------ */
+
+html[data-qg-skin="modernist"] {
+  /* Ramps lifted verbatim from the design system's styles.css so the app and
+     the canvas stay one system. Both ramps share a lightness scale. */
+  --m-bg: #f3f2f2;
+  --m-surface: #eae9e9;
+  --m-ink: #201e1d;
+
+  /* CONSTANT pair -- deliberately NOT redefined in the dark block below.
+     `--m-ink` is the semantic foreground and inverts with the theme; the slab
+     is a physical dark block (the masthead, an inverted hero, a scrim) and has
+     to stay dark in both themes or it turns into a light band with light type
+     on it. The design system draws the same distinction: its dark block
+     retunes every ramp and leaves --qg-ink / --qg-on-ink alone. */
+  --m-slab: #201e1d;
+  --m-on-slab: #f3f2f2;
+  /* The accent's TEXT step for use on a slab. The ramp inverts with the theme
+     and the slab does not, so accent type on ink needs its own constant. */
+  --m-accent-on-slab: #ffc4b8;
+
+  /* Also constant: the design keeps --color-accent at #ec3013 in both themes
+     and inverts only the accent RAMP, so a primary button is the same red on
+     paper and on ink -- and one contrast colour works against both. */
+  --m-accent: #ec3013;
+  --m-divider: color-mix(in srgb, #201e1d 40%, transparent);
+  /* 32%, not a whisper: in this system a 1px rule is a drawn line - list
+     separators, card edges, keypad keys and `.border-line` all read from it,
+     and at 22% they dissolved into the ground. The design's own divider is
+     40% ink; 32% is that value held back just enough for 1px hairlines inside
+     a card, with --m-divider carrying the full weight for edges and 2px rules. */
+  --m-rule: color-mix(in srgb, #201e1d 32%, transparent);
+
+  --m-n100: #f8f4f4;
+  --m-n200: #eae7e7;
+  --m-n300: #d7d3d3;
+  --m-n400: #bab6b6;
+  --m-n500: #9b9797;
+  --m-n600: #7d7979;
+  --m-n700: #605d5d;
+  --m-n800: #444141;
+  --m-n900: #2d2b2b;
+
+  --m-a100: #fff2ef;
+  --m-a200: #ffe0d9;
+  --m-a300: #ffc4b8;
+  --m-a400: #ff9783;
+  --m-a500: #ff563c;
+  --m-a600: #dd2b0f;
+  --m-a700: #ae1800;
+  --m-a800: #7c1405;
+  --m-a900: #4d170e;
+
+  /* The accent is split into a TEXT role and a GRAPHIC role. #ec3013 clears
+     3.8:1 on paper - fine as a fill or a stroke, short of the 4.5:1 floor for
+     the 9-11px labels this design is full of, so type takes the 700 step. */
+  --m-accent-text: var(--m-a700);
+  --m-on-accent: var(--m-on-slab);
+
+  /* ---- mobile system (styles/mobile.css) ---- */
+  --qg-canvas: var(--m-n200);
+  --qg-canvas-deep: var(--m-n300);
+  --qg-panel: var(--m-bg);
+  --qg-panel-soft: var(--m-surface);
+  --qg-panel-glass: var(--m-bg);
+  --qg-hairline: var(--m-rule);
+  --qg-hairline-strong: var(--m-divider);
+
+  --qg-text: var(--m-ink);
+  --qg-text-2: var(--m-n800);
+  --qg-text-3: var(--m-n700);
+
+  --qg-helix: var(--m-accent-text);
+  --qg-helix-bright: var(--m-accent);
+  --qg-flux: var(--m-accent-text);
+  --qg-plasma: var(--m-ink);          /* "verified" reads as authority, not green */
+  --qg-warn: var(--m-a800);
+  --qg-alert: var(--m-a700);
+  --qg-helix-wash: var(--m-a100);
+  --qg-plasma-wash: transparent;
+  --qg-warn-wash: var(--m-a200);
+  --qg-alert-wash: var(--m-accent);
+
+  /* Graphic-only tones. Severity reads as darkness + saturation, so the four
+     reactor arcs stay tellable apart inside a one-accent palette. */
+  --qg-g-ok: var(--m-ink);
+  --qg-g-info: var(--m-n600);
+  --qg-g-warn: var(--m-a500);
+  --qg-g-alert: var(--m-a700);
+
+  --qg-cta-from: var(--m-accent);
+  --qg-cta-mid: var(--m-accent);
+  --qg-cta-to: var(--m-accent);
+
+  /* Flat by construction. Depth comes from rules and inversion, never blur. */
+  --qg-shadow: none;
+  --qg-shadow-lift: none;
+  --qg-glow: none;
+  --qg-inset: none;
+  --qg-stage: none;
+
+  /* One typeface, as the system specifies. Archivo is bundled locally (see the
+     @font-face block at the top of this file), so this resolves to the real
+     face. The tail of the stack still matters: it paints the `font-display:
+     swap` frame and covers any glyph outside the two subsets that ship. */
+  --qg-font-display: "Archivo", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --qg-font-mono: "Archivo", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  /* First-run tour: one hue means all three slides tint the same object the
+     same colour. The topic is carried by the copy, not by a third accent. */
+  --qg-onb-calls: var(--m-accent-text);
+  --qg-onb-calls-bright: var(--m-accent);
+  --qg-onb-vault: var(--m-accent-text);
+  --qg-onb-vault-bright: var(--m-accent);
+
+  /* ---- page system (styles/globals.css) ---- */
+  --app-bg: var(--m-n200);
+  --app-panel: var(--m-bg);
+  --app-line: var(--m-rule);
+  --app-muted-panel: var(--m-surface);
+  --app-ink-950: var(--m-ink);
+  --app-ink-900: var(--m-ink);
+  --app-ink-800: var(--m-n900);
+  --app-ink-700: var(--m-n800);
+  --app-ink-600: var(--m-n800);
+  --app-ink-500: var(--m-n700);
+  --app-ink-400: var(--m-n700);
+}
+
+/* --- 2. Tokens - dark ("ink") --------------------------------------------- */
+
+html[data-qg-skin="modernist"].theme-dark {
+  --m-bg: #1b1a19;
+  --m-surface: #262423;
+  --m-ink: #f3f2f2;
+  --m-divider: color-mix(in srgb, #f3f2f2 38%, transparent);
+  --m-rule: color-mix(in srgb, #f3f2f2 26%, transparent);
+
+  --m-n100: #2d2b2b;
+  --m-n200: #444141;
+  --m-n300: #605d5d;
+  --m-n400: #7d7979;
+  --m-n500: #9b9797;
+  --m-n600: #bab6b6;
+  --m-n700: #d7d3d3;
+  --m-n800: #eae7e7;
+  --m-n900: #f8f4f4;
+
+  --m-a100: #4d170e;
+  --m-a200: #7c1405;
+  --m-a300: #ae1800;
+  --m-a400: #dd2b0f;
+  --m-a500: #ff563c;
+  --m-a600: #ff9783;
+  --m-a700: #ffc4b8;
+  --m-a800: #ffe0d9;
+  --m-a900: #fff2ef;
+
+  --m-accent-text: var(--m-a700);
+
+  /* The ground inverts, so the canvas/panel relationship inverts with it: the
+     shell sits on the darkest tone and blocks lift toward the page ground. */
+  --qg-canvas: #131211;
+  --qg-canvas-deep: #0d0c0c;
+
+  --qg-warn: var(--m-a800);
+  --qg-alert: var(--m-a700);
+  --qg-alert-wash: var(--m-a500);
+
+  --qg-g-ok: var(--m-ink);
+  --qg-g-info: var(--m-n500);
+  --qg-g-warn: var(--m-a600);
+  --qg-g-alert: var(--m-a500);
+
+  --app-bg: #131211;
+}
+
+/* --- 3. Ground ------------------------------------------------------------ */
+
+html[data-qg-skin="modernist"] body {
+  font-family: var(--qg-font-display);
+  background: var(--app-bg);          /* no diagonal gradient wash */
+}
+
+/* The instrument backdrop (radial stage light + coordinate grid) is the Cold
+   Fusion signature and the opposite of this system. Removed, not dimmed. */
+html[data-qg-skin="modernist"] .qg-stage::before,
+html[data-qg-skin="modernist"] .qg-stage::after {
+  content: none;
+}
+
+html[data-qg-skin="modernist"] .qg-orb {
+  display: none;
+}
+
+/* The reactor keeps its arcs and its live sweep - both are hard-edged readouts.
+   The breathing halo behind them is a 20px blur cloud, which is the one part of
+   the gauge this system has no vocabulary for. */
+html[data-qg-skin="modernist"] .qg-reactor-halo {
+  display: none;
+}
+
+html[data-qg-skin="modernist"] .qg-glass {
+  background: var(--qg-panel);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* --- 4. Type -------------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .qg-display {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  text-transform: uppercase;
+}
+
+/* Wide-tracked micro-caps carry the voice of this system, same as they do on
+   the canvas - but set in the grotesque, not a mono face. */
+html[data-qg-skin="modernist"] .qg-eyebrow {
+  font-family: var(--qg-font-display);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  color: var(--qg-text-3);
+}
+
+html[data-qg-skin="modernist"] .qg-mono {
+  font-family: var(--qg-font-display);
+  letter-spacing: 0.06em;
+}
+
+html[data-qg-skin="modernist"] .qg-num {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+/* --- 5. Surfaces ---------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .qg-card,
+html[data-qg-skin="modernist"].theme-dark .qg-card {
+  border: 1px solid var(--qg-hairline-strong);
+  border-radius: 0 !important;
+  background: var(--qg-panel);
+  box-shadow: none;
+}
+
+html[data-qg-skin="modernist"] .qg-card-press:active {
+  transform: none;                    /* blocks do not squash; they invert */
+  background: var(--m-a100);
+  border-color: var(--m-accent);
+}
+
+/* --- 6. Controls ---------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .qg-btn {
+  border-radius: 0 !important;
+  background: var(--m-accent);
+  color: var(--m-on-accent);
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  font-size: 13.5px;
+  letter-spacing: 0.02em;
+  padding: 14px 16px;
+  justify-content: flex-start;        /* a full-width button is left-set here */
+  text-align: left;
+  border: 1px solid var(--m-accent);
+  box-shadow: none;
+}
+
+/* The specular sweep is a glass affordance. There is no glass here. */
+html[data-qg-skin="modernist"] .qg-btn::after {
+  content: none;
+}
+
+html[data-qg-skin="modernist"] .qg-btn:active:not(:disabled) {
+  transform: none;
+  background: var(--m-a600);
+  border-color: var(--m-a600);
+}
+
+html[data-qg-skin="modernist"] .qg-btn-quiet {
+  background: transparent;
+  color: var(--qg-text);
+  border-color: var(--qg-hairline-strong);
+}
+
+html[data-qg-skin="modernist"] .qg-btn-quiet:active:not(:disabled) {
+  background: color-mix(in srgb, var(--m-ink) 10%, transparent);
+  border-color: var(--qg-hairline-strong);
+}
+
+html[data-qg-skin="modernist"] .qg-icon-btn {
+  border-radius: 0 !important;
+  height: 36px;
+  width: 36px;
+  border: 1px solid var(--qg-hairline-strong);
+  background: transparent;
+  color: var(--qg-text);
+}
+
+html[data-qg-skin="modernist"] .qg-icon-btn:active {
+  transform: none;
+  color: var(--m-on-accent);
+  background: var(--m-accent);
+  border-color: var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] .qg-focusable:focus-visible {
+  outline: 2px solid var(--m-accent);
+  outline-offset: 2px;
+  border-radius: 0;
+}
+
+/* --- 7. Status vocabulary ------------------------------------------------- */
+
+/* Four steps that escalate by WEIGHT rather than by hue, because the palette
+   has exactly one hue: outline -> wash -> wash + rule -> solid. */
+html[data-qg-skin="modernist"] .qg-pill {
+  border-radius: 0 !important;
+  font-family: var(--qg-font-display);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 4px 7px;
+  gap: 5px;
+}
+
+html[data-qg-skin="modernist"] .qg-tone-ok {
+  color: var(--m-ink);
+  background: transparent;
+  border-color: var(--m-ink);
+}
+
+html[data-qg-skin="modernist"] .qg-tone-info {
+  color: var(--m-a800);
+  background: var(--m-a100);
+  border-color: transparent;
+}
+
+html[data-qg-skin="modernist"] .qg-tone-warn {
+  color: var(--m-a800);
+  background: var(--m-a200);
+  border-color: var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] .qg-tone-alert {
+  color: var(--m-on-accent);
+  background: var(--m-accent);
+  border-color: var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] .qg-tone-mute {
+  color: var(--m-n700);
+  background: transparent;
+  border-color: var(--m-n400);
+}
+
+html[data-qg-skin="modernist"] .qg-live-dot {
+  border-radius: 0;                   /* a square tally light, not a bulb */
+  height: 6px;
+  width: 6px;
+}
+
+/* --- 8. Bottom navigation ------------------------------------------------- */
+
+/* Edge-to-edge tab rail: the design seats navigation ON the page rule instead
+   of floating a capsule above it, and marks the active tab with a 2px accent
+   rule along its top edge. */
+html[data-qg-skin="modernist"] .qg-nav {
+  max-width: none;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-top: 2px solid var(--qg-hairline-strong);
+  border-radius: 0 !important;
+  background: var(--qg-panel);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+html[data-qg-skin="modernist"] .qg-nav-pill {
+  display: none;                      /* the top rule is the indicator */
+}
+
+html[data-qg-skin="modernist"] .qg-nav-item {
+  font-family: var(--qg-font-display);
+  font-size: 8.5px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--m-n700);
+  padding: 11px 2px 9px;
+  gap: 6px;
+  border-radius: 0;
+}
+
+html[data-qg-skin="modernist"] .qg-nav-item[data-active="true"] {
+  color: var(--m-accent-text);
+  border-top: 2px solid var(--m-accent);
+  margin-top: -2px;
+}
+
+html[data-qg-skin="modernist"] .qg-nav-item[data-active="true"] svg {
+  transform: none;
+}
+
+/* The rail is part of the page, not a capsule floating over it: the wrapper
+   gives up its gutter and the rail itself absorbs the gesture-bar inset, so its
+   ground runs to the physical bottom edge. */
+html[data-qg-skin="modernist"] nav.mobile-safe-bottom {
+  padding: 0 !important;
+}
+
+html[data-qg-skin="modernist"] .qg-nav {
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
+}
+
+/* Content clears the shorter rail (the old value cleared a floating capsule
+   plus its drop shadow) and keeps a narrow gutter, so full-width rules read as
+   rules without any page text touching the bezel. */
+html[data-qg-skin="modernist"] .mobile-shell > main {
+  padding-left: 12px;
+  padding-right: 12px;
+  padding-top: 12px;
+  padding-bottom: calc(78px + env(safe-area-inset-bottom));
+}
+
+html[data-qg-skin="modernist"] .qg-badge {
+  border-radius: 0;
+  height: 15px;
+  min-width: 15px;
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  font-size: 8.5px;
+  background: var(--m-accent);
+  color: var(--m-on-accent);
+  box-shadow: none;
+}
+
+/* --- 9. Sheet ------------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .qg-sheet,
+html[data-qg-skin="modernist"].theme-dark .qg-sheet {
+  max-width: none;
+  border: 0;
+  border-top: 2px solid var(--qg-hairline-strong);
+  border-radius: 0 !important;
+  background: var(--qg-panel);
+  box-shadow: none;
+}
+
+html[data-qg-skin="modernist"] .qg-scrim {
+  background: color-mix(in srgb, var(--m-slab) 72%, transparent);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Selected module: an accent-filled chip inside an accent-ruled block. The
+   inline Cold Fusion gradient resolves to the pale accent-TEXT step under this
+   palette, so it is restated here rather than inherited. */
+html[data-qg-skin="modernist"] [data-module-active] {
+  border-color: var(--m-accent) !important;
+  background: var(--m-a100);
+}
+
+html[data-qg-skin="modernist"] [data-module-active] > span:first-child {
+  background: var(--m-accent) !important;
+  color: var(--m-on-accent) !important;
+}
+
+html[data-qg-skin="modernist"] .qg-grabber {
+  border-radius: 0;
+  height: 2px;
+  width: 34px;
+  background: var(--qg-hairline-strong);
+}
+
+/* --- 10. Tiles ------------------------------------------------------------ */
+
+html[data-qg-skin="modernist"] .qg-tile-chip {
+  border-radius: 0 !important;
+  height: 34px;
+  width: 34px;
+  border: 1px solid var(--m-accent);
+  background: transparent;
+  color: var(--m-accent-text) !important;
+}
+
+/* --- 11. Motion ----------------------------------------------------------- */
+
+/* The system moves in straight lines. Entrances translate on one axis; the
+   spring and the scale come out - nothing here overshoots. */
+html[data-qg-skin="modernist"] .qg-rise {
+  animation-name: qgm-rise;
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.16, 0.84, 0.3, 1);
+  animation-delay: calc(var(--qg-i, 0) * 55ms);
+}
+
+html[data-qg-skin="modernist"] .qg-slide {
+  animation-name: qgm-slide;
+  animation-duration: 380ms;
+  animation-timing-function: cubic-bezier(0.16, 0.84, 0.3, 1);
+}
+
+@keyframes qgm-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes qgm-slide {
+  from { opacity: 0; transform: translateX(-10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Signature motion from the canvas: a scan bar crossing the quantum core, a
+   pulsing tally light, an expanding registration ring, a meter drawing to width.
+   (The masthead carried a second, near-identical sweep; two bars crossing one
+   screen read as a rendering fault, so only the core keeps one.) */
+@keyframes qgm-scan {
+  0%   { transform: translateY(-6px); opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { transform: translateY(120px); opacity: 0; }
+}
+
+@keyframes qgm-pulse {
+  0%, 100% { opacity: 0.2; }
+  50%      { opacity: 1; }
+}
+
+@keyframes qgm-ring {
+  0%   { transform: scale(0.55); opacity: 0.55; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+@keyframes qgm-meter {
+  from { width: 0; }
+}
+
+@keyframes qgm-orbit {
+  to { transform: rotate(360deg); }
+}

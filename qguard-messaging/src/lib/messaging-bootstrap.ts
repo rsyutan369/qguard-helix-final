@@ -8,6 +8,11 @@ export interface PublicIdentityBundle {
   device_id: string;
   identity_id: string;
   device_label: string;
+  /**
+   * A device row this launch superseded by re-keying. Present only when the
+   * local identity was replaced (the FIPS 203 cutover, or an explicit reset).
+   */
+  replaced_device_id?: string | null;
   x25519_identity_public: number[];
   mlkem_identity_public: number[];
   ed25519_identity_public: number[];
@@ -215,7 +220,47 @@ async function ensureDesktopDevice(client: SupabaseClient, userId: string): Prom
 
   await ensureSignedPrekey(client, userId, bundle.device_id);
   await ensureOneTimePrekeys(client, userId, bundle.device_id);
+  await retireSupersededDevice(client, bundle);
   return bundle;
+}
+
+/**
+ * Revoke the device row a re-key replaced.
+ *
+ * A re-key mints a new `device_id`, and the row the previous identity
+ * registered keeps sitting in `messaging_devices`: trusted, recently seen, with
+ * an active signed prekey. Peers go on selecting it for delivery and sealing
+ * envelopes to a private key that no longer exists anywhere -- messages that
+ * are unreadable the instant they are written. That is how one account ended up
+ * with five dead prekey ids and hundreds of undecryptable envelopes.
+ *
+ * Revoke, not delete: `messaging_message_envelopes.recipient_device_id` is
+ * `ON DELETE SET NULL`, so deleting the row would silently erase which device
+ * each historical envelope was for, which is exactly the evidence needed to
+ * explain an unreadable history. Revoked rows are already filtered out of
+ * device loading, so revoking is enough to stop delivery.
+ *
+ * Only acknowledged to the backend once the revoke succeeds; a failure leaves
+ * the id in the bundle so the next sync retries it.
+ */
+async function retireSupersededDevice(client: SupabaseClient, bundle: PublicIdentityBundle): Promise<void> {
+  const supersededId = bundle.replaced_device_id;
+  if (!supersededId || supersededId === bundle.device_id) return;
+  try {
+    const { error } = await client.rpc("revoke_messaging_device", { p_device_id: supersededId });
+    if (error) {
+      const { error: fallbackError } = await client
+        .from("messaging_devices")
+        .update({ trust_state: "revoked", revoked_at: new Date().toISOString() })
+        .eq("id", supersededId)
+        .eq("user_id", bundle.user_id);
+      if (fallbackError) throw fallbackError;
+    }
+    await safeInvoke("keys_ack_superseded_device", {}, null);
+  } catch {
+    // Left unacknowledged on purpose: the next bootstrap or prekey-readiness
+    // pass reports the same id and tries again.
+  }
 }
 
 async function ensureSignedPrekey(client: SupabaseClient, userId: string, deviceId: string): Promise<void> {

@@ -365,6 +365,15 @@ impl PortableIdentity {
                 x25519_public,
                 mlkem_secret,
                 mlkem_public,
+                // The bundle's declared KEM is derived from a key LENGTH, which
+                // cannot separate ML-KEM-1024 from a pre-FIPS Kyber-1024 key of
+                // the same size, so a bundle exported by an older build is
+                // indistinguishable here. Marking it as the current suite is
+                // the safe default: the keys are structurally valid ML-KEM-1024,
+                // and if they were in fact Kyber the derived secret simply will
+                // not authenticate, which fails closed rather than silently
+                // accepting the wrong key.
+                kem: crate::crypto::CURRENT_PQ_KEM.to_string(),
             },
             signer: VaultSigningKeypair {
                 ed25519_secret,
@@ -435,11 +444,17 @@ pub fn signature_algorithm_for(mldsa_public: &[u8]) -> &'static str {
     }
 }
 
+/// Best-effort label for a KEM public key found in a portable identity bundle.
+///
+/// NOTE the limit of what a length can tell you: an ML-KEM-1024 encapsulation
+/// key and a pre-FIPS Kyber-1024 public key are both 1568 bytes, so a bundle
+/// exported by an older build is indistinguishable here and will be labelled
+/// ML-KEM-1024. That is acceptable for a DISPLAY string — the authority on
+/// whether material is usable is `LocalKemKeypair::is_current_suite`, which
+/// reads the stored algorithm marker rather than guessing from a length.
 pub fn kem_algorithm_for(mlkem_public: &[u8]) -> &'static str {
     if LocalKemKeypair::is_current_public_key(mlkem_public) {
         crate::crypto::CURRENT_PQ_KEM
-    } else if mlkem_public.len() == 1184 {
-        crate::crypto::LEGACY_PQ_KEM_768
     } else {
         UNKNOWN
     }

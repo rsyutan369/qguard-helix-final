@@ -1,0 +1,1005 @@
+# Enhance Sophia — AI Security Copilot™ for Accurate, Data-Grounded Enterprise Intelligence
+
+I asked Sophia through:
+
+`http://localhost:3000/dashboard/sophia`
+
+However, Sophia is currently returning inaccurate, incomplete, or misleading answers.
+
+Example response:
+
+> "No assets match that filter — the inventory holds 4 asset(s) overall. CBOM: 178 cryptographic component(s), 160 quantum-vulnerable."
+
+This response does not appear to correctly reflect or explain the user's actual scanned assets, scan results, findings, current security posture, CBOM data, or other live platform information.
+
+## PRIMARY OBJECTIVE
+
+Comprehensively review, refactor, and enhance Sophia — AI Security Copilot™ so that **every answer is grounded in the authenticated user's actual Qguard Helix data**.
+
+Sophia must NOT answer based on:
+
+* Hardcoded/demo values
+* Mock data
+* Static examples
+* Generic assumptions
+* Outdated cached information
+* Invented findings
+* Fabricated assets
+* Unsupported security conclusions
+* Generic LLM knowledge when the answer requires tenant-specific data
+
+Sophia must reason from the **actual current state of the user's Qguard Helix environment**.
+
+The goal is to make Sophia a **Premium, Enterprise-Grade Cybersecurity AI Copilot** capable of accurately understanding, correlating, explaining, and reasoning over the platform's security data.
+
+---
+
+# 1. FIRST: AUDIT THE ENTIRE SOPHIA IMPLEMENTATION
+
+Before making changes, inspect the complete Sophia implementation.
+
+Review:
+
+* `/dashboard/sophia`
+* Sophia frontend components
+* Sophia API routes
+* Backend Sophia services
+* AI/LLM integration
+* System prompts
+* Context-building logic
+* Retrieval/RAG logic
+* Database queries
+* Supabase integration
+* Authentication and tenant resolution
+* RBAC/authorization
+* Asset inventory APIs
+* Scan APIs
+* Findings APIs
+* CBOM APIs
+* Quantum-readiness APIs
+* PQC assessment APIs
+* TLS/PKI telemetry APIs
+* Certificate telemetry
+* Runtime crypto intelligence
+* Compliance/governance data
+* Migration planning data
+* Quantum exposure data
+* Harvest-now risk data
+* Audit evidence
+* Security events
+* Current platform status
+* SSE/realtime data sources
+* Any cached or materialized intelligence
+
+Trace the complete request lifecycle:
+
+`User Question → Sophia UI → API → Authentication → Tenant Context → Data Retrieval → Context Construction → AI Reasoning → Validation → Final Answer`
+
+Identify exactly where inaccurate answers can originate.
+
+---
+
+# 2. TENANT-AWARE DATA GROUNDING
+
+Sophia must always identify the currently authenticated tenant/user before retrieving security information.
+
+Every query must be scoped to the authenticated tenant.
+
+Never allow Sophia to:
+
+* Read another tenant's data
+* Mix tenant data
+* Use global demo data as user data
+* Return information from another workspace
+* Assume an asset exists without database evidence
+
+Enforce tenant isolation at every layer.
+
+The security model should effectively be:
+
+`Authenticated User → Tenant → Authorized Assets/Data → Sophia Context`
+
+Do not rely solely on frontend filtering for security.
+
+Enforce authorization server-side.
+
+---
+
+# 3. SOPHIA MUST USE LIVE PLATFORM DATA
+
+When the user asks about their environment, Sophia must retrieve the relevant current data before answering.
+
+For example:
+
+### User asks:
+
+"How many assets do I have?"
+
+Sophia must query the actual asset inventory.
+
+### User asks:
+
+"Which assets are quantum vulnerable?"
+
+Sophia must retrieve the actual vulnerability/cryptographic findings.
+
+### User asks:
+
+"Why is my quantum readiness score low?"
+
+Sophia must retrieve the actual assessment factors and explain the score.
+
+### User asks:
+
+"What should I remediate first?"
+
+Sophia must analyze actual findings, severity, asset criticality, exposure, exploitability, cryptographic risk, business impact, and migration dependencies.
+
+### User asks:
+
+"Show me my RSA usage."
+
+Sophia must retrieve actual CBOM/crypto inventory data rather than provide a generic explanation of RSA.
+
+---
+
+# 4. BUILD A SOPHIA SECURITY CONTEXT ENGINE
+
+Create a dedicated backend context layer for Sophia.
+
+Conceptually:
+
+`Sophia Query`
+↓
+`Intent Detection`
+↓
+`Required Data Sources`
+↓
+`Tenant-Scoped Retrieval`
+↓
+`Data Normalization`
+↓
+`Cross-Domain Correlation`
+↓
+`Security Reasoning`
+↓
+`Evidence Validation`
+↓
+`Answer Generation`
+↓
+`Confidence / Evidence Metadata`
+
+The context engine should be capable of retrieving relevant information from:
+
+* Asset Inventory
+* Scan Results
+* Vulnerabilities
+* Findings
+* CBOM
+* Cryptographic Algorithms
+* Certificates
+* TLS
+* PKI
+* Protocols
+* Endpoints
+* Applications
+* APIs
+* Cloud assets
+* Containers
+* Kubernetes
+* Mobile applications
+* Quantum-readiness assessments
+* PQC readiness
+* Migration plans
+* Migration status
+* Runtime cryptographic telemetry
+* Trust state
+* Compliance controls
+* Regulatory mappings
+* Audit evidence
+* Security events
+* Historical scan results
+* Remediation status
+
+Do not retrieve unnecessary data blindly.
+
+Use the user's question to determine which sources are required.
+
+---
+
+# 5. INTELLIGENT QUERY / INTENT ROUTING
+
+Sophia should understand security questions semantically.
+
+For example:
+
+### Asset questions
+
+* "What assets do I have?"
+* "Show my internet-facing assets."
+* "Which applications are vulnerable?"
+* "What changed since my last scan?"
+
+→ Query asset inventory and scan data.
+
+### Cryptography questions
+
+* "Where am I using RSA?"
+* "How much ECC do I have?"
+* "Which systems use SHA-1?"
+* "Which algorithms are quantum vulnerable?"
+
+→ Query CBOM and cryptographic findings.
+
+### PQC questions
+
+* "Am I ready for post-quantum migration?"
+* "Which systems cannot migrate to ML-KEM?"
+* "What should I migrate first?"
+
+→ Query PQC readiness, CBOM, compatibility, dependencies, and migration data.
+
+### TLS questions
+
+* "Which endpoints still use RSA certificates?"
+* "Which systems support hybrid PQC TLS?"
+* "Which certificates are expiring?"
+
+→ Query TLS/certificate telemetry.
+
+### Compliance questions
+
+* "Why did I fail this control?"
+* "Show me evidence for this control."
+
+→ Query compliance assessment and audit evidence.
+
+### Remediation questions
+
+* "What should I fix first?"
+* "What is my highest-risk issue?"
+
+→ Correlate severity + exposure + asset criticality + cryptographic risk + exploitability + business impact + remediation state.
+
+---
+
+# 6. NEVER FABRICATE DATA
+
+This is a critical requirement.
+
+If the database contains:
+
+`4 assets`
+
+Sophia must not claim:
+
+`40 assets`
+
+If the CBOM contains:
+
+`178 cryptographic components`
+
+Sophia must accurately report that value.
+
+If:
+
+`160 components are classified as quantum vulnerable`
+
+Sophia must explain exactly what those 160 components represent.
+
+Sophia must distinguish between:
+
+* Assets
+* Components
+* Findings
+* Vulnerabilities
+* Algorithms
+* Certificates
+* Endpoints
+* Scan results
+* Evidence
+* Controls
+
+Do not treat these as interchangeable entities.
+
+---
+
+# 7. HANDLE DATA DISCREPANCIES
+
+If different Qguard Helix modules report different numbers, Sophia must NOT silently choose one.
+
+For example:
+
+Asset Inventory:
+
+`4 assets`
+
+CBOM:
+
+`178 components`
+
+Scanner:
+
+`7 findings`
+
+Sophia should explain that these are different datasets/entities.
+
+If there is an actual inconsistency, report it:
+
+> "I found a discrepancy between the Asset Inventory and CBOM datasets. The inventory currently contains 4 assets, while the CBOM contains 178 cryptographic components associated with those assets. I would not interpret these as 178 separate assets."
+
+If the relationship cannot be established, say so.
+
+---
+
+# 8. EVIDENCE-FIRST ANSWERING
+
+Every security-specific answer should be traceable to platform evidence.
+
+Sophia should internally maintain:
+
+* Data source
+* Record IDs
+* Asset IDs
+* Scan IDs
+* Finding IDs
+* Evidence IDs
+* Timestamps
+* Data freshness
+* Confidence level
+
+Where appropriate, expose concise evidence references in the UI.
+
+Example:
+
+**Quantum Exposure**
+
+* 4 assets discovered
+* 178 cryptographic components
+* 160 classified as quantum-vulnerable
+* 90% of CBOM components require PQC remediation
+
+Then provide:
+
+**Evidence**
+
+* CBOM scan: `SCAN-XXXX`
+* Asset inventory: `ASSET-INVENTORY-XXXX`
+* Last updated: actual timestamp
+
+Do not expose internal secrets, database credentials, sensitive tokens, or unnecessary implementation details.
+
+---
+
+# 9. DATA FRESHNESS
+
+Sophia must understand how fresh the data is.
+
+Include metadata such as:
+
+* Last scan time
+* Last inventory update
+* Last CBOM generation
+* Last telemetry event
+* Last assessment
+* Last synchronization
+
+If the data is stale, Sophia must say so.
+
+Example:
+
+> "The current answer is based on the latest available CBOM generated 18 hours ago. A newer scan is recommended before treating this as the current production posture."
+
+Never present stale information as real-time information.
+
+---
+
+# 10. SOPHIA REASONING ENGINE
+
+Enhance Sophia's reasoning capabilities significantly.
+
+Sophia should perform:
+
+### Correlation
+
+Connect:
+
+`Asset → Application → Crypto Component → Algorithm → Finding → Risk → Remediation`
+
+### Prioritization
+
+Consider:
+
+* Severity
+* Asset criticality
+* Internet exposure
+* Data sensitivity
+* Cryptographic strength
+* Quantum vulnerability
+* Exploitability
+* Certificate expiration
+* Migration complexity
+* Dependency impact
+* Compliance impact
+
+### Root Cause Analysis
+
+Instead of merely stating:
+
+> "This asset is vulnerable."
+
+Explain:
+
+* What was detected
+* Why it matters
+* Which cryptographic primitive is involved
+* Which asset is affected
+* What evidence supports the finding
+* Potential impact
+* Recommended remediation
+* Migration considerations
+* Validation requirements
+
+---
+
+# 11. SOPHIA SHOULD UNDERSTAND QGUARD HELIX
+
+Sophia should have a structured understanding of Qguard Helix terminology, architecture, modules, and security concepts.
+
+Examples include:
+
+* Quantum Readiness
+* PQC
+* CBOM
+* Quantum Exposure
+* Quantum Risk
+* Harvest Now, Decrypt Later
+* Cryptographic Agility
+* PQC Migration
+* ML-KEM
+* ML-DSA
+* Hybrid Cryptography
+* TLS 1.3
+* X25519
+* X25519 + ML-KEM hybrid
+* AES-256-GCM
+* SHA-3
+* PKI
+* Certificates
+* Trust State
+* Crypto Telemetry
+* Migration Planner
+* Migration Sandbox
+* Runtime Crypto Intelligence
+* Compliance
+* Audit Evidence
+
+However, **platform-specific terminology must never override actual database evidence**.
+
+---
+
+# 12. KNOWLEDGE VS TENANT DATA
+
+Sophia must clearly distinguish between:
+
+### General Security Knowledge
+
+Example:
+
+> "ML-KEM is a NIST-standardized post-quantum key-encapsulation mechanism."
+
+and:
+
+### User-Specific Security Intelligence
+
+Example:
+
+> "Your environment currently contains 23 components using classical public-key cryptography."
+
+The first may come from trusted cybersecurity knowledge.
+
+The second MUST come from the user's actual Qguard Helix data.
+
+Never mix the two without clearly distinguishing them.
+
+---
+
+# 13. TRUSTED SOURCES AND KNOWLEDGE
+
+Enhance Sophia's knowledge layer using authoritative cybersecurity sources where appropriate.
+
+Prioritize sources such as:
+
+* NIST
+* CISA
+* IETF RFCs
+* OWASP
+* ISO/IEC where licensed/available
+* Official vendor documentation
+* Qguard Helix internal documentation
+
+For standards-related questions, prefer authoritative primary sources.
+
+Sophia should not invent citations.
+
+If external sources are unavailable, say so instead of fabricating references.
+
+---
+
+# 14. CONFIDENCE AND UNCERTAINTY
+
+Sophia should be capable of determining:
+
+* High confidence
+* Medium confidence
+* Low confidence
+* Insufficient evidence
+
+Example:
+
+> **Confidence: High**
+>
+> Based directly on the latest CBOM scan and asset inventory.
+
+or:
+
+> **Confidence: Limited**
+>
+> The available telemetry does not contain enough evidence to determine whether this endpoint supports hybrid PQC TLS.
+
+Never convert missing evidence into a positive or negative conclusion.
+
+---
+
+# 15. "NOT ASSESSED" MUST REMAIN NOT ASSESSED
+
+This is especially important for security and compliance.
+
+If no evidence exists:
+
+Do NOT say:
+
+* Passed
+* Failed
+* Secure
+* Vulnerable
+* Compliant
+* Non-compliant
+
+Instead say:
+
+> "Not assessed — insufficient evidence."
+
+This principle must be consistently applied throughout Sophia.
+
+---
+
+# 16. TEMPORAL REASONING
+
+Sophia should understand historical changes.
+
+Support questions such as:
+
+* "What changed since my last scan?"
+* "Did my risk improve?"
+* "Which vulnerabilities were resolved?"
+* "Which new assets appeared?"
+* "Which algorithms were newly discovered?"
+* "How has my PQC readiness changed?"
+
+Compare actual historical records where available.
+
+Never fabricate historical changes.
+
+---
+
+# 17. ACTIONABLE SECURITY RECOMMENDATIONS
+
+Sophia should not stop at describing problems.
+
+For relevant questions, provide:
+
+1. Finding
+2. Evidence
+3. Risk
+4. Root cause
+5. Recommended remediation
+6. Priority
+7. Dependencies
+8. Validation steps
+9. Expected outcome
+
+Example:
+
+> **Priority: Critical**
+>
+> Asset: `api-production`
+>
+> Finding: Classical RSA dependency detected.
+>
+> Evidence: CBOM component `CBOM-XXXX`
+>
+> Risk: Long-term confidentiality exposure and PQC migration dependency.
+>
+> Recommendation: Assess migration to a supported hybrid cryptographic configuration and validate application/library compatibility before production deployment.
+
+Recommendations must be based on the actual detected technology.
+
+---
+
+# 18. SOPHIA SHOULD NEVER PRETEND TO PERFORM ACTIONS
+
+If Sophia cannot actually execute an action, it must not claim that it did.
+
+For example, never say:
+
+> "I rotated your certificate."
+
+unless the backend actually executed the rotation and returned successful confirmation.
+
+Instead say:
+
+> "I recommend rotating this certificate."
+
+If an action is supported, require:
+
+`User Intent → Authorization → Confirmation → Backend Execution → Verification`
+
+Then report the actual execution result.
+
+---
+
+# 19. REAL-TIME / SSE INTEGRATION
+
+Where Qguard Helix already uses SSE or realtime events, integrate Sophia with the same authoritative event streams where appropriate.
+
+Sophia should be able to reflect current changes such as:
+
+* New scan completed
+* Asset discovered
+* Finding created
+* Finding resolved
+* Certificate changed
+* Crypto component discovered
+* Migration completed
+* Telemetry alert generated
+
+Avoid relying exclusively on stale frontend state.
+
+---
+
+# 20. SOPHIA FRONTEND UX
+
+Upgrade the Sophia UI to feel like a premium enterprise security copilot.
+
+Include:
+
+* Clear answer hierarchy
+* Evidence sections
+* Confidence indicators
+* Data freshness
+* Source attribution
+* Related assets
+* Related findings
+* Recommended actions
+* Expandable reasoning summaries
+* Security severity indicators
+* Context-aware suggested questions
+* Loading states
+* Retrieval status
+* Error handling
+* Empty states
+* "Insufficient evidence" states
+
+Do not expose private chain-of-thought.
+
+Instead provide concise **reasoning summaries** explaining how the conclusion was derived from evidence.
+
+---
+
+# 21. SOPHIA RESPONSE STRUCTURE
+
+For security questions, prefer a structured format such as:
+
+### Answer
+
+Direct answer to the user's question.
+
+### Current State
+
+Actual current metrics/data.
+
+### Evidence
+
+Relevant assets, findings, scans, CBOM records, telemetry, or controls.
+
+### Analysis
+
+Concise explanation of what the evidence means.
+
+### Risk
+
+Security/business/quantum implications.
+
+### Recommended Action
+
+Specific next steps.
+
+### Data Freshness
+
+When the underlying data was last updated.
+
+### Confidence
+
+High / Medium / Low / Insufficient Evidence.
+
+Do not force this structure for simple conversational questions.
+
+---
+
+# 22. EXAMPLE OF CORRECT BEHAVIOR
+
+If the actual database contains:
+
+* 4 assets
+* 178 CBOM components
+* 160 quantum-vulnerable components
+
+Sophia should be able to answer:
+
+> **You currently have 4 discovered assets.**
+>
+> Across those assets, the latest CBOM contains **178 cryptographic components**, of which **160 are currently classified as quantum-vulnerable** according to the platform's assessment rules.
+>
+> These numbers represent different entities: the 4 assets are systems/resources, while the 178 CBOM records represent cryptographic components identified across those assets.
+>
+> I can also break the 160 quantum-vulnerable components down by asset, algorithm, severity, application, or recommended migration path.
+
+This is significantly better than simply returning:
+
+> "No assets match that filter."
+
+unless the user actually applied a filter that genuinely produces zero matching assets.
+
+---
+
+# 23. FILTER AWARENESS
+
+Sophia must understand the user's current UI context.
+
+If the user is currently viewing:
+
+* A specific asset
+* A specific scan
+* A specific severity
+* A specific tenant
+* A specific module
+* A specific date range
+* A specific algorithm
+* A specific compliance framework
+
+Sophia should incorporate that context when appropriate.
+
+However, UI context must never override explicit user questions.
+
+---
+
+# 24. AUTOMATED VALIDATION
+
+Create automated tests for Sophia.
+
+Test scenarios should include:
+
+* Asset count accuracy
+* CBOM count accuracy
+* Quantum-vulnerable count accuracy
+* Asset-to-CBOM relationships
+* Finding retrieval
+* Severity accuracy
+* Tenant isolation
+* Historical comparison
+* Data freshness
+* Empty datasets
+* Missing evidence
+* Conflicting datasets
+* Unauthorized data
+* Invalid asset IDs
+* Natural-language filters
+* Multi-part security questions
+
+Include regression tests so future changes cannot silently reintroduce hallucinated or incorrect data.
+
+---
+
+# 25. OBSERVABILITY
+
+Add internal observability for Sophia.
+
+Track:
+
+* User question
+* Detected intent
+* Data sources selected
+* Queries executed
+* Number of records retrieved
+* Data timestamps
+* Evidence IDs
+* Model response
+* Validation result
+* Confidence
+* Latency
+* Errors
+* Retrieval failures
+
+Do NOT log:
+
+* Passwords
+* API keys
+* Tokens
+* Private keys
+* Sensitive secrets
+* Unnecessary personal information
+
+---
+
+# 26. FAILURE HANDLING
+
+If the backend cannot retrieve the required information, Sophia must clearly communicate the limitation.
+
+Example:
+
+> "I can't reliably answer that right now because the CBOM data source is unavailable. I don't want to provide an estimate or guess."
+
+This is preferable to hallucinating an answer.
+
+---
+
+# 27. SECURITY REQUIREMENTS
+
+Sophia itself must be treated as a security-sensitive component.
+
+Implement:
+
+* Strong tenant isolation
+* RBAC
+* Server-side authorization
+* Input validation
+* Prompt-injection resistance
+* Tool authorization
+* Data-source authorization
+* Secret protection
+* Output validation
+* Audit logging
+* Rate limiting
+* Abuse prevention
+* Secure error handling
+
+A malicious asset name, scan result, log entry, or external document must NOT be able to manipulate Sophia's system instructions.
+
+Treat retrieved data as **untrusted data**, not instructions.
+
+---
+
+# 28. DO NOT USE FAKE INTELLIGENCE
+
+Remove or clearly isolate:
+
+* Mock security metrics
+* Demo assets
+* Fake findings
+* Placeholder CBOM data
+* Hardcoded counts
+* Simulated telemetry
+* Fake AI responses
+
+If demo mode exists, clearly label it as:
+
+`DEMO / SIMULATED DATA`
+
+Never allow demo data to appear as production tenant intelligence.
+
+---
+
+# 29. PERFORMANCE
+
+Sophia must remain responsive even with large enterprise datasets.
+
+Implement appropriate:
+
+* Query optimization
+* Indexing
+* Pagination
+* Aggregation
+* Caching where safe
+* Retrieval limits
+* Context compression
+* Semantic retrieval
+* Parallel data retrieval where appropriate
+
+Do not load an entire enterprise database into the LLM context.
+
+Retrieve only the data necessary to answer the question.
+
+---
+
+# 30. FINAL ACCEPTANCE CRITERIA
+
+Do not consider this task complete merely because the Sophia page loads.
+
+The implementation is complete only when:
+
+* Sophia answers from actual authenticated tenant data.
+* Asset counts are accurate.
+* CBOM counts are accurate.
+* Quantum-vulnerable counts are accurate.
+* Asset/component relationships are accurate.
+* Findings correspond to real scan results.
+* Current status is based on current data.
+* Historical questions use actual historical records.
+* Missing evidence is reported as "Not assessed" or insufficient evidence.
+* Sophia does not hallucinate security findings.
+* Sophia does not fabricate sources.
+* Sophia does not fabricate actions.
+* Sophia does not mix tenant data.
+* Sophia understands Qguard Helix terminology.
+* Sophia can correlate data across modules.
+* Sophia provides evidence-backed reasoning summaries.
+* Sophia reports data freshness.
+* Sophia provides confidence where appropriate.
+* Sophia handles conflicting data transparently.
+* Sophia handles backend failures safely.
+* Sophia is protected against prompt injection from retrieved data.
+* Sophia's answers are tested against known ground-truth datasets.
+* Frontend and backend are correctly wired.
+* APIs/hooks/SSE/realtime integrations are functioning correctly.
+* No console errors or broken API calls remain.
+* No mock/demo values are incorrectly presented as real data.
+
+---
+
+# 31. IMPORTANT IMPLEMENTATION RULE
+
+**Do not simply improve Sophia's prompt.**
+
+This task requires a **full end-to-end intelligence architecture review**.
+
+If the underlying data retrieval, API integration, database queries, tenant resolution, context construction, or validation is incorrect, fix those components.
+
+The objective is not to make Sophia sound smarter.
+
+The objective is to make Sophia **actually correct**.
+
+Sophia should behave as:
+
+> **Qguard Helix's evidence-grounded AI Security Copilot — reasoning over the user's real security environment, not inventing an answer from generic AI knowledge.**
+
+---
+
+# 32. FINAL VERIFICATION
+
+After implementation:
+
+1. Start the complete application stack.
+2. Authenticate with a real test tenant.
+3. Open `/dashboard/sophia`.
+4. Ask Sophia questions about actual assets.
+5. Compare every answer against the database/API results.
+6. Test CBOM questions.
+7. Test quantum-readiness questions.
+8. Test remediation questions.
+9. Test historical questions.
+10. Test questions with no available evidence.
+11. Test conflicting data.
+12. Test tenant isolation.
+13. Test prompt injection through retrieved data.
+14. Verify SSE/realtime updates.
+15. Inspect browser console.
+16. Inspect backend logs.
+17. Verify all API responses.
+18. Run the automated Sophia regression suite.
+
+For every test, Sophia's answer must match the authoritative Qguard Helix data.
+
+**Do not mark the implementation complete until the answers are demonstrably accurate against real platform data.**
+
+Make the final Sophia experience **Premium, Enterprise-Grade, Secure, Explainable, Evidence-Based, Deeply Context-Aware, and Operationally Reliable.**

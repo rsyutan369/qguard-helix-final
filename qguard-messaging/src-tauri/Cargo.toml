@@ -1,6 +1,6 @@
 [package]
 name = "qguard-messaging"
-version = "1.3.0"
+version = "1.3.5"
 description = "QGuard Messaging - hybrid post-quantum secure desktop messaging"
 authors = ["QGuard Team"]
 edition = "2021"
@@ -46,6 +46,16 @@ hkdf = "0.12"
 # crypto::portable_identity). Already in the lockfile as an hkdf dependency.
 hmac = "0.12"
 sha3 = "0.10"
+# FIPS 203 / FIPS 204 IMPLEMENTATIONS, PORTABLE (`clean`) BUILDS ONLY.
+#
+# `pqcrypto-mlkem` is ML-KEM (FIPS 203). It is NOT interchangeable with the
+# `pqcrypto-kyber` crate this replaced: that one wraps PQClean's round-3
+# `kyber1024`, which differs from ML-KEM in the Fujisaki-Okamoto transform and
+# the shared-secret derivation. The two produce different shared secrets and do
+# not interoperate — yet their key and ciphertext sizes are IDENTICAL (ek/pk
+# 1568, ct 1568), so nothing about the wire format or the database reveals which
+# one is in use. Only this dependency line does. Do not "simplify" it back.
+#
 # PORTABLE (`clean`) PQC implementations ONLY. These crates' DEFAULT features
 # include `neon`, which on aarch64 compiles the optimized Keccak from
 # pqcrypto-internals' keccak2x built with `-march=armv8.2-a+sha3` — i.e. it emits
@@ -57,7 +67,7 @@ sha3 = "0.10"
 # x86_64 emulator). The `clean` C implementations use only baseline ARMv8-A and
 # run on every CPU. Keep `std`; drop `neon`/`avx2` (PQC keygen/sign are
 # infrequent here, so the portable-vs-SIMD perf difference is imperceptible).
-pqcrypto-kyber = { version = "0.8", default-features = false, features = ["std"] }
+pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-mldsa = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 

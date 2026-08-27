@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::identity::platform_device_label;
 use tauri::State;
 
 use crate::device_trust::{DeviceTrustState, TrustedDevice};
@@ -24,7 +25,7 @@ pub struct QrVerification {
 #[tauri::command]
 pub fn devices_list_trust_center(state: State<'_, AppState>) -> Result<Vec<TrustedDevice>> {
     let user_id = state.user_id()?;
-    let bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
+    let bundle = state.ensure_identity(&user_id, platform_device_label())?;
     let mut devices = state
         .devices
         .lock()
@@ -49,7 +50,7 @@ pub fn devices_verify_qr(
     remote_fingerprint: String,
 ) -> Result<QrVerification> {
     let user_id = state.user_id()?;
-    let bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
+    let bundle = state.ensure_identity(&user_id, platform_device_label())?;
     let safety = conversation_safety_number(&bundle.fingerprint, &remote_fingerprint);
     Ok(QrVerification {
         qr_payload: safety.qr_payload,

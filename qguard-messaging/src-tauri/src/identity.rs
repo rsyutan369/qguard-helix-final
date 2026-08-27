@@ -10,6 +10,39 @@ use crate::crypto::{
 };
 use crate::error::Result;
 
+/// The label this build registers new devices under.
+///
+/// Every call site used to pass the literal `"Windows Desktop"`, on every
+/// platform -- so an Android phone and a Windows desktop registered under the
+/// SAME label. The delivery selector bucketed peers by `user_id:device_label`,
+/// which meant an entire account collapsed into one addressable device: calls
+/// rang the wrong endpoint and messages reached only one device. Selection is
+/// no longer label-based (see `lib/delivery-devices.ts`), but the label is user
+/// visible in Device Trust / Security Verification and must be truthful.
+pub fn platform_device_label() -> &'static str {
+    if cfg!(target_os = "android") {
+        "Android Device"
+    } else if cfg!(target_os = "ios") {
+        "iOS Device"
+    } else if cfg!(target_os = "macos") {
+        "macOS Desktop"
+    } else if cfg!(target_os = "linux") {
+        "Linux Desktop"
+    } else if cfg!(target_os = "windows") {
+        "Windows Desktop"
+    } else {
+        "QGuard Device"
+    }
+}
+
+/// Labels written by builds that hardcoded the desktop string everywhere. A
+/// restored identity carrying one of these on a platform it cannot be true for
+/// is corrected on load; `device_label` is deliberately NOT part of
+/// `identity_signable`, so relabelling never invalidates a device signature.
+pub fn is_legacy_hardcoded_label(label: &str) -> bool {
+    label.trim().eq_ignore_ascii_case("Windows Desktop")
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PublicIdentityBundle {
     pub user_id: String,
@@ -24,6 +57,20 @@ pub struct PublicIdentityBundle {
     pub fingerprint: String,
     pub suite: AlgorithmSuite,
     pub created_at: DateTime<Utc>,
+    /// The device row this identity SUPERSEDES, when this launch re-keyed.
+    ///
+    /// A re-key mints a new `device_id`, so the row the old identity registered
+    /// is left behind still advertising an active prekey. Peers keep selecting
+    /// it for delivery (it is trusted, well-formed and recent), and every
+    /// envelope sealed to it is undecryptable from the moment it is written --
+    /// the private key is gone. That is how a single account accumulated five
+    /// dead prekey ids and hundreds of unreadable envelopes.
+    ///
+    /// Informational and unsigned: `identity_signable` does not cover it, so it
+    /// cannot affect any device signature. The client uses it to revoke the
+    /// superseded row right after registering the new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_device_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,6 +128,7 @@ impl LocalIdentity {
             fingerprint,
             suite: AlgorithmSuite::default(),
             created_at: self.created_at,
+            replaced_device_id: None,
         })
     }
 }

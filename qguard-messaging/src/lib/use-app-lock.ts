@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isAndroidRuntime, safeInvoke } from "@/lib/tauri";
+import { isCallActive, onCallActivityChange } from "@/lib/call-activity";
 import { isNativeDialogOpen } from "@/lib/native-dialog-guard";
 
 export interface StoredSession {
@@ -126,6 +127,11 @@ export function useAppLock(userId: string | null) {
 
     const lockNow = () => {
       if (isNativeDialogOpen()) return;
+      // Never lock out from under a live call. The call overlay shows only
+      // call media -- no message history -- so leaving the app unlocked for its
+      // duration exposes nothing the lock protects, whereas locking mid-call
+      // unmounts the overlay and drops the call.
+      if (isCallActive()) return;
       void lock();
     };
     const resetInactivity = () => {
@@ -139,6 +145,14 @@ export function useAppLock(userId: string | null) {
     };
     const onActivity = () => resetInactivity();
 
+    // A call that ends while the app is still in the background must not leave
+    // it unlocked: re-apply the policy the moment the guard is released.
+    const stopWatchingCalls = onCallActivityChange((active) => {
+      if (active) return;
+      if (document.visibilityState === "hidden") lockNow();
+      else resetInactivity();
+    });
+
     document.addEventListener("visibilitychange", onVisibility);
     ["mousedown", "keydown", "touchstart", "wheel"].forEach((e) =>
       window.addEventListener(e, onActivity, { passive: true }),
@@ -149,6 +163,7 @@ export function useAppLock(userId: string | null) {
     // visibilitychange listener above is the primary trigger).
     (window as unknown as { __qguardAppLock?: () => void }).__qguardAppLock = () => lockNow();
     return () => {
+      stopWatchingCalls();
       document.removeEventListener("visibilitychange", onVisibility);
       ["mousedown", "keydown", "touchstart", "wheel"].forEach((e) => window.removeEventListener(e, onActivity));
       if (inactivityTimerRef.current !== undefined) window.clearTimeout(inactivityTimerRef.current);

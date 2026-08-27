@@ -22,6 +22,7 @@ import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
 import { safeInvoke } from "@/lib/tauri";
+import { CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD, kemInteroperates } from "@/lib/kem-suite";
 
 interface DeviceTrustCenterPageProps {
   userId: string;
@@ -69,12 +70,18 @@ type ConfirmAction = {
 
 const requiredSuite = {
   classical_kex: "X25519",
-  pq_kem: "ML-KEM-1024",
+  pq_kem: CURRENT_PQ_KEM,
   kdf: "HKDF-SHA3-256",
   symmetric: "AES-256-GCM",
   classical_signature: "Ed25519",
   pq_signature: "ML-DSA-65",
+  // Without this a QR-paired device would default to a suite indistinguishable
+  // from a pre-cutover one. See lib/kem-suite.ts.
+  pq_kem_standard: CURRENT_PQ_KEM_STANDARD,
 };
+
+/** The phrase `keys_reset_device_identity` requires. Mirrors the Rust side. */
+const RESET_DEVICE_IDENTITY_CONFIRMATION = "RESET THIS DEVICE IDENTITY";
 
 const statusTone = {
   success: "border-emerald-200 bg-emerald-50 text-emerald-700",
@@ -159,8 +166,14 @@ function trustClass(level: ReturnType<typeof trustLevel>): string {
 
 function suiteLabel(device: TrustedDevice | ParsedPairingPayload | DeviceLinkRequest): string {
   const suite = "requested_suite" in device ? device.requested_suite : device.suite;
-  const pqKem = String(suite.pq_kem ?? "ML-KEM-1024");
   const classical = String(suite.classical_kex ?? "X25519");
+  // Do NOT print `pq_kem` unqualified. Pre-cutover devices published
+  // "ML-KEM-1024" while holding Kyber-1024, so echoing the field verbatim shows
+  // a FIPS 203 badge on a device that cannot do FIPS 203 -- the same false
+  // reassurance that let messages be sealed to it. See lib/kem-suite.ts.
+  const pqKem = kemInteroperates(suite)
+    ? String(suite.pq_kem ?? CURRENT_PQ_KEM)
+    : `${String(suite.pq_kem ?? CURRENT_PQ_KEM)} (pre-FIPS-203 build)`;
   return `${pqKem} + ${classical}`;
 }
 
@@ -222,6 +235,8 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
   const [parsedPairing, setParsedPairing] = useState<ParsedPairingPayload | null>(null);
   const [scannerActive, setScannerActive] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
+  const [resetPhrase, setResetPhrase] = useState("");
+  const [resetOpen, setResetOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const thisDevice = useMemo(() => devices.find((device) => device.trust_state === "ThisDevice") ?? devices.find((device) => device.trust_state === "Trusted") ?? null, [devices]);
@@ -432,6 +447,53 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
     }
   }
 
+  /**
+   * Discard this device's stored key material and register a fresh identity.
+   *
+   * The escape hatch for a device whose key material cannot be opened -- a
+   * hardware-keystore fault, a half-written file, a data dir restored without
+   * its wrapped DEK. `ensure_identity` deliberately REFUSES to re-key on its
+   * own in that situation, because doing so silently is what used to destroy
+   * histories: every envelope on the relay is sealed to prekeys that then no
+   * longer exist, and the whole conversation turns into "not found: local
+   * signed prekey". So the destruction is available, but only here, only on a
+   * typed confirmation, and only with the consequence stated first.
+   */
+  async function resetDeviceIdentity() {
+    setBusy("reset-identity");
+    setStatus({ tone: "info", message: "Discarding this device's key material and generating a new identity..." });
+    try {
+      // No fallback argument: a failure here MUST surface. Swallowing it would
+      // leave the user believing a reset happened when their keys are untouched.
+      const bundle = await safeInvoke<{ device_id: string; fingerprint: string }>(
+        "keys_reset_device_identity",
+        { userId, confirmation: RESET_DEVICE_IDENTITY_CONFIRMATION },
+      );
+      await logDeviceEvent("device_identity_reset", "warning", bundle.device_id, {
+        fingerprint: bundle.fingerprint.slice(0, 18),
+        reason: "user_confirmed_key_material_reset",
+      });
+      // Republish the new identity/prekeys immediately: until this lands the
+      // device has keys nobody can address, so it would look "registered" while
+      // silently receiving nothing.
+      await syncCurrentMessagingDevice(supabase, userId);
+      await recordDeviceTelemetry(bundle.device_id, "device_identity_reset", "Device key material reset on user confirmation", 100, "complete");
+      setStatus({
+        tone: "warning",
+        message: "This device now has a new identity. Messages sealed to the previous keys stay unreadable here; new messages work normally.",
+      });
+      setResetOpen(false);
+      setResetPhrase("");
+      await onRefresh();
+      await loadLinkRequests();
+    } catch (error) {
+      setStatus({ tone: "error", message: describeDataError(error) });
+      await recordDeviceTelemetry(thisDevice?.device_id ?? null, "device_identity_reset_failed", describeDataError(error), 100, "failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function revokeDevice(device: TrustedDevice) {
     setBusy(`revoke-${device.device_id}`);
     setStatus({ tone: "info", message: `Revoking ${device.label} and invalidating active key material...` });
@@ -450,7 +512,12 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
         throw new Error("Device no longer exists.");
       }
 
-      await logDeviceEvent("device_revoked", "warning", device.device_id, { label: device.label, status: "revoked" });
+      // Audited at `info`: this is a successful, authenticated action the user
+      // deliberately took, not evidence that something is wrong. It was
+      // `warning`, and the posture score read that literally -- see
+      // ADMINISTRATIVE_EVENT_TYPES in security-score.ts, which also has to keep
+      // reinterpreting the rows already written at the old severity.
+      await logDeviceEvent("device_revoked", "info", device.device_id, { label: device.label, status: "revoked" });
       await recordDeviceTelemetry(device.device_id, "device_revoked", "Device access and prekeys revoked", 100, "complete");
       setStatus({ tone: "success", message: `${device.label} was revoked and will no longer receive grants or sessions.` });
       await onRefresh();
@@ -466,7 +533,9 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
     setBusy(`delete-${device.device_id}`);
     setStatus({ tone: "info", message: `Deleting ${device.label} from the trusted registry...` });
     try {
-      await logDeviceEvent("device_delete_requested", "warning", device.device_id, { label: device.label, fingerprint: device.fingerprint.slice(0, 18) });
+      // `info`, not `warning`: retiring a dormant identity is the hygiene task
+      // the dashboard itself asks for. See device_revoked above.
+      await logDeviceEvent("device_delete_requested", "info", device.device_id, { label: device.label, fingerprint: device.fingerprint.slice(0, 18) });
       await safeInvoke("devices_delete", { deviceId: device.device_id }, false);
       const result = await supabase.rpc("delete_messaging_device", { p_device_id: device.device_id });
       if (result.error) {
@@ -639,6 +708,15 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
               >
                 {busy === "sync" ? <Loader2 className="animate-spin" size={14} /> : <RefreshCcw size={14} />}
                 Sync Devices
+              </button>
+              <button
+                onClick={() => { setResetOpen(true); setResetPhrase(""); }}
+                disabled={Boolean(busy)}
+                title="Discard this device's key material and generate a new identity"
+                className="flex items-center gap-2 rounded-lg border border-rose-200 bg-white/70 px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <KeyRound size={14} />
+                Reset Device Keys
               </button>
             </div>
           </div>
@@ -890,6 +968,61 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {resetOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-4 backdrop-blur-sm">
+          <section className="shell-card w-full max-w-md overflow-hidden bg-white">
+            <div className="border-b border-line p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-600">
+                  <KeyRound size={20} />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-ink-950">Reset This Device&apos;s Keys</h2>
+                  <p className="text-xs text-ink-500">Irreversible. Use only if this device cannot open its own key material.</p>
+                </div>
+              </div>
+            </div>
+            <div className="p-4">
+              <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                <AlertTriangle className="mt-0.5 shrink-0" size={16} />
+                <span>
+                  Every message already sealed to this device - the whole history in every conversation,
+                  including your own sent copies - becomes permanently unreadable here. No resend and no
+                  other device can bring it back. New messages after the reset are unaffected.
+                </span>
+              </div>
+              <label className="mt-4 block text-xs font-bold uppercase tracking-wide text-ink-400">
+                Type {RESET_DEVICE_IDENTITY_CONFIRMATION} to confirm
+              </label>
+              <input
+                value={resetPhrase}
+                onChange={(event) => setResetPhrase(event.target.value)}
+                placeholder={RESET_DEVICE_IDENTITY_CONFIRMATION}
+                autoComplete="off"
+                spellCheck={false}
+                className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm text-ink-950 outline-none focus:border-violet-400"
+              />
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  onClick={() => { setResetOpen(false); setResetPhrase(""); }}
+                  className="rounded-lg border border-line px-4 py-2 text-sm font-bold text-ink-700 hover:bg-canvas"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={resetDeviceIdentity}
+                  disabled={resetPhrase.trim() !== RESET_DEVICE_IDENTITY_CONFIRMATION || busy === "reset-identity"}
+                  className="flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy === "reset-identity" && <Loader2 className="animate-spin" size={14} />}
+                  Reset Device Keys
+                </button>
               </div>
             </div>
           </section>

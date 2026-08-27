@@ -8,6 +8,11 @@ const DONE_KEY = "qguard_mobile_onboarding_done";
  * Each slide re-tints the reactor by overriding the accent tokens on a wrapper —
  * the same brand object turns a different colour rather than three unrelated
  * illustrations competing for attention.
+ *
+ * Slides 2 and 3 read their hue through `--qg-onb-*` with the Cold Fusion
+ * literal as the fallback, so the Android Modernist skin — which has exactly
+ * one hue — can collapse all three slides onto the accent without this file
+ * needing a second render path.
  */
 const SLIDES = [
   {
@@ -25,8 +30,8 @@ const SLIDES = [
     title: "Know who picked up",
     body: "Voice and video negotiate quantum-safe media keys, then verify the other device with Ed25519 and ML-DSA signatures — before the first frame is sent.",
     chips: ["ML-DSA-65", "SRTP E2EE"],
-    accent: "#8b5cf6",
-    accentBright: "#c4b5fd",
+    accent: "var(--qg-onb-calls, #8b5cf6)",
+    accentBright: "var(--qg-onb-calls-bright, #c4b5fd)",
   },
   {
     icon: FileLock2,
@@ -34,8 +39,8 @@ const SLIDES = [
     title: "Files that stay on your device",
     body: "The Quantum Vault encrypts photos, videos and documents locally. Nothing leaves unencrypted, and you hold the only recovery key.",
     chips: ["Zero-knowledge", "Local-first"],
-    accent: "#0e9f86",
-    accentBright: "#2de1c2",
+    accent: "var(--qg-onb-vault, #0e9f86)",
+    accentBright: "var(--qg-onb-vault-bright, #2de1c2)",
   },
 ];
 

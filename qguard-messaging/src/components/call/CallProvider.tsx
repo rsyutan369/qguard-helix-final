@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { CallFailureNotice } from "@/components/call/CallFailureNotice";
 import { IncomingCallModal } from "@/components/call/IncomingCallModal";
 import { InCallOverlay } from "@/components/call/InCallOverlay";
+import { setCallActive } from "@/lib/call-activity";
 import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { useSecureCall, type CallPeer } from "@/lib/use-secure-call";
@@ -59,6 +61,16 @@ export function CallProvider({ userId, children }: { userId: string; children: R
   const call = useSecureCall({ userId, deviceId });
   const [peerName, setPeerName] = useState("Secure contact");
 
+  // Hold the app-lock open for the lifetime of a call. Without this the Android
+  // PIN gate fires on the first `visibilitystate: hidden` -- a screen dim, a
+  // volume overlay, a notification shade -- and tears down the live call.
+  // Cleared on unmount so a crashed/closed provider can never wedge it open.
+  const callLive = ["ringing", "calling", "connecting", "connected"].includes(call.state.phase);
+  useEffect(() => {
+    setCallActive(callLive);
+    return () => setCallActive(false);
+  }, [callLive]);
+
   // Incoming ring: resolve the caller's display name and flash the taskbar.
   useEffect(() => {
     if (call.state.phase !== "ringing" || call.state.role !== "callee" || !call.state.peerUserId) return undefined;
@@ -80,6 +92,19 @@ export function CallProvider({ userId, children }: { userId: string; children: R
     setPeerName(peer.displayName || "Secure contact");
     await call.startCall(peer, conversationId);
   }, [call.startCall]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A call that fails leaves `phase: "ended"` with a reason attached, but the
+  // in-call overlay is already gone by then -- so the reason needs its own
+  // surface or it is simply lost. Keyed on the call id so a repeat failure of a
+  // NEW call re-shows the notice after the user dismissed the previous one.
+  const [dismissedErrorCallId, setDismissedErrorCallId] = useState<string | null>(null);
+  const failure = call.state.phase === "ended"
+    && call.state.error
+    && call.state.callId !== dismissedErrorCallId
+    ? call.state.error
+    : null;
+  const failedCallId = call.state.callId;
+  const dismissFailure = useCallback(() => setDismissedErrorCallId(failedCallId), [failedCallId]);
 
   const value = useMemo<CallContextValue>(() => ({ ...call, startCall, peerName }), [call, peerName, startCall]);
 
@@ -107,6 +132,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
           onToggleCamera={() => call.toggleCamera()}
         />
       )}
+      {failure && <CallFailureNotice message={failure} onDismiss={dismissFailure} />}
     </CallContext.Provider>
   );
 }

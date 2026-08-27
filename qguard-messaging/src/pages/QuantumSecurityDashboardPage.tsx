@@ -209,6 +209,10 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
   const allHardeningActive = totalCount > 0 && activeCount === totalCount;
   const inactiveChecks = hardeningChecks.filter((check) => check.status !== "active");
   const binaryHash = hardening.binary_sha3 ? `${hardening.binary_sha3.slice(0, 18)}...${hardening.binary_sha3.slice(-10)}` : "Unavailable";
+  // Name the file the hash was taken over. It is not always an executable: an
+  // Android release build maps its code straight out of the APK, so the APK is
+  // the measured image. A hash with no stated subject is unverifiable.
+  const measuredArtifact = hardening.binary_path?.split(/[\\/]/).pop() ?? null;
   const activeMyDevices = useMemo(() => devices.filter((device) => device.user_id === userId && isActiveDevice(device)), [devices, userId]);
   const trustedMyDevices = useMemo(() => activeMyDevices.filter(isTrustedDevice), [activeMyDevices]);
   const hybridKexReady = activeMyDevices.some(deviceHasHybridKex);
@@ -501,7 +505,10 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-ink-950">Security Hardening</h2>
-            <div className="mt-1 font-mono text-xs text-ink-500">Runtime binary SHA3-256: {binaryHash}</div>
+            <div className="mt-1 font-mono text-xs text-ink-500">
+              Runtime image SHA3-256: {binaryHash}
+              {measuredArtifact ? ` (${measuredArtifact})` : ""}
+            </div>
           </div>
           <div className={`status-pill ${allHardeningActive ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
             {allHardeningActive ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}

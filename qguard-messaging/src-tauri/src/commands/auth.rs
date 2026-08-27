@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::error::{QGuardError, Result};
-use crate::identity::PublicIdentityBundle;
+use crate::identity::{PublicIdentityBundle, platform_device_label};
 use crate::state::{AppState, AuthSession};
 
 #[derive(Clone, Debug, Serialize)]
@@ -46,7 +46,7 @@ pub fn auth_sync_session(
         expires_at,
     })?;
     let _key_scope = state.lock_key_scope()?;
-    let identity_bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
+    let identity_bundle = state.ensure_identity(&user_id, platform_device_label())?;
     // A fresh interactive sign-in (password + optional MFA, NOT a background
     // token refresh) re-proves account ownership, which is the documented way
     // out of a workspace brute-force lockdown ("sign out and back in to

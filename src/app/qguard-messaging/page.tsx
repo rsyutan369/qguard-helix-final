@@ -32,6 +32,7 @@ import {
   AlgoSuiteTable,
   CTASection,
   DownloadButton,
+  InstallerIntegrity,
   type Feature,
 } from './_shared';
 
@@ -122,6 +123,7 @@ export default function QguardMessagingOverview() {
               <GoldButton href="/login">Launch the App</GoldButton>
               <GhostButton to="/qguard-messaging/secure-chat">Explore Secure Chat</GhostButton>
             </div>
+            <InstallerIntegrity className="mt-5" />
             <div className="mt-8">
               <TrustStrip items={TRUST} />
             </div>

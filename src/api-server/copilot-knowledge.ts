@@ -13,6 +13,10 @@ import type {
   CopilotSuggestion,
   RoleCapabilities,
 } from '@/types/copilot'
+// The canonical, token-anchored algorithm classifier the governance engine and
+// every dashboard already use. Reused rather than re-implemented so "RSA" means
+// the same thing to Sophia that it means to CBOM, Governance and the QR Engine.
+import { algorithmFamily, ALGORITHM_FAMILY_LABEL, type AlgorithmFamily } from '@/lib/governance/subjects'
 
 /* ------------------------------------------------------------------ */
 /* Module registry — every QGuard Helix surface Sophia can deep-link   */
@@ -496,46 +500,233 @@ export function inferObjective(question: string, intents: CopilotIntent[]): Obje
   return { kind: 'status', objective: 'You want a focused status readout for a specific area.', investigate: false }
 }
 
+/* ------------------------------------------------------------------ */
+/* Cryptographic entity understanding                                   */
+/*                                                                      */
+/* An algorithm is an ENTITY, not an asset name. "Which systems use     */
+/* RSA?" previously became `name ILIKE '%rsa%'` over the assets table,  */
+/* which matches an asset literally named "rsa" and nothing else, so    */
+/* the answer was always "0 assets match". Algorithms are therefore     */
+/* lifted OUT of the name filter and resolved against the cryptographic */
+/* inventory, where they actually live.                                 */
+/* ------------------------------------------------------------------ */
+
 /**
- * Extract a real entity/attribute filter from a natural-language question for
- * asset search. Question words and generic security vocabulary are NOT filters
- * — "Show my most vulnerable assets" must never become name ILIKE '%show my
- * most vulnerable assets%' (that literal search returned 0 rows and produced
- * the "0 asset(s) match" answer that contradicted the risk evidence). Only
- * concrete terms survive: asset names ("web-01"), types ("database"),
- * environments ("production"). Returns '' when the question carries no filter.
+ * Question vocabulary → canonical algorithm family. Patterns are token-anchored
+ * for the same reason `algorithmFamily()` is: a loose substring let "OpenSSL"
+ * register as SSL and matched "DSA" inside "ECDSA"/"ML-DSA". Order matters —
+ * the most specific family must be tested first.
+ */
+const ALGORITHM_QUESTION_PATTERNS: Array<{ family: AlgorithmFamily; pattern: RegExp }> = [
+  { family: 'ml-kem', pattern: /\bml[-\s]?kem\b|\bkyber\b/i },
+  { family: 'ml-dsa', pattern: /\bml[-\s]?dsa\b|\bdilithium\b/i },
+  { family: 'slh-dsa', pattern: /\bslh[-\s]?dsa\b|\bsphincs\b/i },
+  { family: 'hybrid', pattern: /\bhybrid\b|\bx25519[-+\s]?ml[-\s]?kem\b/i },
+  { family: 'md5', pattern: /\bmd5\b/i },
+  { family: 'sha1', pattern: /\bsha[-\s]?1\b/i },
+  { family: 'sha3', pattern: /\bsha[-\s]?3\b|\bshake(128|256)?\b/i },
+  { family: 'sha2', pattern: /\bsha[-\s]?(224|256|384|512)\b|\bsha[-\s]?2\b/i },
+  { family: 'rc4', pattern: /\brc4\b|\barcfour\b/i },
+  { family: '3des', pattern: /\b3des\b|\btriple[-\s]?des\b/i },
+  { family: 'des', pattern: /\bdes\b/i },
+  { family: 'aes', pattern: /\baes\b/i },
+  { family: 'chacha', pattern: /\bchacha20?\b|\bpoly1305\b/i },
+  { family: 'ecdsa', pattern: /\becdsa\b|\bed25519\b|\bed448\b|\beddsa\b/i },
+  { family: 'ecdh', pattern: /\becdhe?\b|\bx25519\b|\bx448\b|\bp-?(256|384|521)\b|\bsecp\d+r1\b/i },
+  { family: 'rsa', pattern: /\brsa\b/i },
+  { family: 'dh', pattern: /\bdhe?\b|\bdiffie([-\s]?hellman)?\b/i },
+  { family: 'dsa', pattern: /\bdsa\b/i },
+]
+
+/**
+ * "ECC" and "elliptic curve" are umbrella terms covering both the signature
+ * (ECDSA/EdDSA) and key-agreement (ECDH/X25519) families, so a question about
+ * ECC must resolve to BOTH rather than arbitrarily picking one.
+ */
+const ALGORITHM_UMBRELLAS: Array<{ families: AlgorithmFamily[]; pattern: RegExp }> = [
+  { families: ['ecdsa', 'ecdh'], pattern: /\becc\b|\belliptic([-\s]?curve)?\b/i },
+  { families: ['ml-kem', 'ml-dsa', 'slh-dsa'], pattern: /\bpqc\b|\bpost[-\s]?quantum\b(?!\s+(readiness|ready))/i },
+]
+
+/**
+ * Canonical algorithm families named by a question, most specific first.
+ *
+ * Matched text is CONSUMED as it is recognised, because the family names are
+ * substrings of one another across a separator: `dsa` matches inside
+ * "ML-DSA" (the hyphen is a word boundary), so testing every pattern against
+ * the original text reported a question about ML-DSA as ALSO naming classical
+ * DSA — and a post-quantum signature would have been counted as a
+ * quantum-vulnerable one. Consuming "ML-DSA" before the `dsa` pattern runs is
+ * the same most-specific-wins ordering `algorithmFamily()` gets from its
+ * if/return chain.
+ */
+export function detectAlgorithmFamilies(question: string): AlgorithmFamily[] {
+  let text = String(question || '')
+  const found: AlgorithmFamily[] = []
+  const add = (family: AlgorithmFamily) => { if (!found.includes(family)) found.push(family) }
+  for (const { family, pattern } of ALGORITHM_QUESTION_PATTERNS) {
+    const global = new RegExp(pattern.source, 'gi')
+    if (global.test(text)) {
+      add(family)
+      // Blank the match so a broader pattern later in the list cannot re-match it.
+      text = text.replace(new RegExp(pattern.source, 'gi'), ' ')
+    }
+  }
+  for (const { families, pattern } of ALGORITHM_UMBRELLAS) {
+    if (new RegExp(pattern.source, 'i').test(text)) families.forEach(add)
+  }
+  return found.slice(0, 6)
+}
+
+export function algorithmFamilyLabel(family: AlgorithmFamily): string {
+  return ALGORITHM_FAMILY_LABEL[family] || family
+}
+
+/** Re-exported so the tools classify inventory rows with the SAME function. */
+export { algorithmFamily }
+export type { AlgorithmFamily }
+
+/**
+ * Which KIND of record the question is about. The platform counts assets,
+ * cryptographic components, certificates, keys and findings separately and they
+ * are NOT interchangeable — 4 assets carrying 178 components is not 178 assets.
+ * Sophia must answer in the unit the user asked about.
+ */
+export type QueryEntity = 'asset' | 'component' | 'certificate' | 'key' | 'finding' | 'unspecified'
+
+export function detectEntityKind(question: string): QueryEntity {
+  const q = String(question || '')
+  if (/\bcertificate(s)?\b|\bcert(s)?\b|\bx\.?509\b/i.test(q)) return 'certificate'
+  if (/\bfinding(s)?\b|\bvulnerabilit(y|ies)\b|\bissue(s)?\b|\balert(s)?\b/i.test(q)) return 'finding'
+  if (/\bkey(s)?\b|\bkeypair(s)?\b|\bkey material\b/i.test(q)) return 'key'
+  if (/\bcomponent(s)?\b|\bcbom\b|\blibrar(y|ies)\b|\bdependenc(y|ies)\b/i.test(q)) return 'component'
+  if (/\basset(s)?\b|\bsystem(s)?\b|\bserver(s)?\b|\bhost(s)?\b|\bapplication(s)?\b|\bendpoint(s)?\b|\bservice(s)?\b|\bworkload(s)?\b|\bmachine(s)?\b|\bdatabase(s)?\b|\bcluster(s)?\b|\bgateway(s)?\b|\bapi(s)?\b|\bwebsite(s)?\b|\bdomain(s)?\b/i.test(q)) return 'asset'
+  return 'unspecified'
+}
+
+/**
+ * Terms that are never a useful asset-name/type/environment filter.
+ *
+ * Two classes live here:
+ *   1. question and sentence scaffolding ("show", "which", "still", "use");
+ *   2. platform-generic vocabulary that matches everything and therefore
+ *      filters nothing ("asset", "system", "crypto", "posture").
+ *
+ * "Show my most vulnerable assets" must never become
+ * `name ILIKE '%show my most vulnerable assets%'` — that literal search
+ * returned 0 rows and produced the "0 asset(s) match" answer that contradicted
+ * the live risk evidence sitting right next to it.
  */
 const FILTER_STOPWORDS = new Set([
   // question/verb scaffolding
-  'show', 'list', 'display', 'find', 'search', 'give', 'tell', 'get', 'see',
-  'what', 'which', 'where', 'when', 'why', 'how', 'who', 'whose',
+  'show', 'list', 'display', 'find', 'search', 'give', 'tell', 'get', 'see', 'want', 'need', 'needs', 'know',
+  'what', 'which', 'where', 'when', 'why', 'how', 'who', 'whose', 'whom',
   'are', 'is', 'was', 'were', 'be', 'been', 'being', 'am',
   'do', 'does', 'did', 'have', 'has', 'had', 'can', 'could', 'should', 'would', 'will', 'may', 'might', 'must',
   'please', 'kindly', 'me', 'my', 'our', 'your', 'their', 'his', 'her', 'its',
   'i', 'we', 'you', 'they', 'it', 'this', 'that', 'these', 'those', 'them',
-  'the', 'a', 'an', 'and', 'or', 'not', 'no', 'of', 'in', 'on', 'at', 'for', 'to', 'from', 'with', 'about', 'into', 'over', 'under', 'by',
-  'all', 'any', 'some', 'many', 'much', 'more', 'most', 'least', 'less', 'few', 'each', 'every', 'other',
-  'now', 'currently', 'today', 'here', 'there', 'out', 'up', 'down',
+  'the', 'a', 'an', 'and', 'or', 'not', 'no', 'of', 'in', 'on', 'at', 'for', 'to', 'from', 'with', 'about', 'into', 'over', 'under', 'by', 'as', 'than', 'then', 'still', 'yet', 'also', 'just', 'only',
+  'all', 'any', 'some', 'many', 'much', 'more', 'most', 'least', 'less', 'few', 'each', 'every', 'other', 'both', 'either', 'neither',
+  'now', 'currently', 'today', 'here', 'there', 'out', 'up', 'down', 'left', 'remaining', 'remain', 'remains',
+  // generic predicates — describe a relation, never identify a record
+  'use', 'uses', 'used', 'using', 'run', 'runs', 'running', 'ran',
+  'own', 'owns', 'owned', 'owner', 'owners', 'ownership', 'responsible',
+  'support', 'supports', 'supported', 'supporting', 'enable', 'enabled', 'configure', 'configured',
+  'affect', 'affects', 'affected', 'impact', 'impacts', 'impacted', 'contain', 'contains', 'containing',
+  'deploy', 'deployed', 'install', 'installed', 'depend', 'depends', 'require', 'requires', 'required',
+  'migrate', 'migrated', 'migrating', 'migration', 'fix', 'fixed', 'remediate', 'remediated',
   // ranking / severity vocabulary (drives objective + args, never a text filter)
-  'top', 'highest', 'lowest', 'worst', 'best', 'biggest', 'greatest', 'largest', 'riskiest', 'weakest',
-  'vulnerable', 'vulnerability', 'vulnerabilities', 'risk', 'risks', 'risky', 'critical', 'severe', 'high', 'medium', 'low',
-  'exposed', 'exposure', 'external', 'internal', 'internet-facing', 'public-facing', 'facing',
+  'top', 'highest', 'lowest', 'worst', 'best', 'biggest', 'greatest', 'largest', 'riskiest', 'weakest', 'oldest', 'newest',
+  'vulnerable', 'vulnerability', 'vulnerabilities', 'risk', 'risks', 'risky', 'critical', 'severe', 'high', 'medium', 'low', 'weak', 'strong', 'insecure', 'secure',
+  'exposed', 'exposure', 'external', 'internal', 'internet-facing', 'public-facing', 'facing', 'public', 'private',
   // platform-generic vocabulary (matches everything, filters nothing)
-  'asset', 'assets', 'inventory', 'quantum', 'crypto', 'cryptographic', 'cryptography', 'pqc',
-  'status', 'state', 'posture', 'overview', 'summary', 'report', 'data', 'info', 'information', 'details', 'detail',
+  'asset', 'assets', 'system', 'systems', 'inventory', 'quantum', 'crypto', 'cryptographic', 'cryptography', 'pqc',
+  'component', 'components', 'finding', 'findings', 'algorithm', 'algorithms', 'certificate', 'certificates', 'cert', 'certs',
+  'key', 'keys', 'library', 'libraries', 'dependency', 'dependencies', 'cbom', 'scan', 'scans', 'endpoint', 'endpoints',
+  'status', 'state', 'posture', 'overview', 'summary', 'report', 'data', 'info', 'information', 'details', 'detail', 'result', 'results',
 ])
 
-export function extractAssetFilter(question: string): string {
-  const tokens = String(question || '')
-    .toLowerCase()
+/**
+ * A token that looks like a concrete identifier rather than a common word —
+ * a hostname (`api.prod.example.com`), a hyphenated service name (`web-01`),
+ * or anything carrying digits. These are ranked ABOVE bare words because they
+ * are what actually narrows an inventory.
+ */
+function selectivityScore(token: string): number {
+  let score = 0
+  if (token.includes('.')) score += 4       // hostname / FQDN
+  if (token.includes('-') || token.includes('_')) score += 3 // service-name convention
+  if (/\d/.test(token)) score += 2         // instance numbering
+  if (token.length >= 8) score += 1         // long words are rarely generic
+  return score
+}
+
+export interface QueryFilter {
+  /** Asset name/type/environment tokens ONLY — never an algorithm. */
+  query: string
+  /** Canonical algorithm families the question named. */
+  algorithms: AlgorithmFamily[]
+  /** Human labels for the detected families, for the answer text. */
+  algorithmLabels: string[]
+  internetFacing: boolean
+  criticality: string
+  /** The question asked who is responsible ("who owns them?"). */
+  wantsOwner: boolean
+  /** The record kind the user asked about. */
+  entity: QueryEntity
+}
+
+/**
+ * Parse a natural-language question into the structured filter the tools take.
+ *
+ * Ordering is deliberate: algorithm terms are consumed FIRST and removed from
+ * the free-text pool, so "Which internet-facing systems still use RSA and who
+ * owns them?" yields `{ algorithms: ['rsa'], internetFacing: true,
+ * wantsOwner: true, query: '' }` — not the nonsense name filter
+ * "system still use" that dropped RSA entirely and matched nothing.
+ */
+export function extractQueryFilter(question: string): QueryFilter {
+  const raw = String(question || '')
+  const algorithms = detectAlgorithmFamilies(raw)
+
+  // Remove every algorithm term from the text before name-token extraction, so
+  // an algorithm can never leak into an asset-name ILIKE.
+  let residual = raw.toLowerCase()
+  for (const { pattern } of ALGORITHM_QUESTION_PATTERNS) residual = residual.replace(new RegExp(pattern.source, 'gi'), ' ')
+  for (const { pattern } of ALGORITHM_UMBRELLAS) residual = residual.replace(new RegExp(pattern.source, 'gi'), ' ')
+
+  const tokens = residual
     .replace(/[^a-z0-9._\- ]+/g, ' ')
     .split(/\s+/)
     .map((t) => t.replace(/^[._-]+|[._-]+$/g, ''))
     .filter((t) => t.length >= 2 && !FILTER_STOPWORDS.has(t))
     // A trailing plural never hurts an ILIKE substring match — strip it so
     // "servers" still matches type "server".
-    .map((t) => (t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t))
-  return [...new Set(tokens)].slice(0, 3).join(' ')
+    .map((t) => (t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t))
+    .filter((t) => !FILTER_STOPWORDS.has(t))
+
+  // Rank by selectivity, NOT by position. Taking the first three tokens in
+  // sentence order is what dropped "rsa" (the only discriminating term) from
+  // "...systems still use RSA..." while keeping "system still use".
+  const ranked = [...new Set(tokens)].sort((a, b) => selectivityScore(b) - selectivityScore(a))
+
+  return {
+    query: ranked.slice(0, 3).join(' '),
+    algorithms,
+    algorithmLabels: algorithms.map(algorithmFamilyLabel),
+    internetFacing: /internet[- ]facing|public[- ]facing|externally exposed|public internet|edge[- ]facing/i.test(raw),
+    criticality: /\bcritical\b/i.test(raw) ? 'critical' : '',
+    wantsOwner: /\bwho owns\b|\bowner(s)?\b|\bownership\b|\bwho (is |are )?responsible\b|\bwhose\b|\bwho manages\b|\bteam\b/i.test(raw),
+    entity: detectEntityKind(raw),
+  }
+}
+
+/**
+ * Back-compatible string form — the asset name/type/environment filter only.
+ * Prefer `extractQueryFilter` for anything that needs the algorithm entities.
+ */
+export function extractAssetFilter(question: string): string {
+  return extractQueryFilter(question).query
 }
 
 /**

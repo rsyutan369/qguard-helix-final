@@ -31,3 +31,88 @@
 **Failure pattern (avoided):** the obvious way to stop leaking `original_filename` is to make it a placeholder and decrypt on display. But that one column is read by **public shared-link routes** (a share recipient has *no vault keys*, so a sealed name is undecryptable for them) and by **server-side analytics dashboards** (which by design can't hold user keys). A blind flip would have shown random IDs to share recipients and placeholders in dashboards — a regression worse than the metadata leak, and untestable without an authenticated session.
 **Root cause:** filename is both a confidentiality concern (owner) and a functional field (sharing/telemetry); encrypting it for the owner removes it from every party that legitimately can't decrypt.
 **Prevention rule:** before "just encrypt field X", grep every reader. If any reader can't possess the key (anonymous share, server telemetry), the change needs a *separate name-delivery path* for them and authenticated E2E testing — ship the additive capture (`envelope_meta.sealedMeta`) first, defer the destructive cutover. The HNDL-critical hardening was the **passphrase KDF (PBKDF2→Argon2id) + strength enforcement**, not the metadata — fix the root-of-trust first.
+
+## 2026-08-26 — Video calling failed in both directions on 1.3.0
+
+**Failure pattern.** A fix that is correct in isolation can be completely inert
+because of an upstream defect, and it will look like the fix did not work. The
+1.3.0 ring fan-out ("ring every device") was correct code fanning out to a
+one-element list, because `deliveryDeviceBucket` keyed on `user_id:device_label`
+and every platform registered the identical hardcoded label `"Windows Desktop"`.
+
+**Root causes (4, independent).**
+1. Identical hardcoded device labels collapsed every account to ONE addressable
+   device — for messages as well as calls.
+2. `App.tsx` returned the Android PIN screen in an early return ABOVE
+   `CallProvider`, so backgrounding the phone unmounted the call-signal
+   subscription entirely.
+3. The shipped public TURN relay could not allocate, AND an unallocatable TURN
+   entry stops ICE gathering from ever completing — a broken relay was strictly
+   worse than no relay.
+4. One fixed 45s wall clock covered both ringing and connecting, so a
+   slow-but-advancing connection was killed at the moment it was about to work.
+
+**Prevention rules.**
+- A discriminator that is *hardcoded identical everywhere* is not a
+  discriminator. When deduplicating "the same device", key on something that
+  actually diverges per device (here: `last_seen_at` recency), not on a label
+  the code itself writes.
+- Anything that must survive a lock/gate must be mounted ABOVE that gate. Check
+  what an early `return` unmounts before adding one.
+- Never ship a third-party dependency in the media path without a runtime health
+  check. And verify a TURN server by driving REAL Chromium ICE over CDP — a
+  hand-rolled STUN probe returns errors that may be your own bug.
+- A timeout should measure the thing it is protecting against. Elapsed time is
+  not progress; if the operation can legitimately take longer, gate on progress
+  and keep a separate absolute ceiling.
+- A failure state that unmounts its own UI discards its error message. Check
+  that a `failed` reason has somewhere to render.
+- `messaging_call_signals` is a complete call timeline — read it before theorising
+  about call bugs.
+
+## 2026-08-26 (2) — "100% · Fully protected" above "2 of 4 layers fully active"
+
+**Failure pattern.** Two models measuring the same thing on one screen, and the
+WRONG one was the pessimistic-looking one. The headline (`buildSecurityPosture`)
+was right; the phone's reactor (`buildCryptoStack`) was mis-measuring. The user
+reasonably read the low number as a security gap. It was not: their cryptography
+was fully active.
+
+**Root cause.** `buildCryptoStack` diverged from the canonical posture engine in
+three ways, and `security-score.ts` already documented the trap in its own code
+("stale device identities left behind by reinstalls ... make a perfectly healthy
+device read as awaiting prekey material forever"):
+1. Divided Identity/Handshake by EVERY non-revoked device row. A reinstall mints
+   a new identity and strands the old row forever with no signed prekey — the
+   live account had 2 live devices and 3 stranded rows, so Handshake read 2/5.
+2. Counted build-provenance gates (code signing, obfuscation, control-flow
+   flattening) in the Runtime layer. `security-score.ts` deliberately excludes
+   them; they describe how the binary was produced, not whether the running
+   cryptography works.
+3. Measured Session against an aspirational target (24) instead of the readiness
+   threshold the rest of the platform uses (16).
+
+Separately, on Android the runtime genuinely could not measure itself:
+`current_binary_measurement()` used `std::env::current_exe()`, which on Android
+is the zygote (`/system/bin/app_process64`) — not our code, and unreadable in
+the app sandbox. Two integrity checks reported "unavailable" for that reason
+alone. Fixed by measuring the app's own loaded `.so`, located via
+`/proc/self/maps`.
+
+**Prevention rules.**
+- Before adding a second measurement of something already measured, find the
+  existing engine and reuse its vocabulary. If a module's header comment warns
+  about a trap, the new module is probably about to fall into it.
+- A ratio is only as honest as its denominator. State the population in the UI
+  ("across N enrolled devices") — an unqualified "2 of 4" hides the bug.
+- Narrowing a denominator is legitimate ONLY when the excluded rows are
+  reclassified and surfaced with their own action, never silently dropped. Test
+  both directions: that stranded rows stop deflating the layer, AND that a real
+  gap on a live device still fails it.
+- Two numbers on one screen that can contradict each other WILL. Make the
+  stronger claim structurally conditional on the weaker evidence (`scoreVerdict`
+  now takes the layers) so the contradiction cannot be written again.
+- `#[cfg(target_os = "android")]` code is NOT compiled by a host `cargo check`.
+  Verify with `cargo check --lib --target aarch64-linux-android`, and put the
+  NDK's `toolchains/llvm/prebuilt/windows-x86_64/bin` on PATH first or cc-rs
+  fails with "failed to find tool clang.exe".

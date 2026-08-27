@@ -1,0 +1,837 @@
+/* =============================================================================
+   MODERNIST - Android page skin
+   =============================================================================
+   The module pages (Secure Chat, Quantum Vault, Key Management, Settings, ...)
+   are written in Tailwind utilities, not in the `.qg-*` mobile vocabulary, so
+   retuning tokens alone leaves them on the old palette. This sheet maps the
+   utility vocabulary those pages already use onto the Modernist system.
+
+   It is the same technique globals.css already uses to retrofit dark mode
+   (`.theme-dark .bg-white { ... !important }`), one scope deeper:
+
+       html[data-qg-skin="modernist"]  ->  Android only
+       ...                             ->  beats `.theme-dark ...` on specificity
+
+   NOTHING in this file changes markup, logic or wiring. Only paint.
+
+   The old palette carried three brand hues (violet / cyan / emerald) plus two
+   status hues (amber / rose). Modernist has ONE hue, so meaning is re-encoded
+   as weight rather than colour:
+
+       verified / correct   ->  ink, outlined            (quiet authority)
+       brand / actionable   ->  accent wash              (noticed)
+       needs attention      ->  accent wash + accent rule
+       failing / destructive->  solid accent             (loudest)
+
+   Loaded from main.tsx AFTER android-modernist.css.
+   ========================================================================== */
+
+/* --- Zero radius ---------------------------------------------------------- */
+
+/* The system has no curves - not on cards, buttons, avatars, chips or meters.
+   `!important` is required because many call sites set radii inline. */
+html[data-qg-skin="modernist"] [class*="rounded"] {
+  border-radius: 0 !important;
+}
+
+html[data-qg-skin="modernist"] .shell-card,
+html[data-qg-skin="modernist"] .icon-button,
+html[data-qg-skin="modernist"] .status-pill,
+html[data-qg-skin="modernist"] .profile-hero,
+html[data-qg-skin="modernist"] .avatar-vortex,
+html[data-qg-skin="modernist"] .vault-upload-dropzone,
+html[data-qg-skin="modernist"] input,
+html[data-qg-skin="modernist"] select,
+html[data-qg-skin="modernist"] textarea,
+html[data-qg-skin="modernist"] button,
+html[data-qg-skin="modernist"] img,
+html[data-qg-skin="modernist"] svg {
+  border-radius: 0 !important;
+}
+
+/* --- Flat ----------------------------------------------------------------- */
+
+/* Blur and drop shadows are the previous system's depth model. This one builds
+   depth from rules and inversion, so both come out everywhere. */
+html[data-qg-skin="modernist"] [class*="shadow"],
+html[data-qg-skin="modernist"] .shell-card,
+html[data-qg-skin="modernist"] .icon-button,
+html[data-qg-skin="modernist"] .status-pill,
+html[data-qg-skin="modernist"] .avatar-vortex {
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-qg-skin="modernist"] [class*="blur"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* --- Named component classes (globals.css) -------------------------------- */
+
+html[data-qg-skin="modernist"] .shell-card,
+html[data-qg-skin="modernist"].theme-dark .shell-card {
+  border: 1px solid var(--m-divider);
+  background: var(--m-bg);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+html[data-qg-skin="modernist"] .shell-card:hover,
+html[data-qg-skin="modernist"].theme-dark .shell-card:hover {
+  border-color: var(--m-accent);
+  box-shadow: none !important;
+}
+
+html[data-qg-skin="modernist"] .icon-button {
+  border: 1px solid var(--m-divider);
+  background: transparent;
+  color: var(--m-ink);
+}
+
+html[data-qg-skin="modernist"] .icon-button:hover {
+  border-color: var(--m-accent);
+  color: var(--m-accent-text);
+  background: var(--m-a100);
+  transform: none;
+}
+
+html[data-qg-skin="modernist"] .status-pill {
+  font-family: var(--qg-font-display);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 4px 7px;
+}
+
+html[data-qg-skin="modernist"] .profile-hero,
+html[data-qg-skin="modernist"].theme-dark .profile-hero {
+  background: var(--m-surface);
+  border: 1px solid var(--m-divider);
+}
+
+html[data-qg-skin="modernist"] .avatar-vortex,
+html[data-qg-skin="modernist"].theme-dark .avatar-vortex {
+  border: 1px solid var(--m-divider);
+  background: transparent;
+}
+
+html[data-qg-skin="modernist"] .avatar-vortex:hover {
+  border-color: var(--m-accent);
+  transform: none;
+}
+
+html[data-qg-skin="modernist"] .vault-upload-dropzone,
+html[data-qg-skin="modernist"].theme-dark .vault-upload-dropzone {
+  border: 1px dashed var(--m-divider);
+  background: var(--m-surface);
+  color: var(--m-ink);
+}
+
+html[data-qg-skin="modernist"] .vault-upload-dropzone:hover,
+html[data-qg-skin="modernist"] .vault-upload-dropzone:focus-visible {
+  border-color: var(--m-accent);
+  background: var(--m-a100);
+}
+
+html[data-qg-skin="modernist"] .vault-dropzone-icon {
+  color: var(--m-n700);
+}
+
+html[data-qg-skin="modernist"] .security-hardening-panel,
+html[data-qg-skin="modernist"].theme-dark .security-hardening-panel {
+  border-color: var(--m-divider);
+  background: var(--m-surface);
+  color: var(--m-ink);
+}
+
+html[data-qg-skin="modernist"] .sidebar-security-card,
+html[data-qg-skin="modernist"].theme-dark .sidebar-security-card {
+  border: 1px solid var(--m-ink);
+  background: transparent;
+  color: var(--m-ink);
+}
+
+html[data-qg-skin="modernist"] .conversation-segment-active,
+html[data-qg-skin="modernist"].theme-dark .conversation-segment-active {
+  background: var(--m-slab);
+  color: var(--m-on-slab);
+  box-shadow: none;
+}
+
+html[data-qg-skin="modernist"] .conversation-row-active,
+html[data-qg-skin="modernist"].theme-dark .conversation-row-active {
+  background: var(--m-a100);
+  border-left: 2px solid var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] .vault-tree-row:hover,
+html[data-qg-skin="modernist"] .vault-tree-row:focus,
+html[data-qg-skin="modernist"].theme-dark .vault-tree-row:hover,
+html[data-qg-skin="modernist"].theme-dark .vault-tree-row:focus {
+  background: var(--m-a100);
+}
+
+html[data-qg-skin="modernist"] .vault-tree-row[aria-selected="true"],
+html[data-qg-skin="modernist"].theme-dark .vault-tree-row[aria-selected="true"] {
+  background: var(--m-slab);
+  color: var(--m-on-slab);
+}
+
+/* --- Surfaces ------------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .bg-white,
+html[data-qg-skin="modernist"] .bg-white\/70,
+html[data-qg-skin="modernist"] .bg-white\/75,
+html[data-qg-skin="modernist"] .bg-white\/80,
+html[data-qg-skin="modernist"] .bg-white\/90,
+html[data-qg-skin="modernist"] .bg-white\/95,
+html[data-qg-skin="modernist"] .hover\:bg-white:hover,
+html[data-qg-skin="modernist"].theme-dark .bg-white,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/70,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/75,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/80,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/90,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/95 {
+  background-color: var(--m-bg) !important;
+}
+
+/* Translucent white overlays only ever sit ON a dark hero, so they lighten
+   against the ink ground rather than against the page. */
+html[data-qg-skin="modernist"] .bg-white\/5,
+html[data-qg-skin="modernist"] .bg-white\/10,
+html[data-qg-skin="modernist"] .bg-white\/15,
+html[data-qg-skin="modernist"] .bg-white\/20,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/10,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/15,
+html[data-qg-skin="modernist"].theme-dark .bg-white\/20 {
+  background-color: color-mix(in srgb, var(--m-on-slab) 12%, transparent) !important;
+}
+
+html[data-qg-skin="modernist"] .bg-canvas,
+html[data-qg-skin="modernist"] .bg-ink-50,
+html[data-qg-skin="modernist"] .hover\:bg-canvas:hover,
+html[data-qg-skin="modernist"].theme-dark .bg-canvas,
+html[data-qg-skin="modernist"].theme-dark .bg-ink-50,
+html[data-qg-skin="modernist"].theme-dark .hover\:bg-canvas:hover {
+  background-color: var(--m-surface) !important;
+}
+
+html[data-qg-skin="modernist"] .bg-ink-100 {
+  background-color: var(--m-n300) !important;
+}
+
+html[data-qg-skin="modernist"] .bg-ink-950 {
+  background-color: var(--m-slab) !important;
+}
+
+html[data-qg-skin="modernist"] .bg-ink-950\/40,
+html[data-qg-skin="modernist"] .bg-ink-950\/50,
+html[data-qg-skin="modernist"] .bg-ink-950\/80,
+html[data-qg-skin="modernist"] .bg-ink-950\/90 {
+  background-color: color-mix(in srgb, var(--m-slab) 72%, transparent) !important;
+}
+
+/* Verified / correct: quiet, outlined, ink. Never a coloured wash. */
+html[data-qg-skin="modernist"] .bg-emerald-50,
+html[data-qg-skin="modernist"] .bg-emerald-50\/80,
+html[data-qg-skin="modernist"] .bg-emerald-50\/90,
+html[data-qg-skin="modernist"] .bg-cyan-50,
+html[data-qg-skin="modernist"] .bg-cyan-50\/60,
+html[data-qg-skin="modernist"] .bg-cyan-50\/70,
+html[data-qg-skin="modernist"] .hover\:bg-emerald-50:hover,
+html[data-qg-skin="modernist"] .hover\:bg-cyan-50:hover,
+html[data-qg-skin="modernist"] .hover\:bg-cyan-50\/50:hover,
+html[data-qg-skin="modernist"] .focus\:bg-cyan-50\/60:focus,
+html[data-qg-skin="modernist"].theme-dark .bg-emerald-50,
+html[data-qg-skin="modernist"].theme-dark .bg-emerald-50\/80,
+html[data-qg-skin="modernist"].theme-dark .bg-emerald-50\/90,
+html[data-qg-skin="modernist"].theme-dark .bg-cyan-50,
+html[data-qg-skin="modernist"].theme-dark .bg-cyan-50\/60,
+html[data-qg-skin="modernist"].theme-dark .bg-cyan-50\/70 {
+  background-color: var(--m-surface) !important;
+}
+
+/* Brand / actionable: the accent wash. */
+html[data-qg-skin="modernist"] .bg-violet-50,
+html[data-qg-skin="modernist"] .bg-violet-50\/60,
+html[data-qg-skin="modernist"] .bg-violet-50\/90,
+html[data-qg-skin="modernist"] .bg-violet-100,
+html[data-qg-skin="modernist"] .hover\:bg-violet-50:hover,
+html[data-qg-skin="modernist"] .hover\:bg-violet-100:hover,
+html[data-qg-skin="modernist"].theme-dark .bg-violet-50,
+html[data-qg-skin="modernist"].theme-dark .bg-violet-50\/60,
+html[data-qg-skin="modernist"].theme-dark .bg-violet-50\/90,
+html[data-qg-skin="modernist"].theme-dark .bg-violet-100 {
+  background-color: var(--m-a100) !important;
+}
+
+/* Needs attention / failing: the heavier wash. */
+html[data-qg-skin="modernist"] .bg-amber-50,
+html[data-qg-skin="modernist"] .bg-rose-50,
+html[data-qg-skin="modernist"] .hover\:bg-amber-50:hover,
+html[data-qg-skin="modernist"] .hover\:bg-rose-50:hover,
+html[data-qg-skin="modernist"].theme-dark .bg-amber-50,
+html[data-qg-skin="modernist"].theme-dark .bg-rose-50 {
+  background-color: var(--m-a200) !important;
+}
+
+/* Solid fills. Brand and destructive actions take the accent; the "inverted"
+   ink fill stays ink. Both pair correctly with `text-white` below. */
+html[data-qg-skin="modernist"] .bg-violet-500,
+html[data-qg-skin="modernist"] .bg-violet-600,
+html[data-qg-skin="modernist"] .bg-violet-700,
+html[data-qg-skin="modernist"] .bg-cyan-500,
+html[data-qg-skin="modernist"] .bg-cyan-600,
+html[data-qg-skin="modernist"] .bg-cyan-700,
+html[data-qg-skin="modernist"] .bg-rose-500,
+html[data-qg-skin="modernist"] .bg-rose-600,
+html[data-qg-skin="modernist"] .bg-rose-700 {
+  background-color: var(--m-accent) !important;
+}
+
+/* Confirmed / completed fills stay ink, so "done" never competes with "act". */
+html[data-qg-skin="modernist"] .bg-emerald-500,
+html[data-qg-skin="modernist"] .bg-emerald-600,
+html[data-qg-skin="modernist"] .bg-emerald-700 {
+  background-color: var(--m-slab) !important;
+}
+
+/* --- Borders -------------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .border-line,
+html[data-qg-skin="modernist"].theme-dark .border-line {
+  border-color: var(--m-rule) !important;
+}
+
+html[data-qg-skin="modernist"] .border-emerald-100,
+html[data-qg-skin="modernist"] .border-emerald-200,
+html[data-qg-skin="modernist"] .border-cyan-100,
+html[data-qg-skin="modernist"] .border-cyan-200,
+html[data-qg-skin="modernist"] .border-cyan-300,
+html[data-qg-skin="modernist"] .border-cyan-400,
+html[data-qg-skin="modernist"].theme-dark .border-emerald-100,
+html[data-qg-skin="modernist"].theme-dark .border-emerald-200,
+html[data-qg-skin="modernist"].theme-dark .border-cyan-100,
+html[data-qg-skin="modernist"].theme-dark .border-cyan-200 {
+  border-color: var(--m-n400) !important;
+}
+
+html[data-qg-skin="modernist"] .border-violet-100,
+html[data-qg-skin="modernist"] .border-violet-200,
+html[data-qg-skin="modernist"] .border-violet-300,
+html[data-qg-skin="modernist"].theme-dark .border-violet-100,
+html[data-qg-skin="modernist"].theme-dark .border-violet-200,
+html[data-qg-skin="modernist"].theme-dark .border-violet-300 {
+  border-color: var(--m-a300) !important;
+}
+
+html[data-qg-skin="modernist"] .border-amber-100,
+html[data-qg-skin="modernist"] .border-amber-200,
+html[data-qg-skin="modernist"] .border-rose-100,
+html[data-qg-skin="modernist"] .border-rose-200,
+html[data-qg-skin="modernist"].theme-dark .border-amber-100,
+html[data-qg-skin="modernist"].theme-dark .border-amber-200,
+html[data-qg-skin="modernist"].theme-dark .border-rose-100,
+html[data-qg-skin="modernist"].theme-dark .border-rose-200 {
+  border-color: var(--m-accent) !important;
+}
+
+html[data-qg-skin="modernist"] .border-white\/10,
+html[data-qg-skin="modernist"] .border-white\/20,
+html[data-qg-skin="modernist"] .border-white\/30,
+html[data-qg-skin="modernist"] .border-white\/50,
+html[data-qg-skin="modernist"] .border-white\/60,
+html[data-qg-skin="modernist"].theme-dark .border-white\/20,
+html[data-qg-skin="modernist"].theme-dark .border-white\/50,
+html[data-qg-skin="modernist"].theme-dark .border-white\/60 {
+  border-color: color-mix(in srgb, var(--m-on-slab) 32%, transparent) !important;
+}
+
+/* --- Type colours --------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] .text-ink-950,
+html[data-qg-skin="modernist"] .text-ink-900,
+html[data-qg-skin="modernist"] .hover\:text-ink-950:hover,
+html[data-qg-skin="modernist"].theme-dark .text-ink-950,
+html[data-qg-skin="modernist"].theme-dark .text-ink-900 {
+  color: var(--m-ink) !important;
+}
+
+html[data-qg-skin="modernist"] .text-ink-800,
+html[data-qg-skin="modernist"] .text-ink-700,
+html[data-qg-skin="modernist"] .text-ink-600,
+html[data-qg-skin="modernist"].theme-dark .text-ink-800,
+html[data-qg-skin="modernist"].theme-dark .text-ink-700,
+html[data-qg-skin="modernist"].theme-dark .text-ink-600 {
+  color: var(--m-n800) !important;
+}
+
+html[data-qg-skin="modernist"] .text-ink-500,
+html[data-qg-skin="modernist"] .text-ink-400,
+html[data-qg-skin="modernist"].theme-dark .text-ink-500,
+html[data-qg-skin="modernist"].theme-dark .text-ink-400 {
+  color: var(--m-n700) !important;
+}
+
+/* `text-white` only ever sits on an accent fill or an ink fill, and the
+   contrast colour for BOTH is the same token in either theme - which is why
+   this single mapping is safe. */
+html[data-qg-skin="modernist"] .text-white {
+  color: var(--m-on-slab) !important;
+}
+
+html[data-qg-skin="modernist"] .text-white\/50,
+html[data-qg-skin="modernist"] .text-white\/60,
+html[data-qg-skin="modernist"] .text-white\/70,
+html[data-qg-skin="modernist"] .text-white\/80,
+html[data-qg-skin="modernist"] .text-white\/85 {
+  color: color-mix(in srgb, var(--m-on-slab) 74%, transparent) !important;
+}
+
+/* Brand + destructive type takes the accent's text step (the 700), which
+   clears the contrast floor at 9-11px where the raw accent does not. */
+html[data-qg-skin="modernist"] .text-violet-500,
+html[data-qg-skin="modernist"] .text-violet-600,
+html[data-qg-skin="modernist"] .text-violet-700,
+html[data-qg-skin="modernist"] .text-cyan-600,
+html[data-qg-skin="modernist"] .text-cyan-700,
+html[data-qg-skin="modernist"] .text-rose-500,
+html[data-qg-skin="modernist"] .text-rose-600,
+html[data-qg-skin="modernist"] .text-rose-700,
+html[data-qg-skin="modernist"] .hover\:text-cyan-700:hover,
+html[data-qg-skin="modernist"] .hover\:text-violet-700:hover,
+html[data-qg-skin="modernist"].theme-dark .text-violet-600,
+html[data-qg-skin="modernist"].theme-dark .text-violet-700,
+html[data-qg-skin="modernist"].theme-dark .text-cyan-600,
+html[data-qg-skin="modernist"].theme-dark .text-cyan-700,
+html[data-qg-skin="modernist"].theme-dark .text-rose-500,
+html[data-qg-skin="modernist"].theme-dark .text-rose-600 {
+  color: var(--m-accent-text) !important;
+}
+
+/* Verified / measured-good reads as ink. */
+html[data-qg-skin="modernist"] .text-emerald-500,
+html[data-qg-skin="modernist"] .text-emerald-600,
+html[data-qg-skin="modernist"] .text-emerald-700,
+html[data-qg-skin="modernist"].theme-dark .text-emerald-600,
+html[data-qg-skin="modernist"].theme-dark .text-emerald-700 {
+  color: var(--m-ink) !important;
+}
+
+html[data-qg-skin="modernist"] .text-amber-500,
+html[data-qg-skin="modernist"] .text-amber-600,
+html[data-qg-skin="modernist"] .text-amber-700,
+html[data-qg-skin="modernist"] .text-amber-800,
+html[data-qg-skin="modernist"].theme-dark .text-amber-500,
+html[data-qg-skin="modernist"].theme-dark .text-amber-600,
+html[data-qg-skin="modernist"].theme-dark .text-amber-700 {
+  color: var(--m-a800) !important;
+}
+
+/* Pale tints are always type ON an ink hero, so they take the light accent
+   step - which stays light against ink in either theme. */
+html[data-qg-skin="modernist"] .text-violet-200,
+html[data-qg-skin="modernist"] .text-violet-300,
+html[data-qg-skin="modernist"] .text-cyan-200,
+html[data-qg-skin="modernist"] .text-sky-300 {
+  color: var(--m-a300) !important;
+}
+
+/* --- Gradients ------------------------------------------------------------ */
+
+/* Brand gradients flatten to the accent. Targeted by their FROM stop so the
+   video scrim in InCallOverlay (`from-black/55 to-transparent`) is untouched. */
+html[data-qg-skin="modernist"] .from-cyan-400,
+html[data-qg-skin="modernist"] .from-cyan-500 {
+  background-image: linear-gradient(var(--m-accent), var(--m-accent)) !important;
+}
+
+/* Gradient TEXT (bg-clip-text) keeps a gradient so the clip still paints. */
+html[data-qg-skin="modernist"] .from-violet-300 {
+  background-image: linear-gradient(var(--m-a300), var(--m-a300)) !important;
+}
+
+/* The About hero is an ink block in this system, not a violet one. */
+html[data-qg-skin="modernist"] .from-violet-700 {
+  background-image: linear-gradient(var(--m-slab), var(--m-slab)) !important;
+}
+
+/* A soft card wash stays soft - flattening it to solid accent would put dark
+   body copy on a saturated ground. */
+html[data-qg-skin="modernist"] .from-violet-50 {
+  background-image: linear-gradient(var(--m-a100), var(--m-bg)) !important;
+}
+
+/* --- Sign in / register --------------------------------------------------- */
+
+/* LoginPage ships its own scoped <style> block of literal violets and blues,
+   so it is the one surface a token retune cannot reach. It is restated here
+   rather than edited, which keeps that component byte-identical for desktop.
+
+   The whole auth screen becomes a SLAB - the constant dark ground - because the
+   page's copy is written in `text-white` and light-tint utilities throughout.
+   That also matches the design's sign-in, which opens on an ink masthead. */
+html[data-qg-skin="modernist"] .qg-login {
+  background: var(--m-slab) !important;
+  color: var(--m-on-slab);
+}
+
+html[data-qg-skin="modernist"] .qg-login .qg-grid,
+html[data-qg-skin="modernist"] .qg-login .qg-orb,
+html[data-qg-skin="modernist"] .qg-login .qg-hero-veil,
+html[data-qg-skin="modernist"] .qg-login .qg-halo-glow {
+  display: none !important;
+}
+
+html[data-qg-skin="modernist"] .qg-login .qg-shell {
+  border: 1px solid color-mix(in srgb, var(--m-on-slab) 24%, transparent) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+html[data-qg-skin="modernist"] .qg-login .qg-form {
+  border-left-color: color-mix(in srgb, var(--m-on-slab) 16%, transparent);
+}
+
+html[data-qg-skin="modernist"] .qg-login .qg-cta {
+  background: var(--m-accent) !important;
+  color: var(--m-on-accent) !important;
+  box-shadow: none !important;
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+html[data-qg-skin="modernist"] .qg-login .qg-cta:hover:not(:disabled) {
+  background: var(--m-a600) !important;
+  box-shadow: none !important;
+  filter: none;
+}
+
+html[data-qg-skin="modernist"] .qg-login .qg-cta:active:not(:disabled) {
+  transform: none;
+}
+
+/* The mark keeps its rotating ring - a hard conic edge, not a glow - retinted
+   to the accent so the auth screen carries the same one hue as the app. */
+html[data-qg-skin="modernist"] .qg-login .qg-halo-ring {
+  background: conic-gradient(from 0deg, transparent 0deg, var(--m-accent) 70deg, var(--m-accent-on-slab) 150deg, transparent 230deg) !important;
+}
+
+/* Fields on a slab: an ink-toned well with light type. The global input rule
+   below paints a PAPER field, which would be invisible here because the page's
+   `text-white` labels and values resolve to the light constant. */
+html[data-qg-skin="modernist"] .qg-login input {
+  background: color-mix(in srgb, var(--m-on-slab) 8%, transparent) !important;
+  border-color: color-mix(in srgb, var(--m-on-slab) 26%, transparent) !important;
+  color: var(--m-on-slab) !important;
+  caret-color: var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] .qg-login input::placeholder {
+  color: color-mix(in srgb, var(--m-on-slab) 42%, transparent) !important;
+}
+
+html[data-qg-skin="modernist"] .qg-login input:focus {
+  border-color: var(--m-accent) !important;
+  box-shadow: none !important;
+}
+
+/* Every tinted type colour on this screen collapses to the one accent, in the
+   constant light step so it stays legible against the slab in both themes. */
+html[data-qg-skin="modernist"] .qg-login [class*="text-violet-"],
+html[data-qg-skin="modernist"] .qg-login [class*="text-sky-"],
+html[data-qg-skin="modernist"] .qg-login [class*="text-emerald-"],
+html[data-qg-skin="modernist"] .qg-login [class*="text-rose-"],
+html[data-qg-skin="modernist"] .qg-login [class*="text-cyan-"] {
+  color: var(--m-accent-on-slab) !important;
+}
+
+/* `:not(input)` because these substring selectors also match the STATE classes
+   on the fields (`focus:border-violet-400/70`), which would paint an accent
+   border on every input at rest rather than only while focused. */
+html[data-qg-skin="modernist"] .qg-login [class*="border-rose-"]:not(input),
+html[data-qg-skin="modernist"] .qg-login [class*="border-emerald-"]:not(input),
+html[data-qg-skin="modernist"] .qg-login [class*="border-violet-"]:not(input) {
+  border-color: var(--m-accent) !important;
+}
+
+html[data-qg-skin="modernist"] .qg-login [class*="bg-rose-"]:not(input),
+html[data-qg-skin="modernist"] .qg-login [class*="bg-emerald-"]:not(input) {
+  background-color: color-mix(in srgb, var(--m-accent) 18%, transparent) !important;
+}
+
+/* Display type on the auth screen follows the system: heavy, tight, uppercase. */
+html[data-qg-skin="modernist"] .qg-login h1,
+html[data-qg-skin="modernist"] .qg-login h2 {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  text-transform: uppercase;
+}
+
+/* --- Avatars -------------------------------------------------------------- */
+
+/* Square blocks in one of two tones, chosen by the same deterministic hash the
+   gradient palette used - so a given person still looks like themselves, in a
+   palette that has one hue. Text colour is already handled by `.text-white`,
+   whose mapping resolves correctly against both the ink and accent grounds. */
+html[data-qg-skin="modernist"] [data-avatar-tone="0"] {
+  --qg-avatar-bg: var(--m-slab);
+}
+
+html[data-qg-skin="modernist"] [data-avatar-tone="1"] {
+  --qg-avatar-bg: var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] [data-avatar-tone] {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+/* --- Form controls -------------------------------------------------------- */
+
+html[data-qg-skin="modernist"] input,
+html[data-qg-skin="modernist"] select,
+html[data-qg-skin="modernist"] textarea,
+html[data-qg-skin="modernist"].theme-dark input,
+html[data-qg-skin="modernist"].theme-dark select,
+html[data-qg-skin="modernist"].theme-dark textarea {
+  font-family: var(--qg-font-display);
+  background: var(--m-surface);
+  border-color: var(--m-divider);
+  color: var(--m-ink);
+  caret-color: var(--m-accent);
+}
+
+html[data-qg-skin="modernist"] input::placeholder,
+html[data-qg-skin="modernist"] textarea::placeholder,
+html[data-qg-skin="modernist"].theme-dark input::placeholder,
+html[data-qg-skin="modernist"].theme-dark textarea::placeholder {
+  color: var(--m-n600);
+}
+
+html[data-qg-skin="modernist"] input:focus-visible,
+html[data-qg-skin="modernist"] textarea:focus-visible,
+html[data-qg-skin="modernist"] select:focus-visible {
+  border-color: var(--m-accent);
+  outline: none;
+}
+
+/* Buttons stop lifting and glowing on press; they invert instead. */
+html[data-qg-skin="modernist"] button:not(:disabled):hover {
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+html[data-qg-skin="modernist"] .focus-ring:focus-visible {
+  outline-color: var(--m-accent);
+}
+
+/* --- Structural primitives (used by the mobile chrome) -------------------- */
+
+/* Markup added for this skin carries `.qgm-only`, so it is display:none in
+   every build that does not set the skin attribute - the desktop shell renders
+   byte-identically to before. */
+/* No `!important` on `.qgm-only`: these rules win on specificity alone
+   (0,2,1 vs 0,1,0), which leaves an inline `display` on the element itself
+   free to pick flex/grid. `display: block` rather than `revert` so an older
+   WebView cannot drop the declaration and hide the masthead outright. */
+.qgm-only { display: none; }
+html[data-qg-skin="modernist"] .qgm-only { display: block; }
+html[data-qg-skin="modernist"] .qgm-not { display: none !important; }
+
+/* The masthead: an ink block behind a lit lattice.
+   It used to carry its own accent scan bar as well, but the dashboard's quantum
+   core block below it runs the same sweep — two bars travelling down the same
+   screen read as a glitch rather than as signature motion, so the masthead
+   keeps the lattice and the core keeps the sweep. */
+.qgm-masthead {
+  position: relative;
+  overflow: hidden;
+  background: var(--m-slab);
+  color: var(--m-on-slab);
+}
+
+.qgm-masthead::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--m-on-slab) 10%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--m-on-slab) 10%, transparent) 1px, transparent 1px);
+  background-size: 34px 34px;
+}
+
+.qgm-wordmark {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  font-size: 17px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.qgm-tally {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--m-accent);
+  animation: qgm-pulse 1.8s ease-in-out infinite;
+}
+
+.qgm-kicker {
+  font-family: var(--qg-font-display);
+  font-weight: 400;
+  font-size: 9px;
+  line-height: 1.4;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+/* Page identity: a tracked kicker over a heavy, tight display line. */
+.qgm-pagehead {
+  border-bottom: 2px solid var(--m-divider);
+  background: var(--m-bg);
+}
+
+.qgm-pagekicker {
+  font-family: var(--qg-font-display);
+  font-weight: 400;
+  font-size: 9.5px;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--m-n700);
+}
+
+.qgm-pagetitle {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  font-size: 27px;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  text-transform: uppercase;
+  color: var(--m-ink);
+}
+
+/* The 3-up readout strip that sits under a page head on the canvas. */
+.qgm-strip {
+  display: flex;
+  background: var(--m-surface);
+  border-bottom: 1px solid var(--m-divider);
+}
+
+.qgm-strip-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+.qgm-strip-cell + .qgm-strip-cell {
+  border-left: 1px solid var(--m-divider);
+}
+
+.qgm-strip-label {
+  font-family: var(--qg-font-display);
+  font-weight: 400;
+  font-size: 8.5px;
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--m-n700);
+}
+
+.qgm-strip-value {
+  font-family: var(--qg-font-display);
+  font-weight: 800;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  margin-top: 5px;
+  color: var(--m-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qgm-strip-value[data-accent="true"] {
+  color: var(--m-accent-text);
+}
+
+/* Dashboard posture block: accent wash, registration ring, drawn meter. */
+html[data-qg-skin="modernist"] .qgm-core {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--m-accent);
+  background: var(--m-a100);
+}
+
+html[data-qg-skin="modernist"] .qgm-core::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--m-accent), transparent);
+  animation: qgm-scan 3.6s linear infinite;
+}
+
+.qgm-core-mark {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--m-accent);
+  background: var(--m-bg);
+  color: var(--m-accent);
+}
+
+.qgm-core-mark::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border: 1px solid var(--m-accent);
+  animation: qgm-ring 2.8s ease-out infinite;
+  pointer-events: none;
+}
+
+.qgm-core-mark svg {
+  animation: qgm-orbit 14s linear infinite;
+}
+
+.qgm-meter {
+  height: 3px;
+  background: var(--m-a200);
+  overflow: hidden;
+}
+
+.qgm-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--m-accent);
+  animation: qgm-meter 1.5s cubic-bezier(0.16, 0.84, 0.3, 1) both;
+}
+
+/* --- Accessibility floor -------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-qg-skin="modernist"] .qgm-core::after,
+  html[data-qg-skin="modernist"] .qgm-core-mark::before,
+  html[data-qg-skin="modernist"] .qgm-core-mark svg,
+  html[data-qg-skin="modernist"] .qgm-tally,
+  html[data-qg-skin="modernist"] .qgm-meter > span {
+    animation: none !important;
+  }
+}

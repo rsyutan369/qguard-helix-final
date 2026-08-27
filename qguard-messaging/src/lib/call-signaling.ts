@@ -14,7 +14,15 @@ const SIGNAL_COLUMNS =
 //     socket has died but the client has not noticed yet (heartbeats are 30s).
 const BOOST_POLL_MS = 900;
 const DEGRADED_POLL_MS = 2_000;
-const IDLE_POLL_MS = 12_000;
+// IDLE splits on whether the app is actually in front of the user. A ring that
+// waits on a 12s idle tick is a ring the caller has already half given up on,
+// so a visible app polls fast enough that the phone lights up in ~3s even with
+// realtime completely down. A hidden app cannot ring anyone anyway (the modal
+// is not on screen and mobile suspends the WebView), so it backs right off and
+// leans on the resume refresh instead — this is the battery/latency trade, and
+// it is decided by visibility rather than by a fixed number.
+const IDLE_VISIBLE_POLL_MS = 3_500;
+const IDLE_HIDDEN_POLL_MS = 15_000;
 const DEFAULT_BOOST_MS = 60_000;
 // First poll cursor: how far back to look before any DB timestamp is known.
 // Kept just under the caller's own 45s give-up so catching up after a short
@@ -125,9 +133,13 @@ export function subscribeCallSignals(opts: {
     onSignal(row);
   };
 
+  const appVisible = (): boolean =>
+    typeof document === "undefined" || document.visibilityState !== "hidden";
+
   const pollIntervalMs = (): number => {
     if (Date.now() < boostUntil) return BOOST_POLL_MS;
-    return channelJoined ? IDLE_POLL_MS : DEGRADED_POLL_MS;
+    if (!channelJoined) return DEGRADED_POLL_MS;
+    return appVisible() ? IDLE_VISIBLE_POLL_MS : IDLE_HIDDEN_POLL_MS;
   };
 
   const runPoll = async (): Promise<void> => {

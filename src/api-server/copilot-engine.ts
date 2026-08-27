@@ -19,7 +19,7 @@ import {
   planForIntents,
   inferObjective,
   expandQuestion,
-  extractAssetFilter,
+  extractQueryFilter,
   sanitizePrompt,
   modulePath,
   moduleLabel,
@@ -215,10 +215,30 @@ export function planQuery(question: string, memory: CopilotMemoryState): Executi
   // ("show my most vulnerable assets") never do — asking a question is not a
   // name filter, and treating it as one produced contradictory "0 match"
   // answers over live risk data.
-  const args: Record<string, unknown> = { query: extractAssetFilter(question) }
-  if (/internet[- ]facing|public[- ]facing|externally exposed/i.test(question)) args.internetFacing = true
-  if (/\bcritical\b/i.test(question)) args.criticality = 'critical'
+  const filter = extractQueryFilter(question)
+  const args: Record<string, unknown> = {
+    query: filter.query,
+    algorithms: filter.algorithms,
+    algorithmLabels: filter.algorithmLabels,
+    entity: filter.entity,
+    wantsOwner: filter.wantsOwner,
+  }
+  if (filter.internetFacing) args.internetFacing = true
+  if (filter.criticality) args.criticality = filter.criticality
   if (detection.followUp && memory.focusEntity) args.asset = memory.focusEntity
+
+  // An algorithm named in the question is a CBOM lookup, not an asset-name
+  // search: "which systems use RSA" must read the cryptographic inventory and
+  // join back to the owning asset. Without this the question fell through to
+  // searchAssets, which can only match an asset literally named "rsa" and so
+  // always answered "no assets match that filter".
+  if (filter.algorithms.length) {
+    if (!tools.includes('findAssetsUsingAlgorithm')) tools.unshift('findAssetsUsingAlgorithm')
+    for (const tool of ['getAlgorithms', 'getCryptoInventory']) {
+      if (!tools.includes(tool)) tools.push(tool)
+    }
+    if (filter.wantsOwner && !tools.includes('explainFindingOwnership')) tools.push('explainFindingOwnership')
+  }
 
   const modeModules = objective.investigate
     ? [...new Set([...modules, 'quantum_readiness', 'risk_analysis', 'exposure_graph', 'live_migration', 'pki', 'compliance'])]
@@ -274,21 +294,95 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
     const scans = b.tool('getLatestScans')
     const findingsTool = b.tool('getFindings')
 
+    // An algorithm question is answered from the cryptographic inventory, which
+    // is where algorithms live. This branch runs FIRST because it is the
+    // specific answer the user asked for; the generic inventory summary below
+    // is only a fallback.
+    const algoUse = b.tool('findAssetsUsingAlgorithm')
+    let algorithmAnswered = false
+    if (algoUse && Array.isArray(algoUse.data.families) && (algoUse.data.families as unknown[]).length) {
+      algorithmAnswered = true
+      const labels = (algoUse.data.algorithmLabels as string[] | undefined)?.join(', ') || 'the requested algorithm'
+      const rows = (algoUse.data.assets as Array<Record<string, unknown>> | undefined) || []
+      const matched = num(algoUse.data.matchedAssets)
+      const components = num(algoUse.data.components)
+      const certificates = num(algoUse.data.certificates)
+      const scoped = algoUse.data.assetsBeforeScope != null && num(algoUse.data.assetsBeforeScope) !== matched
+
+      if (components + certificates === 0) {
+        // Absence of a RECORD is not absence of the algorithm in reality — say
+        // exactly what was searched so the user can judge coverage.
+        findings.push(`No ${labels} usage is recorded in the cryptographic inventory. This reflects what discovery has measured, not a guarantee that ${labels} is absent — run a scan on anything not yet covered.`)
+      } else {
+        const where = matched === 1 ? '1 asset' : `${matched} assets`
+        findings.push(
+          `${labels}: ${components} cryptographic component(s)` +
+          (certificates ? ` and ${certificates} certificate(s)` : '') +
+          ` across ${where}` +
+          (scoped ? ` (${num(algoUse.data.assetsBeforeScope)} before the requested scope filter)` : '') + '.',
+        )
+        if (num(algoUse.data.unattributed) > 0) {
+          findings.push(`${num(algoUse.data.unattributed)} ${labels} record(s) are not linked to an asset, so they are counted in the component total but cannot be attributed to an owner.`)
+        }
+        // Name the assets and their owners — this IS the question when the user
+        // asked "who owns them?".
+        for (const row of rows.slice(0, 8)) {
+          const owner = str(row.owner) || 'no owner recorded'
+          const tags = [
+            row.internetFacing === true ? 'internet-facing' : null,
+            str(row.criticality) ? `${str(row.criticality)} criticality` : null,
+            str(row.environment) || null,
+          ].filter(Boolean).join(' · ')
+          findings.push(`${str(row.name) || 'unnamed asset'} — owner: ${owner}${tags ? ` (${tags})` : ''}; ${num(row.components)} component(s)${num(row.certificates) ? `, ${num(row.certificates)} certificate(s)` : ''}.`)
+        }
+        if (rows.length > 8) findings.push(`…and ${rows.length - 8} more asset(s) in the CBOM Explorer.`)
+        if (num(algoUse.data.ownersUnknown) > 0) {
+          findings.push(`${num(algoUse.data.ownersUnknown)} of these assets have no service owner recorded — assign one so remediation has an accountable team.`)
+          recommendations.push({
+            title: 'Assign service owners to unowned assets',
+            detail: `${num(algoUse.data.ownersUnknown)} asset(s) carrying ${labels} have no owner in the inventory, so no team is accountable for migrating them.`,
+            priority: 'medium',
+            standards: [STANDARDS.NIST_CSF],
+            deepLink: modulePath('assets'),
+          })
+        }
+      }
+    }
+
     // Only report a match count when a REAL filter was applied. A question
     // with no extractable filter ("show my most vulnerable assets") is a
     // status/ranking request — answer from the inventory, never "0 match".
-    if (search && search.data.filtered === true && /which|search|find|show|list/i.test(b.question)) {
+    // A name filter that matched nothing NEVER dead-ends the answer: it says
+    // what was searched and then still reports the inventory, because "no
+    // asset is named X" is not an answer to "which assets use X".
+    if (!algorithmAnswered && search && search.data.filtered === true && /which|search|find|show|list/i.test(b.question)) {
       const matched = num(search.data.matched)
-      findings.push(matched > 0
-        ? `${matched} asset(s) match the requested filter.`
-        : `No assets match that filter${assets && num(assets.data.total) > 0 ? ` — the inventory holds ${num(assets.data.total)} asset(s) overall` : ''}.`)
-    } else if (assets) {
+      if (matched > 0) {
+        findings.push(`${matched} asset(s) match the requested filter.`)
+      } else {
+        const total = assets ? num(assets.data.total) : 0
+        findings.push(
+          `No asset name, type or environment matches "${str(search.data.query)}"` +
+          (total > 0 ? `; the inventory holds ${total} asset(s) overall` : '') + '.',
+        )
+        if (total > 0) findings.push(`The inventory holds ${total} asset(s); ${num(assets && assets.data.internetFacing)} are internet-facing.`)
+      }
+    } else if (!algorithmAnswered && assets) {
       findings.push(`The inventory holds ${num(assets.data.total)} asset(s); ${num(assets.data.internetFacing)} are internet-facing.`)
     }
     if (cbom) {
       const vulnerable = num(cbom.data.vulnerableComponents ?? cbom.data.vulnerable)
       const total = num(cbom.data.cryptoComponents ?? cbom.data.total)
-      if (total > 0) findings.push(`CBOM: ${total} cryptographic component(s), ${vulnerable} quantum-vulnerable.`)
+      // Assets and components are different units. Stating them side by side
+      // without that sentence is what let "4 assets / 178 components" read as a
+      // contradiction rather than as an inventory and its contents.
+      if (total > 0) {
+        const assetTotal = assets ? num(assets.data.total) : 0
+        findings.push(
+          `CBOM: ${total} cryptographic component(s), ${vulnerable} quantum-vulnerable` +
+          (assetTotal > 0 ? ` — these are components discovered ACROSS the ${assetTotal} asset(s), not ${total} separate systems` : '') + '.',
+        )
+      }
       if (vulnerable > 0) {
         risk = { level: riskFromScore((vulnerable / Math.max(1, total)) * 100), drivers: [`${vulnerable} quantum-vulnerable crypto component(s)`], score: clamp(Math.round((vulnerable / Math.max(1, total)) * 100)) }
         recommendations.push({
@@ -1242,6 +1336,33 @@ export interface ComposeInput {
   lastAssessmentAt?: string | null
 }
 
+/**
+ * Plain-language data-freshness statement. Sophia reports the age of the
+ * evidence she answered from, and flags anything older than 72 hours as no
+ * longer a statement about current production posture.
+ */
+function describeFreshness(lastAssessmentAt?: string | null): { sentence: string; stale: boolean; ageHours: number | null } {
+  if (!lastAssessmentAt) {
+    return { sentence: 'Data freshness: no assessment timestamp is recorded, so I cannot tell you how current this evidence is.', stale: false, ageHours: null }
+  }
+  const ms = new Date(lastAssessmentAt).getTime()
+  if (!Number.isFinite(ms)) {
+    return { sentence: 'Data freshness: the assessment timestamp is unreadable, so I cannot tell you how current this evidence is.', stale: false, ageHours: null }
+  }
+  const ageHours = Math.max(0, (Date.now() - ms) / 36e5)
+  const human = ageHours < 1 ? 'less than an hour ago'
+    : ageHours < 48 ? `${Math.round(ageHours)} hour(s) ago`
+    : `${Math.round(ageHours / 24)} day(s) ago`
+  const stale = ageHours > 72
+  return {
+    sentence: stale
+      ? `Data freshness: this answer is based on the last assessment, generated ${human}. That is old enough that it may no longer describe current production posture.`
+      : `Data freshness: based on the last assessment, generated ${human}.`,
+    stale,
+    ageHours,
+  }
+}
+
 /** Pure answer composer — exported for offline verification. */
 export function composeAnswer(input: ComposeInput): CopilotAnswer {
   const { plan, executions } = input
@@ -1414,6 +1535,11 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
 
   let summary: string
   if (findings.length) {
+    // The summary is the headline; the FULL findings list is carried on
+    // keyFindings so nothing is silently dropped. Truncating to three here was
+    // discarding the per-asset ownership lines that answered questions like
+    // "…and who owns them?" — the user saw one asset and never learned the
+    // others existed.
     summary = findings.slice(0, 3).join(' ')
   } else if (emptyRuns === attempted && attempted > 0) {
     summary = 'No live data exists yet for this question. Connect a scanner, collector or cloud connector and run a discovery scan — I only report evidence, never estimates.'
@@ -1421,11 +1547,25 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
     summary = 'I could not derive an evidence-backed answer for this question. Try one of the suggested questions, or ask about a specific module.'
   }
 
+  /* Data freshness must be STATED, not merely folded into a confidence score.
+     An answer built on a three-week-old assessment is not a statement about
+     production today, and the user has to be told which one they are reading. */
+  const freshness = describeFreshness(input.lastAssessmentAt)
   const reasoning = [
     `Detected intent(s): ${plan.intents.join(', ')}${plan.followUp ? ' (follow-up to the previous question)' : ''}.`,
     `Consulted ${attempted} data source(s) across ${plan.modules.length} module(s): ${plan.modules.map((m) => moduleLabel(m)).join(', ') || '—'}.`,
+    freshness.sentence,
     ...sourceNotes(toolRuns, ['empty', 'error', 'denied'], 3),
   ]
+  if (freshness.stale) {
+    agentRecommendations.push({
+      title: 'Re-scan before treating this as current posture',
+      detail: `${freshness.sentence} Run a discovery scan so the inventory, CBOM and readiness engines reflect today's estate.`,
+      priority: 'medium',
+      standards: [STANDARDS.NIST_CSF],
+      deepLink: modulePath('scanner'),
+    })
+  }
 
   const standards = [...new Set(agentRecommendations.flatMap((r) => r.standards))].slice(0, 8)
 
@@ -1435,6 +1575,9 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
     agents: plan.agents,
     summary,
     reasoning,
+    // Everything the agents established, in order — the summary shows the first
+    // three, this carries the rest (per-asset rows, owners, caveats).
+    keyFindings: findings.slice(0, 24),
     evidence: evidence.slice(0, 12),
     recommendations: dedupeRecs(agentRecommendations),
     risk: agentRisk,
@@ -1447,6 +1590,7 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
     generatedAt: new Date().toISOString(),
     mode: 'direct',
     objectiveKind: plan.objectiveKind,
+    objective: plan.objective,
   }
 }
 
@@ -1522,10 +1666,25 @@ export async function runCopilotQuery(
     emit({ type: 'stage', stage: 'reasoning', label: 'Correlating evidence across modules…' })
   }
 
-  // Freshness for confidence: prefer the QR snapshot's assessment time.
+  /* Freshness must describe the evidence THIS answer was built from. Reading it
+     only from getQuantumReadiness meant any question that did not consult the
+     QR snapshot — an asset or CBOM question, for example — reported "no
+     assessment timestamp is recorded" even though every source it DID use
+     carried an observation time. Prefer the QR assessment time, then fall back
+     to the newest observedAt across the evidence actually gathered. */
   let lastAssessmentAt: string | null = null
   const readiness = executions.find((e) => e.run.tool === 'getQuantumReadiness')?.result
   if (readiness) lastAssessmentAt = str(rec(readiness.data).lastAssessmentAt) || null
+  if (!lastAssessmentAt) {
+    let newest = 0
+    for (const execution of executions) {
+      for (const item of execution.result.evidence || []) {
+        const ms = item.observedAt ? new Date(item.observedAt).getTime() : 0
+        if (Number.isFinite(ms) && ms > newest) newest = ms
+      }
+    }
+    if (newest > 0) lastAssessmentAt = new Date(newest).toISOString()
+  }
 
   emit({ type: 'stage', stage: 'generating', label: plan.mode === 'investigate' ? 'Writing the consultant-grade analysis…' : 'Generating the evidence-based answer…' })
   const answer = composeAnswer({ question: sanitized.text, plan, executions, lastAssessmentAt })

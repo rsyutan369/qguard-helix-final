@@ -3,7 +3,7 @@ use tauri::State;
 
 use crate::crypto::AlgorithmSuite;
 use crate::error::{QGuardError, Result};
-use crate::identity::PublicIdentityBundle;
+use crate::identity::{PublicIdentityBundle, platform_device_label};
 use crate::prekeys::{generate_one_time_prekeys, PublicOneTimePrekey, PublicSignedPrekey};
 use crate::state::AppState;
 
@@ -34,7 +34,7 @@ pub fn keys_unlock_private_key(
     let session_user_id = state.resolve_user_id(user_id)?;
     state.check_decrypt_rate_limit("key_unlock", &session_user_id, 12, 300)?;
     let _key_scope = state.lock_key_scope()?;
-    let identity = state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    let identity = state.ensure_identity(&session_user_id, platform_device_label())?;
     state.audit_info(
         "keys_unlock_private_key",
         "Device-bound private key unlocked locally for decryption",
@@ -61,7 +61,7 @@ pub fn keys_upload_identity_bundle(
 ) -> Result<PublicIdentityBundle> {
     let session_user_id = state.resolve_user_id(user_id)?;
     let _key_scope = state.lock_key_scope()?;
-    let bundle = state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    let bundle = state.ensure_identity(&session_user_id, platform_device_label())?;
     state.audit_info(
         "keys_upload_identity",
         "Public identity bundle prepared for Supabase relay",
@@ -76,7 +76,7 @@ pub fn keys_upload_signed_prekey(
 ) -> Result<PublicSignedPrekey> {
     let session_user_id = state.resolve_user_id(user_id)?;
     let _key_scope = state.lock_key_scope()?;
-    state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    state.ensure_identity(&session_user_id, platform_device_label())?;
     let prekey = state
         .signed_prekey
         .lock()
@@ -94,7 +94,7 @@ pub fn keys_upload_one_time_prekeys(
 ) -> Result<Vec<PublicOneTimePrekey>> {
     let session_user_id = state.resolve_user_id(user_id)?;
     let _key_scope = state.lock_key_scope()?;
-    state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    state.ensure_identity(&session_user_id, platform_device_label())?;
     let prekeys = state
         .one_time_prekeys
         .lock()
@@ -124,7 +124,7 @@ pub async fn keys_replenish_one_time_prekeys(
     let session_user_id = state.resolve_user_id(user_id)?;
     state.check_decrypt_rate_limit("prekey_replenish", &session_user_id, 12, 300)?;
     let _key_scope = state.lock_key_scope()?;
-    state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    state.ensure_identity(&session_user_id, platform_device_label())?;
 
     let needed = needed.clamp(1, ONE_TIME_PREKEY_REPLENISH_MAX) as usize;
     let identity = state
@@ -166,6 +166,59 @@ pub async fn keys_replenish_one_time_prekeys(
     Ok(publics)
 }
 
+/// Acknowledge that the superseded device row named by
+/// `PublicIdentityBundle::replaced_device_id` has been revoked on the relay, so
+/// the bundle stops advertising it. Kept separate from the revoke itself
+/// because the revoke is a Supabase RPC the client owns; until it confirms, the
+/// id must keep being reported or a dropped call would strand a dead device row
+/// as a permanent delivery target.
+#[tauri::command]
+pub fn keys_ack_superseded_device(state: State<'_, AppState>) -> Result<()> {
+    state.require_auth()?;
+    state.clear_superseded_device_id();
+    Ok(())
+}
+
+/// The exact phrase `keys_reset_device_identity` requires. A typed
+/// confirmation, not a boolean, because the boolean would be one stray
+/// `true` away from wiping a working device's keys.
+const RESET_DEVICE_IDENTITY_CONFIRMATION: &str = "RESET THIS DEVICE IDENTITY";
+
+/// Discard this device's key material and register a brand-new identity.
+///
+/// DESTRUCTIVE AND IRREVERSIBLE: every message already sealed to this device --
+/// its whole history on the relay, including the user's own copies -- becomes
+/// permanently unreadable here. It exists only as the deliberate way out of a
+/// device whose stored keys genuinely cannot be opened; `ensure_identity`
+/// deliberately refuses to do this on its own, because doing it automatically
+/// on a transient fault is what destroyed histories silently.
+#[tauri::command]
+pub async fn keys_reset_device_identity(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+    confirmation: String,
+) -> Result<PublicIdentityBundle> {
+    let session_user_id = state.resolve_user_id(user_id)?;
+    if confirmation.trim() != RESET_DEVICE_IDENTITY_CONFIRMATION {
+        return Err(QGuardError::InvalidInput(format!(
+            "device identity reset requires the confirmation phrase \"{RESET_DEVICE_IDENTITY_CONFIRMATION}\""
+        )));
+    }
+    state.check_decrypt_rate_limit("device_identity_reset", &session_user_id, 3, 3600)?;
+    let _key_scope = state.lock_key_scope()?;
+    let bundle = state.reset_device_identity(&session_user_id, platform_device_label())?;
+    state.audit_info(
+        "keys_reset_device_identity",
+        "Device key material discarded on explicit user confirmation; fresh identity generated",
+    );
+    state.touch_telemetry(
+        "key",
+        "Device identity reset -- previously sealed history is no longer readable on this device",
+        100,
+    );
+    Ok(bundle)
+}
+
 #[tauri::command]
 pub fn keys_rotate_prekeys(
     state: State<'_, AppState>,
@@ -174,7 +227,7 @@ pub fn keys_rotate_prekeys(
     let session_user_id = state.resolve_user_id(user_id)?;
     state.check_decrypt_rate_limit("key_rotate", &session_user_id, 6, 300)?;
     let _key_scope = state.lock_key_scope()?;
-    state.ensure_identity(&session_user_id, "Windows Desktop")?;
+    state.ensure_identity(&session_user_id, platform_device_label())?;
 
     let identity = {
         let identity_guard = state
@@ -189,7 +242,7 @@ pub fn keys_rotate_prekeys(
     let identity = match identity {
         Some(identity) => identity,
         None => {
-            state.ensure_identity(&session_user_id, "Windows Desktop")?;
+            state.ensure_identity(&session_user_id, platform_device_label())?;
             state
                 .identity
                 .lock()

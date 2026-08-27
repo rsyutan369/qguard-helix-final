@@ -152,9 +152,12 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
             <div className="mb-7 flex flex-col items-center text-center md:hidden">
               <LogoMark size={84} />
               <div className="mt-4 text-[19px] font-bold tracking-wide text-white">QGuard Helix</div>
-              <div className="mt-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-300/90">
-                <ShieldCheck size={12} />
-                Quantum-safe · End-to-end encrypted
+              {/* Sized to hold the icon and the full line together at 412px:
+                  at 11px/0.18em the row overflowed and broke, which left the
+                  shield stranded on a line of its own. */}
+              <div className="mt-1.5 flex items-center justify-center gap-1.5 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300/90">
+                <ShieldCheck size={12} className="shrink-0" />
+                <span>Quantum-safe · End-to-end encrypted</span>
               </div>
             </div>
 

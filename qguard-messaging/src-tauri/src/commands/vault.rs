@@ -1,4 +1,5 @@
 use std::fs::File;
+use crate::identity::platform_device_label;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -81,7 +82,7 @@ struct EnterpriseRecipientOwned {
 pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    let identity_bundle = state.ensure_identity(&user_id, "Windows Desktop")?;
+    let identity_bundle = state.ensure_identity(&user_id, platform_device_label())?;
     // The Vault Master Key + ML-DSA-87 signing key are only available while the
     // Quantum Vault workspace is unlocked (password/PIN). Locked => this errors,
     // gating every vault operation behind the workspace unlock.
@@ -100,6 +101,10 @@ pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext>
             x25519_public: identity.kem.x25519_public.clone(),
             mlkem_secret: identity.kem.mlkem_secret.clone(),
             mlkem_public: identity.kem.mlkem_public.clone(),
+            // Carry the source identity's algorithm marker rather than assuming
+            // the current suite: this is a copy of the live keypair, so it must
+            // not claim to be something the original was not.
+            kem: identity.kem.kem.clone(),
         };
         (
             identity.kem.x25519_public.clone(),

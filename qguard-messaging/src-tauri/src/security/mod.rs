@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::kdf::sha3_hex;
@@ -83,6 +85,24 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
     } else {
         "Runtime binary hash matches the release manifest (unsigned; code signing adds an external trust root)"
     };
+    // Name the artifact that was actually measured, and distinguish "could not
+    // find our image" from "found it but could not read it". The previous text
+    // said only "could not be measured", which is what let a packaging change
+    // (the release APK stopping shipping a standalone `.so`) sit unexplained on
+    // the dashboard instead of pointing at the file it had looked for.
+    let measured_artifact = binary_measurement.path.as_deref().map(artifact_name);
+    let anti_tampering_detail = match (binary_hash_available, measured_artifact) {
+        (true, Some(name)) => format!("Runtime image measured: {name}"),
+        (true, None) => "Runtime image measured".to_string(),
+        (false, Some(name)) => format!("Runtime image {name} could not be read"),
+        (false, None) => "Runtime image could not be located in this process".to_string(),
+    };
+    let integrity_hash_detail = match (binary_hash_available, measured_artifact) {
+        (true, Some(name)) => format!("SHA3-256 runtime hash computed over {name}"),
+        (true, None) => "SHA3-256 runtime hash check is available".to_string(),
+        (false, _) => "SHA3-256 runtime hash check failed: no runtime image to hash".to_string(),
+    };
+
     let release_hardened = !cfg!(debug_assertions);
     let code_obfuscation = release_hardened;
     let control_flow_flattening =
@@ -108,11 +128,7 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
             "anti_tampering_detection",
             "Anti-Tampering Detection",
             binary_hash_available && !debugger_detected,
-            if binary_hash_available {
-                "Runtime binary measurement available"
-            } else {
-                "Runtime binary could not be measured"
-            },
+            anti_tampering_detail,
         ),
         check(
             "binary_integrity_verification",
@@ -134,11 +150,7 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
             "runtime_integrity_hash_checks",
             "Integrity Hash Checks",
             binary_hash_available,
-            if binary_hash_available {
-                "SHA3-256 runtime hash check is available"
-            } else {
-                "SHA3-256 runtime hash check failed"
-            },
+            integrity_hash_detail,
         ),
         check(
             "secure_memory_zeroize",
@@ -230,39 +242,180 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
     }
 }
 
+#[derive(Clone)]
 struct BinaryMeasurement {
     sha3: Option<String>,
     path: Option<String>,
 }
 
-fn check(id: &str, label: &str, active: bool, detail: &str) -> SecurityHardeningCheck {
+fn check(id: &str, label: &str, active: bool, detail: impl Into<String>) -> SecurityHardeningCheck {
     SecurityHardeningCheck {
         id: id.to_string(),
         label: label.to_string(),
         status: if active { "active" } else { "warning" }.to_string(),
         active,
-        detail: detail.to_string(),
+        detail: detail.into(),
     }
 }
 
-fn current_binary_measurement() -> BinaryMeasurement {
-    let path = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(_) => {
-            return BinaryMeasurement {
-                sha3: None,
-                path: None,
-            }
-        }
-    };
-    let display_path = path.to_string_lossy().to_string();
-    let sha3 = std::fs::read(&path)
+fn measure_file(path: &std::path::Path) -> BinaryMeasurement {
+    let sha3 = std::fs::read(path)
         .ok()
         .map(|bytes| sha3_hex(bytes.as_slice()));
     BinaryMeasurement {
         sha3,
-        path: Some(display_path),
+        path: Some(path.to_string_lossy().to_string()),
     }
+}
+
+/// A symbol guaranteed to live inside THIS library's own loaded image. Its
+/// address is what identifies our mapping in `/proc/self/maps`; see
+/// `locate_self_image`.
+#[cfg(any(target_os = "android", test))]
+#[inline(never)]
+fn image_anchor() {}
+
+/// Skip `count` whitespace-separated fields and return the remainder.
+///
+/// `/proc/<pid>/maps` pathnames may contain spaces, so the path is taken as
+/// everything after the fixed fields rather than as the last field.
+#[cfg(any(target_os = "android", test))]
+fn skip_fields(mut rest: &str, count: usize) -> Option<&str> {
+    for _ in 0..count {
+        rest = rest.trim_start();
+        let end = rest.find(char::is_whitespace)?;
+        rest = &rest[end..];
+    }
+    Some(rest.trim_start())
+}
+
+/// The file backing the mapping that CONTAINS `addr`, parsed from the text of a
+/// `/proc/<pid>/maps` file.
+///
+/// Containment — not a filename match — is the identifying test, and that is the
+/// whole point. See `locate_self_image` for why matching on the name failed.
+#[cfg(any(target_os = "android", test))]
+fn mapping_backing_file(maps: &str, addr: usize) -> Option<String> {
+    for line in maps.lines() {
+        // "start-end perms offset dev inode    pathname"
+        let Some((range, rest)) = line.split_once(' ') else { continue };
+        let Some((start, end)) = range.split_once('-') else { continue };
+        let (Ok(start), Ok(end)) = (
+            usize::from_str_radix(start, 16),
+            usize::from_str_radix(end, 16),
+        ) else {
+            continue;
+        };
+        if addr < start || addr >= end {
+            continue;
+        }
+        let Some(path) = skip_fields(rest, 4) else { continue };
+        // A file replaced while still mapped (an app upgrade in flight) keeps
+        // its mapping but gains this marker; the name before it is still the
+        // file we were loaded from.
+        let path = path.strip_suffix(" (deleted)").unwrap_or(path).trim_end();
+        // Anonymous regions and the kernel's pseudo-mappings ("[stack]",
+        // "[heap]", "[vdso]") have no backing file and are skipped by this.
+        if !path.starts_with('/') {
+            continue;
+        }
+        return Some(path.to_string());
+    }
+    None
+}
+
+/// The on-disk file backing THIS application's own code, read from the kernel's
+/// own view of the process.
+///
+/// TWO Android-specific traps live here, and the second one is why the first
+/// fix was not enough.
+///
+/// 1. `std::env::current_exe()` is not our code on Android: the process
+///    executable is the zygote (`/system/bin/app_process64`), which every app on
+///    the device shares and which the app sandbox cannot read anyway.
+///
+/// 2. Looking for a mapped path that ends in `.so` and contains the crate name
+///    then found nothing on RELEASE builds. Release variants are packaged with
+///    `extractNativeLibs="false"`, so there is no `.so` on disk at all: the
+///    library is stored uncompressed inside the APK and mapped straight out of
+///    it, and `/proc/self/maps` names the backing file — `.../base.apk`. Debug
+///    variants set `extractNativeLibs="true"` (AGP does this to speed up
+///    incremental installs) and DO have a real `.so`, which is exactly why this
+///    only ever failed on an installed release build.
+///
+/// Both traps are the same mistake: guessing at the path instead of asking which
+/// file backs our code. `image_anchor` is unambiguously inside our own image, so
+/// the mapping that contains its address is ours whatever the file is called —
+/// extracted `.so`, in-APK `base.apk`, or any future packaging. No JNI, no APK
+/// layout assumptions, no name matching.
+#[cfg(target_os = "android")]
+fn locate_self_image() -> Option<String> {
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    mapping_backing_file(&maps, image_anchor as *const () as usize)
+}
+
+/// Reduce a library path to the file that actually exists on disk.
+///
+/// The kernel's maps name the plain APK, but bionic's own APIs (`dladdr`,
+/// `dl_iterate_phdr`, linker errors, crash dumps) report a library loaded from
+/// inside an APK using the composite form
+/// `/data/app/.../base.apk!/lib/arm64-v8a/libfoo.so`. That string names no file,
+/// so anything reaching us in that form has to be reduced to its container
+/// before it can be read.
+#[cfg(any(target_os = "android", test))]
+fn container_path(path: &str) -> &str {
+    match path.find("!/") {
+        Some(index) => &path[..index],
+        None => path,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn measure_self_image() -> BinaryMeasurement {
+    match locate_self_image().as_deref().map(container_path) {
+        Some(path) => measure_file(std::path::Path::new(path)),
+        // Deliberately reported as unmeasured rather than substituting the
+        // zygote: a hash of a file that is not our code would be worse than no
+        // hash, because it would look like a passing integrity check.
+        None => BinaryMeasurement {
+            sha3: None,
+            path: None,
+        },
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn measure_self_image() -> BinaryMeasurement {
+    match std::env::current_exe() {
+        Ok(path) => measure_file(&path),
+        Err(_) => BinaryMeasurement {
+            sha3: None,
+            path: None,
+        },
+    }
+}
+
+/// The running image cannot change while the process is alive, so it is hashed
+/// at most once. This is not only an optimisation: `security_hardening_status`
+/// is a synchronous Tauri command and therefore runs on the main thread, and the
+/// artifact being read is tens of megabytes (on Android the whole APK).
+/// Re-reading it on every dashboard load would stall the UI.
+fn current_binary_measurement() -> BinaryMeasurement {
+    static MEASUREMENT: OnceLock<BinaryMeasurement> = OnceLock::new();
+    MEASUREMENT.get_or_init(measure_self_image).clone()
+}
+
+/// Warm the measurement off the main thread so the first dashboard load never
+/// pays for the read. Safe to call more than once.
+pub fn prime_binary_measurement() {
+    std::thread::spawn(|| {
+        let _ = current_binary_measurement();
+    });
+}
+
+/// Trailing path component, for user-facing detail text.
+fn artifact_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 #[cfg(windows)]
@@ -317,5 +470,109 @@ fn release_manifest_signature_valid(manifest: &ReleaseIntegrityManifest) -> Opti
             Some(verifying_key.verify(manifest.binary_sha3.as_bytes(), &signature).is_ok())
         }
         _ => Some(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{image_anchor, mapping_backing_file};
+
+    /// A DEBUG Android variant: `extractNativeLibs="true"`, so the library is
+    /// unpacked to `lib/` and mapped from a real `.so`.
+    const EXTRACTED_MAPS: &str = "\
+7f8a1c0000-7f8a1c8000 r--p 00000000 fd:03 1441802 /data/app/~~kQ9==/com.qguard.messaging-xY7==/lib/arm64/libqguard_messaging_lib.so
+7f8a1c8000-7f8a9d4000 r-xp 00008000 fd:03 1441802 /data/app/~~kQ9==/com.qguard.messaging-xY7==/lib/arm64/libqguard_messaging_lib.so
+7f8a9d4000-7f8a9e0000 rw-p 00000000 00:00 0 [anon:.bss]
+7fff2a1000-7fff2c2000 rw-p 00000000 00:00 0 [stack]
+";
+
+    /// A RELEASE Android variant: `extractNativeLibs="false"`, so no `.so` is
+    /// written to disk at all and the library is mapped straight out of the
+    /// uncompressed APK entry. This is the shape that produced the reported
+    /// "Runtime binary could not be measured" on the physical tablet.
+    const IN_APK_MAPS: &str = "\
+7f8a1c0000-7f8a1c8000 r--p 003a1000 fd:03 1441800 /data/app/~~kQ9==/com.qguard.messaging-xY7==/base.apk
+7f8a1c8000-7f8a9d4000 r-xp 003a9000 fd:03 1441800 /data/app/~~kQ9==/com.qguard.messaging-xY7==/base.apk
+7f8a9d4000-7f8a9e0000 rw-p 00000000 00:00 0 [anon:.bss]
+";
+
+    const CODE_ADDR: usize = 0x7f8a_2000_00;
+
+    #[test]
+    fn measures_the_library_when_the_release_packaging_maps_it_out_of_the_apk() {
+        // The regression under test: name matching ("ends with .so and contains
+        // the crate name") finds nothing here, because the release APK ships no
+        // standalone .so. Containment finds our image regardless.
+        assert_eq!(
+            mapping_backing_file(IN_APK_MAPS, CODE_ADDR).as_deref(),
+            Some("/data/app/~~kQ9==/com.qguard.messaging-xY7==/base.apk"),
+        );
+    }
+
+    #[test]
+    fn measures_the_extracted_library_when_one_is_unpacked() {
+        assert_eq!(
+            mapping_backing_file(EXTRACTED_MAPS, CODE_ADDR).as_deref(),
+            Some("/data/app/~~kQ9==/com.qguard.messaging-xY7==/lib/arm64/libqguard_messaging_lib.so"),
+        );
+    }
+
+    #[test]
+    fn ignores_anonymous_and_pseudo_mappings() {
+        // 0x7f8a9d8000 falls inside "[anon:.bss]" in both fixtures: a mapping
+        // with no backing file must never be reported as a measurable image.
+        assert_eq!(mapping_backing_file(EXTRACTED_MAPS, 0x7f8a_9d80_00), None);
+    }
+
+    #[test]
+    fn reports_the_original_file_when_an_upgrade_replaced_it_mid_run() {
+        let maps = "7f8a1c8000-7f8a9d4000 r-xp 00008000 fd:03 1441802 /data/app/~~kQ9==/pkg/base.apk (deleted)\n";
+        assert_eq!(
+            mapping_backing_file(maps, CODE_ADDR).as_deref(),
+            Some("/data/app/~~kQ9==/pkg/base.apk"),
+        );
+    }
+
+    #[test]
+    fn keeps_pathnames_that_contain_spaces_intact() {
+        // The path is the remainder of the line, not its last whitespace field.
+        let maps = "7f8a1c8000-7f8a9d4000 r-xp 00008000 fd:03 1441802 /data/app/My App/base.apk\n";
+        assert_eq!(
+            mapping_backing_file(maps, CODE_ADDR).as_deref(),
+            Some("/data/app/My App/base.apk"),
+        );
+    }
+
+    #[test]
+    fn reduces_a_composite_in_apk_library_path_to_the_apk_that_holds_it() {
+        // `dladdr`/`dl_iterate_phdr` name an in-APK library this way. The "!/"
+        // form is a linker construct, not a file, so only the container can be
+        // read -- and the plain APK path must pass through untouched.
+        assert_eq!(
+            super::container_path("/data/app/~~kQ9==/pkg/base.apk!/lib/arm64-v8a/libqguard_messaging_lib.so"),
+            "/data/app/~~kQ9==/pkg/base.apk",
+        );
+        assert_eq!(super::container_path("/data/app/~~kQ9==/pkg/base.apk"), "/data/app/~~kQ9==/pkg/base.apk");
+        assert_eq!(super::container_path("/x/lib/libfoo.so"), "/x/lib/libfoo.so");
+    }
+
+    #[test]
+    fn returns_none_when_no_mapping_contains_the_address() {
+        assert_eq!(mapping_backing_file(EXTRACTED_MAPS, 0x10_0000), None);
+        assert_eq!(mapping_backing_file("", CODE_ADDR), None);
+        assert_eq!(mapping_backing_file("garbage line\n", CODE_ADDR), None);
+    }
+
+    #[test]
+    fn the_anchor_address_resolves_against_this_processs_own_mappings() {
+        // Not Android, but the parser has to agree with a real kernel dump: the
+        // anchor lives in this test binary, so its address must resolve to a
+        // real file on any platform that publishes /proc/self/maps.
+        let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+            return; // Windows/macOS: no procfs, nothing to cross-check here.
+        };
+        let resolved = mapping_backing_file(&maps, image_anchor as *const () as usize);
+        assert!(resolved.is_some(), "anchor did not resolve against real maps");
+        assert!(std::path::Path::new(&resolved.unwrap()).exists());
     }
 }
