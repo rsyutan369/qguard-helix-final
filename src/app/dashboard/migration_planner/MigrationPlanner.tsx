@@ -174,6 +174,11 @@ function ApprovalWorkflowPanel({ onDecision }: { onDecision: () => void }) {
       </div>
       {plans.length ? (
         <div className="space-y-2">
+          {plans.length > 6 ? (
+            <div className="text-[10px] text-white/35">
+              Showing the 6 most recent of {plans.length} saved plans.
+            </div>
+          ) : null}
           {plans.slice(0, 6).map((plan) => {
             const tone = PLAN_STATUS_TONES[plan.status.toLowerCase()] || SLATEISH;
             return (
@@ -1101,6 +1106,11 @@ export default function MigrationPlanner() {
             <SectionTitle suffix={<span className="text-[11px] text-white/40">{plan.migrationJobs.length} jobs</span>}>Migration Execution Jobs</SectionTitle>
             {plan.migrationJobs.length ? (
               <div className="space-y-2">
+                {plan.migrationJobs.length > 8 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing 8 of {plan.migrationJobs.length} jobs — the full queue is in Live Migration Ops.
+                  </div>
+                ) : null}
                 {plan.migrationJobs.slice(0, 8).map((job) => {
                   const done = /completed|done/i.test(job.status);
                   const failed = /failed/i.test(job.status);

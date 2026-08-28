@@ -28,6 +28,17 @@ import {
   UnlockKeyhole,
 } from 'lucide-react';
 import { useScannerIntelligence, type ScannerFinding } from '@/lib/scanner/use-scanner-intelligence';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
+import {
+  DiscoveryPage,
+  DiscoveryHeader,
+  DiscoveryMetric,
+  DiscoveryEmpty,
+  StaleAssessmentBanner,
+  TruncationNote,
+  panelClass,
+  subtlePanelClass,
+} from '../_components/discovery/shell';
 
 type Metric = {
   label: string;
@@ -65,8 +76,8 @@ type PolicyControl = {
   status: 'Enforced' | 'Gap' | 'Review';
 };
 
-const GLASS_PANEL_CLASSES =
-  'group relative overflow-hidden rounded-xl border border-slate-200/80 bg-white/72 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-all duration-500 hover:-translate-y-1 hover:border-cyan-300/80 hover:bg-white/88 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_22px_55px_rgba(15,23,42,0.12),0_0_42px_rgba(0,197,235,0.18)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-cyan-300/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(0,197,235,0.55)] group-hover:before:via-cyan-300 after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-cyan-300/12 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-cyan-300/20 group-hover:after:blur-[36px] dark:border-[#FFD36B]/20 dark:bg-[#0f1428]/45 dark:text-white dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] dark:hover:border-[#FFD36B]/70 dark:hover:bg-[#0f1428]/65 dark:hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] dark:before:via-[#FFF4C0]/70 dark:group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] dark:group-hover:before:via-[#FFF4C0] dark:after:bg-[#FFD36B]/10 dark:group-hover:after:bg-[#FFD36B]/25';
+/* Discovery-suite surface — identical to CBOM Explorer. */
+const GLASS_PANEL_CLASSES = panelClass;
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(Math.max(0, Number(value) || 0));
@@ -121,18 +132,14 @@ const playbooks = [
 
 const FINDING_FILTERS: FindingFilter[] = ['All', 'Non-Compliant', 'Undocumented', 'Critical'];
 
-function toneClasses(tone: Metric['tone']) {
-  switch (tone) {
-    case 'red':
-      return 'border-red-500/30 bg-red-500/10 text-red-600 shadow-[0_0_24px_rgba(248,113,113,0.14)] dark:border-red-400/30 dark:text-red-300';
-    case 'orange':
-      return 'border-orange-500/30 bg-orange-500/10 text-orange-600 shadow-[0_0_24px_rgba(251,146,60,0.14)] dark:border-orange-400/30 dark:text-orange-300';
-    case 'green':
-      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 shadow-[0_0_24px_rgba(52,211,153,0.14)] dark:border-emerald-400/30 dark:text-emerald-300';
-    default:
-      return 'border-gold/30 bg-gold/10 text-gold shadow-[0_0_24px_rgba(255,211,107,0.16)]';
-  }
+/** Map the page's semantic tones onto the shared discovery metric tones. */
+function metricTone(tone: Metric['tone']): 'amber' | 'red' | 'green' | 'cyan' {
+  if (tone === 'red') return 'red';
+  if (tone === 'orange') return 'amber';
+  if (tone === 'green') return 'green';
+  return 'amber';
 }
+
 
 function severityClasses(severity: Finding['severity']) {
   switch (severity) {
@@ -150,7 +157,7 @@ function policyClasses(policy: Finding['policy']) {
     case 'Non-Compliant':
       return 'text-red-600 dark:text-red-300';
     case 'Undocumented':
-      return 'text-gold';
+      return 'text-[var(--qg-amber)]';
     default:
       return 'text-amber-700 dark:text-amber-300';
   }
@@ -169,8 +176,8 @@ function controlStatusClasses(status: PolicyControl['status']) {
 
 function SectionTitle({ icon: Icon, children }: { icon: LucideIcon; children: string }) {
   return (
-    <h2 className="relative z-10 flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/60">
-      <Icon className="h-4 w-4 text-gold" />
+    <h2 className="relative z-10 flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">
+      <Icon className="h-4 w-4 text-[var(--qg-amber)]" />
       {children}
     </h2>
   );
@@ -245,9 +252,15 @@ export default function ShadowCrypto() {
       action: normalizeDisplayText(entry.recommendation || entry.pqcReplacement, 'Schedule PQC migration'),
     } as Finding));
 
+    /*
+     * The FULL deduplicated set. It was previously capped at 20 here, before
+     * the filter ran — so "Critical" showed only the criticals that happened to
+     * fall inside the first twenty rows, and its count was wrong for any estate
+     * with more than twenty shadow findings. Filtering must see everything;
+     * only the RENDER is bounded, and that bound is disclosed.
+     */
     return [...fromFindings, ...fromCbom]
-      .filter((finding, index, all) => index === all.findIndex((item) => `${item.asset}:${item.implementation}:${item.evidence}` === `${finding.asset}:${finding.implementation}:${finding.evidence}`))
-      .slice(0, 20);
+      .filter((finding, index, all) => index === all.findIndex((item) => `${item.asset}:${item.implementation}:${item.evidence}` === `${finding.asset}:${finding.implementation}:${finding.evidence}`));
   }, [data.findings, vulnerableEntries]);
 
   const filteredFindings = useMemo(() => {
@@ -255,6 +268,21 @@ export default function ShadowCrypto() {
     if (activeFindingFilter === 'Critical') return findings.filter((finding) => finding.severity === 'Critical');
     return findings.filter((finding) => finding.policy === activeFindingFilter);
   }, [activeFindingFilter, findings]);
+
+  /** Rows actually rendered. The remainder is disclosed beneath the table. */
+  const FINDINGS_PAGE = 20;
+  const visibleFindings = useMemo(() => filteredFindings.slice(0, FINDINGS_PAGE), [filteredFindings]);
+
+  /** Per-filter counts, computed over the FULL set so every tab is truthful. */
+  const filterCounts = useMemo(() => ({
+    All: findings.length,
+    Critical: findings.filter((f) => f.severity === 'Critical').length,
+    Undocumented: findings.filter((f) => f.policy === 'Undocumented').length,
+    'Non-Compliant': findings.filter((f) => f.policy === 'Non-Compliant').length,
+  }) as Record<FindingFilter, number>, [findings]);
+
+  /** Newest scan behind this view — the page's honest measurement age. */
+  const measuredAt = data.generatedAt || null;
 
   const hasScanEvidence = data.mode !== 'none' && (
     data.summary.totalComponents > 0 ||
@@ -327,36 +355,39 @@ export default function ShadowCrypto() {
   }, [data.cbom.entries, data.findings]);
 
   return (
-    <div className="animate-in space-y-6 p-4 text-slate-950 fade-in duration-700 dark:text-white lg:p-8">
-      <header className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <div className="mb-2 flex items-center gap-3">
-            <div className="rounded bg-gold/10 border border-gold/20 p-2">
-              <Radar className="h-6 w-6 text-gold drop-shadow-[0_0_6px_rgba(255,211,107,0.4)]" />
-            </div>
-            <h1 className="text-3xl font-black uppercase leading-none tracking-tight text-slate-950 dark:text-white">
-              Shadow <span className="text-gold">Crypto</span>
-            </h1>
-          </div>
-          <p className="max-w-3xl text-sm font-medium text-slate-600 dark:text-white/50">
-            Identify undocumented or non-compliant cryptographic implementations across scanner evidence, CBOM inventory, runtime telemetry, and policy drift.
-          </p>
-        </div>
+    <DiscoveryPage>
+      <WorkflowRail activeStage="discovery" tone="adaptive" />
+      <DiscoveryHeader
+        title="Shadow Crypto"
+        subtitle="Undocumented and non-compliant cryptographic implementations, correlated across scanner evidence, CBOM inventory, runtime telemetry and policy drift."
+        connected={connected}
+        measuredAt={measuredAt}
+        reconciledNote="Derived from the same scanner intelligence as CBOM"
+        actions={
+          <>
+            <a
+              href="/dashboard/scanner"
+              className="inline-flex items-center gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-xs font-bold text-blue-300 transition hover:border-blue-400/60"
+            >
+              <ScanSearch className="h-4 w-4" />
+              Launch Sweep
+            </a>
+            <button
+              type="button"
+              onClick={refresh}
+              className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-4 py-2 text-xs font-bold text-[var(--qg-dashboard-text-soft)] transition hover:border-[var(--qg-amber)]/45"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              {connected ? 'Sync Evidence' : 'Load Evidence'}
+            </button>
+          </>
+        }
+      />
 
-        <div className="flex flex-wrap items-center gap-3">
-          <a href="/dashboard/scanner" className="flex items-center gap-2 rounded-lg border border-gold/30 bg-gold/10 px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-gold transition hover:border-gold/70 hover:bg-gold/20">
-            <ScanSearch className="h-4 w-4" />
-            Launch Sweep
-          </a>
-          <button onClick={refresh} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/70 px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-slate-600 transition hover:border-cyan-300 hover:text-slate-950 dark:border-white/10 dark:bg-white/5 dark:text-white/60 dark:hover:border-gold/30 dark:hover:text-white">
-            <RefreshCw className={`h-4 w-4 text-gold ${loading ? 'animate-spin' : ''}`} />
-            {connected ? 'Sync Evidence' : 'Load Evidence'}
-          </button>
-        </div>
-      </header>
+      <StaleAssessmentBanner measuredAt={measuredAt} />
 
       {error && (
-        <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm font-semibold text-red-600 dark:text-red-300">
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm font-semibold text-red-600 dark:text-red-300">
           {error}
         </div>
       )}
@@ -366,18 +397,14 @@ export default function ShadowCrypto() {
           const Icon = metric.icon;
 
           return (
-            <section key={metric.label} className={`${GLASS_PANEL_CLASSES} p-5`}>
-              <div className="relative z-10 flex items-center justify-between gap-4">
-                <div>
-                  <span className="block text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-white/40">{metric.label}</span>
-                  <span className="mt-3 block text-3xl font-black leading-none text-slate-950 dark:text-white">{metric.value}</span>
-                  <span className="mt-3 block text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-white/35">{metric.detail}</span>
-                </div>
-                <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-full border ${toneClasses(metric.tone)}`}>
-                  <Icon className="h-7 w-7" />
-                </div>
-              </div>
-            </section>
+            <DiscoveryMetric
+              key={metric.label}
+              label={metric.label}
+              value={metric.value}
+              detail={metric.detail}
+              icon={Icon}
+              tone={metricTone(metric.tone)}
+            />
           );
         })}
       </div>
@@ -392,64 +419,67 @@ export default function ShadowCrypto() {
                   key={filter}
                   type="button"
                   onClick={() => setActiveFindingFilter(filter)}
-                  className={`rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition ${
+                  className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition ${
                     activeFindingFilter === filter
-                      ? 'border-gold/50 bg-gold/10 text-gold'
-                      : 'border-slate-200 bg-white/70 text-slate-600 hover:border-cyan-300 hover:text-slate-950 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40 dark:hover:border-gold/30 dark:hover:text-white/70'
+                      ? 'border-[var(--qg-amber)]/50 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)]'
+                      : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)] hover:border-[var(--qg-amber)]/35 hover:text-[var(--qg-dashboard-text)]'
                   }`}
                 >
                   {filter}
+                  {/* Counted over the FULL finding set, so a tab never advertises
+                      a number the truncated table cannot account for. */}
+                  <span className="font-mono opacity-70">{filterCounts[filter] ?? 0}</span>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="relative z-10 mt-5 overflow-x-auto rounded-xl border border-slate-200/80 bg-white/75 selection:bg-transparent selection:text-current dark:border-white/5 dark:bg-transparent">
+          <div className={`relative z-10 mt-5 overflow-x-auto ${subtlePanelClass}`}>
             <table className="w-full min-w-[980px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-slate-200/80 bg-slate-50/80 dark:border-gold/15 dark:bg-gold/[0.03]">
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Asset</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Source</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Implementation</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Severity</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Policy</th>
-                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-slate-600 dark:text-white/40">Action</th>
+                <tr className="border-b border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)]">
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Asset</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Source</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Implementation</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Severity</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Policy</th>
+                  <th className="p-4 text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200/70 dark:divide-white/5">
+              <tbody className="divide-y divide-[var(--qg-card-border)]">
                 {filteredFindings.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="p-10 text-center">
                       {loading ? (
-                        <span className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">Loading scanner evidence…</span>
+                        <span className="text-xs font-black uppercase tracking-widest text-[var(--qg-text-muted)]">Loading scanner evidence…</span>
                       ) : !hasScanEvidence ? (
                         <div className="mx-auto flex max-w-md flex-col items-center gap-3">
-                          <ScanSearch className="h-8 w-8 text-gold/70" />
-                          <div className="text-sm font-black uppercase tracking-widest text-slate-700 dark:text-white/60">No scan evidence yet</div>
-                          <p className="text-xs font-medium normal-case tracking-normal text-slate-500 dark:text-white/40">
+                          <ScanSearch className="h-8 w-8 text-[var(--qg-amber)]/70" />
+                          <div className="text-sm font-black uppercase tracking-widest text-[var(--qg-dashboard-text-soft)]">No scan evidence yet</div>
+                          <p className="text-xs font-medium normal-case tracking-normal text-[var(--qg-text-muted)]">
                             Shadow Crypto correlates discovered cryptography from scanner runs, CBOM inventory, and runtime telemetry. Run your first scan to start surfacing undocumented or non-compliant crypto.
                           </p>
-                          <a href="/dashboard/scanner" className="mt-1 inline-flex items-center gap-2 rounded-lg border border-gold/40 bg-gold/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-gold transition hover:border-gold/70 hover:bg-gold/20">
+                          <a href="/dashboard/scanner" className="mt-1 inline-flex items-center gap-2 rounded-lg border border-[var(--qg-amber)]/40 bg-[var(--qg-amber)]/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-[var(--qg-amber)] transition hover:border-[var(--qg-amber)]/70 hover:bg-[var(--qg-amber)]/20">
                             <ScanSearch className="h-3.5 w-3.5" /> Run a Scan
                           </a>
                         </div>
                       ) : activeFindingFilter === 'All' ? (
                         <span className="text-xs font-black uppercase tracking-widest text-emerald-500 dark:text-emerald-300/70">No shadow crypto detected — all discovered cryptography is documented and policy-compliant.</span>
                       ) : (
-                        <span className="text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">{`No ${activeFindingFilter.toLowerCase()} shadow crypto findings match this tenant scan.`}</span>
+                        <span className="text-xs font-black uppercase tracking-widest text-[var(--qg-text-muted)]">{`No ${activeFindingFilter.toLowerCase()} shadow crypto findings match this tenant scan.`}</span>
                       )}
                     </td>
                   </tr>
-                ) : filteredFindings.map((finding) => (
-                  <tr key={`${finding.asset}-${finding.implementation}-${finding.evidence}`} className="group/row bg-white/45 transition hover:bg-cyan-50/75 dark:bg-transparent dark:hover:bg-gold/[0.04]">
+                ) : visibleFindings.map((finding) => (
+                  <tr key={`${finding.asset}-${finding.implementation}-${finding.evidence}`} className="group/row border-b border-[var(--qg-card-border)] transition last:border-0 hover:bg-[var(--qg-card-bg)]">
                     <td className="p-4">
-                      <div className="font-bold text-slate-950 group-hover/row:text-gold dark:text-white/85">{finding.asset}</div>
-                      <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-white/30">{finding.owner}</div>
+                      <div className="font-bold text-[var(--qg-dashboard-text)] group-hover/row:text-[var(--qg-amber)]">{finding.asset}</div>
+                      <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--qg-text-muted)]">{finding.owner}</div>
                     </td>
-                    <td className="p-4 text-xs font-semibold text-slate-600 dark:text-white/55">{finding.source}</td>
+                    <td className="p-4 text-xs font-semibold text-[var(--qg-dashboard-text-soft)]">{finding.source}</td>
                     <td className="p-4">
-                      <div className="text-xs font-bold text-slate-800 dark:text-white/75">{finding.implementation}</div>
-                      <div className="mt-1 max-w-[270px] truncate font-mono text-[10px] text-slate-500 dark:text-white/35">{finding.evidence}</div>
+                      <div className="text-xs font-bold text-[var(--qg-dashboard-text)]">{finding.implementation}</div>
+                      <div className="mt-1 max-w-[270px] truncate font-mono text-[10px] text-[var(--qg-text-muted)]">{finding.evidence}</div>
                     </td>
                     <td className="p-4">
                       <span className={`inline-flex rounded border px-2 py-1 text-[9px] font-black uppercase tracking-wider ${severityClasses(finding.severity)}`}>
@@ -458,7 +488,7 @@ export default function ShadowCrypto() {
                     </td>
                     <td className={`p-4 text-xs font-black ${policyClasses(finding.policy)}`}>{finding.policy}</td>
                     <td className="p-4">
-                      <button className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-gold transition hover:text-slate-950 dark:hover:text-white">
+                      <button className="inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-[var(--qg-amber)] transition hover:text-[var(--qg-dashboard-text)]">
                         {finding.action}
                         <ArrowRight className="h-3.5 w-3.5" />
                       </button>
@@ -467,6 +497,13 @@ export default function ShadowCrypto() {
                 ))}
               </tbody>
             </table>
+            <TruncationNote
+              shown={visibleFindings.length}
+              total={filteredFindings.length}
+              noun={activeFindingFilter === 'All' ? 'shadow findings' : `${activeFindingFilter.toLowerCase()} shadow findings`}
+              rank="highest-severity"
+              to="/dashboard/cbom"
+            />
           </div>
         </section>
       </div>
@@ -479,19 +516,19 @@ export default function ShadowCrypto() {
               const Icon = source.icon;
 
               return (
-                <div key={source.label} className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
+                <div key={source.label} className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-3">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex min-w-0 items-center gap-3">
-                      <Icon className="h-4 w-4 shrink-0 text-gold" />
+                      <Icon className="h-4 w-4 shrink-0 text-[var(--qg-amber)]" />
                       <div>
-                        <div className="text-xs font-black uppercase tracking-wider text-white/75">{source.label}</div>
-                        <div className="mt-1 text-[10px] font-semibold text-white/35">{source.detail}</div>
+                        <div className="text-xs font-black uppercase tracking-wider text-[var(--qg-dashboard-text)]">{source.label}</div>
+                        <div className="mt-1 text-[10px] font-semibold text-[var(--qg-text-muted)]">{source.detail}</div>
                       </div>
                     </div>
-                    <div className="text-sm font-black text-gold">{source.value}</div>
+                    <div className="text-sm font-black text-[var(--qg-amber)]">{source.value}</div>
                   </div>
                   <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/5">
-                    <div className="h-full rounded-full bg-gold shadow-[0_0_10px_rgba(255,211,107,0.7)]" style={{ width: `${source.coverage}%` }} />
+                    <div className="h-full rounded-full bg-[var(--qg-amber)]" style={{ width: `${source.coverage}%` }} />
                   </div>
                 </div>
               );
@@ -508,7 +545,7 @@ export default function ShadowCrypto() {
               return (
                 <div key={item.label} className="grid grid-cols-[150px_1fr_42px] items-center gap-3">
                   <div className="flex items-center gap-2">
-                    <Icon className="h-4 w-4 text-gold" />
+                    <Icon className="h-4 w-4 text-[var(--qg-amber)]" />
                     <span className="text-xs font-semibold text-white/60">{item.label}</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-white/5">
@@ -517,7 +554,7 @@ export default function ShadowCrypto() {
                       style={{ width: `${item.value}%` }}
                     />
                   </div>
-                  <div className="text-right font-mono text-xs font-black text-white/55">{item.value}%</div>
+                  <div className="text-right font-mono text-xs font-black text-[var(--qg-dashboard-text-soft)]">{item.value}%</div>
                 </div>
               );
             })}
@@ -530,12 +567,12 @@ export default function ShadowCrypto() {
           <SectionTitle icon={ShieldCheck}>Policy Alignment Matrix</SectionTitle>
           <div className="relative z-10 mt-5 grid gap-3 md:grid-cols-2">
             {policyControls.map((control) => (
-              <div key={control.control} className="rounded-lg border border-white/5 bg-white/[0.02] p-4">
+              <div key={control.control} className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <div className="text-sm font-black text-white/85">{control.control}</div>
-                    <div className="mt-2 text-xs font-semibold text-white/40">Expected: {control.expected}</div>
-                    <div className="mt-1 text-xs font-semibold text-white/35">Observed: {control.drift}</div>
+                    <div className="text-sm font-black text-[var(--qg-dashboard-text)]">{control.control}</div>
+                    <div className="mt-2 text-xs font-semibold text-[var(--qg-text-muted)]">Expected: {control.expected}</div>
+                    <div className="mt-1 text-xs font-semibold text-[var(--qg-text-muted)]">Observed: {control.drift}</div>
                   </div>
                   <span className={`shrink-0 rounded border px-2 py-1 text-[9px] font-black uppercase tracking-wider ${controlStatusClasses(control.status)}`}>
                     {control.status}
@@ -552,15 +589,15 @@ export default function ShadowCrypto() {
             {playbooks.map((playbook, index) => (
               <button
                 key={playbook.label}
-                className="w-full rounded-lg border border-white/5 bg-white/[0.02] p-4 text-left transition hover:border-gold/30 hover:bg-gold/[0.05]"
+                className="w-full rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-4 text-left transition hover:border-[var(--qg-amber)]/30 hover:bg-[var(--qg-card-bg)]"
               >
                 <div className="flex items-start gap-3">
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-gold/30 bg-gold/10 text-[10px] font-black text-gold">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[var(--qg-amber)]/30 bg-[var(--qg-amber)]/10 text-[10px] font-black text-[var(--qg-amber)]">
                     {index + 1}
                   </div>
                   <div>
-                    <div className="text-sm font-black text-white/85">{playbook.label}</div>
-                    <div className="mt-1 text-xs font-semibold leading-relaxed text-white/40">{playbook.detail}</div>
+                    <div className="text-sm font-black text-[var(--qg-dashboard-text)]">{playbook.label}</div>
+                    <div className="mt-1 text-xs font-semibold leading-relaxed text-[var(--qg-text-muted)]">{playbook.detail}</div>
                   </div>
                 </div>
               </button>
@@ -568,7 +605,6 @@ export default function ShadowCrypto() {
           </div>
         </section>
       </div>
-
-    </div>
+    </DiscoveryPage>
   );
 }

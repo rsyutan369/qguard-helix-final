@@ -3,7 +3,8 @@ import net from 'node:net'
 import { getToken, getServerUser, createAuthClient, getServiceClient } from '@/lib/supabase-server'
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { persistableTelemetry } from '@/lib/scanner/session-payload'
-import { findingIdentityKey, richerText } from '@/lib/scanner/finding-identity'
+import { findingIdentityKey, isCryptographicComponent, richerText } from '@/lib/scanner/finding-identity'
+import { algorithmFamily } from '@/lib/governance/subjects'
 import { classifyCryptoRootCause } from '@/lib/crypto-root-cause'
 import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
 import { repositoryProvider } from '@/lib/scanner/web-scanner/repo-scanner'
@@ -2421,11 +2422,35 @@ export async function deleteScanHistory(client: any, userId: string, scanId: str
   return removed
 }
 
+/**
+ * Assemble the Cryptographic Bill of Materials.
+ *
+ * A CBOM lists CRYPTOGRAPHY — algorithms, cipher suites, protocols, keys and
+ * certificates. It does not list findings ABOUT the estate. `crypto_inventory`
+ * holds both, because the scan writer stores `algorithm: finding.algorithm` for
+ * every rule it fires, so policy findings land as rows with algorithm
+ * "No Certificate Pinning" or "Regulatory Compliance Gap".
+ *
+ * Counting those as components was a category error with real consequences:
+ * they are written `is_vulnerable: true`, so they inflated BOTH sides of the
+ * quantum-vulnerable ratio that drives the readiness score, the risk score,
+ * remediation, certification and every report. One measured tenant published
+ * "178 cryptographic components, 160 quantum-vulnerable" (90%) where the
+ * cryptography itself was 77 components / 59 vulnerable (77%).
+ *
+ * Nothing is lost by the exclusion: `persistResult` writes the same finding to
+ * `pqc_scan_results` and `crypto_exposures`, which is what the Vulnerabilities
+ * and Risk Analysis surfaces read. The count is published so the difference
+ * between the row total and the component total is explainable rather than
+ * mysterious.
+ */
 function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode) {
   const assetById = new Map<string, any>(assets.map((asset) => [asset.id, asset]))
   const grouped = new Map<string, any>()
+  let findingRowsExcluded = 0
 
   for (const item of inventory) {
+    if (!isCryptographicComponent(item, algorithmFamily)) { findingRowsExcluded += 1; continue }
     const asset = assetById.get(item.asset_id)
     const key = `${item.asset_id}:${item.item_type}:${item.algorithm}:${item.name}`
     const existing = grouped.get(key)
@@ -2463,6 +2488,10 @@ function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode
     quantumVulnerableComponents: entries.filter((entry) => entry.isVulnerable).length,
     pqcReadyComponents: entries.filter((entry) => entry.isQuantumSafe).length,
     totalInstances: entries.reduce((sum, entry) => sum + entry.instances, 0),
+    /** Rows that are scanner findings, not cryptography — reported, not hidden. */
+    findingRowsExcluded,
+    /** Every `crypto_inventory` row considered, so the two totals reconcile. */
+    inventoryRowsConsidered: inventory.length,
   }
 
   return { mode, entries, stats }
@@ -3349,6 +3378,14 @@ async function computeScannerIntelligence(token: string, userId: string) {
     summary: {
       totalAssets: assetPayload.assets.length,
       totalComponents: cbom.stats.totalComponents,
+      /**
+       * Why the component total is smaller than the crypto_inventory row count:
+       * scanner findings share that table and are counted in pqc_scan_results /
+       * crypto_exposures instead. Published so the difference is explainable on
+       * any surface rather than looking like data loss.
+       */
+      findingRowsExcluded: cbom.stats.findingRowsExcluded,
+      inventoryRowsConsidered: cbom.stats.inventoryRowsConsidered,
       vulnerableAssets: assetPayload.assets.filter((asset: any) => asset.vulnerableCount > 0).length,
       vulnerableComponents: cbom.stats.quantumVulnerableComponents,
       pqcReadyComponents: cbom.stats.pqcReadyComponents,

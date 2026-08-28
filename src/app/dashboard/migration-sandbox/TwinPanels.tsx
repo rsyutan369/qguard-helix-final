@@ -231,6 +231,11 @@ export function DigitalTwinTab({ detail, loading, error, reload, pqcStack, simul
           <EmptyBlock label={twin.nodes.length === 0 ? 'No assets discovered yet.' : 'No twin nodes match this search.'} />
         ) : (
           <div className="max-h-[460px] space-y-1.5 overflow-y-auto pr-1 scrollbar-thin scrollbar-track-transparent scrollbar-thumb-white/10">
+            {filteredNodes.length > 120 ? (
+              <div className="col-span-full text-[10px] text-white/35">
+                Showing 120 of {filteredNodes.length} twin nodes — refine the filter to narrow the set.
+              </div>
+            ) : null}
             {filteredNodes.slice(0, 120).map((node) => (
               <div key={node.id} className="grid gap-2 rounded-lg border border-white/6 bg-white/[0.015] px-3.5 py-2.5 lg:grid-cols-[1.4fr_1fr_auto] lg:items-center">
                 <div className="min-w-0">
@@ -240,7 +245,8 @@ export function DigitalTwinTab({ detail, loading, error, reload, pqcStack, simul
                     {node.criticalExposures > 0 && <Pill className="border-red-500/25 bg-red-500/10 text-red-300">{node.criticalExposures} critical</Pill>}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1">
-                    {node.algorithms.slice(0, 4).map((algo) => <span key={algo}><Pill className="border-purple-500/20 bg-purple-500/[0.07] font-mono text-purple-300/85">{algo}</Pill></span>)}
+                    {node.algorithms.length > 4 ? <span className="text-[9px] text-white/35">+{node.algorithms.length - 4}</span> : null}
+                  {node.algorithms.slice(0, 4).map((algo) => <span key={algo}><Pill className="border-purple-500/20 bg-purple-500/[0.07] font-mono text-purple-300/85">{algo}</Pill></span>)}
                     {node.algorithms.length === 0 && <span className="text-[10px] text-white/25">no crypto evidence yet</span>}
                   </div>
                 </div>

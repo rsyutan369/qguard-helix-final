@@ -6,6 +6,15 @@ import { InventoryExportMenu } from '../_components/InventoryExportMenu';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { useMigrationWorkflow } from '@/hooks/use-migration-workflow';
 import { useQuantumReadiness } from '@/app/dashboard/quantum-readiness/_shared';
+import {
+  DiscoveryPage,
+  DiscoveryHeader,
+  DiscoveryMetric,
+  StaleAssessmentBanner,
+  TruncationNote,
+  panelClass,
+  subtlePanelClass,
+} from '../_components/discovery/shell';
 
 type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
 
@@ -50,7 +59,8 @@ type AssetRecord = {
 
 const riskLevels: RiskLevel[] = ['critical', 'high', 'medium', 'low'];
 
-const GLASS_PANEL_CLASSES = 'group relative overflow-hidden rounded-xl border border-slate-200/80 bg-white/72 text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur-xl transition-all duration-500 hover:-translate-y-1 hover:border-cyan-300/80 hover:bg-white/88 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_22px_55px_rgba(15,23,42,0.12),0_0_42px_rgba(0,197,235,0.18)] hover:z-10 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-cyan-300/70 before:to-transparent before:transition-all before:duration-500 group-hover:before:opacity-100 group-hover:before:shadow-[0_0_15px_rgba(0,197,235,0.55)] group-hover:before:via-cyan-300 after:pointer-events-none after:absolute after:-right-24 after:-top-24 after:h-48 after:w-48 after:rounded-full after:bg-cyan-300/12 after:blur-3xl after:transition-all after:duration-500 group-hover:after:opacity-100 group-hover:after:bg-cyan-300/20 group-hover:after:blur-[36px] dark:border-[#FFD36B]/20 dark:bg-[#0f1428]/45 dark:text-white dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.08),inset_0_-24px_60px_rgba(255,211,107,0.03),0_0_40px_rgba(255,211,107,0.14)] dark:hover:border-[#FFD36B]/70 dark:hover:bg-[#0f1428]/65 dark:hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-24px_60px_rgba(255,211,107,0.15),0_8px_30px_rgba(0,0,0,0.5),0_0_60px_rgba(255,211,107,0.5),0_0_120px_rgba(255,211,107,0.2)] dark:before:via-[#FFF4C0]/70 dark:group-hover:before:shadow-[0_0_15px_rgba(255,211,107,0.9)] dark:group-hover:before:via-[#FFF4C0] dark:after:bg-[#FFD36B]/10 dark:group-hover:after:bg-[#FFD36B]/25';
+/* Discovery-suite surface — identical to CBOM Explorer. */
+const GLASS_PANEL_CLASSES = panelClass;
 
 function riskColor(score: number) {
   if (score >= 80) return 'text-red-600 dark:text-red-400';
@@ -412,40 +422,19 @@ export default function AssetsMap() {
   };
 
   return (
-    <div className="p-6 lg:p-8 space-y-6 min-h-screen">
+    <DiscoveryPage>
       <WorkflowRail activeStage="discovery" tone="adaptive" />
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-black uppercase tracking-tight text-slate-950 dark:text-white">Asset <span className="text-gold">Inventory</span></h1>
-          <p className="mt-1 text-sm text-slate-600 dark:text-white/50">Authorized cryptographic assets discovered from real scanner results.</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest">
-            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${connected ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-300' : 'border-slate-300/60 bg-slate-100/60 text-slate-500 dark:border-white/12 dark:bg-white/[0.03] dark:text-white/40'}`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
-              {connected ? 'Live Telemetry' : 'Cached'}
-            </span>
-            {(() => {
-              const inSync = qrHasData &&
-                Number(qr.snapshot.inventory.cryptoComponents) === Number(summary.totalComponents) &&
-                Number(qr.snapshot.inventory.vulnerableComponents) === Number(summary.vulnerableComponents);
-              const label = !qrResolved ? 'Awaiting Quantum Readiness Engine'
-                : !qrHasData ? 'No QR assessment evidence'
-                  : inSync ? 'Reconciled with Quantum Readiness Engine'
-                    : 'Diverged from Quantum Readiness Engine';
-              const tone = inSync ? 'border-cyan-500/25 bg-cyan-500/8 text-cyan-600 dark:border-cyan-400/25 dark:text-cyan-300'
-                : qrHasData ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-                  : 'border-slate-300/60 bg-slate-100/60 text-slate-500 dark:border-white/12 dark:bg-white/[0.03] dark:text-white/40';
-              return (
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${tone}`}
-                  title={qrHasData ? `QR Engine: ${qr.snapshot.inventory.cryptoComponents} components · ${qr.snapshot.inventory.vulnerableComponents} vulnerable` : undefined}
-                >
-                  <Shield className="h-3 w-3" /> {label}
-                </span>
-              );
-            })()}
-          </div>
-        </div>
-        <div className="flex flex-wrap justify-end gap-2">
+      <DiscoveryHeader
+        title="Asset Inventory"
+        subtitle="Authorized cryptographic assets discovered from real scanner results."
+        connected={connected}
+        measuredAt={data.generatedAt || null}
+        actions={
+          <>
+        {/* The QR reconciliation state is kept EXACTLY as it was — it is the
+            page's own accuracy contract, and it states divergence rather than
+            hiding it. Only the surrounding chrome changed. */}
+        <span className="hidden" />
           <InventoryExportMenu
             label={`Export ${selectedAssets.length > 0 ? `${selectedAssets.length} selected` : `${filteredAssets.length} shown`}`}
             disabled={exportAssets.length === 0}
@@ -482,29 +471,62 @@ export default function AssetsMap() {
               };
             }}
           />
-          <button onClick={refresh} className="flex items-center gap-2 rounded-lg border border-gold/20 bg-gold/10 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-gold">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
+          <button
+            type="button"
+            onClick={refresh}
+            className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-4 py-2 text-xs font-bold text-[var(--qg-dashboard-text-soft)] transition hover:border-[var(--qg-amber)]/45"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </button>
-        </div>
-      </header>
+          </>
+        }
+      />
 
-      {error && <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-300">{error}</div>}
+      {/* Reconciliation state against the Quantum Readiness Engine. Preserved
+          verbatim: it reports "Diverged" when the two disagree instead of
+          quietly showing one of the two numbers. */}
+      <div className="flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest">
+        {(() => {
+          const inSync = qrHasData &&
+            Number(qr.snapshot.inventory.cryptoComponents) === Number(summary.totalComponents) &&
+            Number(qr.snapshot.inventory.vulnerableComponents) === Number(summary.vulnerableComponents);
+          const label = !qrResolved ? 'Awaiting Quantum Readiness Engine'
+            : !qrHasData ? 'No QR assessment evidence'
+              : inSync ? 'Reconciled with Quantum Readiness Engine'
+                : 'Diverged from Quantum Readiness Engine';
+          const tone = inSync ? 'border-[var(--qg-cyan)]/25 bg-[var(--qg-cyan)]/10 text-[var(--qg-cyan)]'
+            : qrHasData ? 'border-[var(--qg-amber)]/35 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)]'
+              : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]';
+          return (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${tone}`}
+              title={qrHasData ? `QR Engine: ${qr.snapshot.inventory.cryptoComponents} components · ${qr.snapshot.inventory.vulnerableComponents} vulnerable` : undefined}
+            >
+              <Shield className="h-3 w-3" /> {label}
+            </span>
+          );
+        })()}
+      </div>
+
+      <StaleAssessmentBanner measuredAt={data.generatedAt || null} />
+
+      {error && <div className="rounded-md border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-300">{error}</div>}
 
       <div className="flex flex-col lg:flex-row gap-4">
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-white/30" />
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--qg-text-muted)]" />
           <input
             type="text"
             placeholder="Search assets, algorithms, domains, IP addresses..."
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full rounded-lg border border-slate-200 bg-white/78 py-2.5 pl-10 pr-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-gold/50 dark:border-gold/20 dark:bg-[#0f1428]/35 dark:text-white dark:placeholder:text-white/25"
+            className="w-full rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] py-2.5 pl-10 pr-4 text-sm text-[var(--qg-dashboard-text)] outline-none transition placeholder:text-[var(--qg-text-muted)] focus:border-[var(--qg-amber)]/50 dark:border-[var(--qg-amber)]/25  dark:text-white dark:placeholder:text-white/25"
           />
         </div>
-        <div className="flex gap-2 flex-wrap text-gold">
+        <div className="flex gap-2 flex-wrap text-[var(--qg-amber)]">
           {riskLevels.map((level) => (
-            <button key={level} onClick={() => setRiskFilter(riskFilter === level ? null : level)} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-colors ${riskFilter === level ? 'border-gold/60 bg-gold/15 text-gold' : 'border-slate-200 bg-white/70 text-slate-600 hover:border-cyan-300 hover:text-slate-950 dark:border-white/10 dark:bg-[#0f1428]/35 dark:text-white/45 dark:hover:text-white/70'}`}>
-              <Filter className="h-3.5 w-3.5" /> {level} <span className="font-mono text-slate-400 dark:text-white/35">{riskSummary[level]}</span>
+            <button key={level} onClick={() => setRiskFilter(riskFilter === level ? null : level)} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-widest transition-colors ${riskFilter === level ? 'border-[var(--qg-amber)]/60 bg-[var(--qg-amber)]/15 text-[var(--qg-amber)]' : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-dashboard-text-soft)] hover:border-[var(--qg-amber)]/40 hover:text-[var(--qg-dashboard-text)]   text-[var(--qg-text-muted)] dark:hover:text-white/70'}`}>
+              <Filter className="h-3.5 w-3.5" /> {level} <span className="font-mono text-[var(--qg-text-muted)]">{riskSummary[level]}</span>
             </button>
           ))}
         </div>
@@ -516,21 +538,21 @@ export default function AssetsMap() {
             label: 'Authorized Assets',
             value: summary.totalAssets || assets.length,
             sub: `${summary.vulnerableAssets} with vulnerable crypto`,
-            color: 'text-slate-950 dark:text-white',
+            tone: 'cyan' as const,
             icon: Server,
           },
           {
             label: 'Quantum-Vulnerable Components',
             value: summary.vulnerableComponents,
             sub: 'Matches QR Engine & CBOM',
-            color: 'text-red-600 dark:text-red-400',
+            tone: 'red' as const,
             icon: AlertTriangle,
           },
           {
             label: 'Cryptographic Components',
             value: summary.totalComponents,
             sub: `${summary.pqcReadyComponents} PQC-ready`,
-            color: 'text-gold',
+            tone: 'amber' as const,
             icon: Shield,
           },
           {
@@ -539,18 +561,18 @@ export default function AssetsMap() {
             sub: qrHasData
               ? `${qr.snapshot.scores.quantumReadinessLevel} · risk ${qr.snapshot.scores.quantumRisk}/100`
               : qrResolved ? 'No assessment evidence yet' : 'Awaiting assessment',
-            color: qrHasData ? 'text-emerald-600 dark:text-green-400' : 'text-slate-400 dark:text-white/35',
+            tone: qrHasData ? ('green' as const) : ('muted' as const),
             icon: Shield,
           },
         ].map((item) => (
-          <div key={item.label} className={GLASS_PANEL_CLASSES + " p-4"}>
-            <div className="flex items-center gap-2 mb-2 relative z-10">
-              <item.icon className="h-3.5 w-3.5 text-gold/60 dark:text-gold/50" />
-              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500 dark:text-white/40">{item.label}</span>
-            </div>
-            <div className={`text-2xl font-black relative z-10 ${item.color}`}>{item.value}</div>
-            <div className="mt-1 text-[10px] font-mono text-slate-500 dark:text-white/32 relative z-10">{item.sub}</div>
-          </div>
+          <DiscoveryMetric
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            detail={item.sub}
+            icon={item.icon}
+            tone={item.tone}
+          />
         ))}
       </div>
 
@@ -561,22 +583,22 @@ export default function AssetsMap() {
       <div className={GLASS_PANEL_CLASSES + ' p-5'}>
         <div className="relative z-10 grid gap-6 lg:grid-cols-[1.1fr_1.3fr_1.3fr]">
           <div>
-            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">PQC Component Coverage</div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">PQC Component Coverage</div>
             <div className="mt-2 flex items-end gap-2">
               <span className="text-4xl font-black text-emerald-600 dark:text-green-400">{summary.pqcReadiness}%</span>
-              <span className="mb-1 text-[10px] font-mono text-slate-500 dark:text-white/35">of {summary.totalComponents} components</span>
+              <span className="mb-1 text-[10px] font-mono text-[var(--qg-text-muted)]">of {summary.totalComponents} components</span>
             </div>
-            <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+            <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[var(--qg-muted-panel)] dark:bg-white/10">
               <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-green-400" style={{ width: `${Math.min(100, summary.pqcReadiness)}%` }} />
             </div>
-            <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-white/32">
+            <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-[var(--qg-text-muted)]">
               <span>{summary.pqcReadyComponents} PQC-ready</span>
               <span className="text-red-600 dark:text-red-400">{summary.vulnerableComponents} vulnerable</span>
             </div>
           </div>
 
           <div>
-            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Risk Posture</div>
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">Risk Posture</div>
             <div className="mt-3 grid grid-cols-2 gap-3">
               {[
                 { label: 'Risk Score', value: `${summary.riskScore}/100`, color: riskColor(summary.riskScore) },
@@ -584,8 +606,8 @@ export default function AssetsMap() {
                 { label: 'Vulnerable Assets', value: `${summary.vulnerableAssets}/${summary.totalAssets || assets.length}`, color: 'text-red-600 dark:text-red-400' },
                 { label: 'Critical Findings', value: summary.criticalFindings, color: 'text-orange-600 dark:text-orange-400' },
               ].map((metric) => (
-                <div key={metric.label} className="rounded-lg border border-slate-200/80 bg-white/70 p-3 dark:border-white/8 dark:bg-white/[0.02]">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-white/35">{metric.label}</div>
+                <div key={metric.label} className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-3 dark:border-white/8 dark:bg-white/[0.02]">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-[var(--qg-text-muted)]">{metric.label}</div>
                   <div className={`mt-1 text-lg font-black ${metric.color}`}>{metric.value}</div>
                 </div>
               ))}
@@ -594,9 +616,9 @@ export default function AssetsMap() {
 
           <div>
             <div className="flex items-center justify-between">
-              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/40">Finding Severity</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">Finding Severity</div>
               <span
-                className="text-[10px] font-mono text-slate-500 dark:text-white/32"
+                className="text-[10px] font-mono text-[var(--qg-text-muted)]"
                 title={`${summary.totalFindings} de-duplicated findings in total, ${severityCounts.safe} graded Safe`}
               >
                 {gradedFindings} graded
@@ -613,8 +635,8 @@ export default function AssetsMap() {
                 const max = Math.max(1, severityCounts.critical + severityCounts.high + severityCounts.medium + severityCounts.low);
                 return (
                   <div key={key} className="flex items-center gap-3">
-                    <span className="w-14 shrink-0 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-white/40">{label}</span>
-                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                    <span className="w-14 shrink-0 text-[10px] font-black uppercase tracking-widest text-[var(--qg-text-muted)]">{label}</span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--qg-muted-panel)] dark:bg-white/10">
                       <div className={`h-full rounded-full ${bar}`} style={{ width: `${(count / max) * 100}%` }} />
                     </div>
                     <span className={`w-7 shrink-0 text-right text-[11px] font-black ${text}`}>{count}</span>
@@ -631,7 +653,7 @@ export default function AssetsMap() {
           <table className="w-full min-w-[1040px] border-separate border-spacing-y-2 text-left">
             <thead>
               <tr>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">
                   <div className="flex items-center gap-3">
                     <input
                       type="checkbox"
@@ -639,42 +661,42 @@ export default function AssetsMap() {
                       onChange={toggleVisibleSelection}
                       disabled={filteredAssets.length === 0}
                       aria-label="Select all visible assets"
-                      className="h-4 w-4 rounded border-slate-300 bg-white accent-[#FFD36B] dark:border-gold/35 dark:bg-[#050816]"
+                      className="h-4 w-4 rounded border-[var(--qg-card-border)] bg-white accent-[#FFD36B] dark:border-[var(--qg-amber)]/35 dark:bg-[#050816]"
                     />
                     Asset Name
                   </div>
                 </th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Type</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Domain / URL / IP</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Findings</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Risk Score</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Compliance</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Lifecycle</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Last Scanned</th>
-                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600 dark:text-white/50">Action</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Type</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Domain / URL / IP</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Findings</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Risk Score</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Compliance</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Lifecycle</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Last Scanned</th>
+                <th className="p-4 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text-soft)]">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="p-12 text-center text-gold/50 font-black uppercase tracking-widest">
+                  <td colSpan={9} className="p-12 text-center text-[var(--qg-amber)]/50 font-black uppercase tracking-widest">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" /> Loading Asset Inventory
                   </td>
                 </tr>
               ) : assets.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="p-14 text-center">
-                    <div className="mb-4 text-xs font-black uppercase tracking-widest text-slate-500 dark:text-white/30">
+                    <div className="mb-4 text-xs font-black uppercase tracking-widest text-[var(--qg-text-muted)]">
                       No authorized assets scanned yet. Start a scan to build your cryptographic asset inventory.
                     </div>
-                    <a href="/dashboard/scanner" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-gold/30 bg-gold/10 text-gold text-[10px] font-black uppercase tracking-wider">
+                    <a href="/dashboard/scanner" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[var(--qg-amber)]/30 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)] text-[10px] font-black uppercase tracking-wider">
                       <ExternalLink className="h-3.5 w-3.5" /> Start Authorized Scan
                     </a>
                   </td>
                 </tr>
               ) : filteredAssets.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-12 text-center uppercase tracking-widest text-slate-500 dark:text-white/30">No assets match the current search or filter.</td>
+                  <td colSpan={9} className="p-12 text-center uppercase tracking-widest text-[var(--qg-text-muted)]">No assets match the current search or filter.</td>
                 </tr>
               ) : filteredAssets.map((asset) => {
                 const Icon = typeIcon(asset.type);
@@ -705,7 +727,7 @@ export default function AssetsMap() {
                       aria-expanded={isExpanded}
                       className={`group cursor-pointer rounded-xl bg-white/82 outline-none transition-all hover:bg-cyan-50/90 focus-visible:ring-2 focus-visible:ring-gold/50 dark:bg-[#080d1c]/72 dark:hover:bg-[#111934]/86 ${isExpanded ? 'bg-cyan-50/95 shadow-[0_0_0_1px_rgba(0,197,235,0.24),0_18px_45px_rgba(15,23,42,0.12)] dark:bg-[#111934]/90 dark:shadow-[0_0_0_1px_rgba(255,211,107,0.20),0_18px_50px_rgba(0,0,0,0.28)]' : ''}`}
                     >
-                      <td className="rounded-l-xl border-y border-l border-slate-200/80 p-4 dark:border-white/8">
+                      <td className="rounded-l-xl border-y border-l border-[var(--qg-card-border)] p-4 dark:border-white/8">
                         <div className="flex items-center gap-3">
                           <input
                             type="checkbox"
@@ -713,41 +735,41 @@ export default function AssetsMap() {
                             onClick={(event) => event.stopPropagation()}
                             onChange={() => toggleAssetSelection(asset.id)}
                             aria-label={`Select ${asset.name} for export`}
-                            className="h-4 w-4 shrink-0 rounded border-slate-300 bg-white accent-[#FFD36B] dark:border-gold/35 dark:bg-[#050816]"
+                            className="h-4 w-4 shrink-0 rounded border-[var(--qg-card-border)] bg-white accent-[#FFD36B] dark:border-[var(--qg-amber)]/35 dark:bg-[#050816]"
                           />
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gold/25 bg-gold/10 text-gold shadow-[0_0_20px_rgba(255,211,107,0.10)]">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--qg-amber)]/25 bg-[var(--qg-amber)]/10 text-[var(--qg-amber)] shadow-[0_0_20px_rgba(255,211,107,0.10)]">
                             <Icon className="h-4 w-4" />
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <div className="truncate text-sm font-black text-slate-950 transition-colors group-hover:text-gold dark:text-white">{asset.name}</div>
-                              <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-gold/70 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                              <div className="truncate text-sm font-black text-[var(--qg-dashboard-text)] transition-colors group-hover:text-[var(--qg-amber)] dark:text-white">{asset.name}</div>
+                              <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[var(--qg-amber)]/70 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                             </div>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-slate-500 dark:text-white/32">
+                            <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-[var(--qg-text-muted)]">
                               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400/80" />
                               {asset.status || 'active'}
                             </div>
                           </div>
                         </div>
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
-                        <span className="rounded-md border border-slate-200 bg-slate-50/80 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/62">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 dark:border-white/8">
+                        <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] px-2 py-1 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]   dark:text-white/62">
                           {labelize(asset.type)}
                         </span>
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 text-xs font-mono text-slate-600 dark:border-white/8 dark:text-white/50">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 text-xs font-mono text-[var(--qg-dashboard-text-soft)] dark:border-white/8 dark:text-white/50">
                         <div className="max-w-[260px] truncate">{assetTarget(asset)}</div>
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 dark:border-white/8">
                         <div className="flex items-center gap-3">
                           <span className={`inline-flex min-w-10 justify-center rounded-md border px-2 py-1 text-[10px] font-black ${vulnerable.length ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:border-red-400/35 dark:text-red-300' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:border-emerald-400/30 dark:text-emerald-300'}`}>
                             {vulnerable.length}
                           </span>
                           <div className="min-w-0">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-600 dark:text-white/58">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-[var(--qg-dashboard-text-soft)] dark:text-white/58">
                               vulnerable of {cryptoInventory.length}
                             </div>
-                            <div className="mt-1 truncate text-[10px] font-mono text-slate-500 dark:text-white/32" title="Raw detection rows backing these components, before de-duplication">
+                            <div className="mt-1 truncate text-[10px] font-mono text-[var(--qg-text-muted)]" title="Raw detection rows backing these components, before de-duplication">
                               {signalCount > 0
                                 ? `${signalCount} raw detection row${signalCount === 1 ? '' : 's'}`
                                 : `${cryptoInventory.length} observed component${cryptoInventory.length === 1 ? '' : 's'}`}
@@ -769,24 +791,24 @@ export default function AssetsMap() {
                           </div>
                         </div>
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 dark:border-white/8">
                         <div className="flex items-center gap-2">
                           <div className={`text-xs font-black ${riskColor(asset.riskScore)}`}>{asset.riskScore}/100</div>
-                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+                          <div className="h-1.5 w-20 overflow-hidden rounded-full bg-[var(--qg-muted-panel)] dark:bg-white/10">
                             <div className={`h-full ${riskBar(asset.riskScore)}`} style={{ width: `${asset.riskScore}%` }} />
                           </div>
                         </div>
-                        <div className="mt-1 text-[9px] text-slate-400 dark:text-white/25">Q-Score {asset.qScore}/100</div>
+                        <div className="mt-1 text-[9px] text-[var(--qg-text-muted)]">Q-Score {asset.qScore}/100</div>
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 dark:border-white/8">
                         <span className={`rounded-md border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${vulnerable.length > 0 ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                           {asset.complianceStatus}
                         </span>
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 dark:border-white/8">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 dark:border-white/8">
                         {(() => {
                           const lifecycle = lifecycleByAsset.get(String(asset.name || '').toLowerCase());
-                          if (!lifecycle) return <span className="text-[10px] text-slate-400 dark:text-white/25">—</span>;
+                          if (!lifecycle) return <span className="text-[10px] text-[var(--qg-text-muted)]">—</span>;
                           const stageTone =
                             lifecycle.stageId === 'monitoring'
                               ? 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'
@@ -800,7 +822,7 @@ export default function AssetsMap() {
                               <span className={`inline-block rounded-md border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest ${stageTone}`}>
                                 {lifecycle.stageId === 'monitoring' ? 'Monitored' : lifecycle.stageId === 'execution' ? 'Migrating' : lifecycle.stageId === 'validation' ? 'Validating' : 'Remediation'}
                               </span>
-                              <div className="text-[9px] text-slate-500 dark:text-white/35">
+                              <div className="text-[9px] text-[var(--qg-text-muted)]">
                                 {lifecycle.openActions > 0 ? `${lifecycle.openActions} action${lifecycle.openActions === 1 ? '' : 's'}` : lifecycle.validationStatus}
                                 {lifecycle.certificationImpactPct > 0 ? ` · +${lifecycle.certificationImpactPct}% cert` : ''}
                               </div>
@@ -808,8 +830,8 @@ export default function AssetsMap() {
                           );
                         })()}
                       </td>
-                      <td className="border-y border-slate-200/80 p-4 text-[10px] font-mono text-slate-500 dark:border-white/8 dark:text-white/42">{formatDate(asset.lastScanned)}</td>
-                      <td className="rounded-r-xl border-y border-r border-slate-200/80 p-4 dark:border-white/8">
+                      <td className="border-y border-[var(--qg-card-border)] p-4 text-[10px] font-mono text-[var(--qg-text-muted)] dark:border-white/8 dark:text-white/42">{formatDate(asset.lastScanned)}</td>
+                      <td className="rounded-r-xl border-y border-r border-[var(--qg-card-border)] p-4 dark:border-white/8">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
@@ -818,12 +840,12 @@ export default function AssetsMap() {
                               event.stopPropagation();
                               setExpandedAssetId(isExpanded ? null : asset.id);
                             }}
-                            className="inline-flex items-center gap-1 rounded-md border border-gold/25 bg-gold/10 px-2 py-1 text-[10px] font-black uppercase text-gold transition hover:border-gold/60"
+                            className="inline-flex items-center gap-1 rounded-md border border-[var(--qg-amber)]/25 bg-[var(--qg-amber)]/10 px-2 py-1 text-[10px] font-black uppercase text-[var(--qg-amber)] transition hover:border-[var(--qg-amber)]/60"
                           >
                             <Eye className="h-3 w-3" /> {isExpanded ? 'Hide' : 'Details'}
                           </button>
-                          <a onClick={(event) => event.stopPropagation()} href="/dashboard/cbom" className="text-[10px] font-black uppercase text-gold hover:underline">CBOM</a>
-                          <a onClick={(event) => event.stopPropagation()} href="/dashboard/scanner" className="text-[10px] font-black uppercase text-slate-500 hover:text-gold dark:text-white/40">Rescan</a>
+                          <a onClick={(event) => event.stopPropagation()} href="/dashboard/cbom" className="text-[10px] font-black uppercase text-[var(--qg-amber)] hover:underline">CBOM</a>
+                          <a onClick={(event) => event.stopPropagation()} href="/dashboard/scanner" className="text-[10px] font-black uppercase text-[var(--qg-text-muted)] hover:text-[var(--qg-amber)] dark:text-white/40">Rescan</a>
                         </div>
                       </td>
                     </motion.tr>
@@ -831,13 +853,13 @@ export default function AssetsMap() {
                     {isExpanded && (
                       <motion.tr initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}>
                         <td colSpan={9} className="p-0">
-                          <div className="mx-2 mb-3 rounded-xl border border-slate-200/80 bg-slate-50/95 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_20px_45px_rgba(15,23,42,0.10)] dark:border-gold/18 dark:bg-[#070b18]/92 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.32)]">
+                          <div className="mx-2 mb-3 rounded-xl border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_20px_45px_rgba(15,23,42,0.10)] dark:border-[var(--qg-amber)]/18 dark:bg-[#070b18]/92 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.32)]">
                             <div className="grid gap-5 xl:grid-cols-[0.9fr_2.1fr]">
-                              <div className="rounded-lg border border-slate-200 bg-white/80 p-4 dark:border-white/8 dark:bg-white/[0.025]">
+                              <div className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-4 dark:border-white/8 dark:bg-white/[0.025]">
                                 <div className="mb-4 flex items-center justify-between gap-3">
                                   <div>
-                                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">Asset Profile</div>
-                                    <div className="mt-1 text-lg font-black text-slate-950 dark:text-white">{asset.name}</div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">Asset Profile</div>
+                                    <div className="mt-1 text-lg font-black text-[var(--qg-dashboard-text)]">{asset.name}</div>
                                   </div>
                                   <div className="flex shrink-0 flex-col items-end gap-1">
                                     <span className={`rounded-md border px-2 py-1 text-[10px] font-black uppercase ${severityClasses(assetRiskLevel(asset), vulnerable.length > 0)}`}>
@@ -861,9 +883,9 @@ export default function AssetsMap() {
                                     ['Status', asset.status || 'active'],
                                     ['Last scanned', formatDate(asset.lastScanned)],
                                   ].map(([label, value]) => (
-                                    <div key={label} className="flex items-start justify-between gap-4 border-t border-slate-200/80 pt-3 dark:border-white/6">
-                                      <span className="font-black uppercase tracking-widest text-slate-500 dark:text-white/35">{label}</span>
-                                      <span className="max-w-[220px] text-right font-mono text-slate-700 dark:text-white/68">{value}</span>
+                                    <div key={label} className="flex items-start justify-between gap-4 border-t border-[var(--qg-card-border)] pt-3 dark:border-white/6">
+                                      <span className="font-black uppercase tracking-widest text-[var(--qg-text-muted)]">{label}</span>
+                                      <span className="max-w-[220px] text-right font-mono text-[var(--qg-dashboard-text-soft)] dark:text-white/68">{value}</span>
                                     </div>
                                   ))}
                                 </div>
@@ -872,15 +894,15 @@ export default function AssetsMap() {
                               <div>
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                   <div>
-                                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-950 dark:text-white">Vulnerable Cryptographic Components</h3>
-                                    <p className="mt-1 text-xs text-slate-500 dark:text-white/45">
+                                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-[var(--qg-dashboard-text)]">Vulnerable Cryptographic Components</h3>
+                                    <p className="mt-1 text-xs text-[var(--qg-text-muted)] text-[var(--qg-text-muted)]">
                                       Counted at the component level — the same unit the CBOM Explorer and Quantum Readiness Engine use.
                                       {signalCount > 0 ? ` Backed by ${signalCount} raw detection signal${signalCount === 1 ? '' : 's'}.` : ''}
                                     </p>
                                   </div>
                                   <div className="flex flex-wrap gap-2">
                                     <span className="rounded-md border border-red-500/25 bg-red-500/8 px-2 py-1 text-[10px] font-black uppercase text-red-600 dark:border-red-400/25 dark:text-red-300">{vulnerable.length} vulnerable</span>
-                                    <span className="rounded-md border border-slate-200 bg-white/70 px-2 py-1 text-[10px] font-black uppercase text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/42">{cryptoInventory.length} total</span>
+                                    <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] px-2 py-1 text-[10px] font-black uppercase text-[var(--qg-text-muted)]   dark:text-white/42">{cryptoInventory.length} total</span>
                                     {pqcReadyCount > 0 && (
                                       <span className="rounded-md border border-emerald-500/25 bg-emerald-500/8 px-2 py-1 text-[10px] font-black uppercase text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300">{pqcReadyCount} PQC-ready</span>
                                     )}
@@ -902,8 +924,8 @@ export default function AssetsMap() {
                                       <div key={item.id || `${asset.id}-vuln-${index}`} className="rounded-lg border border-red-300/50 bg-red-50/80 p-4 dark:border-red-400/18 dark:bg-red-500/[0.055]">
                                         <div className="mb-3 flex items-start justify-between gap-3">
                                           <div className="min-w-0">
-                                            <div className="truncate text-sm font-black text-slate-950 dark:text-white">{cryptoLabel(item)}</div>
-                                            <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-white/35">{labelize(item.item_type || item.protocol || 'cryptography')}</div>
+                                            <div className="truncate text-sm font-black text-[var(--qg-dashboard-text)]">{cryptoLabel(item)}</div>
+                                            <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-[var(--qg-text-muted)]">{labelize(item.item_type || item.protocol || 'cryptography')}</div>
                                           </div>
                                           <div className="flex shrink-0 flex-wrap justify-end gap-2">
                                             <span className={`rounded border px-2 py-0.5 text-[9px] font-black uppercase ${severityClasses(item.exposure_level, item.is_vulnerable)}`}>
@@ -912,23 +934,23 @@ export default function AssetsMap() {
                                             <a
                                               href={remediationHref(asset, item)}
                                               onClick={(event) => event.stopPropagation()}
-                                              className="inline-flex items-center gap-1 rounded border border-gold/35 bg-gold/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-gold transition hover:border-gold/70 hover:bg-gold/15"
+                                              className="inline-flex items-center gap-1 rounded border border-[var(--qg-amber)]/35 bg-[var(--qg-amber)]/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-[var(--qg-amber)] transition hover:border-[var(--qg-amber)]/70 hover:bg-[var(--qg-amber)]/15"
                                             >
                                               <ExternalLink className="h-3 w-3" /> Remediate
                                             </a>
                                           </div>
                                         </div>
-                                        <p className="line-clamp-2 text-xs leading-relaxed text-slate-600 dark:text-white/58">
+                                        <p className="line-clamp-2 text-xs leading-relaxed text-[var(--qg-dashboard-text-soft)] dark:text-white/58">
                                           {metadataText(item, 'evidence', 'Scanner marked this cryptographic component as vulnerable or migration-sensitive.')}
                                         </p>
-                                        <div className="mt-3 rounded-md border border-slate-200 bg-white/80 p-3 dark:border-white/8 dark:bg-black/18">
-                                          <div className="text-[9px] font-black uppercase tracking-widest text-gold/70">Recommended action</div>
-                                          <div className="mt-1 text-xs font-semibold leading-relaxed text-slate-700 dark:text-white/68">
+                                        <div className="mt-3 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-3 dark:border-white/8 dark:bg-black/18">
+                                          <div className="text-[9px] font-black uppercase tracking-widest text-[var(--qg-amber)]/70">Recommended action</div>
+                                          <div className="mt-1 text-xs font-semibold leading-relaxed text-[var(--qg-dashboard-text-soft)] dark:text-white/68">
                                             {metadataText(item, 'recommendation', 'Review against the NIST PQC migration policy and assign remediation ownership.')}
                                           </div>
                                         </div>
                                         {componentSignals.length > 0 && (
-                                          <div className="mt-2 flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-slate-400 dark:text-white/30">
+                                          <div className="mt-2 flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-[var(--qg-text-muted)]">
                                             <AlertTriangle className="h-2.5 w-2.5" />
                                             {componentSignals.length} detection signal{componentSignals.length === 1 ? '' : 's'} across scanner, exposures & CBOM
                                           </div>
@@ -940,18 +962,18 @@ export default function AssetsMap() {
                                 )}
 
                                 {vulnerable.length > 12 && (
-                                  <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-white/35">
+                                  <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-[var(--qg-text-muted)]">
                                     +{vulnerable.length - 12} additional vulnerable component{vulnerable.length - 12 === 1 ? '' : 's'} available in CBOM.
                                   </div>
                                 )}
                               </div>
                             </div>
 
-                            <div className="mt-5 border-t border-slate-200/80 pt-4 dark:border-white/8">
-                              <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-white/35">Observed Cryptography</div>
+                            <div className="mt-5 border-t border-[var(--qg-card-border)] pt-4 dark:border-white/8">
+                              <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-[var(--qg-text-muted)]">Observed Cryptography</div>
                               <div className="flex flex-wrap gap-2">
                                 {cryptoInventory.length === 0 ? (
-                                  <span className="rounded-md border border-slate-200 bg-white/70 px-3 py-1.5 text-[10px] font-bold text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/40">Manual review required</span>
+                                  <span className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] px-3 py-1.5 text-[10px] font-bold text-[var(--qg-text-muted)]   dark:text-white/40">Manual review required</span>
                                 ) : visibleCryptoInventory.map((item, index) => (
                                   <span key={item.id || `${asset.id}-crypto-${index}`} className={`rounded-md border px-3 py-1.5 text-[10px] font-bold ${item.is_vulnerable ? 'border-red-500/25 bg-red-500/8 text-red-600 dark:border-red-400/25 dark:text-red-300' : 'border-emerald-500/25 bg-emerald-500/8 text-emerald-600 dark:border-emerald-400/25 dark:text-emerald-300'}`}>
                                     {cryptoLabel(item)}
@@ -965,7 +987,7 @@ export default function AssetsMap() {
                                       toggleCryptoExpansion(asset.id);
                                     }}
                                     aria-expanded={cryptoListExpanded}
-                                    className="rounded-md border border-slate-300 bg-white/80 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-slate-600 transition hover:border-gold/45 hover:text-gold dark:border-white/10 dark:bg-white/[0.03] dark:text-white/45 dark:hover:border-gold/45 dark:hover:text-gold"
+                                    className="rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)] transition hover:border-[var(--qg-amber)]/45 hover:text-[var(--qg-amber)]   text-[var(--qg-text-muted)] dark:hover:border-[var(--qg-amber)]/45 dark:hover:text-[var(--qg-amber)]"
                                   >
                                     {cryptoListExpanded ? 'Show less' : `+${hiddenCryptoCount} more`}
                                   </button>
@@ -983,6 +1005,6 @@ export default function AssetsMap() {
           </table>
         </div>
       </div>
-    </div>
+    </DiscoveryPage>
   );
 }

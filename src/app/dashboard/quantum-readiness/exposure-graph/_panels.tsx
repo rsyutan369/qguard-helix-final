@@ -142,6 +142,11 @@ export function RailSummary({
                 <span className="shrink-0 font-mono text-cyan-300/80">{integerFmt(node.blastRadius)} affected</span>
               </button>
             ))}
+            {data.graph.nodes.length > 5 ? (
+              <div className="pt-1 text-[10px] text-white/35">
+                Showing the 5 largest of {integerFmt(data.graph.nodes.length)} graph assets.
+              </div>
+            ) : null}
           </div>
         ) : (
           <EmptyState label="No dependency data yet." hint="Record asset relationships to compute blast radius." />

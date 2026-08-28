@@ -2833,6 +2833,23 @@ html.qg-theme-dark {
   --qg-cyan-soft: rgba(6, 182, 212, 0.12);
   --qg-green-soft: rgba(16, 185, 129, 0.1);
   --qg-surface-inset: rgba(2, 6, 23, 0.34);
+
+  /* --- Semantic notice surfaces -------------------------------------
+     Banners (stale data, degraded evidence, warnings) previously hardcoded
+     `text-amber-100` — near-white amber, which is legible on a dark ground and
+     invisible on the pale amber wash the light theme paints. These tokens carry
+     a readable foreground for BOTH themes so a notice can never be styled for
+     one of them only. */
+  --qg-notice-bg: rgba(245, 158, 11, 0.10);
+  --qg-notice-border: rgba(245, 158, 11, 0.32);
+  --qg-notice-text: #fcd34d;
+  --qg-notice-text-soft: rgba(253, 230, 138, 0.78);
+  --qg-danger-bg: rgba(239, 68, 68, 0.12);
+  --qg-danger-border: rgba(239, 68, 68, 0.34);
+  --qg-danger-text: #fca5a5;
+  --qg-success-bg: rgba(16, 185, 129, 0.12);
+  --qg-success-border: rgba(16, 185, 129, 0.32);
+  --qg-success-text: #6ee7b7;
 }
 
 html.qg-theme-light {
@@ -2894,6 +2911,20 @@ html.qg-theme-light {
   --qg-cyan-soft: rgba(14, 165, 233, 0.08);
   --qg-green-soft: rgba(16, 185, 129, 0.12);
   --qg-surface-inset: rgba(248, 250, 252, 0.92);
+
+  /* Semantic notice surfaces — see the dark block. Foregrounds here are the
+     DARK end of each hue so they read against a pale wash; only the token
+     values change, never the markup that consumes them. */
+  --qg-notice-bg: rgba(245, 158, 11, 0.12);
+  --qg-notice-border: rgba(180, 83, 9, 0.34);
+  --qg-notice-text: #92400e;
+  --qg-notice-text-soft: #b45309;
+  --qg-danger-bg: rgba(239, 68, 68, 0.10);
+  --qg-danger-border: rgba(185, 28, 28, 0.30);
+  --qg-danger-text: #991b1b;
+  --qg-success-bg: rgba(16, 185, 129, 0.12);
+  --qg-success-border: rgba(4, 120, 87, 0.28);
+  --qg-success-text: #065f46;
 }
 
 .qg-dashboard-shell {
@@ -4118,4 +4149,287 @@ html.qg-theme-ready .qc-page * {
 #use-cases .use-case-hero-desc {
   color: rgba(255, 255, 255, 0.94) !important;
   text-shadow: 0 1px 14px rgba(0, 0, 0, 0.88) !important;
+}
+
+
+/* ============================================================
+   LIGHT THEME — dashboard CONTENT compatibility layer
+   ============================================================
+
+   The chrome (sidebar, mobile header) already had light-theme overrides; the
+   CONTENT area never did. Dashboard panels hardcode near-black backgrounds
+   (`bg-[#0a0f1a]`) and white-opacity text (`text-white/30`) from when every
+   dashboard was dark-only. Under the light theme the page background flips but
+   those panels do not, so a card stays black and its labels stay near-white on
+   a white page — the "Asset Attributes is still black" report.
+
+   The long-term fix is for every panel to consume the `--qg-*` tokens the way
+   CBOM Explorer does. This layer makes the 46 hardcoded dark surfaces and
+   the white-opacity text legible in light mode today, and
+   `tools/dashboard-contrast-check.ts` stops new token-less panels appearing.
+
+   Escape hatch: put `qg-force-dark` on anything deliberately dark in BOTH
+   themes (a terminal, a code block, a dark data visualisation). Nothing inside
+   it is remapped.
+   ============================================================ */
+
+/* ---- 1. Hardcoded dark panel/card backgrounds -> light surfaces ---- */
+.qg-theme-light .qg-dashboard-main .bg-\[\#02060d\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#020617\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#02070E\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#020a18\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#020b19\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#030711\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#04060e\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#040810\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#041227\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#05080f\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#050816\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#050a15\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#050b15\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#060F1C\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#060c17\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#061329\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#070b16\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#070b18\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#070c16\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#07101D\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#07101d\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#07101e\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#07162d\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#071831\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#080d17\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#080d1a\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#080d1c\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#080e1b\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#092044\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0A1525\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0A1728\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0B1526\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0a0a0a\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0a0f1a\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0a0f1e\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0a203d\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0b1120\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0b1220\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0b1327\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0b1424\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0b1628\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0b1d3a\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0f0f13\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#0f1428\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#111934\]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-\[\#16161a\]:not(.qg-force-dark):not(.qg-force-dark *) {
+  background-color: var(--qg-dashboard-surface) !important;
+}
+
+/* ---- 2. White-opacity text -> graded slate ------------------------
+   Only the OPACITY variants are remapped. Full-opacity `text-white` is left
+   alone: it is overwhelmingly used on solid coloured chips, where white is the
+   correct foreground and remapping it would break contrast the other way. */
+.qg-theme-light .qg-dashboard-main [class*="text-white/8"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-white/9"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qg-dashboard-text) !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-white/6"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-white/7"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qg-dashboard-text-soft) !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-white/2"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-white/3"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-white/4"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-white/5"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qg-dashboard-text-muted) !important;
+}
+
+/* ---- 3. Hairline borders drawn for a dark ground ------------------ */
+.qg-theme-light .qg-dashboard-main [class*="border-white/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  border-color: var(--qg-dashboard-border) !important;
+}
+
+/* ---- 4. Translucent white fills read as grey smears on white ------ */
+.qg-theme-light .qg-dashboard-main [class*="bg-white/[0.0"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-white/5"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  background-color: var(--qg-dashboard-surface) !important;
+}
+
+/* ---- 5. Black overlays used as panel fills ------------------------ */
+.qg-theme-light .qg-dashboard-main [class*="bg-black/2"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-black/3"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-black/4"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  background-color: var(--qg-dashboard-surface) !important;
+}
+
+/* ---- 6. Keep white text on genuinely coloured chips ---------------
+   These backgrounds stay saturated in both themes, so their foreground must
+   stay white — rule 2 must not reach inside them. */
+.qg-theme-light .qg-dashboard-main .bg-\[\#06B6D4\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#22d3ee\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#34d399\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#4DFF88\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#8b2aff\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#9d3dff\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#FFE08A\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#f87171\] [class*="text-white"] {
+  color: #ffffff !important;
+}
+
+/* ---- 7. The DARK-MODE slate scale ---------------------------------
+   Sophia and several panels use slate as a dark-theme ramp: slate-50…300 are
+   near-WHITE, chosen as foreground against a dark ground. In light mode they
+   land on a white page and vanish — the Sophia console rendered as an almost
+   blank screen. Flip the light end of the ramp to the dark end. slate-500/600
+   are mid-tone and legible on both, so they are left alone. */
+.qg-theme-light .qg-dashboard-main .text-slate-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-slate-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-slate-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qg-dashboard-text) !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-slate-300:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-slate-400:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qg-dashboard-text-soft) !important;
+}
+
+/* Dark slate FILLS become light surfaces, or their (now dark) text would sit
+   on a dark card. */
+.qg-theme-light .qg-dashboard-main .bg-slate-700:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-slate-800:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-slate-900:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .bg-slate-950:not(.qg-force-dark):not(.qg-force-dark *) {
+  background-color: var(--qg-dashboard-surface) !important;
+}
+
+.qg-theme-light .qg-dashboard-main .border-slate-500:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .border-slate-600:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .border-slate-700:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .border-slate-800:not(.qg-force-dark):not(.qg-force-dark *) {
+  border-color: var(--qg-dashboard-border) !important;
+}
+
+/* Opacity-suffixed variants of the same utilities (`bg-slate-900/40`,
+   `border-slate-700/50`) — Tailwind emits these as separate classes. */
+.qg-theme-light .qg-dashboard-main [class*="bg-slate-9"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-slate-8"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  background-color: var(--qg-dashboard-surface) !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="border-slate-7"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="border-slate-6"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  border-color: var(--qg-dashboard-border) !important;
+}
+
+/* ---- 8. Placeholders ---------------------------------------------- */
+.qg-theme-light .qg-dashboard-main input::placeholder:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main textarea::placeholder:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qg-dashboard-text-muted) !important;
+  opacity: 1;
+}
+
+/* ---- 9. Near-white SEMANTIC tints ---------------------------------
+   A status banner picks its foreground from the light end of its hue —
+   `text-amber-100` on an amber wash, `text-red-200` on a red wash. That reads
+   on a dark ground and disappears on the pale wash the light theme paints; it
+   is how the stale-assessment banner shipped invisible, and 48 more banners
+   across the dashboards carry the same pattern.
+
+   Each hue's light end is flipped to its dark end, which keeps the semantic
+   colour (a warning still reads amber, an error still reads red) while
+   restoring contrast. Shades 300+ are already legible on white and untouched. */
+.qg-theme-light .qg-dashboard-main .text-amber-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-amber-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-amber-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #92400e !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-yellow-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-yellow-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-yellow-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #854d0e !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-orange-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-orange-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-orange-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #9a3412 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-red-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-red-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-red-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #991b1b !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-rose-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-rose-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-rose-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #9f1239 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-emerald-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-emerald-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-emerald-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #065f46 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-green-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-green-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-green-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #166534 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-teal-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-teal-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-teal-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #115e59 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-cyan-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-cyan-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-cyan-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #155e75 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-sky-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-sky-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-sky-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #075985 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-blue-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-blue-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-blue-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #1e40af !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-indigo-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-indigo-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-indigo-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #3730a3 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-violet-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-violet-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-violet-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #5b21b6 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-purple-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-purple-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-purple-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #6b21a8 !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-fuchsia-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-fuchsia-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-fuchsia-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #86198f !important;
+}
+
+.qg-theme-light .qg-dashboard-main .text-pink-50:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-pink-100:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main .text-pink-200:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #9d174d !important;
 }

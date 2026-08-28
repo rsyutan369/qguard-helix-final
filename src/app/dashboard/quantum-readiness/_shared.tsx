@@ -7,6 +7,7 @@ import { ChevronRight, type LucideIcon } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { STALE_AFTER_HOURS as STALE_HOURS, assessmentAgeHours as ageHours, describeAge as ageLabel } from '@/lib/dashboard-freshness';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
 import {
   DEFAULT_COST_ASSUMPTIONS,
@@ -252,6 +253,10 @@ export function relativeTime(value: string | null) {
   const days = Math.round(hrs / 24);
   return `${days}d ago`;
 }
+
+/* Freshness vocabulary lives in a pure module so the dashboards, the server and
+   the offline check all reason about assessment age identically. */
+export { STALE_AFTER_HOURS, assessmentAgeHours, describeAge, isStale } from '@/lib/dashboard-freshness';
 
 export function riskTone(score: number) {
   if (score >= 80) return RED;
@@ -687,6 +692,49 @@ export function QuantumReadinessSubnav() {
   );
 }
 
+/**
+ * Discloses that a panel is showing only the head of a longer list.
+ *
+ * Renders NOTHING when the list fits, so it never adds noise to a small
+ * estate. It exists because a panel that silently drops rows reads as a
+ * complete picture: an operator seeing eight critical findings has no way to
+ * know there are forty, and will plan against the eight.
+ *
+ * `rank` names WHY these are the ones shown ("highest-severity",
+ * "most recent") — "showing 8 of 40" without an ordering is still misleading,
+ * because the reader assumes the eight that matter most are the eight present.
+ */
+export function TruncationNote({
+  shown,
+  total,
+  noun,
+  rank,
+  to,
+  className,
+}: {
+  shown: number;
+  total: number;
+  noun: string;
+  rank?: string;
+  /** Optional deep link to the surface that lists them all. */
+  to?: string;
+  className?: string;
+}) {
+  if (!Number.isFinite(total) || total <= shown) return null;
+  return (
+    <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 pt-2 text-[10px] text-white/35 ${className || ''}`}>
+      <span>
+        Showing {rank ? `the ${integerFmt(shown)} ${rank}` : integerFmt(shown)} of {integerFmt(total)} {noun}.
+      </span>
+      {to ? (
+        <Link to={to} className="font-bold text-blue-300/80 no-underline transition hover:text-blue-200">
+          View all
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
 export function ViewAllLink({ to, children }: { to: string; children: ReactNode }) {
   return (
     <Link to={to} className="inline-flex items-center gap-1 text-xs font-bold text-blue-300 no-underline transition hover:text-blue-200">
@@ -717,6 +765,7 @@ export function QuantumReadinessShell({
   snapshot: QuantumReadinessSnapshot;
   children: ReactNode;
 }) {
+  const assessmentAge = ageHours(snapshot.lastAssessmentAt || snapshot.generatedAt);
   return (
     <div className="min-h-screen bg-[#030711] px-4 py-5 text-white sm:px-5 lg:px-6">
       <div className="mx-auto max-w-[1560px] space-y-4">
@@ -734,9 +783,27 @@ export function QuantumReadinessShell({
         </header>
 
         {!snapshot.hasData && state === 'success' ? (
-          <div className="rounded-md border border-amber-400/25 bg-amber-400/[0.07] px-4 py-3 text-sm text-amber-100/90">
+          <div className="rounded-md border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-4 py-3 text-sm text-[var(--qg-notice-text)]">
             No assessment evidence found for this tenant yet. KPIs below reflect empty state. Run a PQC discovery scan or
             connect cryptographic inventory to populate the Quantum Readiness Assessment Engine™.
+          </div>
+        ) : null}
+
+        {/*
+          Staleness is stated, not merely datable. Every page in this shell can
+          be read as a statement about production RIGHT NOW — an executive deck
+          especially — so an assessment old enough to have drifted has to say so
+          where the reader will see it, not only as a timestamp in the footer.
+        */}
+        {snapshot.hasData && state === 'success' && assessmentAge !== null && assessmentAge > STALE_HOURS ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-4 py-3 text-sm text-[var(--qg-notice-text)]">
+            <span className="font-semibold">Assessment is {ageLabel(assessmentAge)} old.</span>
+            <span className="text-[var(--qg-notice-text-soft)]">
+              These figures describe the estate as last measured, which may no longer be current production posture.
+            </span>
+            <Link to="/dashboard/scanner" className="font-bold text-[var(--qg-notice-text)] no-underline underline-offset-2 hover:underline">
+              Run a discovery scan
+            </Link>
           </div>
         ) : null}
 
@@ -749,7 +816,14 @@ export function QuantumReadinessShell({
             />
             {sseConnected ? 'Live telemetry, metrics stream & table subscriptions connected' : 'Connecting live assessment streams'}
           </span>
-          <span>Last synchronized: {longDate(snapshot.lastAssessmentAt || snapshot.generatedAt)}</span>
+          <span>
+            Last synchronized: {longDate(snapshot.lastAssessmentAt || snapshot.generatedAt)}
+            {assessmentAge !== null ? (
+              <span className={assessmentAge > STALE_HOURS ? 'ml-1.5 text-[var(--qg-notice-text)]' : 'ml-1.5 text-[var(--qg-dashboard-text-muted)]'}>
+                ({ageLabel(assessmentAge)} old)
+              </span>
+            ) : null}
+          </span>
         </div>
       </div>
     </div>

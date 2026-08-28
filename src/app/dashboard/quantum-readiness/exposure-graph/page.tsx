@@ -245,6 +245,11 @@ export default function ExposureGraphPage() {
                 </button>
               ))}
               {searchMatches.length > 6 ? (
+                <div className="border-t border-white/8 px-3 py-1.5 text-[10px] text-white/35">
+                  {searchMatches.length - 6} more match — refine your search.
+                </div>
+              ) : null}
+              {searchMatches.length > 6 ? (
                 <div className="border-t border-white/5 px-3 py-1.5 text-[10px] text-white/35">{searchMatches.length - 6} more match(es) highlighted in the graph</div>
               ) : null}
             </div>

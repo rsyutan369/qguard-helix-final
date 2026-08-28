@@ -28,8 +28,10 @@ import { buildHndlIntelligence } from './harvest-now'
 import { buildWorkflowState } from './migration-workflow'
 import { buildSnapshotDashboard } from './migration-snapshots'
 import { buildAdjacency, computeBlastRadius } from '@/lib/exposure-graph-intel'
-import { ROLE_CAPABILITIES, STANDARDS, algorithmFamily, algorithmFamilyLabel, modulePath, moduleLabel } from './copilot-knowledge'
+import { ROLE_CAPABILITIES, STANDARDS, algorithmFamily, algorithmFamilyLabel, involvesAlgorithmFamily, modulePath, moduleLabel } from './copilot-knowledge'
 import type { AlgorithmFamily } from './copilot-knowledge'
+import { namesCryptography } from '@/lib/scanner/finding-identity'
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import type { CopilotEvidence, CopilotRole, CopilotToolRun, CopilotToolStatus } from '@/types/copilot'
 import type { ExposureIntelligence } from '@/types/exposure-graph'
 
@@ -105,6 +107,28 @@ function arr(v: unknown): unknown[] { return Array.isArray(v) ? v : [] }
  * the authenticated tenant with an explicit .eq('user_id', ctx.userId) on top
  * of the RLS client — verified offline by tools/copilot-check.ts.
  */
+/**
+ * A table that does not exist in this deployment is a legitimate "no data"
+ * answer — the platform ships optional subsystems. ANY other query error is a
+ * bug, and must never be reported as an empty result.
+ *
+ * This distinction cost a real defect: `findAssetsUsingAlgorithm` selected an
+ * `updated_at` column that `crypto_inventory` does not have (it has
+ * `discovered_at`). PostgREST answered 42703 "column does not exist", the
+ * blanket `if (error) return []` turned that into zero rows, and Sophia
+ * confidently told the user "RSA: 0 cryptographic component(s)" on an estate
+ * whose CBOM was full of TLS_RSA cipher suites. A silent empty is
+ * indistinguishable from a true zero, which is the worst possible failure mode
+ * for a tool whose entire job is reporting what the tenant actually has.
+ */
+function isMissingRelation(error: unknown): boolean {
+  const err = error as { code?: string; message?: string } | null
+  const code = String(err?.code || '')
+  const message = String(err?.message || '')
+  if (code === '42P01') return true
+  return /relation .* does not exist|could not find the table|schema cache/i.test(message)
+}
+
 export async function tenantRows(
   ctx: ToolContext,
   table: string,
@@ -113,15 +137,18 @@ export async function tenantRows(
   apply?: (q: any) => any,
   limit = 200,
 ): Promise<Record<string, unknown>[]> {
-  try {
-    let query = ctx.client.from(table).select(select).eq('user_id', ctx.userId)
-    if (apply) query = apply(query)
-    const { data, error } = await query.limit(limit)
-    if (error) return []
-    return (data as Record<string, unknown>[]) || []
-  } catch {
-    return []
+  let query = ctx.client.from(table).select(select).eq('user_id', ctx.userId)
+  if (apply) query = apply(query)
+  const { data, error } = await query.limit(limit)
+  if (error) {
+    // Missing subsystem → honest empty. Anything else → surface it; runTool
+    // turns a throw into an `error` status the answer reports as a failed
+    // source rather than as a zero.
+    if (isMissingRelation(error)) return []
+    const err = error as { code?: string; message?: string }
+    throw new Error(`${table} query failed${err?.code ? ` [${err.code}]` : ''}: ${String(err?.message || error).slice(0, 160)}`)
   }
+  return (data as Record<string, unknown>[]) || []
 }
 
 async function tenantCount(
@@ -324,19 +351,53 @@ register({
     const wanted = new Set<string>(families)
 
     const [inventory, certs, assets] = await Promise.all([
-      tenantRows(ctx, 'crypto_inventory', 'id, asset_id, name, item_type, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, updated_at, created_at', (q) => q, 2000),
+      // `crypto_inventory` has discovered_at/created_at — there is NO updated_at.
+      tenantRows(ctx, 'crypto_inventory', 'id, asset_id, name, item_type, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at, created_at', (q) => q, 2000),
       tenantRows(ctx, 'certificates', 'id, asset_id, name, algorithm, key_size, issuer, not_after, updated_at, created_at', (q) => q, 800),
       tenantRows(ctx, 'assets', ASSET_SELECT, (q) => q, 800),
     ])
 
     const assetById = new Map(assets.map((a) => [str(a.id), a]))
-    // A component's algorithm can be recorded on `algorithm` or embedded in the
-    // scanner's class-prefixed `name` ("Cipher Suite: TLS_RSA_WITH_..."), so
-    // both are classified and either may establish the family.
-    const familyOf = (row: Record<string, unknown>): AlgorithmFamily => {
-      const direct = algorithmFamily(str(row.algorithm))
-      if (direct !== 'unknown') return direct
-      return algorithmFamily(`${str(row.name)} ${str(row.protocol)}`)
+
+    /*
+     * `crypto_inventory` stores BOTH real cryptographic observations and
+     * scanner FINDINGS, because the scan writer sets `algorithm:
+     * finding.algorithm` for every rule it fires — so a policy finding lands
+     * with algorithm "No Certificate Pinning" or "Regulatory Compliance Gap".
+     * Counting those as cryptographic components inflates the component total
+     * and pollutes the algorithm distribution. The platform already has the
+     * separator for this (the same guard the migration snapshots use), so use
+     * it rather than inventing a second rule.
+     */
+    const isCryptographicRow = (row: Record<string, unknown>): boolean => {
+      const name = str(row.name)
+      // The scanner writes `${category}: ${algorithm}`; a real cryptographic
+      // observation carries a cryptographic class prefix.
+      if (name && !namesCryptography(name)) return false
+      const anatomy = analyzeCryptoObservation({
+        algorithm: str(row.algorithm),
+        name,
+        itemType: str(row.item_type),
+        protocol: str(row.protocol),
+      })
+      return anatomy.kind !== 'policy'
+    }
+
+    /*
+     * Whether a row INVOLVES a wanted family — not what its single canonical
+     * family is. `algorithmFamily()` answers the latter, and for matching it
+     * misses the forms a real certificate scan emits: `sha256WithRSAEncryption`
+     * classifies as `unknown`, and `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`
+     * classifies as `sha2` — so an estate full of RSA certificates reported
+     * ZERO RSA components. Both the algorithm field and the scanner's
+     * class-prefixed name are tested.
+     */
+    const matchedFamily = (row: Record<string, unknown>): AlgorithmFamily | null => {
+      const haystack = `${str(row.algorithm)} ${str(row.name)} ${str(row.protocol)}`
+      for (const family of families) {
+        if (involvesAlgorithmFamily(haystack, family)) return family
+      }
+      return null
     }
 
     interface Hit { family: AlgorithmFamily; label: string; kind: 'component' | 'certificate'; assetId: string; detail: string; keySize: number }
@@ -345,20 +406,24 @@ register({
     // answer able to state how fresh its evidence is.
     let observedAtMs = 0
     const noteObserved = (row: Record<string, unknown>) => {
-      for (const field of ['updated_at', 'created_at']) {
+      // Field names differ per table: crypto_inventory records discovered_at,
+      // certificates record updated_at. Try all, use whichever exists.
+      for (const field of ['updated_at', 'discovered_at', 'created_at']) {
         const ms = new Date(str(row[field])).getTime()
         if (Number.isFinite(ms) && ms > observedAtMs) observedAtMs = ms
       }
     }
+    let policyRowsSkipped = 0
     for (const row of inventory) {
-      const family = familyOf(row)
-      if (!wanted.has(family)) continue
+      if (!isCryptographicRow(row)) { policyRowsSkipped += 1; continue }
+      const family = matchedFamily(row)
+      if (!family) continue
       noteObserved(row)
       hits.push({ family, label: str(row.algorithm) || str(row.name) || algorithmFamilyLabel(family), kind: 'component', assetId: str(row.asset_id), detail: str(row.item_type) || 'component', keySize: num(row.key_size) })
     }
     for (const row of certs) {
-      const family = familyOf(row)
-      if (!wanted.has(family)) continue
+      const family = matchedFamily(row)
+      if (!family) continue
       noteObserved(row)
       hits.push({ family, label: str(row.algorithm) || algorithmFamilyLabel(family), kind: 'certificate', assetId: str(row.asset_id), detail: `certificate${str(row.issuer) ? ` issued by ${str(row.issuer)}` : ''}`, keySize: num(row.key_size) })
     }
@@ -413,6 +478,7 @@ register({
         components: hits.filter((h) => h.kind === 'component').length,
         certificates: hits.filter((h) => h.kind === 'certificate').length,
         unattributed,
+        policyRowsSkipped,
         ownersKnown: withOwner,
         ownersUnknown: rows.length - withOwner,
         internetFacing: rows.filter((r) => r.internetFacing).length,
@@ -614,6 +680,10 @@ register({
         pqcReadyComponents: num(inventory.pqcReadyComponents),
         certificates: num(inventory.certificatesAnalyzed),
         keys: num(inventory.keysDiscovered),
+        // Provenance: scanner findings share crypto_inventory but are not
+        // components. Carried so the answer can explain the difference.
+        findingRowsExcluded: num(inventory.findingRowsExcluded),
+        inventoryRows: num(inventory.cryptoInventoryRows),
       },
       [ev('CBOM Explorer', 'CBOM components', String(num(inventory.cryptoComponents)), { detail: `${num(inventory.vulnerableComponents)} vulnerable · ${num(inventory.pqcReadyComponents)} PQC-ready`, deepLink: modulePath('cbom') })],
       num(inventory.cryptoComponents),
@@ -651,9 +721,22 @@ register({
   description: 'Algorithm distribution with quantum-vulnerability classification',
   capability: 'read',
   async execute(ctx) {
-    const rows = await tenantRows(ctx, 'crypto_inventory', 'algorithm, is_vulnerable, is_quantum_safe', (q) => q, 800)
+    const rows = await tenantRows(ctx, 'crypto_inventory', 'algorithm, name, item_type, protocol, is_vulnerable, is_quantum_safe', (q) => q, 800)
+    /*
+     * Only rows that actually NAME cryptography become algorithms. The scan
+     * writer stores `algorithm: finding.algorithm` for every rule it fires, so
+     * policy findings land in this column too — which is why this card
+     * previously published "NO CERTIFICATE PINNING", "INFORMATION DISCLOSURE"
+     * and "REGULATORY COMPLIANCE GAP" as observed cryptographic algorithms.
+     * They are findings about the estate, not algorithms in it.
+     */
     const groups = new Map<string, { algorithm: string; count: number; vulnerable: number; quantumSafe: number }>()
+    let policyRows = 0
     for (const r of rows) {
+      const name = str(r.name)
+      const isCrypto = (!name || namesCryptography(name))
+        && analyzeCryptoObservation({ algorithm: str(r.algorithm), name, itemType: str(r.item_type), protocol: str(r.protocol) }).kind !== 'policy'
+      if (!isCrypto) { policyRows += 1; continue }
       const key = (str(r.algorithm) || 'unknown').toUpperCase()
       const g = groups.get(key) || { algorithm: key, count: 0, vulnerable: 0, quantumSafe: 0 }
       g.count += 1
@@ -664,9 +747,15 @@ register({
     const algorithms = [...groups.values()].sort((a, b) => b.count - a.count).slice(0, 30)
     const vulnerableAlgos = algorithms.filter((a) => a.vulnerable > 0).map((a) => a.algorithm)
     return ok(
-      { algorithms, vulnerableAlgorithms: vulnerableAlgos },
-      [ev('CBOM Explorer', 'Algorithms observed', String(groups.size), { detail: vulnerableAlgos.slice(0, 6).join(', ') || 'none vulnerable', deepLink: modulePath('cbom') })],
+      { algorithms, vulnerableAlgorithms: vulnerableAlgos, policyRowsExcluded: policyRows, rowsScanned: rows.length },
+      [ev('CBOM Explorer', 'Algorithms observed', String(groups.size), {
+        detail: `${vulnerableAlgos.slice(0, 6).join(', ') || 'none vulnerable'}${policyRows ? ` · ${policyRows} finding row(s) excluded — they are findings, not algorithms` : ''}`,
+        deepLink: modulePath('cbom'),
+      })],
       groups.size,
+      groups.size === 0 && policyRows > 0
+        ? `No cryptographic algorithm is recorded in the inventory — all ${policyRows} row(s) are scanner findings rather than cryptographic observations.`
+        : undefined,
     )
   },
 })

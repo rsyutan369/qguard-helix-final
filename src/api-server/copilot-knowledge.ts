@@ -587,6 +587,69 @@ export { algorithmFamily }
 export type { AlgorithmFamily }
 
 /**
+ * Does this text INVOLVE the given algorithm family at all?
+ *
+ * This is deliberately a different question from `algorithmFamily()`, which
+ * answers "what is this string's ONE canonical family?" — the right question
+ * for governance, and the wrong one for "which systems use RSA?".
+ *
+ * Two gaps make the single-family classifier unusable for matching:
+ *
+ *  1. It is anchored on `\bRSA\b`, so it does not see RSA in the forms a real
+ *     certificate scan actually produces — `sha256WithRSAEncryption` (the
+ *     standard X.509 signature name), `rsaEncryption`, `RSASSA-PSS`. Those
+ *     classify as `unknown`, so an estate full of RSA certificates reported
+ *     ZERO RSA components.
+ *  2. For a composite string it must pick one family, and it picks by test
+ *     order: `TLS_RSA_WITH_AES_128_CBC_SHA` is `aes` and
+ *     `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` is `sha2`. Both genuinely
+ *     involve RSA, and a user asking "where am I using RSA" wants them.
+ *
+ * Matching is still token-aware — `ssl` must not match "OpenSSL" and `dsa`
+ * must not match "ECDSA" — but it accepts the concatenated OID-style spellings
+ * that carry a family name as an internal token.
+ */
+const FAMILY_MATCHERS: Record<string, RegExp> = {
+  // RSA in every spelling a scanner emits, including concatenated OID names.
+  rsa: /\bRSA\b|RSAENCRYPTION|RSASSA|WITHRSA|\bRSAES\b|\bRSAPSS\b/,
+  // ECDSA / EdDSA signatures.
+  ecdsa: /\bECDSA\b|ECDSAWITH|\bED25519\b|\bED448\b|\bEDDSA\b/,
+  // Elliptic-curve key agreement.
+  ecdh: /\bECDHE?\b|\bX25519\b|\bX448\b|\bSECP\d+R1\b|\bPRIME256V1\b|\bP-?(256|384|521)\b|ECPUBLICKEY/,
+  // Finite-field Diffie-Hellman only — must not swallow ECDH.
+  dh: /(?<!EC)\bDHE?\b|\bDIFFIE\b/,
+  // Classical DSA only — must not swallow ECDSA or ML-DSA.
+  dsa: /(?<!EC)(?<!ML-)(?<!ML)(?<!SLH-)(?<!SLH)\bDSA\b/,
+  'ml-kem': /\bML[-\s]?KEM\b|MLKEM|\bKYBER\b/,
+  'ml-dsa': /\bML[-\s]?DSA\b|MLDSA|\bDILITHIUM\b/,
+  'slh-dsa': /\bSLH[-\s]?DSA\b|SLHDSA|\bSPHINCS\b/,
+  // A hybrid names BOTH a classical and a PQ component, e.g. X25519MLKEM768.
+  hybrid: /\bHYBRID\b|X25519MLKEM|SECP\d+R1MLKEM|ED25519[-+]?ML[-\s]?DSA|X25519[-+]ML[-\s]?KEM/,
+  aes: /\bAES\b/,
+  chacha: /\bCHACHA20?\b|\bPOLY1305\b/,
+  '3des': /\b3DES\b|TRIPLE[-\s]?DES|DES[-\s]?EDE3/,
+  // Plain DES only — 3DES is a different algorithm with different guidance.
+  des: /(?<!3)(?<!TRIPLE[-\s])(?<!EDE)\bDES\b/,
+  rc4: /\bRC4\b|\bARCFOUR\b/,
+  sha1: /\bSHA[-\s]?1\b|SHA1WITH|WITHSHA1\b/,
+  sha2: /\bSHA[-\s]?(224|256|384|512)\b|SHA(224|256|384|512)WITH|WITHSHA(224|256|384|512)\b|\bSHA[-\s]?2\b/,
+  sha3: /\bSHA[-\s]?3\b|\bSHA3-(224|256|384|512)\b|\bSHAKE(128|256)\b/,
+  md5: /\bMD5\b|MD5WITH|WITHMD5\b/,
+}
+
+export function involvesAlgorithmFamily(text: unknown, family: AlgorithmFamily): boolean {
+  if (family === 'unknown') return false
+  const matcher = FAMILY_MATCHERS[family]
+  if (!matcher) return false
+  // Separators become spaces so `TLS_RSA_WITH_AES` tokenises, but the raw
+  // concatenated form is ALSO tested so `sha256WithRSAEncryption` is seen.
+  const raw = String(text || '').toUpperCase()
+  const spaced = ` ${raw.replace(/[_+.]/g, ' ')} `
+  return matcher.test(spaced) || matcher.test(raw)
+}
+
+
+/**
  * Which KIND of record the question is about. The platform counts assets,
  * cryptographic components, certificates, keys and findings separately and they
  * are NOT interchangeable — 4 assets carrying 178 components is not 178 assets.

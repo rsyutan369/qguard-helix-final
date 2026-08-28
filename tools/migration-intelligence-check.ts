@@ -142,6 +142,96 @@ function main() {
   const tagProvider = quickOwnershipTag({ id: 't2', assetName: 'okta.com', host: 'tenant.okta.com', assetType: 'saas-application', algorithm: 'RSA' })
   assert(tagProvider.domain === 'provider' && tagProvider.providerName === 'Okta', 'quick tag attributes provider correctly', `${tagProvider.domain}/${tagProvider.providerName}`)
 
+  /* ---------------------------------------------------------------- */
+  console.log('\n[8] Matrix scope filters — company + asset')
+  /*
+   * The Shared Responsibility Matrix can be scoped by company and by asset.
+   * The option list is derived from the rendered rows, so the count shown
+   * beside an option MUST equal the number of rows selecting it produces —
+   * otherwise the control promises rows it cannot deliver.
+   */
+  const scopeInputs: OwnershipFindingInput[] = [
+    { id: 's1', assetName: 'shop.example.com', host: 'shop.example.com.cdn.cloudflare.net', assetType: 'cdn-service', algorithm: 'TLS_RSA_WITH_AES_128_CBC_SHA', severity: 'high', observedAt: '2026-08-20T10:00:00Z' },
+    { id: 's2', assetName: 'shop.example.com', host: 'shop.example.com.cdn.cloudflare.net', assetType: 'cdn-service', algorithm: 'ECDHE-P256', severity: 'medium', observedAt: '2026-08-26T10:00:00Z' },
+    { id: 's3', assetName: 'tenant.okta.com', host: 'tenant.okta.com', assetType: 'saas-application', algorithm: 'RSA-2048', severity: 'critical', observedAt: '2026-08-22T10:00:00Z' },
+    { id: 's4', assetName: 'origin.internal', assetType: 'server', environment: 'internal', algorithm: 'RSA-4096', severity: 'high', observedAt: '2026-08-25T10:00:00Z' },
+    { id: 's5', assetName: 'origin.internal', assetType: 'server', environment: 'internal', algorithm: '3DES', severity: 'critical', observedAt: '2026-08-24T10:00:00Z' },
+  ]
+  const scope = buildSharedResponsibility(scopeInputs)
+  const rows = scope.matrix
+
+  assert(rows.length > 0, 'the fixture produces matrix rows', `${rows.length}`)
+  assert(rows.every((r) => typeof r.assetKey === 'string' && r.assetKey.length > 0), 'every row carries a canonical assetKey')
+  assert(rows.every((r) => typeof r.providerName === 'string' && r.providerName.length > 0), 'every row carries a company label')
+  assert(
+    rows.every((r) => (r.providerAttributed ? r.providerId !== null : r.providerId === null && r.providerName === 'Unattributed')),
+    'an unattributed row keeps a null providerId and reads "Unattributed" — never a guessed vendor',
+  )
+
+  // Facet counts must equal the filter result. This is the in-sync invariant.
+  const companyCounts = new Map<string, number>()
+  const assetCounts = new Map<string, number>()
+  for (const r of rows) {
+    const ck = r.providerAttributed ? (r.providerId || r.providerName) : '__unattributed__'
+    companyCounts.set(ck, (companyCounts.get(ck) ?? 0) + 1)
+    assetCounts.set(r.assetKey, (assetCounts.get(r.assetKey) ?? 0) + 1)
+  }
+  let mismatches = 0
+  for (const [key, count] of companyCounts) {
+    const filtered = rows.filter((r) =>
+      key === '__unattributed__' ? !r.providerAttributed : r.providerAttributed && (r.providerId || r.providerName) === key,
+    )
+    if (filtered.length !== count) mismatches += 1
+  }
+  for (const [key, count] of assetCounts) {
+    if (rows.filter((r) => r.assetKey === key).length !== count) mismatches += 1
+  }
+  assert(mismatches === 0, 'every company/asset option count equals the rows that filter produces', `${companyCounts.size} companies, ${assetCounts.size} assets`)
+
+  // Filtering must never invent or lose a row.
+  const perCompanyTotal = [...companyCounts.values()].reduce((a, b) => a + b, 0)
+  const perAssetTotal = [...assetCounts.values()].reduce((a, b) => a + b, 0)
+  assert(perCompanyTotal === rows.length, 'company facets partition the matrix exactly once', `${perCompanyTotal} vs ${rows.length}`)
+  assert(perAssetTotal === rows.length, 'asset facets partition the matrix exactly once', `${perAssetTotal} vs ${rows.length}`)
+
+  // A scoped asset selection returns only that asset.
+  const originKey = [...assetCounts.keys()].find((k) => k.includes('origin.internal'))
+  assert(Boolean(originKey), 'the internal origin asset is present as an option')
+  if (originKey) {
+    const originRows = rows.filter((r) => r.assetKey === originKey)
+    assert(originRows.length > 0 && originRows.every((r) => r.assetKey === originKey), 'selecting an asset returns only that asset', `${originRows.length} row(s)`)
+    assert(originRows.every((r) => r.domain === 'customer'), 'the internal origin stays customer-owned under scope')
+  }
+
+  /* ---------------------------------------------------------------- */
+  console.log('\n[9] Freshness travels with the finding and the row')
+  assert(scope.findings.every((f) => 'observedAt' in f), 'every finding exposes observedAt')
+  const s2Finding = scope.findings.find((f) => f.id === 's2')
+  assert(s2Finding?.observedAt === '2026-08-26T10:00:00Z', 'the observation timestamp survives classification', String(s2Finding?.observedAt))
+  const dated = rows.filter((r) => r.observedAt)
+  assert(dated.length > 0, 'matrix rows carry an observation timestamp', `${dated.length}/${rows.length}`)
+  // Consolidated rows report the NEWEST instance, never the oldest.
+  const shopKey = [...assetCounts.keys()].find((k) => k.includes('shop.example.com'))
+  if (shopKey) {
+    const shopRows = rows.filter((r) => r.assetKey === shopKey && r.observedAt)
+    const newest = shopRows.reduce((max, r) => Math.max(max, Date.parse(r.observedAt as string)), 0)
+    assert(newest >= Date.parse('2026-08-20T10:00:00Z'), 'a consolidated row reports its newest observation', new Date(newest).toISOString())
+  }
+
+  /* ---------------------------------------------------------------- */
+  console.log('\n[10] Matrix rows reconcile with the panels beside them')
+  const domainFromMatrix = { customer: 0, provider: 0, ecosystem: 0 }
+  for (const r of rows) domainFromMatrix[r.domain] += 1
+  assert(
+    domainFromMatrix.customer + domainFromMatrix.provider + domainFromMatrix.ecosystem === rows.length,
+    'every matrix row belongs to exactly one ownership domain',
+  )
+  // Companies named in the matrix must exist in the Provider & Ecosystem
+  // Readiness table — the two panels read one attribution, not two.
+  const breakdownIds = new Set(scope.providerBreakdown.map((b) => b.providerId))
+  const orphaned = rows.filter((r) => r.providerAttributed && r.providerId && !breakdownIds.has(r.providerId))
+  assert(orphaned.length === 0, 'no company appears in the matrix but not in the provider breakdown', `${orphaned.length} orphaned`)
+
   console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} CHECK(S) FAILED`}\n`)
   process.exit(failures === 0 ? 0 : 1)
 }

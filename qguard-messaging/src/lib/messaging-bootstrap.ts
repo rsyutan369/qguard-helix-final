@@ -218,10 +218,37 @@ async function ensureDesktopDevice(client: SupabaseClient, userId: string): Prom
   });
   if (deviceError) throw deviceError;
 
+  await reinstateConversationMembership(client, bundle.device_id);
   await ensureSignedPrekey(client, userId, bundle.device_id);
   await ensureOneTimePrekeys(client, userId, bundle.device_id);
   await retireSupersededDevice(client, bundle);
   return bundle;
+}
+
+/**
+ * Bind this device into the conversations the account already belongs to.
+ *
+ * Membership rows are keyed per device, but the envelope INSERT policy gates on
+ * the USER being an active member. Retiring a device revokes (or, via Device
+ * Trust Center delete, removes) its membership rows, and a re-key mints a new
+ * device_id that no row mentions -- so every send into an existing thread was
+ * rejected as `new row violates row-level security policy` and surfaced only as
+ * "Encryption failed", with nothing in the app able to repair it.
+ *
+ * Runs BEFORE retireSupersededDevice so the new rows exist by the time the old
+ * device's rows are revoked. Non-fatal: an older database without migration 033
+ * simply has no such function, and a device that cannot rebind now retries on
+ * the next bootstrap or prekey-readiness pass.
+ */
+async function reinstateConversationMembership(client: SupabaseClient, deviceId: string): Promise<void> {
+  try {
+    // The error is read and dropped on purpose: a database still on migration
+    // 032 has no such function, and that must not stop key registration.
+    const { error } = await client.rpc("reinstate_messaging_conversation_membership", { p_device_id: deviceId });
+    if (error) return;
+  } catch {
+    // Transport failure — retried by the next registration pass.
+  }
 }
 
 /**

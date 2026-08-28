@@ -154,12 +154,106 @@ export function observationClass(componentName: unknown) {
   const text = String(componentName || '').trim()
   const prefix = text.includes(':') ? text.slice(0, text.indexOf(':')) : text
   // "Key Exchange (Harvest Now Decrypt Later)" -> "key exchange"
-  return prefix.replace(/\s*\(.*$/, '').trim().toLowerCase()
+  // Underscores are normalised because the agent collector writes its module id
+  // (`key_exchange: RSA-2048`) where the web scanner writes a display category
+  // (`Key Exchange: RSA-2048`). Without this, every agent-collected component
+  // read as non-cryptographic.
+  return prefix.replace(/\s*\(.*$/, '').replace(/_/g, ' ').trim().toLowerCase()
 }
 
-/** True when the record's `algorithm` field really names cryptography. */
+/** True when the record's class prefix names a cryptographic observation. */
 export function namesCryptography(componentName: unknown) {
   return CRYPTO_OBSERVATION_CLASSES.includes(observationClass(componentName))
+}
+
+/* ------------------------------------------------------------------ */
+/* Cryptographic component vs. scanner finding                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `crypto_inventory` is written by three different producers, and one of them
+ * stores a FINDING in the same shape as a cryptographic component:
+ *
+ *   • `scanner.ts` writes `algorithm: finding.algorithm` for EVERY rule it
+ *     fires, so a policy rule lands with algorithm "No Certificate Pinning",
+ *     "Regulatory Compliance Gap" or "No OCSP Stapling";
+ *   • `agent-scanner.ts` writes `${moduleId}: ${algorithm}` (`key_exchange:`,
+ *     `ssh:`, `library:`) and `PQC-ready: ${algorithm}`.
+ *
+ * Counting the findings as components inflates the CBOM headline and, because
+ * they are also written `is_vulnerable: true`, inflates "quantum-vulnerable"
+ * on both sides of the ratio: a tenant whose 178 rows were 101 findings
+ * published "178 cryptographic components, 160 quantum-vulnerable" (90%) where
+ * the cryptography itself was 77 components / 59 vulnerable (77%).
+ *
+ * Identification is POSITIVE ONLY: a row counts as a cryptographic component
+ * when something about it actually names cryptography. Nothing is excluded by
+ * guessing that its text "looks like a finding" — that heuristic would silently
+ * drop real components the moment a producer changed its wording.
+ */
+
+/** TLS/SSL/SSH/IPsec protocol versions are legitimate CBOM components. */
+const CRYPTO_PROTOCOL_PATTERN =
+  /\b(TLS|SSL|DTLS|SSH|IPSEC|IKE|QUIC|WPA|KERBEROS)\s*[-_ ]?V?\d/i
+
+/** A TLS/SSL cipher-suite identifier, e.g. TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256. */
+const CIPHER_SUITE_PATTERN = /^(TLS|SSL)[_-][A-Z0-9_]+$/i
+
+/**
+ * Algorithm tokens the canonical family classifier misses because it is anchored
+ * on word boundaries: `sha256WithRSAEncryption` (the standard X.509 signature
+ * name) and `X25519MLKEM768` (a hybrid group) carry the algorithm as an
+ * internal token with no separator around it.
+ *
+ * Deliberately NOT included: bare "PQC", "quantum", "certificate", "key". Those
+ * words appear in finding TITLES — "No PQC Certificate", "Quantum-Vulnerable
+ * OIDs", "No Certificate Pinning" — and matching them would count a finding as
+ * a cryptographic component, which is the exact defect this predicate exists to
+ * prevent.
+ */
+const CRYPTO_ALGORITHM_TOKEN_PATTERN = new RegExp(
+  [
+    'RSAENCRYPTION', 'RSASSA', 'WITHRSA',
+    'MLKEM', 'MLDSA', 'SLHDSA',
+    '\\bKYBER\\b', '\\bDILITHIUM\\b', '\\bSPHINCS\\b', '\\bFALCON\\b',
+    '\\bX25519\\b', '\\bX448\\b', '\\bED25519\\b', '\\bED448\\b',
+    '\\bSECP\\d+R1\\b', '\\bPRIME256V1\\b',
+    '\\bHMAC\\b', '\\bHKDF\\b', '\\bPBKDF2\\b', '\\bARGON2\\b', '\\bBCRYPT\\b', '\\bSCRYPT\\b',
+    '\\bPOLY1305\\b', '\\bCURVE25519\\b',
+  ].join('|'),
+  'i',
+)
+
+/**
+ * True when a `crypto_inventory` row describes actual cryptography rather than
+ * a scanner finding about the estate.
+ *
+ * `classify` is the canonical algorithm-family classifier, injected so this
+ * module stays free of a dependency cycle with the governance engine.
+ */
+export function isCryptographicComponent(
+  row: { name?: unknown; algorithm?: unknown; item_type?: unknown; protocol?: unknown },
+  classify: (raw: string) => string,
+): boolean {
+  const algorithm = String(row.algorithm ?? '').trim()
+  const name = String(row.name ?? '').trim()
+  // The algorithm value with any class prefix removed, e.g.
+  // "Cipher Suite: TLS_AES_128" -> "TLS_AES_128".
+  const bare = algorithm || (name.includes(':') ? name.slice(name.indexOf(':') + 1).trim() : name)
+
+  // 1. It names a real algorithm family (RSA, AES, ML-KEM, SHA-2, …).
+  if (classify(bare) !== 'unknown') return true
+  // 2. It carries an algorithm token the family classifier cannot see.
+  if (CRYPTO_ALGORITHM_TOKEN_PATTERN.test(bare)) return true
+  // 3. It names a cryptographic protocol version (TLSv1.2, SSHv2, …).
+  if (CRYPTO_PROTOCOL_PATTERN.test(bare)) return true
+  // 4. It is a cipher-suite identifier.
+  if (CIPHER_SUITE_PATTERN.test(bare.replace(/\s+/g, ''))) return true
+  // 5. Its class prefix is a known cryptographic observation class — this is
+  //    what keeps a bare "Certificate: leaf" row (no algorithm recorded yet)
+  //    counted, while "certificate-risk: No Certificate Pinning" is not.
+  if (name && namesCryptography(name)) return true
+  return false
 }
 
 /**

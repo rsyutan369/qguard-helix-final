@@ -27,6 +27,7 @@ import {
   GREEN,
   ORANGE,
   RED,
+  TruncationNote,
 } from '../_shared';
 
 const HEATMAP_DIMENSIONS = ['Overall Risk', 'Crypto Posture', 'Internet Exposure', 'Environment'] as const;
@@ -185,6 +186,13 @@ export default function RiskAnalysisPage() {
                 ))}
               </tbody>
             </table>
+            <TruncationNote
+              shown={heatmapRows.length}
+              total={snapshot.exposureGraph.nodes.length}
+              noun="assets in the exposure graph"
+              rank="highest-risk"
+              to="/dashboard/quantum-readiness/exposure-graph"
+            />
             <p className="mt-2 text-[10px] text-white/35">
               Cells score 0–100 per dimension. Overall = measured asset risk; Posture = quantum-vulnerable 90 / hybrid 50 /
               PQC-ready 10; Internet exposure and production environment from asset evidence. Hover a cell for its basis.

@@ -301,10 +301,43 @@ export default function HarvestNow() {
 
             <div className="flex flex-col items-stretch gap-2">
               <div className="flex items-center justify-end gap-2">
+                {/*
+                  "Live SSE" describes the CONNECTION, not the data. Without the
+                  measurement age beside it, a three-week-old assessment reads as
+                  a live picture of harvest exposure — which is precisely the
+                  judgement this page exists to inform.
+                */}
                 <span className="flex items-center gap-1.5 rounded border border-white/10 bg-black/30 px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/50">
                   <span className={`h-1.5 w-1.5 rounded-full ${sseConnected ? TONE_DOT.green : TONE_DOT.amber}`} />
                   {sseConnected ? 'Live SSE' : state === 'error' ? 'Reconnecting' : 'Syncing'}
                 </span>
+                {(() => {
+                  const measuredAt = data.lastScanAt || data.generatedAt;
+                  if (!measuredAt) {
+                    return (
+                      <span className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] text-white/35">
+                        No scan timestamp
+                      </span>
+                    );
+                  }
+                  const ageHours = Math.max(0, (Date.now() - new Date(measuredAt).getTime()) / 36e5);
+                  const stale = ageHours > 72;
+                  const label = ageHours < 1
+                    ? '< 1h old'
+                    : ageHours < 48
+                      ? `${Math.round(ageHours)}h old`
+                      : `${Math.round(ageHours / 24)}d old`;
+                  return (
+                    <span
+                      title={`Assessment measured ${new Date(measuredAt).toLocaleString()}`}
+                      className={`rounded border px-2 py-1 text-[8px] font-black uppercase tracking-[0.14em] ${
+                        stale ? 'border-amber-400/40 bg-amber-400/10 text-amber-200' : 'border-white/10 bg-black/30 text-white/50'
+                      }`}
+                    >
+                      {label}
+                    </span>
+                  );
+                })()}
                 <button type="button" onClick={refresh} aria-label="Refresh telemetry" className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-black/30 text-white/55 transition hover:border-cyan-400/40 hover:text-cyan-300">
                   <RefreshCw className={`h-3.5 w-3.5 ${state === 'loading' ? 'animate-spin' : ''}`} />
                 </button>
@@ -369,6 +402,11 @@ export default function HarvestNow() {
                   <div className="mt-2.5 border-t border-white/8 pt-2">
                     <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.14em] text-white/40">Top Exposure Nodes · click for detail</p>
                     <div className="flex flex-wrap gap-1.5">
+                      {data.exposureGraph.nodes.length > 12 ? (
+                        <div className="col-span-full text-[10px] text-white/35">
+                          Showing 12 of {data.exposureGraph.nodes.length} exposed assets.
+                        </div>
+                      ) : null}
                       {data.exposureGraph.nodes.slice(0, 12).map((n) => {
                         const tone = classTone(n.cryptoClass);
                         return (

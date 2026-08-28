@@ -382,6 +382,13 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
           `CBOM: ${total} cryptographic component(s), ${vulnerable} quantum-vulnerable` +
           (assetTotal > 0 ? ` — these are components discovered ACROSS the ${assetTotal} asset(s), not ${total} separate systems` : '') + '.',
         )
+        // The CBOM counts cryptography. Scanner findings live in the same table
+        // but are reported as findings, so state the difference rather than
+        // letting the smaller component total look like missing data.
+        const excluded = num(cbom.data.findingRowsExcluded)
+        if (excluded > 0) {
+          findings.push(`A further ${excluded} inventory row(s) are scanner findings rather than cryptographic components — they are counted in Risk Analysis and Vulnerabilities, not in the CBOM total.`)
+        }
       }
       if (vulnerable > 0) {
         risk = { level: riskFromScore((vulnerable / Math.max(1, total)) * 100), drivers: [`${vulnerable} quantum-vulnerable crypto component(s)`], score: clamp(Math.round((vulnerable / Math.max(1, total)) * 100)) }
@@ -1678,7 +1685,9 @@ export async function runCopilotQuery(
   if (!lastAssessmentAt) {
     let newest = 0
     for (const execution of executions) {
-      for (const item of execution.result.evidence || []) {
+      // A failed or denied tool has result === null — it contributed no
+      // evidence and must not crash the freshness scan.
+      for (const item of execution.result?.evidence || []) {
         const ms = item.observedAt ? new Date(item.observedAt).getTime() : 0
         if (Number.isFinite(ms) && ms > newest) newest = ms
       }

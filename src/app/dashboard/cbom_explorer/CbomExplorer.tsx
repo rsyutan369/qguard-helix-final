@@ -426,6 +426,19 @@ function ReadinessGauge({ score, hasScore = true }: { score: number; hasScore?: 
   );
 }
 
+/**
+ * Discloses that a panel shows only the head of a longer list. Renders nothing
+ * when the list fits, so a small estate stays clean.
+ */
+function TruncationNote({ shown, total, noun, rank }: { shown: number; total: number; noun: string; rank?: string }) {
+  if (!Number.isFinite(total) || total <= shown) return null;
+  return (
+    <div className="pt-1 text-[10px] text-[var(--qg-text-muted)]">
+      Showing {rank ? `the ${numberFmt(shown)} ${rank}` : numberFmt(shown)} of {numberFmt(total)} {noun}.
+    </div>
+  );
+}
+
 function EmptyState({ label }: { label: string }) {
   return (
     <div className="grid min-h-[120px] place-items-center rounded-md border border-dashed border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] px-4 text-center text-xs font-bold text-[var(--qg-text-muted)]">
@@ -827,7 +840,10 @@ function FocusedTabDashboard({
           <div className="space-y-3 xl:col-span-7">
             {history.length === 0 ? (
               <EmptyState label="No authenticated scan history is available yet." />
-            ) : history.slice(0, 8).map((scan: any) => (
+            ) : (
+              <TruncationNote shown={8} total={history.length} noun="recorded scans" rank="most recent" />
+            )}
+            {history.slice(0, 8).map((scan: any) => (
               <div key={scan.scanId || scan.id} className={`${subtlePanelClass} p-4`}>
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <div>
@@ -850,6 +866,7 @@ function FocusedTabDashboard({
                 <EmptyState label="No scan has recorded runtime telemetry yet." />
               ) : (
                 <div className="space-y-2">
+                  <TruncationNote shown={6} total={telemetry.length} noun="telemetry events" rank="most recent" />
                   {telemetry.slice(0, 6).map((event: any, index: number) => (
                     <div key={String(event.id || `${event.timestamp}-${index}`)} className="rounded border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] p-3 text-xs">
                       <div className="font-bold text-[var(--qg-dashboard-text)]">{String(event.message || event.event || event.type || 'Telemetry event')}</div>
@@ -1529,6 +1546,7 @@ export default function CbomExplorer() {
                 <EmptyState label="No authenticated scans have been recorded for this tenant yet." />
               ) : (
                 <div className="space-y-2">
+                  <TruncationNote shown={8} total={history.length} noun="recorded scans" rank="most recent" />
                   {history.slice(0, 8).map((scan: any) => (
                     <div key={scan.scanId || scan.id} className="grid gap-3 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-3 md:grid-cols-[1fr_auto_auto] md:items-center">
                       <div>

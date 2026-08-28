@@ -562,6 +562,11 @@ export default function ReportCenterPage() {
                           ))}
                         </tbody>
                       </table>
+                      {sr.matrix.length > 8 ? (
+                        <div className="pt-1.5 text-[10px] text-white/35">
+                          Showing the 8 highest-priority of {integerFmt(sr.matrix.length)} matrix rows — the full matrix is in the exported report.
+                        </div>
+                      ) : null}
                     </div>
                     <p className="mt-1.5 text-[10px] text-white/35">
                       One row per exposure, owner and asset. Repeated scanner detections of the same exposure are consolidated — the instance count
@@ -598,6 +603,11 @@ export default function ReportCenterPage() {
                         </span>
                       ))}
                     </div>
+                    {sr.providerBreakdown.length > 10 ? (
+                      <div className="pt-1.5 text-[10px] text-white/35">
+                        Showing the 10 highest-volume of {integerFmt(sr.providerBreakdown.length)} attributed providers.
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -753,6 +763,11 @@ export default function ReportCenterPage() {
                 </tr>
               </thead>
               <tbody>
+                {history.length > 20 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing the 20 most recent of {history.length} generated reports.
+                  </div>
+                ) : null}
                 {history.slice(0, 20).map((entry, index) => {
                   const meta = FORMAT_META[entry.format];
                   return (

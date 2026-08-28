@@ -639,6 +639,11 @@ export default function QuantumCertificationPage() {
             <SectionTitle>Certification Activity</SectionTitle>
             {data.history.length ? (
               <div className="space-y-2.5">
+                {data.history.length > 10 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing the 10 most recent of {data.history.length} certification history entries.
+                  </div>
+                ) : null}
                 {data.history.slice(0, 10).map((h) => (
                   <div key={h.id} className="flex items-start gap-2.5">
                     <span className="mt-1 h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: eventColor(h.event) }} />
@@ -663,6 +668,11 @@ export default function QuantumCertificationPage() {
             </SectionTitle>
             {data.notifications.length ? (
               <div className="space-y-2">
+                {data.notifications.length > 8 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing the 8 most recent of {data.notifications.length} notifications.
+                  </div>
+                ) : null}
                 {data.notifications.slice(0, 8).map((n) => (
                   <div key={n.id} className="rounded-md border border-white/6 bg-white/[0.015] px-3 py-2">
                     <div className="flex items-center justify-between gap-2">
@@ -686,7 +696,12 @@ export default function QuantumCertificationPage() {
               <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-white/45">Public Verification Activity</div>
               {data.verificationActivity.length ? (
                 <div className="space-y-1.5">
-                  {data.verificationActivity.slice(0, 5).map((v, i) => (
+                  {data.verificationActivity.length > 5 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing the 5 most recent of {data.verificationActivity.length} verification events.
+                  </div>
+                ) : null}
+                {data.verificationActivity.slice(0, 5).map((v, i) => (
                     <div key={i} className="flex items-center justify-between text-[11px]">
                       <span className="font-mono text-white/70">{v.certificateId}</span>
                       <span className="flex items-center gap-2">

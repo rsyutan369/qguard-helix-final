@@ -451,6 +451,11 @@ export function TheaterMap({ map, selected, onSelect }: TheaterMapProps) {
             <p className="truncate text-[10px] font-black text-cyan-200">{hoverSite.label}</p>
             <p className="text-[9px] font-bold text-white/60">{hoverSite.assets} asset(s) · {hoverSite.vulnerableAssets} vulnerable</p>
             <p className="text-[9px] font-bold text-white/45">Avg risk {hoverSite.avgRisk} · {hoverSite.severity}</p>
+            {(hoverSite.topAssets ?? []).length > 3 ? (
+              <div className="text-[9px] text-white/35">
+                +{(hoverSite.topAssets ?? []).length - 3} more asset(s) at this site
+              </div>
+            ) : null}
             {(hoverSite.topAssets ?? []).slice(0, 3).map((a) => (
               <p key={a.name} className="truncate text-[8px] font-semibold text-white/50">• {a.name} ({a.riskScore})</p>
             ))}

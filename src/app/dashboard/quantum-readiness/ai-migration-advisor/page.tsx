@@ -409,6 +409,11 @@ export default function AiMigrationAdvisorPage() {
               </p>
               {model.playbookDetail.length ? (
                 <div className="space-y-2.5">
+                  {model.playbookDetail.length > 5 ? (
+                    <div className="text-[10px] text-white/35">
+                      Showing the 5 highest-priority of {model.playbookDetail.length} algorithm targets.
+                    </div>
+                  ) : null}
                   {model.playbookDetail.slice(0, 5).map((playbook) => (
                     <div key={playbook.finding} className="rounded-md border border-white/8 bg-white/[0.025] p-3">
                       <div className="text-[10px] font-bold uppercase tracking-wide text-white/40">{playbook.finding}</div>
@@ -435,6 +440,11 @@ export default function AiMigrationAdvisorPage() {
               </p>
               {model.playbookDetail.length ? (
                 <div className="space-y-3">
+                  {model.playbookDetail.length > 4 ? (
+                    <div className="text-[10px] text-white/35">
+                      Showing the 4 highest-priority of {model.playbookDetail.length} rollback runbooks.
+                    </div>
+                  ) : null}
                   {model.playbookDetail.slice(0, 4).map((playbook, index) => (
                     <div key={playbook.finding} className="rounded-md border border-white/8 bg-black/20 p-3.5">
                       <div className="flex items-start gap-3">

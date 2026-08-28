@@ -188,7 +188,27 @@ function matrixSeedsFor(finding: OwnershipFinding): MatrixSeed[] {
   const rawAsset = finding.asset || 'Unknown asset'
   const assetKey = canonicalAssetLabel(rawAsset)
   const asset = assetDisplayLabel(rawAsset) || rawAsset
-  const base = { occurrences: 1, detectionLabels: [rawAsset], severity: finding.severity, asset }
+  /*
+   * Provider attribution and freshness ride on every matrix row so the table
+   * can be filtered by company and reconciled against the Provider & Ecosystem
+   * Readiness panel WITHOUT a second derivation — two derivations of the same
+   * fact is how two panels start disagreeing about one estate.
+   *
+   * `providerAttributed: false` is preserved rather than smoothed away: an
+   * unattributed row must stay visibly unattributed, never filed under a
+   * guessed vendor.
+   */
+  const base = {
+    occurrences: 1,
+    detectionLabels: [rawAsset],
+    severity: finding.severity,
+    asset,
+    assetKey,
+    providerId: finding.attribution.attributed ? finding.attribution.providerId : null,
+    providerName: finding.attribution.attributed ? finding.attribution.providerName : 'Unattributed',
+    providerAttributed: finding.attribution.attributed,
+    observedAt: finding.observedAt,
+  }
 
   if (finding.edgeOrigin && finding.edgeOrigin.isProviderFronted && finding.edgeOrigin.edge && finding.edgeOrigin.origin) {
     const edge = finding.edgeOrigin.edge
@@ -293,6 +313,17 @@ function mergeSeed(target: MatrixSeed, seed: MatrixSeed): void {
   }
   if (target.migrationDependencyStatus !== 'ready' && seed.migrationDependencyStatus === 'ready') {
     target.migrationDependencyStatus = 'ready'
+  }
+  // Freshness: the group is as fresh as its NEWEST observation.
+  if (seed.observedAt && (!target.observedAt || Date.parse(seed.observedAt) > Date.parse(target.observedAt))) {
+    target.observedAt = seed.observedAt
+  }
+  // Attribution: an attributed instance upgrades an unattributed group, but an
+  // unattributed instance never downgrades an attributed one.
+  if (!target.providerAttributed && seed.providerAttributed) {
+    target.providerAttributed = true
+    target.providerId = seed.providerId
+    target.providerName = seed.providerName
   }
 }
 

@@ -239,6 +239,12 @@ export interface OwnershipFinding {
   asset: string
   assetType: string
   algorithm: string
+  /**
+   * When the underlying evidence was observed. Carried through from the scan
+   * record so every surface can state the age of what it is showing rather
+   * than presenting an assessment of unknown vintage as current.
+   */
+  observedAt: string | null
 }
 
 /**
@@ -304,6 +310,21 @@ export interface SharedResponsibilityMatrixRow {
   detectionLabels: string[]
   /** Highest severity observed across the consolidated instances. */
   severity: FindingSeverityLevel
+  /**
+   * Attributed company / technology, carried from the finding's provider
+   * attribution so the matrix can be filtered and reconciled against the
+   * Provider & Ecosystem Readiness table without a second derivation.
+   * `providerId` is null when no evidence attributed the row — that row is
+   * genuinely unattributed and must not be filed under a guessed vendor.
+   */
+  providerId: string | null
+  providerName: string
+  /** True only when evidence actually matched a provider. */
+  providerAttributed: boolean
+  /** Canonical asset key used for grouping — stable across display casing. */
+  assetKey: string
+  /** Newest observation across the consolidated instances. */
+  observedAt: string | null
 }
 
 export interface DomainReadiness {

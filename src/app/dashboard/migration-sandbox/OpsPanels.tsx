@@ -260,7 +260,7 @@ export function SimulationBuilderTab({ simulationTypes, pipeline, pendingAction,
               Select All Filtered ({Math.min(25, filtered.length)})
             </button>
             <button type="button" onClick={selectVulnerable} className="rounded-lg border border-red-500/25 bg-red-500/8 px-2.5 py-2 text-[10px] font-bold text-red-300 transition hover:bg-red-500/15">
-              Select Vulnerable
+              Select Vulnerable ({Math.min(25, assets.filter((a) => a.vulnerableItems > 0 || a.criticalExposures > 0).length)})
             </button>
             <button type="button" onClick={() => setSelected(new Set())} className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-[10px] font-bold text-white/50 transition hover:bg-white/8">
               Clear

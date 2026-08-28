@@ -40,6 +40,7 @@ import {
   GREEN,
   ORANGE,
   RED,
+  TruncationNote,
 } from '../_shared';
 
 export default function ExecutiveDashboardPage() {
@@ -201,6 +202,13 @@ export default function ExecutiveDashboardPage() {
                   </button>
                 );
               })}
+              <TruncationNote
+                shown={executiveActions.length}
+                total={snapshot.recommendedActions.length}
+                noun="recommended actions"
+                rank="highest-priority"
+                to="/dashboard/quantum-readiness/remediation"
+              />
             </div>
           ) : (
             <EmptyState label="No outstanding actions." />

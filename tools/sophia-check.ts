@@ -28,6 +28,7 @@ import {
   extractAssetFilter,
   detectAlgorithmFamilies,
   detectEntityKind,
+  involvesAlgorithmFamily,
 } from '../src/api-server/copilot-knowledge'
 import { TOOL_REGISTRY, runTool, type CopilotBuilders, type ToolContext } from '../src/api-server/copilot-tools'
 
@@ -39,6 +40,8 @@ async function callTool(name: string, c: ToolContext, args: Record<string, unkno
 import { planQuery, runCopilotQuery } from '../src/api-server/copilot-engine'
 import { EMPTY_MEMORY } from '../src/types/copilot'
 import type { ExposureIntelligence } from '../src/types/exposure-graph'
+
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 
 let failures = 0
 function assert(cond: boolean, label: string, extra = '') {
@@ -91,6 +94,28 @@ function buildInventory(): Record<string, unknown>[] {
   push('a-api', 'AES-256-GCM', 'Symmetric Encryption', false, 8)
   return rows
 }
+
+/**
+ * The shapes a REAL TLS/certificate scan writes, which the fixture above (all
+ * tidy "RSA-2048" strings) never exercised. `sha256WithRSAEncryption` is the
+ * standard X.509 signature name and is how RSA overwhelmingly appears in
+ * practice; the canonical single-family classifier reads it as `unknown`, so
+ * a live estate full of RSA certificates reported ZERO RSA components.
+ *
+ * The `certificate-risk:` rows are scanner FINDINGS. The scan writer stores
+ * `algorithm: finding.algorithm` for every rule it fires, so policy findings
+ * share this table — they must never be counted as cryptographic components
+ * nor published as observed algorithms.
+ */
+const REAL_WORLD_ROWS: Record<string, unknown>[] = [
+  { id: 'rw-1', user_id: USER_ID, asset_id: 'a-web', name: 'Certificate Signature: sha256WithRSAEncryption', item_type: 'certificate-signature', algorithm: 'sha256WithRSAEncryption', protocol: 'TLS 1.3', is_vulnerable: true, is_quantum_safe: false, created_at: NOW, updated_at: NOW },
+  { id: 'rw-2', user_id: USER_ID, asset_id: 'a-api', name: 'Cipher Suite: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256', item_type: 'cipher-suite', algorithm: 'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256', protocol: 'TLS 1.2', is_vulnerable: true, is_quantum_safe: false, created_at: NOW, updated_at: NOW },
+  { id: 'rw-3', user_id: USER_ID, asset_id: 'a-web', name: 'Key Exchange: X25519MLKEM768', item_type: 'key-exchange', algorithm: 'X25519MLKEM768', protocol: 'TLS 1.3', is_vulnerable: false, is_quantum_safe: true, created_at: NOW, updated_at: NOW },
+  // Scanner findings — NOT cryptography.
+  { id: 'rw-4', user_id: USER_ID, asset_id: 'a-web', name: 'certificate-risk: No Certificate Pinning', item_type: 'finding', algorithm: 'No Certificate Pinning', protocol: '', is_vulnerable: true, is_quantum_safe: false, created_at: NOW, updated_at: NOW },
+  { id: 'rw-5', user_id: USER_ID, asset_id: 'a-api', name: 'compliance-risk: Regulatory Compliance Gap', item_type: 'finding', algorithm: 'Regulatory Compliance Gap', protocol: '', is_vulnerable: true, is_quantum_safe: false, created_at: NOW, updated_at: NOW },
+  { id: 'rw-6', user_id: USER_ID, asset_id: 'a-api', name: 'transport-risk: No OCSP Stapling', item_type: 'finding', algorithm: 'No OCSP Stapling', protocol: '', is_vulnerable: true, is_quantum_safe: false, created_at: NOW, updated_at: NOW },
+]
 const GT_INVENTORY = buildInventory()
 const GT_TOTAL_COMPONENTS = GT_INVENTORY.length            // 178
 const GT_VULNERABLE = GT_INVENTORY.filter((r) => r.is_vulnerable === true).length // 160
@@ -106,10 +131,11 @@ console.log(`\nGROUND TRUTH — ${GT_ASSETS.length} assets · ${GT_TOTAL_COMPONE
 /* Mock client serving exactly that ground truth                       */
 /* ------------------------------------------------------------------ */
 
+let INCLUDE_REAL_WORLD = false
 function rowsFor(table: string): Record<string, unknown>[] {
   switch (table) {
     case 'assets': return GT_ASSETS.map((a) => ({ ...a, user_id: USER_ID, created_at: NOW, updated_at: NOW }))
-    case 'crypto_inventory': return GT_INVENTORY
+    case 'crypto_inventory': return INCLUDE_REAL_WORLD ? [...GT_INVENTORY, ...REAL_WORLD_ROWS] : GT_INVENTORY
     case 'certificates': return GT_CERTS
     default: return []
   }
@@ -306,7 +332,91 @@ async function main() {
     `${staleOutcome.answer.confidence.score} vs ${outcome.answer.confidence.score}`,
   )
 
-  console.log('\n[13] Tenant isolation holds on the new tool')
+  console.log('\n[13] Real-world algorithm spellings are matched (the "0 components" bug)')
+  assert(involvesAlgorithmFamily('sha256WithRSAEncryption', 'rsa'), 'sha256WithRSAEncryption IS RSA — the standard X.509 signature name')
+  assert(involvesAlgorithmFamily('rsaEncryption', 'rsa'), 'rsaEncryption IS RSA')
+  assert(involvesAlgorithmFamily('RSASSA-PSS', 'rsa'), 'RSASSA-PSS IS RSA')
+  assert(involvesAlgorithmFamily('TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256', 'rsa'), 'an ECDHE_RSA suite involves RSA authentication')
+  assert(involvesAlgorithmFamily('TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256', 'ecdh'), '…and ECDH key agreement — a suite involves MORE than one family')
+  assert(involvesAlgorithmFamily('X25519MLKEM768', 'hybrid'), 'X25519MLKEM768 is a hybrid')
+  assert(!involvesAlgorithmFamily('ECDSA-P256', 'dsa'), 'ECDSA is still not classical DSA')
+  assert(!involvesAlgorithmFamily('ML-DSA-65', 'dsa'), 'ML-DSA is still not classical DSA')
+  assert(!involvesAlgorithmFamily('3DES-EDE-CBC', 'des'), '3DES is still not DES')
+  assert(!involvesAlgorithmFamily('OpenSSL 3.0', 'rsa'), 'a library name is not an algorithm match')
+  assert(!involvesAlgorithmFamily('No Certificate Pinning', 'rsa'), 'a finding title matches no algorithm')
+
+  INCLUDE_REAL_WORLD = true
+  const rwCtx: ToolContext = { ...ctx, client: makeClient() }
+  const rwRsa = await callTool('findAssetsUsingAlgorithm', rwCtx, { algorithms: ['rsa'] }, builders)
+  assert(
+    num(rwRsa.data.components) === 104,
+    'RSA now includes sha256WithRSAEncryption and the ECDHE_RSA suite',
+    `${num(rwRsa.data.components)} (was 102 before the real-world rows)`,
+  )
+  assert(num(rwRsa.data.policyRowsSkipped) === 3, 'the 3 scanner-finding rows are excluded from the component count', `${num(rwRsa.data.policyRowsSkipped)} skipped`)
+
+  const rwHybrid = await callTool('findAssetsUsingAlgorithm', rwCtx, { algorithms: ['hybrid'] }, builders)
+  assert(num(rwHybrid.data.components) === 1, 'X25519MLKEM768 is found as a hybrid, not lost as unknown', `${num(rwHybrid.data.components)}`)
+
+  console.log('\n[14] Scanner findings are never published as observed algorithms')
+  const algos = await callTool('getAlgorithms', rwCtx, {}, builders)
+  const observed = (algos.data.algorithms as Array<{ algorithm: string }>).map((a) => a.algorithm)
+  assert(num(algos.data.policyRowsExcluded) === 3, 'finding rows are excluded and counted', `${num(algos.data.policyRowsExcluded)}`)
+  assert(!observed.some((a) => /CERTIFICATE PINNING|COMPLIANCE GAP|OCSP STAPLING/i.test(a)), 'no finding title appears as an algorithm', observed.slice(0, 5).join(', '))
+  assert(observed.some((a) => /RSA/i.test(a)), 'real algorithms still appear')
+  INCLUDE_REAL_WORLD = false
+
+  console.log('\n[15] A broken query is an ERROR, never a silent zero')
+  /*
+   * The defect this guards: findAssetsUsingAlgorithm selected an `updated_at`
+   * column that crypto_inventory does not have (it has discovered_at).
+   * PostgREST answered 42703, tenantRows swallowed it with `if (error)
+   * return []`, and Sophia reported "RSA: 0 cryptographic component(s)" on an
+   * estate whose CBOM was full of TLS_RSA cipher suites. A silent empty is
+   * indistinguishable from a true zero — the worst failure mode for a tool
+   * whose job is reporting what the tenant actually has.
+   */
+  const failingClient = (code: string, message: string) => ({
+    from: () => {
+      const q: Record<string, unknown> = {}
+      const chain = () => q
+      const settle = () => Promise.resolve({ data: null, error: { code, message }, count: null })
+      q.select = () => q; q.eq = () => q; q.or = chain; q.in = chain; q.is = chain
+      q.neq = chain; q.order = chain; q.gte = chain; q.lte = chain
+      q.limit = () => settle()
+      q.maybeSingle = () => settle()
+      q.single = () => settle()
+      q.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => settle().then(res, rej)
+      return q
+    },
+  })
+
+  // 42703 = undefined_column. A BUG — it must surface, not read as zero.
+  const badColumnCtx: ToolContext = { ...ctx, client: failingClient('42703', 'column crypto_inventory.updated_at does not exist') }
+  const badColumnRun = await runTool('findAssetsUsingAlgorithm', badColumnCtx, { algorithms: ['rsa'] }, builders)
+  assert(badColumnRun.run.status === 'error', 'an undefined-column error reports status=error', badColumnRun.run.status)
+  assert(!/^ok$/.test(badColumnRun.run.status), 'it does NOT report a successful zero')
+  assert(/does not exist|query failed/i.test(String(badColumnRun.run.note || '')), 'the note names the real failure', String(badColumnRun.run.note || '').slice(0, 90))
+
+  // 42P01 = undefined_table. An optional subsystem — honest empty is correct.
+  const missingTableCtx: ToolContext = { ...ctx, client: failingClient('42P01', 'relation "public.crypto_inventory" does not exist') }
+  const missingTableRun = await runTool('findAssetsUsingAlgorithm', missingTableCtx, { algorithms: ['rsa'] }, builders)
+  assert(missingTableRun.run.status !== 'error', 'a MISSING TABLE still degrades to an honest empty, not an error', missingTableRun.run.status)
+
+  // And the failure must reach the user's answer rather than being hidden.
+  const brokenOutcome = await runCopilotQuery(badColumnCtx, Q, { ...EMPTY_MEMORY }, () => {}, builders)
+  const brokenText = answerText(brokenOutcome.answer)
+  assert(
+    !/RSA: 0 cryptographic component/i.test(brokenText),
+    'a failed query never produces the sentence "RSA: 0 cryptographic component(s)"',
+    brokenText.slice(0, 80),
+  )
+  assert(
+    brokenOutcome.answer.toolRuns.some((r) => r.status === 'error'),
+    'the answer carries the failed source so the user can see coverage was incomplete',
+  )
+
+  console.log('\n[16] Tenant isolation holds on the new tool')
   const recorder: Array<{ table: string; eqs: Array<[string, unknown]> }> = []
   const scopedCtx: ToolContext = { ...ctx, client: makeClient(recorder) }
   await callTool('findAssetsUsingAlgorithm', scopedCtx, { algorithms: ['rsa'] }, builders)

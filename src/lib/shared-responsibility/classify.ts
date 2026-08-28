@@ -462,5 +462,9 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
     asset: input.assetName || input.location || input.host || 'Unknown asset',
     assetType: input.assetType || 'asset',
     algorithm: input.algorithm || '',
+    // Freshness travels with the finding. It was previously accepted on the
+    // input and then dropped here, so no consumer could state how old the
+    // evidence behind an ownership verdict actually was.
+    observedAt: input.observedAt || null,
   }
 }

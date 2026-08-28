@@ -54,6 +54,7 @@ import {
   EMERALD,
   AMBER,
   GOLD,
+  TruncationNote,
 } from './_shared';
 
 const MODULES = [
@@ -179,6 +180,13 @@ export default function QuantumReadinessLandingPage() {
                   </button>
                 );
               })}
+              <TruncationNote
+                shown={3}
+                total={snapshot.recommendedActions.length}
+                noun="recommendations"
+                rank="highest-priority"
+                to="/dashboard/quantum-readiness/ai-executive-advisor"
+              />
             </div>
           ) : (
             <EmptyState label="No recommendations yet." hint="Run an assessment to generate AI guidance." />
@@ -203,6 +211,13 @@ export default function QuantumReadinessLandingPage() {
                   <div className="mt-0.5 truncate text-[10px] text-white/45">{finding.asset}</div>
                 </div>
               ))}
+              <TruncationNote
+                shown={4}
+                total={snapshot.criticalFindings.length}
+                noun="critical findings"
+                rank="highest-severity"
+                to="/dashboard/quantum-readiness/risk-analysis"
+              />
             </div>
           ) : (
             <EmptyState label="No critical risks detected." />

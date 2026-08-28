@@ -530,6 +530,11 @@ export default function AiExecutiveAdvisorPage() {
               <Panel className="p-5">
                 <SectionTitle suffix={<Landmark className="h-4 w-4 text-white/40" />}>Risk Acceptance Positions</SectionTitle>
                 <div className="space-y-2">
+                  {m.riskAcceptance.length > 4 ? (
+                    <div className="text-[10px] text-white/35">
+                      Showing the 4 highest-exposure of {m.riskAcceptance.length} risk-acceptance positions.
+                    </div>
+                  ) : null}
                   {m.riskAcceptance.slice(0, 4).map((item) => (
                     <div key={item.risk} className="rounded border border-white/8 bg-black/20 px-2.5 py-2 text-[11px]">
                       <div className="flex items-center justify-between gap-2">

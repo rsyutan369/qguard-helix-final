@@ -387,7 +387,7 @@ export default function QuantumRemediationPage() {
                       {req.relatedAssets.length ? (
                         <div className="truncate pt-0.5 text-[10px] text-white/40">
                           Related: {req.relatedAssets.slice(0, 6).join(', ')}
-                          {req.relatedAssets.length > 6 ? '…' : ''}
+                          {req.relatedAssets.length > 6 ? ` +${req.relatedAssets.length - 6} more` : ''}
                         </div>
                       ) : null}
                     </div>
@@ -531,6 +531,11 @@ export default function QuantumRemediationPage() {
                                       {finding.instances > 1 ? <span className="text-white/40">{finding.instances}×</span> : null}
                                     </div>
                                   ))}
+                                  {action.findings.length > 6 ? (
+                                    <div className="text-white/35">
+                                      Showing the 6 highest-severity of {action.findings.length} evidence records.
+                                    </div>
+                                  ) : null}
                                 </div>
                               </div>
                             ) : null}
@@ -685,6 +690,11 @@ export default function QuantumRemediationPage() {
                     </div>
                   </div>
                 ))}
+                {plan.progress.recentlyFixed.length > 5 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing the 5 most recent of {plan.progress.recentlyFixed.length} completed items.
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="text-[11px] text-white/40">No completed migration jobs recorded yet.</p>
@@ -699,6 +709,11 @@ export default function QuantumRemediationPage() {
                     <span className="shrink-0 font-mono text-white/40">{task.effortWeeks} wk</span>
                   </div>
                 ))}
+                {plan.progress.upcomingTasks.length > 5 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing the 5 highest-priority of {plan.progress.upcomingTasks.length} upcoming tasks.
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="text-[11px] text-white/40">Queue is clear.</p>

@@ -1,11 +1,11 @@
 {
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2hGSkxobFo1Rkl2RG0vZVhlcFBMWkgwSU5CdEc5QnlPYW9vK2N6blVHRCtZVCtHL2V3dDRGa25GVUZQMmY0ZXZiYllLZnNYeld0RU1sUjJRd3U1ckFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3NzQ1NzE5CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjMuMl94NjQtc2V0dXAuZXhlClFPUnJRUHNOd1RKV1pZTWxBSi91bnZwNXUxY3lwV0luYlA4UmFubnMzMFNnSEJvRkl3VEZQSUpZUXRnc0pRY1hnc2Y4L1F5dGFQcjdNa09jRm9RSkF3PT0K",
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2o3WVMxdXdtQWlSaWZ0dGsrRTNSaDlyNXlPS1h3TnZlNklxTUcvbldNMkJjSTZyOFFyaVZtOFRjR2dDeXVuVUlTeHFHUDBhTVpxWUdJdEd4cGtkaXdVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODg2NTA2CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjMuNl94NjQtc2V0dXAuZXhlCmgzVGRuVHgxMllnT1owTXVVUHJGMllHWUsrdWhTc0tSNTZDUnZFZ0N6K0Jac2pRSGFGUkVRdXhzbGgzb2lqbm1ZeWNEZkYraE1jaUpVaERWbFc0N0RnPT0K",
                                              "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
                                          }
                   },
-    "pub_date":  "2026-08-26T12:02:03Z",
-    "version":  "1.3.2",
-    "notes":  "The post-quantum key exchange is now genuinely ML-KEM-1024 (FIPS 203). Earlier releases performed Kyber-1024, the NIST round-3 candidate ML-KEM was standardised from, while describing it as ML-KEM-1024 - the two are different algorithms and do not interoperate. The stated algorithm and the performed algorithm now match, and the key exchange no longer accepts a weaker parameter set. Video call frames are now protected against tampering as well as against reading. Each device generates fresh keys on first launch and registers as a new device; messages sent before this release cannot be opened afterwards, and no Vault file is affected."
+    "pub_date":  "2026-08-28T03:08:29Z",
+    "version":  "1.3.6",
+    "notes":  "Fixes Secure Chat send failure after a device re-key: conversation membership is now rebound to the replacement device."
 }

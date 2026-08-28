@@ -902,6 +902,11 @@ function ApprovalGateBanner({ gate, pendingAction, onDecision, onExport, exportP
         <div className="mt-4 border-t border-white/8 pt-3">
           <div className="mb-2 text-[9px] font-bold uppercase tracking-wider text-white/30">Decision Log ({gate.counts.approved} approved · {gate.counts.rejected} rejected · {gate.counts.reviewRequested} review)</div>
           <div className="flex flex-wrap gap-2">
+            {gate.decisions.length > 6 ? (
+              <div className="w-full text-[10px] text-white/35">
+                Showing the 6 most recent of {gate.decisions.length} decisions.
+              </div>
+            ) : null}
             {gate.decisions.slice(0, 6).map((decision) => (
               <div key={`${decision.jobId}-${decision.decidedAt}`} className="rounded-lg border border-white/8 bg-black/20 px-3 py-1.5 text-[10px] font-semibold text-white/50">
                 <span className={cn('font-black uppercase', decision.decision === 'approve' ? 'text-emerald-300' : decision.decision === 'reject' ? 'text-red-300' : 'text-sky-300')}>{decision.decision.replace(/_/g, ' ')}</span>
@@ -1242,6 +1247,11 @@ function SimulationDetailsModal({
                 <EmptyBlock label="No recovery snapshots captured yet." />
               ) : (
                 <div className="space-y-2">
+                  {snapshots.length > 6 ? (
+                    <div className="text-[10px] text-white/35">
+                      Showing the 6 most recent of {snapshots.length} recovery snapshots.
+                    </div>
+                  ) : null}
                   {snapshots.slice().reverse().slice(0, 6).map((snap, index) => {
                     const simulationState = objectRecord(snap.simulationState)
                     const riskState = objectRecord(snap.riskState)
@@ -1903,7 +1913,7 @@ export default function MigrationSandbox() {
                 {plannerHandoffSimulations.length === 0 ? (
                   <EmptyBlock label="Waiting for sandbox simulation jobs from this migration plan handoff." />
                 ) : (
-                  plannerHandoffSimulations.slice(0, 5).map((sim) => {
+                  plannerHandoffSimulations.slice(0, 5).map((sim, handoffIndex) => {
                     const colors = statusColor(sim.status)
                     return (
                       <div key={sim.id} className="rounded-xl border border-white/8 bg-white/[0.025] px-4 py-3">
@@ -1928,6 +1938,11 @@ export default function MigrationSandbox() {
                     View all {plannerHandoffSimulations.length} handoff simulations
                   </button>
                 )}
+                {plannerHandoffSimulations.length > 5 ? (
+                  <div className="text-[10px] text-white/35">
+                    Showing 5 of {plannerHandoffSimulations.length} handed-off simulations.
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -2076,7 +2091,12 @@ export default function MigrationSandbox() {
                     <p className="mb-3 text-[11px] leading-relaxed text-white/55">{data.sophia.executiveSummary}</p>
                     {data.sophia.priorityActions.length > 0 && (
                       <div className="space-y-2">
-                        {data.sophia.priorityActions.slice(0, 4).map((action, index) => (
+                        {data.sophia.priorityActions.length > 4 ? (
+                      <div className="text-[10px] text-white/35">
+                        Showing the 4 highest-priority of {data.sophia.priorityActions.length} recommended actions.
+                      </div>
+                    ) : null}
+                    {data.sophia.priorityActions.slice(0, 4).map((action, index) => (
                           <div key={action} className="flex items-start gap-2 rounded-lg border border-white/6 bg-white/[0.015] p-2.5">
                             <div className={cn('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-black',
                               index === 0 ? 'bg-red-500/20 text-red-300' : index === 1 ? 'bg-amber-500/20 text-amber-300' : 'bg-sky-500/20 text-sky-300')}>

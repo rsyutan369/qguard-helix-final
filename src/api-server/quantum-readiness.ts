@@ -15,6 +15,8 @@ import {
   levelFromRisk,
   severityWeight,
 } from '@/lib/migration/asset-intelligence'
+import { isCryptographicComponent } from '@/lib/scanner/finding-identity'
+import { algorithmFamily } from '@/lib/governance/subjects'
 
 // The per-asset risk/posture derivation, algorithm classification and internet
 // exposure heuristic live in the shared migration intelligence engine so the
@@ -256,8 +258,20 @@ async function computeSnapshot(token: string, userId: string) {
     else if (klass === 'hybrid') hybrid += 1
   }
 
-  if (cryptoInventory.length) {
-    for (const item of cryptoInventory) {
+  /*
+   * A CBOM component is CRYPTOGRAPHY. `crypto_inventory` also holds scanner
+   * FINDINGS, because the scan writer stores `algorithm: finding.algorithm`
+   * for every rule it fires — so "No Certificate Pinning" and "Regulatory
+   * Compliance Gap" arrive as rows flagged is_vulnerable:true and inflated
+   * BOTH sides of the quantum-vulnerable ratio that drives this score. The
+   * findings are not lost: the same records live in pqc_scan_results and
+   * crypto_exposures, which is what Risk Analysis and Vulnerabilities read.
+   */
+  const cryptoComponentRows = cryptoInventory.filter((row) => isCryptographicComponent(row, algorithmFamily))
+  const findingRowsExcluded = cryptoInventory.length - cryptoComponentRows.length
+
+  if (cryptoComponentRows.length) {
+    for (const item of cryptoComponentRows) {
       if (item.is_quantum_safe === true) tally('pqc')
       else if (item.is_vulnerable === true) tally('vulnerable')
       else tally(classifyAlgorithm(str(item.algorithm)))
@@ -289,19 +303,37 @@ async function computeSnapshot(token: string, userId: string) {
   // estates past the row caps), adopt its exact posture counts — headline CBOM
   // numbers and the vulnerable/PQC shares must reflect the full tenant universe.
   const intelTotal = intelHasData && intelSummary ? num(intelSummary.totalComponents) : 0
-  const cbomExactDominates = inventoryCount !== null && inventoryCount > Math.max(intelTotal, cryptoInventory.length, vulnerable + pqcReady + hybrid)
+
+  /*
+   * The exact head-counts (`inventoryCount` and friends) are SQL counts over
+   * every crypto_inventory row, so they include the finding rows the JS
+   * classifier just excluded. Applying them raw would reinstate the inflated
+   * total the moment a tenant grew past the detail-row cap.
+   *
+   * The measured crypto share of the fetched page is therefore carried onto
+   * the exact counts. When the page is not truncated — every tenant inside the
+   * 2,500-row cap — that share is computed over the WHOLE table, so the result
+   * is exact, not an estimate. `cbomTruncated` marks the case where it is not.
+   */
+  const cryptoShare = cryptoInventory.length > 0 ? cryptoComponentRows.length / cryptoInventory.length : 1
+  const cbomTruncated = inventoryCount !== null && inventoryCount > cryptoInventory.length
+  const exactCryptoTotal = inventoryCount === null ? null : Math.round(inventoryCount * cryptoShare)
+  const exactVulnerable = inventoryVulnerableCount === null ? null : Math.round(inventoryVulnerableCount * cryptoShare)
+  const exactPqc = inventoryPqcCount === null ? null : Math.round(inventoryPqcCount * cryptoShare)
+
+  const cbomExactDominates = exactCryptoTotal !== null && exactCryptoTotal > Math.max(intelTotal, cryptoComponentRows.length, vulnerable + pqcReady + hybrid)
   if (cbomExactDominates) {
-    vulnerable = Math.max(vulnerable, inventoryVulnerableCount ?? 0)
-    pqcReady = Math.max(pqcReady, inventoryPqcCount ?? 0)
+    vulnerable = Math.max(vulnerable, exactVulnerable ?? 0)
+    pqcReady = Math.max(pqcReady, exactPqc ?? 0)
     hybrid = 0
   }
 
   const totalCrypto = cbomExactDominates
-    ? Math.max(1, inventoryCount ?? 1)
+    ? Math.max(1, exactCryptoTotal ?? 1)
     : intelHasData && intelSummary ? Math.max(1, intelTotal) : vulnerable + pqcReady + hybrid
   const cryptoComponents = cbomExactDominates
-    ? (inventoryCount ?? 0)
-    : intelHasData && intelSummary ? intelTotal : (cryptoInventory.length || totalCrypto)
+    ? (exactCryptoTotal ?? 0)
+    : intelHasData && intelSummary ? intelTotal : (cryptoComponentRows.length || totalCrypto)
   const vulnerableComponents = vulnerable
   const pqcReadyComponents = pqcReady + hybrid
 
@@ -704,6 +736,16 @@ async function computeSnapshot(token: string, userId: string) {
       quantumVulnerableAssets,
       cryptoComponents,
       vulnerableComponents,
+      /**
+       * Provenance for the component total, so any surface can explain why it
+       * differs from the raw crypto_inventory row count: findings live in the
+       * same table and are counted in pqc_scan_results / crypto_exposures
+       * instead. `cbomTruncated` is true only past the detail-row cap, where
+       * the crypto share is carried onto the exact head-count.
+       */
+      cryptoInventoryRows: cryptoInventory.length,
+      findingRowsExcluded,
+      cbomTruncated,
       pqcReadyComponents,
     },
     riskDistribution: { critical, high, medium, low },

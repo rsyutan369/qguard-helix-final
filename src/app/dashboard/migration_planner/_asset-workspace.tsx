@@ -592,6 +592,11 @@ export function AssetPortfolioOverview({
         </SectionTitle>
         {recommendedOrder.length ? (
           <div className="space-y-2">
+            {recommendedOrder.length > 12 ? (
+              <div className="text-[10px] text-white/35">
+                Showing the top 12 of {recommendedOrder.length} ranked assets.
+              </div>
+            ) : null}
             {recommendedOrder.slice(0, 12).map((row) => (
               <div key={row.assetId} className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.025] p-3 transition hover:border-cyan-400/35">
                 <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-cyan-400/12 text-[11px] font-black text-cyan-200">{row.rank}</span>

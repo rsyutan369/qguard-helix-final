@@ -267,6 +267,11 @@ export default function PkiVisibility() {
                 <PanelEmpty>No certificate algorithm recorded.</PanelEmpty>
               ) : (
                 <div className="space-y-1">
+                  {data.algorithmDistribution.length > 8 ? (
+                    <div className="pb-1 text-[10px] text-white/35">
+                      Showing the 8 most common of {fmtNumber(data.algorithmDistribution.length)} certificate algorithms.
+                    </div>
+                  ) : null}
                   {data.algorithmDistribution.slice(0, 8).map((row) => (
                     <BarRow
                       key={row.label}
@@ -335,6 +340,11 @@ export default function PkiVisibility() {
                   </tbody>
                 </TableShell>
               )}
+              {data.issuers.length > 8 ? (
+                <div className="mt-2 text-[10px] text-white/35">
+                  Showing the 8 highest-volume of {fmtNumber(data.issuers.length)} issuers — use the issuer filter to reach the rest.
+                </div>
+              ) : null}
             </Panel>
           </div>
 
@@ -354,6 +364,11 @@ export default function PkiVisibility() {
                 {data.trustChains.slice(0, 8).map((node) => (
                   <TrustChainCard key={node.id} node={node} onOpenCertificate={openCertificate} />
                 ))}
+                {data.trustChains.length > 8 ? (
+                  <div className="text-[10px] text-white/35 lg:col-span-2">
+                    Showing 8 of {fmtNumber(data.trustChains.length)} discovered trust chains.
+                  </div>
+                ) : null}
               </div>
             )}
           </Panel>
@@ -411,7 +426,10 @@ export default function PkiVisibility() {
                   setIssuer(value);
                   setOffset(0);
                 }}
-                options={[{ value: 'all', label: 'All issuers' }, ...data.issuers.slice(0, 20).map((row) => ({ value: row.issuer, label: row.issuer }))]}
+                /* Every issuer is selectable. Capping this list at 20 made
+                   issuers outside the top 20 unreachable, so the filter could
+                   not scope to part of the very estate it was filtering. */
+                options={[{ value: 'all', label: 'All issuers' }, ...data.issuers.map((row) => ({ value: row.issuer, label: row.issuer }))]}
               />
             </div>
 
@@ -501,6 +519,11 @@ export default function PkiVisibility() {
               <PanelEmpty>No certificate finding is open across the certificates discovered so far.</PanelEmpty>
             ) : (
               <ul className="space-y-2">
+                {data.findings.length > 10 ? (
+                  <li className="rounded-lg border border-white/8 bg-white/[0.02] px-3 py-1.5 text-[10px] text-white/35">
+                    Showing the 10 highest-severity of {fmtNumber(data.findings.length)} open certificate findings.
+                  </li>
+                ) : null}
                 {data.findings.slice(0, 10).map((finding) => (
                   <li key={finding.id} className="rounded-lg border border-white/10 bg-black/25 p-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">

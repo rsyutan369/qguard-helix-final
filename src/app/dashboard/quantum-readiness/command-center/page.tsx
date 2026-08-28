@@ -45,6 +45,7 @@ import {
   AMBER,
   GOLD,
   TEAL,
+  TruncationNote,
 } from '../_shared';
 
 export default function CommandCenterPage() {
@@ -183,6 +184,13 @@ export default function CommandCenterPage() {
                       <td className="py-2.5 text-white/45">{relativeTime(finding.detectedAt)}</td>
                     </tr>
                   ))}
+                  <TruncationNote
+                    shown={8}
+                    total={snapshot.criticalFindings.length}
+                    noun="critical findings"
+                    rank="highest-severity"
+                    to="/dashboard/quantum-readiness/risk-analysis"
+                  />
                 </tbody>
               </table>
             </div>
