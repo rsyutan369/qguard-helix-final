@@ -24,6 +24,13 @@ import {
   type AgentEventName,
 } from '@/lib/agent-installer/agent-release'
 import { publishAgentEvent } from './agent-event-bus'
+import { agentRole } from '@/lib/agent-installer/agent-release'
+import {
+  agentMayWrite,
+  decideAgentRole,
+  decideScanTypes,
+  type AgentEntitlementRequest,
+} from './agent-entitlement'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
 
@@ -111,8 +118,11 @@ function isMissingRuntimeTable(error: any) {
   return text.includes('42p01') || text.includes('pgrst205') || text.includes('does not exist') || text.includes('could not find the table')
 }
 
-function jsonError(res: Response, status: number, code: string, message: string) {
-  return res.status(status).json({ error: { code, message } })
+function jsonError(res: Response, status: number, code: string, message: string, detail?: unknown) {
+  /* `detail` carries the structured half of a refusal — which role was asked
+     for, which tier it needs, which roles this plan does include — so the UI
+     can render an actionable gate instead of re-deriving policy from prose. */
+  return res.status(status).json({ error: { code, message, ...(detail === undefined ? {} : { detail }) } })
 }
 
 const DEFAULT_AGENT_SCAN_TYPES = [
@@ -501,6 +511,55 @@ function evidenceResourceIdentifiers(evidence: ScannerEvidenceRecord) {
   ].map(normalizedPolicyText).filter(Boolean)
 }
 
+/**
+ * Normalises a host label for identity comparison: case-folded, trailing dot
+ * stripped, and reduced to its short name so `TestVM`, `testvm.` and
+ * `testvm.corp.local` all resolve to the same machine.
+ */
+function hostIdentity(value: unknown) {
+  const text = String(value || '').trim().toLowerCase().replace(/\.+$/, '')
+  if (!text) return null
+  return text.split('.')[0] || null
+}
+
+/**
+ * True when an observation describes the host the agent is INSTALLED ON rather
+ * than something it reached out to.
+ *
+ * `allowedTargets` scopes which remote endpoints an agent may probe and
+ * `allowedPaths` scopes which filesystem roots it may read. Neither vocabulary
+ * can express "this machine", so validating host-local telemetry — process
+ * crypto inventory, the local certificate store, ETW/eBPF crypto calls — against
+ * them rejected 100% of it and left freshly enrolled agents dead at
+ * "Calculating quantum exposure" (85%).
+ *
+ * Host-local telemetry is authorised by ENROLMENT: an operator who installed an
+ * agent on a machine authorised that machine to be reported. The check stays
+ * narrow so it cannot be used to smuggle in third-party surface:
+ *   - the observed host must be the host this agent registered from, and
+ *   - it must not name a network port, because a port means a service was
+ *     reached rather than the host inspected, and reaching stays allowlisted.
+ */
+function isSelfHostObservation(evidence: ScannerEvidenceRecord, agent: any) {
+  const agentHost = hostIdentity(agent?.hostname)
+  if (!agentHost) return false
+  if (evidence.port) return false
+  return hostIdentity(evidence.host) === agentHost
+}
+
+/**
+ * The single authorisation predicate for agent-sourced observations: in scope
+ * when the agent's enrolment covers it (its own host) or when the operator's
+ * allowlist covers it (anything it reached).
+ */
+function agentObservationInScope(
+  evidence: ScannerEvidenceRecord,
+  policy: ReturnType<typeof normalizePolicy>,
+  agent: any,
+) {
+  return isSelfHostObservation(evidence, agent) || evidenceAllowedByPolicy(evidence, policy)
+}
+
 function evidenceAllowedByPolicy(evidence: ScannerEvidenceRecord, policy: ReturnType<typeof normalizePolicy>, allowEmptyPolicy = false) {
   const allowedTargets = policy.allowedTargets.map(String).filter(Boolean)
   const allowedPaths = policy.allowedPaths.map(String).filter(Boolean)
@@ -740,7 +799,10 @@ function runtimeSeverity(input: {
   if (input.shadowCrypto) computed = 'moderate'
   if (input.isLegacy) computed = 'high'
   if (input.downgradeDetected || input.hndlRisk || (input.keySize && input.keySize <= 1024)) computed = 'critical'
-  if (/md5|sha-?1|3des|rc4|des|ssl|tls-?1\.[01]/i.test(input.algorithmText)) computed = 'critical'
+  // Word-bounded: unbounded `ssl` matched "OpenSSL-compatible crypto library"
+  // and unbounded `des` matched inside unrelated words, so naming a library was
+  // enough to publish a critical. A broken primitive has to be NAMED as one.
+  if (/\b(?:md5|sha-?1|3des|triple-?des|rc4|des|sslv?[23]|tls-?1\.[01]|tlsv1\.[01])\b/i.test(input.algorithmText)) computed = 'critical'
   const explicit = cleanString(input.explicitSeverity, 20) as FindingSeverity | null
   return explicit && severityRank(explicit) > severityRank(computed) ? explicit : computed
 }
@@ -764,12 +826,48 @@ function normalizeRuntimeCryptoEvent(raw: any, sourceType: string, agent?: any, 
   const protocol = normalizeRuntimeProtocol(raw?.protocol || metadata.protocol)
   const keySize = raw?.keySize || raw?.key_size ? Number(raw?.keySize || raw?.key_size) : null
   const observedAt = cleanString(raw?.observedAt || raw?.observed_at, 80) || new Date().toISOString()
-  const algorithmText = `${eventType} ${algorithm || ''} ${keyExchangeAlgorithm || ''} ${cipherSuite || ''} ${tlsVersion || ''} ${protocol || ''} ${JSON.stringify(metadata)}`.toLowerCase()
-  const isPqc = Boolean(raw?.isPqc || raw?.is_pqc) || /ml-kem|ml-dsa|kyber|dilithium|sphincs|sntrup|pqc|post-quantum|hybrid/.test(algorithmText)
-  const isLegacy = Boolean(raw?.isLegacy || raw?.is_legacy) || /rsa|ecdsa|ecc|ecdh|dsa|dh-|diffie|sha-?1|md5|3des|des|rc4|ssl|tls-?1\.[01]|aes-128-cbc/.test(algorithmText)
-  const downgradeDetected = Boolean(raw?.downgradeDetected || raw?.downgrade_detected) || /downgrade|fallback|ssl|tls-?1\.[01]/.test(algorithmText)
-  const shadowCrypto = Boolean(raw?.shadowCrypto || raw?.shadow_crypto) || /package|config|unknown|embedded|vendor|library/.test(algorithmText)
-  const hndlRisk = Boolean(raw?.hndlRisk || raw?.hndl_risk) || (isLegacy && Boolean(raw?.host || raw?.target) && /rsa|ecdsa|ecc|dh|tls|certificate/.test(algorithmText))
+  // Classification reads the STATED primitives through the platform's single
+  // crypto model. It previously swept a regex over the whole event including
+  // `JSON.stringify(metadata)`, which is how a process that had merely loaded
+  // `ncryptsslp.dll` was published as a CRITICAL TLS downgrade: the substring
+  // "ssl" in a module name matched the downgrade pattern, and "library" in a
+  // signal label matched the shadow-crypto pattern. A second, looser model
+  // living here also silently overrode the collector's own honest verdict,
+  // because every flag was `agentSaidTrue || regexOverBlob`.
+  const statedAlgorithm = keyExchangeAlgorithm || cipherSuite || algorithm
+  const anatomy = analyzeCryptoObservation(
+    { name: statedAlgorithm, algorithm: statedAlgorithm, protocol: protocol || tlsVersion },
+    Boolean(statedAlgorithm),
+  )
+  const algorithmText = `${statedAlgorithm || ''} ${tlsVersion || ''} ${protocol || ''}`.toLowerCase()
+
+  const isPqc = Boolean(raw?.isPqc || raw?.is_pqc) || anatomy.quantumClass === 'safe' || anatomy.quantumClass === 'hybrid'
+  const isLegacy = Boolean(raw?.isLegacy || raw?.is_legacy) || anatomy.quantumClass === 'vulnerable'
+
+  // A downgrade needs an OBSERVED weak protocol version. Nothing else can
+  // establish it, so nothing else may assert it.
+  const observedProtocol = `${tlsVersion || ''} ${protocol || ''}`.toLowerCase()
+  // A claim still requires the evidence for that claim, even when an agent
+  // asserts it: an uploader that reports `downgradeDetected` without having
+  // observed any protocol version has not observed a downgrade. This also keeps
+  // older agent builds - and any third-party collector - from writing a critical
+  // the control plane cannot substantiate.
+  const weakProtocolObserved = /\b(?:sslv?[23]|tls-?1\.[01]|tlsv1(?:\.[01])?)\b/.test(observedProtocol)
+  const downgradeClaimed = Boolean(raw?.downgradeDetected || raw?.downgrade_detected)
+  const downgradeDetected = weakProtocolObserved || (downgradeClaimed && Boolean(observedProtocol.trim()))
+
+  // Shadow crypto means cryptography outside the DECLARED inventory. A host
+  // agent has no inventory to compare against, so it cannot establish this and
+  // its claim is not published; the control plane decides it during
+  // reconciliation. Other sources keep their own determination.
+  const shadowCrypto = sourceType === 'local-agent'
+    ? false
+    : Boolean(raw?.shadowCrypto || raw?.shadow_crypto)
+
+  // Harvest-now-decrypt-later needs quantum-vulnerable key establishment
+  // protecting data in transit, not merely a legacy-sounding string.
+  const hndlRisk = Boolean(raw?.hndlRisk || raw?.hndl_risk)
+    || (isLegacy && !isPqc && Boolean(raw?.host || raw?.target) && anatomy.kind === 'key-exchange')
   const severity = runtimeSeverity({
     explicitSeverity: raw?.severity,
     isPqc,
@@ -2302,6 +2400,40 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
   const policy = normalizePolicy(req.body?.policy || {})
 
   /*
+   * ROLE IS SERVER-RESOLVED (Agent_Installer_Refactor §41, §15).
+   *
+   * The role used to come straight out of caller-supplied `metadata.role`,
+   * which is spread into the row verbatim — so a tenant on any plan could mint
+   * a `patcher` (an agent that WRITES to their hosts) by editing one JSON
+   * field. The requested role is now checked against the tenant's plan before
+   * anything is written, and an unknown role is refused rather than defaulted.
+   *
+   *   collector, scanner  read-only     BASIC
+   *   patcher, operator   writes hosts  PRO
+   */
+  const roleDecision = await decideAgentRole(
+    req as AgentEntitlementRequest,
+    req.body?.role ?? req.body?.metadata?.role,
+    (id) => agentRole(id).label,
+  )
+  if (!roleDecision.ok) {
+    jsonError(res, roleDecision.status, roleDecision.code, roleDecision.message, roleDecision.detail)
+    return
+  }
+  const resolvedRole = roleDecision.role
+
+  /*
+   * Scan modules are clamped to the plan, and the removals are RECORDED.
+   * Dropping them silently would leave the agent never reporting on those
+   * dimensions, and an absent dimension reads as a clean one.
+   */
+  const scanTypeDecision = await decideScanTypes(
+    req as AgentEntitlementRequest,
+    Array.isArray(policy.scanTypes) && policy.scanTypes.length ? policy.scanTypes.map(String) : agentRole(resolvedRole).scanTypes,
+  )
+  policy.scanTypes = scanTypeDecision.allowed
+
+  /*
    * Asset binding must be verified, not trusted. `metadata` is caller-supplied and
    * was spread in verbatim, so a tenant could bind their agent to ANOTHER tenant's
    * asset UUID. That never granted them the other tenant's data (every read filters
@@ -2338,7 +2470,13 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
     hostname: cleanString(req.body?.hostname, 255),
     platform: cleanString(req.body?.platform, 100),
     version: cleanString(req.body?.version, 100) || '0.1.0',
-    capabilities: defaultRemediationCapabilities(typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {}),
+    /* Capabilities follow the SERVER-RESOLVED role. A caller asking for
+       `remediation: true` on a collector gets a collector, because the role
+       definition is the authority on what a role may do (§40, §41). */
+    capabilities: defaultRemediationCapabilities({
+      ...(typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {}),
+      ...agentRole(resolvedRole).capabilities,
+    }),
     policy,
     metadata: {
       ...(typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}),
@@ -2349,6 +2487,16 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       assetType: resolvedAsset?.type || null,
       environment: cleanString(req.body?.environment, 80) || cleanString(req.body?.metadata?.environment, 80) || 'production',
       enrolledBy: user.id,
+      /* Written AFTER the caller's metadata spread so it overwrites any
+         `role` the caller supplied. This is the authoritative value; the
+         agent's own claim is informational only (§41). */
+      role: resolvedRole,
+      roleResolvedBy: 'control-plane',
+      entitlementTier: scanTypeDecision.tier,
+      /* Modules this plan does not include. Surfaced in the Agent Center as
+         "not included in your plan" so a dimension nobody looked at is never
+         mistaken for a dimension that came back clean. */
+      scanTypesDeniedByPlan: scanTypeDecision.denied,
       remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
       supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
       localCollector: LOCAL_COLLECTOR_CLARIFICATION,
@@ -3521,11 +3669,24 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
   const wasConnected = agent.last_seen_at
     ? Date.now() - Date.parse(agent.last_seen_at) <= HEARTBEAT_ONLINE_WINDOW_MS
     : false
-  publishAgentEvent(agent.user_id, wasConnected ? 'agent.heartbeat' : 'agent.connected', agent.id, {
-    status: cleanString(req.body?.status, 50) || 'active',
+  const reportedStatus = cleanString(req.body?.status, 50) || 'active'
+  const reportedPhase = typeof telemetry === 'object' ? (telemetry as any).phase || null : null
+  // A failure heartbeat is an ERROR event, not a routine heartbeat. Publishing
+  // every heartbeat under the same name meant an open scan stream had no way to
+  // learn that the run it was following had died, so the live progress card kept
+  // rendering the last stage it had seen.
+  const heartbeatEvent =
+    reportedStatus === 'error' || reportedPhase === 'failed'
+      ? 'agent.error'
+      : wasConnected
+        ? 'agent.heartbeat'
+        : 'agent.connected'
+  publishAgentEvent(agent.user_id, heartbeatEvent, agent.id, {
+    status: reportedStatus,
     hostname: cleanString(req.body?.hostname, 255) || agent.hostname,
     version: cleanString(req.body?.version, 100) || agent.version,
-    phase: typeof telemetry === 'object' ? (telemetry as any).phase || null : null,
+    phase: reportedPhase,
+    error: typeof telemetry === 'object' ? cleanString((telemetry as any).error, 500) : null,
   })
 
   res.json({ data: { status: 'accepted', observedAt: now } })
@@ -3740,11 +3901,42 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
   const normalized = payload
     .map((item: any) => normalizeRuntimeCryptoEvent(item, 'local-agent', agent))
     .filter(Boolean) as RuntimeCryptoEventRecord[]
-  const policyAllowed = normalized.filter((event) => evidenceAllowedByPolicy(runtimeEventToEvidence(event), policy))
+  const policyAllowed = normalized.filter((event) => agentObservationInScope(runtimeEventToEvidence(event), policy, agent))
   const rejectedEventCount = normalized.length - policyAllowed.length
 
+  // Policy filtering is a NORMAL outcome, not an agent fault. Answering a fully
+  // out-of-scope batch with 403 turned routine scoping into a thrown error
+  // inside the agent's scan loop: it aborted the scan mid-flight and left the
+  // Agent Center's progress bar frozen at the last stage it had seen (85%).
+  // The batch is now accounted for and acknowledged — nothing policy excludes
+  // is persisted, and the operator is told exactly what was dropped and why.
   if (policyAllowed.length === 0) {
-    jsonError(res, 403, 'RUNTIME_EVENTS_OUT_OF_POLICY', 'Uploaded runtime events do not match this agent policy')
+    if (client) {
+      await client.from('agent_heartbeats').insert({
+        user_id: agent.user_id,
+        agent_id: agent.id,
+        status: 'policy_rejected_runtime_events',
+        telemetry: {
+          rejectedEventCount,
+          reason: 'out_of_policy',
+          allowedTargets: policy.allowedTargets.length,
+          allowedPaths: policy.allowedPaths.length,
+        },
+        observed_at: new Date().toISOString(),
+      })
+    }
+    res.json({
+      data: {
+        inserted: 0,
+        duplicateCount: 0,
+        acceptedEventCount: 0,
+        rejectedEventCount,
+        outOfPolicy: true,
+        reason: 'RUNTIME_EVENTS_OUT_OF_POLICY',
+        message: 'No uploaded runtime event is in scope for this agent policy.',
+        evidence: { evidenceCount: 0, findingCount: 0, links: [] },
+      },
+    })
     return
   }
 
@@ -3773,7 +3965,9 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
   res.json({
     data: {
       ...persistence,
+      acceptedEventCount: policyAllowed.length,
       rejectedEventCount,
+      outOfPolicy: false,
       evidence: {
         evidenceCount: evidenceResult.evidenceCount,
         findingCount: evidenceResult.findingCount,
@@ -3793,10 +3987,37 @@ router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) 
   }
   const policy = normalizePolicy(agent.policy || {})
   const normalizedEvidence = payload.slice(0, 1000).map((item: any) => normalizeEvidence(item, 'local-agent', agent)).filter(Boolean) as ScannerEvidenceRecord[]
-  const evidence = normalizedEvidence.filter((item) => evidenceAllowedByPolicy(item, policy))
+  const evidence = normalizedEvidence.filter((item) => agentObservationInScope(item, policy, agent))
   const rejectedEvidenceCount = normalizedEvidence.length - evidence.length
+  // Out-of-scope evidence is filtered, accounted for and acknowledged — never
+  // turned into an error that aborts the agent's scan. See the identical note
+  // on /agent/runtime-events.
   if (evidence.length === 0) {
-    jsonError(res, 403, 'EVIDENCE_OUT_OF_POLICY', 'Uploaded evidence does not match this agent policy')
+    if (client) {
+      await client.from('agent_heartbeats').insert({
+        user_id: agent.user_id,
+        agent_id: agent.id,
+        status: 'policy_rejected_evidence',
+        telemetry: {
+          rejectedEvidenceCount,
+          reason: 'out_of_policy',
+          allowedTargets: policy.allowedTargets.length,
+          allowedPaths: policy.allowedPaths.length,
+        },
+        observed_at: new Date().toISOString(),
+      })
+    }
+    res.json({
+      data: {
+        evidenceCount: 0,
+        findingCount: 0,
+        links: [],
+        rejectedEvidenceCount,
+        outOfPolicy: true,
+        reason: 'EVIDENCE_OUT_OF_POLICY',
+        message: 'No uploaded evidence is in scope for this agent policy.',
+      },
+    })
     return
   }
   if (client && rejectedEvidenceCount > 0) {
@@ -3825,6 +4046,25 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
   const policy = await activePolicyForAgent(client, agent)
   if (!policy.enabled) {
     res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: 'agent_policy_disabled' } })
+    return
+  }
+
+  /*
+   * Re-check the WRITE entitlement on every poll (§15, §41, §53).
+   *
+   * An agent enrolled as a patcher while the tenant held Pro keeps its row
+   * after a downgrade — deleting a fleet on a billing change would be worse
+   * than leaving it idle. What must stop immediately is the work: a tenant on
+   * Basic has no plan entitlement to an agent that modifies their hosts, so the
+   * job queue returns empty with the reason stated rather than silently.
+   *
+   * Checked here rather than only at enrolment because this is the last point
+   * before a host is changed, and because it is the check a downgrade, a
+   * lapsed card or a revocation all have to pass through.
+   */
+  const writeAccess = await agentMayWrite(client, agent, 'remediation')
+  if (!writeAccess.allowed) {
+    res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: writeAccess.reason } })
     return
   }
 
@@ -4037,7 +4277,9 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     .slice(0, 200)
     .map((item: any) => normalizeEvidence(item, 'local-agent', agent))
     .filter(Boolean) as ScannerEvidenceRecord[]
-  const evidence = normalizedEvidence.filter((item) => evidenceAllowedByPolicy(item, policy))
+  // Same authorisation model as evidence/runtime uploads: an agent may always
+  // report on the host it is installed on; anything it reached stays allowlisted.
+  const evidence = normalizedEvidence.filter((item) => agentObservationInScope(item, policy, agent))
   const rejectedEvidenceCount = normalizedEvidence.length - evidence.length
   if (normalizedEvidence.length > 0 && evidence.length === 0) {
     jsonError(res, 403, 'REMEDIATION_EVIDENCE_OUT_OF_POLICY', 'Validation evidence does not match this agent policy')

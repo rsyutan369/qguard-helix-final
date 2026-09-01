@@ -16,7 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.QGUARD_TEST_BASE || 'http://localhost:3000'
 const OWNER_EMAIL = 'zachmatthew369@gmail.com'
 
 const env = Object.fromEntries(

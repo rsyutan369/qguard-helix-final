@@ -17,7 +17,7 @@
 import { createClient } from '@supabase/supabase-js'
 import fs from 'node:fs'
 
-const BASE = 'http://localhost:3000'
+const BASE = process.env.QGUARD_TEST_BASE || 'http://localhost:3000'
 const VICTIM = 'zachmatthew369@gmail.com'
 const ATTACKER = 'teslagreat101@gmail.com'
 const STARTER = 'cybersniper26@gmail.com'

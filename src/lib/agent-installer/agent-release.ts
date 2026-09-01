@@ -11,7 +11,7 @@
  */
 
 /** Runtime version of the lightweight agent bundle. Bump on any agent.ts change. */
-export const AGENT_VERSION = '1.5.0'
+export const AGENT_VERSION = '1.5.2'
 
 /** Minimum Node.js major the bundled runtime requires (uses node: builtins + X509Certificate). */
 export const AGENT_MIN_NODE_MAJOR = 18

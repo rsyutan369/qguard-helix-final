@@ -14,7 +14,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
-const BASE = 'http://localhost:3000'
+const BASE = process.env.QGUARD_TEST_BASE || 'http://localhost:3000'
 const OWNER_EMAIL = 'zachmatthew369@gmail.com'
 
 const env = Object.fromEntries(

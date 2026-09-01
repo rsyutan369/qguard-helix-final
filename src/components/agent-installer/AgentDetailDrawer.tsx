@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   Ban,
+  CheckCircle2,
   Cpu,
   Download,
   FileSearch,
@@ -24,6 +25,7 @@ import {
   type AgentScanRecord,
   type DeployedAgent,
   type GeneratedPackage,
+  type LiveScanProgress,
   type useAgentInstaller,
 } from '@/hooks/use-agent-installer';
 import { CopyButton, NotAssessed, StatusChip, fmtBytes, fmtDate, relTime } from './primitives';
@@ -207,17 +209,7 @@ export function AgentDetailDrawer({
             <div className="mb-4 rounded-lg border border-cyan-400/25 bg-cyan-400/[0.06] px-3 py-2 text-xs text-cyan-100">{notice}</div>
           ) : null}
 
-          {scan && scan.progress < 100 ? (
-            <div className="mb-4 rounded-xl border border-cyan-400/25 bg-cyan-400/[0.05] p-3">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="font-bold text-cyan-100">{scan.message || scan.stage}</span>
-                <span className="font-mono text-cyan-200">{scan.progress}%</span>
-              </div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
-                <div className="h-full rounded-full bg-cyan-400 transition-all duration-500" style={{ width: `${scan.progress}%` }} />
-              </div>
-            </div>
-          ) : null}
+          {scan ? <ScanProgressCard scan={scan} hasScope={allowedTargets.length > 0 || allowedPaths.length > 0} /> : null}
 
           {tab === 'overview' ? (
             <OverviewTab agent={agent} health={health} scans={scans} allowedTargets={allowedTargets} allowedPaths={allowedPaths} />
@@ -513,6 +505,38 @@ function OverviewTab({
         )}
       </div>
 
+      {/*
+        Which rule set this agent classifies against (spec §51, §85).
+        Two agents on the same estate can legitimately report different
+        findings when they run different builds. Naming the versions turns
+        that from "the scanner is inconsistent" into "upgrade this agent".
+      */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-white/45">
+          <Cpu className="h-3.5 w-3.5" /> Detection provenance
+        </div>
+        {health?.engine?.knowledgeBaseVersion || health?.engine?.ruleSetVersion ? (
+          <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+            {[
+              ['Agent build', health?.installedVersion ?? '—'],
+              ['Knowledge base', health?.engine?.knowledgeBaseVersion ? `v${health.engine.knowledgeBaseVersion}` : '—'],
+              ['Rule set', health?.engine?.ruleSetVersion ? `v${health.engine.ruleSetVersion}` : '—'],
+              ['Upgrade available', health?.upgradeAvailable ? `Yes — v${health.latestVersion}` : 'No'],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between gap-3 text-[11px]">
+                <dt className="text-white/40">{label}</dt>
+                <dd className="truncate text-right font-mono text-white/70">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="mt-2 text-[11px] leading-relaxed text-white/40">
+            This agent has not reported its rule-set version. Builds before 1.5.2 do not send it, so the platform cannot
+            name which rules produced this agent&apos;s findings — upgrade the agent to restore that provenance.
+          </p>
+        )}
+      </div>
+
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
         <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-white/45">
           <Activity className="h-3.5 w-3.5" /> Scan history
@@ -528,17 +552,111 @@ function OverviewTab({
               </p>
             ) : null}
             <ul className="mt-2 max-h-40 space-y-1 overflow-auto">
-              {scans.slice(0, 12).map((item, index) => (
-                <li key={`${item.startedAt}-${index}`} className="flex items-center justify-between gap-3 text-[11px]">
-                  <span className="text-white/45">{fmtDate(item.startedAt)}</span>
-                  <span className={item.status === 'completed' ? 'text-emerald-300' : 'text-cyan-300'}>
-                    {item.status === 'completed' ? `${item.evidenceCount ?? 0} evidence` : 'Running'}
-                  </span>
-                </li>
-              ))}
+              {scans.slice(0, 12).map((item, index) => {
+                const outcome = scanOutcome(item);
+                return (
+                  <li key={`${item.startedAt}-${index}`} className="flex items-start justify-between gap-3 text-[11px]">
+                    <span className="shrink-0 text-white/45">{fmtDate(item.startedAt)}</span>
+                    <span className={`text-right ${outcome.tone}`} title={outcome.detail || undefined}>
+                      {outcome.label}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One scan session's outcome, stated honestly.
+ *
+ * Rendering every non-completed session as "Running" meant a scan that had
+ * failed minutes ago still claimed to be in flight. A session is in flight only
+ * while it is genuinely open; every other state names what actually happened.
+ */
+function scanOutcome(item: AgentScanRecord): { label: string; tone: string; detail: string | null } {
+  if (item.status === 'completed') {
+    const evidence = `${item.evidenceCount ?? 0} evidence`;
+    if (item.degraded) {
+      return { label: `${evidence} · publish errors`, tone: 'text-amber-300', detail: item.error };
+    }
+    if (item.outOfPolicy) {
+      return {
+        label: `${evidence} · out of scope`,
+        tone: 'text-amber-300',
+        detail: 'Nothing this scan observed was inside the authorized targets or paths for this agent.',
+      };
+    }
+    if (item.rejectedByPolicy) {
+      return {
+        label: `${evidence} · ${item.rejectedByPolicy} out of scope`,
+        tone: 'text-emerald-300',
+        detail: 'Observations outside the authorized scope were not stored.',
+      };
+    }
+    return { label: evidence, tone: 'text-emerald-300', detail: null };
+  }
+  if (item.status === 'failed') {
+    return { label: 'Failed', tone: 'text-rose-300', detail: item.error || null };
+  }
+  if (item.status === 'interrupted') {
+    return { label: 'Interrupted', tone: 'text-amber-300', detail: item.error || null };
+  }
+  return { label: 'Running', tone: 'text-cyan-300', detail: null };
+}
+
+/**
+ * Live scan state.
+ *
+ * Renders THREE states, not one. Previously only an in-flight bar existed and it
+ * was hidden at 100%, so a scan that died mid-flight left its last frame on
+ * screen forever with no outcome and no reason — the "stuck at 85%" the operator
+ * actually sees. A terminal frame now always resolves to a stated outcome.
+ */
+function ScanProgressCard({ scan, hasScope }: { scan: LiveScanProgress; hasScope: boolean }) {
+  if (scan.failed) {
+    return (
+      <div className="mb-4 rounded-xl border border-rose-400/30 bg-rose-400/[0.06] p-3">
+        <div className="flex items-center gap-2 text-xs font-bold text-rose-100">
+          <AlertTriangle className="h-3.5 w-3.5" /> Scan failed
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-rose-100/80">
+          {scan.message || 'The agent stopped before completing this scan.'}
+        </p>
+        <p className="mt-1 text-[10px] text-white/35">{relTime(scan.at)}</p>
+      </div>
+    );
+  }
+
+  if (scan.terminal) {
+    return (
+      <div className="mb-4 rounded-xl border border-emerald-400/25 bg-emerald-400/[0.05] p-3">
+        <div className="flex items-center gap-2 text-xs font-bold text-emerald-100">
+          <CheckCircle2 className="h-3.5 w-3.5" /> {scan.message || 'Scan complete'}
+        </div>
+        {!hasScope ? (
+          <p className="mt-1 text-[11px] leading-relaxed text-white/50">
+            This agent has no authorized targets or paths, so it reports host-local
+            telemetry only. Add scope under Capabilities to widen what it may scan.
+          </p>
+        ) : null}
+        <p className="mt-1 text-[10px] text-white/35">{relTime(scan.at)}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-cyan-400/25 bg-cyan-400/[0.05] p-3">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="font-bold text-cyan-100">{scan.message || scan.stage}</span>
+        <span className="font-mono text-cyan-200">{scan.progress}%</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-cyan-400 transition-all duration-500" style={{ width: `${scan.progress}%` }} />
       </div>
     </div>
   );

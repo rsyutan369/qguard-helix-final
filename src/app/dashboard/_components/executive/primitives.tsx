@@ -216,6 +216,24 @@ export function Bar({ value, color = '#22d3ee', height = 6 }: { value: number; c
 
 /* ---- Section heading (between rows) ------------------------------ */
 
+/**
+ * Discloses that a panel is showing only the head of a longer list.
+ *
+ * Renders nothing when the list fits. `rank` names WHY these are the ones
+ * shown — "showing 6 of 40" without an ordering still misleads, because the
+ * reader assumes the six that matter most are the six present.
+ */
+export function TruncationNote({
+  shown, total, noun, rank,
+}: { shown: number; total: number; noun: string; rank?: string }) {
+  if (!Number.isFinite(total) || total <= shown) return null
+  return (
+    <div className="pt-2 text-[9px] font-bold uppercase tracking-wider text-white/30">
+      Showing {rank ? `the ${fmtNumber(shown)} ${rank}` : fmtNumber(shown)} of {fmtNumber(total)} {noun}
+    </div>
+  )
+}
+
 export function SectionLabel({ children, href, meta }: { children: ReactNode; href?: string; meta?: ReactNode }) {
   const inner = (
     <span className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.22em] text-white/55">

@@ -1,0 +1,3218 @@
+# Qguard Helix — Web / Local / Dev Deep Scanning Implementation Prompt
+
+## ROLE
+
+Act as a Principal Security Architect, Application Security Engineer, Cryptography Engineer, DevSecOps Engineer, and Full-Stack Engineer.
+
+You are implementing a production-grade expansion of the existing **Qguard Helix Quantum Exposure Assessment** platform.
+
+The Quantum Exposure Assessment interface should have three top-level scanning tabs:
+
+* **Web**
+* **Local**
+* **Dev**
+
+The Web tab already represents Internet-facing cryptographic exposure assessment.
+
+Your task is to fully implement and integrate the **Local** and **Dev** scanning modes without breaking the existing Web scanner.
+
+The resulting system must provide dedicated, task-aware, deep scanning engines for each mode.
+
+---
+
+# 1. PRIMARY OBJECTIVE
+
+Transform the existing Quantum Exposure Assessment page into a unified:
+
+## Qguard Helix Exposure Assessment Engine™
+
+### Scan Modes
+
+```text
+WEB
+ └── Internet-facing assets
+      ├── DNS & CAA
+      ├── HTTP Security Headers
+      ├── TLS & Protocols
+      ├── Certificates
+      ├── OCSP / PKI
+      └── Quantum Readiness
+
+LOCAL
+ └── User-authorized local assets
+      ├── Files
+      ├── Folders
+      ├── Source Code
+      ├── Configuration
+      ├── Dependencies
+      ├── Certificates / Keys
+      ├── Cryptographic Usage
+      ├── Secrets
+      ├── IaC
+      ├── Containers
+      └── Quantum Vulnerability
+
+DEV
+ └── Development repositories
+      ├── GitHub
+      ├── GitLab
+      ├── Bitbucket
+      ├── Azure DevOps
+      ├── Public Git repositories
+      ├── Private repositories
+      ├── Git URLs
+      ├── Branches
+      ├── Commits
+      ├── Pull/Merge Requests
+      ├── Dependencies
+      ├── Secrets
+      ├── Crypto Usage
+      └── PQC Readiness
+```
+
+Each tab must have a dedicated scanning pipeline.
+
+Do NOT simply change the UI labels while reusing one generic scanner.
+
+The three modes must have different:
+
+* Input acquisition
+* Authentication
+* Authorization
+* Scanner engines
+* Job orchestration
+* Evidence collection
+* Progress reporting
+* Result normalization
+* Security controls
+* Error handling
+
+---
+
+# 2. IMPORTANT ARCHITECTURAL PRINCIPLE
+
+Implement the platform as:
+
+```text
+Quantum Exposure Assessment
+             │
+             ├──────── WEB
+             │
+             ├──────── LOCAL
+             │
+             └──────── DEV
+                      │
+                      ▼
+              Scan Task Manager
+                      │
+                      ▼
+              Scan Orchestrator
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+       Web Jobs    Local Jobs   Dev Jobs
+          │           │           │
+          ▼           ▼           ▼
+      Dedicated    Dedicated    Dedicated
+       Engines      Engines      Engines
+          │           │           │
+          └───────────┼───────────┘
+                      ▼
+              Evidence Pipeline
+                      │
+                      ▼
+             Normalization Layer
+                      │
+                      ▼
+              Correlation Engine
+                      │
+                      ▼
+            Quantum Risk Engine
+                      │
+                      ▼
+              Assessment Results
+```
+
+Do not build one giant scanner.
+
+Use modular scanner engines with a common orchestration framework.
+
+---
+
+# 3. TOP-LEFT TAB DESIGN
+
+The existing top-left navigation must remain visually consistent with the current Qguard Helix design.
+
+Use:
+
+```text
+┌──────────────────────────────────────────────┐
+│  ◉ Web        ▣ Local        </> Dev         │
+└──────────────────────────────────────────────┘
+```
+
+Recommended labels:
+
+### Web
+
+Internet-facing exposure assessment.
+
+### Local
+
+Local device / filesystem / codebase assessment.
+
+### Dev
+
+Repository and development security assessment.
+
+The active tab must have:
+
+* Neon cyan/teal highlight
+* Animated bottom indicator
+* Subtle glow
+* Correct icon
+* Accessible keyboard navigation
+* ARIA selected state
+* Smooth Framer Motion transition
+
+Do not redesign the existing page unnecessarily.
+
+Preserve the current Qguard Helix visual language.
+
+---
+
+# 4. LOCAL SCANNING
+
+## Objective
+
+The Local scanner must allow users to scan assets located on their own device.
+
+Examples:
+
+```text
+C:\Projects\MyApplication
+C:\SourceCode
+C:\Users\User\Documents\SecurityProject
+D:\Repositories
+~/projects/application
+/home/user/project
+```
+
+The Local scanner must support:
+
+* Individual files
+* Folders
+* Complete codebases
+* Git repositories
+* Project directories
+* Configuration directories
+* Build artifacts
+* Container configuration
+* Infrastructure-as-Code
+* Certificate files
+* Cryptographic configuration
+* Dependency manifests
+
+---
+
+# 5. LOCAL SCANNING SECURITY MODEL
+
+Do NOT attempt to silently access the user's filesystem.
+
+The system must use explicit user authorization.
+
+Preferred architecture:
+
+```text
+Browser
+   │
+   ▼
+Qguard Helix Local Scanner
+Web UI
+   │
+   ▼
+Local Scanner Agent
+   │
+   ├── Filesystem Access
+   ├── Git Access
+   ├── Local Tooling
+   ├── Source Analysis
+   └── Crypto Analysis
+```
+
+The Local Scanner Agent should run locally on the user's device.
+
+Possible implementation:
+
+```text
+qguard-helix-local-agent
+```
+
+Support:
+
+* Windows
+* Linux
+* macOS
+
+The agent should expose a localhost-only authenticated API.
+
+Example:
+
+```text
+http://127.0.0.1:<dynamic-port>
+```
+
+Prefer:
+
+* Loopback binding
+* Random/dynamic port
+* Short-lived authentication token
+* Origin validation
+* Request signing
+* Job authorization
+* Strict filesystem sandboxing
+
+Do NOT expose the local scanner agent to:
+
+```text
+0.0.0.0
+```
+
+unless explicitly configured and secured.
+
+Never require users to expose their filesystem scanner publicly.
+
+---
+
+# 6. LOCAL AGENT CAPABILITIES
+
+The local agent should provide capabilities such as:
+
+```text
+detect
+select-path
+validate-path
+create-scan
+start-scan
+pause-scan
+cancel-scan
+scan-status
+stream-events
+retrieve-results
+health
+version
+```
+
+The browser should detect whether the agent is installed.
+
+Example states:
+
+```text
+LOCAL SCANNER
+
+● Agent Connected
+Version 1.0.x
+Device: Windows
+Ready
+```
+
+or:
+
+```text
+LOCAL SCANNER
+
+○ Agent Not Detected
+
+Install Qguard Helix Local Scanner
+```
+
+Do not claim the agent is connected unless the health check succeeds.
+
+---
+
+# 7. LOCAL SCAN TARGET SELECTION
+
+Create a professional target selector.
+
+Allow:
+
+### Scan Folder
+
+User chooses a directory.
+
+### Scan Files
+
+User selects one or more files.
+
+### Scan Git Repository
+
+User chooses a local Git repository.
+
+### Scan Project
+
+Detect project type automatically.
+
+Example:
+
+```text
+Detected Project
+
+Node.js
+TypeScript
+React
+Next.js
+Git repository
+
+Files: 8,421
+Source files: 2,932
+Dependencies: 187
+Git history: Available
+```
+
+---
+
+# 8. LOCAL SCANNER ENGINES
+
+Create dedicated scanner engines.
+
+## Local File Discovery Engine
+
+Detect:
+
+* File types
+* Binary files
+* Source files
+* Configuration files
+* Certificate files
+* Key files
+* Archive files
+* Dependency manifests
+* Infrastructure files
+* CI/CD files
+
+Example:
+
+```text
+Local File Discovery Engine
+```
+
+---
+
+# 9. LOCAL SOURCE CODE SECURITY ENGINE
+
+Analyze source code for:
+
+* Cryptographic API usage
+* Weak algorithms
+* Deprecated algorithms
+* Hard-coded cryptographic parameters
+* Insecure TLS configuration
+* Certificate validation weaknesses
+* Insecure randomness
+* Weak key sizes
+* Hard-coded keys
+* Hard-coded IVs/nonces
+* Insecure hashing
+* Password hashing weaknesses
+* Deprecated crypto libraries
+
+Languages should be detected automatically.
+
+Prioritize support for:
+
+```text
+JavaScript
+TypeScript
+Python
+Java
+C
+C++
+C#
+Go
+Rust
+PHP
+Ruby
+Kotlin
+Swift
+Objective-C
+Shell
+PowerShell
+```
+
+Do not report a vulnerability merely because a string contains a crypto-related word.
+
+Use contextual detection.
+
+---
+
+# 10. LOCAL CRYPTO DISCOVERY ENGINE
+
+Build a dedicated:
+
+## Cryptographic Usage Discovery Engine™
+
+Detect actual usage of:
+
+```text
+RSA
+DSA
+ECDSA
+ECDH
+DH
+X25519
+Ed25519
+AES
+AES-GCM
+AES-CBC
+3DES
+DES
+RC4
+SHA-1
+SHA-2
+SHA-3
+MD5
+HMAC
+HKDF
+PBKDF2
+scrypt
+Argon2
+TLS
+mTLS
+JWT
+JWS
+JWE
+PKCS
+OpenSSL
+BoringSSL
+LibreSSL
+libsodium
+liboqs
+OQS-OpenSSL
+Java JCA/JCE
+.NET cryptography
+WebCrypto
+Node crypto
+Python cryptography
+```
+
+Also detect PQC algorithms such as:
+
+```text
+ML-KEM
+ML-DSA
+SLH-DSA
+Kyber
+Dilithium
+SPHINCS+
+X25519 + ML-KEM
+Ed25519 + ML-DSA
+```
+
+Normalize aliases.
+
+Example:
+
+```text
+Kyber
+↓
+ML-KEM
+
+Dilithium
+↓
+ML-DSA
+```
+
+Do not incorrectly classify algorithm aliases as separate cryptographic technologies.
+
+---
+
+# 11. LOCAL CBOM ENGINE
+
+Implement a local:
+
+## CBOM Discovery Engine™
+
+Produce a Cryptographic Bill of Materials.
+
+Each cryptographic component should contain:
+
+```text
+Component ID
+Package
+Library
+Version
+Language
+File
+Line
+Function
+Algorithm
+Key Size
+Mode
+Protocol
+Usage
+Provider
+Confidence
+Evidence
+Quantum Status
+```
+
+Example:
+
+```text
+crypto-component-001
+
+Algorithm:
+RSA-2048
+
+Library:
+OpenSSL
+
+File:
+src/security/tls.ts
+
+Line:
+142
+
+Usage:
+TLS certificate
+
+Quantum Status:
+Quantum Vulnerable
+
+Confidence:
+High
+```
+
+The CBOM must be machine-readable.
+
+Support export to:
+
+```text
+JSON
+CSV
+CycloneDX-compatible representation where appropriate
+```
+
+Do not falsely claim complete CycloneDX compatibility unless implemented and validated.
+
+---
+
+# 12. LOCAL SECRET DISCOVERY ENGINE
+
+Create a dedicated secret scanner.
+
+Detect potential:
+
+* API keys
+* Tokens
+* Private keys
+* Certificates
+* Passwords
+* Cloud credentials
+* Database credentials
+* JWT secrets
+* Encryption keys
+
+Support high-entropy detection and contextual rules.
+
+IMPORTANT:
+
+Never transmit discovered secrets to the Qguard Helix cloud backend by default.
+
+Default behavior:
+
+```text
+Secret detected locally
+        ↓
+Hash/redact
+        ↓
+Send metadata/evidence
+        ↓
+Do NOT send secret value
+```
+
+Display:
+
+```text
+Potential Secret
+
+Type:
+Private Key
+
+Location:
+config/production.pem
+
+Value:
+[REDACTED]
+
+Evidence:
+Local only
+```
+
+Provide an explicit opt-in mechanism if raw content is ever required.
+
+---
+
+# 13. LOCAL DEPENDENCY ANALYSIS ENGINE
+
+Detect:
+
+```text
+package.json
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+requirements.txt
+poetry.lock
+Pipfile
+pom.xml
+build.gradle
+go.mod
+go.sum
+Cargo.toml
+Cargo.lock
+composer.json
+Gemfile
+Gemfile.lock
+*.csproj
+*.sln
+Podfile
+Package.swift
+```
+
+Build:
+
+```text
+Dependency
+Version
+Direct/Transitive
+License
+Crypto relevance
+Known vulnerability
+Quantum relevance
+```
+
+Where vulnerability intelligence is available, integrate it through a dedicated advisory layer.
+
+Do not invent CVEs.
+
+---
+
+# 14. LOCAL CONFIGURATION SECURITY ENGINE
+
+Analyze:
+
+```text
+.env
+.env.*
+nginx.conf
+apache configuration
+Dockerfile
+docker-compose
+Kubernetes YAML
+Helm charts
+Terraform
+Ansible
+GitHub Actions
+GitLab CI
+Jenkins
+CI/CD configuration
+TLS configuration
+PKI configuration
+```
+
+Detect cryptographic misconfiguration.
+
+Examples:
+
+```text
+TLS 1.0 enabled
+TLS 1.1 enabled
+RSA-1024
+SHA-1 certificate
+Weak DH group
+Weak cipher
+Insecure certificate validation
+Hard-coded private key
+Legacy cryptographic dependency
+```
+
+---
+
+# 15. LOCAL GIT HISTORY ENGINE
+
+If the selected target is a Git repository, optionally inspect:
+
+```text
+Branches
+Tags
+Commits
+Deleted files
+Historical configuration
+Historical secrets
+Historical crypto usage
+```
+
+Detect secrets that may have been committed previously.
+
+Clearly distinguish:
+
+```text
+Current exposure
+Historical exposure
+Remediated exposure
+Unknown
+```
+
+Do not automatically upload the entire Git history.
+
+Process locally where possible.
+
+---
+
+# 16. LOCAL QUANTUM READINESS ENGINE
+
+Determine:
+
+```text
+Quantum Vulnerable
+Quantum Resistant
+Hybrid
+Unknown
+Not Applicable
+```
+
+Analyze:
+
+* RSA
+* ECC
+* ECDSA
+* ECDH
+* DH
+* TLS
+* PKI
+* Certificates
+* Code signing
+* Identity
+* Key exchange
+* Encryption
+* Digital signatures
+
+Map cryptographic dependencies to Qguard Helix migration recommendations.
+
+Example:
+
+```text
+RSA-2048
+↓
+Quantum Vulnerable
+↓
+Migration Candidate
+↓
+Recommended:
+ML-DSA / hybrid transition
+```
+
+Do not automatically claim an application is quantum-safe merely because AES-256 is present.
+
+---
+
+# 17. DEV SCANNING
+
+The Dev tab is for software repositories.
+
+Support:
+
+```text
+GitHub
+GitLab
+Bitbucket
+Azure DevOps
+Public Git repositories
+Private Git repositories
+Self-hosted Git platforms
+Generic Git URLs
+```
+
+Architect the integration using provider adapters.
+
+Example:
+
+```text
+GitProviderAdapter
+ ├── GitHubAdapter
+ ├── GitLabAdapter
+ ├── BitbucketAdapter
+ ├── AzureDevOpsAdapter
+ └── GenericGitAdapter
+```
+
+Do not tightly couple repository logic to GitHub.
+
+---
+
+# 18. DEV AUTHENTICATION
+
+Support secure authentication.
+
+Preferred:
+
+```text
+OAuth 2.0
+OAuth Apps
+GitHub App
+GitLab OAuth
+Provider-specific application integrations
+```
+
+For private repositories:
+
+* Request minimum required scopes
+* Never request unnecessary permissions
+* Clearly show requested permissions
+* Allow disconnect/revoke
+* Encrypt credentials/tokens at rest
+* Never expose tokens to the browser unnecessarily
+* Never log access tokens
+* Rotate credentials where supported
+
+For GitHub, prefer a GitHub App architecture where appropriate for enterprise/private repository integration.
+
+---
+
+# 19. PUBLIC REPOSITORY SCANNING
+
+Allow:
+
+```text
+https://github.com/org/repository
+https://gitlab.com/org/repository
+```
+
+The user should be able to paste a public repository URL without connecting an account.
+
+Validate the URL before scanning.
+
+Detect:
+
+```text
+Provider
+Organization
+Repository
+Default branch
+Visibility
+Language
+Repository size
+Commit count
+```
+
+---
+
+# 20. PRIVATE REPOSITORY SCANNING
+
+Allow users to connect their provider account.
+
+UI:
+
+```text
+Connect Repository Provider
+
+[ GitHub ]
+[ GitLab ]
+[ Bitbucket ]
+[ Azure DevOps ]
+```
+
+After authentication:
+
+```text
+Select Organization
+        ↓
+Select Repository
+        ↓
+Select Branch
+        ↓
+Select Scan Profile
+        ↓
+Start Scan
+```
+
+Never scan private repositories without explicit authorization.
+
+---
+
+# 21. DEV REPOSITORY SCANNER
+
+Create a dedicated:
+
+## Repository Intelligence Engine™
+
+Analyze:
+
+```text
+Repository structure
+Languages
+Frameworks
+Dependencies
+Build systems
+CI/CD
+Infrastructure
+Containers
+Secrets
+Cryptography
+Certificates
+TLS
+Authentication
+Authorization
+Security configuration
+```
+
+---
+
+# 22. DEV CODE SECURITY ENGINE
+
+Implement deep static analysis focused on security and cryptography.
+
+Detect:
+
+```text
+Weak cryptography
+Crypto misuse
+Hard-coded secrets
+Insecure TLS
+Certificate validation bypass
+Weak randomness
+Unsafe serialization
+Injection patterns
+Authentication weaknesses
+Authorization issues
+Security configuration problems
+```
+
+Do not pretend this is a complete replacement for every commercial SAST engine.
+
+Use a confidence-based model.
+
+Every finding should have:
+
+```text
+Rule ID
+Category
+Severity
+Confidence
+File
+Line
+Code context
+Evidence
+Reason
+Recommendation
+```
+
+---
+
+# 23. DEV CRYPTOGRAPHIC CODE ENGINE
+
+This should be one of the primary differentiators of Qguard Helix.
+
+Identify actual cryptographic dependencies and usage.
+
+Example:
+
+```text
+src/auth/token.ts
+
+crypto.createSign("RSA-SHA256")
+
+Detected:
+RSA
+SHA-256
+Digital Signature
+
+Quantum Status:
+Vulnerable to cryptographically relevant quantum computing
+
+Migration Candidate:
+ML-DSA / Hybrid signature architecture
+```
+
+Do not blindly recommend ML-DSA for every use case.
+
+Understand whether the cryptography is being used for:
+
+```text
+Encryption
+Key exchange
+Digital signatures
+Authentication
+Integrity
+Hashing
+Password derivation
+TLS
+Certificates
+Code signing
+Token signing
+Database encryption
+Storage encryption
+```
+
+---
+
+# 24. DEV DEPENDENCY + SBOM ENGINE
+
+Analyze:
+
+```text
+package manifests
+lock files
+SBOM files
+container manifests
+dependency graphs
+```
+
+Create dependency relationships.
+
+Example:
+
+```text
+Application
+   ↓
+jsonwebtoken
+   ↓
+OpenSSL
+   ↓
+RSA
+   ↓
+Quantum Vulnerable
+```
+
+Correlate dependency-level crypto usage with application-level usage.
+
+---
+
+# 25. DEV CI/CD SECURITY ENGINE
+
+Analyze:
+
+```text
+.github/workflows
+.gitlab-ci.yml
+azure-pipelines.yml
+Jenkinsfiles
+Dockerfiles
+Terraform
+Helm
+Kubernetes
+```
+
+Look for:
+
+* Secrets
+* Unsafe credential handling
+* Weak signing
+* Unsigned artifacts
+* Weak TLS
+* Insecure registry configuration
+* Crypto configuration
+* Supply-chain weaknesses
+
+---
+
+# 26. DEV CONTAINER SECURITY ENGINE
+
+Detect:
+
+```text
+Dockerfile
+docker-compose.yml
+Containerfiles
+OCI configuration
+Kubernetes manifests
+Helm charts
+```
+
+Analyze:
+
+* Base image
+* Package dependencies
+* TLS configuration
+* Certificates
+* Crypto libraries
+* Secrets
+* Privileged execution
+* Sensitive mounts
+* Registry configuration
+
+---
+
+# 27. DEV SECRET SCANNING
+
+Scan:
+
+```text
+Current files
+Git history
+Branches
+Tags
+CI/CD
+Configuration
+```
+
+Classify:
+
+```text
+Critical
+High
+Medium
+Low
+Informational
+```
+
+All detected secret values must be redacted.
+
+Example:
+
+```text
+AWS Access Key
+AKIA************
+```
+
+Never expose the full secret in the UI.
+
+---
+
+# 28. DEV QUANTUM READINESS ANALYSIS
+
+Produce repository-level quantum readiness.
+
+Example:
+
+```text
+Repository Quantum Readiness
+
+Crypto Components       48
+Quantum Vulnerable      31
+Hybrid                  7
+PQC Native              4
+Unknown                 6
+
+Quantum Exposure        HIGH
+Migration Priority      P1
+```
+
+Break down by:
+
+```text
+Algorithm
+Library
+File
+Service
+Repository
+Environment
+Dependency
+Protocol
+Certificate
+Identity
+```
+
+---
+
+# 29. SCAN TASK SYSTEM
+
+Implement a unified scan-task architecture.
+
+Each scan must create a unique:
+
+```text
+scan_id
+tenant_id
+user_id
+scan_type
+target
+profile
+status
+created_at
+started_at
+completed_at
+```
+
+Statuses:
+
+```text
+QUEUED
+INITIALIZING
+DISCOVERING
+ANALYZING
+CORRELATING
+SCORING
+COMPLETED
+PARTIAL
+FAILED
+CANCELLED
+```
+
+---
+
+# 30. SCAN PROFILES
+
+Allow users to select profiles.
+
+### Quick
+
+Fast assessment.
+
+### Standard
+
+Balanced scan.
+
+### Deep
+
+Full analysis.
+
+### Cryptographic
+
+Crypto-focused analysis.
+
+### Quantum
+
+PQC / quantum exposure focused.
+
+### Secrets
+
+Secret-focused scan.
+
+### Supply Chain
+
+Dependencies/SBOM focused.
+
+### Custom
+
+User selects individual engines.
+
+Example:
+
+```text
+CUSTOM SCAN
+
+[x] File Discovery
+[x] Crypto Discovery
+[x] CBOM
+[x] Secrets
+[x] Dependencies
+[x] TLS
+[x] Quantum Readiness
+[ ] Git History
+[ ] Container Analysis
+```
+
+---
+
+# 31. TASK-AWARE SCANNER ORCHESTRATION
+
+This is critical.
+
+When a user selects a scan task, only the required scanner engines should execute.
+
+Example:
+
+```text
+User selects:
+
+[x] Cryptography
+[x] Secrets
+[x] Dependencies
+```
+
+The orchestrator launches:
+
+```text
+CryptoDiscoveryEngine
+SecretDiscoveryEngine
+DependencyAnalysisEngine
+```
+
+It should NOT automatically launch every scanner.
+
+Create:
+
+```text
+ScanPlanner
+ScanOrchestrator
+EngineRegistry
+JobQueue
+EvidenceCollector
+ResultNormalizer
+RiskScorer
+```
+
+---
+
+# 32. ENGINE REGISTRY
+
+Create a registry similar to:
+
+```text
+ScannerEngineRegistry
+
+Web:
+  DNSCAAEngine
+  HTTPHeadersEngine
+  TLSEngine
+  CertificateEngine
+  OCSPEngine
+  QuantumExposureEngine
+
+Local:
+  LocalFileDiscoveryEngine
+  LocalCodeSecurityEngine
+  LocalCryptoEngine
+  LocalCBOMEngine
+  LocalSecretEngine
+  LocalDependencyEngine
+  LocalGitHistoryEngine
+  LocalConfigEngine
+  LocalQuantumEngine
+
+Dev:
+  RepositoryDiscoveryEngine
+  RepositoryCodeSecurityEngine
+  RepositoryCryptoEngine
+  RepositoryCBOMEngine
+  RepositorySecretEngine
+  RepositoryDependencyEngine
+  RepositoryCIEngine
+  RepositoryContainerEngine
+  RepositoryQuantumEngine
+```
+
+Each engine should expose a consistent interface.
+
+Example conceptual interface:
+
+```text
+initialize()
+validateTarget()
+execute()
+emitEvidence()
+normalizeResults()
+getProgress()
+cancel()
+cleanup()
+```
+
+---
+
+# 33. PARALLEL SCANNING
+
+Where safe, execute independent engines in parallel.
+
+Example:
+
+```text
+                 Scan
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+      Crypto    Secrets   Dependency
+        │         │         │
+        └─────────┼─────────┘
+                  ▼
+             Correlation
+```
+
+Do not parallelize operations that compete for the same locked resources or create unnecessary load.
+
+Implement:
+
+* Concurrency limits
+* Queue priority
+* Cancellation
+* Timeouts
+* Retries
+* Backpressure
+
+---
+
+# 34. REAL-TIME PROGRESS
+
+The UI must show actual scanner progress.
+
+Example:
+
+```text
+DEEP SCAN
+
+Overall
+██████████████░░░░ 74%
+
+Crypto Discovery        ✓
+Secrets                 ✓
+Dependencies            ███████░░
+Source Analysis         ██████░░░░
+Quantum Assessment      Waiting
+```
+
+Use:
+
+```text
+SSE
+```
+
+or WebSockets where appropriate.
+
+Do not use fake progress timers.
+
+Progress must originate from actual scanner task events.
+
+---
+
+# 35. SCAN EVENT MODEL
+
+Create events such as:
+
+```text
+scan.created
+scan.started
+engine.started
+engine.progress
+finding.discovered
+evidence.collected
+engine.completed
+engine.failed
+correlation.completed
+scoring.completed
+scan.completed
+scan.cancelled
+```
+
+Example:
+
+```json
+{
+  "event": "finding.discovered",
+  "scan_id": "...",
+  "engine": "CryptoDiscoveryEngine",
+  "severity": "high",
+  "timestamp": "..."
+}
+```
+
+---
+
+# 36. EVIDENCE-FIRST MODEL
+
+Every finding must have evidence.
+
+Never generate:
+
+```text
+High Risk
+```
+
+without supporting evidence.
+
+Evidence may include:
+
+```text
+File
+Line
+Repository
+Commit
+Algorithm
+Certificate
+Dependency
+Configuration
+Protocol
+Scanner observation
+```
+
+Example:
+
+```text
+Finding:
+RSA-2048 detected
+
+Evidence:
+Repository: payments-api
+File: src/security/signing.ts
+Line: 81
+API: crypto.createSign()
+Algorithm: RSA-SHA256
+Confidence: High
+```
+
+---
+
+# 37. FINDING CONFIDENCE
+
+Use:
+
+```text
+High
+Medium
+Low
+Unknown
+```
+
+Separate:
+
+```text
+Severity
+```
+
+from:
+
+```text
+Confidence
+```
+
+Example:
+
+```text
+Severity: Critical
+Confidence: Medium
+```
+
+This is important to prevent false-positive-driven remediation.
+
+---
+
+# 38. RESULT NORMALIZATION
+
+All engines should produce normalized findings.
+
+Canonical model:
+
+```text
+finding_id
+scan_id
+asset_id
+engine
+category
+subcategory
+severity
+confidence
+title
+description
+evidence
+location
+algorithm
+component
+version
+quantum_status
+recommendation
+references
+first_seen
+last_seen
+```
+
+---
+
+# 39. CORRELATION ENGINE
+
+Create:
+
+## Qguard Helix Finding Correlation Engine™
+
+Correlate duplicate findings.
+
+Example:
+
+```text
+RSA-2048
+```
+
+detected by:
+
+```text
+Crypto Scanner
+Dependency Scanner
+TLS Scanner
+Certificate Scanner
+```
+
+Do not display four unrelated findings if they represent the same underlying exposure.
+
+Instead:
+
+```text
+Unified Finding
+
+RSA-2048 Quantum Exposure
+
+Evidence Sources:
+• Source Code
+• Dependency
+• Certificate
+• TLS
+```
+
+---
+
+# 40. QUANTUM RISK SCORING
+
+Integrate results into the existing Qguard Helix scoring model.
+
+Separate:
+
+```text
+Security Risk
+Quantum Risk
+Migration Risk
+Confidence
+Coverage
+```
+
+Do not reduce all of these to one number.
+
+Example:
+
+```text
+Security Risk       HIGH
+Quantum Risk        CRITICAL
+Migration Risk      HIGH
+Confidence          92%
+Coverage            87%
+```
+
+---
+
+# 41. SCAN COVERAGE
+
+Display:
+
+```text
+Files scanned
+Files skipped
+Files unsupported
+Repositories scanned
+Branches scanned
+Commits analyzed
+Dependencies analyzed
+Crypto components found
+Secrets detected
+Certificates found
+Configuration files analyzed
+```
+
+If files are excluded:
+
+```text
+Coverage limitation:
+node_modules excluded
+Binary files excluded
+.git objects partially analyzed
+```
+
+Never claim 100% coverage if material data was excluded.
+
+---
+
+# 42. EXCLUSIONS
+
+Provide:
+
+```text
+Exclude Directory
+Exclude File
+Exclude Pattern
+Exclude Extension
+Exclude Dependency
+Exclude Secret Rule
+```
+
+Example:
+
+```text
+node_modules/**
+dist/**
+build/**
+coverage/**
+```
+
+Allow users to create reusable scan profiles.
+
+---
+
+# 43. LOCAL PRIVACY MODE
+
+The Local scanner must support:
+
+## Local-Only Mode
+
+In this mode:
+
+```text
+Source code remains on device
+Secrets remain on device
+Git history remains on device
+Raw files remain on device
+```
+
+Only sanitized results may leave the device.
+
+Display prominently:
+
+```text
+LOCAL-ONLY PROCESSING
+
+Your source code and files remain on this device.
+Only sanitized scan metadata may be synchronized.
+```
+
+---
+
+# 44. DEV PRIVACY CONTROLS
+
+For private repositories:
+
+Show:
+
+```text
+Repository Access
+✓ Authorized repository
+✓ Read-only access
+✓ Token encrypted
+✓ No write access
+```
+
+Never request write permissions when read-only scanning is sufficient.
+
+---
+
+# 45. MULTI-TENANT SECURITY
+
+Every scan must be tenant-scoped.
+
+Enforce:
+
+```text
+tenant_id
+user_id
+project_id
+scan_id
+asset_id
+```
+
+at every database and API boundary.
+
+A user from Tenant A must never retrieve:
+
+```text
+Tenant B scans
+Tenant B findings
+Tenant B repositories
+Tenant B credentials
+Tenant B evidence
+```
+
+Do not trust tenant IDs supplied by the frontend.
+
+Derive tenant identity from authenticated server-side context.
+
+---
+
+# 46. DATABASE MODEL
+
+Create or adapt tables such as:
+
+```text
+scan_tasks
+scan_engines
+scan_engine_runs
+scan_targets
+scan_findings
+scan_evidence
+scan_events
+scan_profiles
+repositories
+repository_connections
+local_agents
+crypto_components
+cbom_components
+scan_exclusions
+```
+
+Use proper:
+
+* Foreign keys
+* Indexes
+* Row-Level Security
+* Tenant isolation
+* Audit timestamps
+
+---
+
+# 47. API DESIGN
+
+Implement APIs conceptually similar to:
+
+```text
+POST /api/exposure/scans
+
+GET /api/exposure/scans/:scanId
+
+POST /api/exposure/scans/:scanId/cancel
+
+GET /api/exposure/scans/:scanId/events
+
+GET /api/exposure/scans/:scanId/findings
+
+GET /api/exposure/scans/:scanId/evidence
+
+GET /api/exposure/scans/:scanId/cbom
+
+POST /api/exposure/local/agent/register
+
+GET /api/exposure/local/agent/status
+
+POST /api/exposure/local/scans
+
+POST /api/exposure/dev/providers/connect
+
+GET /api/exposure/dev/repositories
+
+POST /api/exposure/dev/repositories/scan
+```
+
+Adapt these to the existing backend conventions instead of blindly duplicating existing endpoints.
+
+---
+
+# 48. UI — LOCAL TAB
+
+When Local is selected, transform the main assessment interface appropriately.
+
+Suggested UI:
+
+```text
+LOCAL SECURITY ASSESSMENT
+
+Scan your local files, projects, repositories and
+cryptographic assets directly from your device.
+
+┌──────────────────────────────────────┐
+│  🖥 Local Scanner                    │
+│                                      │
+│  ● Agent Connected                   │
+│  Windows • v1.0.x                    │
+│                                      │
+│  [ Select Folder ]                   │
+│  [ Select Files ]                    │
+│  [ Scan Git Repository ]             │
+└──────────────────────────────────────┘
+```
+
+Then:
+
+```text
+SCAN PROFILE
+
+○ Quick
+● Standard
+○ Deep
+○ Cryptographic
+○ Quantum
+○ Custom
+```
+
+Then:
+
+```text
+[ Start Local Scan ]
+```
+
+---
+
+# 49. UI — DEV TAB
+
+Suggested UI:
+
+```text
+DEVELOPMENT SECURITY ASSESSMENT
+
+Analyze public and private repositories for
+security, cryptographic and quantum exposure.
+
+┌─────────────────────────────────────────┐
+│ Repository Provider                     │
+│                                         │
+│ [ GitHub ] [ GitLab ] [ Bitbucket ]    │
+│ [ Azure DevOps ] [ Generic Git ]       │
+└─────────────────────────────────────────┘
+```
+
+Then:
+
+```text
+Repository URL
+
+https://github.com/example/project
+
+[ Validate Repository ]
+```
+
+For authenticated providers:
+
+```text
+Connected as:
+Organization / User
+
+Repository:
+payments-api
+
+Branch:
+main
+```
+
+Then:
+
+```text
+SCAN PROFILE
+
+[ Deep Scan ]
+
+[ Start Repository Scan ]
+```
+
+---
+
+# 50. SCAN DASHBOARD
+
+After starting any Local or Dev scan, transition into a dedicated scan execution view.
+
+Display:
+
+```text
+QGUARD HELIX
+DEEP SECURITY SCAN
+
+Target:
+payments-api
+
+Type:
+DEV / PRIVATE REPOSITORY
+
+Status:
+ANALYZING
+
+Progress:
+67%
+```
+
+Engine cards:
+
+```text
+✓ Repository Discovery
+✓ Secret Discovery
+✓ Dependency Analysis
+● Cryptographic Analysis
+● Quantum Assessment
+○ Container Analysis
+```
+
+Each engine should show its actual state.
+
+---
+
+# 51. FINDINGS VIEW
+
+Create filtering:
+
+```text
+Severity
+Confidence
+Engine
+Language
+Algorithm
+Repository
+File
+Category
+Quantum Status
+```
+
+Example:
+
+```text
+CRITICAL
+Hard-coded Private Key
+
+HIGH
+RSA-2048 Usage
+
+HIGH
+TLS 1.0 Configuration
+
+MEDIUM
+SHA-1 Usage
+
+LOW
+Legacy Crypto Dependency
+```
+
+---
+
+# 52. FINDING DETAILS
+
+Clicking a finding should open a detailed evidence panel.
+
+Example:
+
+```text
+RSA-2048 DETECTED
+
+Severity:
+HIGH
+
+Quantum Status:
+VULNERABLE
+
+Confidence:
+HIGH
+
+Repository:
+payments-api
+
+File:
+src/security/signing.ts
+
+Line:
+81
+
+Detected Usage:
+Digital Signature
+
+Algorithm:
+RSA-2048
+
+Evidence:
+crypto.createSign("RSA-SHA256")
+
+Why it matters:
+RSA relies on mathematical assumptions that are
+vulnerable to sufficiently capable quantum computers.
+
+Recommended Action:
+Plan migration toward a standardized post-quantum
+signature architecture, potentially including a
+hybrid transition strategy.
+
+[ View Source Context ]
+[ Create Migration Task ]
+```
+
+---
+
+# 53. MIGRATION INTEGRATION
+
+Connect findings to the existing Qguard Helix migration functionality.
+
+Every quantum-vulnerable finding should optionally support:
+
+```text
+Create Migration Task
+```
+
+Example:
+
+```text
+RSA-2048
+       ↓
+Migration Planner
+       ↓
+Target:
+ML-DSA / Hybrid
+       ↓
+Dependency:
+Authentication Service
+       ↓
+Priority:
+P1
+```
+
+Do not automatically modify source code.
+
+Scanning and remediation execution must remain separate workflows.
+
+---
+
+# 54. SCAN HISTORY
+
+Create a scan history section.
+
+Display:
+
+```text
+Scan ID
+Target
+Mode
+Profile
+Started
+Duration
+Findings
+Quantum Exposure
+Status
+```
+
+Example:
+
+```text
+DEV-2026-0829-001
+payments-api
+Deep
+82 findings
+31 quantum vulnerable
+Completed
+```
+
+Allow comparison:
+
+```text
+Compare Scan
+
+Previous
+vs
+Current
+```
+
+---
+
+# 55. TREND ANALYSIS
+
+Track:
+
+```text
+Critical findings
+High findings
+Quantum-vulnerable components
+PQC components
+Secrets
+Crypto components
+Coverage
+```
+
+Display:
+
+```text
+Quantum Exposure
+
+Previous Scan     74
+Current Scan      48
+Change            -26
+```
+
+---
+
+# 56. REPORTING
+
+Support:
+
+```text
+Executive Summary
+Technical Findings
+Crypto Inventory
+CBOM
+Quantum Exposure
+Secrets Summary
+Dependency Summary
+Evidence
+Coverage
+Limitations
+Recommendations
+```
+
+Export formats:
+
+```text
+PDF
+JSON
+CSV
+```
+
+Only generate reports from actual scan data.
+
+Never fabricate scanner results.
+
+---
+
+# 57. PERFORMANCE REQUIREMENTS
+
+Local scans must not freeze the browser.
+
+Dev repository scans must not execute synchronously inside the HTTP request.
+
+Use background jobs.
+
+Recommended architecture:
+
+```text
+API
+ ↓
+Redis / Queue
+ ↓
+Scan Orchestrator
+ ↓
+Dedicated Worker
+ ↓
+Scanner Engine
+ ↓
+Evidence Store
+```
+
+Respect the existing Qguard Helix architecture if already implemented.
+
+---
+
+# 58. RESOURCE CONTROLS
+
+Implement:
+
+```text
+CPU limits
+Memory limits
+File-size limits
+Repository-size limits
+Maximum scan duration
+Maximum concurrent scans
+Maximum file count
+Maximum Git history depth
+```
+
+Make limits configurable.
+
+---
+
+# 59. SAFE FILE HANDLING
+
+Treat all scanned repositories/files as untrusted input.
+
+Protect against:
+
+* Path traversal
+* Symlink attacks
+* Malicious archives
+* Zip bombs
+* Recursive directory loops
+* Huge files
+* Binary parser vulnerabilities
+* Malformed source files
+
+Never blindly extract archives.
+
+Never execute repository code merely to analyze it.
+
+Never run:
+
+```text
+npm install
+pip install
+make
+./build.sh
+docker build
+terraform apply
+```
+
+unless a separate, explicitly isolated sandbox workflow is intentionally implemented.
+
+---
+
+# 60. NO AUTOMATIC CODE EXECUTION
+
+The Dev and Local scanners must primarily perform static analysis.
+
+Do NOT execute:
+
+```text
+repository applications
+scripts
+unknown binaries
+install hooks
+postinstall scripts
+CI pipelines
+```
+
+during ordinary scanning.
+
+If dynamic analysis is added later, it must run inside a dedicated isolated sandbox.
+
+---
+
+# 61. SCANNER ENGINE HEALTH
+
+Create scanner health monitoring.
+
+Example:
+
+```text
+ENGINE HEALTH
+
+Local Crypto Engine       ● Healthy
+Secret Engine              ● Healthy
+Dependency Engine          ● Healthy
+Repository Engine          ● Healthy
+Quantum Engine             ● Healthy
+CBOM Engine                ● Healthy
+```
+
+Do not allow the UI to report an engine as healthy unless the backend actually reports it as healthy.
+
+---
+
+# 62. FAILURE HANDLING
+
+If an engine fails:
+
+```text
+Scan Status:
+PARTIAL
+```
+
+Example:
+
+```text
+Repository Discovery        ✓
+Crypto Analysis             ✓
+Dependency Analysis         ✕
+Quantum Assessment          ✓
+
+Result:
+PARTIAL SCAN
+
+Reason:
+Dependency manifest could not be parsed.
+```
+
+Do not mark the entire scan as successful if critical engines failed.
+
+---
+
+# 63. ACCURACY REQUIREMENTS
+
+This system must prioritize:
+
+```text
+Accuracy > Number of Findings
+```
+
+Avoid noisy pattern matching.
+
+Every finding should include:
+
+```text
+Evidence
+Confidence
+Detection Method
+```
+
+Use:
+
+```text
+Observed
+Inferred
+Potential
+Unknown
+```
+
+where appropriate.
+
+Never represent an inference as an observed fact.
+
+---
+
+# 64. QUANTUM CLASSIFICATION REQUIREMENTS
+
+Use precise classifications:
+
+```text
+Quantum Vulnerable
+Quantum Resistant
+Hybrid
+PQC
+Unknown
+Not Applicable
+```
+
+Do not classify every classical cryptographic algorithm as equally vulnerable.
+
+Consider the cryptographic role.
+
+For example:
+
+```text
+RSA / ECC
+```
+
+used for public-key encryption/signatures/key exchange should be treated differently from:
+
+```text
+AES-256
+SHA-256
+SHA-3
+```
+
+Do not create simplistic:
+
+```text
+Algorithm = vulnerable
+```
+
+logic without considering usage.
+
+---
+
+# 65. AUDIT LOGGING
+
+Log security-relevant events:
+
+```text
+Repository connected
+Repository disconnected
+Local agent connected
+Local agent revoked
+Scan started
+Scan cancelled
+Scan completed
+Finding accessed
+Evidence accessed
+Report exported
+Credential rotated
+```
+
+Never log:
+
+```text
+Passwords
+API tokens
+Private keys
+Raw secrets
+Repository credentials
+```
+
+---
+
+# 66. LOCAL AGENT PAIRING
+
+Implement secure pairing between the browser and Local Scanner Agent.
+
+Recommended conceptual flow:
+
+```text
+User opens Local tab
+        ↓
+Browser detects agent
+        ↓
+Agent generates short-lived pairing challenge
+        ↓
+User approves pairing
+        ↓
+Browser receives session authorization
+        ↓
+Scan session established
+```
+
+Pairing must expire.
+
+Do not use a permanent shared secret embedded in frontend JavaScript.
+
+---
+
+# 67. LOCAL AGENT UPDATE MODEL
+
+The agent should expose:
+
+```text
+version
+platform
+architecture
+capabilities
+scanner-engine versions
+```
+
+Example:
+
+```text
+Qguard Helix Local Agent
+
+Version:
+1.2.0
+
+Platform:
+Windows x64
+
+Crypto Engine:
+2.1.0
+
+CBOM Engine:
+1.8.0
+```
+
+The UI should warn when the agent is incompatible or outdated.
+
+---
+
+# 68. UI STATES
+
+Implement all states.
+
+### Local
+
+```text
+Agent Not Installed
+Agent Connecting
+Agent Connected
+Agent Permission Required
+Agent Busy
+Agent Offline
+Agent Error
+```
+
+### Dev
+
+```text
+Provider Not Connected
+Provider Connecting
+Authenticated
+Repository Loading
+Repository Selected
+Scan Queued
+Scanning
+Completed
+Partial
+Failed
+```
+
+Never leave blank screens.
+
+---
+
+# 69. EMPTY STATES
+
+Example:
+
+```text
+NO LOCAL TARGET SELECTED
+
+Select a folder, file or Git repository
+to begin your local security assessment.
+```
+
+Dev:
+
+```text
+NO REPOSITORY SELECTED
+
+Connect a repository provider or enter a
+public Git repository URL.
+```
+
+---
+
+# 70. FRONTEND COMPONENT ARCHITECTURE
+
+Create reusable components such as:
+
+```text
+ExposureModeTabs
+WebAssessmentPanel
+LocalAssessmentPanel
+DevAssessmentPanel
+
+LocalAgentStatus
+LocalTargetSelector
+RepositoryProviderSelector
+RepositorySelector
+
+ScanProfileSelector
+ScanEngineSelector
+ScanProgress
+ScanEngineCard
+FindingList
+FindingDetails
+EvidencePanel
+CryptoComponentTable
+CBOMViewer
+QuantumExposureSummary
+ScanHistory
+ScanComparison
+```
+
+Avoid one enormous React component.
+
+---
+
+# 71. BACKEND SERVICE ARCHITECTURE
+
+Separate services logically:
+
+```text
+exposure-api
+scan-orchestrator
+local-agent-service
+repository-service
+crypto-discovery-service
+secret-scanner-service
+dependency-service
+cbom-service
+quantum-assessment-service
+evidence-service
+risk-scoring-service
+```
+
+These may initially be deployed as modular components within the existing backend if full microservice deployment would be premature.
+
+Prioritize clean service boundaries.
+
+---
+
+# 72. SECURITY BOUNDARY
+
+Clearly separate:
+
+```text
+WEB
+```
+
+from:
+
+```text
+LOCAL
+```
+
+and:
+
+```text
+DEV
+```
+
+Do not allow a web scan to accidentally gain local-agent permissions.
+
+Do not allow repository credentials to be used by local scanning.
+
+Do not allow Local Agent APIs to access Dev provider credentials.
+
+---
+
+# 73. EXISTING QGUARD HELIX INTEGRATION
+
+Integrate with existing:
+
+```text
+Qguard Helix Authentication
+Tenant System
+Asset Inventory
+CBOM
+Quantum Readiness
+Migration Planner
+Risk Scoring
+Audit Vault
+Sophia AI Security Copilot
+Telemetry
+Compliance
+```
+
+Do not create duplicate concepts if equivalent existing models already exist.
+
+Reuse existing:
+
+```text
+Asset
+Finding
+Evidence
+Crypto Component
+CBOM
+Risk
+Migration Task
+Tenant
+User
+```
+
+where appropriate.
+
+---
+
+# 74. SOPHIA INTEGRATION
+
+Sophia should be able to answer questions using actual scan results.
+
+Examples:
+
+```text
+"What did my latest Local scan find?"
+
+"Which repository has the highest quantum exposure?"
+
+"Show me all RSA usage in my repositories."
+
+"How many quantum-vulnerable cryptographic components were found?"
+
+"Which findings have high confidence?"
+
+"What changed since my previous scan?"
+```
+
+Sophia must query the authenticated tenant's actual scan data.
+
+Never hallucinate findings.
+
+If data is unavailable:
+
+```text
+I don't have sufficient scan evidence to answer that accurately.
+```
+
+---
+
+# 75. API DATA CONTRACT
+
+Sophia and dashboards must consume normalized scan results.
+
+Example conceptual response:
+
+```json
+{
+  "scan_id": "scan-123",
+  "mode": "dev",
+  "status": "completed",
+  "coverage": {
+    "files": 8421,
+    "crypto_components": 48
+  },
+  "quantum": {
+    "vulnerable": 31,
+    "hybrid": 7,
+    "pqc": 4,
+    "unknown": 6
+  },
+  "findings": []
+}
+```
+
+The exact implementation should follow the existing Qguard Helix API conventions.
+
+---
+
+# 76. TESTING REQUIREMENTS
+
+Create comprehensive tests.
+
+## Unit Tests
+
+Test:
+
+```text
+Crypto detection
+Algorithm normalization
+Secret detection
+Dependency detection
+Quantum classification
+Severity calculation
+Confidence calculation
+CBOM normalization
+Finding correlation
+```
+
+## Integration Tests
+
+Test:
+
+```text
+Local Agent → API
+Repository → Scan
+Scan → Engine
+Engine → Evidence
+Evidence → Findings
+Findings → Dashboard
+Findings → Migration Planner
+```
+
+## Security Tests
+
+Test:
+
+```text
+Tenant isolation
+Path traversal
+Symlink traversal
+Malicious archive
+Token leakage
+Secret leakage
+Unauthorized repository access
+Unauthorized local-agent access
+Expired pairing
+Invalid scan IDs
+Cross-tenant scan access
+```
+
+---
+
+# 77. TEST FIXTURES
+
+Create safe test repositories containing examples of:
+
+```text
+RSA
+ECC
+SHA-1
+AES-256
+TLS configuration
+Private keys
+Fake API keys
+Dependencies
+Dockerfiles
+Terraform
+Kubernetes
+CI/CD
+PQC algorithms
+Hybrid algorithms
+```
+
+Use clearly fake credentials.
+
+Never place real secrets in test fixtures.
+
+---
+
+# 78. ACCEPTANCE CRITERIA
+
+The implementation is complete only when all of the following are true:
+
+### WEB
+
+* Existing Web scanning continues to work.
+* No Web functionality is broken.
+
+### LOCAL
+
+* User can connect the Local Scanner Agent.
+* User can select local files.
+* User can select local folders.
+* User can scan a local codebase.
+* User can scan a local Git repository.
+* Local source code can be analyzed.
+* Crypto usage can be detected.
+* CBOM can be generated.
+* Secrets can be detected and redacted.
+* Dependencies can be analyzed.
+* Git history can optionally be analyzed.
+* Quantum exposure can be calculated.
+* Results stream in real time.
+* Scan cancellation works.
+* Partial failures are correctly reported.
+* Local-only privacy mode works.
+
+### DEV
+
+* Public repositories can be scanned.
+* Private GitHub repositories can be connected securely.
+* GitLab repositories can be supported.
+* Provider architecture is extensible.
+* Repository selection works.
+* Branch selection works.
+* Deep repository scanning works.
+* Crypto analysis works.
+* Secret scanning works.
+* Dependency analysis works.
+* CI/CD analysis works.
+* Container/IaC analysis works.
+* CBOM is generated.
+* Quantum exposure is calculated.
+* Findings include evidence.
+* Real-time progress works.
+
+---
+
+# 79. DO NOT IMPLEMENT FAKE FUNCTIONALITY
+
+This is extremely important.
+
+Do NOT use:
+
+```text
+fake scan progress
+fake findings
+hard-coded vulnerability counts
+mock results in production
+random scores
+placeholder "100% secure" results
+```
+
+If an engine is not implemented, clearly show:
+
+```text
+Not implemented
+```
+
+or:
+
+```text
+Unavailable
+```
+
+rather than pretending it ran.
+
+---
+
+# 80. DO NOT OVERWRITE EXISTING FUNCTIONALITY
+
+Before modifying code:
+
+1. Inspect the existing repository.
+2. Identify current Quantum Exposure Assessment components.
+3. Identify current API endpoints.
+4. Identify existing scanner engines.
+5. Identify existing database models.
+6. Identify existing SSE/WebSocket infrastructure.
+7. Identify existing authentication.
+8. Identify existing tenant isolation.
+9. Identify existing CBOM models.
+10. Identify existing Quantum Readiness models.
+
+Reuse existing functionality whenever possible.
+
+Do not duplicate existing engines.
+
+Do not create conflicting API contracts.
+
+---
+
+# 81. IMPLEMENTATION PHASES
+
+Implement in this order.
+
+## Phase 1 — Architecture
+
+Create:
+
+```text
+ScanTask
+ScanEngine
+ScanOrchestrator
+ScanEvent
+Finding
+Evidence
+```
+
+and integrate them with the existing architecture.
+
+## Phase 2 — Local Agent
+
+Implement:
+
+```text
+Local Agent
+Secure Pairing
+Filesystem Selection
+Local Scan API
+```
+
+## Phase 3 — Local Engines
+
+Implement:
+
+```text
+File Discovery
+Crypto Discovery
+CBOM
+Secrets
+Dependencies
+Configuration
+Git History
+Quantum Assessment
+```
+
+## Phase 4 — Dev Provider Layer
+
+Implement:
+
+```text
+Provider Adapter
+GitHub
+GitLab
+Generic Git
+```
+
+Then extend to:
+
+```text
+Bitbucket
+Azure DevOps
+```
+
+## Phase 5 — Dev Engines
+
+Implement:
+
+```text
+Repository Discovery
+Code Security
+Crypto
+CBOM
+Secrets
+Dependencies
+CI/CD
+Container/IaC
+Quantum Assessment
+```
+
+## Phase 6 — Real-Time UI
+
+Implement:
+
+```text
+Scan Progress
+Engine Status
+Finding Stream
+Evidence
+Cancellation
+Partial Results
+```
+
+## Phase 7 — Qguard Helix Integration
+
+Connect:
+
+```text
+Asset Inventory
+CBOM
+Quantum Readiness
+Migration Planner
+Audit Vault
+Sophia
+Reports
+```
+
+## Phase 8 — Security Hardening
+
+Perform:
+
+```text
+Threat Modeling
+Tenant Isolation Testing
+Agent Security Testing
+Credential Security Review
+Filesystem Security Review
+Repository Security Review
+```
+
+## Phase 9 — Performance
+
+Test:
+
+```text
+Small repository
+Medium repository
+Large repository
+Large local directory
+Large Git history
+High finding count
+Concurrent scans
+```
+
+---
+
+# 82. FINAL UX GOAL
+
+The final experience should feel like a professional enterprise security assessment platform.
+
+The user should be able to think:
+
+```text
+Where is my cryptographic exposure?
+```
+
+and choose:
+
+```text
+WEB
+```
+
+for Internet-facing infrastructure,
+
+```text
+LOCAL
+```
+
+for files and source code on their device,
+
+or:
+
+```text
+DEV
+```
+
+for software repositories.
+
+The system then determines:
+
+```text
+What should be scanned?
+        ↓
+Which engines are required?
+        ↓
+What evidence was discovered?
+        ↓
+What cryptography exists?
+        ↓
+Which findings are real?
+        ↓
+What is quantum vulnerable?
+        ↓
+How severe is the exposure?
+        ↓
+What should be migrated?
+```
+
+---
+
+# 83. FINAL DESIGN PRINCIPLE
+
+Qguard Helix should not become merely another generic vulnerability scanner.
+
+The differentiating architecture is:
+
+```text
+                QGUARD HELIX
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+       WEB         LOCAL         DEV
+        │            │            │
+        ▼            ▼            ▼
+ Internet       Device       Repositories
+ Exposure       Exposure       Exposure
+        │            │            │
+        └────────────┼────────────┘
+                     ▼
+             Crypto Discovery
+                     │
+                     ▼
+                  CBOM
+                     │
+                     ▼
+             Evidence Correlation
+                     │
+                     ▼
+             Quantum Assessment
+                     │
+                     ▼
+              Risk Prioritization
+                     │
+                     ▼
+             Migration Planning
+                     │
+                     ▼
+             Qguard Helix Defense
+```
+
+The ultimate objective is:
+
+**Discover → Analyze → Prove → Quantify → Prioritize → Migrate**
+
+Every result must be evidence-backed, tenant-isolated, auditable, and derived from the actual scanner execution.
+
+Do not compromise accuracy for visual completeness.
+
+Do not compromise security for convenience.
+
+Do not compromise privacy for centralized processing.
+
+Build the Local and Dev scanning capabilities as first-class Qguard Helix security engines, not as UI-only extensions.

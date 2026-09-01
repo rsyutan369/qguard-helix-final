@@ -36,6 +36,12 @@ import { moduleIdForFinding } from '@/api-server/scanner-module-ledger';
    dashboard and the scanner phrase "behind Cloudflare" from one implementation
    instead of two that can drift. */
 import { describeEdgeInfrastructure } from '@/lib/scanner/web-scanner/edge-intelligence-model';
+import { decomposeSuite } from '@/lib/crypto/tls-intelligence';
+import {
+  displayForwardSecrecy,
+  reconcileTransport,
+  transportReconciliationNote,
+} from '@/lib/scanner/web-scanner/transport-truth';
 import type { RiskBand } from '@/lib/scanner/public-scan/types';
 import type {
   DefensiveFinding,
@@ -252,7 +258,18 @@ export interface ScannerAssessment {
     gradeDetail: string;
     encryptionScore: number;
     classicalScore: number;
-    postQuantumReadiness: number;
+    /**
+     * null = NOT SCORED.
+     *
+     * The panel used to render `14 / Limited` directly above its own footnote
+     * saying "post-quantum readiness was not scored: no TLS handshake
+     * completed". The 14 came from a finding-share fallback that runs when the
+     * weighted model excluded the dimension — so the page published a number
+     * and a denial of that number at the same time.
+     */
+    postQuantumReadiness: number | null;
+    /** Why it was not scored. Rendered in place of the number. */
+    postQuantumReadinessReason: string | null;
     evidenceCoverage: number;
     businessRisk: RiskBand;
     businessRiskDetail: string;
@@ -667,6 +684,15 @@ export function buildNodeEvidence(
       const staticRsa = suites.filter((suite) => /^RSA$/i.test(suite.keyExchange ?? ''));
       const hybridApplied = Boolean(pq?.probed && pq.state === 'pass' && pq.hybridGroups.length > 0);
       const pureKem = Boolean(pq?.probed && !hybridApplied && pq.pureKemGroups.length > 0);
+      /* Decompose the NEGOTIATED suite, passing the measured named group so a
+         TLS 1.3 suite is read against the group that was actually used rather
+         than against the classical default its name implies. */
+      /* ONE reconciled transport reading for every row below. */
+      const transport = reconcileTransport(tls, edge, undefined);
+      const negotiatedSuiteName = tls?.cipherSuite || edgeTransport?.negotiatedCipher || '';
+      const suiteAnatomy = negotiatedSuiteName
+        ? decomposeSuite(negotiatedSuiteName, hybridApplied || pureKem ? (pq?.primaryGroup ?? pq?.pureKemGroups?.[0] ?? null) : (tls?.negotiatedCurve ?? null))
+        : null;
 
       rows.push(
         {
@@ -708,17 +734,21 @@ export function buildNodeEvidence(
           tone: hybridApplied ? TONE_PQ : pureKem ? TONE_WARN : pq?.probed ? TONE_FAIL : TONE_MUTED,
           detail: pq?.detail ?? 'Named-group probing requires a completed TLS handshake',
         },
+        /* Reconciled, not re-derived. This row, the Cryptographic Intelligence
+           panel and the score decomposition each used to compute forward
+           secrecy from a different fallback chain, and on a TLS 1.3 endpoint
+           whose named-group probe timed out they published "Not offered",
+           "Not observed" and 100 simultaneously. All three now read the same
+           `transport-truth` reconciliation. */
         {
           label: 'Forward secrecy',
-          value: edgeTransport
-            ? edgeTransport.forwardSecrecy
-              ? 'Yes'
-              : 'No'
-            : tls?.ephemeralKeyType
-              ? 'Yes'
-              : 'Not observed',
-          tone: edgeTransport ? (edgeTransport.forwardSecrecy ? TONE_PASS : TONE_FAIL) : TONE_MUTED,
-          detail: edgeTransport?.forwardSecrecyBasis ?? 'Ephemeral key material — present means forward secrecy',
+          value: displayForwardSecrecy(transport),
+          tone: !transport.forwardSecrecy.measured
+            ? TONE_MUTED
+            : transport.forwardSecrecy.value
+              ? (transport.staticRsaAccepted.value === true ? TONE_WARN : TONE_PASS)
+              : TONE_FAIL,
+          detail: transport.forwardSecrecy.basis,
         },
         {
           label: 'Cipher suite',
@@ -726,6 +756,28 @@ export function buildNodeEvidence(
           tone: /GCM|CHACHA20|CCM/i.test(tls?.cipherSuite ?? '') ? TONE_PASS : TONE_WARN,
           detail: 'Suite selected on the negotiated connection',
         },
+        /* Which PART of the suite carries the quantum exposure.
+           A suite is four independent decisions wearing one name, and
+           "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 - vulnerable" is true but
+           useless: it does not say what to change. The decomposer classifies
+           each component through the knowledge base and names the one Shor
+           breaks, so the row answers "replace the ECDHE key agreement", not
+           "your TLS is broken". Omitted entirely when the suite name is not
+           recognisable - an unparsed suite gets no invented attribution. */
+        ...(suiteAnatomy
+          ? [
+              {
+                label: 'Quantum exposure locus',
+                value: suiteAnatomy.quantumExposureFrom.length
+                  ? suiteAnatomy.quantumExposureFrom
+                      .map((part) => (part === 'key-exchange' ? 'Key agreement' : part === 'authentication' ? 'Server authentication' : part === 'bulk' ? 'Bulk cipher' : 'MAC'))
+                      .join(' + ')
+                  : 'None identified in the suite',
+                tone: suiteAnatomy.quantumExposureFrom.length ? TONE_WARN : TONE_PASS,
+                detail: suiteAnatomy.quantumSummary,
+              },
+            ]
+          : []),
         {
           label: 'Suites enumerated',
           value: suites.length ? `${suites.length} accepted · ${vulnerableSuites} quantum-vulnerable` : '—',
@@ -1342,11 +1394,25 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      reported 8% for the same host. The finding-share is kept only as a fallback
      for estates with no transport evidence at all. */
   const publishedPq = scoreComponents.find((component) => component.key === 'post-quantum-readiness');
-  const postQuantumReadiness = publishedPq?.score !== null && publishedPq?.score !== undefined
-    ? publishedPq.score
-    : summary && summary.totalFindings > 0
+  const pqWasScored = publishedPq?.score !== null && publishedPq?.score !== undefined;
+  /* When the published model measured it, that is the number. When it did NOT,
+     the honest answer is null — not a finding-share fallback that produces a
+     confident-looking 14 for an endpoint whose named groups were never probed.
+     The fallback survives only for estates with findings but no transport
+     evidence at all, where a share of the inventory IS the best available
+     reading and is labelled as such. */
+  const postQuantumReadiness = pqWasScored
+    ? publishedPq!.score
+    : summary && summary.totalFindings > 0 && !results[0]?.metadata?.edgeIntelligence
       ? clamp((summary.pqcReady / summary.totalFindings) * 100)
-      : clamp(input.estate.pqcReadiness);
+      : null;
+  const postQuantumReadinessReason = postQuantumReadiness !== null
+    ? null
+    /* `observed` carries the not-measured reason for every score component
+       (see ScoreComponent above), so the panel states the same cause the score
+       decomposition does rather than inventing a second explanation. */
+    : publishedPq?.observed
+      || 'Post-quantum readiness was not scored: named key-agreement groups were not probed, so no post-quantum group could be offered to this endpoint.';
 
   const scanner2Readiness = scanner2?.quantumReadiness
     ? { score: clamp(scanner2.quantumReadiness.score), label: scanner2.quantumReadiness.label }
@@ -1481,17 +1547,20 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
         ? Array.from(new Set(keyExchangeFindings.map((finding) => finding.algorithm))).slice(0, 3).join(', ')
         : 'Not observed';
 
-  const forwardSecrecy = edge?.quantum.forwardSecrecy
-    ? edge.quantum.forwardSecrecy
-    : negotiatedTls
-      ? Boolean(negotiatedTls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(negotiatedTls.keyExchange || '')
+  /* ONE reconciled transport reading, shared with the Observed Attack Surface
+     rows and the score decomposition. This panel used to read
+     `edge.quantum.forwardSecrecy`, which is a string the edge engine sets to
+     "Not observed" whenever ITS probe failed — even when the socket handshake
+     had measured a TLS 1.3 session that is forward secret by construction. */
+  const transport = reconcileTransport(negotiatedTls, edge, undefined);
+  const forwardSecrecy = transport.forwardSecrecy.measured
+    ? displayForwardSecrecy(transport)
+    : keyExchangeFindings.length
+      ? keyExchangeFindings.some((finding) => /ecdhe|dhe|x25519/i.test(finding.algorithm))
         ? 'Enabled'
         : 'Not offered'
-      : keyExchangeFindings.length
-        ? keyExchangeFindings.some((finding) => /ecdhe|dhe|x25519/i.test(finding.algorithm))
-          ? 'Enabled'
-          : 'Not offered'
-        : 'Unknown';
+      : 'Not measured';
+  const forwardSecrecyBasis = transport.forwardSecrecy.basis;
 
   /* Quantum vulnerability — from transport evidence, never from finding titles.
      ------------------------------------------------------------------------
@@ -1507,18 +1576,40 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      The verdict is now the edge engine's, computed from the named-group probe
      and the parsed certificate chain — the same classification /public-scan
      publishes, so one host cannot be graded differently on the two surfaces. */
-  const quantumVulnerability = edge
-    ? edge.quantum.vulnerability
-    : !hasEvidence
-      ? 'Unknown'
-      : scoped.vulnerable > 0
-        ? 'Vulnerable'
-        : 'Not observed';
-  const quantumVulnerabilityReason = edge
-    ? edge.quantum.vulnerabilityReason
-    : !hasEvidence
-      ? 'No cryptographic evidence has been recorded for this view yet.'
-      : 'Derived from persisted finding severities; no public-edge measurement is attached to this scan.';
+  /* The reconciled reading wins over the edge engine's own verdict.
+     ------------------------------------------------------------------------
+     The edge engine reports "Unknown" whenever ITS named-group probe failed.
+     But when the socket handshake completed, the key exchange that was
+     ACTUALLY negotiated was observed — and if it is classical, the session
+     that happened IS quantum vulnerable. Publishing "Unknown" beside a HIGH
+     quantum risk factor for the same certificate (which the page did) is a
+     contradiction: either the exposure is unknown or it is high.
+
+     The reconciler scopes the claim precisely — "the handshake that was
+     negotiated used X, which Shor breaks; whether this endpoint would ALSO
+     accept a post-quantum group was not measured" — which is both honest and
+     more useful than "Unknown". */
+  const transportVerdict = transport.quantumVulnerability;
+  const quantumVulnerability = transportVerdict.measured
+    ? transportVerdict.value === 'hybrid'
+      ? 'Hybrid-protected'
+      : transportVerdict.value === 'resistant'
+        ? 'Quantum-resistant'
+        : 'Vulnerable'
+    : edge
+      ? edge.quantum.vulnerability
+      : !hasEvidence
+        ? 'Unknown'
+        : scoped.vulnerable > 0
+          ? 'Vulnerable'
+          : 'Not observed';
+  const quantumVulnerabilityReason = transportVerdict.measured
+    ? transportVerdict.basis
+    : edge
+      ? edge.quantum.vulnerabilityReason
+      : !hasEvidence
+        ? 'No cryptographic evidence has been recorded for this view yet.'
+        : 'Derived from persisted finding severities; no public-edge measurement is attached to this scan.';
 
   /* Migration targets: the edge engine's, when it measured the endpoint, because
      those name the primitive actually observed. The Scanner_2 migration engine
@@ -1587,6 +1678,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
       encryptionScore,
       classicalScore,
       postQuantumReadiness,
+      postQuantumReadinessReason,
       evidenceCoverage,
       businessRisk,
       businessRiskDetail,
@@ -2348,35 +2440,30 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
      reports for the ephemeral key (it returns `{}` for 1.3). The edge engine
      encodes that reasoning and returns the basis it used, so the row can state
      WHY rather than asserting a flag. */
-  const edgeStaticRsa = edge?.transport.staticRsaAccepted ?? staticRsaSuites.length > 0;
-  const negotiatedIsEphemeral = edge?.transport
-    ? edge.transport.forwardSecrecy
-    : !tls
-      ? null
-      : Boolean(tls.ephemeralKeyType) || /ecdhe|dhe|x25519|ml-kem|kyber/i.test(tls.keyExchange || '');
+  /* Reconciled, not re-derived — the third of the three sites that each had
+     its own fallback chain. `edge.transport.forwardSecrecy` is a plain boolean
+     that reads `false` when the probe never ran, which is how a timed-out
+     probe published "Not offered" on a TLS 1.3 endpoint. */
+  const surfaceTransport = reconcileTransport(tls, edge, undefined);
+  const edgeStaticRsa = surfaceTransport.staticRsaAccepted.value === true;
+  const pfsDisplay = displayForwardSecrecy(surfaceTransport);
   items.push({
     key: 'pfs',
     label: 'Forward Secrecy',
-    value: negotiatedIsEphemeral === null
-      ? 'Not observed'
-      : !negotiatedIsEphemeral
-        ? 'Not offered'
-        : edgeStaticRsa
-          ? 'Partial'
-          : 'Enabled',
-    status: negotiatedIsEphemeral === null
+    value: pfsDisplay,
+    status: !surfaceTransport.forwardSecrecy.measured
       ? 'unknown'
-      : !negotiatedIsEphemeral
+      : !surfaceTransport.forwardSecrecy.value
         ? 'fail'
         : edgeStaticRsa
           ? 'partial'
           : 'pass',
     detail: edgeStaticRsa
-      ? `${edge?.transport.forwardSecrecyBasis ?? 'Ephemeral key agreement observed on the negotiated suite.'} However, static-RSA key-transport suite(s) are also accepted; sessions negotiated on those have no forward secrecy at all.`
-      : edge?.transport.forwardSecrecyBasis ?? 'Ephemeral key agreement observed on the negotiated suite.',
+      ? `${surfaceTransport.forwardSecrecy.basis} However, static-RSA key-transport suite(s) are also accepted; sessions negotiated on those have no forward secrecy at all.`
+      : surfaceTransport.forwardSecrecy.basis,
     evidence: edge?.transport
       ? [
-          { label: 'Basis', value: edge.transport.forwardSecrecyBasis },
+          { label: 'Basis', value: surfaceTransport.forwardSecrecy.basis },
           { label: 'Static RSA key transport accepted', value: edgeStaticRsa ? 'yes' : 'no' },
           { label: 'Session tickets', value: edge.transport.sessionTickets === null ? 'not observed' : edge.transport.sessionTickets ? 'issued' : 'not issued' },
           { label: 'Session resumption honoured', value: edge.transport.sessionReuse === null ? 'not tested' : edge.transport.sessionReuse ? 'yes' : 'no' },

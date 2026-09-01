@@ -2,7 +2,7 @@
 
 import { Crosshair, Radar, ShieldAlert } from 'lucide-react'
 import type { ExecutiveSnapshot } from '@/hooks/use-dashboard'
-import { Panel, PanelHeader, cx, fmtNumber, relativeTime, TONE, type Tone } from './primitives'
+import { Panel, PanelHeader, cx, fmtNumber, relativeTime, TONE, type Tone, TruncationNote} from './primitives'
 
 export default function ThreatIntel({ intel, loading }: { intel: ExecutiveSnapshot['threatIntel'] | undefined; loading: boolean }) {
   if (loading && !intel) {
@@ -52,6 +52,12 @@ export default function ThreatIntel({ intel, loading }: { intel: ExecutiveSnapsh
                 <span className="shrink-0 font-mono text-[8px] text-white/30">{relativeTime(f.at)}</span>
               </a>
             ))}
+            <TruncationNote
+              shown={Math.min(5, intel.feeds.length)}
+              total={intel.feeds.length}
+              noun="intelligence feeds"
+              rank="most recent"
+            />
           </div>
         ) : (
           <p className="py-3 text-center text-[10px] text-white/30">

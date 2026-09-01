@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { History, Search, AlertTriangle, ShieldAlert, Info, CheckCircle, type LucideIcon } from 'lucide-react'
 import type { SecurityEvent } from '@/hooks/use-dashboard'
-import { Panel, PanelHeader, cx, TONE, relativeTime, type Tone } from './primitives'
+import { Panel, PanelHeader, cx, TONE, relativeTime, type Tone, TruncationNote} from './primitives'
 
 const SEV_META: Record<SecurityEvent['severity'], { icon: LucideIcon; tone: Tone }> = {
   critical: { icon: AlertTriangle, tone: 'critical' },
@@ -37,13 +37,18 @@ export default function ThreatTimeline({ events, loading }: { events: SecurityEv
   const [filter, setFilter] = useState<'all' | SecurityEvent['severity']>('all')
   const [query, setQuery] = useState('')
 
-  const filtered = useMemo(() => {
+  /*
+   * Filter FIRST, then bound the render. Slicing before the filter would make
+   * the severity tabs describe only whatever fell inside the first 60 rows,
+   * so "Critical" could under-report on a busy estate.
+   */
+  const matching = useMemo(() => {
     const q = query.trim().toLowerCase()
     return events
       .filter((e) => filter === 'all' || e.severity === filter)
       .filter((e) => !q || `${e.message} ${e.eventType} ${e.resourceName || ''}`.toLowerCase().includes(q))
-      .slice(0, 60)
   }, [events, filter, query])
+  const filtered = useMemo(() => matching.slice(0, 60), [matching])
 
   return (
     <Panel className="flex h-full flex-col">
@@ -121,6 +126,12 @@ export default function ThreatTimeline({ events, loading }: { events: SecurityEv
                 )
               })}
             </AnimatePresence>
+            <TruncationNote
+              shown={filtered.length}
+              total={matching.length}
+              noun={filter === 'all' ? 'events' : `${filter} events`}
+              rank="most recent"
+            />
           </div>
         )}
       </div>

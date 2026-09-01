@@ -197,10 +197,17 @@ function buildPqKeyAgreement(bundle: ScanEvidenceBundle): EdgePostQuantumKeyAgre
       ...base,
       value: 'Unknown',
       state: 'unknown',
+      /* Scoped to THIS engine's probe.
+         The old wording said "No TLS handshake completed", which appeared on the
+         dashboard directly beneath a negotiated TLS 1.3 suite, a 5-certificate
+         chain and an 85-day validity — all measured by the socket analyser,
+         which had completed a handshake perfectly well. What actually failed is
+         the named-group probe, which needs one handshake PER GROUP and is the
+         first thing to time out. Saying so is both accurate and more useful. */
       detail:
         tls.error
-          ? `No TLS handshake completed (${tls.error}), so post-quantum key agreement was not measured. This is "not observed", not "not supported".`
-          : 'No TLS handshake completed, so post-quantum key agreement was not measured.',
+          ? `Named key-agreement groups could not be probed (${tls.error}), so post-quantum key agreement was not measured. Group probing opens one handshake per group and is separate from the main TLS observation. This is "not measured", not "not supported".`
+          : 'Named key-agreement groups were not probed, so post-quantum key agreement was not measured. This is "not measured", not "not supported".',
       evidence,
     }
   }
@@ -302,7 +309,21 @@ export async function collectEdgeIntelligence(
   const http = bundle.http.data
   const crypto = bundle.crypto.data
 
-  const hasTransportEvidence = Boolean(tls.handshake)
+  /* Evidence is evidence wherever it came from.
+     ------------------------------------------------------------------------
+     This used to be `Boolean(tls.handshake)` — the EDGE prober's own handshake
+     — so a timed-out group probe produced verdict "Unknown" while the same
+     response still carried quantum risk factors and migration targets derived
+     from a certificate chain that HAD been parsed. The page then showed
+     "Quantum Vulnerability: Unknown" directly beside "Certificate public key
+     ECDSA P-256 — HIGH" and an ML-DSA-65 migration target at 80% confidence.
+     Either the exposure is unknown or it is high; it cannot be both.
+
+     A parsed certificate is quantum-relevant evidence in its own right: the
+     leaf's public key and signature are exactly what a CRQC breaks. So the
+     verdict is licensed by either source. */
+  const hasCertificateEvidence = crypto.riskFactors.length > 0 || cert.chainDepth > 0
+  const hasTransportEvidence = Boolean(tls.handshake) || hasCertificateEvidence
   const supportsTls13 =
     tls.supportedProtocols.includes('TLSv1.3') || tls.negotiatedProtocol === 'TLSv1.3'
 

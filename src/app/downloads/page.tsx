@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  Check,
   CircleAlert,
   Download,
   Loader2,
+  Lock,
   Plus,
   RadioTower,
   RefreshCw,
@@ -19,6 +21,8 @@ import { isOwnerEmail } from '@/lib/admin-access';
 import { tierMeets } from '@/lib/subscription-access';
 import { useAgentInstaller, type DeployedAgent } from '@/hooks/use-agent-installer';
 import { DeployWizard } from '@/components/agent-installer/DeployWizard';
+import { AGENT_ROLES } from '@/lib/agent-installer/agent-release';
+import { agentRolePlanCopy, useAgentEntitlement } from '@/hooks/use-agent-entitlement';
 import { AgentDetailDrawer } from '@/components/agent-installer/AgentDetailDrawer';
 import {
   Card,
@@ -54,7 +58,11 @@ export default function DownloadsPage() {
   const subscription = useSubscription();
 
   const owner = isOwnerEmail(user?.email);
-  const entitled = owner || (subscription.isActive && tierMeets(subscription.tier, 'pro'));
+  /* The Agent Center is BASIC, not Pro. A Basic tenant deploys the two
+     read-only roles (Collector, Scanner) that feed the Quantum Readiness engine
+     they already pay for; the two host-modifying roles stay Pro and are gated
+     per role inside the wizard and again server-side. */
+  const entitled = owner || (subscription.isActive && tierMeets(subscription.tier, 'basic'));
   const gateReady = !authLoading && !subscription.loading;
 
   const installer = useAgentInstaller(Boolean(user) && entitled);
@@ -100,10 +108,12 @@ export default function DownloadsPage() {
       <Shell>
         <div className="mx-auto max-w-xl rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
           <ShieldCheck className="mx-auto h-7 w-7 text-cyan-300" />
-          <h1 className="mt-4 text-lg font-black text-white">Agent Center requires Pro</h1>
+          <h1 className="mt-4 text-lg font-black text-white">Agent Center requires a plan</h1>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-white/50">
-            Deploying lightweight collectors, patchers and migration operators to your own infrastructure is part of the Pro
-            plan and above. Your current plan is <span className="font-bold text-white/70">{subscription.tier}</span>.
+            Deploying read-only Collector and Scanner agents to your own infrastructure is included from the{' '}
+            <span className="font-bold text-white/70">Basic</span> plan. Patcher and Migration Operator — the roles that
+            change host configuration — require <span className="font-bold text-white/70">Pro</span>. Your current plan is{' '}
+            <span className="font-bold text-white/70">{subscription.tier}</span>.
           </p>
           <Link
             to="/dashboard/settings"
@@ -136,6 +146,7 @@ export default function DownloadsPage() {
             <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-white/50">
               Deploy lightweight collectors and operators to discover, validate, and protect your cryptographic environment.
             </p>
+            <AgentRoleEntitlementRibbon />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span
@@ -447,6 +458,47 @@ export default function DownloadsPage() {
         <AgentDetailDrawer agent={selected} installer={installer} onClose={() => setSelectedId(null)} />
       ) : null}
     </Shell>
+  );
+}
+
+/**
+ * Which agent roles this plan includes, stated on the page rather than
+ * discovered when the wizard refuses one.
+ *
+ * Shows all four with the unentitled ones marked, for the same reason the
+ * wizard does: a Basic tenant should leave knowing that Patcher and Migration
+ * Operator exist and what they would do, because that is the argument for Pro.
+ */
+function AgentRoleEntitlementRibbon() {
+  const entitlement = useAgentEntitlement();
+  if (entitlement.loading) return null;
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      {AGENT_ROLES.map((role) => {
+        const access = entitlement.byRole[role.id];
+        const allowed = access?.allowed ?? false;
+        return (
+          <span
+            key={role.id}
+            title={allowed ? role.tagline : `${access?.message ?? ''} ${agentRolePlanCopy(role.id)}.`}
+            className={
+              allowed
+                ? 'inline-flex items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-400/[0.07] px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-200'
+                : 'inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-white/35'
+            }
+          >
+            {allowed ? <Check aria-hidden className="h-2.5 w-2.5" /> : <Lock aria-hidden className="h-2.5 w-2.5" />}
+            {role.label}
+          </span>
+        );
+      })}
+      <span className="ml-1 text-[10.5px] text-white/35">
+        {entitlement.canWrite
+          ? 'Your plan includes the host-modifying roles.'
+          : 'Patcher and Migration Operator require Pro.'}
+      </span>
+    </div>
   );
 }
 

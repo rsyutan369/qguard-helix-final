@@ -206,7 +206,10 @@ export interface ExecutiveSnapshot {
     freshHeartbeats: number
     activeScans: number
     scanThroughput: number
-    sseHealth: string
+    /** True only when runtime events exist — absence is not a clean bill of health. */
+    measured: boolean
+    /** True when at least one collector is enrolled, however quiet. */
+    agentsEnrolled: boolean
     process: { cpuMs: number; heapUsedMb: number; rssMb: number; aggregationLatencyMs: number }
   }
   exposureGraph: {

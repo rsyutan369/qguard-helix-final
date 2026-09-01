@@ -75,14 +75,63 @@ const MAX_NATIVE_EVENTS = 500
 const MAX_PROCESS_ROWS = 350
 const MAX_CERTIFICATE_ROWS = 120
 
-const CRYPTO_SIGNALS = [
-  { pattern: /ml-kem|ml_dsa|ml-dsa|kyber|dilithium|sphincs|sntrup|post-quantum|pqc|hybrid/i, algorithm: 'PQC/Hybrid crypto' },
-  { pattern: /openssl|libssl|libcrypto|boringssl|libressl/i, algorithm: 'OpenSSL-compatible crypto' },
-  { pattern: /schannel|capi2|cng|bcrypt|ncrypt|crypt32/i, algorithm: 'Windows Crypto API' },
-  { pattern: /gnutls|mbedtls|wolfssl|nss|rustls|ring|botan|libsodium/i, algorithm: 'Runtime crypto library' },
-  { pattern: /rsa|ecdsa|ecdh|diffie|dh-|dsa|sha-?1|md5|3des|rc4|des|tlsv1|tls 1\.0|tls 1\.1/i, algorithm: 'Legacy crypto usage' },
-  { pattern: /certificate|x509|pki|keystore|truststore|jwt|jose|saml|kms|hsm|key.?vault/i, algorithm: 'Key or certificate usage' },
+/**
+ * WHAT KIND of observation a collector made. The class decides what may be
+ * claimed from it — a loaded library is evidence that cryptography is PRESENT,
+ * never evidence that a specific weak algorithm is in USE.
+ */
+type EvidenceClass =
+  /** A crypto library or provider is loaded in a process. Presence only. */
+  | 'library-presence'
+  /** An X.509 certificate whose algorithms are stated by the platform store. */
+  | 'certificate'
+  /** An observed crypto/TLS API invocation (ETW, eBPF uprobe). */
+  | 'crypto-api-call'
+  /** Supplied verbatim by an operator-configured external collector. */
+  | 'external'
+
+/**
+ * Crypto library families, matched on the MODULE name.
+ *
+ * These identify which provider is present. They deliberately say nothing about
+ * algorithm strength: `libssl` present is not `SSLv3` in use.
+ */
+const CRYPTO_LIBRARY_SIGNALS = [
+  { pattern: /\b(?:openssl|libssl|libcrypto|boringssl|libressl)\b/i, algorithm: 'OpenSSL-compatible crypto library' },
+  { pattern: /\b(?:schannel|capi2|cng|bcrypt|ncrypt|crypt32)\b/i, algorithm: 'Windows Crypto API (CNG/Schannel)' },
+  { pattern: /\b(?:gnutls|mbedtls|wolfssl|nss|rustls|botan|libsodium|libgcrypt)\b/i, algorithm: 'Runtime crypto library' },
+  { pattern: /\b(?:oqs|liboqs|pqclean)\b/i, algorithm: 'Post-quantum crypto library' },
+  { pattern: /\b(?:keystore|truststore|pkcs11|hsm|kms)\b/i, algorithm: 'Key store or key management integration' },
 ]
+
+/**
+ * Algorithms this agent is allowed to NAME, matched against a STATED algorithm
+ * field only - never against a file path, a command line or a module map. A
+ * path containing "OpenSSL" says a library is present; it does not name an
+ * algorithm, and treating it as one published criticals nobody observed.
+ */
+const ALGORITHM_SIGNALS: Array<{ pattern: RegExp; kind: 'pqc' | 'vulnerable' | 'broken' | 'symmetric' }> = [
+  { pattern: /\b(?:ml-kem|ml-dsa|slh-dsa|kyber|dilithium|sphincs\+?|falcon|sntrup\d*)\b/i, kind: 'pqc' },
+  { pattern: /\b(?:rsa|dsa|ecc|ec|ecdsa|ecdh|ecdhe|dhe|diffie-?hellman|ed25519|x25519|id-ecpublickey|secp\d+r?\d*|prime256v1|nistp\d+)\b/i, kind: 'vulnerable' },
+  { pattern: /\b(?:md5|sha-?1|rc4|des|3des|triple-?des)\b/i, kind: 'broken' },
+  { pattern: /\b(?:aes|chacha20|poly1305|sha-?(?:256|384|512)|sha3)\b/i, kind: 'symmetric' },
+]
+
+/**
+ * Crypto provider DLLs worth recording when a Windows process has loaded one.
+ * Passed to PowerShell through the environment, never string-interpolated.
+ */
+const WINDOWS_CRYPTO_MODULE_FILTER =
+  '^(libssl|libcrypto|ssleay32|libeay32|bcrypt|bcryptprimitives|ncrypt|ncryptsslp|crypt32|cryptsp|cryptbase|schannel|sspicli|mssign32|wintrust|libgcrypt|nss3|softokn3|freebl3|gnutls|mbedtls|wolfssl|botan|libsodium|liboqs)'
+
+/** Protocol versions, matched only where a version was actually observed. */
+const WEAK_PROTOCOL = /\b(?:sslv?[23]|tls\s*1\.[01]|tlsv1(?:\.[01])?)\b/i
+
+/** Any stated protocol version, used to read a version out of an event message. */
+const STATED_PROTOCOL = /\b(?:ssl\s*v?[23]|dtls\s*v?1(?:\.[0-3])?|tls\s*v?1(?:\.[0-3])?)\b/i
+
+/** Hex digests carry no meaning and must never be pattern-matched for crypto. */
+const HEX_DIGEST = /\b[0-9a-f]{32,}\b/gi
 
 function boolEnv(name: string, defaultValue = false) {
   const value = process.env[name]
@@ -128,29 +177,98 @@ function allowedPathFor(value: unknown, policy: NativeCollectorPolicy) {
   return null
 }
 
+/** Strips hex digests so a random hash can never look like an algorithm name. */
+function withoutDigests(text: string) {
+  return String(text || '').replace(HEX_DIGEST, ' ')
+}
+
+/**
+ * Extracts a protocol version from free text, or null when none is stated.
+ * Returning null is the point: no version observed means no version claimed,
+ * and therefore no downgrade verdict is possible.
+ */
+function statedProtocol(text: unknown) {
+  const match = STATED_PROTOCOL.exec(withoutDigests(String(text || '')))
+  return match ? match[0].replace(/\s+/g, ' ').trim().toUpperCase() : null
+}
+
 function cryptoMatches(text: string) {
-  return CRYPTO_SIGNALS
-    .filter((signal) => signal.pattern.test(text))
+  const clean = withoutDigests(text)
+  return CRYPTO_LIBRARY_SIGNALS
+    .filter((signal) => signal.pattern.test(clean))
     .map((signal) => signal.algorithm)
 }
 
-function cryptoFlags(text: string): Pick<NativeRuntimeEvent, 'isPqc' | 'isLegacy' | 'downgradeDetected' | 'shadowCrypto' | 'hndlRisk' | 'severity' | 'riskScore'> {
-  const isPqc = /ml-kem|ml_dsa|ml-dsa|kyber|dilithium|sphincs|sntrup|post-quantum|pqc|hybrid/i.test(text)
-  const isLegacy = /rsa|ecdsa|ecdh|diffie|dh-|dsa|sha-?1|md5|3des|rc4|des|tlsv1|tls 1\.0|tls 1\.1/i.test(text)
-  const downgradeDetected = /downgrade|fallback|ssl|tlsv1|tls 1\.0|tls 1\.1/i.test(text)
-  const shadowCrypto = /unknown|embedded|vendor|library|package|config|manifest/i.test(text)
-  const hndlRisk = isLegacy && /tls|certificate|x509|pki|key|kms|hsm|rsa|ecdsa|ecdh|dh/i.test(text)
-  const severity: Severity = downgradeDetected || hndlRisk
+/**
+ * Derives the crypto posture of ONE observation.
+ *
+ * The rule this enforces: a claim requires the evidence for that claim.
+ *
+ *  - `isLegacy` / `isPqc` need a STATED algorithm. The presence of a crypto
+ *    library says a provider is loaded, not which algorithm ran.
+ *  - `downgradeDetected` needs an OBSERVED protocol version. It was previously
+ *    derived from the substring "ssl", so every process linked against OpenSSL
+ *    was published as a critical TLS downgrade - a fabricated critical from no
+ *    protocol evidence at all.
+ *  - `shadowCrypto` means cryptography outside the declared inventory. A host
+ *    agent cannot know what was declared, so it never asserts this; the control
+ *    plane decides it during reconciliation.
+ *  - `hndlRisk` needs quantum-vulnerable key establishment on data in transit,
+ *    not merely a loaded library.
+ *
+ * Anything not established stays false, and a presence-only observation carries
+ * `low` severity: it is inventory, not a vulnerability.
+ */
+function classifyObservation(input: {
+  evidenceClass: EvidenceClass
+  algorithm?: string | null
+  protocol?: string | null
+  host?: string | null
+}): Pick<NativeRuntimeEvent, 'isPqc' | 'isLegacy' | 'downgradeDetected' | 'shadowCrypto' | 'hndlRisk' | 'severity' | 'riskScore'> {
+  const algorithmText = withoutDigests(input.algorithm || '')
+  const protocolText = withoutDigests(input.protocol || '')
+
+  const kinds = new Set(
+    ALGORITHM_SIGNALS.filter((signal) => signal.pattern.test(algorithmText)).map((signal) => signal.kind),
+  )
+  const isPqc = kinds.has('pqc')
+  const broken = kinds.has('broken')
+  // A PQC algorithm is not legacy even when a hybrid name also names a classical half.
+  const isLegacy = !isPqc && (kinds.has('vulnerable') || broken)
+
+  // Only a genuinely observed protocol version can assert a downgrade.
+  const downgradeDetected = Boolean(protocolText) && WEAK_PROTOCOL.test(protocolText)
+
+  // Harvest-now-decrypt-later needs quantum-vulnerable key establishment
+  // protecting data in transit - never inferred from an inventory row.
+  const hndlRisk =
+    kinds.has('vulnerable') &&
+    !isPqc &&
+    (input.evidenceClass === 'certificate' || input.evidenceClass === 'crypto-api-call') &&
+    Boolean(protocolText || input.evidenceClass === 'certificate')
+
+  const severity: Severity = broken
     ? 'critical'
-    : isLegacy
+    : downgradeDetected
       ? 'high'
-      : shadowCrypto
-        ? 'moderate'
+      : isLegacy
+        ? 'high'
         : isPqc
           ? 'safe'
           : 'low'
-  const riskScore = severity === 'critical' ? 92 : severity === 'high' ? 74 : severity === 'moderate' ? 55 : severity === 'safe' ? 5 : 28
-  return { isPqc, isLegacy, downgradeDetected, shadowCrypto, hndlRisk, severity, riskScore }
+
+  const riskScore = severity === 'critical' ? 92 : severity === 'high' ? 74 : severity === 'safe' ? 5 : 20
+
+  return {
+    isPqc,
+    isLegacy,
+    downgradeDetected,
+    // Never asserted by the agent - see the note above.
+    shadowCrypto: false,
+    hndlRisk,
+    severity,
+    riskScore,
+  }
 }
 
 function normalizeOperation(text: string) {
@@ -164,6 +282,8 @@ function normalizeOperation(text: string) {
 
 function eventFromSignal(input: {
   collector: string
+  /** What kind of observation this is - decides what may be claimed from it. */
+  evidenceClass: EvidenceClass
   eventType: string
   operationType?: string
   processName?: unknown
@@ -172,6 +292,8 @@ function eventFromSignal(input: {
   assetType?: string
   host?: unknown
   algorithm?: unknown
+  /** A protocol version ONLY where one was genuinely observed. */
+  protocol?: unknown
   certificateFingerprint?: unknown
   filePath?: unknown
   text: string
@@ -181,14 +303,23 @@ function eventFromSignal(input: {
   const filePath = cleanString(input.filePath, 1000)
   const processName = cleanString(input.processName, 255)
   const algorithm = cleanString(input.algorithm, 120) || cryptoMatches(input.text)[0] || 'Runtime crypto signal'
+  const protocol = cleanString(input.protocol, 80)
   const host = cleanString(input.host, 255) || HOSTNAME
-  const flags = cryptoFlags(`${input.text} ${algorithm}`)
+  // Classified from the STATED algorithm and protocol, never from the raw text.
+  const flags = classifyObservation({
+    evidenceClass: input.evidenceClass,
+    algorithm,
+    protocol,
+    host,
+  })
   return {
     eventType: input.eventType,
     operationType: input.operationType || normalizeOperation(input.text),
     assetName: cleanString(input.assetName, 255) || processName || host,
     assetType: input.assetType || 'host_process',
     host,
+    protocol,
+    tlsVersion: protocol,
     algorithm,
     certificateFingerprint: cleanString(input.certificateFingerprint, 255),
     processName,
@@ -196,6 +327,7 @@ function eventFromSignal(input: {
     ...flags,
     metadata: {
       collector: input.collector,
+      evidenceClass: input.evidenceClass,
       nativeRuntime: true,
       filePath,
       textHash: safeHash(input.text),
@@ -227,9 +359,19 @@ function parseJsonRecords(output: string): Record<string, unknown>[] {
   }
 }
 
-function runCommand(command: string, args: string[], timeoutMs: number, shell = false): Promise<CommandResult> {
+function runCommand(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  shell = false,
+  extraEnv?: Record<string, string>,
+): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { shell, windowsHide: true })
+    const child = spawn(command, args, {
+      shell,
+      windowsHide: true,
+      env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+    })
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
     let finished = false
@@ -277,6 +419,7 @@ class ExternalNativeRuntimeCollector implements NativeRuntimeCollector {
       .slice(0, MAX_NATIVE_EVENTS)
       .map((row) => eventFromSignal({
         collector: this.id,
+        evidenceClass: 'external',
         eventType: cleanString(row.eventType || row.event_type, 120) || 'native-runtime-event',
         operationType: cleanString(row.operationType || row.operation_type, 120) || undefined,
         processName: row.processName || row.process_name || row.comm,
@@ -285,6 +428,7 @@ class ExternalNativeRuntimeCollector implements NativeRuntimeCollector {
         assetType: cleanString(row.assetType || row.asset_type, 120) || 'host_process',
         host: row.host || HOSTNAME,
         algorithm: row.algorithm || row.cipherSuite || row.cipher_suite || row.probe,
+        protocol: row.protocol || row.tlsVersion || row.tls_version,
         certificateFingerprint: row.certificateFingerprint || row.certificate_fingerprint,
         filePath: row.filePath || row.file_path || row.executablePath || row.executable_path,
         text: JSON.stringify(row),
@@ -332,6 +476,9 @@ class ProcessInventoryCollector implements NativeRuntimeCollector {
       if (signals.length === 0) continue
       events.push(eventFromSignal({
         collector: this.id,
+        // A loaded library is INVENTORY: it proves a provider is present, not
+        // that a weak algorithm ran. No algorithm or protocol is claimed.
+        evidenceClass: 'library-presence',
         eventType: 'process-crypto-usage',
         processName: comm || path.basename(String(exePath || 'process')),
         processId: pid,
@@ -352,36 +499,74 @@ class ProcessInventoryCollector implements NativeRuntimeCollector {
     return events
   }
 
+  /**
+   * Windows counterpart to reading /proc/<pid>/maps: enumerate the modules each
+   * process has actually LOADED.
+   *
+   * The executable path alone cannot show that a process uses cryptography -
+   * `node.exe` reveals nothing about libssl. Matching crypto names against the
+   * path and command line instead produced findings out of coincidence
+   * ("OpenSSL" in a folder name) while missing every process that genuinely
+   * loads a crypto provider. Loaded modules are the real evidence.
+   */
   private async collectWindows() {
     const command = [
-      '$rows = Get-CimInstance Win32_Process | Select-Object ProcessId,Name,ExecutablePath,CommandLine;',
-      '$rows | ConvertTo-Json -Compress -Depth 3',
+      '$out = @();',
+      'foreach ($p in Get-Process -ErrorAction SilentlyContinue) {',
+      '  try {',
+      '    $mods = @($p.Modules | Where-Object { $_.ModuleName -match $env:QGUARD_MODULE_FILTER } | Select-Object -First 12 -ExpandProperty ModuleName);',
+      '  } catch { $mods = @() }',
+      '  if ($mods.Count -gt 0) {',
+      '    $out += [pscustomobject]@{ ProcessId = $p.Id; Name = $p.ProcessName; ExecutablePath = $p.Path; Modules = $mods }',
+      '  }',
+      '}',
+      '$out | Select-Object -First 350 | ConvertTo-Json -Compress -Depth 4',
     ].join(' ')
-    const result = await runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], 10_000)
+
+    const result = await runCommand(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+      20_000,
+      false,
+      // The provider filter lives in the environment so no operator-controlled
+      // value is ever interpolated into the command string.
+      { QGUARD_MODULE_FILTER: WINDOWS_CRYPTO_MODULE_FILTER },
+    )
+
     const rows = parseJsonRecords(result.stdout)
     const events: NativeRuntimeEvent[] = []
     for (const row of rows.slice(0, MAX_PROCESS_ROWS)) {
       const executablePath = cleanString(row.ExecutablePath || row.executablePath, 1000)
-      const commandLine = cleanString(row.CommandLine || row.commandLine, 1200)
       const processName = cleanString(row.Name || row.name, 255)
-      const text = `${processName || ''} ${executablePath || ''} ${commandLine || ''}`
-      const signals = cryptoMatches(text)
+      const modules = Array.isArray(row.Modules)
+        ? row.Modules.map((item: unknown) => cleanString(item, 255)).filter(Boolean) as string[]
+        : ([cleanString(row.Modules, 255)].filter(Boolean) as string[])
+      if (modules.length === 0) continue
+
+      // Classification reads the MODULE names - the observed artifact - not the
+      // process path, so a folder called "OpenSSL" proves nothing on its own.
+      const moduleText = modules.join(' ')
+      const signals = cryptoMatches(moduleText)
       if (signals.length === 0) continue
+
       const policyPath = allowedPathFor(executablePath, this.policy)
       events.push(eventFromSignal({
         collector: this.id,
+        evidenceClass: 'library-presence',
         eventType: 'process-crypto-usage',
         processName,
         processId: row.ProcessId || row.processId,
         assetName: processName || HOSTNAME,
         host: HOSTNAME,
         filePath: policyPath || executablePath || undefined,
-        text,
+        algorithm: signals[0],
+        text: moduleText,
         metadata: {
           filePath: policyPath || executablePath,
           policyPathMatched: Boolean(policyPath),
           signals: Array.from(new Set(signals)).slice(0, 8),
-          commandLineRedacted: Boolean(commandLine),
+          loadedCryptoModules: modules.slice(0, 12),
+          loadedModuleMapObserved: true,
         },
       }))
     }
@@ -423,6 +608,7 @@ class LinuxEbpfCollector implements NativeRuntimeCollector {
       const probe = cleanString(row.probe, 255) || 'ebpf-crypto-probe'
       return eventFromSignal({
         collector: this.id,
+        evidenceClass: 'crypto-api-call',
         eventType: 'ebpf-crypto-call',
         processName: row.processName || row.process_name || row.comm,
         processId: row.pid || row.processId || row.process_id,
@@ -479,12 +665,15 @@ class WindowsEtwCollector implements NativeRuntimeCollector {
       const eventText = `${provider} ${row.Id || ''} ${preview}`
       return eventFromSignal({
         collector: this.id,
+        evidenceClass: 'crypto-api-call',
         eventType: 'etw-crypto-event',
         processId: row.ProcessId || row.processId,
         assetName: HOSTNAME,
         assetType: 'windows_host',
         host: HOSTNAME,
         algorithm: provider,
+        // Only a version the event actually states; otherwise null.
+        protocol: statedProtocol(preview),
         text: eventText,
         observedAt: row.TimeCreated || row.timeCreated || row.observedAt,
         metadata: {
@@ -529,6 +718,7 @@ class CertificateStoreCollector implements NativeRuntimeCollector {
       const text = `${row.Subject || ''} ${row.Issuer || ''} ${row.PublicKeyAlgorithm || ''} ${row.SignatureAlgorithm || ''}`
       return eventFromSignal({
         collector: this.id,
+        evidenceClass: 'certificate',
         eventType: 'certificate-store-discovery',
         operationType: 'certificate_discovery',
         assetName: row.Subject || HOSTNAME,
@@ -576,6 +766,7 @@ class CertificateStoreCollector implements NativeRuntimeCollector {
           const keySize = toNumber(details?.modulusLength || details?.namedCurve)
           events.push(eventFromSignal({
             collector: this.id,
+            evidenceClass: 'certificate',
             eventType: 'certificate-store-discovery',
             operationType: 'certificate_discovery',
             assetName: cert.subject || path.basename(filePath),

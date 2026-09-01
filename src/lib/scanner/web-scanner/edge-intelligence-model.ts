@@ -368,7 +368,7 @@ export function classifyQuantumVulnerability(input: {
   if (!input.hasTransportEvidence) {
     return {
       vulnerability: 'Unknown',
-      reason: 'No TLS handshake completed for this target, so no quantum exposure verdict is claimed.',
+      reason: 'Named key-agreement groups were not probed for this target, so no endpoint-wide quantum exposure verdict is claimed from group probing.',
     }
   }
   if (input.hybridObserved && input.pqSignatureObserved) {

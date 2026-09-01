@@ -38,6 +38,11 @@ import { usePublicScan } from '@/hooks/use-public-scan';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { ACCENT, Panel, QuantumField, Reveal, SectionLabel } from './_ui';
 import { QuantumScanHero } from './_qve';
+import { ExposureModeTabs } from '@/components/exposure/ExposureModeTabs';
+import { LocalAssessmentPanel } from '@/components/exposure/LocalAssessmentPanel';
+import { DevAssessmentPanel } from '@/components/exposure/DevAssessmentPanel';
+import { useExposureAccess } from '@/hooks/use-exposure-access';
+import type { ScanMode } from '@/lib/scanner/exposure/types';
 import {
   AssessmentScopePanel,
   AttackSurface,
@@ -361,15 +366,46 @@ export default function PublicScanPage() {
   const [target, setTarget] = React.useState('');
   const resultsRef = React.useRef<HTMLDivElement>(null);
 
+  /* Three assessment modes on one page (§3). Web keeps the whole existing
+     surface untouched; Local and Dev mount their own panels in its place. The
+     mode is deep-linkable and is reflected into the URL without a navigation,
+     so a shared link opens on the tab the sender was looking at. */
+  const [mode, setMode] = React.useState<ScanMode>('web');
+
+  /* Lock badges on the tabs. The tabs stay CLICKABLE when locked — the panel
+     behind them is the feature disclosure that makes the case for the plan, so
+     a visitor who cannot scan should still be able to read what a scan does. */
+  const localAccess = useExposureAccess('local');
+  const devAccess = useExposureAccess('dev');
+  const lockedModes = React.useMemo(() => {
+    const locked: Partial<Record<ScanMode, string>> = {};
+    if (!localAccess.loading && !localAccess.allowed) locked.local = localAccess.message;
+    if (!devAccess.loading && !devAccess.allowed) locked.dev = devAccess.message;
+    return locked;
+  }, [localAccess.loading, localAccess.allowed, localAccess.message, devAccess.loading, devAccess.allowed, devAccess.message]);
+
   // Deep-linkable assessments: /public-scan?target=example.com runs on load.
   React.useEffect(() => {
-    const preset = new URLSearchParams(window.location.search).get('target');
+    const params = new URLSearchParams(window.location.search);
+    const requestedMode = params.get('mode');
+    if (requestedMode === 'local' || requestedMode === 'dev') setMode(requestedMode);
+
+    const preset = params.get('target');
     if (preset) {
+      setMode('web');
       setTarget(preset);
       scan(preset);
     }
     // Intentionally on-mount only — a query change is a full navigation here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const changeMode = React.useCallback((next: ScanMode) => {
+    setMode(next);
+    const url = new URL(window.location.href);
+    if (next === 'web') url.searchParams.delete('mode');
+    else url.searchParams.set('mode', next);
+    window.history.replaceState(null, '', url.toString());
   }, []);
 
   React.useEffect(() => {
@@ -392,6 +428,25 @@ export default function PublicScanPage() {
           scroll inside their own containers, and nothing may push the page
           sideways on a phone. */}
       <main className="mx-auto max-w-[92rem] overflow-x-clip px-4 pb-24 pt-6 sm:px-6">
+        {/* ── Assessment mode: Web / Local / Dev (§3) ──────────────────── */}
+        <div className="mb-5">
+          <ExposureModeTabs value={mode} onChange={changeMode} locked={lockedModes} scope="public-scan" />
+        </div>
+
+        {mode === 'local' && (
+          <div role="tabpanel" id="exposure-panel-local" aria-labelledby="exposure-tab-local">
+            <LocalAssessmentPanel upsellSlot={<EnterpriseUpsell />} />
+          </div>
+        )}
+
+        {mode === 'dev' && (
+          <div role="tabpanel" id="exposure-panel-dev" aria-labelledby="exposure-tab-dev">
+            <DevAssessmentPanel upsellSlot={<EnterpriseUpsell />} />
+          </div>
+        )}
+
+        {mode === 'web' && (
+        <div role="tabpanel" id="exposure-panel-web" aria-labelledby="exposure-tab-web">
         {/* ── Hero: Enterprise Quantum Real-Time Visualization Engine™ ──
             The hero is now owned end-to-end by the QVE subsystem (_qve/): the
             live beam network, holographic Quantum Core, GPU packet engine,
@@ -579,10 +634,35 @@ export default function PublicScanPage() {
         ) : (
           <EmptyState state={state} />
         )}
+        </div>
+        )}
       </main>
 
       <PublicScanFooter />
     </div>
+  );
+}
+
+/* ----------------------------------------------------------- upsell slot --- */
+
+/** The enterprise CTA the Web rail already carried, reused by Local and Dev. */
+function EnterpriseUpsell() {
+  return (
+    <Panel className="overflow-hidden border-violet-400/15">
+      <div className="px-4 py-4">
+        <h3 className="text-[15px] font-black leading-tight text-white">Unlock Full Enterprise Assessment</h3>
+        <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
+          Persist every assessment into a governed cryptographic inventory, correlate it with runtime telemetry and turn it
+          into an evidence-backed post-quantum migration programme.
+        </p>
+        <Link
+          to="/register"
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
+        >
+          Explore Enterprise Platform <ArrowRight className="h-4 w-4" />
+        </Link>
+      </div>
+    </Panel>
   );
 }
 

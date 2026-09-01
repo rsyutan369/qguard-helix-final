@@ -591,11 +591,17 @@ export function buildIntelligence(evidence: PublicScanEvidence, confidence: numb
 
   const kex = resolveKeyExchange(evidence)
   const fs = resolveForwardSecrecy(evidence)
-  const forwardSecrecy: CryptoIntelligence['forwardSecrecy'] = fs.enabled
-    ? evidence.cipherSuites.some((suite) => suite.category === 'rsa-kex')
-      ? 'Partial'
-      : 'Enabled'
-    : 'Not observed'
+  /* Three states, not two. The `!evidence.tls` branch is the one that matters:
+     without a handshake there is nothing to observe, and saying "Not observed"
+     there claims a measurement that never happened — while the Forward Secrecy
+     control on the same report correctly said "Unknown". One fact, one answer. */
+  const forwardSecrecy: CryptoIntelligence['forwardSecrecy'] = !evidence.tls
+    ? 'Not measured'
+    : fs.enabled
+      ? evidence.cipherSuites.some((suite) => suite.category === 'rsa-kex')
+        ? 'Partial'
+        : 'Enabled'
+      : 'Not observed'
 
   // Migration targets are only listed for primitives this scan actually saw.
   const migrationTargets: CryptoIntelligence['migrationTargets'] = []

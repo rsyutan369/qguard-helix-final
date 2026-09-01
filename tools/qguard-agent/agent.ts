@@ -10,6 +10,15 @@ import {
   MANDATORY_PQC_STACK,
   mandatoryPqcStackMetadata,
 } from '../../src/lib/crypto/mandatory-pqc-stack.ts'
+import { KNOWLEDGE_BASE_VERSION } from '../../src/lib/crypto/knowledge-base/ground-truth.ts'
+import { findAlgorithm } from '../../src/lib/crypto/knowledge-base/algorithms.ts'
+import { findLibrary } from '../../src/lib/crypto/knowledge-base/apis.ts'
+import {
+  describeControlPlaneFailure,
+  readAgentEnvironment,
+  validateControlPlane,
+} from '../../src/lib/agent-installer/agent-environment.ts'
+import { RULE_SET_VERSION } from '../../src/lib/crypto/knowledge-base/rules.ts'
 
 type EvidenceConfidence = 'high' | 'medium' | 'low'
 type EvidenceType =
@@ -258,13 +267,40 @@ const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, 
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
 /** Injected at bundle time by tools/build-agent-release.mjs; falls back for `tsx` runs. */
-const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.0'
+const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.2'
 const AGENT_ROLE = (process.env.QGUARD_AGENT_ROLE || 'collector').toLowerCase()
 const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
 const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
 const MIGRATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_MIGRATION || '')
 const MAX_REMEDIATION_JOBS = Math.max(1, Math.min(5, Number(process.env.QGUARD_MAX_REMEDIATION_JOBS || 2)))
 const AGENT_STARTED_AT = Date.now()
+
+/*
+ * Control-plane security gate (spec §2, §3, §61, §62).
+ *
+ * The agent refuses to run against a control plane that does not match its
+ * declared environment. This is the check that makes
+ * `QGUARD_ENVIRONMENT=production` + `http://localhost:3000` impossible rather
+ * than merely discouraged: an agent that believes it is in production while
+ * talking plaintext to loopback will accept whatever answers on that port, and
+ * every guarantee downstream — signed commands, tenant isolation, revocation —
+ * assumes the control plane is the real one.
+ *
+ * Fails CLOSED and exits, because the alternative is an agent running on a
+ * production host with its trust anchor pointed somewhere unverified.
+ */
+const AGENT_ENVIRONMENT = readAgentEnvironment(process.env.QGUARD_ENVIRONMENT)
+
+function assertSecureControlPlane(): void {
+  const validation = validateControlPlane(API_URL, AGENT_ENVIRONMENT)
+  for (const warning of validation.warnings) {
+    console.warn(`[qguard-agent] ${warning}`)
+  }
+  if (validation.ok) return
+  console.error(describeControlPlaneFailure(validation))
+  console.error('[qguard-agent] Refusing to start. No telemetry was sent and no host was read.')
+  process.exit(78) // EX_CONFIG
+}
 
 /** Counters surfaced through heartbeat telemetry (spec §24 — agent health). */
 const agentHealth = {
@@ -330,11 +366,34 @@ function hostHealthTelemetry(): Record<string, unknown> {
       remediation: REMEDIATION_ENABLED,
       configPatches: CONFIG_PATCHES_ENABLED,
       migration: MIGRATION_ENABLED,
+      /* Native runtime collection is decided per scan (by the requested scan
+         types) unless the operator forces it, so the capability is reported as
+         the operator's setting rather than as a flat yes/no this function
+         cannot honestly answer outside a scan. */
+      nativeRuntimeCollectors:
+        process.env.QGUARD_NATIVE_RUNTIME_ENABLED == null
+          ? 'per-scan'
+          : /^(1|true|yes|on)$/i.test(String(process.env.QGUARD_NATIVE_RUNTIME_ENABLED))
+            ? 'forced-on'
+            : 'forced-off',
+    },
+    /* Which rule set produced this agent's findings (spec §51, §85).
+       An agent running an older build classifies with an older knowledge base,
+       so two agents can legitimately disagree about the same host. Without this
+       the console cannot tell that apart from an estate that actually changed,
+       and the natural conclusion — "the scanner is inconsistent" — is wrong. */
+    engine: {
+      knowledgeBaseVersion: KNOWLEDGE_BASE_VERSION,
+      ruleSetVersion: RULE_SET_VERSION,
     },
   }
 }
 
 function requireEnrollment() {
+  /* Security gate first: an unenrolled agent pointed at an insecure control
+     plane should be told about the control plane, because that is the problem
+     that survives fixing the credentials. */
+  assertSecureControlPlane()
   if (!AGENT_ID || !AGENT_TOKEN) {
     console.error('QGuard agent is not enrolled. Set QGUARD_AGENT_ID and QGUARD_AGENT_TOKEN before running.')
     console.error('Install a generated package from the Qguard Helix Agent Center (/downloads), or set the')
@@ -450,20 +509,63 @@ async function sendTelemetry(eventType: string, message: string, metadata: Recor
   })
 }
 
-async function uploadEvidence(evidence: ScannerEvidence[]) {
-  if (evidence.length === 0) return
-  await requestJson('/api/v1/agent-scanner/agent/evidence', {
-    method: 'POST',
-    body: JSON.stringify({ evidence }),
-  })
+/**
+ * The outcome of one upload. A scan that collected evidence but could not
+ * publish all of it is DEGRADED, not failed: the distinction is what stops a
+ * single rejected batch from destroying an otherwise complete scan.
+ */
+interface UploadOutcome {
+  attempted: number
+  accepted: number
+  rejected: number
+  outOfPolicy: boolean
+  error: string | null
 }
 
-async function uploadRuntimeEvents(events: RuntimeCryptoEvent[]) {
-  if (events.length === 0) return
-  await requestJson('/api/v1/agent-scanner/agent/runtime-events', {
-    method: 'POST',
-    body: JSON.stringify({ events }),
-  })
+const EMPTY_UPLOAD: UploadOutcome = { attempted: 0, accepted: 0, rejected: 0, outOfPolicy: false, error: null }
+
+/**
+ * Publishes a batch and returns what happened instead of throwing.
+ *
+ * An upload failure — a policy rejection, a validation error, an unreachable
+ * control plane — must never abort a scan that has already done its work. The
+ * caller records the outcome, the scan still reaches a terminal state, and the
+ * Agent Center shows the real reason rather than a bar frozen mid-flight.
+ */
+async function publishBatch(
+  pathName: string,
+  body: Record<string, unknown>,
+  attempted: number,
+): Promise<UploadOutcome> {
+  if (attempted === 0) return { ...EMPTY_UPLOAD }
+  try {
+    const payload = await requestJson<{ data?: Record<string, unknown> }>(pathName, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    const data = payload?.data || {}
+    const rejected = Number(data.rejectedEventCount ?? data.rejectedEvidenceCount ?? 0) || 0
+    const accepted = Number(
+      data.acceptedEventCount ?? data.evidenceCount ?? (data.evidence as Record<string, unknown> | undefined)?.evidenceCount ?? 0,
+    ) || Math.max(0, attempted - rejected)
+    return {
+      attempted,
+      accepted: Boolean(data.outOfPolicy) ? 0 : accepted,
+      rejected: Boolean(data.outOfPolicy) ? attempted : rejected,
+      outOfPolicy: Boolean(data.outOfPolicy),
+      error: null,
+    }
+  } catch (error) {
+    return { attempted, accepted: 0, rejected: 0, outOfPolicy: false, error: (error as Error).message }
+  }
+}
+
+async function uploadEvidence(evidence: ScannerEvidence[]): Promise<UploadOutcome> {
+  return publishBatch('/api/v1/agent-scanner/agent/evidence', { evidence }, evidence.length)
+}
+
+async function uploadRuntimeEvents(events: RuntimeCryptoEvent[]): Promise<UploadOutcome> {
+  return publishBatch('/api/v1/agent-scanner/agent/runtime-events', { events }, events.length)
 }
 
 async function pullRemediationJobs(): Promise<RemediationJob[]> {
@@ -874,22 +976,69 @@ async function walkFiles(root: string, maxDepth = 4) {
   return files
 }
 
-function packageAlgorithmEvidence(packageName: string): { algorithm: string; evidenceType: EvidenceType; confidence: EvidenceConfidence } | null {
-  const name = packageName.toLowerCase()
-  if (name.includes('liboqs') || name.includes('oqs-provider') || name.includes('oqsprovider') || name.includes('oqs-openssl')) return { algorithm: 'ML-KEM-768', evidenceType: 'crypto-library', confidence: 'high' }
-  if (name.includes('ml-kem') || name.includes('ml_dsa') || name.includes('ml-dsa') || name.includes('kyber') || name.includes('dilithium')) return { algorithm: 'ML-KEM', evidenceType: 'crypto-library', confidence: 'high' }
-  if (name === 'jsonwebtoken' || name.includes('jwt')) return { algorithm: 'RSA-2048', evidenceType: 'jwt-algorithm', confidence: 'medium' }
-  if (name === 'jose') return { algorithm: 'ECDSA-P256', evidenceType: 'jwt-algorithm', confidence: 'medium' }
-  if (name.includes('node-rsa') || name.includes('node-forge') || name.includes('openssl')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
-  if (name.includes('elliptic') || name.includes('secp256k1')) return { algorithm: 'ECC-P256', evidenceType: 'crypto-library', confidence: 'medium' }
-  if (name.includes('crypto-js')) return { algorithm: 'AES-128', evidenceType: 'crypto-library', confidence: 'medium' }
-  if (name.includes('ssh2')) return { algorithm: 'Ed25519', evidenceType: 'crypto-library', confidence: 'low' }
-  if (name.includes('bcrypt') || name.includes('argon2') || name.includes('scrypt')) return { algorithm: 'SHA-256', evidenceType: 'crypto-library', confidence: 'low' }
-  if (name.includes('cryptography') || name.includes('pycryptodome') || name.includes('pycrypto')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
-  if (name.includes('pyjwt') || name.includes('jjwt') || name.includes('jose4j') || name.includes('go-jose')) return { algorithm: 'RSA-2048', evidenceType: 'jwt-algorithm', confidence: 'medium' }
-  if (name.includes('bouncycastle') || name.includes('bcprov') || name.includes('portable.bouncycastle') || name.includes('botan') || name.includes('ring') || name.includes('rustls')) return { algorithm: 'ECDSA-P256', evidenceType: 'crypto-library', confidence: 'medium' }
-  if (name.includes('openssl') || name.includes('libressl') || name.includes('boringssl')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
-  if (name.includes('wolfssl') || name.includes('libsodium') || name.includes('mbedtls') || name.includes('gnutls') || name.includes('system.security.cryptography') || name.includes('microsoft.identitymodel.tokens')) return { algorithm: 'RSA-2048', evidenceType: 'crypto-library', confidence: 'medium' }
+/**
+ * What a dependency actually proves.
+ *
+ * This function used to map package names to a specific algorithm AND key size:
+ * `openssl` -> RSA-2048, `libsodium` -> RSA-2048, `bcrypt` -> SHA-256,
+ * `crypto-js` -> AES-128. Every one of those was fabricated, and three were
+ * simply wrong — libsodium ships no RSA at all, bcrypt is Blowfish-based rather
+ * than SHA-256, and no manifest anywhere states a key size.
+ *
+ * A dependency proves that a LIBRARY IS PRESENT. That is availability, not
+ * usage: OpenSSL provides dozens of algorithms and a project that depends on it
+ * may use one of them or none. Reporting "RSA-2048, medium confidence" from a
+ * line in a lockfile invents both the algorithm and the key size, and those
+ * invented rows then flow into the CBOM, the vulnerable-component count and the
+ * migration plan as though something had been measured.
+ *
+ * So the evidence is now the library, classified through the shared knowledge
+ * base (which models `providesAlgorithms` as availability by design), with the
+ * algorithm named only where the package name itself states one — `ml-kem-768`
+ * does, `openssl` does not.
+ */
+function packageAlgorithmEvidence(
+  packageName: string,
+): { algorithm: string; evidenceType: EvidenceType; confidence: EvidenceConfidence; library?: string; provides?: string[]; note?: string } | null {
+  const raw = String(packageName || '').trim()
+  if (!raw) return null
+
+  /* 1. Is the package a library we know? A catalogue hit is an EXACT name or
+        alias match, which is a more specific signal than an algorithm name
+        happening to appear inside the package name — `ssh2` is the ssh2
+        library, not an observation of the SSH protocol. So the library
+        catalogue is consulted first. */
+  const library = findLibrary(raw)
+  if (library) {
+    return {
+      algorithm: library.canonicalName,
+      evidenceType: 'crypto-library',
+      /* Low, and deliberately so. A manifest entry is the weakest evidence the
+         platform accepts: it establishes capability and nothing else. */
+      confidence: 'low',
+      library: library.canonicalName,
+      provides: library.providesAlgorithms,
+      note: library.pqcCapable
+        ? `${library.canonicalName} is present and ships post-quantum primitives. Availability only — whether they are used cannot be determined from a manifest.`
+        : `${library.canonicalName} is present. It provides ${library.providesAlgorithms.length} algorithm(s); a manifest cannot say which, if any, are used.`,
+    }
+  }
+
+  /* 2. Otherwise, does the package NAME state an algorithm? A dependency called
+        `ml-kem-768` is evidence of ML-KEM in a way that one called `openssl`
+        is not. */
+  const named = findAlgorithm(raw)
+  if (named) {
+    return {
+      algorithm: named.canonicalName,
+      evidenceType: 'crypto-library',
+      /* Still not "high": the package is declared, not proven to be called. */
+      confidence: 'medium',
+      library: raw,
+      note: `The package name states ${named.canonicalName}. The dependency is declared; this is not proof that it is invoked at runtime.`,
+    }
+  }
+
   return null
 }
 
@@ -1792,7 +1941,49 @@ async function executePendingRemediations(policy: AgentPolicy) {
   }
 }
 
+/**
+ * Runs one scan and GUARANTEES a terminal state.
+ *
+ * Every exit path — success, failure, or a crash inside a collector — emits a
+ * final progress frame and a terminal heartbeat phase. Without this, an error
+ * anywhere after the last reported stage left the Agent Center rendering that
+ * stage forever: a scan that had already died still showed
+ * "Calculating quantum exposure - 85%", and its session never closed.
+ */
 async function scanOnce(policyOverride?: AgentPolicy) {
+  const startedAt = Date.now()
+  try {
+    const result = await runScanCycle(policyOverride)
+    return result
+  } catch (error) {
+    const message = (error as Error).message || 'Scan failed'
+    agentHealth.errorCount += 1
+    agentHealth.lastError = message
+    agentHealth.lastScanDurationMs = Date.now() - startedAt
+
+    // Terminal frame first: the operator must never be left watching a bar that
+    // stopped moving with no explanation of why.
+    await reportScanStage('scan_failed', 100, `Scan failed: ${message}`, {
+      failed: true,
+      error: message,
+      durationMs: agentHealth.lastScanDurationMs,
+    })
+    // Terminal phase second: this is what closes the scan session in the
+    // Agent Center's scan history.
+    await sendHeartbeat('error', {
+      phase: 'failed',
+      error: message,
+      durationMs: agentHealth.lastScanDurationMs,
+    }).catch(() => undefined)
+    await sendTelemetry('agent_scan_failed', 'Local scanner evidence collection failed', {
+      error: message,
+      durationMs: agentHealth.lastScanDurationMs,
+    }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function runScanCycle(policyOverride?: AgentPolicy) {
   requireEnrollment()
   const policy = policyOverride || await pullPolicy()
   if (!policy.enabled) {
@@ -1889,8 +2080,12 @@ async function scanOnce(policyOverride?: AgentPolicy) {
   }
 
   await reportScanStage('building_cbom', 75, 'Building CBOM from collected evidence', { evidenceCount: evidence.length })
-  await uploadEvidence(evidence)
-  await reportScanStage('calculating_exposure', 85, 'Calculating quantum exposure', { evidenceCount: evidence.length })
+  const evidenceUpload = await uploadEvidence(evidence)
+  await reportScanStage('calculating_exposure', 85, 'Calculating quantum exposure', {
+    evidenceCount: evidence.length,
+    evidenceAccepted: evidenceUpload.accepted,
+    evidenceRejected: evidenceUpload.rejected,
+  })
   const evidenceRuntimeEvents = runtimeEventsEnabled(scanTypes) ? evidence.map(runtimeEventFromEvidence) : []
   let nativeRuntimeEvents: NativeRuntimeEvent[] = []
   let nativeCollectorDiagnostics: unknown[] = []
@@ -1919,22 +2114,37 @@ async function scanOnce(policyOverride?: AgentPolicy) {
   }
 
   const runtimeEvents = [...evidenceRuntimeEvents, ...nativeRuntimeEvents]
-  await uploadRuntimeEvents(runtimeEvents)
+  const runtimeUpload = await uploadRuntimeEvents(runtimeEvents)
+  // Anything the control plane declined is reported, never hidden and never
+  // fatal. `outOfPolicy` is the operator's signal that this agent has no
+  // authorised scope beyond its own host.
+  const uploadErrors = [evidenceUpload.error, runtimeUpload.error].filter(Boolean) as string[]
+  const rejectedByPolicy = evidenceUpload.rejected + runtimeUpload.rejected
   await reportScanStage('publishing_findings', 92, 'Publishing findings to the control plane', {
     evidenceCount: evidence.length,
     runtimeEventCount: runtimeEvents.length,
+    accepted: evidenceUpload.accepted + runtimeUpload.accepted,
+    rejectedByPolicy,
+    outOfPolicy: evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy,
+    uploadErrors,
   })
   const remediationJobs = await executePendingRemediations(policy)
 
   agentHealth.scanCount += 1
   agentHealth.lastScanDurationMs = Date.now() - scanStartedAt
 
-  await sendHeartbeat('active', {
+  const degraded = uploadErrors.length > 0
+  await sendHeartbeat(degraded ? 'degraded' : 'active', {
     phase: 'completed',
+    degraded,
     evidenceCount: evidence.length,
     runtimeEventCount: runtimeEvents.length,
     nativeRuntimeEventCount: nativeRuntimeEvents.length,
     nativeCollectors: nativeCollectorDiagnostics,
+    acceptedByControlPlane: evidenceUpload.accepted + runtimeUpload.accepted,
+    rejectedByPolicy,
+    outOfPolicy: evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy,
+    uploadErrors,
     remediationJobs,
   })
   await sendTelemetry('agent_scan_completed', 'Local scanner evidence collection completed', {
@@ -1944,14 +2154,46 @@ async function scanOnce(policyOverride?: AgentPolicy) {
     remediationJobs,
     durationMs: agentHealth.lastScanDurationMs,
   })
-  await reportScanStage('scan_complete', 100, 'Scan complete', {
+  await reportScanStage(
+    'scan_complete',
+    100,
+    degraded
+      ? `Scan complete with ${uploadErrors.length} publish error(s)`
+      : rejectedByPolicy > 0
+        ? `Scan complete - ${rejectedByPolicy} observation(s) outside authorized scope`
+        : 'Scan complete',
+    {
+      evidenceCount: evidence.length,
+      runtimeEventCount: runtimeEvents.length,
+      accepted: evidenceUpload.accepted + runtimeUpload.accepted,
+      rejectedByPolicy,
+      outOfPolicy: evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy,
+      degraded,
+      uploadErrors,
+      remediationJobs,
+      durationMs: agentHealth.lastScanDurationMs,
+    },
+  )
+  // Report what the control plane ACCEPTED, not what was collected: claiming an
+  // upload that was rejected is how a broken pipeline looks healthy in a log.
+  console.log(
+    `QGuard agent scan complete. Collected ${evidence.length} evidence record(s) and ${runtimeEvents.length} runtime event(s); ` +
+    `control plane accepted ${evidenceUpload.accepted + runtimeUpload.accepted}` +
+    (rejectedByPolicy > 0 ? `, declined ${rejectedByPolicy} as out of authorized scope` : '') +
+    (uploadErrors.length > 0 ? `; ${uploadErrors.length} publish error(s): ${uploadErrors.join('; ')}` : '') +
+    `. Processed ${remediationJobs} remediation job(s).`,
+  )
+  if (evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy) {
+    console.log('No observation was in authorized scope. Add authorized targets or paths to this agent in the Agent Center to widen what it may report.')
+  }
+  return {
     evidenceCount: evidence.length,
     runtimeEventCount: runtimeEvents.length,
+    acceptedCount: evidenceUpload.accepted + runtimeUpload.accepted,
+    rejectedByPolicy,
+    degraded,
     remediationJobs,
-    durationMs: agentHealth.lastScanDurationMs,
-  })
-  console.log(`QGuard agent scan complete. Uploaded ${evidence.length} evidence record(s), ${runtimeEvents.length} runtime event(s), and processed ${remediationJobs} remediation job(s).`)
-  return { evidenceCount: evidence.length, runtimeEventCount: runtimeEvents.length, remediationJobs }
+  }
 }
 
 /**

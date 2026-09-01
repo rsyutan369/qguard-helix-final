@@ -3,7 +3,7 @@
 import { motion, useReducedMotion } from 'framer-motion'
 import { Sparkles, Lock, Shield, Award, RefreshCw, FileSearch, Zap, ArrowRight, Clock, type LucideIcon } from 'lucide-react'
 import type { Recommendation } from '@/hooks/use-dashboard'
-import { Panel, PanelHeader, cx } from './primitives'
+import { Panel, PanelHeader, cx, TruncationNote} from './primitives'
 
 const CATEGORY: Record<string, { icon: LucideIcon; tint: string }> = {
   cryptography: { icon: Lock, tint: 'text-red-400' },
@@ -73,7 +73,13 @@ export default function AiRecommendations({ recommendations, loading }: { recomm
                     <div className="mb-1 flex flex-wrap items-center gap-1.5">
                       <span className={cx('rounded border px-1.5 py-0.5 text-[8px] font-black uppercase', p.cls)}>{p.label}</span>
                       <span className="text-[8px] font-bold uppercase tracking-wide text-white/30">{rec.category}</span>
-                    </div>
+                      <TruncationNote
+            shown={Math.min(6, recommendations.length)}
+            total={recommendations.length}
+            noun="recommendations"
+            rank="highest-priority"
+          />
+        </div>
                     <h3 className="text-[12px] font-black uppercase leading-tight tracking-wide text-white">{rec.title}</h3>
                     <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-white/45">{rec.description}</p>
 

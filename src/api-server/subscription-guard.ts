@@ -25,6 +25,20 @@ const ENFORCEMENT = (process.env.SUBSCRIPTION_ENFORCEMENT || 'enforce').toLowerC
 // API path prefix -> minimum plan tier. Matched by longest (most specific)
 // prefix. Paths NOT listed here (billing, paypal, profile, auth, admin, the
 // dashboard overview) are ungated so users can subscribe and manage their plan.
+//
+// DELIBERATELY ABSENT: `/api/v1/exposure`.
+//
+// That router serves all three assessment modes at one prefix — Web is
+// anonymous by design (it is the product's front door), Local needs BASIC and
+// Dev needs PRO. A prefix rule cannot express three different answers for one
+// prefix, and adding `/api/v1/exposure` here would either lock the free Web
+// assessment out or, worse, be set to the lowest common tier and hand Dev away.
+//
+// So that router gates itself per route, keyed on the MODE, in
+// `src/api-server/exposure.ts` (`requireMode`). Both read the same matrix in
+// `src/lib/subscription-access.ts`, and `tools/exposure-access-check.ts`
+// asserts that every executing route still carries its guard. If you came here
+// to "fix" the missing entry: it is not missing.
 const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // BASIC — Quantum Readiness & Assessment Engine + entry migration tools
   { prefix: '/api/v1/quantum-readiness', tier: 'basic' },
@@ -42,13 +56,25 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // BASIC scans its own assets (feeds QR Engine / Migration Planner / Sandbox).
   { prefix: '/api/v1/scanner', tier: 'basic' },
 
+  // Agent Collector Scanners (scanner "Agents" tab) and the Agent Center
+  // (/downloads) are BASIC, not Pro.
+  //
+  // A Basic tenant may deploy and operate the two READ-ONLY agent roles —
+  // Collector and Scanner — because those are what feed the Quantum Readiness
+  // engine that Basic already pays for. What Basic may NOT hold is an agent
+  // that writes to a host: Patcher and Migration Operator are PRO.
+  //
+  // That distinction is per-ROLE, not per-path, so it cannot be expressed here
+  // (every role is enrolled through the same endpoint). It is enforced in
+  // `src/api-server/agent-entitlement.ts`, which resolves the role server-side
+  // against the tenant's plan and clamps the scan-module list to match. Setting
+  // this prefix to `pro` would lock Basic out of the collector entirely; setting
+  // it to `basic` WITHOUT that module would hand Basic a patcher. Both are
+  // needed together.
+  { prefix: '/api/v1/agent-scanner', tier: 'basic' },
+  { prefix: '/api/v1/agent-installer', tier: 'basic' },
+
   // PRO — Discovery (remaining) / Operations / Ecosystem / Intelligence / PQAuth / Observability / Trust Center
-  { prefix: '/api/v1/agent-scanner', tier: 'pro' }, // Agent Collector Scanners (scanner "Agents" tab) — Pro+ only
-  // Agent Center (/downloads): installer generation, releases, commands, health.
-  // Same tier as agent-scanner — deploying an agent must not be reachable from a
-  // plan that cannot operate one. The agent-credentialed sub-paths below are
-  // exempt: an installed agent authenticates with its own token, not a session.
-  { prefix: '/api/v1/agent-installer', tier: 'pro' },
   { prefix: '/api/v1/migration', tier: 'pro' }, // timeline / phases / live-migration (NOT migration-planner: longer prefix wins)
   { prefix: '/api/v1/migration-snapshots', tier: 'pro' }, // Snapshot Management for safe rollback (live-migration)
   { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (live-migration)

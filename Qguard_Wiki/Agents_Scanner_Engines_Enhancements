@@ -1,0 +1,3397 @@
+# Qguard Helix — Enterprise Crypto Discovery, Quantum Vulnerability & Scanner Engine Enhancement
+
+## ROLE
+
+Act as a **Principal Cryptography Engineer, Post-Quantum Cryptography Architect, Security Scanner Architect, Application Security Engineer, PKI/TLS Engineer, DevSecOps Engineer, Cloud Security Engineer, Kubernetes Security Engineer, Software Supply-Chain Security Engineer, and Enterprise Security Platform Architect**.
+
+You are working directly inside the existing **Qguard Helix** codebase.
+
+Your task is to perform a **deep technical audit, redesign, enhancement, implementation, validation, and hardening** of the existing Qguard Helix Scanner Platform.
+
+Do not treat this as a simple UI enhancement.
+
+This is a **scanner-engine and cryptographic-detection engineering project**.
+
+The final system must provide accurate, evidence-backed, enterprise-grade detection of:
+
+* Classical cryptography
+* Quantum-vulnerable cryptography
+* Weak/legacy cryptography
+* Cryptographic misconfiguration
+* TLS/SSL weaknesses
+* PKI/certificate weaknesses
+* Cryptographic libraries and dependencies
+* Cryptographic API usage
+* Key-exchange mechanisms
+* Digital-signature algorithms
+* Encryption algorithms
+* Hashing algorithms
+* Cryptographic protocols
+* PQC implementations
+* Hybrid cryptography
+* Crypto-agility gaps
+* Quantum migration exposure
+
+across:
+
+```text
+WEB
+LOCAL
+DEV
+```
+
+---
+
+# 1. EXISTING APPLICATION AREAS TO REVIEW
+
+First inspect and understand the existing implementation of:
+
+```text
+http://localhost:3000/dashboard/scanner
+
+http://localhost:3000/public-scan
+
+http://localhost:3000/dashboard/scanner?tab=agents
+
+http://localhost:3000/downloads
+```
+
+Do not immediately modify these pages.
+
+First determine:
+
+* Current frontend architecture
+* Current scanner architecture
+* Current agents
+* Existing scanner engines
+* Existing modules
+* Existing API routes
+* Existing workers
+* Existing queues
+* Existing database models
+* Existing scan-task models
+* Existing findings models
+* Existing CBOM models
+* Existing crypto-component models
+* Existing asset models
+* Existing evidence models
+* Existing scoring logic
+* Existing SSE/WebSocket implementation
+* Existing agent communication
+* Existing scanner binaries
+* Existing scanner configuration
+* Existing installer/build system
+* Existing Windows/Linux/macOS support
+* Existing Web scanner
+* Existing Local scanner
+* Existing Dev scanner
+
+---
+
+# 2. MANDATORY LOCAL CODEBASE REVIEW
+
+Before implementing anything, deeply inspect:
+
+```text
+C:\Users\HP\Music\qguard-helix-final\Scanners
+```
+
+Read and review **ALL relevant contents recursively**.
+
+Do not inspect only the top-level directory.
+
+Inspect:
+
+```text
+Scanners/
+├── agents/
+├── engines/
+├── modules/
+├── rules/
+├── signatures/
+├── crypto/
+├── tls/
+├── certificates/
+├── dependencies/
+├── repositories/
+├── local/
+├── web/
+├── dev/
+├── cloud/
+├── kubernetes/
+├── docker/
+├── iac/
+├── parsers/
+├── detectors/
+├── evidence/
+├── scoring/
+├── workers/
+├── queues/
+├── installers/
+├── configuration/
+├── tests/
+└── all other existing directories
+```
+
+The actual directory structure may differ.
+
+Do not assume these directories exist.
+
+Discover the real structure first.
+
+---
+
+# 3. DO NOT REWRITE FUNCTIONAL SCANNERS BLINDLY
+
+Before changing scanner code:
+
+1. Inventory every existing engine.
+2. Inventory every detector.
+3. Inventory every algorithm rule.
+4. Inventory every scanner module.
+5. Inventory every agent.
+6. Inventory every scanner executable.
+7. Inventory every dependency.
+8. Inventory every configuration file.
+9. Inventory every test.
+10. Identify duplicated functionality.
+11. Identify broken functionality.
+12. Identify false-positive-prone logic.
+13. Identify missing detection capabilities.
+14. Identify inaccurate quantum classifications.
+15. Identify missing evidence.
+16. Identify hard-coded results.
+17. Identify mock/placeholder scanner behavior.
+18. Identify dead code.
+19. Identify unreachable engines.
+20. Identify engines that exist but are not connected to the UI/API.
+
+Create an internal architecture map before implementation.
+
+---
+
+# 4. CORE OBJECTIVE
+
+Upgrade Qguard Helix into:
+
+# Qguard Helix Cryptographic Discovery & Quantum Exposure Scanner™
+
+The scanner should follow:
+
+```text
+DISCOVER
+    ↓
+PARSE
+    ↓
+NORMALIZE
+    ↓
+IDENTIFY
+    ↓
+CORRELATE
+    ↓
+VALIDATE
+    ↓
+ESTABLISH GROUND TRUTH
+    ↓
+CLASSIFY
+    ↓
+SCORE
+    ↓
+PRIORITIZE
+    ↓
+REPORT
+```
+
+Do not build a simple regex-based crypto scanner.
+
+Build a **multi-layer cryptographic intelligence system**.
+
+---
+
+# 5. THREE SCANNING DOMAINS
+
+The platform must maintain three distinct scanning domains.
+
+## WEB
+
+Internet-facing cryptographic exposure.
+
+```text
+Domain
+DNS
+CAA
+HTTP
+TLS
+Certificates
+PKI
+OCSP
+Protocols
+Cipher Suites
+Key Exchange
+Digital Signatures
+Quantum Exposure
+```
+
+## LOCAL
+
+User-authorized local-device scanning.
+
+```text
+Files
+Folders
+Applications
+Source Code
+Libraries
+Dependencies
+Certificates
+Keys
+Configurations
+Git
+Local Services
+Containers
+IaC
+Crypto Usage
+Quantum Exposure
+```
+
+## DEV
+
+Development and cloud-native environment scanning.
+
+```text
+GitHub
+GitLab
+Bitbucket
+Azure DevOps
+Generic Git
+Docker
+OCI
+Container Registries
+Kubernetes
+Helm
+Kustomize
+Terraform
+OpenTofu
+Pulumi
+CloudFormation
+Bicep
+CI/CD
+Cloud
+Dependencies
+SBOM
+CBOM
+Crypto
+PKI
+Quantum Exposure
+```
+
+Each domain must have dedicated acquisition and analysis logic.
+
+---
+
+# 6. CRITICAL DETECTION PRINCIPLE
+
+Do NOT classify cryptography solely from a keyword.
+
+For every detection determine, where evidence permits:
+
+```text
+Algorithm
+Cryptographic Role
+Implementation
+Library
+Library Version
+Provider
+API
+Protocol
+Key Size
+Parameter Set
+Curve
+Mode
+Padding
+Hash
+Certificate
+Configuration
+File
+Line
+Repository
+Dependency
+Runtime/Endpoint
+Confidence
+Evidence
+Quantum Status
+```
+
+Example:
+
+Do NOT report simply:
+
+```text
+RSA detected
+```
+
+Instead report:
+
+```text
+Algorithm:
+RSA
+
+Key Size:
+2048 bits
+
+Role:
+Digital Signature
+
+API:
+crypto.createSign()
+
+Library:
+Node.js OpenSSL provider
+
+File:
+src/auth/signing.ts
+
+Line:
+81
+
+Hash:
+SHA-256
+
+Padding:
+RSA-PSS
+
+Quantum Status:
+Quantum Vulnerable
+
+Confidence:
+High
+```
+
+---
+
+# 7. CRYPTOGRAPHIC CLASSIFICATION ENGINE
+
+Build a centralized:
+
+# Qguard Helix Crypto Knowledge Base™
+
+Do not duplicate algorithm definitions across individual scanners.
+
+Create a canonical knowledge model.
+
+Each algorithm should contain:
+
+```text
+algorithm_id
+canonical_name
+aliases
+family
+primitive_type
+cryptographic_role
+classical_security
+quantum_security
+standard_status
+deprecated_status
+disallowed_status
+minimum_key_size
+recommended_parameters
+supported_protocols
+known_libraries
+known_apis
+known_identifiers
+migration_targets
+evidence_requirements
+```
+
+---
+
+# 8. REQUIRED CLASSICAL CRYPTOGRAPHY COVERAGE
+
+At minimum detect:
+
+## Public-Key Encryption
+
+```text
+RSA
+RSAES-PKCS1-v1_5
+RSA-OAEP
+ElGamal
+```
+
+## Key Establishment
+
+```text
+RSA key transport
+DH
+DHE
+ECDH
+ECDHE
+X25519
+X448
+MQV
+ECMQV
+```
+
+## Digital Signatures
+
+```text
+RSA
+RSA-PSS
+RSA-PKCS#1 v1.5
+DSA
+ECDSA
+Ed25519
+Ed448
+EdDSA
+```
+
+## Elliptic Curves
+
+Detect:
+
+```text
+P-224
+P-256
+P-384
+P-521
+secp256k1
+secp256r1
+secp384r1
+secp521r1
+Curve25519
+X25519
+X448
+Ed25519
+Ed448
+brainpool
+other recognized curves
+```
+
+Do not assume every ECC curve has the same security properties.
+
+---
+
+# 9. RSA DETECTION ENGINE
+
+Create a dedicated RSA analysis engine.
+
+Detect:
+
+```text
+RSA-1024
+RSA-2048
+RSA-3072
+RSA-4096
+RSA-OAEP
+RSA-PSS
+RSA-PKCS#1 v1.5
+RSA key transport
+RSA signatures
+RSA certificates
+RSA SSH keys
+RSA JWT/JWS
+RSA S/MIME
+RSA code signing
+RSA dependency usage
+```
+
+Distinguish:
+
+```text
+Encryption
+Key Transport
+Signature
+Certificate Public Key
+Authentication
+Code Signing
+```
+
+Do not report RSA-2048 as merely "weak" because it is not currently considered classically broken.
+
+Instead classify it appropriately:
+
+```text
+Classical Security:
+Acceptable / Context Dependent
+
+Quantum Security:
+Vulnerable
+
+Migration:
+Required for PQC transition
+```
+
+This distinction is essential.
+
+---
+
+# 10. ECC DETECTION ENGINE
+
+Detect:
+
+```text
+ECDSA
+ECDH
+ECDHE
+EdDSA
+Ed25519
+Ed448
+X25519
+X448
+Named curves
+Explicit curves
+Curve identifiers
+```
+
+Determine whether ECC is used for:
+
+```text
+Signature
+Key Exchange
+Authentication
+Certificate
+Identity
+JWT
+SSH
+TLS
+Code Signing
+```
+
+Quantum classification should reflect the public-key cryptographic role.
+
+---
+
+# 11. DIFFIE-HELLMAN DETECTION
+
+Detect:
+
+```text
+DH
+DHE
+Finite-field DH
+Ephemeral DH
+Static DH
+MODP groups
+FFDHE
+```
+
+Identify:
+
+```text
+Group size
+Parameter
+Usage
+Protocol
+Implementation
+Library
+```
+
+Example:
+
+```text
+DHE
+FFDHE2048
+TLS 1.2
+OpenSSL
+```
+
+should produce an evidence-backed detection.
+
+---
+
+# 12. CLASSICAL KEY EXCHANGE DETECTION
+
+Detect classical key establishment including:
+
+```text
+RSA key transport
+DH
+DHE
+ECDH
+ECDHE
+X25519
+X448
+```
+
+Also detect:
+
+```text
+Hybrid key exchange
+PQC KEM
+Classical + PQC combination
+```
+
+Do not confuse:
+
+```text
+encryption
+```
+
+with:
+
+```text
+key establishment
+```
+
+They are separate cryptographic roles.
+
+---
+
+# 13. DIGITAL SIGNATURE DETECTION
+
+Detect:
+
+```text
+RSA
+RSA-PSS
+RSA-PKCS1-v1_5
+DSA
+ECDSA
+Ed25519
+Ed448
+EdDSA
+```
+
+Also detect:
+
+```text
+ML-DSA
+SLH-DSA
+```
+
+and future standardized PQC signature algorithms as the knowledge base evolves.
+
+---
+
+# 14. HASH FUNCTION DETECTION
+
+Detect:
+
+```text
+MD2
+MD4
+MD5
+SHA-1
+SHA-224
+SHA-256
+SHA-384
+SHA-512
+SHA-512/224
+SHA-512/256
+SHA-3
+SHAKE128
+SHAKE256
+BLAKE2
+BLAKE3
+HMAC
+KMAC
+```
+
+Do not automatically classify every non-NIST hash as vulnerable.
+
+Determine its:
+
+```text
+Usage
+Security role
+Collision resistance requirement
+Password hashing role
+Integrity role
+Signature role
+Protocol role
+```
+
+For example:
+
+```text
+SHA-1 certificate signature
+```
+
+is materially different from:
+
+```text
+SHA-1 used in a non-security legacy identifier
+```
+
+---
+
+# 15. SYMMETRIC CRYPTOGRAPHY
+
+Detect:
+
+```text
+AES-128
+AES-192
+AES-256
+AES-GCM
+AES-CCM
+AES-CBC
+AES-CTR
+ChaCha20
+ChaCha20-Poly1305
+3DES
+DES
+RC4
+Blowfish
+Twofish
+Camellia
+```
+
+Also detect:
+
+```text
+ECB
+CBC
+CTR
+GCM
+CCM
+Poly1305
+```
+
+Quantum classification must be nuanced.
+
+Do not label AES-256 as "quantum vulnerable" in the same manner as RSA/ECC.
+
+Instead model:
+
+```text
+Classical Security
+Quantum Security Consideration
+Estimated Quantum Security Strength
+Migration Priority
+```
+
+---
+
+# 16. PASSWORD HASHING / KDF DETECTION
+
+Detect:
+
+```text
+PBKDF2
+bcrypt
+scrypt
+Argon2
+Argon2id
+HKDF
+HMAC
+Concat KDF
+ANSI X9.63 KDF
+```
+
+Identify:
+
+```text
+Parameters
+Iterations
+Memory
+Parallelism
+Salt
+Output size
+```
+
+Flag weak configurations based on validated rules.
+
+---
+
+# 17. RANDOMNESS DETECTION
+
+Detect insecure randomness usage such as:
+
+```text
+Math.random()
+weak PRNGs
+predictable seeds
+time-based seeds
+non-CSPRNG APIs
+```
+
+Correlate with cryptographic usage.
+
+Example:
+
+```text
+Weak RNG
+    ↓
+AES key generation
+    ↓
+High Security Impact
+```
+
+Do not report weak randomness as a cryptographic vulnerability unless its context supports that conclusion.
+
+---
+
+# 18. TLS DEEP ANALYSIS
+
+Create:
+
+# Qguard Helix TLS Intelligence Engine™
+
+Detect:
+
+```text
+SSLv2
+SSLv3
+TLS 1.0
+TLS 1.1
+TLS 1.2
+TLS 1.3
+```
+
+Identify:
+
+```text
+Cipher Suite
+Key Exchange
+Authentication
+Certificate
+Signature Algorithm
+Supported Groups
+Named Groups
+Signature Algorithms
+ALPN
+SNI
+OCSP Stapling
+Certificate Transparency
+Renegotiation
+Session Resumption
+PSK
+0-RTT
+```
+
+---
+
+# 19. TLS 1.2 ANALYSIS
+
+For TLS 1.2 identify the complete cryptographic suite.
+
+Example:
+
+```text
+TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+```
+
+Normalize into:
+
+```text
+Protocol:
+TLS 1.2
+
+Key Exchange:
+ECDHE
+
+Authentication:
+RSA
+
+Encryption:
+AES-256-GCM
+
+Hash/MAC:
+SHA-384
+
+Quantum Exposure:
+Classical Public-Key Components Vulnerable
+```
+
+Do not classify the entire cipher suite as simply "vulnerable."
+
+Identify which component creates the quantum exposure.
+
+---
+
+# 20. TLS 1.3 ANALYSIS
+
+For TLS 1.3 identify:
+
+```text
+Cipher Suite
+Key Exchange Group
+Signature Algorithm
+Certificate Key
+Certificate Signature
+PQC/Hybrid Support
+```
+
+Detect classical groups such as:
+
+```text
+X25519
+secp256r1
+secp384r1
+secp521r1
+ffdhe2048
+ffdhe3072
+ffdhe4096
+```
+
+Detect PQC/hybrid groups where supported by the implementation.
+
+---
+
+# 21. PQC / HYBRID TLS DETECTION
+
+Detect standardized and implementation-specific hybrid configurations.
+
+Examples may include:
+
+```text
+X25519 + ML-KEM
+ECDHE + ML-KEM
+Classical + PQC hybrid key exchange
+```
+
+Normalize aliases carefully.
+
+Example:
+
+```text
+Kyber
+ML-KEM
+ML-KEM-768
+X25519MLKEM768
+```
+
+Do not treat each as unrelated algorithms.
+
+---
+
+# 22. CERTIFICATE INTELLIGENCE ENGINE
+
+Create:
+
+# Qguard Helix Certificate Intelligence Engine™
+
+Analyze:
+
+```text
+X.509 certificates
+Certificate chains
+Root CA
+Intermediate CA
+Leaf certificate
+Public key
+Signature algorithm
+Issuer
+Subject
+SAN
+Key usage
+Extended key usage
+Validity
+Serial
+OCSP
+CRL
+Certificate Transparency
+```
+
+Detect:
+
+```text
+RSA
+ECDSA
+DSA
+Ed25519
+Ed448
+SHA-1 signatures
+Weak key sizes
+Expired certificates
+Not-yet-valid certificates
+Weak signature algorithms
+Incorrect key usage
+Broken chains
+Missing intermediates
+Hostname mismatch
+Self-signed certificates
+```
+
+---
+
+# 23. CERTIFICATE QUANTUM ANALYSIS
+
+Separate:
+
+```text
+Certificate Public Key Algorithm
+```
+
+from:
+
+```text
+Certificate Signature Algorithm
+```
+
+Example:
+
+```text
+Public Key:
+RSA-2048
+
+Certificate Signature:
+ECDSA-SHA256
+```
+
+Both must be recorded independently.
+
+Do not report:
+
+```text
+Certificate = ECDSA
+```
+
+without distinguishing these fields.
+
+---
+
+# 24. PKI ANALYSIS
+
+Detect:
+
+```text
+CA hierarchy
+Root CA
+Intermediate CA
+Issuing CA
+Trust stores
+Trust anchors
+Certificate profiles
+OCSP
+CRL
+AIA
+SIA
+Certificate Transparency
+```
+
+Where locally accessible, inspect:
+
+```text
+Windows Certificate Store
+Linux trust stores
+macOS Keychain
+Java truststores
+Java keystores
+PKCS#11
+HSM integrations
+```
+
+---
+
+# 25. CRYPTOGRAPHIC LIBRARY DETECTION
+
+Detect cryptographic libraries and providers.
+
+At minimum:
+
+```text
+OpenSSL
+LibreSSL
+BoringSSL
+AWS-LC
+WolfSSL
+Botan
+libsodium
+liboqs
+OQS-OpenSSL
+Open Quantum Safe
+mbedTLS
+NSS
+Java JCA/JCE
+.NET Cryptography
+Windows CNG
+Windows CAPI
+Apple Security Framework
+CommonCrypto
+WebCrypto
+Node.js crypto
+Python cryptography
+PyCryptodome
+Go crypto
+RustCrypto
+ring
+OpenSSH
+GnuTLS
+```
+
+Identify:
+
+```text
+Library
+Version
+Provider
+API
+Algorithm
+Actual usage
+```
+
+---
+
+# 26. DEPENDENCY CRYPTO ANALYSIS
+
+Do not merely detect that a crypto library is installed.
+
+Determine:
+
+```text
+Direct dependency
+Transitive dependency
+Actually imported
+Actually referenced
+Actually invoked
+Configuration enabled
+Algorithm exposed
+Algorithm used
+```
+
+Example:
+
+```text
+OpenSSL installed
+```
+
+does NOT automatically mean:
+
+```text
+RSA used
+```
+
+The scanner should distinguish:
+
+```text
+Available
+Imported
+Configured
+Observed in code
+Observed at runtime
+```
+
+---
+
+# 27. LANGUAGE-SPECIFIC CRYPTO ANALYSIS
+
+Create language-aware detectors.
+
+Support at minimum:
+
+```text
+JavaScript
+TypeScript
+Python
+Java
+Kotlin
+C
+C++
+C#
+Go
+Rust
+PHP
+Ruby
+Swift
+Objective-C
+Shell
+PowerShell
+```
+
+Understand language-specific crypto APIs.
+
+Examples:
+
+```text
+Node.js crypto
+Python cryptography
+Java JCA/JCE
+.NET System.Security.Cryptography
+Go crypto/*
+RustCrypto
+WebCrypto
+OpenSSL EVP
+Windows CNG
+Apple Security APIs
+```
+
+---
+
+# 28. CODE-LEVEL CRYPTO DATA FLOW
+
+Where feasible, implement contextual analysis.
+
+Detect:
+
+```text
+Input
+    ↓
+Crypto API
+    ↓
+Algorithm
+    ↓
+Key
+    ↓
+Output
+```
+
+Example:
+
+```text
+User data
+ ↓
+RSA-OAEP
+ ↓
+RSA-2048 public key
+ ↓
+Encrypted payload
+```
+
+This is significantly more valuable than simple string matching.
+
+---
+
+# 29. CRYPTO API DETECTION
+
+Detect API invocation patterns.
+
+Examples:
+
+```text
+RSA_generate_key
+EVP_PKEY_RSA
+EVP_sha256
+EVP_DigestSign
+EVP_EncryptInit
+SSL_CTX_set_cipher_list
+SSL_CTX_set1_groups
+```
+
+and language-specific equivalents.
+
+Map API → algorithm → role → evidence.
+
+---
+
+# 30. CONFIGURATION ANALYSIS
+
+Analyze:
+
+```text
+OpenSSL configuration
+nginx
+Apache
+HAProxy
+Envoy
+Traefik
+IIS
+Java security configuration
+.NET configuration
+Node configuration
+Python configuration
+Kubernetes
+Ingress
+Service Mesh
+Cloud Load Balancers
+```
+
+Detect:
+
+```text
+Weak TLS
+Legacy protocol
+Weak cipher
+Weak key exchange
+Weak certificate
+Weak signature
+Legacy crypto provider
+```
+
+---
+
+# 31. SSH CRYPTOGRAPHY
+
+Add dedicated SSH analysis.
+
+Detect:
+
+```text
+RSA
+DSA
+ECDSA
+Ed25519
+Ed448
+Diffie-Hellman groups
+curve25519
+KEX algorithms
+host keys
+user keys
+MACs
+ciphers
+```
+
+Identify quantum-vulnerable public-key components.
+
+---
+
+# 32. IPSEC / VPN CRYPTOGRAPHY
+
+Where observable, detect:
+
+```text
+IKE
+IKEv1
+IKEv2
+DH groups
+ECDH
+AES
+3DES
+SHA-1
+SHA-2
+authentication algorithms
+```
+
+Identify quantum-vulnerable key-establishment components.
+
+---
+
+# 33. APPLICATION PROTOCOL CRYPTOGRAPHY
+
+Expand discovery beyond TLS.
+
+Where applicable detect cryptography in:
+
+```text
+SSH
+IPsec
+S/MIME
+PGP/OpenPGP
+JWT
+JWS
+JWE
+OAuth
+OIDC
+Kerberos
+LDAP
+LDAPS
+mTLS
+gRPC
+HTTP/2
+HTTP/3
+QUIC
+DNSSEC
+RADIUS
+SNMP
+Database TLS
+Message queues
+Service meshes
+API gateways
+```
+
+Only report protocols that are actually observed or evidenced.
+
+---
+
+# 34. CODE SIGNING
+
+Detect:
+
+```text
+Authenticode
+JAR signing
+APK signing
+iOS code signing
+Package signing
+Container signing
+Artifact signing
+Git commit signing
+Release signing
+```
+
+Identify:
+
+```text
+Algorithm
+Certificate
+Key size
+Signature
+Trust chain
+Quantum status
+```
+
+---
+
+# 35. PACKAGE / ARTIFACT SIGNING
+
+Analyze:
+
+```text
+npm package signatures
+Python package signing
+Container image signing
+Cosign
+Sigstore
+Notary
+TUF
+in-toto
+SLSA provenance
+```
+
+Where cryptographic algorithms are observable, add them to the CBOM.
+
+---
+
+# 36. QUANTUM VULNERABILITY KNOWLEDGE MODEL
+
+Create a centralized quantum classification model.
+
+At minimum distinguish:
+
+```text
+QUANTUM_VULNERABLE
+QUANTUM_RESISTANT
+PQC_STANDARDIZED
+HYBRID
+CLASSICAL_ONLY
+UNKNOWN
+NOT_APPLICABLE
+```
+
+Do NOT use only:
+
+```text
+VULNERABLE
+SAFE
+```
+
+---
+
+# 37. QUANTUM VULNERABILITY RULES
+
+Public-key algorithms based on factoring/discrete logarithms should be treated as quantum-vulnerable for migration planning.
+
+Examples:
+
+```text
+RSA
+DSA
+DH
+ECDH
+ECDSA
+EdDSA
+Ed25519
+Ed448
+```
+
+Do not interpret this as "currently broken."
+
+Use precise terminology:
+
+```text
+Quantum Vulnerable
+```
+
+rather than:
+
+```text
+Currently Cryptographically Broken
+```
+
+---
+
+# 38. SYMMETRIC QUANTUM CLASSIFICATION
+
+Do not treat symmetric cryptography exactly like RSA/ECC.
+
+Model:
+
+```text
+Classical Security
+Quantum Consideration
+Effective Quantum Security
+Migration Priority
+```
+
+For example:
+
+```text
+AES-256
+
+Classical:
+Strong
+
+Quantum:
+Reduced effective security under Grover-style search assumptions
+
+Assessment:
+Generally preferred over smaller symmetric key sizes for long-term protection
+```
+
+Avoid sensational or technically inaccurate findings.
+
+---
+
+# 39. PQC STANDARD DETECTION
+
+Recognize NIST standardized algorithms:
+
+```text
+ML-KEM
+ML-KEM-512
+ML-KEM-768
+ML-KEM-1024
+
+ML-DSA
+ML-DSA-44
+ML-DSA-65
+ML-DSA-87
+
+SLH-DSA
+```
+
+Map legacy aliases where appropriate:
+
+```text
+Kyber → ML-KEM
+Dilithium → ML-DSA
+SPHINCS+ → SLH-DSA
+```
+
+Do not claim an implementation is standards-compliant merely because a source file contains an algorithm name.
+
+---
+
+# 40. PQC IMPLEMENTATION VALIDATION
+
+When PQC is detected, determine:
+
+```text
+Algorithm
+Parameter Set
+Library
+Library Version
+Implementation
+Provider
+Mode
+Protocol
+Hybrid/Classical/PQC
+Validation Status
+```
+
+Where possible distinguish:
+
+```text
+Standardized
+Draft
+Experimental
+Vendor-specific
+Unknown
+```
+
+---
+
+# 41. NIST STANDARDS RESEARCH REQUIREMENT
+
+Before finalizing the detection logic, research current official NIST guidance.
+
+Use authoritative sources including:
+
+```text
+NIST FIPS 203
+NIST FIPS 204
+NIST FIPS 205
+NIST SP 800-52
+NIST SP 800-57
+NIST SP 800-56A
+NIST SP 800-56B
+NIST FIPS 186
+NIST FIPS 140-3
+NIST PQC publications
+NIST transition guidance
+```
+
+Do not rely primarily on blogs or vendor marketing.
+
+For every important rule record:
+
+```text
+Source
+Publication
+Version
+Section
+Requirement
+Detection Rule
+```
+
+---
+
+# 42. GOVERNMENT GUIDANCE RESEARCH
+
+Also research authoritative government guidance from:
+
+```text
+CISA
+NSA
+OMB
+White House
+NIST
+CNSS
+Relevant U.S. Government standards
+```
+
+Especially investigate:
+
+```text
+PQC migration
+Cryptographic inventory
+Cryptographic discovery
+TLS modernization
+CNSA 2.0
+Government cryptographic transition timelines
+CBOM requirements
+Quantum-vulnerable inventory
+```
+
+Do not mix:
+
+```text
+Federal requirement
+NIST recommendation
+NIST draft
+NSA NSS guidance
+CISA guidance
+Industry best practice
+```
+
+without clearly labeling the source type.
+
+---
+
+# 43. STANDARDS INTELLIGENCE ENGINE
+
+Create a standards metadata layer:
+
+```text
+standard_id
+authority
+publication
+version
+status
+effective_date
+review_date
+requirement_type
+applicability
+algorithm
+rule
+source_url
+source_section
+```
+
+Possible statuses:
+
+```text
+FINAL
+DRAFT
+SUPERSEDED
+WITHDRAWN
+RECOMMENDED
+REQUIRED
+INFORMATIONAL
+```
+
+This allows scanner rules to evolve without hard-coding everything into source code.
+
+---
+
+# 44. RULE ENGINE
+
+Build a centralized rule engine.
+
+Example:
+
+```text
+QGH-CRYPTO-RSA-001
+QGH-CRYPTO-ECC-001
+QGH-CRYPTO-DH-001
+QGH-TLS-001
+QGH-TLS-002
+QGH-CERT-001
+QGH-PQC-001
+QGH-LIB-001
+QGH-DEP-001
+QGH-SSH-001
+QGH-PKI-001
+```
+
+Each rule should contain:
+
+```text
+Rule ID
+Name
+Description
+Severity
+Confidence Model
+Evidence Requirements
+Detection Logic
+Quantum Classification
+Standards Mapping
+Remediation
+References
+False Positive Conditions
+```
+
+---
+
+# 45. CONFIDENCE MODEL
+
+Separate:
+
+```text
+Severity
+Confidence
+Evidence Quality
+Coverage
+```
+
+Example:
+
+```text
+Severity:
+HIGH
+
+Confidence:
+HIGH
+
+Evidence Quality:
+DIRECT
+
+Coverage:
+COMPLETE
+```
+
+Never equate:
+
+```text
+High Severity
+```
+
+with:
+
+```text
+High Confidence
+```
+
+---
+
+# 46. EVIDENCE-FIRST DETECTION
+
+Every finding must contain actual evidence.
+
+Example:
+
+```text
+Finding:
+RSA-2048 detected
+
+Evidence:
+File:
+src/auth/signing.ts
+
+Line:
+81
+
+API:
+crypto.createSign()
+
+Algorithm:
+RSA-SHA256
+
+Key:
+2048 bits
+
+Detection:
+AST + API semantic analysis
+```
+
+If evidence is insufficient:
+
+```text
+Status:
+Potential
+
+Confidence:
+Low
+```
+
+Do not present it as confirmed.
+
+---
+
+# 47. FALSE POSITIVE REDUCTION
+
+Build multiple detection layers:
+
+```text
+Layer 1:
+Lexical Detection
+
+Layer 2:
+AST Detection
+
+Layer 3:
+API Detection
+
+Layer 4:
+Configuration Detection
+
+Layer 5:
+Dependency Detection
+
+Layer 6:
+Data-Flow Correlation
+
+Layer 7:
+Runtime/Network Evidence
+
+Layer 8:
+Cross-Scanner Correlation
+```
+
+The more independent evidence sources agree, the higher the confidence.
+
+---
+
+# 48. CROSS-SCANNER CORRELATION
+
+If multiple scanners detect the same cryptographic component:
+
+```text
+Source Code
++
+Dependency
++
+Container
++
+Kubernetes
++
+TLS
++
+Certificate
+```
+
+correlate them into a unified cryptographic asset.
+
+Do not create duplicate findings unnecessarily.
+
+---
+
+# 49. GROUND TRUTH ENGINE
+
+Create:
+
+# Qguard Helix Cryptographic Ground Truth Engine™
+
+It should answer:
+
+```text
+Was it actually observed?
+Where?
+How?
+By which engine?
+With what evidence?
+Can another scanner confirm it?
+What is the confidence?
+```
+
+Classify evidence:
+
+```text
+DIRECT_OBSERVATION
+STATIC_ANALYSIS
+CONFIGURATION
+DEPENDENCY_METADATA
+NETWORK_OBSERVATION
+CERTIFICATE_OBSERVATION
+RUNTIME_TELEMETRY
+INFERENCE
+UNKNOWN
+```
+
+---
+
+# 50. CBOM INTEGRATION
+
+Every confirmed cryptographic component must be capable of becoming a CBOM component.
+
+Minimum fields:
+
+```text
+component_id
+asset_id
+algorithm
+role
+library
+version
+provider
+protocol
+key_size
+parameter_set
+file
+line
+source
+evidence
+confidence
+quantum_status
+standards
+first_seen
+last_seen
+```
+
+---
+
+# 51. SCANNER AGENTS
+
+Review and enhance:
+
+```text
+/dashboard/scanner?tab=agents
+```
+
+Create a professional agent-management interface.
+
+Display:
+
+```text
+Agent
+Platform
+Version
+Status
+Capabilities
+Last Seen
+Scanner Engine Versions
+Health
+Permissions
+```
+
+Example:
+
+```text
+Qguard Local Scanner Agent
+
+● ONLINE
+
+Windows x64
+Version 2.0.1
+
+Capabilities:
+✓ Filesystem
+✓ Git
+✓ Code
+✓ Crypto
+✓ CBOM
+✓ Secrets
+✓ Docker
+✓ Kubernetes
+```
+
+---
+
+# 52. AGENT CAPABILITY NEGOTIATION
+
+The server must know exactly what each agent supports.
+
+Example:
+
+```text
+agent.capabilities
+```
+
+must report:
+
+```text
+filesystem
+git
+docker
+kubernetes
+crypto
+tls
+certificate
+cbom
+secret
+dependency
+iac
+cloud
+```
+
+Do not dispatch a scan to an agent that does not support the required engine.
+
+---
+
+# 53. AGENT SECURITY
+
+Harden agents with:
+
+```text
+Authenticated pairing
+Short-lived tokens
+TLS where appropriate
+Loopback restrictions
+Origin validation
+Request authorization
+Capability validation
+Tenant binding
+Job authorization
+Audit logging
+Automatic expiration
+Version validation
+```
+
+Do not expose local scanner services broadly.
+
+---
+
+# 54. DOWNLOADS PAGE
+
+Enhance:
+
+```text
+http://localhost:3000/downloads
+```
+
+into a professional:
+
+# Qguard Helix Scanner Agent & Engine Distribution Center
+
+Provide:
+
+```text
+Windows Agent
+Linux Agent
+macOS Agent
+CLI Scanner
+Docker Scanner
+Kubernetes Scanner
+Cloud Connector
+Developer CLI
+```
+
+Only display downloads that actually exist.
+
+Never create fake download links.
+
+Show:
+
+```text
+Version
+Release
+Platform
+Architecture
+SHA-256
+Signature
+Release Date
+Changelog
+Minimum Version
+```
+
+---
+
+# 55. DOWNLOAD INTEGRITY
+
+Every downloadable agent/package should have:
+
+```text
+SHA-256
+Digital Signature
+Version
+Build ID
+Release Metadata
+```
+
+The agent installer should verify package integrity where supported.
+
+---
+
+# 56. WEB SCANNER ENGINES
+
+Enhance Web scanning with dedicated modules:
+
+```text
+DNSCAAEngine
+HTTPHeadersEngine
+TLSEngine
+TLSCipherEngine
+TLSKeyExchangeEngine
+TLSCertificateEngine
+PKIEngine
+OCSPEngine
+CertificateTransparencyEngine
+ProtocolEngine
+QuantumExposureEngine
+```
+
+Each engine must produce evidence.
+
+---
+
+# 57. LOCAL SCANNER ENGINES
+
+Implement or enhance:
+
+```text
+LocalFileDiscoveryEngine
+LocalCodeAnalysisEngine
+LocalCryptoDiscoveryEngine
+LocalCryptoAPIEngine
+LocalDependencyEngine
+LocalLibraryEngine
+LocalCertificateEngine
+LocalKeyStoreEngine
+LocalSecretEngine
+LocalGitEngine
+LocalGitHistoryEngine
+LocalTLSConfigEngine
+LocalContainerEngine
+LocalIACEngine
+LocalCBOMEngine
+LocalQuantumEngine
+```
+
+---
+
+# 58. DEV SCANNER ENGINES
+
+Implement or enhance:
+
+```text
+RepositoryDiscoveryEngine
+RepositoryCodeAnalysisEngine
+RepositoryCryptoEngine
+RepositoryDependencyEngine
+RepositorySecretEngine
+RepositoryCBOMEngine
+
+DockerEngine
+ContainerImageEngine
+ContainerRegistryEngine
+
+KubernetesEngine
+KubernetesRBACEngine
+KubernetesNetworkEngine
+KubernetesTLS/PKIEngine
+HelmEngine
+KustomizeEngine
+
+TerraformEngine
+OpenTofuEngine
+PulumiEngine
+CloudFormationEngine
+BicepEngine
+IaCEngine
+
+CICDEngine
+ArtifactSigningEngine
+SupplyChainEngine
+
+CloudSecurityEngine
+CloudCryptoEngine
+
+QuantumExposureEngine
+```
+
+---
+
+# 59. TASK-AWARE SCANNING
+
+Do not run every scanner for every task.
+
+Example:
+
+```text
+User selects:
+
+[x] Crypto
+[x] TLS
+[x] Certificates
+```
+
+Run only:
+
+```text
+CryptoEngine
+TLSEngine
+CertificateEngine
+```
+
+For:
+
+```text
+[x] Full Dev Deep Scan
+```
+
+execute all applicable engines.
+
+---
+
+# 60. SCAN PROFILES
+
+Support:
+
+```text
+Quick
+Standard
+Deep
+Crypto
+Quantum
+TLS/PKI
+Secrets
+Dependencies
+Supply Chain
+Container
+Kubernetes
+Cloud
+Full Enterprise
+Custom
+```
+
+---
+
+# 61. REAL-TIME SCAN EXECUTION
+
+Show actual engine status.
+
+Example:
+
+```text
+CRYPTO DISCOVERY       ████████████ 100% ✓
+TLS ANALYSIS           ████████░░░░  72% ●
+CERTIFICATE ANALYSIS   ████████████ 100% ✓
+DEPENDENCY ANALYSIS    ██████░░░░░░  54% ●
+CBOM CORRELATION       ░░░░░░░░░░░░   0% ○
+```
+
+Never simulate progress.
+
+Progress must come from actual scanner events.
+
+---
+
+# 62. SCAN EVENT MODEL
+
+Implement:
+
+```text
+scan.created
+scan.queued
+scan.started
+engine.started
+engine.progress
+finding.discovered
+evidence.collected
+engine.completed
+engine.failed
+correlation.started
+correlation.completed
+cbom.updated
+quantum.assessment.started
+quantum.assessment.completed
+scan.completed
+scan.partial
+scan.failed
+scan.cancelled
+```
+
+---
+
+# 63. SCAN FAILURE HANDLING
+
+If one engine fails:
+
+```text
+PARTIAL
+```
+
+not:
+
+```text
+SUCCESS
+```
+
+Example:
+
+```text
+Crypto Engine        ✓
+TLS Engine           ✓
+Certificate Engine   ✕
+CBOM Engine          ✓
+
+Result:
+PARTIAL SCAN
+
+Limitation:
+Certificate analysis unavailable
+```
+
+---
+
+# 64. COVERAGE ENGINE
+
+Report:
+
+```text
+Files Scanned
+Files Skipped
+Files Unsupported
+Repositories Scanned
+Branches
+Commits
+Dependencies
+Libraries
+Crypto Components
+Certificates
+TLS Endpoints
+Kubernetes Workloads
+Containers
+Cloud Resources
+IaC Resources
+```
+
+Also report:
+
+```text
+Permission Denied
+Unsupported
+Excluded
+Not Assessed
+Unknown
+```
+
+Never treat:
+
+```text
+Not Scanned
+```
+
+as:
+
+```text
+Secure
+```
+
+---
+
+# 65. SCANNER ACCURACY VALIDATION
+
+Create a comprehensive test corpus.
+
+Include known examples of:
+
+```text
+RSA-1024
+RSA-2048
+RSA-3072
+RSA-4096
+RSA-PSS
+RSA-OAEP
+ECDSA P-256
+ECDSA P-384
+ECDH
+X25519
+X448
+DH
+FFDHE
+DSA
+Ed25519
+Ed448
+AES-128
+AES-256
+AES-GCM
+AES-CBC
+3DES
+DES
+RC4
+MD5
+SHA-1
+SHA-256
+SHA-384
+SHA-512
+SHA-3
+HKDF
+PBKDF2
+bcrypt
+scrypt
+Argon2
+ML-KEM
+ML-DSA
+SLH-DSA
+Hybrid PQC
+TLS 1.0
+TLS 1.1
+TLS 1.2
+TLS 1.3
+Weak certificates
+Valid certificates
+Expired certificates
+Weak keys
+Strong keys
+PQC certificates/experimental implementations
+```
+
+---
+
+# 66. NEGATIVE TEST CASES
+
+Create tests proving the scanner does NOT produce false positives for:
+
+```text
+Variable named RSA
+Documentation mentioning RSA
+Comments mentioning AES
+Test data containing crypto names
+Unused imports
+Unused dependencies
+String literals
+Log messages
+README documentation
+Non-security hashing
+Non-cryptographic random usage
+```
+
+This is extremely important.
+
+---
+
+# 67. DETECTION PRECISION METRICS
+
+Measure:
+
+```text
+True Positives
+False Positives
+False Negatives
+Precision
+Recall
+Confidence
+Coverage
+```
+
+Track scanner quality by engine.
+
+Example:
+
+```text
+Crypto API Engine
+Precision: 96.8%
+Recall: 93.4%
+```
+
+Only publish metrics that are actually measured from a defined test corpus.
+
+---
+
+# 68. REGRESSION TESTING
+
+Every scanner rule change must run regression tests.
+
+Do not allow a new detector to break existing detection.
+
+Maintain:
+
+```text
+Crypto Detection Regression Suite
+TLS Regression Suite
+Certificate Regression Suite
+PQC Regression Suite
+Dependency Regression Suite
+CBOM Regression Suite
+```
+
+---
+
+# 69. SECURITY OF THE SCANNER ITSELF
+
+Treat all scanner inputs as hostile.
+
+Protect against:
+
+```text
+Path Traversal
+Zip Bombs
+Malicious Archives
+Symlink Attacks
+Huge Files
+Malformed Certificates
+Malformed ASN.1
+Malformed X.509
+Malicious Git Repositories
+Git Object Attacks
+Repository Fork Bombs
+Parser Vulnerabilities
+Resource Exhaustion
+Dependency Confusion
+```
+
+Do not execute untrusted repository code during static scanning.
+
+---
+
+# 70. NO DESTRUCTIVE SCANNING
+
+Scanner engines must not:
+
+```text
+Modify repositories
+Push commits
+Modify Kubernetes
+Deploy workloads
+Restart workloads
+Change cloud configuration
+Rotate keys
+Delete resources
+Modify certificates
+Change firewall rules
+```
+
+Scanning is read-only.
+
+Remediation is a separate Qguard Helix workflow.
+
+---
+
+# 71. PERFORMANCE ARCHITECTURE
+
+Large scans must execute asynchronously.
+
+Use the existing Qguard Helix architecture where possible:
+
+```text
+API
+ ↓
+Scan Task
+ ↓
+Queue
+ ↓
+Orchestrator
+ ↓
+Dedicated Worker
+ ↓
+Scanner Engine
+ ↓
+Evidence
+ ↓
+Normalization
+ ↓
+Correlation
+ ↓
+CBOM
+ ↓
+Risk
+```
+
+Implement:
+
+```text
+Concurrency limits
+Timeouts
+Retries
+Cancellation
+Resource limits
+Backpressure
+```
+
+---
+
+# 72. ENTERPRISE MULTI-TENANCY
+
+Every scanner operation must be tenant scoped.
+
+Enforce:
+
+```text
+tenant_id
+user_id
+project_id
+scan_id
+asset_id
+agent_id
+```
+
+server-side.
+
+Never trust tenant identifiers supplied by the frontend.
+
+---
+
+# 73. EVIDENCE SECURITY
+
+Never expose:
+
+```text
+Private Keys
+Passwords
+API Tokens
+Cloud Credentials
+Kubernetes Secret Values
+Repository Tokens
+```
+
+in scan results.
+
+Use:
+
+```text
+[REDACTED]
+```
+
+and retain only the minimum metadata necessary.
+
+---
+
+# 74. SCANNER RESULT MODEL
+
+Normalize all scanner findings into:
+
+```text
+finding_id
+scan_id
+tenant_id
+asset_id
+engine
+rule_id
+category
+subcategory
+title
+description
+severity
+confidence
+evidence_type
+evidence
+location
+algorithm
+role
+library
+version
+protocol
+key_size
+parameter_set
+certificate
+quantum_status
+standards
+recommendation
+first_seen
+last_seen
+```
+
+---
+
+# 75. STANDARDS MAPPING
+
+Each relevant detection should optionally map to:
+
+```text
+NIST
+FIPS
+NIST SP
+CISA
+NSA
+OMB
+CNSA
+RFC
+CIS
+OWASP
+```
+
+Only include a mapping when the relationship is legitimate.
+
+Do not fabricate compliance mappings.
+
+---
+
+# 76. GOVERNMENT REQUIREMENT VS RECOMMENDATION
+
+Clearly distinguish:
+
+```text
+MANDATORY / REQUIRED
+RECOMMENDED
+DRAFT
+INFORMATIONAL
+VENDOR GUIDANCE
+INTERNAL QGUARD RULE
+```
+
+For example:
+
+```text
+NIST Final Standard
+```
+
+must not be represented as:
+
+```text
+Federal legal requirement for every organization
+```
+
+Similarly, a draft NIST document must not be treated as a final requirement.
+
+---
+
+# 77. QUANTUM RISK SCORING
+
+Calculate quantum exposure using multiple factors:
+
+```text
+Algorithm
+Cryptographic Role
+Key Size
+Data Sensitivity
+Data Lifetime
+Internet Exposure
+Asset Criticality
+Certificate Lifetime
+Migration Complexity
+Dependency Count
+Blast Radius
+Harvest-Now-Decrypt-Later Risk
+Evidence Confidence
+```
+
+Do not score solely from:
+
+```text
+RSA = 100
+ECC = 100
+```
+
+---
+
+# 78. HARVEST-NOW-DECRYPT-LATER
+
+Identify potential HNDL exposure where evidence supports:
+
+```text
+Long-lived sensitive data
+Current public-key encryption
+Current classical key establishment
+Long certificate lifetime
+Long data retention
+Internet exposure
+```
+
+Clearly distinguish:
+
+```text
+Observed
+Estimated
+Inferred
+Unknown
+```
+
+Do not claim that data is being actively harvested unless there is evidence.
+
+---
+
+# 79. CRYPTO AGILITY DETECTION
+
+Detect whether applications have:
+
+```text
+Hard-coded algorithms
+Hard-coded key sizes
+Hard-coded cipher suites
+Hard-coded certificates
+Hard-coded providers
+Crypto abstraction layers
+Configurable algorithm selection
+PQC capability
+Hybrid capability
+Algorithm negotiation
+```
+
+Produce:
+
+```text
+Crypto Agility:
+High
+Medium
+Low
+Unknown
+```
+
+with evidence.
+
+---
+
+# 80. MIGRATION RECOMMENDATIONS
+
+For quantum-vulnerable findings, provide migration guidance.
+
+Example:
+
+```text
+RSA / ECC key establishment
+        ↓
+Evaluate ML-KEM / hybrid key establishment
+```
+
+For signatures:
+
+```text
+RSA / ECDSA / EdDSA
+        ↓
+Evaluate ML-DSA or SLH-DSA
+```
+
+Do not blindly replace every algorithm with one PQC algorithm.
+
+Recommendations must consider:
+
+```text
+Cryptographic Role
+Protocol
+Application
+Library
+Platform
+Interoperability
+Performance
+Certificate ecosystem
+Migration feasibility
+```
+
+---
+
+# 81. WEB + LOCAL + DEV CORRELATION
+
+The platform should eventually correlate:
+
+```text
+WEB
+ ↓
+Certificate
+ ↓
+TLS Endpoint
+ ↓
+DEV Repository
+ ↓
+Crypto Library
+ ↓
+Container
+ ↓
+Kubernetes
+ ↓
+Cloud Load Balancer
+```
+
+This becomes the:
+
+# Qguard Helix Quantum Exposure Graph™
+
+Only establish relationships backed by actual evidence.
+
+---
+
+# 82. SOPHIA INTEGRATION
+
+Sophia must be able to query actual scanner results.
+
+Examples:
+
+```text
+"Where is RSA used?"
+
+"Which applications use ECDSA?"
+
+"Which certificates are quantum vulnerable?"
+
+"Which repositories use legacy TLS?"
+
+"Which Kubernetes workloads depend on vulnerable crypto?"
+
+"Which cloud services use vulnerable public-key cryptography?"
+
+"What changed since the previous scan?"
+
+"Which findings have direct evidence?"
+
+"Which findings are only inferred?"
+
+"Which assets should be migrated first?"
+```
+
+Sophia must never invent scanner results.
+
+---
+
+# 83. SCANNER AGENT DASHBOARD
+
+Enhance:
+
+```text
+/dashboard/scanner?tab=agents
+```
+
+to show:
+
+```text
+Agent
+Version
+Platform
+Status
+Health
+Capabilities
+Engine Versions
+Last Seen
+Current Task
+Queue
+Permissions
+```
+
+Example:
+
+```text
+Qguard Helix Scanner Agent
+
+● ONLINE
+
+Windows x64
+v2.1.0
+
+Engines:
+Crypto 2.4.0
+TLS 2.1.0
+CBOM 2.0.0
+Dependency 1.9.0
+PQC 2.3.0
+```
+
+---
+
+# 84. DOWNLOADS CENTER
+
+Enhance:
+
+```text
+/downloads
+```
+
+to provide verified scanner distributions.
+
+Support where implemented:
+
+```text
+Windows
+Linux
+macOS
+CLI
+Docker
+Kubernetes
+Cloud Connector
+Developer Scanner
+```
+
+Show:
+
+```text
+Version
+Architecture
+SHA-256
+Signature
+Release Date
+Supported OS
+Engine Versions
+Changelog
+```
+
+Never display a package as available if it has not actually been built and published.
+
+---
+
+# 85. SCANNER VERSIONING
+
+Each engine should have independent version metadata.
+
+Example:
+
+```text
+Crypto Engine 3.2.1
+TLS Engine 2.8.0
+Certificate Engine 2.5.4
+CBOM Engine 3.0.0
+Quantum Engine 3.1.2
+```
+
+This makes scan results reproducible.
+
+A finding should be traceable to the exact scanner/rule version that generated it.
+
+---
+
+# 86. RULE VERSIONING
+
+Every rule should be versioned.
+
+Example:
+
+```text
+QGH-CRYPTO-RSA-001
+Rule Version:
+3.1.0
+```
+
+Store the rule version with the finding.
+
+---
+
+# 87. SCAN REPRODUCIBILITY
+
+A completed scan should be reproducible from:
+
+```text
+Scanner Version
+Engine Version
+Rule Version
+Configuration
+Target
+Scan Profile
+Timestamp
+Evidence
+```
+
+This is important for enterprise auditability.
+
+---
+
+# 88. REPORTING
+
+The scanner must support:
+
+```text
+Executive Summary
+Technical Findings
+Crypto Inventory
+CBOM
+TLS Inventory
+Certificate Inventory
+Dependency Inventory
+Library Inventory
+PQC Inventory
+Quantum Exposure
+HNDL Exposure
+Crypto Agility
+Coverage
+Evidence
+Standards Mapping
+Migration Recommendations
+Limitations
+```
+
+---
+
+# 89. ACCURACY RULE
+
+The scanner must prefer:
+
+**Fewer accurate findings over thousands of speculative findings.**
+
+Never fabricate:
+
+```text
+Algorithms
+Libraries
+Certificates
+Dependencies
+CVEs
+Quantum classifications
+Standards mappings
+Scan progress
+Coverage
+```
+
+---
+
+# 90. "UNKNOWN" IS A VALID RESULT
+
+If the scanner cannot determine something:
+
+```text
+UNKNOWN
+```
+
+is preferable to a fabricated answer.
+
+If access is unavailable:
+
+```text
+NOT ASSESSED
+```
+
+If evidence is incomplete:
+
+```text
+POTENTIAL
+```
+
+If directly observed:
+
+```text
+CONFIRMED
+```
+
+---
+
+# 91. REQUIRED FINAL VALIDATION
+
+After implementation, perform a complete validation.
+
+Test:
+
+```text
+Web
+Local
+Dev
+Agents
+Downloads
+Scanner APIs
+Worker queues
+Engine execution
+CBOM
+Evidence
+Quantum classification
+TLS
+Certificates
+Dependencies
+Libraries
+Repositories
+Docker
+Kubernetes
+Cloud
+IaC
+CI/CD
+```
+
+---
+
+# 92. BUILD VALIDATION
+
+Run the actual:
+
+```text
+TypeScript checks
+Lint
+Unit tests
+Integration tests
+Scanner tests
+Build
+Agent build
+Installer build
+Backend tests
+Database migrations
+```
+
+Fix all errors.
+
+Do not leave:
+
+```text
+TODO
+FIXME
+mock
+placeholder
+fake
+temporary
+```
+
+in production paths.
+
+---
+
+# 93. FINAL AUDIT
+
+Before declaring completion, answer:
+
+```text
+1. What scanner engines already existed?
+
+2. Which engines were improved?
+
+3. Which engines were newly implemented?
+
+4. Which algorithms can now be detected?
+
+5. Which TLS versions and cipher suites can be analyzed?
+
+6. Which certificate properties are detected?
+
+7. Which cryptographic libraries are detected?
+
+8. Which dependencies are analyzed?
+
+9. Which PQC algorithms are recognized?
+
+10. Which hybrid configurations are recognized?
+
+11. Which Web detections are supported?
+
+12. Which Local detections are supported?
+
+13. Which Dev detections are supported?
+
+14. Which Kubernetes detections are supported?
+
+15. Which Docker/container detections are supported?
+
+16. Which cloud platforms are supported?
+
+17. Which IaC formats are supported?
+
+18. Which standards are mapped?
+
+19. How are false positives reduced?
+
+20. How is evidence established?
+
+21. How is confidence calculated?
+
+22. How is quantum vulnerability classified?
+
+23. How is CBOM generated?
+
+24. How is tenant isolation enforced?
+
+25. How are secrets protected?
+
+26. How are scanner agents authenticated?
+
+27. How is scan reproducibility maintained?
+
+28. What remains unsupported?
+
+29. What limitations remain?
+
+30. What should be implemented next?
+```
+
+---
+
+# 94. FINAL PRODUCT STANDARD
+
+The final result must feel like an **enterprise cryptographic intelligence platform**, not a collection of regex scanners.
+
+The architecture should become:
+
+```text
+                  QGUARD HELIX
+                       │
+          CRYPTOGRAPHIC DISCOVERY
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+       WEB            LOCAL           DEV
+        │              │              │
+        ▼              ▼              ▼
+      TLS          Source Code     Repositories
+      PKI          Dependencies    Dependencies
+      DNS          Libraries       Docker
+      Certs        Certificates    Kubernetes
+      Protocols    Git             Cloud
+        │          Containers      IaC
+        │          IaC             CI/CD
+        │              │              │
+        └──────────────┼──────────────┘
+                       ▼
+              CRYPTO DISCOVERY
+                       ▼
+             CRYPTO KNOWLEDGE BASE
+                       ▼
+              EVIDENCE CORRELATION
+                       ▼
+              GROUND TRUTH ENGINE
+                       ▼
+                   CBOM FUSION
+                       ▼
+             QUANTUM CLASSIFICATION
+                       ▼
+              QUANTUM EXPOSURE GRAPH
+                       ▼
+              RISK / HNDL ANALYSIS
+                       ▼
+               PRIORITIZATION
+                       ▼
+              MIGRATION PLANNER
+                       ▼
+             GOVERNANCE / AUDIT
+```
+
+---
+
+# 95. NON-NEGOTIABLE REQUIREMENTS
+
+Do not:
+
+* Build superficial keyword-only detection.
+* Assume an installed library is actively used.
+* Call RSA/ECC "broken" merely because it is quantum-vulnerable.
+* Call AES-256 equivalent to RSA quantum vulnerability.
+* Treat all SHA algorithms as equally insecure.
+* Treat every crypto-related string as a finding.
+* Treat inaccessible assets as secure.
+* Treat missing evidence as a pass.
+* Fabricate scanner results.
+* Fabricate standards mappings.
+* Fabricate CVEs.
+* Fabricate scan progress.
+* Fabricate coverage.
+* Execute untrusted repository code during normal scanning.
+* Modify customer infrastructure during scanning.
+* Expose secrets.
+* Expose private keys.
+* Request unnecessary repository/cloud/Kubernetes permissions.
+* Rewrite working engines without first understanding them.
+
+Instead:
+
+**Discover → Validate → Correlate → Establish Ground Truth → Classify → Score → Explain → Prioritize.**
+
+---
+
+# 96. DEFINITION OF DONE
+
+The work is complete only when:
+
+```text
+✓ Existing scanners reviewed
+✓ Existing agents reviewed
+✓ Existing Scanners directory reviewed recursively
+✓ Existing functionality preserved
+✓ Web scanning enhanced
+✓ Local scanning enhanced
+✓ Dev scanning enhanced
+✓ Crypto knowledge base implemented
+✓ RSA detection improved
+✓ ECC detection improved
+✓ DH detection improved
+✓ TLS detection improved
+✓ Certificate detection improved
+✓ PKI detection improved
+✓ Crypto-library detection improved
+✓ Dependency analysis improved
+✓ Code-level crypto detection improved
+✓ PQC detection implemented
+✓ Hybrid detection implemented
+✓ Kubernetes scanning implemented/enhanced
+✓ Docker/container scanning implemented/enhanced
+✓ Cloud-native scanning implemented/enhanced
+✓ IaC scanning implemented/enhanced
+✓ CI/CD scanning implemented/enhanced
+✓ CBOM integration implemented
+✓ Evidence model implemented
+✓ Ground-truth correlation implemented
+✓ Quantum classification validated
+✓ Standards mapping implemented
+✓ False-positive tests implemented
+✓ Regression tests implemented
+✓ Agent security validated
+✓ Scanner security validated
+✓ Tenant isolation validated
+✓ Downloads verified
+✓ Build passes
+✓ Tests pass
+✓ No fake production functionality remains
+```
+
+The final objective is for Qguard Helix to answer, with defensible evidence:
+
+> **What cryptography exists in this environment, where is it being used, which components are weak or quantum-vulnerable, which dependencies and infrastructure create the exposure, what standards apply, how confident are we in the finding, and what should be migrated first?**
+
+Build this as a **real enterprise-grade cryptographic discovery and quantum-readiness scanning platform**, with accuracy, evidence, reproducibility, standards alignment, and cryptographic correctness as the highest priorities.

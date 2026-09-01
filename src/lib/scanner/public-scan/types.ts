@@ -253,7 +253,16 @@ export interface CryptoIntelligence {
     evidenceSource: string
   }>
   keyExchange: string
-  forwardSecrecy: 'Enabled' | 'Partial' | 'Not observed'
+  /**
+   * `Not measured` and `Not observed` are different answers.
+   *
+   * `Not observed` means the handshake WAS read and carried no ephemeral key
+   * agreement — a measured absence, and a real failure. `Not measured` means no
+   * handshake was read at all, so nothing can be said either way. Collapsing the
+   * two published the strongest possible negative for an endpoint that simply
+   * never answered, while the Findings table said "Unknown" for the same fact.
+   */
+  forwardSecrecy: 'Enabled' | 'Partial' | 'Not observed' | 'Not measured'
   /**
    * `Unknown` is a first-class verdict, not a fallback. The panel used to report
    * `Vulnerable` — with the reason "No hybrid or post-quantum key agreement

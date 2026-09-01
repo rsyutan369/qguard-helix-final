@@ -1,0 +1,1837 @@
+# Qguard Helix — Expanded Dev, Cloud-Native & Kubernetes Scanning
+
+## 1. DEV TAB — EXPANDED PURPOSE
+
+The **Dev** tab must not be limited to GitHub/GitLab repository scanning.
+
+It should become the:
+
+# Qguard Helix Development & Cloud-Native Security Assessment Engine™
+
+The Dev scanner must assess the modern application development lifecycle:
+
+```text
+SOURCE CODE
+    ↓
+REPOSITORIES
+    ↓
+DEPENDENCIES
+    ↓
+SECRETS
+    ↓
+CI/CD
+    ↓
+CONTAINERS
+    ↓
+REGISTRIES
+    ↓
+KUBERNETES
+    ↓
+INFRASTRUCTURE-AS-CODE
+    ↓
+CLOUD CONFIGURATION
+    ↓
+TLS / PKI / CRYPTOGRAPHY
+    ↓
+QUANTUM READINESS
+```
+
+The goal is to identify security and cryptographic exposure across the complete development and deployment ecosystem.
+
+---
+
+# 2. DEV SCANNING CATEGORIES
+
+The Dev tab should provide dedicated scanning categories:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ DEVELOPMENT SECURITY ASSESSMENT                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ [ Repositories ] [ Dependencies ] [ Secrets ]              │
+│ [ CI/CD ]       [ Containers ]   [ Kubernetes ]            │
+│ [ Cloud ]       [ IaC ]          [ Crypto ]                │
+│ [ SBOM/CBOM ]   [ Supply Chain ] [ Quantum ]               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Each category should correspond to actual scanner engines.
+
+Do not make these decorative filters.
+
+---
+
+# 3. DEV TARGET TYPES
+
+Support multiple development targets.
+
+### Source Repositories
+
+```text
+GitHub
+GitLab
+Bitbucket
+Azure DevOps
+Generic Git
+Self-hosted Git
+```
+
+### Container Sources
+
+```text
+Dockerfile
+Docker Compose
+OCI images
+Container registries
+Private registries
+Public registries
+```
+
+### Kubernetes
+
+```text
+Kubernetes manifests
+Helm charts
+Kustomize
+Live Kubernetes clusters
+Namespaces
+Workloads
+Services
+Ingress
+Secrets metadata
+ConfigMaps
+RBAC
+NetworkPolicies
+Pod Security
+Admission configuration
+```
+
+### Infrastructure-as-Code
+
+Support:
+
+```text
+Terraform
+OpenTofu
+Pulumi
+CloudFormation
+AWS CDK
+Azure Bicep
+ARM templates
+Google Cloud Deployment Manager
+Ansible
+Helm
+Kustomize
+```
+
+### Cloud Platforms
+
+Design provider adapters for:
+
+```text
+AWS
+Microsoft Azure
+Google Cloud
+Oracle Cloud
+Cloudflare
+DigitalOcean
+Other supported cloud providers
+```
+
+The architecture must remain provider-extensible.
+
+---
+
+# 4. CONTAINER SECURITY ENGINE
+
+Create a dedicated:
+
+## Qguard Helix Container Security Engine™
+
+The engine must analyze containerized workloads.
+
+Support:
+
+```text
+Dockerfiles
+Containerfiles
+Docker Compose
+OCI images
+Container image metadata
+Container registries
+```
+
+Analyze:
+
+```text
+Base image
+OS packages
+Application packages
+Libraries
+Crypto libraries
+Certificates
+TLS configuration
+Secrets
+Users
+Capabilities
+Privileges
+Ports
+Environment variables
+Volumes
+Entrypoints
+Health checks
+Image configuration
+```
+
+---
+
+# 5. DOCKERFILE ANALYSIS
+
+Detect issues such as:
+
+```text
+Running as root
+Secrets embedded in image
+Sensitive environment variables
+Insecure package installation
+Unpinned dependencies
+Insecure remote downloads
+Weak TLS configuration
+Unnecessary privileges
+Excessive capabilities
+Insecure base image
+Deprecated base image
+Missing health check
+Unsafe filesystem configuration
+```
+
+Also identify cryptographic usage.
+
+Example:
+
+```text
+Dockerfile
+    ↓
+FROM ubuntu:latest
+    ↓
+OpenSSL installed
+    ↓
+Crypto dependency detected
+```
+
+The scanner should correlate this with the application's source code and dependency graph.
+
+---
+
+# 6. CONTAINER IMAGE ANALYSIS
+
+Where authorized, analyze container images.
+
+Extract:
+
+```text
+Image
+Digest
+Tag
+Base image
+OS
+Packages
+Application dependencies
+Libraries
+Crypto components
+Certificates
+Configuration
+User
+Capabilities
+Entrypoint
+Environment metadata
+```
+
+Always prefer immutable image digests over tags when establishing evidence.
+
+Example:
+
+```text
+Image:
+payments-api
+
+Digest:
+sha256:...
+
+Base:
+ubuntu
+
+Crypto:
+OpenSSL
+
+Crypto components:
+7
+
+Quantum vulnerable:
+3
+```
+
+---
+
+# 7. CONTAINER REGISTRY SCANNING
+
+Support authorized registries.
+
+Architecture:
+
+```text
+ContainerRegistryAdapter
+        │
+        ├── Docker Registry
+        ├── Amazon ECR
+        ├── Azure Container Registry
+        ├── Google Artifact Registry
+        ├── GitHub Container Registry
+        └── Other OCI registries
+```
+
+The scanner must use read-only access whenever possible.
+
+Never require registry write permissions for scanning.
+
+---
+
+# 8. KUBERNETES SECURITY ENGINE
+
+Create:
+
+# Qguard Helix Kubernetes Security Engine™
+
+The Kubernetes scanner must support both:
+
+### Static Kubernetes Analysis
+
+Scan:
+
+```text
+deployment.yaml
+service.yaml
+ingress.yaml
+statefulset.yaml
+daemonset.yaml
+job.yaml
+cronjob.yaml
+configmap.yaml
+secret.yaml
+namespace.yaml
+role.yaml
+rolebinding.yaml
+clusterrole.yaml
+clusterrolebinding.yaml
+networkpolicy.yaml
+podsecuritypolicy
+Helm charts
+Kustomize overlays
+```
+
+### Authorized Live Cluster Analysis
+
+Where explicitly configured, connect to a Kubernetes cluster using read-only credentials.
+
+---
+
+# 9. KUBERNETES CONNECTION SECURITY
+
+Never require cluster-admin privileges for ordinary assessment.
+
+Prefer:
+
+```text
+Read-only ServiceAccount
+```
+
+with narrowly scoped RBAC permissions.
+
+Display:
+
+```text
+Cluster:
+production-cluster
+
+Connection:
+● Connected
+
+Access:
+Read-only
+
+Namespaces:
+12
+
+Workloads:
+184
+```
+
+Do not claim access to resources that the provided identity cannot actually read.
+
+---
+
+# 10. KUBERNETES WORKLOAD ANALYSIS
+
+Analyze:
+
+```text
+Pods
+Deployments
+StatefulSets
+DaemonSets
+Jobs
+CronJobs
+ReplicaSets
+Services
+Ingress
+```
+
+Check:
+
+```text
+Privileged containers
+Root users
+Host networking
+Host PID
+Host IPC
+Host filesystem mounts
+Dangerous capabilities
+Writable root filesystem
+Missing securityContext
+Weak resource limits
+Unsafe volume mounts
+Sensitive environment variables
+Image tag usage
+Image provenance
+Image digest usage
+```
+
+---
+
+# 11. KUBERNETES CRYPTOGRAPHIC ANALYSIS
+
+The Kubernetes engine must specifically look for cryptographic exposure.
+
+Analyze:
+
+```text
+TLS configuration
+Ingress TLS
+Certificates
+Secrets containing certificate material
+mTLS configuration
+Service mesh configuration
+API server TLS configuration
+Etcd encryption configuration
+Container crypto libraries
+Application crypto configuration
+Key management configuration
+```
+
+Example:
+
+```text
+Ingress
+   ↓
+TLS Certificate
+   ↓
+RSA-2048
+   ↓
+Quantum Vulnerable
+```
+
+This finding should correlate with:
+
+```text
+Certificate
+Application
+Ingress
+Service
+Repository
+Container
+```
+
+rather than appearing as unrelated findings.
+
+---
+
+# 12. KUBERNETES SECRET ANALYSIS
+
+Do NOT expose Kubernetes secret values.
+
+Detect:
+
+```text
+Secret objects
+Certificate secrets
+TLS secrets
+Opaque secrets
+Environment variables
+Mounted secret volumes
+Potential private keys
+Potential API credentials
+```
+
+Display:
+
+```text
+Secret:
+payments-tls
+
+Type:
+kubernetes.io/tls
+
+Material:
+[REDACTED]
+
+Crypto:
+RSA-2048
+
+Quantum Status:
+Vulnerable
+```
+
+Never return secret values to the frontend.
+
+---
+
+# 13. KUBERNETES RBAC ENGINE
+
+Create dedicated RBAC analysis.
+
+Analyze:
+
+```text
+Roles
+ClusterRoles
+RoleBindings
+ClusterRoleBindings
+ServiceAccounts
+```
+
+Detect:
+
+```text
+Wildcard permissions
+cluster-admin usage
+Excessive privileges
+Unnecessary write permissions
+Anonymous access
+Overly broad ServiceAccounts
+Privilege escalation paths
+```
+
+Produce an authorization graph.
+
+Example:
+
+```text
+ServiceAccount
+      ↓
+RoleBinding
+      ↓
+Role
+      ↓
+Secrets
+      ↓
+Potential Exposure
+```
+
+---
+
+# 14. KUBERNETES NETWORK SECURITY
+
+Analyze:
+
+```text
+NetworkPolicies
+Ingress
+Services
+Service Mesh
+Namespaces
+Pod communication
+```
+
+Identify workloads with:
+
+```text
+No NetworkPolicy
+Overly permissive ingress
+Overly permissive egress
+Unrestricted namespace communication
+Publicly exposed services
+```
+
+Correlate network exposure with cryptographic configuration.
+
+---
+
+# 15. HELM SCANNER
+
+Create:
+
+## Helm Security Engine™
+
+Analyze:
+
+```text
+Chart.yaml
+values.yaml
+templates/
+_helpers.tpl
+```
+
+Analyze rendered manifests as well as source templates.
+
+Important:
+
+Do not only scan raw Helm templates.
+
+Where safely possible:
+
+```text
+Helm Template
+      ↓
+Rendered Kubernetes Manifest
+      ↓
+Kubernetes Security Engine
+```
+
+This prevents security configuration hidden behind Helm templating from being missed.
+
+---
+
+# 16. KUSTOMIZE ENGINE
+
+Analyze:
+
+```text
+kustomization.yaml
+base/
+overlays/
+patches/
+resources/
+```
+
+Resolve overlays where possible.
+
+Example:
+
+```text
+Base
+ ↓
+Development overlay
+ ↓
+Production overlay
+ ↓
+Rendered configuration
+```
+
+Assess the effective configuration.
+
+---
+
+# 17. INFRASTRUCTURE-AS-CODE ENGINE
+
+Create:
+
+# Qguard Helix IaC Security Engine™
+
+Analyze:
+
+```text
+Terraform
+OpenTofu
+Pulumi
+CloudFormation
+AWS CDK
+Azure Bicep
+ARM
+Ansible
+Helm
+Kustomize
+```
+
+Detect:
+
+```text
+Public storage
+Open security groups
+Weak IAM
+Unencrypted storage
+Weak TLS
+Hard-coded credentials
+Insecure secrets
+Public databases
+Missing encryption
+Weak cryptographic settings
+Weak key management
+Missing logging
+```
+
+---
+
+# 18. CLOUD SECURITY ENGINE
+
+Create provider-neutral:
+
+# Qguard Helix Cloud Security Engine™
+
+The engine should use cloud provider adapters.
+
+```text
+CloudSecurityAdapter
+       │
+       ├── AWS
+       ├── Azure
+       ├── GCP
+       ├── Oracle Cloud
+       ├── Cloudflare
+       └── Future Providers
+```
+
+---
+
+# 19. AWS ANALYSIS
+
+Where authorized, analyze resources such as:
+
+```text
+IAM
+S3
+KMS
+EC2
+ECS
+EKS
+Lambda
+RDS
+API Gateway
+CloudFront
+Load Balancers
+Secrets Manager
+Certificate Manager
+VPC
+Security Groups
+CloudTrail
+```
+
+Pay particular attention to:
+
+```text
+Encryption
+Key management
+TLS
+Certificates
+IAM
+Public exposure
+PQC readiness
+```
+
+For AWS KMS, distinguish the cryptographic role and service capabilities rather than simply labeling KMS as "quantum safe."
+
+---
+
+# 20. AZURE ANALYSIS
+
+Support authorized analysis of:
+
+```text
+Entra ID
+Key Vault
+AKS
+Storage
+App Services
+VMs
+Azure SQL
+Application Gateway
+Load Balancer
+Front Door
+Container Registry
+Managed Identities
+NSGs
+```
+
+Analyze:
+
+```text
+Encryption
+Certificates
+Key management
+TLS
+Identity
+Secrets
+Network exposure
+Quantum readiness
+```
+
+---
+
+# 21. GOOGLE CLOUD ANALYSIS
+
+Support:
+
+```text
+GKE
+Cloud KMS
+Secret Manager
+Cloud Storage
+Compute Engine
+Cloud Run
+Artifact Registry
+Load Balancing
+IAM
+VPC
+Certificate Manager
+```
+
+Analyze:
+
+```text
+Encryption
+Keys
+Certificates
+TLS
+IAM
+Secrets
+Containers
+Kubernetes
+Quantum readiness
+```
+
+---
+
+# 22. CLOUD CRYPTO DISCOVERY ENGINE
+
+Create:
+
+# Qguard Helix Cloud Cryptographic Discovery Engine™
+
+Correlate cryptography across cloud resources.
+
+Example:
+
+```text
+AWS
+ │
+ ├── KMS
+ ├── ACM
+ ├── EKS
+ ├── ALB
+ └── RDS
+```
+
+Identify:
+
+```text
+Algorithms
+Key sizes
+Certificates
+TLS versions
+Cipher suites where observable
+Key-management services
+Encryption configuration
+Signing configuration
+```
+
+The objective is to build a cloud cryptographic inventory.
+
+---
+
+# 23. CLOUD CBOM FUSION
+
+Merge cloud crypto observations into the existing Qguard Helix CBOM.
+
+Example:
+
+```text
+CBOM
+
+Application
+ ├── Source Code
+ ├── Dependency
+ ├── Container
+ ├── Kubernetes
+ ├── Cloud
+ ├── Certificate
+ └── Runtime
+```
+
+This becomes a unified cryptographic dependency graph.
+
+---
+
+# 24. SUPPLY-CHAIN SECURITY ENGINE
+
+Create:
+
+# Qguard Helix Software Supply Chain Engine™
+
+Correlate:
+
+```text
+Repository
+ ↓
+Dependency
+ ↓
+Package
+ ↓
+Container
+ ↓
+Registry
+ ↓
+Deployment
+ ↓
+Kubernetes
+ ↓
+Cloud
+```
+
+Detect inconsistencies.
+
+Example:
+
+```text
+Source:
+OpenSSL 3.x
+
+Container:
+OpenSSL 1.x
+
+Production:
+Different image digest
+```
+
+Flag the mismatch.
+
+---
+
+# 25. SBOM + CBOM FUSION
+
+Support:
+
+```text
+SBOM
+CBOM
+Container metadata
+Dependency graph
+Repository metadata
+Cloud metadata
+Kubernetes metadata
+```
+
+Create:
+
+```text
+Qguard Helix Unified Component Graph
+```
+
+with relationships such as:
+
+```text
+Repository
+    ↓
+Package
+    ↓
+Library
+    ↓
+Crypto API
+    ↓
+Algorithm
+    ↓
+Certificate
+    ↓
+Container
+    ↓
+Kubernetes Deployment
+    ↓
+Cloud Service
+```
+
+---
+
+# 26. CI/CD SECURITY ENGINE
+
+Analyze:
+
+```text
+GitHub Actions
+GitLab CI
+Azure Pipelines
+Jenkins
+CircleCI
+Buildkite
+Argo Workflows
+Tekton
+Other supported CI/CD systems
+```
+
+Detect:
+
+```text
+Hard-coded secrets
+Unsafe tokens
+Overly broad permissions
+Unsigned artifacts
+Weak artifact integrity
+Insecure registries
+Untrusted dependencies
+Unsafe scripts
+Insecure deployment credentials
+Weak TLS
+Crypto configuration
+```
+
+---
+
+# 27. ARTIFACT SIGNING ANALYSIS
+
+Where applicable, analyze software supply-chain signing.
+
+Detect:
+
+```text
+Artifact signing
+Container signing
+Image signatures
+Provenance metadata
+Signing certificates
+Signing algorithms
+Verification configuration
+```
+
+Correlate:
+
+```text
+Artifact
+ ↓
+Signing algorithm
+ ↓
+Certificate
+ ↓
+Quantum status
+```
+
+This is especially important for post-quantum migration planning.
+
+---
+
+# 28. SERVICE MESH SECURITY
+
+Where present, detect:
+
+```text
+Istio
+Linkerd
+Consul
+AWS App Mesh
+Other supported service meshes
+```
+
+Analyze:
+
+```text
+mTLS
+Certificates
+Trust domains
+Certificate rotation
+TLS versions
+Cipher configuration
+Identity
+Workload authentication
+```
+
+Correlate service mesh certificates with the CBOM.
+
+---
+
+# 29. CLOUD-NATIVE CRYPTOGRAPHIC PATH
+
+The Dev scanner should be able to establish a path such as:
+
+```text
+Developer Code
+      ↓
+Crypto Library
+      ↓
+Container
+      ↓
+Kubernetes Deployment
+      ↓
+Service Mesh
+      ↓
+Ingress
+      ↓
+TLS Certificate
+      ↓
+Cloud Load Balancer
+      ↓
+Internet
+```
+
+This should become part of the:
+
+# Quantum Exposure Graph™
+
+---
+
+# 30. QUANTUM EXPOSURE GRAPH INTEGRATION
+
+Dev findings must feed the existing Quantum Exposure Graph.
+
+Example:
+
+```text
+Repository
+    │
+    ├── RSA-2048
+    │
+    ├── OpenSSL
+    │
+    └── Certificate
+             │
+             ▼
+       Kubernetes Ingress
+             │
+             ▼
+        Cloud Load Balancer
+             │
+             ▼
+          Internet
+```
+
+This allows Qguard Helix to identify not merely:
+
+> "RSA exists"
+
+but:
+
+> "RSA-2048 is used by this application, packaged into this container, deployed to this Kubernetes workload, exposed through this ingress, and associated with this Internet-facing certificate."
+
+Only show relationships that are supported by actual evidence.
+
+---
+
+# 31. DEV SCAN PROFILES
+
+Expand Dev scan profiles.
+
+### Repository Quick
+
+```text
+Repository
+Dependencies
+Secrets
+Crypto
+```
+
+### Repository Deep
+
+```text
+Repository
+Git History
+Dependencies
+Secrets
+Crypto
+SBOM
+CBOM
+CI/CD
+IaC
+Containers
+```
+
+### Container Deep
+
+```text
+Dockerfile
+Image
+Packages
+Crypto
+Secrets
+Configuration
+```
+
+### Kubernetes Deep
+
+```text
+Manifests
+Helm
+Kustomize
+RBAC
+Network
+Secrets metadata
+TLS
+Crypto
+Workloads
+```
+
+### Cloud Deep
+
+```text
+Cloud inventory
+IAM
+KMS
+Certificates
+Storage
+Network
+Containers
+Kubernetes
+Crypto
+```
+
+### Supply Chain
+
+```text
+Repository
+Dependencies
+SBOM
+Container
+Registry
+Signing
+CI/CD
+Deployment
+```
+
+### Quantum
+
+```text
+Crypto
+PKI
+TLS
+Certificates
+Identity
+Signing
+KMS
+Container
+Kubernetes
+Cloud
+```
+
+### Full Dev Environment
+
+Run all applicable engines.
+
+---
+
+# 32. SMART SCAN PLANNER
+
+The Scan Planner should dynamically determine which engines are relevant.
+
+Example:
+
+```text
+Repository detected
+        ↓
+Dockerfile found
+        ↓
+Kubernetes directory found
+        ↓
+Terraform detected
+        ↓
+GitHub Actions detected
+```
+
+Automatically propose:
+
+```text
+Recommended Deep Scan
+
+✓ Repository
+✓ Dependencies
+✓ Secrets
+✓ Crypto
+✓ Docker
+✓ Kubernetes
+✓ Terraform
+✓ CI/CD
+✓ CBOM
+✓ Quantum Assessment
+```
+
+The user must still control what actually runs.
+
+---
+
+# 33. LIVE KUBERNETES SCANNING
+
+For explicitly authorized live clusters:
+
+```text
+Dev
+ ↓
+Kubernetes
+ ↓
+Connect Cluster
+ ↓
+Validate RBAC
+ ↓
+Discover Namespaces
+ ↓
+Select Scope
+ ↓
+Select Scan Profile
+ ↓
+Start Assessment
+```
+
+Allow:
+
+```text
+Entire Cluster
+Specific Namespace
+Specific Workload
+Specific Deployment
+```
+
+Do not automatically scan every cluster accessible to the user's credentials.
+
+---
+
+# 34. CLOUD ACCOUNT SCOPING
+
+Similarly:
+
+```text
+Connect Cloud
+ ↓
+Select Account/Subscription/Project
+ ↓
+Select Regions
+ ↓
+Select Services
+ ↓
+Select Scan Profile
+ ↓
+Start Scan
+```
+
+The user should know exactly what will be accessed.
+
+---
+
+# 35. DEV ENGINE EXECUTION
+
+Example:
+
+```text
+DEV DEEP SCAN
+              │
+              ▼
+       Repository Discovery
+              │
+       ┌──────┼───────────┐
+       ▼      ▼           ▼
+     Crypto  Secrets   Dependencies
+       │      │           │
+       └──────┼───────────┘
+              ▼
+          Docker Engine
+              │
+              ▼
+       Kubernetes Engine
+              │
+              ▼
+            IaC
+              │
+              ▼
+        Cloud Analysis
+              │
+              ▼
+        CBOM / SBOM Fusion
+              │
+              ▼
+       Quantum Assessment
+              │
+              ▼
+         Risk Scoring
+```
+
+Only execute engines applicable to the selected target and scan profile.
+
+---
+
+# 36. DEV DASHBOARD
+
+Enhance the Dev tab with:
+
+```text
+Repositories
+Containers
+Kubernetes
+Cloud
+IaC
+CI/CD
+Crypto
+CBOM
+Quantum
+```
+
+Example dashboard:
+
+```text
+DEV SECURITY POSTURE
+
+Repositories                  18
+Containers                    42
+Kubernetes Workloads          186
+Cloud Resources               1,482
+Crypto Components             327
+Quantum Vulnerable             94
+Secrets                        12
+Critical Findings               7
+```
+
+All values must originate from actual scan data.
+
+---
+
+# 37. DEV FINDING CORRELATION
+
+Correlate findings across layers.
+
+Example:
+
+```text
+Finding #001
+
+RSA-2048
+
+Evidence:
+Repository
+   ↓
+src/auth/signing.ts
+
+Container
+   ↓
+payments-api:1.8.2
+
+Kubernetes
+   ↓
+payments-api deployment
+
+Ingress
+   ↓
+payments.example.com
+
+Certificate
+   ↓
+RSA-2048
+```
+
+Display this as one correlated exposure where evidence supports the relationship.
+
+---
+
+# 38. CLOUD + KUBERNETES + REPOSITORY RELATIONSHIPS
+
+Build relationships such as:
+
+```text
+Repository
+ ↓
+Dockerfile
+ ↓
+Image
+ ↓
+Registry
+ ↓
+Kubernetes Deployment
+ ↓
+Pod
+ ↓
+Service
+ ↓
+Ingress
+ ↓
+Cloud Load Balancer
+```
+
+These relationships should feed:
+
+* Asset Inventory
+* CBOM
+* Quantum Exposure Graph
+* Risk Engine
+* Migration Planner
+* Compliance
+* Sophia
+
+---
+
+# 39. MIGRATION PLANNER INTEGRATION
+
+Dev findings should be directly actionable.
+
+Example:
+
+```text
+RSA-2048
+Application: payments-api
+Repository: payments-api
+Container: payments-api:1.8.2
+Kubernetes: production/payments-api
+Ingress: payments.example.com
+Certificate: cert-123
+
+[ Create Migration Plan ]
+```
+
+The Migration Planner should understand the dependency chain.
+
+---
+
+# 40. QUANTUM MIGRATION PRIORITY
+
+Prioritize cryptographic migration based on:
+
+```text
+Internet Exposure
+Data Sensitivity
+Cryptographic Role
+Algorithm
+Key Size
+Certificate Lifetime
+Asset Criticality
+Exploitability
+Migration Complexity
+Dependency Count
+Blast Radius
+Harvest-Now Risk
+```
+
+Do not prioritize solely by algorithm name.
+
+---
+
+# 41. DEV SCAN EVIDENCE
+
+Every finding must contain enough evidence to reproduce or validate the observation.
+
+Examples:
+
+```text
+Repository:
+payments-api
+
+File:
+src/security/auth.ts
+
+Line:
+81
+```
+
+or:
+
+```text
+Kubernetes:
+production
+
+Deployment:
+payments-api
+
+Container:
+payments-api
+
+Image:
+sha256:...
+```
+
+or:
+
+```text
+Cloud:
+AWS
+
+Region:
+...
+
+Resource:
+...
+
+Configuration:
+...
+```
+
+Sensitive values must remain redacted.
+
+---
+
+# 42. SCAN COVERAGE
+
+For Dev, display:
+
+```text
+Repositories scanned
+Branches scanned
+Commits analyzed
+Files analyzed
+Dependencies analyzed
+Containers analyzed
+Images analyzed
+Kubernetes namespaces
+Kubernetes workloads
+Cloud resources
+IaC files
+CI/CD workflows
+Crypto components
+Certificates
+```
+
+Also display:
+
+```text
+Excluded
+Unsupported
+Permission denied
+Unavailable
+Not scanned
+```
+
+This is essential for accurate enterprise reporting.
+
+---
+
+# 43. PERMISSION-AWARE RESULTS
+
+If a cloud or Kubernetes account cannot access a resource:
+
+```text
+Access Denied
+```
+
+must not become:
+
+```text
+No vulnerability
+```
+
+Use:
+
+```text
+Not Assessed
+```
+
+instead.
+
+Example:
+
+```text
+KMS Configuration
+Not Assessed
+
+Reason:
+Insufficient permissions
+```
+
+This preserves the evidence-first philosophy of Qguard Helix.
+
+---
+
+# 44. DEV PRIVACY MODEL
+
+For private repositories and cloud environments:
+
+```text
+Read-only by default
+Minimum required permissions
+Encrypted credentials
+No credential logging
+Secret redaction
+Audit logging
+Tenant isolation
+Explicit scope selection
+```
+
+For local scanning:
+
+```text
+Local-only processing preferred
+```
+
+For cloud scanning:
+
+```text
+Metadata-first collection
+```
+
+where possible.
+
+---
+
+# 45. NO DESTRUCTIVE OPERATIONS
+
+Dev scanners must NEVER automatically:
+
+```text
+delete resources
+modify Kubernetes
+restart pods
+change IAM
+rotate keys
+modify certificates
+deploy workloads
+change cloud configuration
+push Git commits
+create pull requests
+modify repositories
+```
+
+Scanning must remain read-only.
+
+Remediation is a separate workflow.
+
+---
+
+# 46. NO AUTOMATIC EXECUTION OF UNTRUSTED DEV CONTENT
+
+Never execute repository code during normal scanning.
+
+Do not automatically run:
+
+```text
+npm install
+pip install
+mvn
+gradle
+go build
+cargo build
+make
+docker build
+helm install
+terraform apply
+kubectl apply
+```
+
+Static analysis should be the default.
+
+If build-aware analysis is required, execute it only inside a purpose-built isolated sandbox.
+
+---
+
+# 47. SCANNER HEALTH
+
+Expose individual engine health:
+
+```text
+Repository Engine        ● Healthy
+Crypto Engine            ● Healthy
+Secret Engine            ● Healthy
+Dependency Engine        ● Healthy
+Docker Engine            ● Healthy
+Kubernetes Engine        ● Healthy
+Helm Engine              ● Healthy
+IaC Engine               ● Healthy
+Cloud Engine             ● Healthy
+CBOM Engine              ● Healthy
+Quantum Engine           ● Healthy
+```
+
+Health must represent actual engine availability.
+
+---
+
+# 48. FINAL DEV ARCHITECTURE
+
+The final architecture should look like:
+
+```text
+                         QGUARD HELIX
+                              │
+                   QUANTUM EXPOSURE ASSESSMENT
+                              │
+             ┌────────────────┼────────────────┐
+             │                │                │
+            WEB             LOCAL             DEV
+                                              │
+                    ┌─────────┼───────────────┐
+                    │         │               │
+               Repository  Containers      Cloud
+                    │         │               │
+                    ▼         ▼               ▼
+                 Source     Docker         AWS/Azure/GCP
+                    │         │               │
+                    └─────────┼───────────────┘
+                              │
+                         Kubernetes
+                              │
+                         Helm/Kustomize
+                              │
+                             IaC
+                              │
+                            CI/CD
+                              │
+                       Dependencies
+                              │
+                          Secrets
+                              │
+                         Cryptography
+                              │
+                           SBOM/CBOM
+                              │
+                       Quantum Analysis
+                              │
+                    Evidence Correlation
+                              │
+                    Quantum Exposure Graph
+                              │
+                        Risk Prioritization
+                              │
+                       Migration Planner
+                              │
+                       Qguard Helix
+```
+
+---
+
+# 49. FINAL PRODUCT POSITIONING
+
+The Dev tab should ultimately provide visibility across:
+
+**Code → Dependencies → Secrets → CI/CD → Containers → Registries → Kubernetes → IaC → Cloud → Cryptography → PKI → Quantum Readiness**
+
+This makes the Qguard Helix Dev scanner substantially more valuable than a repository-only scanner.
+
+The primary question the engine should answer is:
+
+> **"Where does cryptography exist across my development and cloud-native environment, how is it connected to production assets, what is quantum vulnerable, and what should I migrate first?"**
+
+The implementation must remain evidence-driven.
+
+Never fabricate findings.
+
+Never claim an asset was scanned when it was not.
+
+Never treat inaccessible resources as secure.
+
+Never expose secrets.
+
+Never perform destructive operations.
+
+Never execute untrusted application code during ordinary scanning.
+
+Every finding must be traceable to actual evidence.
+
+The final Qguard Helix Dev engine should provide a defensible chain:
+
+```text
+DISCOVER
+    ↓
+IDENTIFY
+    ↓
+NORMALIZE
+    ↓
+CORRELATE
+    ↓
+VALIDATE
+    ↓
+ESTABLISH GROUND TRUTH
+    ↓
+SCORE EXPOSURE
+    ↓
+PRIORITIZE
+    ↓
+MIGRATE
+```
+
+This Dev capability should integrate directly with the existing Qguard Helix **CBOM, Asset Inventory, Quantum Exposure Graph, Quantum Readiness Assessment, Harvest-Now Risk Engine, Migration Planner, Audit Vault, Compliance Command Center, and Sophia AI Security Copilot**.

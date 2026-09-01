@@ -8,6 +8,7 @@ import {
   FileTerminal,
   KeyRound,
   Loader2,
+  Lock,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -25,6 +26,7 @@ import {
   type GeneratedPackage,
   type useAgentInstaller,
 } from '@/hooks/use-agent-installer';
+import { agentRolePlanCopy, useAgentEntitlement } from '@/hooks/use-agent-entitlement';
 import { CopyButton, StatusChip, fmtBytes, relTime } from './primitives';
 
 /**
@@ -131,6 +133,10 @@ export function DeployWizard({
   const [step, setStep] = useState<StepIndex>(0);
   const [reached, setReached] = useState(0);
 
+  /* Which roles this tenant's plan includes. Read here rather than passed in,
+     so every mount of the wizard gets the same answer without each caller
+     having to remember to thread it through. */
+  const entitlement = useAgentEntitlement();
   const [role, setRole] = useState<AgentRole>('collector');
   const [platform, setPlatform] = useState<AgentPlatform>('linux');
   const [name, setName] = useState('');
@@ -165,14 +171,30 @@ export function DeployWizard({
   const oneTimeToken = installer.oneTimeToken?.agentId === agentId ? installer.oneTimeToken : null;
 
   // Selecting a role resets scope to that role's module set — a Scanner should
-  // not silently inherit an Operator's surface list.
+  // not silently inherit an Operator's surface list. The list is then narrowed
+  // to the modules this PLAN includes, so the wizard never offers a scope the
+  // API will strip out on enrolment.
   useEffect(() => {
-    setScanTypes(roleDefinition.scanTypes);
+    const permitted = entitlement.scanTypes;
+    setScanTypes(
+      permitted.length ? roleDefinition.scanTypes.filter((type) => permitted.includes(type)) : roleDefinition.scanTypes,
+    );
     if (!roleDefinition.mutatesTargets) {
       setRemediationAuthorized(false);
       setMigrationAuthorized(false);
     }
-  }, [roleDefinition]);
+  }, [roleDefinition, entitlement.scanTypes]);
+
+  /* A role the plan no longer includes must not stay selected — for instance
+     when a Pro subscription lapses while the wizard is open. Falls back to the
+     first role this plan does include rather than to a hard-coded 'collector',
+     so a tenant with an unusual entitlement still lands somewhere valid. */
+  useEffect(() => {
+    if (entitlement.loading) return;
+    if (entitlement.roles.includes(role)) return;
+    const fallback = entitlement.roles[0];
+    if (fallback) setRole(fallback);
+  }, [entitlement.loading, entitlement.roles, role]);
 
   const go = useCallback((next: StepIndex) => {
     setStep(next);
@@ -299,34 +321,56 @@ export function DeployWizard({
         {/* ---------------- Step 0 — Agent type ---------------- */}
         {step === 0 ? (
           <div className="space-y-4">
+            {/* Roles are shown in FULL, with the ones this plan does not include
+                marked and unselectable. Hiding them would make the wizard
+                silently shorter on Basic, which reads as a missing feature
+                rather than a plan boundary and teaches the operator nothing
+                about what Pro adds. */}
             <div className="grid gap-3 sm:grid-cols-2">
-              {AGENT_ROLES.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setRole(item.id)}
-                  className={`rounded-xl border p-4 text-left transition ${
-                    role === item.id
-                      ? 'border-cyan-400/40 bg-cyan-400/[0.07]'
-                      : 'border-white/10 bg-white/[0.02] hover:border-white/20'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-black text-white">{item.label}</span>
-                    {item.mutatesTargets ? (
-                      <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-amber-200">
-                        Can change config
+              {AGENT_ROLES.map((item) => {
+                const roleAccess = entitlement.byRole[item.id];
+                const locked = !entitlement.loading && roleAccess && !roleAccess.allowed;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={Boolean(locked)}
+                    aria-disabled={Boolean(locked)}
+                    title={locked ? roleAccess.message : item.tagline}
+                    onClick={() => !locked && setRole(item.id)}
+                    className={`rounded-xl border p-4 text-left transition ${
+                      locked
+                        ? 'cursor-not-allowed border-white/[0.07] bg-white/[0.01] opacity-60'
+                        : role === item.id
+                          ? 'border-cyan-400/40 bg-cyan-400/[0.07]'
+                          : 'border-white/10 bg-white/[0.02] hover:border-white/20'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-sm font-black text-white">
+                        {item.label}
+                        {locked ? <Lock aria-hidden className="h-3 w-3 text-amber-300/80" /> : null}
                       </span>
-                    ) : (
-                      <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-emerald-200">
-                        Read-only
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-1.5 text-xs leading-relaxed text-white/55">{item.tagline}</p>
-                  <p className="mt-2 text-[11px] leading-relaxed text-white/35">{item.authority}</p>
-                </button>
-              ))}
+                      {item.mutatesTargets ? (
+                        <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-amber-200">
+                          Can change config
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-emerald-200">
+                          Read-only
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1.5 text-xs leading-relaxed text-white/55">{item.tagline}</p>
+                    <p className="mt-2 text-[11px] leading-relaxed text-white/35">{item.authority}</p>
+                    {locked ? (
+                      <p className="mt-2 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-2 py-1.5 text-[11px] leading-relaxed text-amber-100/85">
+                        {roleAccess.message} {agentRolePlanCopy(item.id)}.
+                      </p>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
             <div className="flex justify-end">
               <NextButton onClick={() => go(1)} />

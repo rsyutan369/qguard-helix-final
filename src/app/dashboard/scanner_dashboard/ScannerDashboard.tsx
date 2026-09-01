@@ -55,6 +55,11 @@ import {
   scoreColor,
 } from '@/components/quantum-scan/ui';
 import { ScannerHero } from './_hero';
+import { ExposureModeTabs } from '@/components/exposure/ExposureModeTabs';
+import { useExposureAccess } from '@/hooks/use-exposure-access';
+import { LocalAssessmentPanel } from '@/components/exposure/LocalAssessmentPanel';
+import { DevAssessmentPanel } from '@/components/exposure/DevAssessmentPanel';
+import type { ExposureAssessment, ScanMode } from '@/lib/scanner/exposure/types';
 import { buildAssessment, SCANNER_NODE_BLUEPRINTS, SCANNER_NODE_MODULES } from './_intel';
 import {
   clearScannerSession,
@@ -752,10 +757,22 @@ export default function ScannerDashboard() {
   const requestedTab = scannerTabFromParam(searchParams.get('tab'));
   const { session, user } = useAuth();
 
-  // Agent Collector Scanners are a PRO+ capability. Basic can run scans and view
-  // findings, but not the agent-collector tab or its API. Owner is always Elite.
+  // Agent access is BASIC, with the write-capable roles held back to PRO.
+  //
+  //   canUseAgents       BASIC+  reach the Agents tab, deploy and operate the
+  //                              two READ-ONLY roles (Collector, Scanner).
+  //   canUseWriteAgents  PRO+    Patcher and Migration Operator, the roles that
+  //                              modify a host.
+  //
+  // Splitting the two is the whole point: a Basic tenant needs a real agent
+  // fleet to feed the Quantum Readiness engine they already pay for, but must
+  // never hold an agent that can change one of their endpoints. The server
+  // enforces the same split per role in api-server/agent-entitlement.ts; this
+  // is the UX layer.
   const subscription = useSubscription();
-  const canUseAgents = isOwnerEmail(user?.email) || (subscription.isActive && tierMeets(subscription.tier, 'pro'));
+  const isOwner = isOwnerEmail(user?.email);
+  const canUseAgents = isOwner || (subscription.isActive && tierMeets(subscription.tier, 'basic'));
+  const canUseWriteAgents = isOwner || (subscription.isActive && tierMeets(subscription.tier, 'pro'));
 
   // Central Scanner Intelligence — the platform-wide, tenant-scoped snapshot
   // (shared-table truth + SSE + poll fallback) that also powers the Assets,
@@ -779,6 +796,27 @@ export default function ScannerDashboard() {
 
   const [status, setStatus] = useState<ScanStatus>('idle');
   const [activeTab, setActiveTab] = useState<TabId>(() => requestedTab ?? 'setup');
+
+  /* Three assessment modes (§3). Web is the existing authenticated estate
+     scanner, unchanged. Local and Dev mount the Exposure Assessment Engine's
+     own panels, with the authenticated extras — connector credentials and
+     platform synchronisation — that the anonymous page cannot offer. */
+  const [exposureMode, setExposureMode] = useState<ScanMode>(() => {
+    const requested = searchParams.get('mode');
+    return requested === 'local' || requested === 'dev' ? requested : 'web';
+  });
+
+  /* Lock badges on the tabs. Reaching /dashboard/scanner at all already needs
+     BASIC, so Local is normally open here — but Dev needs PRO, and a Basic
+     tenant must see that before they click rather than after. */
+  const localAccess = useExposureAccess('local');
+  const devAccess = useExposureAccess('dev');
+  const lockedModes = useMemo(() => {
+    const locked: Partial<Record<ScanMode, string>> = {};
+    if (!localAccess.loading && !localAccess.allowed) locked.local = localAccess.message;
+    if (!devAccess.loading && !devAccess.allowed) locked.dev = devAccess.message;
+    return locked;
+  }, [localAccess.loading, localAccess.allowed, localAccess.message, devAccess.loading, devAccess.allowed, devAccess.message]);
   useEffect(() => {
     if (requestedTab) {
       setActiveTab(requestedTab);
@@ -796,6 +834,54 @@ export default function ScannerDashboard() {
     }
     setSearchParams(nextParams, { replace: true });
   }, [searchParams, setSearchParams]);
+
+  const handleModeSelect = useCallback((mode: ScanMode) => {
+    setExposureMode(mode);
+    const nextParams = new URLSearchParams(searchParams);
+    if (mode === 'web') nextParams.delete('mode');
+    else nextParams.set('mode', mode);
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  /**
+   * Persist a Local assessment into the tenant's inventory (§73).
+   *
+   * The browser produced it, so the server re-derives everything it writes —
+   * this call only carries it across the boundary.
+   */
+  const syncLocalAssessment = useCallback(async (assessment: ExposureAssessment) => {
+    const token = session?.access_token;
+    if (!token) throw new Error('Sign in again to synchronise this assessment.');
+    const response = await fetch('/api/v1/exposure/local/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ assessment }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error?.message ?? 'The assessment could not be synchronised.');
+    showToast(
+      payload.data?.degraded
+        ? payload.data.notice ?? 'The assessment was not persisted.'
+        : `Synchronised: ${payload.data?.cryptoInventoryRows ?? 0} CBOM components and ${payload.data?.scanResultRows ?? 0} findings written to the inventory.`,
+    );
+  }, [session?.access_token]);
+
+  const syncDevAssessment = useCallback(async (scanId: string) => {
+    const token = session?.access_token;
+    if (!token) throw new Error('Sign in again to synchronise this assessment.');
+    const response = await fetch(`/api/v1/exposure/scans/${encodeURIComponent(scanId)}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error?.message ?? 'The assessment could not be synchronised.');
+    showToast(
+      payload.data?.degraded
+        ? payload.data.notice ?? 'The assessment was not persisted.'
+        : `Synchronised: ${payload.data?.cryptoInventoryRows ?? 0} CBOM components and ${payload.data?.scanResultRows ?? 0} findings written to the inventory.`,
+    );
+  }, [session?.access_token]);
+
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [searchQ, setSearchQ] = useState('');
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
@@ -2446,6 +2532,25 @@ export default function ScannerDashboard() {
           scroll inside their own containers, and nothing may push the page
           sideways on a phone. */}
       <div className="relative z-10 mx-auto max-w-[92rem] overflow-x-clip px-3 pb-16 pt-4 sm:px-5 sm:pt-6">
+        {/* ── Assessment mode: Web / Local / Dev (§3) ──────────────────── */}
+        <div className="mb-5">
+          <ExposureModeTabs value={exposureMode} onChange={handleModeSelect} locked={lockedModes} scope="dashboard-scanner" />
+        </div>
+
+        {exposureMode === 'local' && (
+          <div role="tabpanel" id="exposure-panel-local" aria-labelledby="exposure-tab-local">
+            <LocalAssessmentPanel onSync={syncLocalAssessment} />
+          </div>
+        )}
+
+        {exposureMode === 'dev' && (
+          <div role="tabpanel" id="exposure-panel-dev" aria-labelledby="exposure-tab-dev">
+            <DevAssessmentPanel authenticated onSync={syncDevAssessment} />
+          </div>
+        )}
+
+        {exposureMode === 'web' && (
+        <div role="tabpanel" id="exposure-panel-web" aria-labelledby="exposure-tab-web">
         <div>
           <ScannerHero
             status={status}
@@ -3332,9 +3437,9 @@ export default function ScannerDashboard() {
                 <span className="mx-auto grid h-11 w-11 place-items-center rounded-xl border border-violet-400/30 bg-violet-500/10 text-violet-300">
                   <Lock className="h-5 w-5" />
                 </span>
-                <h3 className="mt-3 text-[15px] font-black text-white">Collector settings require Pro</h3>
+                <h3 className="mt-3 text-[15px] font-black text-white">Collector settings require a plan</h3>
                 <p className="mx-auto mt-1.5 max-w-md text-[12.5px] leading-relaxed text-slate-400">
-                  Agent Collector policy management is available on the Pro plan and above. Scanning, findings and
+                  Agent Collector policy management is available on the Basic plan and above. Scanning, findings and
                   history remain fully available on your current plan.
                 </p>
                 <Link
@@ -3346,6 +3451,8 @@ export default function ScannerDashboard() {
               </Panel>
             )}
           </div>
+        )}
+        </div>
         )}
       </div>
 

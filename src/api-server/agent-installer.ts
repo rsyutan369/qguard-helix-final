@@ -45,7 +45,25 @@ import {
   type ConnectionState,
 } from '@/lib/agent-installer/agent-release'
 import { generateInstaller, installQuickCommand } from '@/lib/agent-installer/installer-templates'
+import {
+  describeControlPlaneFailure,
+  readAgentEnvironment,
+  validateControlPlane,
+} from '@/lib/agent-installer/agent-environment'
 import { eventsSince, publishAgentEvent, subscribe } from './agent-event-bus'
+import {
+  decideAgentRole,
+  decideScanTypes,
+  entitlementFor,
+  type AgentEntitlementRequest,
+} from './agent-entitlement'
+import {
+  AGENT_ROLE_MIN_TIER,
+  agentRolesForTier,
+  agentScanTypesForTier,
+  plansIncludingAgentRole,
+  type AccessTier,
+} from '@/lib/subscription-access'
 
 const router = Router()
 
@@ -53,8 +71,11 @@ const router = Router()
 /* Shared helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-function jsonError(res: Response, status: number, code: string, message: string) {
-  return res.status(status).json({ error: { code, message } })
+function jsonError(res: Response, status: number, code: string, message: string, detail?: unknown) {
+  /* `detail` carries the structured half of a refusal — which role was asked
+     for, which tier it needs, which roles this plan does include — so the UI
+     can render an actionable gate instead of re-deriving policy from prose. */
+  return res.status(status).json({ error: { code, message, ...(detail === undefined ? {} : { detail }) } })
 }
 
 function isMissingRuntimeTable(error: any) {
@@ -356,8 +377,30 @@ async function persistCommandState(
 /* GET /releases — what is published (spec §25 GET /agent-releases)    */
 /* ------------------------------------------------------------------ */
 
-router.get('/releases', requireUserAuth, async (_req: AuthedRequest, res) => {
+router.get('/releases', requireUserAuth, async (req: AuthedRequest, res) => {
   const release = await loadRelease()
+
+  /*
+   * The role catalogue is disclosed in full, with an `entitled` flag per role
+   * rather than a filtered list (§48).
+   *
+   * A Basic tenant should SEE that Patcher and Migration Operator exist and
+   * what they do — that is the argument for Pro. Hiding them would leave the
+   * download centre silently shorter with no explanation, which teaches the
+   * customer nothing and looks like a missing feature rather than a plan
+   * boundary.
+   */
+  let tier: AccessTier = 'none'
+  let entitlementDegraded = false
+  try {
+    const entitlement = await entitlementFor(req as AgentEntitlementRequest)
+    tier = entitlement.isActive ? entitlement.tier : 'none'
+  } catch {
+    entitlementDegraded = true
+  }
+  const entitledRoles = agentRolesForTier(tier)
+  const entitledScanTypes = agentScanTypesForTier(tier)
+
   res.json({
     data: {
       current: release,
@@ -378,11 +421,24 @@ router.get('/releases', requireUserAuth, async (_req: AuthedRequest, res) => {
         label: role.label,
         tagline: role.tagline,
         modules: role.modules,
-        scanTypes: role.scanTypes,
+        /* The modules this role would run FOR THIS TENANT, not the role's
+           theoretical maximum — so a Basic tenant reading the catalogue sees
+           the collector they will actually get. */
+        scanTypes: role.scanTypes.filter((type) => entitledScanTypes.includes(type)),
+        catalogueScanTypes: role.scanTypes,
         capabilities: role.capabilities,
         mutatesTargets: role.mutatesTargets,
         authority: role.authority,
+        entitled: entitledRoles.includes(role.id),
+        requiredTier: AGENT_ROLE_MIN_TIER[role.id],
+        includedIn: plansIncludingAgentRole(role.id),
       })),
+      entitlement: {
+        tier,
+        degraded: entitlementDegraded,
+        roles: entitledRoles,
+        scanTypes: entitledScanTypes,
+      },
       installPhases: INSTALL_PHASES,
     },
   })
@@ -399,13 +455,58 @@ router.get('/releases/:platform', requireUserAuth, async (req: AuthedRequest, re
 /* POST /package — generate a real, tenant-bound installer             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The control-plane URL an installer will bake in.
+ *
+ * Explicit configuration wins (§2: "Do not hard-code production URLs directly
+ * into source code. Use environment configuration."). The request-derived
+ * fallback exists so a developer running locally gets a working installer
+ * without any setup — but it is only trusted in development, because deriving
+ * a production endpoint from a `Host` header means an attacker who can reach
+ * the server can choose where the agents they provision will phone home.
+ */
 function resolveApiUrl(req: Request): string {
-  const configured = process.env.QGUARD_PUBLIC_API_URL || process.env.VITE_PUBLIC_APP_URL
+  const configured = process.env.QGUARD_CONTROL_PLANE_URL || process.env.QGUARD_PUBLIC_API_URL || process.env.VITE_PUBLIC_APP_URL
   if (configured) return configured.replace(/\/+$/, '')
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim()
   const proto = forwardedProto || req.protocol || 'http'
   const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost:3000').split(',')[0].trim()
   return `${proto}://${host}`
+}
+
+const AGENT_ENVIRONMENT = readAgentEnvironment(process.env.QGUARD_ENVIRONMENT)
+
+/**
+ * Refuse to generate an installer that would ship an insecure control plane
+ * (§3, §43, §62).
+ *
+ * This is the last point at which the platform controls what an agent will
+ * talk to. Once a package is downloaded and run, a bad URL is on somebody's
+ * production host.
+ */
+/* A plain interface, NOT a discriminated union: under this project's
+   `strict: false` a union does not narrow on the `ok` literal, so
+   `controlPlane.message` fails to type-check after the `if (!ok)` guard. Same
+   trap the exposure engine contract hit. */
+interface ControlPlaneGate {
+  ok: boolean
+  message?: string
+  detail?: unknown
+}
+
+function assertControlPlane(apiUrl: string): ControlPlaneGate {
+  const validation = validateControlPlane(apiUrl, AGENT_ENVIRONMENT)
+  if (validation.ok) return { ok: true }
+  return {
+    ok: false,
+    message: describeControlPlaneFailure(validation),
+    detail: {
+      environment: validation.environment,
+      url: validation.url,
+      errors: validation.errors,
+      warnings: validation.warnings,
+    },
+  }
 }
 
 router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
@@ -465,10 +566,37 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
   const policy = agent.policy || {}
   const capabilities = agent.capabilities || {}
 
+  /*
+   * Re-check the plan at PACKAGE time, not only at enrolment.
+   *
+   * An agent row enrolled while the tenant held Pro survives a downgrade to
+   * Basic — deleting their agents on a billing change would be worse. But a
+   * downgraded tenant must not be able to keep minting fresh installers for a
+   * write-capable role, so the gate is re-evaluated here against the plan they
+   * hold NOW rather than the plan they held then (§15, §41).
+   */
+  const roleDecision = await decideAgentRole(req as AgentEntitlementRequest, role, (id) => agentRole(id).label)
+  if (!roleDecision.ok) {
+    return jsonError(res, roleDecision.status, roleDecision.code, roleDecision.message, roleDecision.detail)
+  }
+
+  /* And clamp the policy the installer will bake in, so a package generated
+     today cannot carry modules the current plan no longer includes. */
+  const requestedScanTypes = Array.isArray(policy.scanTypes) && policy.scanTypes.length
+    ? policy.scanTypes.map(String)
+    : roleDefinition.scanTypes
+  const scanTypeDecision = await decideScanTypes(req as AgentEntitlementRequest, requestedScanTypes)
+
+  const apiUrl = resolveApiUrl(req)
+  const controlPlane = assertControlPlane(apiUrl)
+  if (!controlPlane.ok) {
+    return jsonError(res, 500, 'CONTROL_PLANE_INSECURE', controlPlane.message ?? 'Insecure control-plane configuration.', controlPlane.detail)
+  }
+
   let installer
   try {
     installer = generateInstaller(platformId, {
-      apiUrl: resolveApiUrl(req),
+      apiUrl,
       tenantId: user.id,
       agentId: agent.id,
       agentToken: suppliedToken,
@@ -481,7 +609,7 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
         intervalSeconds: Number(policy.intervalSeconds || policy.interval_seconds || 60),
         allowedTargets: Array.isArray(policy.allowedTargets) ? policy.allowedTargets.map(String) : [],
         allowedPaths: Array.isArray(policy.allowedPaths) ? policy.allowedPaths.map(String) : [],
-        scanTypes: Array.isArray(policy.scanTypes) ? policy.scanTypes.map(String) : roleDefinition.scanTypes,
+        scanTypes: scanTypeDecision.allowed,
         alertThreshold: String(policy.alertThreshold || 'moderate'),
       },
       remediationEnabled: roleDefinition.mutatesTargets && capabilities.remediation === true,
@@ -832,6 +960,13 @@ router.get('/agents/:id/health', requireUserAuth, async (req: AuthedRequest, res
       process: latestTelemetry?.process || null,
       counters: latestTelemetry?.counters || null,
       capabilities: latestTelemetry?.capabilities || agent.capabilities || null,
+      /*
+       * The knowledge-base and rule-set version this agent classifies against
+       * (spec §51, §85). Null for an agent whose build predates the field —
+       * which is itself the useful signal, because it means its findings were
+       * produced by a rule set the platform can no longer name.
+       */
+      engine: latestTelemetry?.engine || null,
       telemetryAvailable: Boolean(latestTelemetry),
       heartbeats: rows.map((row) => ({
         id: row.id,
@@ -948,25 +1083,58 @@ router.get('/agents/:id/scans', requireUserAuth, async (req: AuthedRequest, res)
     return jsonError(res, 500, 'SCANS_LOAD_FAILED', (error as Error).message)
   }
 
-  // A scan is bounded by its `starting` and `completed` heartbeat phases.
+  // A scan is bounded by its `starting` phase and one of the TERMINAL phases.
+  //
+  // `failed` is terminal too. Recognising only `completed` meant a scan that
+  // died mid-flight never closed its session, so the Agent Center rendered a
+  // long-dead scan as "Running" indefinitely — the visible half of the bug that
+  // left agents stuck at "Calculating quantum exposure".
+  //
+  // Only the newest session may still be open: an older `starting` with no
+  // terminal phase after it belongs to a run the agent never finished
+  // reporting (process killed, host rebooted), and is closed as `interrupted`
+  // rather than left claiming to be running.
   const scans: Array<Record<string, unknown>> = []
   let pendingStart: any = null
+
+  const closeSession = (start: any, terminal: any, status: 'completed' | 'failed') => ({
+    startedAt: start?.observed_at || null,
+    completedAt: terminal.observed_at,
+    durationMs:
+      start?.observed_at && terminal.observed_at
+        ? Date.parse(terminal.observed_at) - Date.parse(start.observed_at)
+        : terminal.telemetry?.durationMs ?? null,
+    evidenceCount: terminal.telemetry?.evidenceCount ?? null,
+    runtimeEventCount: terminal.telemetry?.runtimeEventCount ?? null,
+    remediationJobs: terminal.telemetry?.remediationJobs ?? null,
+    acceptedCount: terminal.telemetry?.acceptedByControlPlane ?? null,
+    rejectedByPolicy: terminal.telemetry?.rejectedByPolicy ?? null,
+    outOfPolicy: terminal.telemetry?.outOfPolicy ?? null,
+    degraded: Boolean(terminal.telemetry?.degraded),
+    error: status === 'failed' ? (terminal.telemetry?.error ?? null) : null,
+    status,
+  })
+
   for (const row of [...rows].reverse()) {
     const phase = row.telemetry?.phase
-    if (phase === 'starting') pendingStart = row
-    if (phase === 'completed') {
-      scans.push({
-        startedAt: pendingStart?.observed_at || null,
-        completedAt: row.observed_at,
-        durationMs:
-          pendingStart?.observed_at && row.observed_at
-            ? Date.parse(row.observed_at) - Date.parse(pendingStart.observed_at)
-            : row.telemetry?.durationMs ?? null,
-        evidenceCount: row.telemetry?.evidenceCount ?? null,
-        runtimeEventCount: row.telemetry?.runtimeEventCount ?? null,
-        remediationJobs: row.telemetry?.remediationJobs ?? null,
-        status: 'completed',
-      })
+    if (phase === 'starting') {
+      // A new run started while the previous one was still open: the previous
+      // run never reported a terminal phase and is recorded as interrupted.
+      if (pendingStart) {
+        scans.push({
+          startedAt: pendingStart.observed_at,
+          completedAt: null,
+          durationMs: null,
+          evidenceCount: null,
+          degraded: false,
+          error: 'The agent started a new scan before this one reported a result.',
+          status: 'interrupted',
+        })
+      }
+      pendingStart = row
+    }
+    if (phase === 'completed' || phase === 'failed') {
+      scans.push(closeSession(pendingStart, row, phase === 'failed' ? 'failed' : 'completed'))
       pendingStart = null
     }
   }
@@ -976,6 +1144,8 @@ router.get('/agents/:id/scans', requireUserAuth, async (req: AuthedRequest, res)
       completedAt: null,
       durationMs: null,
       evidenceCount: null,
+      degraded: false,
+      error: null,
       status: 'running',
     })
   }

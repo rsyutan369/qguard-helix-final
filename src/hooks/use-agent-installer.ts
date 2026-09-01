@@ -153,6 +153,8 @@ export type AgentHealth = {
   process: Record<string, unknown> | null;
   counters: Record<string, unknown> | null;
   capabilities: Record<string, unknown> | null;
+  /** Knowledge-base + rule-set versions the agent classifies against (§51, §85). */
+  engine: { knowledgeBaseVersion?: string; ruleSetVersion?: string } | null;
   telemetryAvailable: boolean;
   heartbeats: Array<{ id: string; status: string; observedAt: string; phase: string | null }>;
 };
@@ -203,6 +205,15 @@ export type AgentScanRecord = {
   evidenceCount: number | null;
   runtimeEventCount?: number | null;
   remediationJobs?: number | null;
+  /** How many observations the control plane actually accepted. */
+  acceptedCount?: number | null;
+  /** Observations the agent's authorized scope excluded. Not an error. */
+  rejectedByPolicy?: number | null;
+  outOfPolicy?: boolean | null;
+  /** Completed, but one or more batches could not be published. */
+  degraded?: boolean;
+  error?: string | null;
+  /** 'completed' | 'failed' | 'interrupted' | 'running' */
   status: string;
 };
 
@@ -247,7 +258,13 @@ export type LiveScanProgress = {
   progress: number;
   message: string;
   at: string;
+  /** Terminal frames settle the bar; without one it would render forever. */
+  terminal: boolean;
+  failed: boolean;
 };
+
+/** Stages that END a scan. A frame carrying one of these settles the progress UI. */
+const TERMINAL_SCAN_STAGES = new Set(['scan_complete', 'scan_failed']);
 
 const MAX_BACKOFF_MS = 30_000;
 
@@ -411,16 +428,45 @@ export function useAgentInstaller(enabled: boolean) {
         if (name === 'agent.scan_progress' || name === 'agent.scan_completed') {
           const agentId = String(payload.agentId || '');
           if (agentId) {
+            const stage = String(payload.stage || (name === 'agent.scan_completed' ? 'scan_complete' : 'running'));
+            const failed = stage === 'scan_failed' || payload.failed === true;
             setScanProgress((prev) => ({
               ...prev,
               [agentId]: {
                 agentId,
-                stage: String(payload.stage || (name === 'agent.scan_completed' ? 'scan_complete' : 'running')),
+                stage,
                 progress: typeof payload.progress === 'number' ? payload.progress : name === 'agent.scan_completed' ? 100 : 0,
                 message: String(payload.message || ''),
                 at: String(payload.at || new Date().toISOString()),
+                terminal: TERMINAL_SCAN_STAGES.has(stage) || name === 'agent.scan_completed',
+                failed,
               },
             }));
+          }
+        }
+
+        // A scan that dies without reaching a terminal stage would otherwise
+        // leave the bar frozen at its last frame. An agent-level error is a
+        // terminal signal for whatever run was in flight.
+        if (name === 'agent.error') {
+          const agentId = String(payload.agentId || '');
+          if (agentId) {
+            setScanProgress((prev) => {
+              const current = prev[agentId];
+              if (!current || current.terminal) return prev;
+              return {
+                ...prev,
+                [agentId]: {
+                  ...current,
+                  stage: 'scan_failed',
+                  progress: 100,
+                  message: String(payload.error || payload.message || 'The agent reported an error during this scan.'),
+                  at: String(payload.at || new Date().toISOString()),
+                  terminal: true,
+                  failed: true,
+                },
+              };
+            });
           }
         }
 

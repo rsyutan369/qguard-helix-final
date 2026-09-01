@@ -474,7 +474,17 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
             <dd
               className="font-bold"
               style={{
-                color: intelligence.forwardSecrecy === 'Enabled' ? ACCENT.emerald : ACCENT.amber,
+                /* Measured-absent is a failure (rose); never-measured is
+                   simply unknown (slate). Painting both amber said the same
+                   thing about a real gap and about a silent endpoint. */
+                color:
+                  intelligence.forwardSecrecy === 'Enabled'
+                    ? ACCENT.emerald
+                    : intelligence.forwardSecrecy === 'Partial'
+                      ? ACCENT.amber
+                      : intelligence.forwardSecrecy === 'Not observed'
+                        ? ACCENT.rose
+                        : ACCENT.slate,
               }}
             >
               {intelligence.forwardSecrecy === 'Enabled' ? '✦ Enabled' : intelligence.forwardSecrecy}

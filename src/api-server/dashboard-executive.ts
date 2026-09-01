@@ -456,7 +456,19 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     freshHeartbeats,
     activeScans: activeScanSessions,
     scanThroughput: scanResults.filter((r) => dateMs(r.created_at) >= now - 3600000).length, // findings/hour
-    sseHealth: 'operational',
+    /*
+     * Measured-vs-absent, so the panel can tell "we observed nothing" apart
+     * from "nothing is observing". A tenant with no collector saw
+     * `0 events · 0 queue · 0/0 workers`, which reads as a healthy quiet
+     * system rather than an unmonitored one.
+     *
+     * `sseHealth: 'operational'` used to sit here as a hardcoded literal — it
+     * was never rendered and never reflected the actual stream, so it is gone
+     * rather than replaced with a guess. The UI already shows real connection
+     * state from the client's own SSE subscription.
+     */
+    measured: runtimeEvents.length > 0,
+    agentsEnrolled: scannerAgents.length > 0,
     // REAL platform-process telemetry (this API server), not fabricated per-host gauges.
     process: {
       cpuMs: Math.round((cpuAfter.user + cpuAfter.system) / 1000),

@@ -51,6 +51,7 @@ import revenueRoutes from './revenue'
 import adminRoutes from './admin'
 import scannerRoutes from './scanner'
 import publicScanRoutes from './public-scan'
+import exposureRoutes from './exposure'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import agentInstallerRoutes from './agent-installer'
 import serviceRecordRoutes from './service-records'
@@ -784,6 +785,13 @@ export function createApiServer() {
   // it mounts BEFORE the subscription gateway. It carries its own rate limiting,
   // concurrency cap, SSRF guard and result cache.
   app.use('/api/v1/public-scan', publicScanRoutes)
+
+  // Exposure Assessment Engine™ — the Local and Dev counterparts to the public
+  // edge scanner. Mounted BEFORE the subscription gateway because capability
+  // disclosure, engine health, repository validation and PUBLIC repository
+  // assessment are anonymous by design; every endpoint that touches tenant data
+  // or a stored credential enforces its own authentication inside the router.
+  app.use('/api/v1/exposure', exposureRoutes)
 
   app.use('/api', subscriptionGateway)
 

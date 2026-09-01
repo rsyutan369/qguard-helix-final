@@ -77,14 +77,23 @@ export function ScannerExecutiveSummary({ assessment }: { assessment: ScannerAss
     },
     {
       label: 'Post-Quantum Readiness',
-      big: `${executive.postQuantumReadiness}%`,
-      sub: executive.postQuantumReadiness >= 60 ? 'Majority quantum-safe' : 'Migration outstanding',
+      /* Not scored is rendered as such. A number here beside the panel's own
+         "was not scored" footnote is the contradiction this replaced. */
+      big: executive.postQuantumReadiness === null ? 'Not scored' : `${executive.postQuantumReadiness}%`,
+      sub:
+        executive.postQuantumReadiness === null
+          ? 'Not measured on this scan'
+          : executive.postQuantumReadiness >= 60
+            ? 'Majority quantum-safe'
+            : 'Migration outstanding',
       detail:
-        executive.postQuantumReadiness >= 60
-          ? 'Most discovered components already use quantum-safe cryptography.'
-          : 'Most discovered components still rely on quantum-vulnerable cryptography.',
-      ring: executive.postQuantumReadiness,
-      color: scoreColor(executive.postQuantumReadiness),
+        executive.postQuantumReadiness === null
+          ? executive.postQuantumReadinessReason ?? 'This dimension was not measured, so no readiness figure is published.'
+          : executive.postQuantumReadiness >= 60
+            ? 'Most discovered components already use quantum-safe cryptography.'
+            : 'Most discovered components still rely on quantum-vulnerable cryptography.',
+      ring: executive.postQuantumReadiness ?? 0,
+      color: scoreColor(executive.postQuantumReadiness ?? 0),
     },
     {
       label: 'Business Risk',
@@ -226,17 +235,28 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
           <p className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
             Post-Quantum Readiness
           </p>
-          <CountUp value={executive.postQuantumReadiness} className="mt-2 block text-5xl font-black tracking-tight" />
-          <p className="mt-1 text-xs font-semibold" style={{ color: scoreColor(executive.postQuantumReadiness) }}>
-            {executive.postQuantumReadiness >= 60 ? 'Majority ready' : 'Limited'}
-          </p>
-          <Meter
-            value={executive.postQuantumReadiness}
-            className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto"
-          />
-          <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
-            {pqWeight}% of the weighted model
-          </p>
+          {executive.postQuantumReadiness === null ? (
+            <>
+              <span className="mt-2 block text-3xl font-black tracking-tight text-slate-500">Not scored</span>
+              <p className="mt-1 max-w-[13rem] text-[11px] leading-relaxed text-slate-500 sm:ml-auto">
+                {executive.postQuantumReadinessReason}
+              </p>
+            </>
+          ) : (
+            <>
+              <CountUp value={executive.postQuantumReadiness} className="mt-2 block text-5xl font-black tracking-tight" />
+              <p className="mt-1 text-xs font-semibold" style={{ color: scoreColor(executive.postQuantumReadiness) }}>
+                {executive.postQuantumReadiness >= 60 ? 'Majority ready' : 'Limited'}
+              </p>
+              <Meter
+                value={executive.postQuantumReadiness}
+                className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto"
+              />
+              <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
+                {pqWeight}% of the weighted model
+              </p>
+            </>
+          )}
         </div>
       </div>
 

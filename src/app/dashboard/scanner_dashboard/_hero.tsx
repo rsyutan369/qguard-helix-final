@@ -210,7 +210,8 @@ export interface ScannerHeroProps {
    */
   verdict: {
     score: number;
-    postQuantumReadiness: number;
+    /** null = not scored on this assessment. */
+    postQuantumReadiness: number | null;
     gradeable: boolean;
     nodeScores: Record<string, number>;
   } | null;

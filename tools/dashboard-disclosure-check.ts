@@ -76,6 +76,9 @@ const ROOTS = [
   'src/app/dashboard/assets_map',
   'src/app/dashboard/shadow-crypto',
   'src/app/dashboard/cbom_explorer',
+  'src/app/dashboard/_components/executive',
+  'src/app/dashboard/crypto_exposure_map',
+  'src/app/dashboard/security_events_panel',
 ]
 
 function walk(dir: string): string[] {

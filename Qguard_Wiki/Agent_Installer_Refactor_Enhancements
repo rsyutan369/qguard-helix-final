@@ -1,0 +1,2560 @@
+# Qguard Helix — Enterprise-Grade Secure Agent Architecture, Enrollment, Remediation & Agent Role Separation
+
+## Objective
+
+Perform a complete security-focused architectural review, refactor, and implementation of the Qguard Helix Agent ecosystem.
+
+The current Qguard Helix Windows Lightweight Agent installer has several architectural weaknesses that must be addressed before production deployment:
+
+1. Production agent communication must never depend on `http://localhost:3000`.
+2. Long-lived enrollment credentials must not be embedded directly into installers.
+3. Agent runtime integrity must use cryptographic signature verification in addition to SHA-256.
+4. SYSTEM-level execution must be tightly controlled and treated as a high-risk privileged component.
+5. Remediation commands must be strongly authenticated, authorized, auditable, replay-protected, and policy-controlled.
+6. Remediation must follow an approval → execution → validation → rollback lifecycle.
+7. Agent capabilities must be separated by security role and least privilege.
+8. Agent identity must be device-bound and preferably certificate-based after enrollment.
+9. Production, staging, and development environments must be completely separated.
+10. The entire implementation must use real backend APIs, database records, authentication, authorization, telemetry, and agent state — NOT mocked frontend data.
+
+The final implementation must be production-oriented, secure-by-default, observable, auditable, and compatible with the existing Qguard Helix architecture.
+
+---
+
+# 1. FIRST: AUDIT THE EXISTING IMPLEMENTATION
+
+Before modifying anything, inspect the complete existing implementation.
+
+Do NOT immediately start rewriting files.
+
+Identify:
+
+* Agent Center pages
+* Agent installation APIs
+* Agent enrollment APIs
+* Agent runtime download APIs
+* Agent heartbeat APIs
+* Agent status APIs
+* Agent command APIs
+* Remediation APIs
+* Existing RBAC
+* Existing tenant isolation
+* Existing database schema
+* Existing Supabase tables
+* Existing authentication middleware
+* Existing API authentication
+* Existing SSE/WebSocket infrastructure
+* Existing audit logging
+* Existing notification mechanisms
+* Existing policy engine
+* Existing scan orchestration
+* Existing frontend hooks
+* Existing agent runtime implementation
+* Existing PowerShell installer generation
+* Existing Windows agent lifecycle
+* Existing agent update mechanism
+* Existing secrets management
+* Existing environment configuration
+
+Search the entire repository for:
+
+```text
+localhost:3000
+http://
+QGUARD_AGENT_TOKEN
+AgentToken
+agent-installer
+installation-event
+qguard-agent.cjs
+ScheduledTask
+QGuardHelixAgent
+remediation
+patch
+migration
+heartbeat
+agent_id
+tenant_id
+```
+
+Determine exactly which components currently depend on the development control plane.
+
+Do not remove working functionality unless it is replaced by a secure equivalent.
+
+---
+
+# 2. ESTABLISH PROPER ENVIRONMENT SEPARATION
+
+The current configuration incorrectly identifies itself as:
+
+```text
+Environment: production
+```
+
+while communicating with:
+
+```text
+http://localhost:3000
+```
+
+This must be eliminated.
+
+Create explicit environments:
+
+```text
+development
+staging
+production
+```
+
+Each environment must have its own:
+
+* API endpoint
+* database configuration
+* authentication configuration
+* agent enrollment authority
+* signing configuration
+* agent runtime repository
+* secrets
+* telemetry
+* audit records
+* agent registrations
+
+Example:
+
+```text
+Development
+http://localhost:3000
+
+Staging
+https://api-staging.qguardhelix.com
+
+Production
+https://api.qguardhelix.com
+```
+
+Do not hard-code production URLs directly into source code.
+
+Use environment configuration.
+
+For example:
+
+```text
+QGUARD_CONTROL_PLANE_URL
+QGUARD_ENVIRONMENT
+```
+
+Production must reject:
+
+```text
+localhost
+127.0.0.1
+0.0.0.0
+HTTP endpoints
+```
+
+unless explicitly running in development mode.
+
+---
+
+# 3. ENFORCE HTTPS
+
+All production agent communication must use HTTPS.
+
+The following must be prohibited in production:
+
+```text
+http://api.qguardhelix.com
+http://localhost:3000
+http://127.0.0.1
+```
+
+Production must use:
+
+```text
+https://api.qguardhelix.com
+```
+
+or the configured production control-plane hostname.
+
+Implement:
+
+* TLS 1.2 minimum
+* TLS 1.3 preferred
+* certificate validation
+* hostname validation
+* secure HTTP client defaults
+* connection timeout
+* retry policy
+* exponential backoff
+* bounded retries
+* connection failure handling
+
+Do not implement:
+
+```text
+DisableCertificateValidation
+TrustAllCertificates
+IgnoreSslErrors
+```
+
+or equivalent behavior.
+
+Never allow the agent to silently downgrade HTTPS to HTTP.
+
+---
+
+# 4. OPTIONAL HIGH-SECURITY MODE: MUTUAL TLS
+
+Design the architecture so Qguard Helix can support mutual TLS.
+
+Preferred production architecture:
+
+```text
+                 QGUARD CONTROL PLANE
+                         │
+                    HTTPS / mTLS
+                         │
+                ┌────────▼────────┐
+                │ Qguard Agent    │
+                │ Device Identity │
+                └─────────────────┘
+```
+
+After enrollment, the agent should receive or generate a device-bound identity.
+
+Prefer:
+
+```text
+Agent private key
+        +
+Agent certificate
+        +
+Qguard CA
+```
+
+The private key must:
+
+* never be transmitted to the control plane
+* never be logged
+* never be displayed
+* be stored using Windows-protected mechanisms where practical
+* be inaccessible to standard users
+
+Design the system so certificate rotation is supported.
+
+---
+
+# 5. REPLACE LONG-LIVED INSTALLER TOKENS
+
+The current implementation embeds:
+
+```text
+QGUARD_AGENT_TOKEN
+```
+
+directly inside the PowerShell installer.
+
+Remove this architecture for production.
+
+Implement:
+
+## One-Time Enrollment Token
+
+An administrator creates an enrollment request in Agent Center.
+
+The backend generates:
+
+```text
+Enrollment ID
+One-time enrollment token
+Expiration
+Tenant ID
+Allowed agent role
+Allowed environment
+Optional device constraints
+```
+
+Example lifecycle:
+
+```text
+Administrator
+     │
+     ▼
+Agent Center
+     │
+     ▼
+Create Enrollment
+     │
+     ▼
+Short-lived token
+     │
+     ▼
+Installer
+     │
+     ▼
+Enrollment API
+     │
+     ▼
+Validate token
+     │
+     ▼
+Bind endpoint
+     │
+     ▼
+Issue permanent agent identity
+     │
+     ▼
+Immediately invalidate enrollment token
+```
+
+Enrollment tokens should:
+
+* expire quickly
+* be single-use
+* be tenant-scoped
+* be role-scoped
+* optionally be IP/network scoped
+* optionally be device-bound
+* be revocable
+* be fully audited
+
+Never store plaintext enrollment tokens in database records if avoidable.
+
+Store a secure hash/fingerprint for verification.
+
+---
+
+# 6. DEVICE-BOUND AGENT IDENTITY
+
+After successful enrollment, the agent must have its own identity.
+
+Do not rely exclusively on:
+
+```text
+tenant_id + agent_id + static bearer token
+```
+
+Use:
+
+```text
+Tenant
+  +
+Agent ID
+  +
+Device identity
+  +
+Credential/certificate
+```
+
+Agent identity must be unique.
+
+The backend must detect:
+
+* duplicated agent IDs
+* credential reuse
+* enrollment replay
+* enrollment from unexpected devices
+* revoked agents
+* disabled agents
+* deleted agents
+
+An agent marked:
+
+```text
+revoked
+```
+
+must immediately lose control-plane access.
+
+---
+
+# 7. AGENT REGISTRATION STATES
+
+Implement a proper lifecycle:
+
+```text
+created
+pending_enrollment
+enrolling
+active
+connecting
+offline
+suspended
+revoked
+decommissioned
+```
+
+Frontend Agent Center must accurately display these states.
+
+Do not infer status merely from database creation.
+
+Status must reflect actual agent heartbeat and backend state.
+
+Track:
+
+```text
+last_seen_at
+last_heartbeat_at
+last_ip
+last_hostname
+last_os
+last_agent_version
+last_runtime_hash
+last_certificate
+last_command_at
+last_scan_at
+connection_state
+```
+
+---
+
+# 8. SECURE AGENT RUNTIME DOWNLOAD
+
+The current installer downloads:
+
+```text
+qguard-agent.cjs
+```
+
+from the control plane.
+
+Keep centralized distribution, but strengthen it.
+
+Runtime download must require:
+
+* authenticated request
+* authorized agent/enrollment context
+* HTTPS
+* exact version
+* supported platform
+* architecture compatibility
+* runtime metadata
+* SHA-256
+* digital signature
+
+The backend should provide metadata such as:
+
+```text
+runtime_version
+platform
+architecture
+sha256
+signature
+signature_algorithm
+published_at
+minimum_supported_agent_version
+```
+
+---
+
+# 9. DIGITAL CODE SIGNING
+
+SHA-256 alone is insufficient.
+
+Implement digital signing for Qguard agent releases.
+
+For Windows:
+
+```text
+Authenticode
+```
+
+should be used for executable components where applicable.
+
+If the runtime remains JavaScript:
+
+* sign the installer/package
+* sign the release manifest
+* protect the signing key
+* verify signatures before execution
+* maintain trusted signing certificate information
+
+Preferred architecture:
+
+```text
+Qguard Release
+      │
+      ├── Runtime
+      ├── SHA-256
+      ├── Digital Signature
+      └── Signed Manifest
+                │
+                ▼
+          Windows Agent
+                │
+          Verify Signature
+                │
+        ┌───────┴────────┐
+        │                │
+      Valid           Invalid
+        │                │
+     Execute           Abort
+```
+
+Never execute an unsigned or invalid runtime in production.
+
+---
+
+# 10. SIGNED RELEASE MANIFEST
+
+Create a signed manifest containing:
+
+```json
+{
+  "product": "Qguard Helix Agent",
+  "version": "1.5.0",
+  "platform": "windows",
+  "architecture": "x64",
+  "sha256": "...",
+  "publishedAt": "...",
+  "minimumControlPlaneVersion": "...",
+  "minimumAgentVersion": "...",
+  "signature": "...",
+  "keyId": "..."
+}
+```
+
+The installer must verify:
+
+1. Manifest signature
+2. Runtime SHA-256
+3. Runtime compatibility
+4. Platform
+5. Architecture
+6. Version policy
+
+---
+
+# 11. AGENT ROLE SEPARATION
+
+Implement explicit agent capability profiles.
+
+## Collector Agent
+
+Role:
+
+```text
+collector
+```
+
+Permissions:
+
+```text
+READ ONLY
+```
+
+Capabilities:
+
+* asset discovery
+* CBOM collection
+* crypto inventory
+* certificate inventory
+* TLS telemetry
+* SSH discovery
+* package inventory
+* runtime telemetry
+
+It must NOT be allowed to:
+
+* modify configuration
+* install software
+* change certificates
+* modify TLS
+* execute remediation
+
+---
+
+# 12. ASSESSMENT AGENT
+
+Role:
+
+```text
+assessment
+```
+
+Permissions:
+
+```text
+READ ONLY
+```
+
+Capabilities:
+
+* crypto risk assessment
+* quantum exposure analysis
+* PQC readiness
+* compliance evaluation
+* policy evaluation
+* risk scoring
+* evidence collection
+
+It must not modify endpoints.
+
+---
+
+# 13. PATCHER AGENT
+
+Role:
+
+```text
+patcher
+```
+
+Permissions:
+
+```text
+READ + APPROVED WRITE
+```
+
+Capabilities:
+
+* configuration remediation
+* approved security patches
+* certificate replacement
+* TLS configuration remediation
+* approved endpoint security configuration changes
+
+The Patcher MUST NOT:
+
+* execute arbitrary shell commands
+* execute arbitrary PowerShell
+* download arbitrary binaries
+* execute arbitrary JavaScript
+* modify arbitrary files
+* modify arbitrary registry keys
+* perform unrestricted system administration
+
+All write operations must be allowlisted.
+
+---
+
+# 14. MIGRATION AGENT
+
+Role:
+
+```text
+migration
+```
+
+Capabilities:
+
+* cryptographic migration
+* PQC migration
+* hybrid cryptography migration
+* certificate migration
+* TLS migration
+* application crypto configuration migration
+
+Support:
+
+```text
+RSA → Hybrid/PQC
+ECC → Hybrid/PQC
+X25519 → X25519 + ML-KEM
+Classical signatures → Ed25519 + ML-DSA
+```
+
+Respect the existing Qguard Helix cryptographic architecture and policies.
+
+Migration must be separate from generic patching.
+
+---
+
+# 15. LEAST PRIVILEGE
+
+Do not give every agent all capabilities.
+
+Implement:
+
+```text
+Role
+   ↓
+Capabilities
+   ↓
+Policies
+   ↓
+Allowed operations
+```
+
+Example:
+
+```text
+collector
+  └── read.inventory
+
+scanner/assessment
+  ├── read.inventory
+  ├── read.crypto
+  └── read.compliance
+
+patcher
+  ├── read.inventory
+  ├── read.crypto
+  ├── remediation.preview
+  └── remediation.execute
+
+migration operator
+  ├── read.crypto
+  ├── migration.plan
+  └── migration.execute
+```
+
+---
+
+# 16. NEVER ALLOW ARBITRARY REMOTE COMMAND EXECUTION
+
+This is mandatory.
+
+Do NOT create a generic API such as:
+
+```text
+POST /agent/execute
+{
+  "command": "powershell ..."
+}
+```
+
+Do not implement unrestricted:
+
+```text
+cmd.exe
+powershell.exe
+bash
+sh
+node -e
+```
+
+execution from control-plane commands.
+
+Instead implement typed commands.
+
+Examples:
+
+```text
+UpdateTlsConfiguration
+ReplaceCertificate
+UpdateSecurityHeader
+PatchKnownConfiguration
+RotateCertificate
+UpdateApprovedPackage
+ApplyApprovedCryptoPolicy
+```
+
+Each command must have a strict schema.
+
+---
+
+# 17. REMEDIATION COMMAND STRUCTURE
+
+Every remediation command must contain:
+
+```text
+tenant_id
+agent_id
+command_id
+request_id
+policy_id
+operation
+target
+parameters
+created_at
+expires_at
+nonce
+requested_by
+approved_by
+signature
+```
+
+Example conceptual object:
+
+```json
+{
+  "tenantId": "...",
+  "agentId": "...",
+  "commandId": "...",
+  "requestId": "...",
+  "policyId": "...",
+  "operation": "UpdateTlsConfiguration",
+  "target": "...",
+  "parameters": {},
+  "createdAt": "...",
+  "expiresAt": "...",
+  "nonce": "...",
+  "requestedBy": "...",
+  "approvedBy": "...",
+  "signature": "..."
+}
+```
+
+Never trust only the frontend.
+
+All authorization must be enforced server-side.
+
+---
+
+# 18. COMMAND SIGNING
+
+Commands that can modify an endpoint must be cryptographically signed.
+
+The agent must verify:
+
+```text
+signature
+issuer
+tenant
+agent
+expiration
+nonce
+command type
+policy
+```
+
+before execution.
+
+Reject:
+
+* expired commands
+* unknown commands
+* unsigned commands
+* invalid signatures
+* commands for another tenant
+* commands for another agent
+* replayed commands
+* commands outside policy
+* commands outside capability scope
+
+---
+
+# 19. REPLAY PROTECTION
+
+Implement:
+
+```text
+command_id
+nonce
+created_at
+expires_at
+```
+
+The agent must maintain a local record of processed command IDs.
+
+If a command has already been executed:
+
+```text
+REJECT: replay detected
+```
+
+Never execute it twice.
+
+---
+
+# 20. REMEDIATION APPROVAL WORKFLOW
+
+Replace:
+
+```text
+Qguard → PATCH → Endpoint
+```
+
+with:
+
+```text
+Detection
+    ↓
+Recommendation
+    ↓
+Risk Assessment
+    ↓
+Remediation Plan
+    ↓
+Policy Evaluation
+    ↓
+Approval Required?
+    │
+    ├── No → Auto-approved by policy
+    │
+    └── Yes
+          ↓
+      Human Approval
+          ↓
+      Signed Command
+          ↓
+      Agent
+          ↓
+      Pre-check
+          ↓
+      Backup/Snapshot
+          ↓
+      Apply Change
+          ↓
+      Validation
+          ↓
+      Success / Rollback
+```
+
+---
+
+# 21. REMEDIATION MODES
+
+Support:
+
+```text
+recommend_only
+approval_required
+policy_auto_approve
+emergency_remediation
+```
+
+Default should be:
+
+```text
+approval_required
+```
+
+Never enable unrestricted automatic remediation by default.
+
+---
+
+# 22. PRE-CHECK
+
+Before modifying an endpoint, the agent must verify:
+
+* target exists
+* target is supported
+* current state matches expected state
+* policy allows modification
+* command has not expired
+* command is authentic
+* agent role permits operation
+* required backup is possible
+* endpoint is healthy enough for remediation
+
+If pre-check fails:
+
+```text
+DO NOT MODIFY
+```
+
+Return a structured failure reason.
+
+---
+
+# 23. BACKUP / SNAPSHOT
+
+Before high-risk modifications, create a recoverable state.
+
+Examples:
+
+* configuration backup
+* certificate backup
+* registry backup
+* configuration snapshot
+* service configuration snapshot
+
+Never expose private keys in logs or telemetry.
+
+Backups containing secrets must be encrypted.
+
+---
+
+# 24. VALIDATION AFTER REMEDIATION
+
+After modification:
+
+```text
+Patch
+ ↓
+Validate
+ ↓
+Rescan
+ ↓
+Compare expected state
+```
+
+Validate:
+
+* service availability
+* TLS configuration
+* certificate validity
+* cryptographic configuration
+* connectivity
+* policy compliance
+* expected configuration
+
+Only mark remediation:
+
+```text
+SUCCESS
+```
+
+when validation passes.
+
+---
+
+# 25. AUTOMATIC ROLLBACK
+
+If validation fails:
+
+```text
+Rollback
+   ↓
+Restore previous configuration
+   ↓
+Validate rollback
+```
+
+Final state should be:
+
+```text
+remediation_failed_rolled_back
+```
+
+rather than simply:
+
+```text
+failed
+```
+
+Maintain complete audit history.
+
+---
+
+# 26. REMEDIATION TRANSACTION STATES
+
+Implement:
+
+```text
+draft
+planned
+pending_approval
+approved
+rejected
+queued
+delivered
+received
+precheck
+executing
+validating
+completed
+failed
+rollback_pending
+rolled_back
+expired
+cancelled
+```
+
+Frontend must accurately display these states.
+
+---
+
+# 27. AUDIT TRAIL
+
+Every security-sensitive operation must create an immutable audit record.
+
+Record:
+
+```text
+tenant_id
+agent_id
+user_id
+command_id
+request_id
+operation
+target
+policy_id
+approval
+timestamp
+source_ip
+agent_version
+before_state
+after_state
+result
+failure_reason
+rollback_result
+```
+
+Never log:
+
+```text
+agent_token
+private_key
+password
+secret
+API key
+certificate private key
+```
+
+Sensitive fields must be redacted.
+
+---
+
+# 28. AGENT HEARTBEAT
+
+Implement a secure heartbeat.
+
+Heartbeat should report:
+
+```text
+agent_id
+tenant_id
+hostname
+OS
+architecture
+agent_version
+runtime_hash
+connection_state
+last_scan
+last_command
+capabilities
+health
+timestamp
+```
+
+Do not include secrets.
+
+Heartbeat must be authenticated.
+
+Backend must reject heartbeats from:
+
+* revoked agents
+* disabled agents
+* wrong tenants
+* invalid identities
+
+---
+
+# 29. AGENT HEALTH MONITORING
+
+Agent Center should display:
+
+```text
+Online
+Offline
+Connecting
+Degraded
+Outdated
+Revoked
+Suspended
+```
+
+Determine health using real heartbeat timestamps.
+
+Example:
+
+```text
+Healthy
+< 2 minutes
+
+Degraded
+2–10 minutes
+
+Offline
+> 10 minutes
+```
+
+Make thresholds configurable.
+
+---
+
+# 30. AGENT VERSION MANAGEMENT
+
+Implement:
+
+```text
+Current Version
+Latest Version
+Minimum Supported Version
+Update Required
+Update Available
+```
+
+If an agent becomes unsupported:
+
+```text
+out_of_date
+```
+
+Do not immediately execute upgrades without policy.
+
+Support:
+
+```text
+manual update
+approved automatic update
+scheduled update
+rollback
+```
+
+---
+
+# 31. SECURE AGENT UPDATE
+
+Agent updates must follow:
+
+```text
+Check Update
+   ↓
+Download
+   ↓
+Verify Manifest
+   ↓
+Verify Signature
+   ↓
+Verify SHA-256
+   ↓
+Stage
+   ↓
+Backup Current Version
+   ↓
+Install
+   ↓
+Health Check
+   ↓
+Activate
+```
+
+If the new runtime fails:
+
+```text
+Rollback to previous trusted runtime
+```
+
+---
+
+# 32. WINDOWS SERVICE ARCHITECTURE
+
+Evaluate replacing the Scheduled Task approach with a proper Windows Service.
+
+Preferred:
+
+```text
+Qguard Helix Agent Service
+```
+
+configured for:
+
+```text
+Automatic Startup
+Automatic Recovery
+Delayed Start where appropriate
+```
+
+If Scheduled Task is retained, document why and harden it.
+
+Regardless of implementation:
+
+* prevent unauthorized task/service modification
+* verify executable path
+* verify runtime integrity
+* restrict permissions
+* protect configuration
+* detect tampering
+
+---
+
+# 33. WINDOWS FILE SECURITY
+
+Protect:
+
+```text
+agent configuration
+credentials
+certificates
+private keys
+runtime
+logs
+local command queue
+backup files
+```
+
+Use appropriate Windows security controls.
+
+Sensitive credentials should preferably use:
+
+```text
+Windows DPAPI
+```
+
+or another appropriate OS-backed secret protection mechanism.
+
+Do not rely solely on plaintext `.env` files for production secrets.
+
+---
+
+# 34. LOCAL COMMAND QUEUE
+
+If the agent supports offline operation, implement a secure local queue.
+
+Queue entries must be:
+
+```text
+encrypted
+authenticated
+integrity-protected
+expiration-controlled
+replay-protected
+```
+
+Commands must never remain executable indefinitely.
+
+When reconnecting:
+
+```text
+Verify command
+Verify signature
+Verify expiration
+Verify agent
+Verify policy
+Execute
+Record result
+```
+
+---
+
+# 35. TAMPER DETECTION
+
+The agent should detect unexpected changes to:
+
+```text
+runtime
+configuration
+service/task
+certificate
+agent identity
+security-sensitive files
+```
+
+Generate:
+
+```text
+agent_tamper_detected
+```
+
+telemetry.
+
+Do not automatically overwrite suspicious changes without policy authorization.
+
+---
+
+# 36. TENANT ISOLATION
+
+Every backend operation must enforce:
+
+```text
+authenticated_user
+      ↓
+tenant
+      ↓
+agent
+```
+
+An agent from Tenant A must never:
+
+* receive Tenant B commands
+* access Tenant B inventory
+* submit Tenant B telemetry
+* retrieve Tenant B runtime configuration
+
+Do not rely on frontend filtering.
+
+Enforce tenant isolation at:
+
+* API
+* database
+* query
+* command dispatch
+* agent authentication
+* telemetry ingestion
+
+---
+
+# 37. RBAC
+
+Implement roles such as:
+
+```text
+Platform Administrator
+Security Administrator
+Security Analyst
+Auditor
+Remediation Approver
+Agent Administrator
+Read Only
+```
+
+Separate permissions:
+
+```text
+agent.view
+agent.enroll
+agent.revoke
+agent.configure
+agent.command
+remediation.view
+remediation.create
+remediation.approve
+remediation.execute
+migration.create
+migration.approve
+migration.execute
+audit.view
+```
+
+A user who can create remediation must not automatically be allowed to approve their own high-risk remediation unless explicitly allowed by policy.
+
+---
+
+# 38. FOUR-EYES APPROVAL FOR HIGH-RISK OPERATIONS
+
+Support optional dual approval.
+
+For example:
+
+```text
+Requester
+   ↓
+Approver 1
+   ↓
+Approver 2
+   ↓
+Execution
+```
+
+Use this for high-risk operations such as:
+
+* TLS replacement
+* certificate replacement
+* cryptographic migration
+* security policy changes
+* production service changes
+
+---
+
+# 39. EMERGENCY REMEDIATION
+
+Support an emergency workflow, but require:
+
+* elevated permission
+* explicit justification
+* incident/reference ID
+* timestamp
+* mandatory audit
+* post-action review
+
+Never create a hidden bypass.
+
+---
+
+# 40. AGENT CAPABILITY MANIFEST
+
+Every agent must declare its capabilities.
+
+Example:
+
+```text
+collector
+  inventory.read
+  crypto.read
+  certificate.read
+  tls.read
+
+assessment
+  inventory.read
+  crypto.read
+  compliance.read
+
+patcher
+  inventory.read
+  crypto.read
+  remediation.execute
+
+migration
+  crypto.read
+  migration.plan
+  migration.execute
+```
+
+The backend must compare requested operations against this manifest.
+
+---
+
+# 41. DO NOT TRUST AGENT-DECLARED PRIVILEGES
+
+The agent must not be able to claim:
+
+```text
+role=administrator
+```
+
+and thereby gain privileges.
+
+The backend must maintain the authoritative role.
+
+Agent-provided capabilities are informational.
+
+Server-side authorization is authoritative.
+
+---
+
+# 42. AGENT INSTALLER REDESIGN
+
+The Windows installer should become:
+
+```text
+Qguard Helix Secure Agent Installer
+```
+
+The installer should require:
+
+```text
+Control Plane URL
+Enrollment Token
+Agent Role
+Optional Installation Policy
+```
+
+Do NOT embed a permanent token.
+
+Example:
+
+```text
+Install
+  ↓
+Validate HTTPS control plane
+  ↓
+Validate one-time enrollment token
+  ↓
+Enroll device
+  ↓
+Receive agent identity
+  ↓
+Verify signed runtime
+  ↓
+Install securely
+  ↓
+Start agent
+  ↓
+Send heartbeat
+  ↓
+Confirm enrollment
+```
+
+---
+
+# 43. INSTALLER SECURITY CHECKS
+
+Before installation:
+
+```text
+Administrator?
+HTTPS?
+Supported Windows?
+Supported architecture?
+Valid enrollment?
+Enrollment not expired?
+Enrollment not already used?
+Trusted runtime signature?
+Expected runtime hash?
+Compatible version?
+```
+
+If any security validation fails:
+
+```text
+ABORT INSTALLATION
+```
+
+---
+
+# 44. PRODUCTION INSTALLER MUST NOT EXPOSE SECRETS
+
+Do not print secrets to console.
+
+Do not include tokens in:
+
+```text
+logs
+URLs
+PowerShell output
+error messages
+telemetry
+installer filenames
+temporary filenames
+Windows Event Logs
+```
+
+Avoid putting credentials into command-line arguments because they may be observable by process inspection.
+
+---
+
+# 45. API DESIGN
+
+Review and harden endpoints such as:
+
+```text
+/api/v1/agent-installer/runtime
+/api/v1/agent-installer/self
+/api/v1/agent-installer/installation-event
+```
+
+Introduce a coherent agent API such as:
+
+```text
+/api/v1/agents/enroll
+/api/v1/agents/{agentId}
+/api/v1/agents/{agentId}/heartbeat
+/api/v1/agents/{agentId}/capabilities
+/api/v1/agents/{agentId}/commands
+/api/v1/agents/{agentId}/commands/{commandId}
+/api/v1/agents/{agentId}/telemetry
+/api/v1/agents/{agentId}/revoke
+/api/v1/agent-runtime/releases
+/api/v1/agent-runtime/releases/latest
+```
+
+Use proper HTTP semantics and consistent error responses.
+
+---
+
+# 46. DATABASE MODEL
+
+Review the existing database and create or improve tables for:
+
+```text
+agents
+agent_enrollments
+agent_credentials
+agent_certificates
+agent_heartbeats
+agent_capabilities
+agent_runtime_releases
+agent_commands
+agent_command_results
+remediation_plans
+remediation_approvals
+remediation_executions
+remediation_snapshots
+agent_audit_events
+agent_security_events
+```
+
+Every security-sensitive table must contain appropriate:
+
+```text
+tenant_id
+created_at
+updated_at
+created_by
+```
+
+where applicable.
+
+Implement proper tenant isolation.
+
+---
+
+# 47. REAL-TIME AGENT CENTER
+
+The Agent Center must use real backend state.
+
+Do not fabricate:
+
+```text
+Connected
+Healthy
+Running
+Remediated
+```
+
+Use actual:
+
+* database state
+* heartbeat
+* agent events
+* command results
+* installation events
+* runtime state
+
+If SSE is already used by Qguard Helix, integrate agent events into the existing SSE infrastructure.
+
+---
+
+# 48. AGENT CENTER UI
+
+Provide:
+
+## Agent Overview
+
+```text
+Hostname
+OS
+Version
+Role
+Environment
+Status
+Last Seen
+Health
+```
+
+## Security
+
+```text
+Identity
+Certificate
+Credential State
+Trust Status
+Runtime Signature
+Runtime Hash
+Tamper Status
+```
+
+## Capabilities
+
+Show:
+
+```text
+READ
+REMEDIATE
+MIGRATE
+```
+
+with exact permissions.
+
+## Activity
+
+Show:
+
+```text
+Scans
+Commands
+Remediation
+Updates
+Security Events
+Heartbeat
+```
+
+## Actions
+
+Allow only authorized actions:
+
+```text
+Suspend
+Resume
+Revoke
+Rotate Identity
+Update
+Run Scan
+Create Remediation
+```
+
+---
+
+# 49. REMEDIATION UI
+
+Create a proper remediation workflow.
+
+Example:
+
+```text
+Finding
+   ↓
+Recommended Fix
+   ↓
+Impact
+   ↓
+Affected Assets
+   ↓
+Pre-check
+   ↓
+Remediation Plan
+   ↓
+Approval
+   ↓
+Execution
+   ↓
+Validation
+   ↓
+Result
+```
+
+Display:
+
+```text
+Before
+After
+Expected Result
+Actual Result
+Rollback Status
+```
+
+---
+
+# 50. SECURITY EVENT TYPES
+
+Create standardized events:
+
+```text
+agent_enrolled
+agent_enrollment_failed
+agent_revoked
+agent_heartbeat
+agent_offline
+agent_tamper_detected
+agent_runtime_verified
+agent_runtime_verification_failed
+agent_update_started
+agent_update_completed
+agent_update_failed
+agent_command_received
+agent_command_rejected
+agent_command_replay_detected
+remediation_requested
+remediation_approved
+remediation_rejected
+remediation_started
+remediation_completed
+remediation_failed
+remediation_rolled_back
+```
+
+---
+
+# 51. LOGGING
+
+Implement structured logging.
+
+Every log entry should include useful correlation fields:
+
+```text
+timestamp
+tenant_id
+agent_id
+request_id
+command_id
+event_type
+severity
+result
+```
+
+Never log:
+
+```text
+tokens
+private keys
+passwords
+secrets
+```
+
+Implement secret redaction.
+
+---
+
+# 52. RATE LIMITING
+
+Protect agent APIs against abuse.
+
+Apply limits to:
+
+```text
+enrollment
+heartbeat
+runtime download
+commands
+telemetry
+installation events
+```
+
+Prevent a compromised agent from flooding the control plane.
+
+---
+
+# 53. AGENT REVOCATION
+
+Implement immediate revocation.
+
+When administrator clicks:
+
+```text
+Revoke Agent
+```
+
+the backend must:
+
+```text
+mark agent revoked
+invalidate credentials
+invalidate certificate
+reject heartbeat
+reject commands
+reject telemetry
+```
+
+The Agent Center should display:
+
+```text
+REVOKED
+```
+
+The installer/runtime must not automatically re-register a revoked identity.
+
+---
+
+# 54. CREDENTIAL ROTATION
+
+Implement:
+
+```text
+credential rotation
+certificate rotation
+enrollment rotation
+runtime signing key rotation
+```
+
+with secure overlap periods where necessary.
+
+Do not require reinstalling the entire agent simply to rotate credentials.
+
+---
+
+# 55. CRYPTOGRAPHIC REQUIREMENTS
+
+Align the implementation with the existing Qguard Helix cryptographic architecture.
+
+Prefer:
+
+```text
+AES-256-GCM
+SHA3-256
+SHA3-512
+HKDF-SHA3-256
+HKDF-SHA-256 fallback
+TLS 1.3
+X25519
+ML-KEM
+ML-DSA
+```
+
+Where PQC/hybrid support is applicable, use the project's established:
+
+```text
+Open Quantum Safe liboqs
+OQS-OpenSSL
+```
+
+Do not invent custom cryptography.
+
+Never implement custom encryption algorithms.
+
+---
+
+# 56. SECRETS MANAGEMENT
+
+Production secrets must come from a secure secrets-management mechanism.
+
+Do not commit:
+
+```text
+tokens
+private keys
+API keys
+signing keys
+database credentials
+certificate private keys
+```
+
+into source control.
+
+Development may use `.env` where appropriate, but production must use the platform's secure secret storage.
+
+---
+
+# 57. SECURITY TESTING
+
+Create automated tests for:
+
+## Enrollment
+
+* valid token
+* expired token
+* reused token
+* wrong tenant
+* wrong role
+* revoked enrollment
+* malformed token
+
+## Authentication
+
+* invalid credential
+* revoked agent
+* wrong certificate
+* expired certificate
+* wrong tenant
+
+## Commands
+
+* valid command
+* expired command
+* invalid signature
+* replay
+* wrong agent
+* wrong tenant
+* unauthorized operation
+* unsupported capability
+
+## Remediation
+
+* pre-check failure
+* approval rejection
+* execution failure
+* validation failure
+* successful rollback
+
+## Runtime
+
+* valid signature
+* invalid signature
+* hash mismatch
+* unsupported version
+* corrupted runtime
+
+## Security
+
+* privilege escalation
+* tenant isolation
+* secret leakage
+* authorization bypass
+* command injection
+* path traversal
+* SSRF
+* replay attack
+
+---
+
+# 58. NEVER USE MOCKS TO SATISFY TESTS
+
+If the existing implementation has mocks or placeholder APIs:
+
+* identify them
+* replace them with actual implementations where required
+* do not simply make tests pass by changing assertions
+
+The goal is functional production behavior.
+
+---
+
+# 59. BACKWARD COMPATIBILITY
+
+Preserve currently working functionality wherever possible.
+
+If an existing endpoint must change:
+
+1. Implement the secure replacement.
+2. Update all consumers.
+3. Add migration compatibility where necessary.
+4. Remove insecure paths only after confirming no remaining references.
+
+Search the entire codebase for old endpoints.
+
+---
+
+# 60. DEVELOPER EXPERIENCE
+
+Provide:
+
+```text
+.env.example
+```
+
+with safe placeholders.
+
+Example:
+
+```text
+QGUARD_ENVIRONMENT=development
+QGUARD_CONTROL_PLANE_URL=http://localhost:3000
+```
+
+Production configuration must be separate.
+
+Document:
+
+```text
+Development
+Staging
+Production
+```
+
+installation procedures.
+
+---
+
+# 61. PRODUCTION CONFIGURATION
+
+Production must resemble:
+
+```text
+QGUARD_ENVIRONMENT=production
+QGUARD_CONTROL_PLANE_URL=https://api.qguardhelix.com
+```
+
+Never:
+
+```text
+QGUARD_ENVIRONMENT=production
+QGUARD_CONTROL_PLANE_URL=http://localhost:3000
+```
+
+Add startup validation that fails fast if production configuration is insecure.
+
+---
+
+# 62. SECURITY FAIL-CLOSED REQUIREMENT
+
+When security verification fails:
+
+```text
+DO NOT EXECUTE
+DO NOT REMEDIATE
+DO NOT MIGRATE
+DO NOT ACCEPT COMMAND
+```
+
+Examples:
+
+```text
+Invalid signature → reject
+Expired command → reject
+Unknown agent → reject
+Revoked agent → reject
+Wrong tenant → reject
+Unsupported capability → reject
+Invalid TLS → reject
+Runtime hash mismatch → abort
+```
+
+Never silently downgrade security.
+
+---
+
+# 63. FRONTEND REQUIREMENTS
+
+Review all Agent Center pages and ensure:
+
+* real data
+* real API hooks
+* loading states
+* empty states
+* error states
+* authorization checks
+* tenant filtering
+* SSE updates
+* command status
+* remediation status
+* audit events
+* agent health
+
+Do not display success states unless backed by actual backend evidence.
+
+---
+
+# 64. API / BACKEND REQUIREMENTS
+
+Every API must implement:
+
+```text
+authentication
+authorization
+tenant isolation
+validation
+rate limiting
+audit logging
+structured errors
+correlation IDs
+```
+
+Avoid trusting:
+
+```text
+tenant_id
+agent_id
+role
+user_id
+```
+
+provided solely by the client.
+
+Resolve authoritative identity from authenticated credentials.
+
+---
+
+# 65. NEXT.JS REQUIREMENTS
+
+If the existing Qguard Helix frontend uses Next.js App Router:
+
+* follow the existing project architecture
+* use Server Components where appropriate
+* use Client Components only where interactivity requires them
+* keep secrets server-side
+* do not expose agent credentials to browser JavaScript
+* do not place privileged agent operations directly in client-side code
+* use secure server-side API boundaries
+* preserve existing routing and UI conventions
+
+Do not expose:
+
+```text
+AgentToken
+private keys
+signing keys
+backend secrets
+service credentials
+```
+
+to the browser.
+
+---
+
+# 66. REQUIRED SECURITY ARCHITECTURE
+
+The resulting system should follow:
+
+```text
+                         QGUARD HELIX
+                         CONTROL PLANE
+                              │
+                ┌─────────────┴─────────────┐
+                │                           │
+          Agent Center                 Policy Engine
+                │                           │
+                └─────────────┬─────────────┘
+                              │
+                       Secure API / mTLS
+                              │
+                    ┌─────────▼─────────┐
+                    │  Agent Identity   │
+                    │                   │
+                    │ Tenant            │
+                    │ Agent ID          │
+                    │ Certificate       │
+                    │ Capability        │
+                    └─────────┬─────────┘
+                              │
+                     ┌────────▼────────┐
+                     │ Qguard Agent    │
+                     │                 │
+                     │ Collector       │
+                     │ Assessment      │
+                     │ Patcher         │
+                     │ Migration       │
+                     │ Telemetry       │
+                     │ Local Queue     │
+                     │ Integrity Guard │
+                     └────────┬────────┘
+                              │
+               ┌──────────────┴──────────────┐
+               │                             │
+          READ OPERATIONS               WRITE OPERATIONS
+               │                             │
+       Inventory / Crypto             Signed Command
+       TLS / PKI / Runtime                  │
+               │                       Approval
+               │                            │
+               │                       Pre-check
+               │                            │
+               │                       Backup
+               │                            │
+               │                         Patch
+               │                            │
+               │                       Validation
+               │                            │
+               │                       Rollback
+               │
+               └──────────────┬──────────────┘
+                              │
+                         Audit Trail
+```
+
+---
+
+# 67. IMPLEMENTATION PRIORITY
+
+Implement in this order:
+
+## Phase 1 — Security Foundation
+
+* environment separation
+* HTTPS
+* secure configuration
+* secret management
+* tenant isolation
+* agent identity
+
+## Phase 2 — Enrollment
+
+* one-time enrollment
+* device binding
+* credential issuance
+* credential rotation
+* revocation
+
+## Phase 3 — Runtime Security
+
+* signed runtime
+* SHA-256
+* release manifest
+* runtime verification
+* secure updates
+* rollback
+
+## Phase 4 — Agent Roles
+
+* collector
+* assessment
+* patcher
+* migration
+* capability enforcement
+
+## Phase 5 — Secure Commands
+
+* typed commands
+* command signatures
+* expiration
+* nonce
+* replay protection
+* authorization
+
+## Phase 6 — Remediation
+
+* remediation plans
+* approval
+* pre-check
+* backup
+* execution
+* validation
+* rollback
+
+## Phase 7 — Observability
+
+* heartbeat
+* agent health
+* audit events
+* security events
+* SSE
+* Agent Center
+
+## Phase 8 — Hardening
+
+* tamper detection
+* rate limiting
+* penetration testing
+* authorization testing
+* tenant isolation testing
+* secret leakage testing
+
+---
+
+# 68. REQUIRED DELIVERABLES
+
+After implementation, provide:
+
+### Backend
+
+* API changes
+* database migrations
+* authentication changes
+* authorization changes
+* agent enrollment
+* agent identity
+* command system
+* remediation engine
+* audit system
+
+### Agent
+
+* secure enrollment
+* secure identity
+* runtime verification
+* heartbeat
+* capability enforcement
+* command verification
+* remediation execution
+* rollback
+* update mechanism
+
+### Windows Installer
+
+* secure production installer
+* no permanent embedded token
+* HTTPS
+* enrollment flow
+* runtime signature verification
+* SHA-256 verification
+* secure local storage
+* uninstall/revocation behavior
+
+### Frontend
+
+* Agent Center
+* enrollment UI
+* agent status
+* capability view
+* command history
+* remediation workflow
+* approvals
+* audit history
+* security events
+
+### Documentation
+
+Create/update:
+
+```text
+AGENT_SECURITY.md
+AGENT_ENROLLMENT.md
+AGENT_ARCHITECTURE.md
+AGENT_REMEDIATION.md
+AGENT_ROLES.md
+AGENT_DEPLOYMENT.md
+AGENT_OPERATIONS.md
+```
+
+---
+
+# 69. FINAL VALIDATION
+
+Before considering the implementation complete, perform a repository-wide verification.
+
+Search for:
+
+```text
+http://localhost:3000
+$AgentToken =
+QGUARD_AGENT_TOKEN=
+hardcoded qga_
+TrustAllCertificates
+DisableCertificateValidation
+powershell -Command
+cmd.exe
+node -e
+execute arbitrary command
+```
+
+Any production path containing insecure behavior must be reviewed and removed or explicitly isolated to development.
+
+Verify:
+
+```text
+Production → HTTPS
+Enrollment → short-lived
+Agent identity → device-bound
+Runtime → signed
+Runtime → SHA-256 verified
+Commands → signed
+Commands → replay protected
+Commands → capability checked
+Remediation → approval controlled
+Remediation → pre-check
+Remediation → backup
+Remediation → validation
+Remediation → rollback
+Agents → tenant isolated
+Secrets → protected
+Revocation → immediate
+Audit → complete
+```
+
+---
+
+# 70. IMPORTANT IMPLEMENTATION RULE
+
+Do not simply modify the PowerShell installer.
+
+This task requires an **end-to-end architecture change** across:
+
+```text
+Frontend
+   ↕
+API
+   ↕
+Authentication
+   ↕
+Database
+   ↕
+Agent Center
+   ↕
+Enrollment
+   ↕
+Agent Runtime
+   ↕
+Windows
+```
+
+The system must remain fully functional after the refactor.
+
+Do not create placeholder implementations merely to satisfy the UI.
+
+Do not create fake telemetry.
+
+Do not report an agent as connected without an actual heartbeat.
+
+Do not report remediation as successful without actual validation evidence.
+
+Do not expose secrets to the frontend.
+
+Do not permit arbitrary remote command execution.
+
+Do not bypass existing security controls.
+
+Do not weaken existing Qguard Helix cryptographic requirements.
+
+---
+
+# 71. DEFINITION OF DONE
+
+The implementation is complete only when all of the following are true:
+
+```text
+[ ] Production agents never use localhost
+[ ] Production agents never use HTTP
+[ ] Enrollment tokens are short-lived
+[ ] Enrollment tokens are single-use
+[ ] Permanent credentials are not embedded in installers
+[ ] Agent identity is device-bound
+[ ] Agent revocation works
+[ ] Runtime signature verification works
+[ ] SHA-256 verification works
+[ ] Runtime update verification works
+[ ] Agent roles are enforced server-side
+[ ] Collector is read-only
+[ ] Assessment is read-only
+[ ] Patcher has controlled write permissions
+[ ] Migration is separated from patching
+[ ] Arbitrary command execution is prohibited
+[ ] Commands are cryptographically authenticated
+[ ] Commands expire
+[ ] Commands are replay protected
+[ ] Tenant isolation is enforced
+[ ] RBAC is enforced
+[ ] High-risk remediation requires approval
+[ ] Pre-check works
+[ ] Backup/snapshot works
+[ ] Validation works
+[ ] Rollback works
+[ ] Agent heartbeat works
+[ ] Agent health is based on real telemetry
+[ ] Agent Center uses real backend data
+[ ] Audit trail is complete
+[ ] Sensitive data is redacted
+[ ] Secrets are protected
+[ ] Tamper detection exists
+[ ] Rate limiting exists
+[ ] Automated security tests pass
+[ ] Production configuration passes security validation
+[ ] No insecure localhost production dependency remains
+```
+
+Finally, run the complete build, type checking, linting, database migration validation, backend tests, frontend tests, agent tests, and security tests.
+
+Fix all discovered errors rather than merely reporting them.
+
+The final result must be a cohesive, production-ready Qguard Helix Secure Agent architecture with strong tenant isolation, least privilege, cryptographic trust, controlled remediation, complete auditability, and secure lifecycle management.

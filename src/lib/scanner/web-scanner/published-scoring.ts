@@ -41,6 +41,7 @@ import {
   weightedCategoryScore,
 } from '../public-scan/grading-model'
 import { measuredKeyAgreement, type EdgeIntelligence, type MeasuredKeyAgreement } from './edge-intelligence-model'
+import { reconcileTransport } from './transport-truth'
 import type {
   ApiSecurityResult,
   CertificateInfo,
@@ -208,15 +209,23 @@ function forwardSecrecy(
   kem: MeasuredKeyAgreement,
 ): { score: number; observed: string } | null {
   if (!tls) return null
-  const ephemeral =
-    kem.kemApplied ||
-    edge?.transport.forwardSecrecy === true ||
-    Boolean(tls.ephemeralKeyType) ||
-    /ECDHE|DHE|X25519|X448|ML-KEM|Kyber/i.test(tls.keyExchange || '')
+
+  /* Reconciled through the shared reading rather than re-derived here.
+     This function and two dashboard panels each had their own fallback chain,
+     and on a TLS 1.3 endpoint whose named-group probe timed out they published
+     100, "Not offered" and "Not observed" simultaneously. */
+  const truth = reconcileTransport(tls, edge, kem)
+
+  /* Not measured returns null, which redistributes the weight — the same
+     treatment every other unmeasured dimension gets. Scoring an unmeasured
+     control as 100 was the half of the contradiction that flattered the target. */
+  if (!truth.forwardSecrecy.measured) return null
+
+  const ephemeral = truth.forwardSecrecy.value === true
   const staticRsa = (tls.cipherSuites ?? []).filter(
     (suite) => STATIC_RSA_PATTERN.test(suite.name) || suite.category === 'rsa-kex',
   )
-  const staticRsaAccepted = staticRsa.length > 0 || edge?.transport.staticRsaAccepted === true
+  const staticRsaAccepted = truth.staticRsaAccepted.value === true
   const label = kem.group ?? tls.keyExchange ?? 'ephemeral'
   if (!ephemeral) return { score: 0, observed: 'no ephemeral key agreement' }
   // Preferring ECDHE while still accepting static-RSA key transport is not full
