@@ -1,0 +1,103 @@
+# Implement Premium Real-Time Quantum Vulnerability Scanning Animation
+
+Kindly use Clone and Copy exactly the provided reference image an interactive and animated scanning visualization** for the pages below.
+
+## Target Pages
+
+Implement this on:
+
+* `http://localhost:3000/dashboard/scanner?mode=local`
+* `http://localhost:3000/dashboard/scanner?mode=dev`
+
+## Behavior
+
+When the user clicks the **Start Scan** button, display the scanning animation directly **below the Target Address/Configuration bar**.
+
+The animation must be connected to the **actual scanner lifecycle and real-time scan results**.
+
+## Visual Requirements
+
+Create a premium and interactive scanning environment featuring:
+
+* 🔍 A moving **magnifying glass** that actively scans files, code, repositories, and cryptographic data.
+* 💻 Animated **binary streams** moving dynamically in the background.
+* 🔐 Moving and animated **encrypted text and cryptographic algorithms**, such as RSA, ECC, TLS, SHA, AES, certificates, keys, and PQC algorithms.
+* ⚡ Scanning pulses and visual effects when cryptographic assets or vulnerabilities are detected.
+* 📊 Real-time scan progress and live metrics.
+* 🚨 Live findings appearing as the scanner detects actual vulnerabilities.
+
+Example live activity:
+
+```text
+✓ Discovering files
+✓ Analyzing dependencies
+● Detecting cryptographic algorithms
+● Inspecting certificates
+○ Validating vulnerabilities
+```
+
+## Real-Time Accuracy
+
+**Important:** The visualization must reflect actual scanner activity.
+
+* Use real scan events and backend data.
+* Display actual findings, files, algorithms, certificates, and metrics.
+* Do NOT generate fake vulnerabilities or fabricated scan results.
+* If exact percentage progress is unavailable, use real scan stages instead.
+
+## Technology
+
+Use the most suitable modern technology, preferably:
+
+* Three.js / WebGL
+* React Three Fiber
+* Framer Motion
+* Canvas
+
+The animation should be smooth, performant, and optimized for enterprise use.
+
+## Interaction
+
+Users should be able to:
+
+* Hover over detected cryptographic artifacts.
+* View finding details and evidence.
+* Click findings to open the corresponding scan result.
+
+## Local and Dev Scanner Support
+
+### Local Mode
+
+Visualize scanning of:
+
+* Files and directories
+* Source code
+* Certificates and keys
+* Cryptographic libraries
+* Dependencies
+* Application binaries
+
+### Dev Mode
+
+Visualize scanning of:
+
+* Git repositories
+* Source code
+* Dependencies
+* Package manifests
+* CI/CD configurations
+* Docker and Kubernetes files
+* Cryptographic APIs and libraries
+
+## Final Requirements
+
+* Create a reusable component for both Local and Dev Scanner modes.
+* Show the animation only while an actual scan is running.
+* Connect it to real-time scanner events using the existing SSE, WebSocket, or API infrastructure.
+* Handle scan completion, errors, and cancellation properly.
+* Optimize performance and support reduced-motion users.
+* Ensure the design aligns with the **Qguard Helix premium, elegant, futuristic, and enterprise-grade UI**.
+
+### Final Goal
+
+The result should feel like a **real-time Quantum Vulnerability Scanning Engine**, not just a loading animation—visually showing the scanner actively discovering, analyzing, validating, and detecting cryptographic vulnerabilities in real time.

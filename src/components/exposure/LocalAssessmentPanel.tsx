@@ -36,9 +36,10 @@ import {
   FindingExplorer,
   QuantumExposureSummary,
   ScanEngineSelector,
-  ScanProfileSelector,
+  ScanProfileRail,
 } from './shared';
 import { EngineHealthPanel, ScannerIntelligenceSection } from './ScannerIntelligence';
+import { ScanTheatre, formatBytes, type TheatreStatus } from './ScanTheatre';
 import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
@@ -79,6 +80,11 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
   const [syncState, setSyncState] = React.useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [syncError, setSyncError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  /* The live scan theatre is dismissible once the scan settles; a new run
+     always brings it back. */
+  const [theatreHidden, setTheatreHidden] = React.useState(false);
+  const theatreRef = React.useRef<HTMLDivElement>(null);
+  const resultsRef = React.useRef<HTMLDivElement>(null);
 
   const profiles = React.useMemo(() => profilesForMode('local'), []);
   const registry = useScannerEngines('local');
@@ -116,6 +122,29 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
   }, [scan.assessment, onSync]);
 
   const busy = scan.state === 'authorizing' || scan.state === 'collecting' || scan.state === 'scanning';
+
+  /* ── live scan theatre (§ Scanning UI/UX) ──────────────────────────────
+     Shown from the moment the operator starts a run, and driven entirely by
+     the hook: the worker is the only thing that can move it. */
+  const theatreStatus: TheatreStatus | null =
+    scan.state === 'scanning' ? 'scanning'
+      : scan.state === 'complete' ? 'complete'
+        : scan.state === 'cancelled' ? 'cancelled'
+          : scan.state === 'error' && scan.startedAt !== null ? 'error'
+            : null;
+  const theatreVisible = theatreStatus !== null && !theatreHidden;
+
+  /* A scan that has just started deserves the operator's eye. The stage is
+     brought into view once per run, and never under reduced motion rules the
+     browser is enforcing for the user. */
+  React.useEffect(() => {
+    if (scan.state !== 'scanning') return;
+    setTheatreHidden(false);
+    const node = theatreRef.current;
+    if (!node) return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    node.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  }, [scan.state]);
 
   /* Locked: show the mode in full, minus the controls that would run it.
      Rendered after every hook above has run, so the hook order is stable
@@ -295,98 +324,6 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
               </div>
             )}
           </div>
-
-          {/* ── profile + engines ────────────────────────────────────────── */}
-          {scan.collection && (
-            <>
-              <div className="border-t border-white/[0.06] px-5 py-4">
-                <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.18em] text-slate-500">Scan profile</p>
-                <div className="mt-2.5">
-                  <ScanProfileSelector
-                    profiles={profiles}
-                    value={profileId}
-                    onChange={setProfileId}
-                    suggested={scan.plan?.suggestedProfile ?? null}
-                  />
-                </div>
-              </div>
-
-              <div className="border-t border-white/[0.06]">
-                <button
-                  type="button"
-                  onClick={() => setShowAdvanced((current) => !current)}
-                  aria-expanded={showAdvanced}
-                  className="flex w-full items-center justify-between gap-2 px-5 py-3 text-left transition-colors hover:bg-white/[0.02]"
-                >
-                  <span className="flex items-center gap-2 text-[12.5px] font-bold text-slate-300">
-                    <Settings2 className="h-3.5 w-3.5" /> Engines and exclusions
-                  </span>
-                  <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', showAdvanced && 'rotate-180')} />
-                </button>
-
-                <AnimatePresence initial={false}>
-                  {showAdvanced && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.28 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="space-y-4 px-5 pb-5">
-                        {profileId !== 'custom' && (
-                          <p className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11.5px] leading-relaxed text-slate-400">
-                            The <strong className="font-bold text-slate-200">{profiles.find((entry) => entry.id === profileId)?.label}</strong>{' '}
-                            profile will run {resolvedEngines.length} engine{resolvedEngines.length === 1 ? '' : 's'}. Switch
-                            to <strong className="font-bold text-slate-200">Custom</strong> to choose them individually.
-                          </p>
-                        )}
-
-                        <ScanEngineSelector
-                          engines={engines}
-                          selected={profileId === 'custom' ? customEngines : new Set(resolvedEngines)}
-                          onToggle={(id) => {
-                            setProfileId('custom');
-                            setCustomEngines((current) => {
-                              const next = new Set(current.size ? current : resolvedEngines);
-                              if (next.has(id)) next.delete(id);
-                              else next.add(id);
-                              return next;
-                            });
-                          }}
-                          recommended={recommendedMap}
-                        />
-
-                        <ExclusionEditor exclusions={exclusions} onChange={setExclusions} />
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              <div className="border-t border-white/[0.06] px-5 py-4">
-                <button
-                  type="button"
-                  disabled={busy || scan.state === 'scanning'}
-                  onClick={() => scan.start({ profileId, customEngines: [...customEngines], exclusions })}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-3 text-[14px] font-black text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {scan.state === 'scanning' ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" /> Assessing {scan.progress}%
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-4 w-4" /> Start local assessment
-                    </>
-                  )}
-                </button>
-                <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
-                  {resolvedEngines.length} engines · {scan.collection.files.length.toLocaleString()} files in scope
-                </p>
-              </div>
-            </>
-          )}
         </Panel>
 
         {/* ── rail ─────────────────────────────────────────────────────── */}
@@ -407,8 +344,156 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
         </div>
       </div>
 
+      {/* ── profile + launch ───────────────────────────────────────────────
+           Full width, deliberately. Ten profiles stacked two-across inside the
+           configuration column pushed the start button below the fold, so
+           choosing a profile and running it became two separate journeys.
+           Across the whole page they are one band: pick, read, launch.
+
+           Still gated on a collection: a profile describes what will be read,
+           and until a folder is authorised there is nothing to read. */}
+      {scan.collection && (
+        <Panel className="overflow-hidden" glow={scan.state !== 'scanning' && !busy}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
+            <SectionLabel>Scan Profile</SectionLabel>
+            <span className="font-mono text-[10px] text-slate-500">
+              {profiles.length} profiles · {engines.length} engines available
+            </span>
+          </div>
+
+          <div className="px-5 py-4">
+            <ScanProfileRail
+              profiles={profiles}
+              value={profileId}
+              onChange={setProfileId}
+              suggested={scan.plan?.suggestedProfile ?? null}
+              engineCount={resolvedEngines.length}
+              launchSlot={
+                <div className="flex h-full flex-col justify-center rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
+                  <button
+                    type="button"
+                    disabled={busy || scan.state === 'scanning'}
+                    onClick={() => scan.start({ profileId, customEngines: [...customEngines], exclusions })}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-3 text-[13.5px] font-black leading-tight text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {scan.state === 'scanning' ? (
+                      <>
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin" /> Assessing {scan.progress}%
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-4 w-4 shrink-0" /> Start local assessment
+                      </>
+                    )}
+                  </button>
+                  <p className="mt-2 truncate text-center font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
+                    {scan.collection.rootName}
+                  </p>
+                  <p className="mt-0.5 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
+                    {scan.collection.files.length.toLocaleString()} files in scope
+                  </p>
+                </div>
+              }
+            />
+          </div>
+
+          <div className="border-t border-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((current) => !current)}
+              aria-expanded={showAdvanced}
+              className="flex w-full items-center justify-between gap-2 px-5 py-3 text-left transition-colors hover:bg-white/[0.02]"
+            >
+              <span className="flex items-center gap-2 text-[12.5px] font-bold text-slate-300">
+                <Settings2 className="h-3.5 w-3.5" /> Engines and exclusions
+              </span>
+              <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', showAdvanced && 'rotate-180')} />
+            </button>
+
+            <AnimatePresence initial={false}>
+              {showAdvanced && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.28 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-4 px-5 pb-5">
+                    {profileId !== 'custom' && (
+                      <p className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11.5px] leading-relaxed text-slate-400">
+                        The <strong className="font-bold text-slate-200">{profiles.find((entry) => entry.id === profileId)?.label}</strong>{' '}
+                        profile will run {resolvedEngines.length} engine{resolvedEngines.length === 1 ? '' : 's'}. Switch
+                        to <strong className="font-bold text-slate-200">Custom</strong> to choose them individually.
+                      </p>
+                    )}
+
+                    <ScanEngineSelector
+                      engines={engines}
+                      selected={profileId === 'custom' ? customEngines : new Set(resolvedEngines)}
+                      onToggle={(id) => {
+                        setProfileId('custom');
+                        setCustomEngines((current) => {
+                          const next = new Set(current.size ? current : resolvedEngines);
+                          if (next.has(id)) next.delete(id);
+                          else next.add(id);
+                          return next;
+                        });
+                      }}
+                      recommended={recommendedMap}
+                    />
+
+                    <ExclusionEditor exclusions={exclusions} onChange={setExclusions} />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </Panel>
+      )}
+
+      {/* ── live scan theatre ──────────────────────────────────────────────
+           Directly below the target and configuration surface, so the run the
+           operator just authorised is the next thing they see. */}
+      {theatreVisible && theatreStatus && (
+        <div ref={theatreRef} className="scroll-mt-24">
+          <ScanTheatre
+            mode="local"
+            status={theatreStatus}
+            progress={scan.progress}
+            runs={scan.runs}
+            findings={scan.findings}
+            telemetry={scan.telemetry}
+            currentStep={scan.currentStep}
+            startedAt={scan.startedAt}
+            streamOpen={scan.streamOpen}
+            target={{
+              label: scan.collection?.rootName ?? scan.fingerprint?.rootName ?? 'Authorised folder',
+              detail: scan.collection ? `${scan.collection.files.length.toLocaleString()} files in scope` : null,
+            }}
+            /* Local knows exactly how many bytes it read, because it read them. */
+            volume={
+              scan.collection
+                ? {
+                    label: 'Data analysed',
+                    value: formatBytes(scan.collection.stats.totalBytes),
+                    sublabel: `${scan.collection.stats.read.toLocaleString()} files read`,
+                  }
+                : null
+            }
+            assessment={scan.assessment}
+            knowledgeBase={registry.knowledgeBase}
+            engineHealth={registry.engines}
+            error={scan.error}
+            onCancel={scan.cancel}
+            onViewAll={() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            onDismiss={() => setTheatreHidden(true)}
+          />
+        </div>
+      )}
+
       {/* ── error ──────────────────────────────────────────────────────── */}
-      {scan.error && (
+      {scan.error && !theatreVisible && (
         <div className="flex items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-500/[0.07] px-4 py-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
           <p className="text-[12.5px] leading-relaxed text-rose-100/85">{scan.error}</p>
@@ -417,7 +502,7 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
 
       {/* ── results ────────────────────────────────────────────────────── */}
       {scan.assessment && (
-        <div className="space-y-5">
+        <div ref={resultsRef} className="space-y-5 scroll-mt-24">
           <AssessmentStatusBar
             assessment={scan.assessment}
             onReset={scan.reset}
@@ -526,11 +611,13 @@ function ExclusionEditor({ exclusions, onChange }: { exclusions: ScanExclusions;
   );
 }
 
+/** The Engine Ledger before there is anything to record. Titled to match the
+ *  ledger it becomes, so the rail does not rename itself mid-workflow. */
 function LocalEmptyRail() {
   return (
     <Panel className="overflow-hidden">
       <div className="border-b border-white/[0.06] px-4 py-3">
-        <SectionLabel>Scanner Engines</SectionLabel>
+        <SectionLabel>Engine Ledger</SectionLabel>
       </div>
       <div className="px-4 py-6 text-center">
         <MonitorSmartphone aria-hidden className="mx-auto h-7 w-7 text-slate-700" />

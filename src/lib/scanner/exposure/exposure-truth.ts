@@ -41,7 +41,7 @@ import type { ExposureAssessment, ExposureFinding, FindingSeverity, QuantumStatu
 
 /* ─────────────────────────────────────────────────────────────── the shape ── */
 
-export type CountUnit = 'component' | 'finding';
+export type CountUnit = 'component' | 'finding' | 'exposure';
 
 export interface QuantumCounts {
   vulnerable: number;
@@ -63,6 +63,18 @@ export interface ExposureTruth {
    */
   components: QuantumCounts;
   findings: QuantumCounts;
+  /**
+   * The THIRD unit, and the one every risk score is computed in.
+   *
+   * Correlation merges findings that are one underlying issue, so a scan with
+   * 15 findings can hold 13 exposures. `computeScores` weighs EXPOSURES, which
+   * is why a panel showing finding severities beside a risk score appears to
+   * contradict it. Published here so no panel has to guess, and so the two
+   * populations can never be tallied independently and drift.
+   */
+  exposures: QuantumCounts;
+  /** Exposure severities — the population the risk scores are weighted over. */
+  exposureSeverity: Record<FindingSeverity, number>;
 
   /**
    * Post-quantum readiness.
@@ -96,6 +108,14 @@ export interface ExposureTruth {
    * difference reading as a bug.
    */
   unitNote: string | null;
+
+  /**
+   * One sentence naming the population the risk scores were computed over, and
+   * how it relates to the finding counts a reader sees beside them. Always
+   * present once there is anything to score — this is the sentence that stops
+   * "1 critical" next to "99/100" reading as a defect.
+   */
+  scoreUnitNote: string | null;
 }
 
 /* ──────────────────────────────────────────────────────────────── counting ── */
@@ -132,6 +152,7 @@ function tally(statuses: QuantumStatus[]): QuantumCounts {
 export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth {
   const components = tally(assessment.cbom.map((entry) => entry.quantumStatus));
   const findings = tally(assessment.findings.map((entry) => entry.quantumStatus));
+  const exposures = tally(assessment.exposures.map((entry) => entry.quantumStatus));
 
   /* Readiness is a share of COMPONENTS, always. Computing it over findings
      would make an estate look worse the more thoroughly it was scanned, since
@@ -153,6 +174,15 @@ export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth
     severity[finding.severity] = (severity[finding.severity] ?? 0) + 1;
   }
   const actionable = assessment.findings.filter((finding) => finding.severity !== 'info').length;
+
+  /* Tallied HERE rather than in risk.ts, so the panel that renders a score and
+     the model that computes it are counting the same rows. */
+  const exposureSeverity: Record<FindingSeverity, number> = {
+    critical: 0, high: 0, medium: 0, low: 0, info: 0,
+  };
+  for (const exposure of assessment.exposures) {
+    exposureSeverity[exposure.severity] = (exposureSeverity[exposure.severity] ?? 0) + 1;
+  }
 
   const incompleteEngines = assessment.task.runs
     .filter((run) => run.state === 'failed' || run.state === 'cancelled')
@@ -190,9 +220,20 @@ export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth
       ? `Quantum Exposure counts ${components.vulnerable} vulnerable ${components.vulnerable === 1 ? 'COMPONENT' : 'COMPONENTS'} — one cryptographic primitive in one place, the unit a migration replaces. Findings counts ${findings.vulnerable} vulnerable ${findings.vulnerable === 1 ? 'FINDING' : 'FINDINGS'} — the unit work is triaged in. Several findings can attach to one component, so the two differ by design.`
       : null;
 
+  /* Always stated once anything was scored. Unlike `unitNote`, this is not
+     conditional on the numbers differing: a reader looking at a risk score is
+     entitled to know what it was computed over even when the two populations
+     happen to coincide. */
+  const scoreUnitNote = assessment.exposures.length > 0
+    ? `Risk scores are computed over CORRELATED EXPOSURES, not raw findings: ${assessment.findings.length} finding${assessment.findings.length === 1 ? '' : 's'} correlated into ${assessment.exposures.length} exposure${assessment.exposures.length === 1 ? '' : 's'} (${describeSeverity(exposureSeverity)}). Each is weighted by severity and discounted by detection confidence, so a small number of high-severity exposures can produce a high score.`
+    : null;
+
   return {
     components,
     findings,
+    exposures,
+    exposureSeverity,
+    scoreUnitNote,
     readiness,
     readinessReason,
     readinessUnit: 'component',
@@ -207,10 +248,17 @@ export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth
 
 /* ─────────────────────────────────────────────────────── display helpers ──── */
 
-/** "5 components" / "12 findings" — the unit, always said out loud. */
+/** "1 critical, 8 high, 2 medium" — omitting the bands with no members. */
+export function describeSeverity(counts: Record<FindingSeverity, number>): string {
+  const parts = (['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[])
+    .filter((severity) => counts[severity] > 0)
+    .map((severity) => `${counts[severity]} ${severity}`);
+  return parts.length ? parts.join(', ') : 'none';
+}
+
+/** "5 components" / "12 findings" / "13 exposures" — the unit, said out loud. */
 export function withUnit(count: number, unit: CountUnit): string {
-  const noun = unit === 'component' ? 'component' : 'finding';
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
 }
 
 /**

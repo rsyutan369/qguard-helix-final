@@ -37,9 +37,10 @@ import {
   FindingExplorer,
   QuantumExposureSummary,
   ScanEngineSelector,
-  ScanProfileSelector,
+  ScanProfileRail,
 } from './shared';
 import { EngineHealthPanel, ScannerIntelligenceSection } from './ScannerIntelligence';
+import { ScanTheatre, type TheatreStatus } from './ScanTheatre';
 import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
@@ -98,6 +99,11 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
   const [regions, setRegions] = React.useState<Set<string>>(new Set());
   const [showConnect, setShowConnect] = React.useState(false);
   const [syncState, setSyncState] = React.useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  /* The live scan theatre is dismissible once the scan settles; a new run
+     always brings it back. */
+  const [theatreHidden, setTheatreHidden] = React.useState(false);
+  const theatreRef = React.useRef<HTMLDivElement>(null);
+  const resultsRef = React.useRef<HTMLDivElement>(null);
 
   const profiles = React.useMemo(() => profilesForMode('dev'), []);
   const registry = useScannerEngines('dev');
@@ -110,6 +116,55 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
   const busy = scan.state === 'starting' || scan.state === 'scanning';
   const validation = scan.validation;
   const canStart = Boolean(repositoryUrl.trim()) || selectedConnections.size > 0;
+
+  /* ── live scan theatre (§ Scanning UI/UX) ──────────────────────────────
+     Driven entirely by the SSE stream: nothing here can move without a real
+     frame from the server. */
+  const theatreStatus: TheatreStatus | null =
+    scan.state === 'starting' ? 'starting'
+      : scan.state === 'scanning' ? 'scanning'
+        : scan.state === 'complete' ? 'complete'
+          : scan.state === 'cancelled' ? 'cancelled'
+            : scan.state === 'error' && scan.startedAt !== null ? 'error'
+              : null;
+  const theatreVisible = theatreStatus !== null && !theatreHidden;
+
+  /* The corpus tile only exists once Repository Discovery has reported real
+     unit counts. Before that the theatre says "not measured" rather than
+     guessing at a repository it has not finished reading. */
+  const corpus = React.useMemo(() => {
+    const discovery = scan.runs.find((run) => run.engineId === 'repository-discovery');
+    if (!discovery?.units || discovery.units.total <= 0) return null;
+    return {
+      label: 'Corpus',
+      value: `${discovery.units.done.toLocaleString()} / ${discovery.units.total.toLocaleString()}`,
+      sublabel: `${discovery.units.unit} collected`,
+    };
+  }, [scan.runs]);
+
+  const theatreTarget = React.useMemo(() => {
+    const repository = repositoryUrl.trim();
+    if (repository) {
+      const reference = scan.validation?.ref;
+      return {
+        label: reference ? `${reference.owner}/${reference.repo}` : repository,
+        detail: scan.validation?.defaultBranch ? `branch ${branch.trim() || scan.validation.defaultBranch}` : null,
+      };
+    }
+    const chosen = connections.filter((connection) => selectedConnections.has(connection.id));
+    if (chosen.length === 1) return { label: chosen[0].label, detail: chosen[0].kind };
+    if (chosen.length > 1) return { label: `${chosen.length} connected environments`, detail: null };
+    return { label: 'Development target', detail: null };
+  }, [repositoryUrl, branch, scan.validation, connections, selectedConnections]);
+
+  React.useEffect(() => {
+    if (scan.state !== 'scanning' && scan.state !== 'starting') return;
+    setTheatreHidden(false);
+    const node = theatreRef.current;
+    if (!node) return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    node.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  }, [scan.state]);
 
   const activeConnections = React.useMemo(
     () => connections.filter((connection) => selectedConnections.has(connection.id)),
@@ -398,93 +453,6 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
               )}
             </AnimatePresence>
           </Panel>
-
-          {/* ── profile + engines ────────────────────────────────────────── */}
-          <Panel className="overflow-hidden">
-            <div className="border-b border-white/[0.06] px-5 py-3">
-              <SectionLabel>Scan Profile</SectionLabel>
-            </div>
-            <div className="px-5 py-4">
-              <ScanProfileSelector
-                profiles={profiles}
-                value={profileId}
-                onChange={setProfileId}
-                disabledIds={authenticated ? undefined : new Set(profiles.filter((entry) => entry.minTier).map((entry) => entry.id))}
-              />
-            </div>
-
-            <div className="border-t border-white/[0.06]">
-              <button
-                type="button"
-                onClick={() => setShowAdvanced((current) => !current)}
-                aria-expanded={showAdvanced}
-                className="flex w-full items-center justify-between gap-2 px-5 py-3 text-left transition-colors hover:bg-white/[0.02]"
-              >
-                <span className="flex items-center gap-2 text-[12.5px] font-bold text-slate-300">
-                  <Settings2 className="h-3.5 w-3.5" /> Engines and exclusions
-                </span>
-                <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', showAdvanced && 'rotate-180')} />
-              </button>
-              <AnimatePresence initial={false}>
-                {showAdvanced && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.28 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="px-5 pb-5">
-                      <ScanEngineSelector
-                        engines={engines}
-                        selected={profileId === 'custom' ? customEngines : new Set(resolvedEngines)}
-                        onToggle={(id) => {
-                          setProfileId('custom');
-                          setCustomEngines((current) => {
-                            const next = new Set(current.size ? current : resolvedEngines);
-                            if (next.has(id)) next.delete(id);
-                            else next.add(id);
-                            return next;
-                          });
-                        }}
-                      />
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-
-            <div className="border-t border-white/[0.06] px-5 py-4">
-              <button
-                type="button"
-                disabled={busy || !canStart || scopeMissing}
-                onClick={handleStart}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-3 text-[14px] font-black text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {busy ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> Assessing {scan.progress}%
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4" /> Start development assessment
-                  </>
-                )}
-              </button>
-              {scopeMissing && (
-                <p className="mt-2 text-center text-[11px] text-amber-300/85">
-                  {clusterSelected && namespaces.size === 0
-                    ? 'Select at least one namespace — this scanner never enumerates a whole cluster implicitly.'
-                    : 'Select at least one region — this scanner never enumerates a whole account implicitly.'}
-                </p>
-              )}
-              {!canStart && !scopeMissing && (
-                <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
-                  Enter a repository URL or select a connection
-                </p>
-              )}
-            </div>
-          </Panel>
         </div>
 
         {/* ── rail ─────────────────────────────────────────────────────── */}
@@ -505,7 +473,136 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
         </div>
       </div>
 
-      {scan.error && (
+      {/* ── profile + launch ───────────────────────────────────────────────
+           Full width, deliberately. Twelve profiles stacked two-across inside
+           the configuration column pushed the start button far below the fold,
+           so choosing a profile and running it became two separate journeys.
+           Across the whole page they are one band: pick, read, launch. */}
+      <Panel className="overflow-hidden" glow={!busy && canStart && !scopeMissing}>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
+          <SectionLabel>Scan Profile</SectionLabel>
+          <span className="font-mono text-[10px] text-slate-500">
+            {profiles.length} profiles · {engines.length} engines available
+          </span>
+        </div>
+        <div className="px-5 py-4">
+          <ScanProfileRail
+            profiles={profiles}
+            value={profileId}
+            onChange={setProfileId}
+            disabledIds={authenticated ? undefined : new Set(profiles.filter((entry) => entry.minTier).map((entry) => entry.id))}
+            engineCount={resolvedEngines.length}
+            launchSlot={
+              <div className="flex h-full flex-col justify-center rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
+                <button
+                  type="button"
+                  disabled={busy || !canStart || scopeMissing}
+                  onClick={handleStart}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-3 text-[13.5px] font-black leading-tight text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy ? (
+                    <>
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" /> Assessing {scan.progress}%
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 shrink-0" /> Start development assessment
+                    </>
+                  )}
+                </button>
+                {scopeMissing ? (
+                  <p className="mt-2 text-center text-[11px] leading-snug text-amber-300/85">
+                    {clusterSelected && namespaces.size === 0
+                      ? 'Select at least one namespace — this scanner never enumerates a whole cluster implicitly.'
+                      : 'Select at least one region — this scanner never enumerates a whole account implicitly.'}
+                  </p>
+                ) : !canStart ? (
+                  <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
+                    Enter a repository URL or select a connection
+                  </p>
+                ) : (
+                  <p className="mt-2 truncate text-center font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
+                    {theatreTarget.label}
+                  </p>
+                )}
+              </div>
+            }
+          />
+        </div>
+
+        <div className="border-t border-white/[0.06]">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((current) => !current)}
+            aria-expanded={showAdvanced}
+            className="flex w-full items-center justify-between gap-2 px-5 py-3 text-left transition-colors hover:bg-white/[0.02]"
+          >
+            <span className="flex items-center gap-2 text-[12.5px] font-bold text-slate-300">
+              <Settings2 className="h-3.5 w-3.5" /> Engines and exclusions
+            </span>
+            <ChevronDown className={cn('h-4 w-4 text-slate-500 transition-transform', showAdvanced && 'rotate-180')} />
+          </button>
+          <AnimatePresence initial={false}>
+            {showAdvanced && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.28 }}
+                className="overflow-hidden"
+              >
+                <div className="px-5 pb-5">
+                  <ScanEngineSelector
+                    engines={engines}
+                    selected={profileId === 'custom' ? customEngines : new Set(resolvedEngines)}
+                    onToggle={(id) => {
+                      setProfileId('custom');
+                      setCustomEngines((current) => {
+                        const next = new Set(current.size ? current : resolvedEngines);
+                        if (next.has(id)) next.delete(id);
+                        else next.add(id);
+                        return next;
+                      });
+                    }}
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </Panel>
+
+      {/* ── live scan theatre ──────────────────────────────────────────────
+           Directly below the repository and configuration surface, so the run
+           the operator just started is the next thing they see. */}
+      {theatreVisible && theatreStatus && (
+        <div ref={theatreRef} className="scroll-mt-24">
+          <ScanTheatre
+            mode="dev"
+            status={theatreStatus}
+            progress={scan.progress}
+            runs={scan.runs}
+            findings={scan.findings}
+            telemetry={scan.telemetry}
+            currentStep={scan.currentStep}
+            startedAt={scan.startedAt}
+            streamOpen={scan.streamOpen}
+            target={{ label: theatreTarget.label, detail: theatreTarget.detail }}
+            /* Dev learns its corpus size only once the repository resolves, so
+               the tile stays honest about not knowing until it does. */
+            volume={corpus}
+            assessment={scan.assessment}
+            knowledgeBase={registry.knowledgeBase}
+            engineHealth={registry.engines}
+            error={scan.error ? [scan.error, scan.errorDetail].filter(Boolean).join(' — ') : null}
+            onCancel={() => void scan.cancel()}
+            onViewAll={() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            onDismiss={() => setTheatreHidden(true)}
+          />
+        </div>
+      )}
+
+      {scan.error && !theatreVisible && (
         <div className="flex items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-500/[0.07] px-4 py-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
           <div>
@@ -516,7 +613,7 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
       )}
 
       {scan.assessment && (
-        <div className="space-y-5">
+        <div ref={resultsRef} className="space-y-5 scroll-mt-24">
           <AssessmentStatusBar
             assessment={scan.assessment}
             onReset={scan.reset}
@@ -563,38 +660,65 @@ function DevPostureDashboard({ assessment }: { assessment: NonNullable<ReturnTyp
   const { coverage } = assessment.task;
   const { intelligence } = assessment;
 
-  const tiles: Array<{ label: string; value: number; accent?: string }> = [
-    { label: 'Repositories', value: coverage.repositories || (assessment.task.target.kind === 'repository' ? 1 : 0) },
-    { label: 'Files analysed', value: coverage.filesAnalyzed },
-    { label: 'Dependencies', value: coverage.dependencies },
-    { label: 'Containers', value: coverage.containers },
-    { label: 'Images', value: coverage.images },
-    { label: 'K8s workloads', value: coverage.kubernetesWorkloads },
-    { label: 'Cloud resources', value: coverage.cloudResources },
-    { label: 'Crypto components', value: assessment.cbom.length },
-    { label: 'Quantum vulnerable', value: intelligence.quantum.vulnerable, accent: ACCENT.rose },
-    { label: 'Secrets', value: intelligence.secrets.length, accent: ACCENT.amber },
-    { label: 'Critical findings', value: intelligence.severity.critical, accent: ACCENT.rose },
-    { label: 'High findings', value: intelligence.severity.high, accent: '#fb923c' },
-  ].filter((tile) => tile.value > 0);
+  /* Every tile names its UNIT, because this strip mixes three of them: the
+     estate the scan read, the cryptographic components it inventoried, and the
+     findings it raised. Read side by side without labels, "Quantum vulnerable
+     6" (components) beside "Critical findings 1" (findings) invites the reader
+     to treat them as one series. */
+  const tiles: Array<{ label: string; unit: string; value: number; accent?: string; engineId?: string }> = [
+    { label: 'Repositories', unit: 'in scope', value: coverage.repositories || (assessment.task.target.kind === 'repository' ? 1 : 0) },
+    { label: 'Files analysed', unit: `of ${coverage.filesDiscovered.toLocaleString()} discovered`, value: coverage.filesAnalyzed },
+    { label: 'Dependencies', unit: 'resolved', value: coverage.dependencies, engineId: 'dependency-analysis' },
+    { label: 'Containers', unit: 'definitions read', value: coverage.containers, engineId: 'container-security' },
+    { label: 'Images', unit: 'inspected', value: coverage.images, engineId: 'registry-scan' },
+    { label: 'K8s workloads', unit: 'read', value: coverage.kubernetesWorkloads, engineId: 'kubernetes-security' },
+    { label: 'Cloud resources', unit: 'enumerated', value: coverage.cloudResources, engineId: 'cloud-inventory' },
+    { label: 'Crypto components', unit: 'in the CBOM', value: assessment.cbom.length, engineId: 'cbom-generator' },
+    { label: 'Quantum vulnerable', unit: 'components', value: intelligence.quantum.vulnerable, accent: ACCENT.rose, engineId: 'quantum-assessment' },
+    { label: 'Secrets', unit: 'findings', value: intelligence.secrets.length, accent: ACCENT.amber, engineId: 'secret-discovery' },
+    { label: 'Critical findings', unit: 'findings', value: intelligence.severity.critical, accent: ACCENT.rose },
+    { label: 'High findings', unit: 'findings', value: intelligence.severity.high, accent: '#fb923c' },
+  ];
 
-  if (tiles.length === 0) return null;
+  /* A dimension whose engine never reported is NOT zero — it is unmeasured, and
+     the two must stay distinguishable (§43). Hiding both behind `value > 0`
+     made "no containers in this repository" and "the container engine never
+     ran" render identically: as absence. */
+  const measured = new Set(
+    assessment.task.runs
+      .filter((run) => run.state === 'completed' || run.state === 'not-applicable')
+      .map((run) => run.engineId),
+  );
+  const visible = tiles.filter((tile) => tile.value > 0 || !tile.engineId || measured.has(tile.engineId));
+  const unmeasured = tiles.filter((tile) => tile.value === 0 && tile.engineId && !measured.has(tile.engineId));
+
+  if (visible.length === 0 && unmeasured.length === 0) return null;
 
   return (
     <Panel className="overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Dev Security Posture</SectionLabel>
+        <span className="font-mono text-[10px] text-slate-500">Across this assessment</span>
       </div>
       <div className="grid grid-cols-2 gap-px bg-white/[0.05] sm:grid-cols-3 lg:grid-cols-6">
-        {tiles.map((tile) => (
+        {visible.map((tile) => (
           <div key={tile.label} className="bg-[#080d1a] px-4 py-3.5">
             <p className="font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-slate-500">{tile.label}</p>
             <p className="mt-1 font-mono text-[20px] font-black leading-none" style={{ color: tile.accent ?? '#e2e8f0' }}>
               {tile.value.toLocaleString()}
             </p>
+            <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-slate-600">{tile.unit}</p>
           </div>
         ))}
       </div>
+
+      {unmeasured.length > 0 && (
+        <p className="border-t border-amber-400/20 bg-amber-400/[0.05] px-5 py-2.5 text-[11px] leading-relaxed text-amber-100/85">
+          Not measured, so not shown as zero:{' '}
+          <strong className="font-bold">{unmeasured.map((tile) => tile.label).join(', ')}</strong>. The engine that would
+          have read {unmeasured.length === 1 ? 'it' : 'them'} did not reach a reporting state in this run.
+        </p>
+      )}
       {(intelligence.languages.length > 0 || intelligence.frameworks.length > 0) && (
         <div className="flex flex-wrap gap-4 border-t border-white/[0.06] px-5 py-3">
           {intelligence.languages.length > 0 && (
@@ -953,11 +1077,13 @@ function authHeader(): Record<string, string> {
 
 /* ─────────────────────────────────────────────────────────── empty states ─── */
 
+/** The Engine Ledger before there is anything to record. Titled to match the
+ *  ledger it becomes, so the rail does not rename itself mid-workflow. */
 function DevEmptyRail() {
   return (
     <Panel className="overflow-hidden">
       <div className="border-b border-white/[0.06] px-4 py-3">
-        <SectionLabel>Scanner Engines</SectionLabel>
+        <SectionLabel>Engine Ledger</SectionLabel>
       </div>
       <div className="px-4 py-6 text-center">
         <Github aria-hidden className="mx-auto h-7 w-7 text-slate-700" />

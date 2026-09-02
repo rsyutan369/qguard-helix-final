@@ -27,35 +27,95 @@ import type {
   CorrelatedExposure,
   ExposureFinding,
   ExposureScores,
+  FindingSeverity,
   ScanCoverage,
   EngineRun,
 } from './types';
-import { CONFIDENCE_WEIGHT, SEVERITY_WEIGHT, riskBand } from './types';
+import { CONFIDENCE_WEIGHT, SEVERITY_ORDER, SEVERITY_WEIGHT, riskBand } from './types';
 
 /* ────────────────────────────────────────────────────────── security risk ── */
 
+/**
+ * Band structure, taken from the SAME thresholds `riskBand()` publishes.
+ *
+ * The score is built out of the bands rather than mapped onto them afterwards,
+ * so the number and the label it carries agree by construction. The previous
+ * model computed the two independently, which is how a single critical finding
+ * came to print "57 — moderate".
+ */
+const SECURITY_BAND_FLOOR: Record<FindingSeverity, number> = {
+  critical: 80, high: 60, medium: 35, low: 15, info: 0,
+};
+const SECURITY_BAND_CEILING: Record<FindingSeverity, number> = {
+  critical: 100, high: 80, medium: 60, low: 35, info: 15,
+};
+/** The floor of the band BELOW each one — where low confidence pulls back to. */
+const SECURITY_BAND_PREVIOUS: Record<FindingSeverity, number> = {
+  critical: 60, high: 35, medium: 15, low: 0, info: 0,
+};
+
+/**
+ * Critical-equivalents at which a severity band is considered fully consumed.
+ *
+ * Tuned by sweeping 50-1000 against real estate shapes (tools/risk-curve-check.ts):
+ * below ~200 the top of the scale pins again on large estates, above ~1000 small
+ * estates stop separating. 500 is the knee.
+ */
+const VOLUME_REFERENCE = 500;
+
+/**
+ * Security risk — severity decides the band, volume ranks within it.
+ *
+ * WHY NOT A WEIGHTED SUM
+ * ----------------------
+ * The previous model accumulated `severity x confidence` and saturated it
+ * through `100 * (1 - e^(-w/120))`. Because severity was ADDITIVE, volume could
+ * impersonate severity: ten low-severity exposures and one committed private
+ * key both scored exactly 57. It also under-claimed severity (one critical read
+ * "moderate") while over-claiming volume (four highs with no critical present
+ * read "critical", and anything past eight pinned at 98-100 with no headroom
+ * left to rank estates apart).
+ *
+ * THE MODEL
+ * ---------
+ *   floor   the worst exposure's band floor, pulled back toward the band below
+ *           it in proportion to that exposure's CONFIDENCE. A critical the
+ *           scanner is unsure of must not assert a critical posture, and
+ *           severity and confidence stay separate readings (S37) rather than
+ *           being multiplied into one.
+ *   volume  log-scaled critical-equivalents. Estates span orders of magnitude;
+ *           a linear term runs away with repository size and an exponential one
+ *           pins after a handful of findings.
+ *   score   floor + (band ceiling - floor) * volume
+ *
+ * Volume can therefore rank an estate within its band but can never carry it
+ * into a higher one. The band names the worst class of thing actually present,
+ * which is the claim the evidence supports.
+ */
 function computeSecurityRisk(exposures: CorrelatedExposure[]): { score: number | null; basis: string } {
   if (exposures.length === 0) {
     return { score: null, basis: 'No exposures were recorded, so no security risk score is published.' };
   }
 
-  /* Saturating accumulation, not a mean.
-     A mean lets 200 informational findings dilute one critical to nothing; a
-     sum runs away with repository size. The saturating form keeps one critical
-     finding meaningful and stops the hundredth low finding from adding much. */
-  let weighted = 0;
   const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  let equivalents = 0;
+  let worst = exposures[0];
 
   for (const exposure of exposures) {
     counts[exposure.severity] += 1;
-    const base = SEVERITY_WEIGHT[exposure.severity];
-    const discount = CONFIDENCE_WEIGHT[exposure.confidence];
-    weighted += base * discount;
+    /* A "critical-equivalent": one high-confidence critical is 1.0, a
+       high-confidence low is 0.1, an informational exposure is 0. */
+    equivalents += (SEVERITY_WEIGHT[exposure.severity] / 100) * CONFIDENCE_WEIGHT[exposure.confidence];
+    if (SEVERITY_ORDER[exposure.severity] < SEVERITY_ORDER[worst.severity]) worst = exposure;
   }
 
-  // 100 * (1 - e^(-w/120)) — one critical at high confidence lands near 57,
-  // three near 92, and a long tail of lows approaches but never reaches 100.
-  const score = Math.round(100 * (1 - Math.exp(-weighted / 120)));
+  const bandFloor = SECURITY_BAND_FLOOR[worst.severity];
+  const previousFloor = SECURITY_BAND_PREVIOUS[worst.severity];
+  const floor = previousFloor + (bandFloor - previousFloor) * CONFIDENCE_WEIGHT[worst.confidence];
+  const ceiling = SECURITY_BAND_CEILING[worst.severity];
+
+  const volume = Math.min(1, Math.log10(1 + equivalents) / Math.log10(1 + VOLUME_REFERENCE));
+  const score = Math.max(0, Math.min(100, Math.round(floor + (ceiling - floor) * volume)));
 
   const parts: string[] = [];
   if (counts.critical) parts.push(`${counts.critical} critical`);
@@ -63,9 +123,13 @@ function computeSecurityRisk(exposures: CorrelatedExposure[]): { score: number |
   if (counts.medium) parts.push(`${counts.medium} medium`);
   if (counts.low) parts.push(`${counts.low} low`);
 
+  const confidenceNote = worst.confidence === 'high'
+    ? ''
+    : ` at ${worst.confidence} confidence, which pulls the floor back from ${bandFloor}`;
+
   return {
-    score: Math.max(0, Math.min(100, score)),
-    basis: `Security risk ${score}/100 from ${exposures.length} correlated exposure${exposures.length === 1 ? '' : 's'}${parts.length ? ` (${parts.join(', ')})` : ''}, each weighted by severity and discounted by detection confidence.`,
+    score,
+    basis: `Security risk ${score}/100 from ${exposures.length} correlated exposure${exposures.length === 1 ? '' : 's'}${parts.length ? ` (${parts.join(', ')})` : ''}. The most severe is ${worst.severity}${confidenceNote}, setting the floor at ${Math.round(floor)}; the ${equivalents.toFixed(1)} critical-equivalents these exposures amount to then place it ${Math.round(volume * 100)}% of the way to ${ceiling}. Severity decides the band and volume ranks within it, so a large number of lower-severity exposures can never present as a critical one.`,
   };
 }
 

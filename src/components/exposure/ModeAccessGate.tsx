@@ -24,7 +24,31 @@ import { ArrowRight, Check, Code2, Lock, MonitorSmartphone, ShieldCheck, Sparkle
 import { cn } from '@/lib/utils';
 import { ACCENT, Panel, SectionLabel } from '@/components/quantum-scan/ui';
 import { TIER_LABEL, type ExposureScanMode, type PlanTier } from '@/lib/subscription-access';
+import { PlanGateModal } from '@/app/qguard-messaging/_shared';
 import type { UseExposureAccessResult } from '@/hooks/use-exposure-access';
+
+/* ──────────────────────────────────────────────── locked scan controls ────── */
+
+/**
+ * The controls the mode actually offers, reproduced faithfully and inert.
+ *
+ * A gate that simply removes the buttons tells a visitor nothing about what
+ * they would be buying, and gives them nowhere to express intent. These are the
+ * real labels in the real positions; clicking one opens the plan modal instead
+ * of starting a scan. Nothing behind them is mounted, so there is no file
+ * picker to open and no worker to spawn.
+ */
+const MODE_CONTROLS: Record<Exclude<ExposureScanMode, 'web'>, Array<{ label: string; primary?: boolean }>> = {
+  local: [
+    { label: 'Select folder' },
+    { label: 'Select files' },
+    { label: 'Start local assessment', primary: true },
+  ],
+  dev: [
+    { label: 'Validate repository' },
+    { label: 'Start development assessment', primary: true },
+  ],
+};
 
 /* ─────────────────────────────────────────────────────── mode copy ────────── */
 
@@ -149,6 +173,15 @@ export interface ModeAccessGateProps {
 export function ModeAccessGate({ mode, access, upsellSlot }: ModeAccessGateProps) {
   const copy = MODE_COPY[mode];
   const Icon = copy.icon;
+  const [planOpen, setPlanOpen] = React.useState(false);
+
+  /* Only the plans that would actually grant this mode. Offering a plan that
+     still refuses the feature after payment is worse than offering none. */
+  const qualifyingPlans = React.useMemo(
+    () => access.includedIn.map((plan) => TIER_LABEL[plan]),
+    [access.includedIn],
+  );
+  const cheapestQualifying = qualifyingPlans[0];
 
   /* Three refusals, three next steps. */
   const cta = React.useMemo(() => {
@@ -242,6 +275,39 @@ export function ModeAccessGate({ mode, access, upsellSlot }: ModeAccessGateProps
               </div>
             </div>
           </div>
+          {/* -- the scan controls, present and inert ---------------------
+              This is the surface the visitor came for. Rendering it - rather
+              than deleting it - is what makes the lock legible: they can see
+              exactly which action is withheld, and clicking it expresses
+              intent, which is what the plan modal answers. None of the real
+              machinery is mounted behind these, so there is no file picker to
+              open and no worker to spawn. */}
+          <div className="relative border-t border-white/[0.06] bg-white/[0.015] px-5 py-4 sm:px-6">
+            <div className="flex flex-wrap items-center gap-2.5">
+              {MODE_CONTROLS[mode].map((control) => (
+                <button
+                  key={control.label}
+                  type="button"
+                  onClick={() => setPlanOpen(true)}
+                  aria-haspopup="dialog"
+                  title={`${copy.label} assessment requires the ${TIER_LABEL[access.requiredTier as PlanTier]} plan or higher`}
+                  className={cn(
+                    'group inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-[13px] font-black transition-all',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/50',
+                    control.primary
+                      ? 'bg-emerald-500/25 text-emerald-100/75 ring-1 ring-inset ring-emerald-400/30 hover:bg-emerald-500/35 hover:text-emerald-50'
+                      : 'border border-white/[0.10] text-slate-400 hover:border-cyan-400/30 hover:text-cyan-200',
+                  )}
+                >
+                  <Lock aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                  {control.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">
+              Locked - choose a plan to run {copy.label} assessments
+            </p>
+          </div>
         </div>
       </Panel>
 
@@ -307,6 +373,22 @@ export function ModeAccessGate({ mode, access, upsellSlot }: ModeAccessGateProps
           {upsellSlot}
         </div>
       </div>
+
+      {/* The plan modal is the shared checkout entry the rest of the platform
+          uses (-> /checkout -> PayPal), restricted to the plans that would
+          actually grant this mode. An anonymous visitor is carried through
+          sign-in by checkout itself, so one control serves both refusals. */}
+      {planOpen && (
+        <PlanGateModal
+          onClose={() => setPlanOpen(false)}
+          badge={`${copy.label} assessment`}
+          title={`Unlock ${copy.label} assessment`}
+          subtitle={cta.note}
+          plans={qualifyingPlans}
+          highlight={cheapestQualifying}
+          footnote="Secure checkout via PayPal. Local and Dev assessments unlock as soon as the subscription is active - the Web assessment stays free."
+        />
+      )}
     </div>
   );
 }

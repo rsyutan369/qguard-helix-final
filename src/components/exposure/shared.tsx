@@ -39,7 +39,7 @@ import type {
   ScanMode,
 } from '@/lib/scanner/exposure/types';
 import { SEVERITY_ORDER } from '@/lib/scanner/exposure/types';
-import { completenessNote, reconcileExposure } from '@/lib/scanner/exposure/exposure-truth';
+import { completenessNote, reconcileExposure, withUnit } from '@/lib/scanner/exposure/exposure-truth';
 import { layerLabel } from '@/lib/scanner/exposure/correlate';
 import { CAPABILITY_LABEL, type EngineDescriptor } from '@/lib/scanner/exposure/engine-contract';
 import type { ScanProfile } from '@/lib/scanner/exposure/profiles';
@@ -96,6 +96,36 @@ const ENGINE_STATE_STYLE: Record<string, { color: string; label: string }> = {
   'not-assessed': { color: ACCENT.amber, label: 'Not Assessed' },
   cancelled: { color: ACCENT.slate, label: 'Cancelled' },
 };
+
+/* ──────────────────────────────────────────────────────────── disclosure ─── */
+
+/**
+ * States that a list is showing only part of what was found.
+ *
+ * A table that quietly stops at its cap is the most deniable way a dashboard
+ * lies: the reader has no way to tell a complete list from a truncated one, and
+ * every number they derive by counting rows is wrong. Renders nothing when the
+ * list is whole.
+ */
+export function ListTruncationNote({
+  shown,
+  total,
+  noun,
+  rank = 'most significant',
+}: {
+  shown: number;
+  total: number;
+  noun: string;
+  rank?: string;
+}) {
+  if (!Number.isFinite(total) || total <= shown) return null;
+  return (
+    <p className="border-t border-white/[0.06] px-5 py-2.5 font-mono text-[10.5px] text-slate-500">
+      Showing the {shown.toLocaleString()} {rank} of {total.toLocaleString()} {noun}. The scores and totals above are
+      computed over all {total.toLocaleString()}.
+    </p>
+  );
+}
 
 /* ───────────────────────────────────────────────────────────────── badges ─── */
 
@@ -214,6 +244,172 @@ export function ScanProfileSelector({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Horizontal profile rail — pick a profile, read what it does, launch.
+ *
+ * The card grid above works when there are a handful of profiles in a narrow
+ * column. Dev mode offers twelve, and stacked two-across they pushed the
+ * primary action — the button that actually starts the assessment — a screen
+ * and a half below the fold. An operator had to scroll to discover both what
+ * the choices were and how to commit to one.
+ *
+ * So the choice and the description are separated: every profile is a compact
+ * chip on one rail, always all visible, and only the SELECTED profile spends
+ * vertical space explaining itself. The launch control sits beside that
+ * explanation, on the same screen as the thing it launches.
+ *
+ * Keyboard behaviour follows the radiogroup pattern: Tab reaches the group
+ * once, then arrows move the selection, Home/End jump to the ends.
+ */
+export function ScanProfileRail({
+  profiles,
+  value,
+  onChange,
+  disabledIds,
+  suggested,
+  engineCount,
+  launchSlot,
+}: {
+  profiles: ScanProfile[];
+  value: string;
+  onChange: (id: string) => void;
+  disabledIds?: Set<string>;
+  /** The Smart Scan Planner's suggestion, badged so the operator sees why. */
+  suggested?: string | null;
+  /** How many engines the current selection resolves to. */
+  engineCount: number;
+  /** The primary action and its hints, supplied by the mode that owns them. */
+  launchSlot?: React.ReactNode;
+}) {
+  const buttonRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
+  const selected = profiles.find((profile) => profile.id === value) ?? null;
+
+  const selectableIndexes = React.useMemo(
+    () => profiles.map((profile, index) => (disabledIds?.has(profile.id) ? -1 : index)).filter((index) => index >= 0),
+    [profiles, disabledIds],
+  );
+
+  const move = (from: number, direction: 1 | -1 | 'first' | 'last') => {
+    if (selectableIndexes.length === 0) return;
+    let target: number;
+    if (direction === 'first') target = selectableIndexes[0];
+    else if (direction === 'last') target = selectableIndexes[selectableIndexes.length - 1];
+    else {
+      const position = selectableIndexes.indexOf(from);
+      const next = (position + direction + selectableIndexes.length) % selectableIndexes.length;
+      target = selectableIndexes[next];
+    }
+    onChange(profiles[target].id);
+    buttonRefs.current[target]?.focus();
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* ── the rail ───────────────────────────────────────────────────── */}
+      <div role="radiogroup" aria-label="Scan profile" className="flex flex-wrap gap-1.5">
+        {profiles.map((profile, index) => {
+          const active = value === profile.id;
+          const locked = disabledIds?.has(profile.id);
+          return (
+            <button
+              key={profile.id}
+              ref={(node) => {
+                buttonRefs.current[index] = node;
+              }}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={locked}
+              tabIndex={active ? 0 : -1}
+              onClick={() => !locked && onChange(profile.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  move(index, 1);
+                } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  move(index, -1);
+                } else if (event.key === 'Home') {
+                  event.preventDefault();
+                  move(index, 'first');
+                } else if (event.key === 'End') {
+                  event.preventDefault();
+                  move(index, 'last');
+                }
+              }}
+              title={locked ? `${profile.label} requires the ${profile.minTier} plan.` : profile.description}
+              className={cn(
+                'group inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-[12.5px] font-bold transition-all',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/50',
+                active
+                  ? 'border-cyan-400/50 bg-cyan-400/[0.1] text-cyan-200 shadow-[0_0_20px_-8px_rgba(34,211,238,0.7)]'
+                  : 'border-white/[0.08] bg-white/[0.02] text-slate-300 hover:border-white/20 hover:text-white',
+                locked && 'cursor-not-allowed opacity-45 hover:border-white/[0.08] hover:text-slate-300',
+              )}
+            >
+              {active && <Check aria-hidden className="h-3.5 w-3.5 shrink-0" />}
+              {profile.label}
+              {suggested === profile.id && !active && (
+                <span className="rounded bg-violet-400/15 px-1.5 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-widest text-violet-300">
+                  Suggested
+                </span>
+              )}
+              {profile.minTier && (
+                <span className="rounded bg-amber-400/15 px-1.5 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-widest text-amber-300">
+                  {profile.minTier}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── what the selection means, and how to run it ─────────────────── */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+        <div className="min-w-0 rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3.5">
+          {selected ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <h4 className="text-[14px] font-black text-white">{selected.label}</h4>
+                <span className="rounded-md border border-cyan-400/25 bg-cyan-400/[0.07] px-2 py-0.5 font-mono text-[10px] font-bold text-cyan-300">
+                  {engineCount} engine{engineCount === 1 ? '' : 's'}
+                </span>
+                {suggested === selected.id && (
+                  <span className="rounded-md bg-violet-400/15 px-2 py-0.5 font-mono text-[9.5px] font-black uppercase tracking-widest text-violet-300">
+                    Planner suggested
+                  </span>
+                )}
+              </div>
+              <p className="mt-1.5 text-[12.5px] leading-relaxed text-slate-400">{selected.description}</p>
+              {selected.covers.length > 0 && (
+                <>
+                  <p className="mt-3 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                    What it covers
+                  </p>
+                  <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                    {selected.covers.map((item) => (
+                      <li
+                        key={item}
+                        className="rounded-md bg-white/[0.05] px-2 py-0.5 font-mono text-[10px] text-slate-300"
+                      >
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </>
+          ) : (
+            <p className="text-[12.5px] text-slate-500">Select a profile to see what it runs.</p>
+          )}
+        </div>
+
+        {launchSlot && <div className="min-w-0">{launchSlot}</div>}
+      </div>
     </div>
   );
 }
@@ -338,8 +534,12 @@ export function EngineLedger({
 
   return (
     <Panel className="overflow-hidden">
+      {/* "Engine Ledger", not "Scanner Engines": this panel is THIS assessment's
+          execution record, while the registry panel below it lists the engines
+          the platform has and whether they are healthy. Both were once called
+          the same thing, which left two adjacent panels claiming one identity. */}
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
-        <SectionLabel>Scanner Engines</SectionLabel>
+        <SectionLabel>Engine Ledger</SectionLabel>
         <div className="flex shrink-0 items-center gap-2">
           <span className="font-mono text-[10px] font-bold text-slate-400">
             {settled}/{runs.length}
@@ -440,6 +640,10 @@ export function EngineLedger({
 /** The five-reading decomposition (§40). Never collapsed into one number. */
 export function ExposureScorecard({ assessment }: { assessment: ExposureAssessment }) {
   const { scores } = assessment.task;
+  /* Read, never recomputed. The reconciler is the one place that knows which
+     population each unit counts, and this panel is where a reader most often
+     tries to reconcile a score against a severity count they saw elsewhere. */
+  const truth = React.useMemo(() => reconcileExposure(assessment), [assessment]);
   const rows: Array<{ label: string; value: number | null; band: string | null; invert: boolean; hint: string }> = [
     { label: 'Security Risk', value: scores.securityRisk, band: scores.securityBand, invert: true, hint: scores.basis[0] ?? '' },
     { label: 'Quantum Risk', value: scores.quantumRisk, band: scores.quantumBand, invert: true, hint: scores.basis[1] ?? '' },
@@ -450,9 +654,22 @@ export function ExposureScorecard({ assessment }: { assessment: ExposureAssessme
 
   return (
     <Panel className="overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Risk Decomposition</SectionLabel>
+        <span className="font-mono text-[10px] text-slate-500">
+          {withUnit(assessment.exposures.length, 'exposure')} · {withUnit(assessment.findings.length, 'finding')}
+        </span>
       </div>
+
+      {/* The population, said out loud and BEFORE the numbers. Without it, a
+          reader who has just seen "1 critical" on the findings donut reads
+          "99/100" as a contradiction rather than as a different unit. */}
+      {truth.scoreUnitNote && (
+        <p className="border-b border-white/[0.06] px-5 py-2.5 text-[11px] leading-relaxed text-slate-500">
+          {truth.scoreUnitNote}
+        </p>
+      )}
+
       <div className="grid grid-cols-[minmax(0,1fr)] divide-y divide-white/[0.05] sm:grid-cols-5 sm:divide-x sm:divide-y-0">
         {rows.map((row) => {
           const color = row.value === null
@@ -1109,12 +1326,21 @@ export function CoveragePanel({ coverage, mode }: { coverage: ScanCoverage; mode
     { label: 'Cloud resources', value: coverage.cloudResources },
     { label: 'Branches', value: coverage.branches },
     { label: 'Commits analysed', value: coverage.commitsAnalyzed },
-  ].filter((metric) => metric.value > 0);
+  ];
+
+  /* A dimension the scan READ and found none of is a measurement; a dimension
+     no engine reached is not. Hiding both behind `value > 0` rendered them
+     identically, so "this repository has no Kubernetes" and "the Kubernetes
+     engine never ran" looked the same (§43). Zeros stay, dimmed; the panel
+     names the ones nothing reported separately. */
+  const present = metrics.filter((metric) => metric.value > 0);
+  const measuredZero = metrics.filter((metric) => metric.value === 0);
 
   return (
     <Panel className="overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.amber}>Assessment Coverage</SectionLabel>
+        <span className="font-mono text-[10px] text-slate-500">Across this assessment</span>
       </div>
 
       {coverage.notAssessed.length > 0 && (
@@ -1135,15 +1361,23 @@ export function CoveragePanel({ coverage, mode }: { coverage: ScanCoverage; mode
         </div>
       )}
 
-      {metrics.length > 0 && (
+      {present.length > 0 && (
         <div className="grid grid-cols-2 gap-px bg-white/[0.05] sm:grid-cols-3 lg:grid-cols-4">
-          {metrics.map((metric) => (
+          {present.map((metric) => (
             <div key={metric.label} className="bg-[#080d1a] px-4 py-3">
               <p className="font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-slate-500">{metric.label}</p>
               <p className="mt-0.5 font-mono text-[18px] font-black leading-none text-slate-200">{metric.value.toLocaleString()}</p>
             </div>
           ))}
         </div>
+      )}
+
+      {measuredZero.length > 0 && (
+        <p className="border-t border-white/[0.06] px-5 py-2.5 text-[11px] leading-relaxed text-slate-500">
+          <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-400">Read, none found:</span>{' '}
+          {measuredZero.map((metric) => metric.label).join(', ')}. These are measurements of zero, not dimensions that went
+          unread — anything the scan could not reach is listed under Not assessed above.
+        </p>
       )}
 
       {coverage.exclusions.length > 0 && (
@@ -1177,6 +1411,9 @@ export function CoveragePanel({ coverage, mode }: { coverage: ScanCoverage; mode
 
 /* ──────────────────────────────────────────────────── correlated exposures ── */
 
+/** Rows rendered before the list is capped. Stated to the reader below. */
+const CORRELATED_LIMIT = 25;
+
 export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposure[] }) {
   const [open, setOpen] = React.useState<string | null>(null);
   const multi = exposures.filter((exposure) => exposure.findingIds.length > 1 || (exposure.layers.length > 1));
@@ -1194,7 +1431,7 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
         rather than repeated once per engine that saw them.
       </p>
       <ul className="divide-y divide-white/[0.04]">
-        {multi.slice(0, 25).map((exposure) => {
+        {multi.slice(0, CORRELATED_LIMIT).map((exposure) => {
           const expanded = open === exposure.key;
           return (
             <li key={exposure.key}>
@@ -1271,6 +1508,12 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
           );
         })}
       </ul>
+      <ListTruncationNote
+        shown={CORRELATED_LIMIT}
+        total={multi.length}
+        noun="exposures spanning multiple layers"
+        rank="widest-spanning"
+      />
     </Panel>
   );
 }

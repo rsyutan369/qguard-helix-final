@@ -23,6 +23,11 @@ import type {
   ScanExclusions,
 } from '@/lib/scanner/exposure/types';
 import { defaultExclusions } from '@/lib/scanner/exposure/types';
+import {
+  appendTelemetry,
+  toTelemetryFrame,
+  type ScanTelemetryFrame,
+} from '@/lib/scanner/exposure/telemetry-frame';
 import type { WorkspaceFile } from '@/lib/scanner/exposure/engine-contract';
 import {
   collectFromDirectoryHandle,
@@ -35,6 +40,7 @@ import {
   type ProjectFingerprint,
 } from '@/lib/scanner/exposure/local/fs-collector';
 import { compileExclusions } from '@/lib/scanner/exposure/orchestrator';
+import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { deriveFacets } from '@/lib/scanner/exposure/content/file-discovery';
 import { planScan, resolveProfile, type ScanPlan } from '@/lib/scanner/exposure/profiles';
 import { descriptorsForMode } from '@/lib/scanner/exposure/registry';
@@ -60,6 +66,16 @@ export interface UseLocalScanResult {
   error: string | null;
   /** Collection limitations, surfaced before the scan starts. */
   limitations: Array<{ dimension: string; reason: string }>;
+  /**
+   * Bounded console of the REAL events this scan emitted, newest last. The
+   * live visualisation renders this verbatim — it never composes a line of its
+   * own, so what the operator reads is what the worker said.
+   */
+  telemetry: ScanTelemetryFrame[];
+  /** Epoch ms the operator started the run. Null until they do. */
+  startedAt: number | null;
+  /** True while the worker is attached and delivering events. */
+  streamOpen: boolean;
 
   selectDirectory: () => Promise<void>;
   selectFiles: (files: FileList | File[]) => Promise<void>;
@@ -71,6 +87,19 @@ export interface UseLocalScanResult {
 const WORKER_SUPPORTED = typeof window !== 'undefined' && typeof Worker !== 'undefined';
 
 export function useLocalScan(): UseLocalScanResult {
+  /**
+   * Entitlement is resolved INSIDE the hook, not left to whichever component
+   * mounts it.
+   *
+   * A Local scan never reaches the server — the corpus goes from the OS picker
+   * straight into a Web Worker in this tab — so there is no request for the API
+   * to refuse. That makes the UI gate the only control, and a control that
+   * lives in one component is one forgotten early-return away from being no
+   * control at all. Resolving it here means every caller inherits it: the panel
+   * still renders the upsell, and `start()` additionally refuses to spawn the
+   * worker. Callers that hold a plan are unaffected.
+   */
+  const access = useExposureAccess('local');
   const [state, setState] = useState<LocalScanState>('idle');
   const [collection, setCollection] = useState<CollectionResult | null>(null);
   const [fingerprint, setFingerprint] = useState<ProjectFingerprint | null>(null);
@@ -82,7 +111,12 @@ export function useLocalScan(): UseLocalScanResult {
   const [currentStep, setCurrentStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [limitations, setLimitations] = useState<Array<{ dimension: string; reason: string }>>([]);
+  const [telemetry, setTelemetry] = useState<ScanTelemetryFrame[]>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [streamOpen, setStreamOpen] = useState(false);
 
+  /** Sequence belongs to the stream, not the event — see telemetry-frame.ts. */
+  const telemetrySeq = useRef(0);
   const workerRef = useRef<Worker | null>(null);
   /** Monotonic floor — a progress bar that goes backwards reads as a fault. */
   const progressFloor = useRef(0);
@@ -154,6 +188,14 @@ export function useLocalScan(): UseLocalScanResult {
 
   const start = useCallback(
     ({ profileId, customEngines = [], exclusions }: { profileId: string; customEngines?: string[]; exclusions?: ScanExclusions }) => {
+      /* Refused before anything is read. Placed FIRST so an unentitled caller
+         never reaches file content, not even to count it. */
+      if (!access.loading && !access.allowed) {
+        setError(access.message || 'Local assessment requires an active plan that includes it.');
+        setState('error');
+        return;
+      }
+
       if (!collection) {
         setError('Authorise a folder or select files before starting the assessment.');
         setState('error');
@@ -190,6 +232,10 @@ export function useLocalScan(): UseLocalScanResult {
       setError(null);
       setProgress(0);
       progressFloor.current = 0;
+      setTelemetry([]);
+      telemetrySeq.current = 0;
+      setStartedAt(Date.now());
+      setStreamOpen(true);
       setState('scanning');
 
       terminateWorker();
@@ -206,11 +252,18 @@ export function useLocalScan(): UseLocalScanResult {
         if (data.type === 'error') {
           setError(data.message ?? 'The local assessment failed.');
           setState('error');
+          setStreamOpen(false);
           terminateWorker();
           return;
         }
         if (data.type !== 'event' || !data.event) return;
         const event = data.event;
+
+        /* Every event becomes a console frame BEFORE it is interpreted, so the
+           feed is a record of the scan rather than a summary of the UI state. */
+        telemetrySeq.current += 1;
+        const frame = toTelemetryFrame(event, telemetrySeq.current);
+        if (frame) setTelemetry((current) => appendTelemetry(current, frame));
 
         if (typeof event.progress === 'number' && event.progress > progressFloor.current) {
           progressFloor.current = event.progress;
@@ -262,6 +315,7 @@ export function useLocalScan(): UseLocalScanResult {
             setProgress(100);
             progressFloor.current = 100;
             setCurrentStep(null);
+            setStreamOpen(false);
             setState(event.event === 'scan.cancelled' ? 'cancelled' : 'complete');
             terminateWorker();
             break;
@@ -274,6 +328,7 @@ export function useLocalScan(): UseLocalScanResult {
       worker.addEventListener('error', (event) => {
         setError(event.message || 'The local scanner worker failed to start.');
         setState('error');
+        setStreamOpen(false);
         terminateWorker();
       });
 
@@ -293,7 +348,7 @@ export function useLocalScan(): UseLocalScanResult {
         },
       });
     },
-    [collection, terminateWorker],
+    [collection, terminateWorker, access.allowed, access.loading, access.message],
   );
 
   const cancel = useCallback(() => {
@@ -315,6 +370,10 @@ export function useLocalScan(): UseLocalScanResult {
     setCurrentStep(null);
     setError(null);
     setLimitations([]);
+    setTelemetry([]);
+    telemetrySeq.current = 0;
+    setStartedAt(null);
+    setStreamOpen(false);
   }, [terminateWorker]);
 
   return {
@@ -330,6 +389,9 @@ export function useLocalScan(): UseLocalScanResult {
     currentStep,
     error,
     limitations,
+    telemetry,
+    startedAt,
+    streamOpen,
     selectDirectory,
     selectFiles,
     start,

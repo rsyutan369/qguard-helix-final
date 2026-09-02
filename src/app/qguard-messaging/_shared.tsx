@@ -191,11 +191,24 @@ export function PlanGateModal({
   badge = 'Choose a plan to download',
   title = 'Subscribe to unlock QGuard Messaging',
   subtitle = 'An active subscription (Starter or above) is required to download and use the app.',
+  plans,
+  highlight,
+  footnote,
 }: {
   onClose: () => void;
   badge?: string;
   title?: string;
   subtitle?: string;
+  /**
+   * Restrict the cards to the plans that actually unlock what the caller is
+   * gating. Offering a plan that would not grant access is worse than offering
+   * none — the visitor pays and is still refused. Defaults to every plan.
+   */
+  plans?: readonly string[];
+  /** The cheapest plan that unlocks it, badged instead of the default popular. */
+  highlight?: string;
+  /** Replaces the checkout reassurance line when the caller has a better one. */
+  footnote?: string;
 }) {
   const [cycle, setCycle] = useState<'monthly' | 'annual'>('monthly');
   const choose = (plan: string) => {
@@ -240,9 +253,9 @@ export function PlanGateModal({
         </div>
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
-          {DOWNLOAD_PLANS.map((plan) => {
+          {DOWNLOAD_PLANS.filter((plan) => !plans || plans.includes(plan.name)).map((plan) => {
             const price = cycle === 'annual' ? plan.priceYearly : plan.priceMonthly;
-            const featured = 'featured' in plan && plan.featured;
+            const featured = highlight ? plan.name === highlight : 'featured' in plan && plan.featured;
             return (
               <div
                 key={plan.name}
@@ -253,7 +266,11 @@ export function PlanGateModal({
               >
                 <div className="flex items-baseline justify-between">
                   <span className="text-sm font-black uppercase tracking-wide text-slate-900">{plan.name}</span>
-                  {featured && <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-black uppercase text-slate-50">Popular</span>}
+                  {featured && (
+                    <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[9px] font-black uppercase text-slate-50">
+                      {highlight ? 'Unlocks it' : 'Popular'}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-2 flex items-end gap-1">
                   <span className="text-3xl font-black text-slate-900">${price}</span>
@@ -276,7 +293,8 @@ export function PlanGateModal({
         </div>
 
         <p className="mt-5 flex items-center justify-center gap-1.5 text-center text-[11px] text-slate-400">
-          <Lock className="h-3 w-3" /> Secure checkout via PayPal. Your subscription unlocks the download instantly after payment.
+          <Lock className="h-3 w-3" />{' '}
+          {footnote ?? 'Secure checkout via PayPal. Your subscription unlocks the download instantly after payment.'}
         </p>
       </div>
     </div>

@@ -118,13 +118,30 @@ async function optionalUserAuth(req: AuthedRequest, _res: Response, next: NextFu
  * own token (RLS-scoped); a paid tier requires a real active subscription row,
  * and owner accounts resolve to Elite.
  */
-async function enforceMode(mode: ExposureScanMode, req: AuthedRequest, res: Response): Promise<boolean> {
+async function enforceMode(
+  mode: ExposureScanMode,
+  req: AuthedRequest,
+  res: Response,
+  /** The token the request actually carried, verified or not. */
+  suppliedToken: string | null,
+): Promise<boolean> {
   if (EXPOSURE_MODE_MIN_TIER[mode] === 'none') return true;
 
-  const token = req.token ?? getToken(req);
+  const token = req.token ?? null;
   const user = req.user ?? null;
 
   if (!token || !user) {
+    /* A token that was sent but could not be verified is a DIFFERENT problem
+       from no token at all. The caller has an expired or malformed session and
+       needs to sign in again — telling them to buy a plan they may already own
+       sends them to the wrong place entirely. */
+    if (suppliedToken) {
+      jsonError(res, 401, 'INVALID_TOKEN',
+        'Your session has expired or is not valid. Sign in again to run this assessment.',
+        { mode, reason: 'invalid-token' });
+      return false;
+    }
+
     const access = resolveExposureModeAccess(mode, 'none', false, false);
     jsonError(res, 401, 'AUTHENTICATION_REQUIRED', exposureModeDenialMessage(access), {
       mode,
@@ -164,10 +181,37 @@ async function enforceMode(mode: ExposureScanMode, req: AuthedRequest, res: Resp
   return false;
 }
 
+/**
+ * Where a caller's access token may come from.
+ *
+ * `EventSource` cannot set request headers — there is no API for it — so a
+ * browser subscribing to a live stream has nowhere to put a bearer token except
+ * the URL. Every other authenticated stream on this platform already accepts
+ * `?token=` for exactly that reason (see `tokenFromRequest` in
+ * api-server/crypto-agility.ts and siblings).
+ *
+ * The widening is granted PER ROUTE and never router-wide. A token in a URL is
+ * more exposed than one in a header — it can reach proxy logs, browser history
+ * and `Referer` — so only the read-only event stream accepts one. Starting,
+ * cancelling, syncing or reading a scan stays header-only.
+ */
+function tokenFromRequest(req: AuthedRequest, allowQueryToken: boolean): string | null {
+  const headerToken = getToken(req);
+  if (headerToken) return headerToken;
+  if (!allowQueryToken) return null;
+
+  const queryToken = req.query.token;
+  if (typeof queryToken === 'string' && queryToken.length > 0) return queryToken;
+  if (Array.isArray(queryToken) && typeof queryToken[0] === 'string' && queryToken[0].length > 0) {
+    return queryToken[0];
+  }
+  return null;
+}
+
 /** Middleware form: authenticate, then require the mode's plan. */
-function requireMode(mode: ExposureScanMode) {
+function requireMode(mode: ExposureScanMode, options: { allowQueryToken?: boolean } = {}) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
-    const token = getToken(req);
+    const token = tokenFromRequest(req, options.allowQueryToken === true);
     if (token) {
       const user = await getServerUser(token);
       if (user) {
@@ -176,7 +220,7 @@ function requireMode(mode: ExposureScanMode) {
         req.client = createAuthClient(token) || getServiceClient();
       }
     }
-    if (!(await enforceMode(mode, req, res))) return;
+    if (!(await enforceMode(mode, req, res, token))) return;
     next();
   };
 }
@@ -588,8 +632,16 @@ router.post('/scans/:scanId/cancel', requireMode('dev'), (req: AuthedRequest, re
   res.json({ data: { scanId: req.params.scanId, cancelled: true } });
 });
 
-/** Live event stream (§34). */
-router.get('/scans/:scanId/events', requireMode('dev'), (req: AuthedRequest, res) => {
+/**
+ * Live event stream (§34).
+ *
+ * The ONE route that accepts `?token=`: its only client is `EventSource`, which
+ * cannot send an Authorization header. Without this the subscription always
+ * arrived anonymous, was refused 401, and the browser — which treats a non-2xx
+ * on an event stream as fatal rather than retryable — reported the stream as
+ * lost while the scan ran on happily behind it.
+ */
+router.get('/scans/:scanId/events', requireMode('dev', { allowQueryToken: true }), (req: AuthedRequest, res) => {
   const job = getJob(req.params.scanId, req.user?.id ?? null);
   if (!job) return jsonError(res, 404, 'NOT_FOUND', 'No such assessment.');
 

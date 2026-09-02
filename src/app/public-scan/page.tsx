@@ -34,6 +34,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuth } from '@/contexts/auth-context';
 import { usePublicScan } from '@/hooks/use-public-scan';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { ACCENT, Panel, QuantumField, Reveal, SectionLabel } from './_ui';
@@ -62,6 +63,15 @@ import {
 
 /* ---------------------------------------------------------------- chrome --- */
 
+/**
+ * Product navigation — signed-in only.
+ *
+ * Every destination here except this page lives under /dashboard, which is
+ * authenticated. Showing them to a visitor advertises rooms they cannot enter
+ * and sends them to a login bounce, so the nav is rendered only once the
+ * session is known to exist. `/public-scan` itself stays reachable to everyone
+ * — it is the front door, not a member area.
+ */
 const NAV_LINKS = [
   { label: 'Dashboard', to: '/dashboard' },
   { label: 'Scanners', to: '/public-scan', active: true },
@@ -71,6 +81,11 @@ const NAV_LINKS = [
 ];
 
 function TopNav() {
+  /* Fail closed: the nav appears only when a session is CONFIRMED. While the
+     session is still resolving the visitor is treated as anonymous, so the
+     links can never flash up for someone who is not signed in. */
+  const { user, loading: authLoading } = useAuth();
+  const signedIn = Boolean(user) && !authLoading;
   const [scrolled, setScrolled] = React.useState(false);
   React.useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
@@ -97,37 +112,53 @@ function TopNav() {
           </span>
         </Link>
 
-        <nav className="hidden items-center gap-1 lg:flex">
-          {NAV_LINKS.map((link) => (
-            <Link
-              key={link.label}
-              to={link.to}
-              className={cn(
-                'rounded-lg px-3.5 py-2 text-[13px] font-semibold no-underline transition-colors',
-                link.active
-                  ? 'bg-cyan-400/10 text-cyan-300 ring-1 ring-cyan-400/25'
-                  : 'text-slate-400 hover:text-white',
-              )}
-            >
-              {link.label}
-            </Link>
-          ))}
-        </nav>
+        {signedIn && (
+          <nav className="hidden items-center gap-1 lg:flex" aria-label="Platform">
+            {NAV_LINKS.map((link) => (
+              <Link
+                key={link.label}
+                to={link.to}
+                className={cn(
+                  'rounded-lg px-3.5 py-2 text-[13px] font-semibold no-underline transition-colors',
+                  link.active
+                    ? 'bg-cyan-400/10 text-cyan-300 ring-1 ring-cyan-400/25'
+                    : 'text-slate-400 hover:text-white',
+                )}
+              >
+                {link.label}
+              </Link>
+            ))}
+          </nav>
+        )}
 
+        {/* The actions mirror the nav. Offering "Sign in" to someone already
+            signed in is the same defect in the other direction, so the signed-in
+            visitor gets the way back into the platform instead. */}
         <div className="flex items-center gap-2">
-          <Link
-            to="/login"
-            className="hidden rounded-lg border border-white/10 px-3.5 py-2 text-[13px] font-semibold text-slate-300 no-underline transition-colors hover:border-cyan-400/30 hover:text-cyan-300 sm:inline-flex"
-          >
-            Sign in
-          </Link>
-          <Link
-            to="/register"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-cyan-400/30 bg-cyan-400/10 font-mono text-[11px] font-black text-cyan-300 no-underline"
-            aria-label="Create an account"
-          >
-            QH
-          </Link>
+          {signedIn ? (
+            <Link
+              to="/dashboard"
+              className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3.5 py-2 text-[13px] font-bold text-cyan-300 no-underline transition-colors hover:bg-cyan-400/15"
+            >
+              Open dashboard
+            </Link>
+          ) : (
+            <>
+              <Link
+                to="/login"
+                className="hidden rounded-lg border border-white/10 px-3.5 py-2 text-[13px] font-semibold text-slate-300 no-underline transition-colors hover:border-cyan-400/30 hover:text-cyan-300 sm:inline-flex"
+              >
+                Sign in
+              </Link>
+              <Link
+                to="/register"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-cyan-400/30 bg-cyan-400/10 font-mono text-[11px] font-black text-cyan-300 no-underline"
+                aria-label="Create an account"
+              >
+                QH
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </header>

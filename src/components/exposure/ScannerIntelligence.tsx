@@ -696,7 +696,10 @@ export function EngineHealthPanel({
       >
         <span className="flex items-center gap-2">
           <Cpu aria-hidden className="h-3.5 w-3.5 text-slate-400" />
-          <span className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-slate-300">Scanner Engines</span>
+          {/* "Engine Registry", not "Scanner Engines": this is what the platform
+              HAS — every engine, its version, its rule set and its live health.
+              The ledger panel above it is what one assessment DID. */}
+          <span className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-slate-300">Engine Registry</span>
         </span>
         <span className="flex shrink-0 items-center gap-2">
           <span

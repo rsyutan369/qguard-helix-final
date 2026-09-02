@@ -22,6 +22,12 @@ import type {
 } from '@/lib/scanner/exposure/types';
 import { descriptorsForMode } from '@/lib/scanner/exposure/registry';
 import { resolveProfile } from '@/lib/scanner/exposure/profiles';
+import { useExposureAccess } from '@/hooks/use-exposure-access';
+import {
+  appendTelemetry,
+  toTelemetryFrame,
+  type ScanTelemetryFrame,
+} from '@/lib/scanner/exposure/telemetry-frame';
 
 export type DevScanState = 'idle' | 'starting' | 'scanning' | 'complete' | 'error' | 'cancelled';
 
@@ -60,6 +66,16 @@ export interface UseExposureScanResult {
   errorDetail: string | null;
   validation: RepositoryValidation | null;
   validating: boolean;
+  /**
+   * Bounded console of the REAL SSE frames this scan emitted, newest last.
+   * Built by the same translator the Local worker path uses, so one scan reads
+   * identically wherever it ran.
+   */
+  telemetry: ScanTelemetryFrame[];
+  /** Epoch ms the operator started the run. Null until they do. */
+  startedAt: number | null;
+  /** True while the EventSource is attached and delivering frames. */
+  streamOpen: boolean;
 
   validate: (url: string) => Promise<RepositoryValidation | null>;
   start: (options: DevScanStartOptions) => Promise<void>;
@@ -67,13 +83,16 @@ export interface UseExposureScanResult {
   reset: () => void;
 }
 
-function authHeaders(): HeadersInit {
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+/**
+ * The caller's Supabase access token, or null.
+ *
+ * The platform stores the session under a project-scoped key whose exact name
+ * varies by project ref, so the token is found by shape rather than by a
+ * hardcoded name. A missing token is not an error — the anonymous endpoints
+ * work without one.
+ */
+function accessToken(): string | null {
   try {
-    /* The platform stores the Supabase session under a project-scoped key; the
-       exact key varies by project ref, so the token is found by shape rather
-       than by a hardcoded name. A missing token is not an error — the anonymous
-       endpoints work without one. */
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key || !key.startsWith('sb-') || !key.endsWith('-auth-token')) continue;
@@ -81,18 +100,32 @@ function authHeaders(): HeadersInit {
       if (!raw) continue;
       const parsed = JSON.parse(raw);
       const token = parsed?.access_token ?? parsed?.currentSession?.access_token;
-      if (token) {
-        (headers as Record<string, string>).Authorization = `Bearer ${token}`;
-        break;
-      }
+      if (typeof token === 'string' && token.length > 0) return token;
     }
   } catch {
     /* no session available — the anonymous path still works */
   }
+  return null;
+}
+
+function authHeaders(): HeadersInit {
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  const token = accessToken();
+  if (token) (headers as Record<string, string>).Authorization = `Bearer ${token}`;
   return headers;
 }
 
 export function useExposureScan(): UseExposureScanResult {
+  /**
+   * Entitlement, resolved in the hook rather than in one component.
+   *
+   * Dev scans DO reach the server, and `requireMode('dev')` refuses an
+   * unentitled caller with a 401 — that remains the real control, and this
+   * cannot weaken it. What this adds is an honest refusal before the request:
+   * without it an unentitled caller sees a raw authorisation failure from the
+   * stream instead of being told which plan includes the mode.
+   */
+  const access = useExposureAccess('dev');
   const [state, setState] = useState<DevScanState>('idle');
   const [scanId, setScanId] = useState<string | null>(null);
   const [runs, setRuns] = useState<EngineRun[]>([]);
@@ -104,16 +137,117 @@ export function useExposureScan(): UseExposureScanResult {
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [validation, setValidation] = useState<RepositoryValidation | null>(null);
   const [validating, setValidating] = useState(false);
+  const [telemetry, setTelemetry] = useState<ScanTelemetryFrame[]>([]);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [streamOpen, setStreamOpen] = useState(false);
 
   const sourceRef = useRef<EventSource | null>(null);
   const progressFloor = useRef(0);
+  /** Sequence belongs to the stream, not the event — see telemetry-frame.ts. */
+  const telemetrySeq = useRef(0);
+  /**
+   * The server replays every event it has already emitted when a subscriber
+   * connects. Replayed frames must not be appended twice, so the console is
+   * keyed on the event identity rather than on arrival.
+   */
+  const seenFrames = useRef<Set<string>>(new Set());
+
+  /** Live state, readable from stream callbacks without re-binding them. */
+  const stateRef = useRef<DevScanState>('idle');
+  stateRef.current = state;
+  const pollTimer = useRef<number | null>(null);
 
   const closeStream = useCallback(() => {
     sourceRef.current?.close();
     sourceRef.current = null;
+    setStreamOpen(false);
   }, []);
 
-  useEffect(() => closeStream, [closeStream]);
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current === null) return;
+    window.clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+  }, []);
+
+  /**
+   * Follow a scan whose event stream went away.
+   *
+   * The scan runs on the SERVER. Losing the subscription says nothing about the
+   * scan, so abandoning the run — and telling the operator to reload, which
+   * cannot help because the scan id only ever lived in this component — throws
+   * away work that is still completing. This polls the job endpoint instead,
+   * which is an ordinary authenticated fetch and unaffected by whatever broke
+   * the stream, and applies the result when it lands.
+   */
+  const followByPolling = useCallback((scanIdToFollow: string) => {
+    if (pollTimer.current !== null) return;
+    setCurrentStep('Live stream interrupted — following the assessment by polling.');
+
+    const POLL_MS = 3_000;
+    /* The server enforces its own scan budget; this is only the point past
+       which the client stops asking, and it says so rather than hanging. */
+    const deadline = Date.now() + 15 * 60_000;
+    let consecutiveFailures = 0;
+
+    const settle = (next: DevScanState, message?: string) => {
+      stopPolling();
+      setCurrentStep(null);
+      if (message) setError(message);
+      setState(next);
+    };
+
+    const tick = async () => {
+      pollTimer.current = null;
+      if (Date.now() > deadline) {
+        settle('error', 'The assessment did not report a result within 15 minutes and is no longer being followed. Start it again, or check the scan history.');
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/v1/exposure/scans/${encodeURIComponent(scanIdToFollow)}`, {
+          headers: authHeaders(),
+        });
+        if (!response.ok) throw new Error(`status ${response.status}`);
+        const payload = await response.json();
+        const job = payload?.data;
+        consecutiveFailures = 0;
+
+        if (job?.assessment) {
+          const assessed = job.assessment as ExposureAssessment;
+          setAssessment(assessed);
+          setRuns(assessed.task.runs);
+          setFindings(assessed.findings);
+          setProgress(100);
+          progressFloor.current = 100;
+          settle(assessed.task.status === 'cancelled' ? 'cancelled' : 'complete');
+          return;
+        }
+        if (job?.status === 'failed') {
+          settle('error', job.error ?? 'The assessment failed.');
+          return;
+        }
+        if (job?.status === 'cancelled') {
+          settle('cancelled');
+          return;
+        }
+      } catch {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 5) {
+          settle('error', 'The assessment stream was lost and the scan could not be reached to follow it. Start the assessment again.');
+          return;
+        }
+      }
+
+      pollTimer.current = window.setTimeout(() => void tick(), POLL_MS);
+    };
+
+    pollTimer.current = window.setTimeout(() => void tick(), POLL_MS);
+  }, [stopPolling]);
+
+  useEffect(() => () => {
+    closeStream();
+    stopPolling();
+  }, [closeStream, stopPolling]);
 
   const validate = useCallback(async (url: string): Promise<RepositoryValidation | null> => {
     if (!url.trim()) {
@@ -150,7 +284,18 @@ export function useExposureScan(): UseExposureScanResult {
 
   const start = useCallback(
     async (options: DevScanStartOptions) => {
+      /* Refused before the request. The server refuses it too — this only
+         decides whether the operator reads a plan message or a 401. */
+      if (!access.loading && !access.allowed) {
+        setError(access.message || 'Dev assessment requires an active plan that includes it.');
+        setErrorDetail(null);
+        setState('error');
+        return;
+      }
+
       closeStream();
+      /* A new run supersedes any recovery poll still following the last one. */
+      stopPolling();
       progressFloor.current = 0;
       setState('starting');
       setError(null);
@@ -158,6 +303,10 @@ export function useExposureScan(): UseExposureScanResult {
       setFindings([]);
       setAssessment(null);
       setProgress(0);
+      setTelemetry([]);
+      telemetrySeq.current = 0;
+      seenFrames.current = new Set();
+      setStartedAt(Date.now());
       setCurrentStep('Queueing assessment…');
 
       /* The ledger is seeded from the SAME profile resolution the server will
@@ -216,13 +365,38 @@ export function useExposureScan(): UseExposureScanResult {
         return;
       }
 
-      setScanId(handle.scanId);
+      /* Bound to a const so the stream callbacks below can rely on it: TypeScript
+         does not carry the null-narrowing of a `let` into a nested closure. */
+      const startedScanId = handle.scanId;
+      setScanId(startedScanId);
       setState('scanning');
 
-      const source = new EventSource(`/api/v1/exposure/scans/${encodeURIComponent(handle.scanId)}/events`);
+      /* EventSource has no way to send an Authorization header, so the token
+         travels in the query string — the same contract every other
+         authenticated stream on this platform uses. Sending nothing means the
+         server refuses the subscription with a 401 that the browser treats as
+         fatal, which reads to the operator as "the connection was lost" even
+         though the scan is running perfectly well. */
+      const streamToken = accessToken();
+      const streamUrl = `/api/v1/exposure/scans/${encodeURIComponent(startedScanId)}/events${
+        streamToken ? `?token=${encodeURIComponent(streamToken)}` : ''
+      }`;
+      const source = new EventSource(streamUrl);
       sourceRef.current = source;
+      setStreamOpen(true);
 
       const applyEvent = (event: ScanEvent) => {
+        /* Console first, interpretation second — the feed records the stream,
+           it does not paraphrase the state the stream produced. Replays are
+           collapsed on event identity so a reconnect never doubles the log. */
+        const identity = `${event.event}|${event.timestamp}|${event.engineId ?? ''}|${event.finding?.id ?? ''}|${event.step ?? ''}`;
+        if (!seenFrames.current.has(identity)) {
+          seenFrames.current.add(identity);
+          telemetrySeq.current += 1;
+          const frame = toTelemetryFrame(event, telemetrySeq.current);
+          if (frame) setTelemetry((current) => appendTelemetry(current, frame));
+        }
+
         if (typeof event.progress === 'number' && event.progress > progressFloor.current) {
           progressFloor.current = event.progress;
           setProgress(event.progress);
@@ -320,17 +494,15 @@ export function useExposureScan(): UseExposureScanResult {
       }
 
       source.addEventListener('error', () => {
+        /* CONNECTING means the browser is retrying on its own; only CLOSED is
+           final. A drop after the terminal frame is normal and expected. */
         if (source.readyState !== EventSource.CLOSED) return;
-        // A transport drop after completion is normal; before it is not.
-        setState((current) => {
-          if (current !== 'scanning') return current;
-          setError('The connection to the assessment stream was lost. The scan may still be running — reload to reconnect.');
-          return 'error';
-        });
         closeStream();
+        if (stateRef.current !== 'scanning' && stateRef.current !== 'starting') return;
+        followByPolling(startedScanId);
       });
     },
-    [closeStream],
+    [closeStream, followByPolling, stopPolling, access.allowed, access.loading, access.message],
   );
 
   const cancel = useCallback(async () => {
@@ -345,6 +517,7 @@ export function useExposureScan(): UseExposureScanResult {
 
   const reset = useCallback(() => {
     closeStream();
+    stopPolling();
     progressFloor.current = 0;
     setState('idle');
     setScanId(null);
@@ -356,7 +529,11 @@ export function useExposureScan(): UseExposureScanResult {
     setError(null);
     setErrorDetail(null);
     setValidation(null);
-  }, [closeStream]);
+    setTelemetry([]);
+    telemetrySeq.current = 0;
+    seenFrames.current = new Set();
+    setStartedAt(null);
+  }, [closeStream, stopPolling]);
 
   return {
     state,
@@ -370,6 +547,9 @@ export function useExposureScan(): UseExposureScanResult {
     errorDetail,
     validation,
     validating,
+    telemetry,
+    startedAt,
+    streamOpen,
     validate,
     start,
     cancel,
