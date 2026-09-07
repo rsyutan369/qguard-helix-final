@@ -856,6 +856,17 @@ const PRIMITIVE_RE = new RegExp(
     '\\bP-(256|384|521)\\b',
     '\\bECPUBLICKEY\\b',
     '\\bGOST\\b',
+    /*
+     * X.509 signature algorithms in their concatenated spelling —
+     * "SHA256withRSA", "sha1WithRSAEncryption", "SHA384withECDSA".
+     *
+     * Every token above is `\b`-anchored, and there is no word boundary inside
+     * "withRSA": `h` and `R` are both word characters, so `\bRSA\b` cannot see
+     * it, and `SHA256` fails its trailing boundary for the same reason. The
+     * most common way a certificate records its algorithm therefore read as a
+     * scanner finding title and was excluded from every primitive count.
+     */
+    'WITH(RSA|DSA|ECDSA|ED25519)',
   ].join('|'),
   'i',
 )

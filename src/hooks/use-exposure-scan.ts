@@ -254,6 +254,21 @@ export function useExposureScan(): UseExposureScanResult {
       setValidation(null);
       return null;
     }
+    /* The server refuses this too (`requireMode('dev')` — it resolves the
+       repository through a platform adapter). Refusing here as well is not
+       redundancy for its own sake: it turns a raw 401/403 body into the plan
+       message the operator can act on, and spends no request doing it. */
+    if (!access.allowed) {
+      const result: RepositoryValidation = {
+        ok: false,
+        notice: access.message
+          || (access.loading
+            ? 'Your plan is still being verified. Try again in a moment.'
+            : 'Development assessment requires an active plan that includes it.'),
+      };
+      setValidation(result);
+      return result;
+    }
     setValidating(true);
     try {
       const response = await fetch('/api/v1/exposure/dev/validate', {
@@ -280,14 +295,23 @@ export function useExposureScan(): UseExposureScanResult {
     } finally {
       setValidating(false);
     }
-  }, []);
+  }, [access.allowed, access.loading, access.message]);
 
   const start = useCallback(
     async (options: DevScanStartOptions) => {
       /* Refused before the request. The server refuses it too — this only
-         decides whether the operator reads a plan message or a 401. */
-      if (!access.loading && !access.allowed) {
-        setError(access.message || 'Dev assessment requires an active plan that includes it.');
+         decides whether the operator reads a plan message or a 401.
+         Fails CLOSED while the entitlement is still resolving: the panel shows
+         a skeleton until it clears, so nothing legitimate calls this in that
+         window, and admitting the caller "because we do not know yet" would
+         hold the gate open for a billing round-trip. */
+      if (!access.allowed) {
+        setError(
+          access.message
+            || (access.loading
+              ? 'Your plan is still being verified. Try again in a moment.'
+              : 'Development assessment requires an active plan that includes it.'),
+        );
         setErrorDetail(null);
         setState('error');
         return;
@@ -575,11 +599,19 @@ export interface PublicConnectionView {
 
 /** Connections are authenticated-only; an anonymous caller gets an empty list. */
 export function useExposureConnections() {
+  const access = useExposureAccess('dev');
   const [connections, setConnections] = useState<PublicConnectionView[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async () => {
+    /* `/dev/connections` is gated to Pro server-side, so an unentitled tab that
+       calls it earns a 403 and nothing else. Skipping the request keeps the
+       locked panel silent rather than having it fail in the background. */
+    if (!access.allowed) {
+      setConnections([]);
+      return;
+    }
     setLoading(true);
     try {
       const response = await fetch('/api/v1/exposure/dev/connections', { headers: authHeaders() });
@@ -595,7 +627,7 @@ export function useExposureConnections() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [access.allowed]);
 
   useEffect(() => {
     void refresh();

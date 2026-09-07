@@ -33,6 +33,16 @@ export { reportEvidenceEvents, scanStartedEvent, stageTransitionEvents } from '.
 export { useQveBudget, useAdaptiveDpr, type QveBudget, type QveTier } from './performance-manager';
 export { useQveAudio, cueForSeverity, type QveCue } from './audio-manager';
 
+export {
+  QveThemeProvider,
+  useQveTheme,
+  useQvePalette,
+  qveAccentOn,
+  QVE_PALETTE,
+  type QveTheme,
+  type QvePalette,
+} from './theme';
+
 export { CoreStage, type CoreStageProps } from './core/CoreStage';
 export { ScoreRing, type ScoreRingProps } from './core/ScoreRing';
 export { BeamNetwork, type BeamNetworkProps } from './beams/BeamNetwork';
@@ -52,10 +62,12 @@ export {
   gradeWaveColors,
   isAlertSeverity,
   maxSeverity,
+  readableOn,
   resolveNodeVerdict,
   QVE_BAND_COLOR,
   QVE_BAND_LABEL,
   QVE_COLOR,
+  QVE_DARK_SURFACE,
   type QveResolvedVerdict,
   type QveVerdictKey,
   type QveNode,

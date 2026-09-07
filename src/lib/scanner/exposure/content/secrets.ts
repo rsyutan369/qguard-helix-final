@@ -26,7 +26,7 @@
 
 import type { FindingConfidence, FindingSeverity } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine, WorkspaceFile } from '../engine-contract';
-import { buildEvidence, buildFinding, completed } from '../engine-contract';
+import { buildEvidence, buildFinding, completed, reportStride } from '../engine-contract';
 import { stableHash } from '../types';
 
 /* ────────────────────────────────────────────────────────── provider rules ── */
@@ -344,10 +344,12 @@ export const secretsEngine: ExposureEngine = {
     const fingerprints = new Set<string>();
     let processed = 0;
 
+    /* One update per ~2% of the work, whatever the corpus size. */
+    const secretStride = reportStride(files.length);
     for (const file of files) {
       if (context.isCancelled()) break;
       processed += 1;
-      if (processed % 40 === 0 || processed === files.length) {
+      if (processed % secretStride === 0 || processed === files.length) {
         context.report('Scanning for credential material', { done: processed, total: files.length, unit: 'files' });
       }
 

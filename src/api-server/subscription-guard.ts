@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { isOwnerEmail } from '@/lib/admin-access'
+import { DEMO_ACCOUNT_TIER, isDemoModeEnabled, isDemoUserId } from '@/lib/demo-account'
 import {
   TIER_RANK,
   TIER_LABEL,
@@ -154,6 +155,14 @@ export interface Entitlement {
 export async function resolveEntitlement(userId: string, email: string | null | undefined, token: string): Promise<Entitlement> {
   if (isOwnerEmail(email)) {
     return { tier: 'elite', status: 'active', isActive: true, isOwner: true }
+  }
+  /* Demo account — see src/lib/demo-account.ts. A constant entitlement, because
+     the billing table it would otherwise read lives in the project that is
+     unavailable. `isOwner` stays FALSE: this grants the Elite subscription
+     tier, not platform ownership, so `requireOwner` on /api/v1/admin and the
+     Revenue Intelligence routes still refuse it. */
+  if (isDemoModeEnabled() && isDemoUserId(userId)) {
+    return { tier: DEMO_ACCOUNT_TIER, status: 'active', isActive: true, isOwner: false }
   }
   const client = createAuthClient(token)
   if (!client) throw new Error('subscription: no supabase auth client')

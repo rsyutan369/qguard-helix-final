@@ -52,11 +52,14 @@ export interface SecurityEvent {
  */
 export type { ExposureNode, ExposureNodeEvidence, ExposureEdge } from '@/lib/dashboard-service'
 import type { ExposureNode, ExposureEdge } from '@/lib/dashboard-service'
+import type { EstateWorkflowGraph } from '@/lib/dashboard/estate-workflow'
 
 export interface ExposureMap {
   nodes: ExposureNode[]
   edges: ExposureEdge[]
 }
+
+export type EstateWorkflow = EstateWorkflowGraph
 
 export interface ActivityItem {
   id: string
@@ -231,6 +234,8 @@ export function useDashboard() {
   const [executive, setExecutive] = useState<ExecutiveSnapshot | null>(null)
   const [events, setEvents] = useState<SecurityEvent[]>([])
   const [exposureMap, setExposureMap] = useState<ExposureMap>({ nodes: [], edges: [] })
+  const [estateWorkflow, setEstateWorkflow] = useState<EstateWorkflow | null>(null)
+  const [workflowState, setWorkflowState] = useState<LoadingState>('loading')
   const [activities, setActivities] = useState<ActivityItem[]>([])
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
   const [health, setHealth] = useState<HealthStatus | null>(null)
@@ -322,6 +327,30 @@ export function useDashboard() {
     }
   }, [token])
 
+  /**
+   * The Estate Exposure Workflow graph.
+   *
+   * Built SERVER-side from the same rows `/exposure-map` reads, so the two
+   * projections of this estate cannot disagree. Kept as its own state slot
+   * rather than derived from `exposureMap`: the map carries only assets and
+   * edges, while the workflow also holds the CBOM, certificates, algorithms and
+   * the finding registers.
+   */
+  const fetchEstateWorkflow = useCallback(async () => {
+    if (!token) return
+    setWorkflowState('loading')
+    try {
+      const res = await fetch('/api/v1/dashboard/estate-workflow', { headers: apiHeaders })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setEstateWorkflow(json.data || null)
+      setWorkflowState('success')
+    } catch (err) {
+      console.error('Failed to fetch estate workflow:', err)
+      setWorkflowState(prev => prev === 'success' ? 'offline' : 'error')
+    }
+  }, [token])
+
   const fetchActivity = useCallback(async () => {
     if (!token) return
     setActivityState('loading')
@@ -378,7 +407,7 @@ export function useDashboard() {
     try {
       await Promise.all([
         fetchSummary(), fetchExecutive(), fetchEvents(), fetchExposureMap(),
-        fetchActivity(), fetchRecommendations(), fetchHealth(),
+        fetchEstateWorkflow(), fetchActivity(), fetchRecommendations(), fetchHealth(),
       ])
     } finally {
       refreshInFlightRef.current = false
@@ -533,6 +562,8 @@ export function useDashboard() {
     executive,
     events,
     exposureMap,
+    estateWorkflow,
+    workflowState,
     activities,
     recommendations,
     health,

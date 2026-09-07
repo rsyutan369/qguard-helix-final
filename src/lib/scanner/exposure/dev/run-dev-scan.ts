@@ -213,6 +213,34 @@ function resolveTarget(options: DevScanOptions): { target: ScanTarget } | { erro
   return { error: 'No scan target was supplied. Provide a repository URL, or select a connected cluster, cloud account or image.' };
 }
 
+/**
+ * The share of the progress bar reserved for repository acquisition.
+ *
+ * Measured on a real public repository: 21.1s spent fetching 57 files against
+ * 0.4s of engine execution — acquisition was 98% of the scan. The engines are
+ * in-memory passes over a corpus that is already downloaded, so they will
+ * always be the fast part of a repository scan. Reserving most of the bar for
+ * the download is what makes the bar describe the wait the operator is actually
+ * having; the remainder still animates through the real engine ledger.
+ *
+ * Targets with no acquisition phase (a cluster, cloud account or registry, where
+ * the engines do the network work themselves) keep the whole range.
+ */
+export const ACQUISITION_PROGRESS_SHARE = 80;
+
+/**
+ * Maps a real read ratio onto the acquisition band.
+ *
+ * Exported so the progress model can be asserted without a network round-trip
+ * (tools/scan-progress-check.ts) — inline arithmetic inside a publish callback
+ * is arithmetic nobody can test.
+ */
+export function acquisitionProgress(done: number, total: number): number {
+  if (!Number.isFinite(total) || total <= 0) return 0;
+  const ratio = Math.max(0, Math.min(1, done / total));
+  return Math.round(ratio * ACQUISITION_PROGRESS_SHARE);
+}
+
 async function executeJob(job: DevScanJob, options: DevScanOptions, engines: string[]): Promise<void> {
   inFlight += 1;
   try {
@@ -242,6 +270,7 @@ async function executeJob(job: DevScanJob, options: DevScanOptions, engines: str
         engineLabel: 'Repository Discovery',
         state: 'running',
         step: 'Resolving repository',
+        progress: 0,
       });
 
       const limits = options.profileId === 'quick' ? REPO_LIMITS.quick : options.profileId === 'deep' || options.profileId === 'full-dev' ? REPO_LIMITS.deep : REPO_LIMITS.standard;
@@ -261,6 +290,10 @@ async function executeJob(job: DevScanJob, options: DevScanOptions, engines: str
             state: 'running',
             step: `Reading ${current}`,
             units: { done, total, unit: 'files' },
+            /* The real read ratio, mapped onto the acquisition band. Without
+               this the bar could not move at all during the longest phase of
+               the scan. */
+            progress: acquisitionProgress(done, total),
           });
         },
       });
@@ -302,6 +335,7 @@ async function executeJob(job: DevScanJob, options: DevScanOptions, engines: str
         engineLabel: 'Repository Discovery',
         state: 'completed',
         detail: `${collected.stats.read} of ${collected.stats.treeEntries} files read from branch ${collected.resolution.branch}.`,
+        progress: ACQUISITION_PROGRESS_SHARE,
       });
     }
 
@@ -322,6 +356,12 @@ async function executeJob(job: DevScanJob, options: DevScanOptions, engines: str
       concurrency: 3,
       isCancelled: () => job.cancelled,
       onEvent: publish,
+      /* The engines take the band acquisition did not use. A repository target
+         has already spent the front of the bar downloading; every other Dev
+         target does its own network work inside the engines and keeps the lot. */
+      progressRange: job.target.kind === 'repository'
+        ? { from: ACQUISITION_PROGRESS_SHARE, to: 99 }
+        : { from: 0, to: 99 },
     });
 
     /* Collection limitations are folded into the assessment's coverage so the

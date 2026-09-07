@@ -19,7 +19,7 @@
 
 import type { CryptoRole, FindingSeverity } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine, WorkspaceFile } from '../engine-contract';
-import { buildEvidence, buildFinding, completed } from '../engine-contract';
+import { buildEvidence, buildFinding, completed, reportStride } from '../engine-contract';
 import { canonicalAlgorithmName, classifyQuantum } from '../algorithms';
 import { assessProtocol, cipherListPermits } from '@/lib/crypto/tls-intelligence';
 import { STANDARDS, citeStandard } from '@/lib/crypto/knowledge-base';
@@ -359,10 +359,12 @@ export const configurationEngine: ExposureEngine = {
     const findings: ReturnType<typeof buildFinding>[] = [];
     let processed = 0;
 
+    /* One update per ~2% of the work, whatever the corpus size. */
+    const configStride = reportStride(files.length);
     for (const file of files) {
       if (context.isCancelled()) break;
       processed += 1;
-      if (processed % 20 === 0 || processed === files.length) {
+      if (processed % configStride === 0 || processed === files.length) {
         context.report('Reading configuration', { done: processed, total: files.length, unit: 'files' });
       }
 

@@ -53,7 +53,23 @@ function walk(dir: string): string[] {
   return out
 }
 
-const files = walk('src/app/dashboard')
+/*
+ * `src/app/dashboard` alone was NOT enough, and the gap cost a whole page.
+ *
+ * /dashboard/scanner and the Crypto Exposure tabs are drawn almost entirely by
+ * SHARED atoms that live outside that tree — `components/quantum-scan/ui.tsx`
+ * (the `Panel` every card on the page is made of) and `components/exposure/*`.
+ * This suite never read them, so the dark fills they introduce were invisible
+ * to it and the light-theme layer was never asked to cover them.
+ *
+ * Any directory whose components render inside `.qg-dashboard-main` belongs
+ * here, not just the route files.
+ */
+const files = [
+  ...walk('src/app/dashboard'),
+  ...walk('src/components/exposure'),
+  ...walk('src/components/quantum-scan'),
+]
 
 /* ------------------------------------------------------------------ */
 console.log('\n[1] Semantic notice tokens exist for BOTH themes')
@@ -113,11 +129,44 @@ for (const file of files) {
   }
 }
 
-const uncovered = [...darkHexes].filter((h) => !layer.includes(`.bg-\\[\\#${h}\\]`))
+/*
+ * Coverage is asserted against the class AS THE MARKUP WRITES IT, not against
+ * the bare hex.
+ *
+ * The original assertion looked for `.bg-\[\#080d1a\]` — the exact-utility
+ * form — and passed, while the page it was meant to protect rendered black in
+ * light mode. `bg-[#080d1a]/80` is a DIFFERENT class name: an opacity modifier
+ * makes Tailwind emit its own utility, which `.bg-\[\#080d1a\]` does not
+ * match. Two thirds of the dark fills in the dashboards carry a modifier, so
+ * the check was green on a layer that reached almost none of them.
+ *
+ * The layer now matches `[class*="bg-[#hex]"]`, which covers the plain fill,
+ * every `/alpha` variant and any variant prefix. This asserts that form.
+ */
+const covers = (h: string) => layer.includes(`[class*="bg-[#${h}]"]`)
+const uncovered = [...darkHexes].filter((h) => !covers(h))
 assert(
   uncovered.length === 0,
   'every dark background hex used by a dashboard is remapped for light mode',
   uncovered.length ? `uncovered: ${uncovered.map((h) => '#' + h).join(', ')}` : `${darkHexes.size} covered`,
+)
+
+/* The specific regression above: a dark fill written WITH an opacity modifier
+   must be matched by a selector that can actually see it. */
+const modifiedDarkHexes = new Set<string>()
+for (const file of files) {
+  const text = readFileSync(file, 'utf8')
+  for (const m of text.matchAll(/bg-\[#([0-9a-fA-F]{6})\]\/\d+/g)) {
+    if (luminance(m[1]) < 0.22) modifiedDarkHexes.add(m[1])
+  }
+}
+const exactOnly = [...modifiedDarkHexes].filter((h) => !covers(h))
+assert(
+  exactOnly.length === 0,
+  'dark fills carrying an opacity modifier (bg-[#hex]/80) are matched as a substring, not as an exact utility class',
+  exactOnly.length
+    ? `exact-class only: ${exactOnly.map((h) => '#' + h).join(', ')}`
+    : `${modifiedDarkHexes.size} modifier-form fill(s) covered`,
 )
 
 /* ------------------------------------------------------------------ */
@@ -163,6 +212,34 @@ assert(
   (layer.match(/:not\(\.qg-force-dark\)/g) || []).length >= 6,
   'every remap rule excludes the opt-out',
   `${(layer.match(/:not\(\.qg-force-dark\)/g) || []).length} rule(s)`,
+)
+
+/*
+ * The hatch has to hold in BOTH light layers.
+ *
+ * There are two: this one, scoped to `.qg-dashboard-main`, and an older one
+ * scoped to `.dashboard-theme-scope` further up the sheet. Only this one
+ * carried the guard, so a `qg-force-dark` subtree still had its foreground
+ * inverted by the older layer — the scanner hero's `text-white` heading
+ * rendered near-black on the dark stage it is deliberately painted on. An
+ * escape hatch that only half the sheet honours is not an escape hatch.
+ */
+const olderLayer = css.slice(
+  css.indexOf('.qg-theme-light .dashboard-theme-scope'),
+  css.indexOf('LIGHT THEME — dashboard CONTENT compatibility layer'),
+)
+const unguardedUtilityRemaps = olderLayer
+  .split('\n')
+  .filter((l) => l.trim().startsWith('.qg-theme-light .dashboard-theme-scope '))
+  .filter((l) => l.includes('[class*=') || /\.dashboard-theme-scope \.(text|bg|border|divide|ring|placeholder)-/.test(l))
+  .filter((l) => !l.includes('::'))
+  .filter((l) => !l.includes(':not(.qg-force-dark)'))
+assert(
+  unguardedUtilityRemaps.length === 0,
+  'the OLDER .dashboard-theme-scope light layer honours the same opt-out',
+  unguardedUtilityRemaps.length
+    ? `${unguardedUtilityRemaps.length} unguarded: ${unguardedUtilityRemaps[0].trim().slice(0, 70)}…`
+    : 'all utility remaps guarded',
 )
 
 /* ------------------------------------------------------------------ */

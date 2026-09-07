@@ -87,9 +87,22 @@ export default function ThreatTimeline({ events, loading }: { events: SecurityEv
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
           </div>
         ) : filtered.length === 0 ? (
-          <div className="flex h-40 flex-col items-center justify-center text-center opacity-40">
+          /* Two different answers, and they were sharing one message.
+             "No events match" reads as a filter result; on a tenant with no
+             recorded events at all it quietly implied the timeline had been
+             searched and found clean. An empty security-event stream is not a
+             statement about the estate's safety, and it must not be phrased as
+             one — so the no-events case says what it actually means. */
+          <div className="flex h-40 flex-col items-center justify-center px-6 text-center opacity-40">
             <History className="mb-3 h-8 w-8 text-white/30" />
-            <p className="text-[10px] font-black uppercase tracking-widest">No events match</p>
+            <p className="text-[10px] font-black uppercase tracking-widest">
+              {events.length === 0 ? 'No security events recorded' : 'No events match this filter'}
+            </p>
+            {events.length === 0 && (
+              <p className="mt-1.5 text-[10px] normal-case leading-relaxed tracking-normal text-white/40">
+                Nothing has been written to the event stream yet. This is not an assessment of your posture.
+              </p>
+            )}
           </div>
         ) : (
           <div className="relative space-y-1 pl-4">

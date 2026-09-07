@@ -26,6 +26,7 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { Globe, MapPin, Network, Server, ShieldHalf, Waypoints, type LucideIcon } from 'lucide-react';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
+import { qveAccentOn, useQvePalette } from '../theme';
 
 export interface InfraTile {
   key: string;
@@ -189,6 +190,7 @@ export const InfrastructureStrip = React.memo(function InfrastructureStrip({
   tiles: InfraTile[];
   animate: boolean;
 }) {
+  const palette = useQvePalette();
   return (
     <dl className="grid grid-cols-2 divide-white/[0.06] sm:grid-cols-3 lg:grid-cols-6 lg:divide-x">
       {tiles.map((tile, index) => (
@@ -210,7 +212,7 @@ export const InfrastructureStrip = React.memo(function InfrastructureStrip({
             <dt className="truncate text-[11.5px] font-semibold text-slate-400">{tile.label}</dt>
             <dd
               className="truncate text-[14px] font-black leading-tight"
-              style={{ color: tile.measured ? (tile.tone ?? '#e2e8f0') : '#475569' }}
+              style={{ color: tile.measured ? qveAccentOn(tile.tone ?? palette.ink, palette) : palette.inkMuted }}
             >
               {tile.value}
             </dd>

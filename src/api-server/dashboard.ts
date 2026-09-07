@@ -13,6 +13,9 @@ import {
   str as textOf,
   UNASSESSED_BAND,
 } from '@/lib/migration/asset-intelligence'
+import { buildEstateWorkflowGraph } from '@/lib/dashboard/estate-workflow'
+import { buildSnapshot } from './quantum-readiness'
+import { readScannerMemoryRows } from './scanner'
 
 const router = Router()
 
@@ -414,20 +417,85 @@ async function buildEventsFallback(client: any, userId: string, limit: number) {
     .slice(0, limit)
 }
 
-async function buildExposureMapFallback(client: any, userId: string) {
-  const [assets, relationships, exposures, vulnerabilities, scanResults, runtimeEvents, inventory, certificates] = await Promise.all([
+/**
+ * The estate query set — read ONCE, by everything that renders the estate.
+ *
+ * `/exposure-map` and `/estate-workflow` are two projections of the same
+ * tenant. Letting each issue its own query set is exactly how two panels on one
+ * page come to disagree about how many assets a tenant has, so the rows are
+ * loaded here and both projections read the same arrays.
+ *
+ * The extra columns over the original map query (`title`, `exposure_type`,
+ * `remediation`, `common_name`, …) are the ones the workflow's node inspector
+ * prints. They cost nothing extra — the rows were already being fetched — and
+ * they are what turns a node from an opaque dot into a readable record.
+ */
+async function loadEstateRows(client: any, userId: string) {
+  const [assets, relationships, exposures, vulnerabilities, scanResults, runtimeEvents, inventory, certificates, sessions] = await Promise.all([
     safeRows(client, 'assets', (q) => q.select('id, name, type, environment, criticality, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(300)),
     safeRows(client, 'asset_relationships', (q) => q.select('source_asset_id, target_asset_id, relationship_type').eq('user_id', userId).limit(600)),
-    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, severity, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000)),
-    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, severity, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000)),
+    safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1600)),
     // `algorithm` is required: the shared posture engine classifies it to decide
     // whether the asset is quantum-vulnerable. Omitting it silently downgraded
     // every asset's posture to "hybrid".
-    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, algorithm, threat_level, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, algorithm, threat_level, remediation, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, severity, risk_score, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2400)),
-    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, is_vulnerable, is_quantum_safe, exposure_level, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(1600)),
-    safeRows(client, 'certificates', (q) => q.select('id, asset_id, status, algorithm, not_after, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, is_vulnerable, is_quantum_safe, exposure_level, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(1600)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, common_name, status, algorithm, not_after, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(60)),
   ])
+
+  /*
+   * DEGRADED-STORE FALLBACK, DISCLOSED.
+   *
+   * When the database is unreachable the scanner keeps completed results in an
+   * in-memory store, and everything derived from `buildScannerIntelligence`
+   * keeps reporting them. Reading the database directly and stopping there is
+   * what produced the split this fixes: the migration workflow reported "2
+   * assets · Discovery complete" while the exposure map beside it drew an empty
+   * estate, because the two were reading different stores.
+   *
+   * So when the database returns no assets and the scanner memory holds some,
+   * those rows answer instead — and `persistence` says so, all the way to the
+   * UI. A user is never shown a degraded read without being told it is one.
+   */
+  let persistence: 'database' | 'memory' = 'database'
+  let effectiveAssets = assets || []
+  let effectiveInventory = inventory || []
+  let effectiveExposures = exposures || []
+  let effectiveResults = scanResults || []
+  let effectiveSessions = sessions || []
+
+  if (effectiveAssets.length === 0) {
+    const memory = readScannerMemoryRows(userId)
+    if (memory.assets.length > 0 || memory.inventory.length > 0) {
+      persistence = 'memory'
+      effectiveAssets = memory.assets
+      effectiveInventory = memory.inventory
+      effectiveExposures = memory.exposures
+      effectiveResults = memory.results
+      effectiveSessions = memory.sessions
+    }
+  }
+
+  return {
+    assets: effectiveAssets,
+    relationships: relationships || [],
+    exposures: effectiveExposures,
+    vulnerabilities: vulnerabilities || [],
+    scanResults: effectiveResults,
+    runtimeEvents: runtimeEvents || [],
+    inventory: effectiveInventory,
+    certificates: certificates || [],
+    sessions: effectiveSessions,
+    persistence,
+  }
+}
+
+async function buildExposureMapFallback(client: any, userId: string) {
+  const { assets, relationships, exposures, vulnerabilities, scanResults, runtimeEvents, inventory, certificates } =
+    await loadEstateRows(client, userId)
 
   // Per-asset risk comes from the SHARED engine in
   // src/lib/migration/asset-intelligence.ts — the same call the Quantum
@@ -607,6 +675,55 @@ router.get('/exposure-map', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Exposure map error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch exposure map' } })
+  }
+})
+
+/**
+ * GET /api/v1/dashboard/estate-workflow
+ *
+ * The Estate Exposure Workflow™ — the tenant's scan sessions, assets, real
+ * asset-to-asset relationships, CBOM components, certificates, algorithms,
+ * findings and recorded remediations, projected into ONE typed graph.
+ *
+ * Reads `loadEstateRows` — the same rows `/exposure-map` reads — and applies
+ * the same shared posture model, so the workflow, the map and the asset
+ * dossiers cannot report different numbers for one estate. The projection
+ * itself is pure and lives in `src/lib/dashboard/estate-workflow.ts`; nothing
+ * about the graph is computed here.
+ */
+router.get('/estate-workflow', async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user
+    const token = (req as any).token
+    const client = createAuthClient(token)
+
+    if (!client) {
+      return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
+    }
+
+    const rows = await loadEstateRows(client, user.id)
+
+    // Same call the exposure map, Quantum Readiness and the Migration Planner
+    // make. Risk is never re-derived for a projection.
+    const postureModel = deriveAssetPostureModel({
+      assets: rows.assets,
+      scanResults: rows.scanResults,
+      cryptoExposures: rows.exposures,
+      cryptoInventory: rows.inventory,
+      runtimeEvents: rows.runtimeEvents,
+    })
+
+    const graph = buildEstateWorkflowGraph({
+      ...rows,
+      assetRisk: postureModel.assetRisk,
+      assetPosture: postureModel.assetPosture,
+      persistence: rows.persistence,
+    })
+
+    return res.json({ data: graph })
+  } catch (err) {
+    console.error('Estate workflow error:', err)
+    return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to build estate workflow' } })
   }
 })
 
@@ -934,6 +1051,44 @@ router.get('/recommendations', async (req: Request, res: Response) => {
 
     // Sort by priority
     recommendations.sort((a, b) => a.priority - b.priority)
+
+    /*
+     * CANONICAL FALLBACK — an empty list here must mean "nothing to do", not
+     * "this endpoint could not see the evidence".
+     *
+     * This route builds its recommendations from its OWN direct table reads.
+     * When those reads come back empty but the canonical Quantum Readiness
+     * snapshot still holds recommended actions — which happens whenever the
+     * snapshot is answering from the scanner's in-memory store — the panel
+     * rendered a green shield reading "No active recommendations · Your posture
+     * is stable" while the engine beside it held four actions, one of them
+     * CRITICAL. Absence was being published as safety.
+     *
+     * The canonical actions therefore answer when this route has nothing. They
+     * are the same actions the Quantum Readiness page shows, so the two cannot
+     * recommend different work for one estate.
+     */
+    if (recommendations.length === 0) {
+      try {
+        const snapshot = await buildSnapshot(token, user.id)
+        const severityPriority: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 }
+        const canonical = (snapshot.recommendedActions || []).map((action) => ({
+          id: action.id,
+          priority: severityPriority[String(action.severity).toLowerCase()] ?? 3,
+          category: 'quantum-readiness',
+          title: action.title,
+          description: action.detail,
+          assetId: null as string | null,
+          action: action.route,
+          estimatedEffort: 'medium',
+        }))
+        if (canonical.length > 0) {
+          return res.json({ data: { recommendations: canonical.slice(0, 20) } })
+        }
+      } catch {
+        // Snapshot unavailable — fall through to the honest empty list.
+      }
+    }
 
     return res.json({ data: { recommendations: recommendations.slice(0, 20) } })
   } catch (err) {

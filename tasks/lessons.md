@@ -417,3 +417,270 @@ My first pass asserted `component.score === null` for unmeasured dimensions and
 reported four defects that did not exist — the contract is `applicable === false`.
 *Prevention:* when a check tool reports a defect, read the type's own contract
 before believing it. The failure output was persuasive and wrong.
+
+## Light theme: /dashboard/scanner stayed black (2026-09-04)
+
+**An opacity modifier makes a different class name, and the whole page fell
+through the theme layer because of it.**
+The light-theme compatibility layer neutralises hardcoded dark fills with exact
+utility selectors — `.bg-\[\#080d1a\]`. Every panel on /dashboard/scanner and
+the Crypto Exposure tabs comes from one shared atom whose fill is
+`bg-[#080d1a]/80`, and Tailwind emits that as its own utility. The exact
+selector cannot match it, so the entire page stayed dark while the shell around
+it went white — and the text ramp inverted on top of it, so headings rendered
+near-black on a near-black ground. Two thirds of the dark fills across the
+dashboards carry a modifier, so this was never scanner-specific.
+*Prevention:* the layer matches `[class*="bg-[#hex]"]`, which covers the plain
+fill, every `/alpha` variant and any variant prefix in one selector, and
+`dashboard-contrast-check.ts` now asserts that modifier-form fills are covered.
+
+**The guard tool was green on a page that was visibly broken, because it
+asserted the wrong thing.**
+It checked that the hex was *listed* in the layer, not that the class *as the
+markup writes it* is matched. A check that restates the fix instead of the
+property is worth nothing.
+*Prevention:* assert the observable property — coverage of the class as used.
+
+**A check tool that walks only the route tree cannot see a shared atom.**
+It walked `src/app/dashboard`, but this page is drawn almost entirely by
+`components/quantum-scan/ui.tsx` and `components/exposure/*`. The dark fills
+those introduce were invisible to it.
+*Prevention:* the walk now includes every directory whose components render
+inside `.qg-dashboard-main`, not just the route files.
+
+**An escape hatch only half the sheet honours is not an escape hatch.**
+There are two light layers — an older `.dashboard-theme-scope` one and the
+newer `.qg-dashboard-main` one — and only the newer carried
+`:not(.qg-force-dark)`. So the deliberately dark QVE stage still had its
+`text-white` heading inverted to near-black by the older layer.
+*Prevention:* both layers carry the guard on every utility remap, and the check
+tool asserts it.
+
+**Not every dark surface is a bug.** The Quantum Visualization Engine grades its
+node-card verdict colours for contrast against a FIXED dark `HERO_SURFACE`.
+Re-surfacing it would not have lightened the visualisation, it would have broken
+the colour model the verdicts are read from. It is marked `qg-force-dark` and
+stays dark in both themes — deliberately, not by omission.
+
+## Light theme: the QVE hero, and the WebGL rebuild that froze the tab (2026-09-04)
+
+**A stylesheet cannot reach a value.** The light-theme compatibility layer
+re-surfaces the engine's DOM chrome, but an SVG `fill`, an inline gradient, a
+canvas `fillStyle` and a Three.js material are VALUES, not styles. Those needed
+a value source — `_qve/theme.ts`, a palette resolved from the active theme and
+defaulting to dark so /public-scan is untouched by construction.
+
+**The contrast helper had the surface baked in as a constant.**
+`readableOnDark` raised a published grade colour until it cleared 4.5:1 against
+a fixed `HERO_SURFACE`. On white the correction has to run the other way, so
+the surface became a PARAMETER and the walk reads its luminance to decide which
+direction is legible. One function still, so nothing drifts.
+*Prevention:* `tools/qve-theme-check.ts` asserts every verdict on both grounds.
+
+**Testing the float and rendering the rounded value are different things.**
+The walk measured the un-rounded HSL result, then `toHex` rounded each channel
+— which cost up to a hundredth of a ratio point and returned #0b815a at 4.49:1
+from a function whose entire contract is "this clears 4.5:1". The check tool
+caught it on the first run. *Prevention:* measure the candidate that will
+actually be painted, never its pre-rounding neighbour.
+
+**Putting a theme in a WebGL boot effect's dependencies froze the tab.**
+`PacketEngine` re-initialised its PixiJS Application when the palette changed —
+and its teardown destroys the canvas element (`destroy(true, …)`), so the
+rebuild ran `Application.init({ canvas })` against a dead node. The tab stopped
+responding to script and to navigation; only a fresh tab recovered it. The
+screenshot timeouts looked like a busy compositor and were a blocked main
+thread.
+*Root cause, not symptom:* the texture never needed rebuilding — sprites are
+`tint`ed per beam, so the glow canvas is a white ALPHA ramp and theme-neutral.
+Only the blend mode changes ('add' on navy, 'normal' on white, because additive
+blending has no headroom on a white page), and that is applied to the live
+display list. `ParticleField` had the same latent shape and got the same
+treatment, which its own header comment had already warned about.
+*Prevention:* a theme value never belongs in the dependency array of an effect
+that owns a GPU context. Put it in a ref and apply it to the live scene.
+
+**A dark object on a light ground is not a bug.** The globe body stays deep
+navy in both themes — it is a physical object in the scene, and inverting it
+would erase it. What had to change is everything drawn as EMITTED light: the
+additive hex field, bloom, god rays and the white packet head, all damped by a
+single `glow` factor, because light cannot be added to white.
+
+## /dashboard: Estate Exposure Workflow, and the KPI it exposed (2026-09-04)
+
+**A renderer can be shared when a MODEL cannot.** The scanner's Exposure
+Workflow renders one `ExposureAssessment` — a scan, its phases, the engine
+processes those phases spawned. None of that exists at tenant level. The
+tempting shortcut was to synthesise an assessment from tenant rows and reuse
+`buildWorkflowGraph` unchanged; it would have invented phases and processes that
+never executed. The estate got its own projection into the same `WorkflowGraph`
+shape instead, and the renderer took a pre-built graph as an alternative source
+— four touch points, Local and Dev behaviour untouched.
+
+**Two projections of one tenant must read one row loader.** `/exposure-map` and
+`/estate-workflow` sit on the same page. Letting each issue its own query set is
+exactly how two panels come to report a different number of assets, so the query
+set was extracted to `loadEstateRows` and the check tool asserts NEITHER route
+body contains a `safeRows(` of its own.
+
+**Verifying the guard is not the same as verifying the file.** The first pass of
+the check tool asserted `safeRows(client, 'asset_relationships')` appeared once
+in the whole FILE — and failed, because two unrelated endpoints legitimately
+read that table. The property that actually matters is scoped to the two route
+bodies. A check that overreaches fails on correct code and teaches nothing.
+
+**The workflow was accurate and the panel above it was not.** With Supabase
+returning 402 the tenant has no rows, and the new workflow correctly reports an
+empty estate — while the KPI tiles on the same page report "Critical Assets 14"
+and "Open Findings 27" against an executive snapshot whose own `hasData` flag is
+`false`. The 14 comes from `snap.inventory.quantumVulnerableAssets` in the
+canonical Quantum Readiness snapshot. Not introduced here and not in scope, but
+it is the same defect class the estate projection was built to avoid, and it is
+on the same screen — so it is reported rather than quietly left.
+
+**Stale HMR keeps looking like a real bug.** `ReferenceError: Server is not
+defined` pointed at an icon map whose import was demonstrably present, and tsc
+was clean. A fresh tab showed nothing. Second time this session: when the
+browser contradicts the file AND the typechecker, reload before debugging.
+
+## /dashboard accuracy audit — four real defects (2026-09-04)
+
+Asked "is everything on this page accurate?", the answer was no. Four distinct
+defects, three of them pre-existing:
+
+**1. A component count wearing an asset label.** `buildSnapshot` did:
+
+    if (assetsAssessed === 0) { quantumVulnerableAssets = vulnerable }
+
+— substituting CBOM component counts into the ASSET fields whenever the tenant
+held no assets. A tenant with ZERO assets published "28 quantum-vulnerable
+assets", a number equal to its 28 vulnerable components, and it propagated to
+the executive KPI, Business Impact, Threat Intelligence, the migration pipeline,
+governance, HNDL and the copilot. Deleted. Zero assets is the correct answer to
+"how many assets", and `hasData` already separates it from "measured and clean".
+The executive KPI is now UNIT-AWARE instead: with no inventory it reports
+"Quantum-Vulnerable Components" under its own label and routes to the CBOM page.
+
+**2. The numbers were real; the read paths disagreed.** The deeper cause of the
+whole inconsistency was not fabrication. With the database unreachable the
+scanner keeps completed results in an in-memory store, so everything derived
+from `buildScannerIntelligence` kept reporting real scan output while anything
+reading the database directly showed an empty estate — the migration workflow
+said "2 assets · Discovery complete" beside an exposure map drawing nothing.
+`loadEstateRows` now falls back to the same store AND returns a `persistence`
+flag that reaches the UI as a banner. A degraded read is fine; an undisclosed
+one is not.
+
+**3. Finding titles published as cryptography.** "Weak RSA Key Size" is a
+scanner finding title that lives in the same `algorithm` column as "RSA-2048",
+and it was becoming an algorithm node — an entity that is not a primitive, which
+an operator could click. The platform already owned the predicate
+(`isCryptographicPrimitive`, written by crypto-agility for this exact reason).
+Reusing it took algorithms from 37 to 17, and the 40 rejections are COUNTED and
+displayed so a lower total reads as a rejection, not as missing data.
+
+**4. A third number for one table.** The projection counted all 59
+`crypto_inventory` rows as CBOM components where the canonical snapshot counted
+35, because that table stores findings alongside cryptography. Reusing the
+shared `isCryptographicComponent` predicate aligned it exactly.
+
+*The pattern in all four:* the platform already had the correct predicate, the
+correct unit and the correct disclosure. Every defect was a place that re-derived
+instead of reusing. Before writing a classifier, grep for one.
+
+## /dashboard audit, part 2 — the split closed, two more defects (2026-09-04)
+
+**One store, or the page cannot be consistent.** `buildSnapshot` read assets
+from the database only, while the component numbers on the SAME snapshot
+arrived through `buildScannerIntelligence`, which is memory-aware. That is how
+one snapshot came to report 35 cryptographic components and 0 assets in the same
+breath, and why Quantum Readiness said "nothing to assess" beside a migration
+workflow reading "2 assets · Discovery complete". The raw reads now fall back to
+the same store, and the snapshot carries `persistence` so every surface built on
+it can disclose a degraded read. Result: assets, findings and components agree
+across the executive KPIs, the migration workflow and the estate workflow.
+
+**A green shield over four open actions.** AI Recommendations built its list
+from its OWN direct table reads, got nothing, and rendered an emerald shield
+reading "Your posture is stable" — while the canonical engine held four
+recommended actions, one CRITICAL. Two fixes, because there were two bugs: the
+endpoint now falls back to `snap.recommendedActions` before publishing "nothing
+to do", and the empty state no longer makes a claim about posture or paints
+itself as a pass.
+
+**One message for two different answers.** The Threat Timeline said "No events
+match" whether a filter had excluded everything or the tenant had no events at
+all — the second reads as "we looked and it's clean". Now distinguished, and the
+no-events case states that it is not an assessment.
+
+**Audited and left alone, with reasons:** Compliance is a disclosed model over
+the canonical governance control engine (`modeled: true`, MODELLED badge,
+evidence count shown) — a model, not a fabrication. Shared Responsibility counts
+59 findings where the registers count 52 because it projects the scanner
+INTELLIGENCE finding set, deduped by finding identity; a real definitional
+difference, not a double-count, and unifying finding definitions across engines
+is a platform-level decision, not a drive-by edit.
+
+*The recurring shape, again:* every defect was a surface deriving its own answer
+instead of reading the canonical one. The fix each time was a fallback to the
+engine that already knew.
+
+## Estate workflow: asset focus, and a word-boundary false negative (2026-09-04)
+
+**Focus must stop at the focus kind, or it does nothing.** An estate graph is
+hub-and-spoke: two assets with fifty findings each are unreadable together. The
+naive scope — "keep everything reachable from the focused asset" — pulls the
+whole estate straight back in, because RSA-2048 sits on both assets and the
+traversal crosses it. `focusScope` therefore stops at any OTHER node of the
+focus kind. A shared algorithm still appears under both assets, which is
+correct: it is genuinely on both.
+
+**Focus is a VIEW, never a recount.** The reconciliation totals keep describing
+the whole estate while the canvas shows a subset, so the footer states that a
+focus is active. A filtered graph that silently looks like the whole tenant is
+the same defect class as a fabricated one.
+
+**The `\b` trap, for the third time in this codebase.** Reusing the platform's
+`isCryptographicPrimitive` to keep scanner finding titles out of algorithm nodes
+also rejected `SHA256withRSA` — the most common way an X.509 certificate records
+its algorithm. Every token in that pattern is `\b`-anchored, and there is no
+word boundary inside "withRSA": `h` and `R` are both word characters, so
+`\bRSA\b` cannot see it and `SHA256` fails its trailing boundary for the same
+reason. Fixed at source with an unanchored `WITH(RSA|DSA|ECDSA|ED25519)`
+alternative, which also corrects crypto-agility's primitive counts.
+*Prevention:* when a token can appear CONCATENATED, `\b` is the wrong anchor —
+and the only way this surfaced was a check-tool assertion that asserted a shared
+algorithm must exist. Write the assertion that would notice.
+
+**A failing assertion is not automatically a failing feature.** The first run
+failed on "a shared algorithm appears under both assets" — and the bug was in my
+FIXTURE (RSA-2048 was only on one asset), which then exposed the real predicate
+bug when corrected to the genuinely shared one. Read what the assertion actually
+claims before changing the code it points at.
+
+## Exposure Workflow canvas: it was not too small, it was unbounded (2026-09-04)
+
+Reported as "widen the graph canvas, it overlaps when I drag it down". Two
+causes, and the obvious one was the lesser:
+
+**1. Unbounded panning.** React Flow pans without limit unless given
+`translateExtent`. One downward drag carried the entire graph out of the frame,
+leaving an empty canvas with no way back except Fit — which reads as the map
+BREAKING rather than as the map having been moved. The extent is now the
+layout's own seeded extent plus a margin larger than any viewport: always
+somewhere to pan to, never anywhere to lose the graph in. Derived from the
+SEEDED extent rather than live body positions, because the force simulation
+moves every tick and a bound that moved with it would feel like the drag was
+fighting back.
+
+**2. A magic 560px.** The force layout for ~90 entities spreads over roughly
+1900 x 1370 units, so a flat 560px viewport showed a keyhole of it. Height now
+scales with the VIEWPORT and with the graph's own size — a two-node lens does
+not reserve a screen of emptiness, a dense one gets room.
+
+**A hidden control is not a simplification.** The focus picker rendered only
+above one candidate, so on a single-asset estate it vanished entirely and an
+operator who had just asked for that filter would hunt for it. It now always
+renders and SAYS why it cannot help yet ("One asset in this estate — nothing to
+filter between yet"), which is the difference between a considered empty state
+and a missing feature.

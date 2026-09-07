@@ -490,6 +490,55 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
   // weight the financial model; may legitimately be 0 when assets aren't tagged.
   const missionCriticalTagged = activeAssets.filter((a) => ['critical', 'high'].includes(str(a.criticality).toLowerCase())).length
 
+  /* ---- UNIT-AWARE HEADLINE ---------------------------------------- *
+   * An asset count and a component count are different measurements, and a
+   * tenant can hold one without the other: an edge scan produces real
+   * cryptography with no asset inventory behind it.
+   *
+   * The snapshot used to paper over that by copying the component counts into
+   * the asset fields, so a tenant with ZERO assets published "28 critical
+   * assets". That substitution is gone (see quantum-readiness.ts), which leaves
+   * the honest question: what should this card show when there is cryptography
+   * but no inventory?
+   *
+   * Not a fabricated asset count, and not a bare 0 that hides real exposure —
+   * the same measurement under its OWN label. The card switches unit, states
+   * which unit it is reporting, and routes to the page that owns it.
+   */
+  const hasAssetInventory = totalAssets > 0
+  const criticalHeadline = hasAssetInventory
+    ? {
+        label: 'Critical Assets',
+        value: vulnerableAssets,
+        unitLabel: 'assets',
+        hint: 'Quantum-vulnerable assets (matches Quantum Readiness).',
+        route: '/dashboard/vulnerabilities',
+      }
+    : {
+        label: 'Quantum-Vulnerable Components',
+        value: inv.vulnerableComponents,
+        unitLabel: 'components',
+        hint: 'No asset inventory yet — reporting the unit that was actually measured: vulnerable CBOM components.',
+        route: '/dashboard/cbom',
+      }
+  const readyHeadline = hasAssetInventory
+    ? {
+        label: 'Quantum Ready Assets',
+        value: inv.pqcReadyAssets,
+        target: totalAssets,
+        targetLabel: `of ${totalAssets}`,
+        hint: 'Assets validated PQC-ready.',
+        route: '/dashboard/quantum-readiness',
+      }
+    : {
+        label: 'PQC-Ready Components',
+        value: inv.pqcReadyComponents ?? 0,
+        target: inv.cryptoComponents,
+        targetLabel: `of ${inv.cryptoComponents}`,
+        hint: 'No asset inventory yet — reporting PQC-ready CBOM components, the unit that was measured.',
+        route: '/dashboard/cbom',
+      }
+
   /* ---- Business impact (DISCLOSED model over real counts) --------- */
   const applications = categoryCounts.get('applications')?.count || 0
   const applicationsAtRisk = categoryCounts.get('applications')?.atRisk || 0
@@ -565,15 +614,15 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
       hint: 'Composite quantum exposure — lower is safer.',
     },
     {
-      id: 'critical-assets', label: 'Critical Assets', value: criticalAssets, unit: '', format: 'count',
-      direction: 'lower-better', target: 0, targetLabel: 'Zero at risk', deltaPercent: 0, trend: 'flat',
-      level: criticalAssets > 0 ? 'high' : 'low',
-      sparkline: [], lastUpdated, route: '/dashboard/vulnerabilities', hint: 'Quantum-vulnerable assets (matches Quantum Readiness).',
+      id: 'critical-assets', label: criticalHeadline.label, value: criticalHeadline.value, unit: '', format: 'count',
+      direction: 'lower-better', target: 0, targetLabel: `Zero ${criticalHeadline.unitLabel} at risk`, deltaPercent: 0, trend: 'flat',
+      level: criticalHeadline.value > 0 ? 'high' : 'low',
+      sparkline: [], lastUpdated, route: criticalHeadline.route, hint: criticalHeadline.hint,
     },
     {
-      id: 'quantum-ready', label: 'Quantum Ready Assets', value: inv.pqcReadyAssets, unit: '', format: 'count',
-      direction: 'higher-better', target: totalAssets, targetLabel: `of ${totalAssets}`, ...readinessTrendInfo,
-      sparkline: readinessSeries, lastUpdated, route: '/dashboard/quantum-readiness', hint: 'Assets validated PQC-ready.',
+      id: 'quantum-ready', label: readyHeadline.label, value: readyHeadline.value, unit: '', format: 'count',
+      direction: 'higher-better', target: readyHeadline.target, targetLabel: readyHeadline.targetLabel, ...readinessTrendInfo,
+      sparkline: readinessSeries, lastUpdated, route: readyHeadline.route, hint: readyHeadline.hint,
     },
     {
       id: 'migration-progress', label: 'Migration Progress', value: overallCompletion, unit: '%', format: 'percent',
@@ -638,7 +687,9 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
   ) / 10
   const topPriority = snap.recommendedActions[0] || null
   const facts = [
-    { id: 'critical-assets', label: 'Critical assets', value: criticalAssets, tone: criticalAssets > 0 ? 'critical' : 'good' },
+    /* Same unit-awareness as the KPI card: the executive facts row must not
+       label a component count as an asset count either. */
+    { id: 'critical-assets', label: criticalHeadline.label, value: criticalHeadline.value, tone: criticalHeadline.value > 0 ? 'critical' : 'good' },
     { id: 'high-findings', label: 'High-risk findings', value: criticalFindingCount + highFindingCount, tone: (criticalFindingCount + highFindingCount) > 0 ? 'warning' : 'good' },
     { id: 'risk-trend', label: 'Risk trend', value: riskTrendInfo.trend === 'down' ? `improved ${riskTrendInfo.deltaPercent}%` : riskTrendInfo.trend === 'up' ? `up ${riskTrendInfo.deltaPercent}%` : 'stable', tone: riskTrendInfo.trend === 'down' ? 'good' : riskTrendInfo.trend === 'up' ? 'warning' : 'neutral' },
     { id: 'migration', label: 'Migration progress', value: `${overallCompletion}%`, tone: overallCompletion >= 50 ? 'good' : 'neutral' },

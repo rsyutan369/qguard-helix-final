@@ -177,6 +177,60 @@ function useScanPulse(telemetryLength: number, running: boolean) {
   return { tick, pulse };
 }
 
+/**
+ * Interpolates the progress readout between two REAL measurements.
+ *
+ * The orchestrator credits an engine its whole weight the moment it settles, so
+ * an engine that stops early — Cryptographic Usage Discovery hitting its
+ * component budget, measured jumping the bar 32% -> 53% in one frame — lands its
+ * remaining share instantly. Every one of those values is true; the problem is
+ * that the bar teleports between them, which is what makes a scan look like it
+ * was doing nothing and then everything.
+ *
+ * This ONLY interpolates. It starts from the previous real value, converges on
+ * the current one within ~500ms, and can never lead it or overshoot it, so the
+ * number on screen is always between two measurements the scan actually
+ * produced. A terminal 100 snaps — finished is not something to animate towards
+ * — and `prefers-reduced-motion` disables it entirely.
+ */
+function useEasedProgress(target: number, animate: boolean): number {
+  const [display, setDisplay] = React.useState(target);
+  const frame = React.useRef<number | null>(null);
+  const current = React.useRef(target);
+
+  React.useEffect(() => {
+    if (!animate || target >= 100 || target <= current.current) {
+      current.current = target;
+      setDisplay(target);
+      return;
+    }
+
+    const from = current.current;
+    const distance = target - from;
+    const started = performance.now();
+    /* Long enough to read as motion, short enough that the number is never
+       meaningfully behind the scan. */
+    const duration = Math.min(600, Math.max(180, distance * 22));
+
+    const step = (now: number) => {
+      const t = Math.min(1, (now - started) / duration);
+      // easeOutCubic: quick to acknowledge the jump, gentle on arrival.
+      const eased = 1 - Math.pow(1 - t, 3);
+      const value = from + distance * eased;
+      current.current = value;
+      setDisplay(value);
+      if (t < 1) frame.current = requestAnimationFrame(step);
+    };
+    frame.current = requestAnimationFrame(step);
+
+    return () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+    };
+  }, [target, animate]);
+
+  return display;
+}
+
 /* ─────────────────────────────────────────────────────────────── the panel ─── */
 
 export function ScanTheatre({
@@ -203,6 +257,9 @@ export function ScanTheatre({
   const running = status === 'scanning' || status === 'starting';
   const [selected, setSelected] = React.useState<ExposureFinding | null>(null);
   const { tick, pulse } = useScanPulse(telemetry.length, running);
+  /* The bar and the readout show the eased value; every metric derived from the
+     scan itself keeps the exact one. */
+  const shownProgress = useEasedProgress(progress, running && !reduceMotion);
 
   /* ── elapsed: real, and frozen the moment the scan settles ──────────── */
   const settledAt = React.useRef<number | null>(null);
@@ -450,7 +507,7 @@ export function ScanTheatre({
         {/* ── stage ───────────────────────────────────────────────────── */}
         <ScanStage
           running={running}
-          progress={progress}
+          progress={shownProgress}
           focus={focus}
           engineLabel={engineLabel}
           caption={caption}
@@ -464,9 +521,9 @@ export function ScanTheatre({
         <div className="grid grid-cols-2 gap-px border-b border-white/[0.07] bg-white/[0.05] sm:grid-cols-3 xl:grid-cols-6">
           <MetricTile label="Scan progress" sublabel={running ? 'live' : 'final'}>
             <div className="flex items-baseline gap-2">
-              <span className="font-mono text-[20px] font-black tabular-nums text-white">{Math.round(progress)}%</span>
+              <span className="font-mono text-[20px] font-black tabular-nums text-white">{Math.round(shownProgress)}%</span>
             </div>
-            <SegmentBar value={progress} />
+            <SegmentBar value={shownProgress} />
           </MetricTile>
 
           <MetricTile

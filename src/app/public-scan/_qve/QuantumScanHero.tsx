@@ -44,7 +44,8 @@ import {
 import { buildInfraTiles, InfrastructureStrip } from './strip/InfrastructureStrip';
 import { ScanTicker, ScanTimeline } from './timeline/ScanTimeline';
 import { useScanEventBridge } from './use-scan-event-bridge';
-import { beamColor, isAlertSeverity, QVE_COLOR, type QveNodeKey } from './types';
+import { beamColor, isAlertSeverity, QVE_COLOR, readableOn, type QveNodeKey } from './types';
+import { qveAccentOn, useQvePalette } from './theme';
 
 /* -------------------------------------------------------------------- helpers - */
 
@@ -87,6 +88,9 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
   const wide = useIsWide();
   const audio = useQveAudio();
   const state = useQveState();
+  /* Instrument palette. 'dark' unless a host wraps the engine in
+     QveThemeProvider, so /public-scan renders exactly as it always has. */
+  const palette = useQvePalette();
 
   // Bind the real SSE stream into the engine's event store.
   useScanEventBridge({
@@ -215,7 +219,7 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
         const node = state.nodes[event.category];
         packetHandle.current?.burst({
           beam: event.category,
-          color: node ? beamColor(node) : QVE_COLOR.scanning,
+          color: node ? beamColor(node, palette.surface) : qveAccentOn(QVE_COLOR.scanning, palette),
           count: packetsForSeverity(event.severity),
           alert,
         });
@@ -265,14 +269,19 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
    * line. There the colour IS the finding, so it follows the published grade
    * table exactly.
    */
-  const accent = state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan;
+  const accent = qveAccentOn(state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan, palette);
 
   const verdictColor = React.useMemo(() => {
-    if (state.run === 'error') return QVE_COLOR.critical;
-    if (state.run === 'complete' && state.gradeColor) return state.gradeColor;
-    if (state.run === 'complete') return QVE_COLOR.pass;
-    return QVE_COLOR.cyan;
-  }, [state.run, state.gradeColor]);
+    const published =
+      state.run === 'error'
+        ? QVE_COLOR.critical
+        : state.run === 'complete'
+          ? (state.gradeColor ?? QVE_COLOR.pass)
+          : QVE_COLOR.cyan;
+    /* The published grade colour, re-lit for the ground it is printed on. The
+       grade itself never changes — only the lightness it is rendered at. */
+    return readableOn(published, palette.surface);
+  }, [state.run, state.gradeColor, palette.surface]);
 
   const runningStage = scan.stages.find((stage) => stage.state === 'running');
 
@@ -387,6 +396,7 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
                       maxPackets={budget.maxPackets}
                       dpr={budget.maxDpr}
                       handleRef={packetHandle}
+                      palette={palette}
                     />
                   )}
                 </>

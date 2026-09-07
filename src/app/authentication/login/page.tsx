@@ -15,6 +15,11 @@ import {
   ShieldCheck
 } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
+import {
+  DEMO_ACCOUNT_EMAIL,
+  DEMO_ACCOUNT_PASSWORD,
+  isDemoModeEnabled,
+} from "@/lib/demo-account";
 import { useTheme } from "@/contexts/theme-context";
 import ThemeToggle from "@/components/theme/ThemeToggle";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -85,6 +90,24 @@ export default function LoginPage() {
       setIsLoading(false);
       setError(err.message || "System error. Try again.");
     }
+  };
+
+  /* Demo / test account — see src/lib/demo-account.ts. The button below is not
+     rendered at all unless VITE_DEMO_ACCOUNT=true, and the credentials it fills
+     are only honoured by `signIn` under the same flag. */
+  const demoEnabled = isDemoModeEnabled();
+
+  const handleDemoSignIn = async () => {
+    setIsLoading(true);
+    setError(null);
+    setSuccessMsg(null);
+    const { error } = await signIn(DEMO_ACCOUNT_EMAIL, DEMO_ACCOUNT_PASSWORD);
+    setIsLoading(false);
+    if (error) {
+      setError(error.message || "Demo session could not be started.");
+      return;
+    }
+    navigate(safeNext);
   };
 
   const handleGoogleSignIn = async () => {
@@ -269,6 +292,24 @@ export default function LoginPage() {
                 </svg>
                 Continue with Google
               </button>
+
+              {demoEnabled && (
+                <button
+                  type="button"
+                  onClick={handleDemoSignIn}
+                  disabled={isLoading}
+                  className="qc-btn qc-btn-ghost"
+                  style={{
+                    borderColor: "rgba(234,179,8,0.55)",
+                    color: "#a16207",
+                    background: "rgba(234,179,8,0.08)",
+                  }}
+                  title={`Signs in as ${DEMO_ACCOUNT_EMAIL} without contacting Supabase`}
+                >
+                  <ShieldCheck size={15} className="shrink-0" />
+                  Continue as Demo (Elite) — no Supabase
+                </button>
+              )}
 
               <p className="qc-card-footer">
                 New deployment?{" "}

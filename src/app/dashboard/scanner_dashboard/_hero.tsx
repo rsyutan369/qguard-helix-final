@@ -48,7 +48,11 @@ import {
   ScanTimeline,
   beamColor,
   isAlertSeverity,
+  qveAccentOn,
+  QveThemeProvider,
+  readableOn,
   useQve,
+  useQvePalette,
   useQveAudio,
   useQveBudget,
   type BeamAnchor,
@@ -59,6 +63,7 @@ import {
   type QveNodeKey,
 } from '@/app/public-scan/_qve';
 import { Panel } from '@/components/quantum-scan/ui';
+import { useTheme } from '@/contexts/theme-context';
 import {
   buildNodeEvidence,
   SCANNER_LEFT_NODES,
@@ -275,6 +280,9 @@ function HeroInner({
   const wide = useIsWide();
   const audio = useQveAudio();
   const { state, dispatch } = useQve();
+  /* Instrument palette for the theme this hero is being drawn in. Supplied by
+     the QveThemeProvider in  below. */
+  const palette = useQvePalette();
 
   const asset = targets.length ? targets.join(', ') : 'authorized estate';
   const isRunning = status === 'queued' || status === 'running' || status === 'analyzing';
@@ -391,7 +399,7 @@ function HeroInner({
         const node = state.nodes[event.category];
         packetHandle.current?.burst({
           beam: event.category,
-          color: node ? beamColor(node) : QVE_COLOR.scanning,
+          color: node ? beamColor(node, palette.surface) : qveAccentOn(QVE_COLOR.scanning, palette),
           count: packetsForSeverity(event.severity),
           alert,
         });
@@ -458,14 +466,24 @@ function HeroInner({
     [selected, results, evidenceFindings, evidenceModules, scanner2, targets, counters, scoreComponents],
   );
 
-  const accent = state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan;
+  /* Structural accent — the hologram, beams and backdrop. Same cyan/violet in
+     both themes; only its lightness follows the ground, at the 3:1 GRAPHIC
+     floor. Uncorrected, #22d3ee measures 1.68:1 on the light stage and the
+     whole instrument layer disappears. */
+  const accent = qveAccentOn(state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan, palette);
 
+  /* Informational colour — the score arc, the readout, the grade line. Here the
+     colour IS the finding, so it stays the published grade colour and is only
+     re-lit for the surface, at the 4.5:1 TEXT floor. */
   const verdictColor = React.useMemo(() => {
-    if (state.run === 'error') return QVE_COLOR.critical;
-    if (state.run === 'complete' && state.gradeColor) return state.gradeColor;
-    if (state.run === 'complete') return QVE_COLOR.pass;
-    return QVE_COLOR.cyan;
-  }, [state.run, state.gradeColor]);
+    const published =
+      state.run === 'error'
+        ? QVE_COLOR.critical
+        : state.run === 'complete'
+          ? (state.gradeColor ?? QVE_COLOR.pass)
+          : QVE_COLOR.cyan;
+    return readableOn(published, palette.surface);
+  }, [state.run, state.gradeColor, palette.surface]);
 
   const runningModule = modules.find((module) => module.status === 'Running');
 
@@ -514,6 +532,11 @@ function HeroInner({
         {/* The rail is supporting detail — on a phone the hero comes first. */}
         <div className="order-2 space-y-5 lg:order-1">{railSlot}</div>
 
+        {/* No `qg-force-dark` here: the visualization follows the theme rather
+            than opting out of it. Its DOM chrome is re-surfaced by the light
+            layer in index.css, and its instrument layer — the values a
+            stylesheet cannot reach — comes from the engine palette resolved in
+            `ScannerHero` below. */}
         <Panel className="relative order-1 overflow-hidden lg:order-2" glow>
           <QuantumBackdrop
             run={state.run}
@@ -588,6 +611,7 @@ function HeroInner({
                       maxPackets={budget.maxPackets}
                       dpr={budget.maxDpr}
                       handleRef={packetHandle}
+                      palette={palette}
                     />
                   )}
                 </>
@@ -775,9 +799,19 @@ function HeroInner({
 /* --------------------------------------------------------------------- export - */
 
 export function ScannerHero(props: ScannerHeroProps) {
+  /* The Quantum Visualization Engine is dark-only by default — /public-scan is
+     a dark page and every literal in the engine was chosen against navy. Here
+     it is mounted inside a dashboard the user can switch to light, so the
+     resolved theme is handed to the engine and its instrument layer (SVG fills,
+     canvas gradients, Three.js materials, additive blend modes) is derived from
+     that rather than from constants a stylesheet could never reach. */
+  const { theme } = useTheme();
+
   return (
-    <QveProvider blueprints={SCANNER_NODE_BLUEPRINTS}>
-      <HeroInner {...props} />
-    </QveProvider>
+    <QveThemeProvider theme={theme === 'light' ? 'light' : 'dark'}>
+      <QveProvider blueprints={SCANNER_NODE_BLUEPRINTS}>
+        <HeroInner {...props} />
+      </QveProvider>
+    </QveThemeProvider>
   );
 }

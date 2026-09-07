@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/auth-context';
+import DemoModeBadge from './components/DemoModeBadge';
 import { ThemeProvider } from './contexts/theme-context';
 import Landing from './pages/Landing';
 import SubscriptionThankYou from './pages/SubscriptionThankYou';
@@ -302,6 +303,9 @@ export default function App() {
           </Route>
         </Routes>
       </Router>
+      {/* Visible marker while the temporary demo identity is signed in.
+          Renders null for every real session. See src/lib/demo-account.ts. */}
+      <DemoModeBadge />
       </AuthProvider>
     </ThemeProvider>
   );

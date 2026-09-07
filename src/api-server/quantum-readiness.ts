@@ -3,7 +3,7 @@ import { buildFinancialExposure, migrationCostUsd as computeMigrationCostUsd } f
 import { loadCostAssumptions } from './cost-assumptions'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
-import { buildScannerIntelligence } from './scanner'
+import { buildScannerIntelligence, readScannerMemoryRows } from './scanner'
 import { buildSharedResponsibility } from '@/lib/shared-responsibility'
 import { buildOwnershipInputs } from './shared-responsibility-inputs'
 import { collapseCriticalFindings, type RawCriticalFinding } from './critical-findings'
@@ -140,7 +140,9 @@ async function computeSnapshot(token: string, userId: string) {
   // applied, so cost surfaces degrade to defaults rather than to nothing.
   const costAssumptions = await loadCostAssumptions(token, userId)
 
-  const [
+  // eslint-disable-next-line prefer-const -- reassigned by the degraded-store
+  // fallback below, which cannot run until the queries have resolved.
+  let [
     assets,
     assetRelationships,
     scanResults,
@@ -196,6 +198,35 @@ async function computeSnapshot(token: string, userId: string) {
     exactCount(client, 'crypto_inventory', userId, (q) => q.eq('is_vulnerable', true)),
     exactCount(client, 'crypto_inventory', userId, (q) => q.eq('is_quantum_safe', true)),
   ])
+
+  /* ---- DEGRADED-STORE FALLBACK, DISCLOSED ------------------------------
+   *
+   * When the database is unreachable the scanner keeps completed results in an
+   * in-memory store, and `buildScannerIntelligence` (called below) reads it.
+   * That is why this snapshot could report 35 cryptographic COMPONENTS and, in
+   * the same breath, 0 ASSETS: the component numbers arrived through the intel
+   * view, which is memory-aware, while every raw table read here was not.
+   *
+   * A tenant then saw the migration workflow say "2 assets · Discovery
+   * complete" beside a Quantum Readiness page reporting nothing to assess. Both
+   * were reading real data; they were reading different stores.
+   *
+   * So the raw reads fall back to the SAME store the intel view uses, and the
+   * snapshot carries `persistence` so every surface built on it can say the
+   * estate is not durable rather than presenting it as though it were.
+   */
+  let persistence: 'database' | 'memory' = 'database'
+  if (assets.length === 0) {
+    const memory = readScannerMemoryRows(userId)
+    if (memory.assets.length > 0 || memory.inventory.length > 0) {
+      persistence = 'memory'
+      assets = memory.assets as unknown as typeof assets
+      cryptoInventory = memory.inventory as unknown as typeof cryptoInventory
+      cryptoExposures = memory.exposures as unknown as typeof cryptoExposures
+      scanResults = memory.results as unknown as typeof scanResults
+      scanSessions = memory.sessions as unknown as typeof scanSessions
+    }
+  }
 
   // ---- Canonical scanner intelligence ----------------------------------
   // Mirror the platform's scanner-intelligence view (same source as harvest-now,
@@ -343,17 +374,39 @@ async function computeSnapshot(token: string, userId: string) {
   // score and posture are identical on every page of the platform.
   const postureModel = deriveAssetPostureModel({ assets, scanResults, cryptoExposures, cryptoInventory, runtimeEvents })
   const { assetRisk, assetPosture } = postureModel
-  let pqcReadyAssets = postureModel.counts.pqcReadyAssets
-  let hybridAssets = postureModel.counts.hybridAssets
-  let quantumVulnerableAssets = postureModel.counts.quantumVulnerableAssets
+  const pqcReadyAssets = postureModel.counts.pqcReadyAssets
+  const hybridAssets = postureModel.counts.hybridAssets
+  const quantumVulnerableAssets = postureModel.counts.quantumVulnerableAssets
   const internetFacing = postureModel.counts.internetFacing
 
-  // If no asset-level posture could be derived, fall back to algorithm shares.
-  if (assetsAssessed === 0) {
-    pqcReadyAssets = pqcReady
-    hybridAssets = hybrid
-    quantumVulnerableAssets = vulnerable
-  }
+  /*
+   * THERE IS NO FALLBACK FROM ASSETS TO COMPONENTS. An asset count is a count
+   * of assets.
+   *
+   * This used to read:
+   *
+   *     if (assetsAssessed === 0) {
+   *       pqcReadyAssets = pqcReady
+   *       hybridAssets = hybrid
+   *       quantumVulnerableAssets = vulnerable
+   *     }
+   *
+   * — substituting CBOM component counts into the asset fields whenever the
+   * tenant held no assets. The intent was to avoid an empty-looking dashboard
+   * for a tenant that had scanned an edge target (real cryptography, no asset
+   * inventory). The effect was that a tenant with ZERO assets published "28
+   * quantum-vulnerable assets" — a number equal, to the unit, to its 28
+   * vulnerable components — and that number then propagated into the executive
+   * "Critical Assets" KPI, Business Impact's "Critical Assets at Risk", Threat
+   * Intelligence's Shor-at-risk tile, the migration pipeline's remaining count,
+   * the governance projection, the HNDL narrative and the Sophia copilot.
+   *
+   * A component is not an asset. The platform already publishes both units
+   * separately (`vulnerableComponents` / `cryptoComponents`), so a surface that
+   * wants to report cryptography on an inventory-less tenant reads THOSE, under
+   * their own label. Zero assets is the correct answer to "how many assets",
+   * and `hasData` already distinguishes it from "measured and clean".
+   */
 
   // ---- Severity distribution -------------------------------------------
   let critical = 0
@@ -708,6 +761,13 @@ async function computeSnapshot(token: string, userId: string) {
     assessmentProgress,
     assessmentStatus,
     hasData,
+    /**
+     * Which store answered. 'memory' means the database was unreachable and the
+     * scanner's in-process results were read instead: real scan output, but not
+     * durable. Every surface built on this snapshot can therefore disclose a
+     * degraded read instead of presenting it as the tenant's stored estate.
+     */
+    persistence,
     scores: {
       quantumReadiness,
       quantumReadinessLevel: levelFromReadiness(quantumReadiness),

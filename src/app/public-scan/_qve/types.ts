@@ -291,8 +291,8 @@ export function bandForScore(score: number): QveGradeBand {
  * The card, its beam and the gauge segment under the same number therefore
  * cannot be different colours.
  */
-export function bandColorForScore(score: number): string {
-  return readableOnDark(arcBandColorFor(score));
+export function bandColorForScore(score: number, surface: string = QVE_DARK_SURFACE): string {
+  return readableOn(arcBandColorFor(score), surface);
 }
 
 /* ------------------------------------------------------------ node verdict - */
@@ -314,24 +314,33 @@ export type QveVerdictKey =
 /* ─────────────────────────────────────────────── legibility on the dark hero ─ */
 
 /**
- * Raise a published grade colour to a legible luminance on the hero's dark card
- * surface, WITHOUT changing what it means.
+ * Move a published grade colour to a legible luminance ON A GIVEN SURFACE,
+ * WITHOUT changing what it means.
  *
  * The Security Grade Reference is printed on a light table, where grade F's
  * `#991b1b` reads as a strong dark red. On the hero's `#070d1b` card the same
  * hex measures 2.33:1 against its background — under the 4.5:1 floor for the
  * 11.5px bold verdict label, i.e. the most important word on the card is the
- * hardest one to read.
+ * hardest one to read. On a WHITE card the opposite is true: `#34d399`, which
+ * is the correct green on navy, measures 1.7:1 and the word "Secure" all but
+ * disappears.
+ *
+ * So the surface is a PARAMETER, not a constant. The walk reads the surface's
+ * own luminance and moves lightness toward legibility — up on a dark ground,
+ * down on a light one — until the contrast floor is met.
  *
  * Only LIGHTNESS moves. Hue and saturation are untouched, so grade F stays the
  * same red and nothing about the semantic mapping changes; this is a rendering
  * transform for one surface, not a second palette. Every consumer goes through
  * this one function, so there is nothing to keep in step.
  */
-const HERO_SURFACE: RGB = [7, 13, 27]; // #070d1b — the CategoryNode card fill
-const MIN_LABEL_CONTRAST = 4.5;
-
 type RGB = [number, number, number];
+
+/** The `CategoryNode` card fill on the dark hero. The historical default. */
+export const QVE_DARK_SURFACE = '#070d1b';
+
+/** WCAG floor for text. Graphics (rings, beams, grid) use 3:1 — see theme.ts. */
+const MIN_LABEL_CONTRAST = 4.5;
 
 const toLinear = (channel: number): number => {
   const value = channel / 255;
@@ -385,26 +394,62 @@ function hslToRgb(h: number, s: number, l: number): RGB {
 
 const readableCache = new Map<string, string>();
 
-export function readableOnDark(hex: string): string {
-  const cached = readableCache.get(hex);
+/**
+ * @param hex          the published colour — its meaning, never changed.
+ * @param surfaceHex   what it will be drawn on.
+ * @param minContrast  4.5 for text (default), 3 for graphics.
+ */
+export function readableOn(
+  hex: string,
+  surfaceHex: string = QVE_DARK_SURFACE,
+  minContrast: number = MIN_LABEL_CONTRAST,
+): string {
+  const cacheKey = `${hex}|${surfaceHex}|${minContrast}`;
+  const cached = readableCache.get(cacheKey);
   if (cached) return cached;
+
+  const surface = hexToRgb(surfaceHex);
+  /* Which way is legible? On navy a colour has to get brighter; on white it has
+     to get darker. Reading it from the surface rather than assuming is the
+     whole reason this function can serve both themes. */
+  const climbing = luminance(surface) < 0.5;
+  const limit = climbing ? 0.94 : 0.06;
+
   const [hue, saturation, startLightness] = rgbToHsl(hexToRgb(hex));
   let lightness = startLightness;
   let result = hex;
-  for (let step = 0; step < 48; step += 1) {
-    const rgb = hslToRgb(hue, saturation, lightness);
-    if (contrastRatio(rgb, HERO_SURFACE) >= MIN_LABEL_CONTRAST) {
-      result = step === 0 ? hex : toHex(rgb);
+
+  for (let step = 0; step < 72; step += 1) {
+    /* Measure the ROUNDED candidate, not the float.
+       `toHex` rounds each channel to an integer, and that rounding can cost a
+       hundredth of a ratio point — enough to return a colour that measured
+       4.50:1 as a float and renders at 4.49:1, i.e. a value this function
+       promised was legible and is not. Testing what will actually be painted
+       is the only version of the check that means anything. */
+    const candidate = toHex(hslToRgb(hue, saturation, lightness));
+    if (contrastRatio(hexToRgb(candidate), surface) >= minContrast) {
+      // Step 0 means the published colour already clears the floor — return it
+      // untouched rather than the HSL round-trip's near-identical neighbour.
+      result = step === 0 ? hex : candidate;
       break;
     }
-    if (lightness >= 0.9) {
-      result = toHex(rgb);
+    const next = climbing ? Math.min(limit, lightness + 0.015) : Math.max(limit, lightness - 0.015);
+    if (next === lightness) {
+      // Ran out of headroom: return the most legible value available rather
+      // than the original, which is the one we already know fails.
+      result = candidate;
       break;
     }
-    lightness = Math.min(0.9, lightness + 0.015);
+    lightness = next;
   }
-  readableCache.set(hex, result);
+
+  readableCache.set(cacheKey, result);
   return result;
+}
+
+/** The dark hero's card surface. Kept for callers that are dark by definition. */
+export function readableOnDark(hex: string): string {
+  return readableOn(hex, QVE_DARK_SURFACE);
 }
 
 /** Published rating → the verdict key that picks the card's badge icon. */
@@ -479,15 +524,22 @@ export interface QveResolvedVerdict {
  * one: the score is a mean over findings, and a mean over a surface that
  * restates one certificate five ways is not evidence of five problems.
  */
-export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
+export function resolveNodeVerdict(node: QveNode, surface: string = QVE_DARK_SURFACE): QveResolvedVerdict {
+  /* The lifecycle colours in QVE_COLOR were picked against the dark hero and
+     are correct there BY DESIGN — `idle` (#64748b) measures 4.0:1 on #070d1b,
+     deliberately quiet. Re-deriving them on that surface would silently lift
+     the engine's resting palette, so the dark ground is returned untouched and
+     only a different surface triggers the legibility walk. */
+  const tone = (hex: string) => (surface === QVE_DARK_SURFACE ? hex : readableOn(hex, surface));
+
   if (node.state === 'idle') {
-    return { key: 'idle', label: node.verdict || 'Standby', color: QVE_COLOR.idle, alert: false, basis: 'No evidence collected for this surface yet.' };
+    return { key: 'idle', label: node.verdict || 'Standby', color: tone(QVE_COLOR.idle), alert: false, basis: 'No evidence collected for this surface yet.' };
   }
   if (node.state === 'scanning') {
-    return { key: 'scanning', label: 'Scanning', color: QVE_COLOR.scanning, alert: false, basis: 'This surface is being measured now.' };
+    return { key: 'scanning', label: 'Scanning', color: tone(QVE_COLOR.scanning), alert: false, basis: 'This surface is being measured now.' };
   }
   if (node.state === 'failed') {
-    return { key: 'failed', label: 'Failed', color: QVE_COLOR.critical, alert: true, basis: 'A module behind this surface did not complete, so the surface is unassessed.' };
+    return { key: 'failed', label: 'Failed', color: tone(QVE_COLOR.critical), alert: true, basis: 'A module behind this surface did not complete, so the surface is unassessed.' };
   }
   /* A module that declined to measure this surface reported a reason, and the
      reason is the point — "not applicable" is a measured answer, but it is not
@@ -503,7 +555,7 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
     return {
       key: 'unmeasured',
       label: notMeasured ? 'Not measured' : 'Not applicable',
-      color: QVE_COLOR.idle,
+      color: tone(QVE_COLOR.idle),
       alert: false,
       basis:
         node.lines[0] ??
@@ -516,7 +568,7 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
     return {
       key: 'unmeasured',
       label: 'Not measured',
-      color: QVE_COLOR.idle,
+      color: tone(QVE_COLOR.idle),
       alert: false,
       basis: 'The modules behind this surface reported, but the target exposed nothing here to measure. This is not a pass.',
     };
@@ -550,7 +602,7 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
     return {
       key: entry.key,
       label: entry.label,
-      color: readableOnDark(RISK_COLOR[severityRisk]),
+      color: readableOn(RISK_COLOR[severityRisk], surface),
       alert: entry.alert,
       basis: `The most severe finding on this surface is ${entry.worst}, which outranks its measured posture.${scored}`,
     };
@@ -563,7 +615,7 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
     return {
       key: VERDICT_KEY_BY_RATING[grade.rating] ?? 'review',
       label: grade.rating,
-      color: readableOnDark(grade.color),
+      color: readableOn(grade.color, surface),
       alert: grade.rating === 'Critical' || grade.rating === 'Weak',
       basis: severityRisk
         ? `Graded on measured posture; the worst finding here (${severityRisk.toLowerCase()} risk) does not outrank it.${scored}`
@@ -578,12 +630,12 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
     return {
       key,
       label,
-      color: readableOnDark(RISK_COLOR[severityRisk]),
+      color: readableOn(RISK_COLOR[severityRisk], surface),
       alert: severityRisk !== 'Elevated',
       basis: 'Graded from observed findings; this surface has no scored category in the published model.',
     };
   }
-  return { key: 'secure', label: 'Secure', color: QVE_COLOR.pass, alert: false, basis: 'No finding above LOW was observed on this surface.' };
+  return { key: 'secure', label: 'Secure', color: tone(QVE_COLOR.pass), alert: false, basis: 'No finding above LOW was observed on this surface.' };
 }
 
 /**
@@ -593,8 +645,8 @@ export function resolveNodeVerdict(node: QveNode): QveResolvedVerdict {
  * the colour and the word beside it are the same function of the same input, so
  * "Secure" can never be painted red.
  */
-export function beamColor(node: QveNode): string {
-  return resolveNodeVerdict(node).color;
+export function beamColor(node: QveNode, surface: string = QVE_DARK_SURFACE): string {
+  return resolveNodeVerdict(node, surface).color;
 }
 
 /**

@@ -47,10 +47,21 @@ export default function AiRecommendations({ recommendations, loading }: { recomm
           {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-24 animate-pulse rounded-lg border border-white/5 bg-white/[0.03]" />)}
         </div>
       ) : recommendations.length === 0 ? (
+        /* ABSENCE IS NOT SAFETY (§43).
+           This used to render a GREEN shield asserting that the estate's
+           posture was fine — a verdict about the tenant, produced from the fact
+           that this one panel had nothing to show. It was displayed on a tenant
+           whose own engine held four recommended actions, one of them critical.
+           An empty list means no action was DERIVED; it is not evidence that
+           none is needed, and it is never a pass. Slate, not emerald, and no
+           verdict. Guarded by tools/estate-workflow-check.ts. */
         <div className="flex flex-1 flex-col items-center justify-center text-center">
-          <Shield className="mb-3 h-8 w-8 text-emerald-400/50" />
-          <p className="text-xs font-bold text-white/50">No active recommendations</p>
-          <p className="mt-1 text-[10px] text-white/25">Your posture is stable. New actions appear as telemetry arrives.</p>
+          <Shield className="mb-3 h-8 w-8 text-slate-500/50" />
+          <p className="text-xs font-bold text-white/50">No recommended actions derived</p>
+          <p className="mt-1 max-w-[15rem] text-[10px] leading-relaxed text-white/25">
+            This is not an assessment of your posture. Actions appear once a scan or integration produces evidence to
+            derive them from.
+          </p>
         </div>
       ) : (
         <div className="flex-1 space-y-2.5 overflow-y-auto pr-1 custom-scrollbar">

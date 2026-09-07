@@ -77,6 +77,21 @@ export interface OrchestratorOptions {
   onEvent?: ScanEventSink;
   /** Poll for operator cancellation. */
   isCancelled?: () => boolean;
+  /**
+   * The slice of the progress bar these engines own.
+   *
+   * A Dev scan spends most of its wall time ACQUIRING the repository before a
+   * single engine runs — measured at 21.1s of acquisition against 0.4s of
+   * engines on a 57-file repository. When the engines own 0-100 regardless, the
+   * bar sits at zero for 98% of the scan and then sweeps to done in under half
+   * a second, which reads as a broken progress bar because it is describing 2%
+   * of the work.
+   *
+   * The caller that knows about an acquisition phase reserves the front of the
+   * band for it and hands the engines the rest. Callers with no such phase
+   * (Local, connection-only Dev targets) omit this and keep the full range.
+   */
+  progressRange?: { from: number; to: number };
 }
 
 const DEFAULT_SCAN_BUDGET_MS = 180_000;
@@ -371,6 +386,11 @@ export async function runExposureScan(options: OrchestratorOptions): Promise<Exp
     });
   };
 
+  /* Where the engine phase starts and ends on the operator's bar. Defaults to
+     the whole thing, so every existing caller is unchanged. */
+  const progressFrom = Math.max(0, Math.min(99, options.progressRange?.from ?? 0));
+  const progressTo = Math.max(progressFrom, Math.min(99, options.progressRange?.to ?? 99));
+
   function overallProgress(): number {
     let earned = 0;
     for (const engine of ordered) {
@@ -379,7 +399,8 @@ export async function runExposureScan(options: OrchestratorOptions): Promise<Exp
       if (settled.has(engine.descriptor.id)) earned += weight;
       else if (run.state === 'running') earned += weight * (run.progress / 100);
     }
-    return Math.min(99, Math.round((earned / totalWeight) * 100));
+    const fraction = totalWeight > 0 ? earned / totalWeight : 0;
+    return Math.min(progressTo, Math.round(progressFrom + fraction * (progressTo - progressFrom)));
   }
 
   /* ── dispatch in dependency waves, bounded by concurrency ─────────────── */

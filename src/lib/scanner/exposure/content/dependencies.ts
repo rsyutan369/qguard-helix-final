@@ -20,7 +20,7 @@
 
 import type { CryptoRole } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine, WorkspaceFile } from '../engine-contract';
-import { buildEvidence, buildFinding, completed } from '../engine-contract';
+import { buildEvidence, buildFinding, completed, reportStride } from '../engine-contract';
 import { canonicalAlgorithmName, classifyQuantum, severityFor, describeAlgorithm } from '../algorithms';
 
 /* ───────────────────────────────────────────────────────────── ecosystems ── */
@@ -606,10 +606,12 @@ export const dependencyEngine: ExposureEngine = {
     }> = [];
 
     let index = 0;
+    /* One update per ~2% of the work, whatever the corpus size. */
+    const dependencyStride = reportStride(inScope.length);
     for (const dependency of inScope) {
       if (context.isCancelled()) break;
       index += 1;
-      if (index % 50 === 0) {
+      if (index % dependencyStride === 0) {
         context.report('Mapping cryptographic relevance', { done: index, total: inScope.length, unit: 'dependencies' });
       }
 

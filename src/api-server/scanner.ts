@@ -3274,6 +3274,31 @@ const INTEL_CACHE_TTL_MS = 15_000
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const intelCache = new Map<string, { at: number; promise: Promise<any> }>()
 
+/**
+ * The scanner's in-memory persistence fallback, read-only, for one tenant.
+ *
+ * When the database is unreachable the scanner keeps its results here rather
+ * than losing a completed scan (`PersistenceMode: 'memory'`). Everything that
+ * derives from `buildScannerIntelligence` — Quantum Readiness components, the
+ * migration workflow, threat intelligence — therefore keeps reporting real scan
+ * results while the database is down.
+ *
+ * Anything that reads the database DIRECTLY does not, and that split is visible
+ * to a user as two panels on one page disagreeing about how many assets they
+ * own. Exported so the estate projections can read the same rows and disclose
+ * which store answered, instead of silently rendering an empty estate next to a
+ * populated one.
+ */
+export function readScannerMemoryRows(userId: string) {
+  return {
+    assets: memoryStore.assets.filter((row) => row.user_id === userId),
+    inventory: memoryStore.inventory.filter((row) => row.user_id === userId),
+    exposures: memoryStore.exposures.filter((row) => row.user_id === userId),
+    results: memoryStore.results.filter((row) => row.user_id === userId),
+    sessions: memoryStore.sessions.filter((row) => row.user_id === userId),
+  }
+}
+
 export async function buildScannerIntelligence(token: string, userId: string) {
   const hasActiveScan = Array.from(activeJobs.values()).some((job) => job.userId === userId)
   const cached = intelCache.get(userId)

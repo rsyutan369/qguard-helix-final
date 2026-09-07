@@ -1,13 +1,13 @@
 'use client'
 
-import { useState } from 'react'
 import {
-  Shield, AlertTriangle, Activity, RefreshCw, Globe, Eye, GitBranch,
+  Shield, AlertTriangle, Activity, RefreshCw, ChevronRight, GitBranch,
   ScrollText, Briefcase, Boxes, Radar, Bell, History, Sparkles, FileDown, Scale,
 } from 'lucide-react'
-import { useDashboard, type ExposureNode } from '@/hooks/use-dashboard'
+import { useDashboard } from '@/hooks/use-dashboard'
 import { useAuth } from '@/contexts/auth-context'
-import QuantumExposureMap, { NodeInspector } from './crypto_exposure_map/QuantumExposureMap'
+import { ExposureWorkflowGraph } from '@/components/exposure/ExposureWorkflowGraph'
+import { ESTATE_LENSES } from '@/lib/dashboard/estate-workflow'
 import SecurityEventsPanel from './security_events_panel/SecurityEventsPanel'
 import ExecutiveSummary from './_components/executive/ExecutiveSummary'
 import KpiGrid from './_components/executive/KpiGrid'
@@ -31,16 +31,15 @@ function firstName(user: ReturnType<typeof useAuth>['user']): string | null {
 }
 
 export default function Dashboard() {
-  const [selectedNode, setSelectedNode] = useState<ExposureNode | null>(null)
   const { user } = useAuth()
   const {
-    summary, executive, events, exposureMap, recommendations, health,
-    summaryState, executiveState, eventsState, mapState, recommendationsState,
+    summary, executive, events, estateWorkflow, recommendations, health,
+    summaryState, executiveState, eventsState, workflowState, recommendationsState,
     lastSyncAt, sseConnected, refreshAll,
   } = useDashboard()
 
   const execLoading = executiveState === 'loading' && !executive
-  const mapLoading = mapState === 'loading' && exposureMap.nodes.length === 0
+  const workflowLoading = workflowState === 'loading' && !estateWorkflow
   const eventsLoading = eventsState === 'loading' && events.length === 0
   const recsLoading = recommendationsState === 'loading' && recommendations.length === 0
   const summaryLoading = summaryState === 'loading' && !summary
@@ -135,29 +134,82 @@ export default function Dashboard() {
         <div className="mt-2"><SharedResponsibilityStrip /></div>
       </div>
 
-      {/* Enterprise Quantum Exposure Graph + Node Inspector */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <SectionLabel href="/dashboard/quantum-readiness/exposure-graph" meta={summary?.lastScanAt ? `Last scan ${relativeTime(summary.lastScanAt)}` : undefined}>
-            <Globe className="h-4 w-4 text-cyan-300" /> Enterprise Quantum Exposure Graph™
-          </SectionLabel>
-          <div className="mt-2">
-            <QuantumExposureMap
-              data={exposureMap}
-              loading={mapLoading}
-              onRefresh={refreshAll}
-              selectedNode={selectedNode}
-              onSelectNode={setSelectedNode}
-            />
-          </div>
-        </div>
-        <div className="lg:col-span-1">
-          <SectionLabel href={selectedNode?.id ? `/dashboard/assets?asset=${encodeURIComponent(selectedNode.id)}` : '/dashboard/assets'} meta="Telemetry analysis">
-            <Eye className="h-4 w-4 text-cyan-300" /> Node Inspector
-          </SectionLabel>
-          <div className="mt-2 h-[520px]">
-            <NodeInspector selectedNode={selectedNode} exposureMap={exposureMap} />
-          </div>
+      {/* Estate Exposure Workflow — the same engine the Local and Dev scanner
+          panels render, projecting the TENANT ESTATE instead of one assessment.
+          It replaces the old Exposure Graph + Node Inspector pair: those showed
+          assets and a side panel, this shows the relationships BETWEEN them —
+          scan sessions, assets and their real parent/child links, the CBOM,
+          certificates, algorithms, both finding registers and the remediations
+          on record — with the inspector built in. */}
+      <div>
+        <SectionLabel
+          href="/dashboard/assets"
+          meta={estateWorkflow
+            ? [
+                `${estateWorkflow.estate.assessedAssets} of ${estateWorkflow.estate.assets} assets assessed`,
+                `${estateWorkflow.estate.relationships} relationships`,
+                /* Stated, not hidden: a lower algorithm count than the number of
+                   recorded values is a REJECTION of scanner finding titles, not
+                   missing data. */
+                estateWorkflow.estate.rejectedAlgorithmLabels > 0
+                  ? `${estateWorkflow.estate.rejectedAlgorithmLabels} finding titles excluded from algorithms`
+                  : null,
+              ].filter(Boolean).join(' · ')
+            : summary?.lastScanAt ? `Last scan ${relativeTime(summary.lastScanAt)}` : undefined}
+        >
+          <GitBranch className="h-4 w-4 text-cyan-300" /> Estate Exposure Workflow™
+        </SectionLabel>
+        <div className="mt-2">
+          {workflowLoading ? (
+            <div className="grid h-[520px] place-items-center rounded-2xl border border-white/[0.07] bg-[#080d1a]/80">
+              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">
+                Building estate workflow…
+              </p>
+            </div>
+          ) : estateWorkflow && estateWorkflow.nodes.length > 0 ? (
+            <div className="space-y-2">
+              {/* A degraded read is disclosed, never presented as the durable
+                  estate. `persistence: 'memory'` means the database was
+                  unreachable and the scanner's in-process results answered —
+                  real scan output that will not survive a restart. */}
+              {estateWorkflow.estate.persistence === 'memory' && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/30 bg-amber-400/[0.07] px-3.5 py-2.5">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                  <p className="text-[12px] leading-relaxed text-amber-100/85">
+                    <span className="font-bold">Served from the local scan cache.</span> The database is unreachable, so
+                    this estate is drawn from scan results held in the running server rather than your stored inventory.
+                    The findings are real; they are not durable, and asset relationships — which live only in the
+                    database — cannot be shown until it is reachable again.
+                  </p>
+                </div>
+              )}
+              <ExposureWorkflowGraph
+                graph={estateWorkflow}
+                lenses={ESTATE_LENSES}
+                focusKind="asset"
+                provenance="Every node is a row this tenant already holds — the workflow adds nothing to the estate. Risk comes from the same shared posture model the Assets and Quantum Readiness pages read."
+              />
+            </div>
+          ) : (
+            /* Empty state, not a fabricated graph. An estate with no scanned
+               assets has no workflow to draw, and drawing one anyway would be
+               the fabrication this module exists to avoid. */
+            <div className="grid h-[520px] place-items-center rounded-2xl border border-white/[0.07] bg-[#080d1a]/80 px-6 text-center">
+              <div className="max-w-md space-y-2">
+                <p className="text-sm font-bold text-slate-200">No estate evidence yet</p>
+                <p className="text-[12.5px] leading-relaxed text-slate-400">
+                  The workflow is drawn from your own assets, scans, CBOM records and certificates. Run a PQC discovery
+                  scan or connect an integration and every asset, relationship and finding it produces appears here.
+                </p>
+                <a
+                  href="/dashboard/scanner"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-200 transition-colors hover:border-cyan-400/50"
+                >
+                  Run a discovery scan <ChevronRight className="h-3.5 w-3.5" />
+                </a>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

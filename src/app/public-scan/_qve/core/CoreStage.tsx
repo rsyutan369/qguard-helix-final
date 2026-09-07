@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils';
 import type { QveBudget } from '../performance-manager';
 import { useAdaptiveDpr } from '../performance-manager';
 import { QVE_COLOR, type QveRunState } from '../types';
+import { useQvePalette, type QvePalette } from '../theme';
 import { ScoreRing } from './ScoreRing';
 
 const QuantumCore3D = React.lazy(() => import('./QuantumCore3D'));
@@ -100,14 +101,14 @@ class CoreBoundary extends React.Component<{ fallback: React.ReactNode; children
 const SHIELD_PATH =
   'M100 14 C124 15 141 24 149 32 L149 82 C149 122 126 150 100 166 C74 150 51 122 51 82 L51 32 C59 24 76 15 100 14 Z';
 
-function FallbackCore({ accent, animate, quantum }: { accent: string; animate: boolean; quantum: boolean }) {
+function FallbackCore({ accent, animate, quantum, palette }: { accent: string; animate: boolean; quantum: boolean; palette: QvePalette }) {
   return (
     <svg viewBox="0 0 200 200" className="h-full w-full" aria-hidden>
       <defs>
         <radialGradient id="qve-fallback-globe">
-          <stop offset="0%" stopColor="#1d5fd0" />
-          <stop offset="70%" stopColor="#0a2f6d" />
-          <stop offset="100%" stopColor="#04122e" />
+          <stop offset="0%" stopColor={palette.fallbackGlobe[0]} />
+          <stop offset="70%" stopColor={palette.fallbackGlobe[1]} />
+          <stop offset="100%" stopColor={palette.fallbackGlobe[2]} />
         </radialGradient>
         <linearGradient id="qve-fallback-shield" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={accent} stopOpacity="0.22" />
@@ -156,6 +157,7 @@ export const CoreStage = React.memo(function CoreStage({
   orbRef,
 }: CoreStageProps) {
   const active = run === 'scanning';
+  const palette = useQvePalette();
   const dpr = useAdaptiveDpr(budget.maxDpr, budget.core3d);
   // The SVG core stays visible until WebGL confirms it is live, then cross-fades
   // out. See `onReady` in QuantumCore3D for why "mounted" is not "running".
@@ -164,7 +166,7 @@ export const CoreStage = React.memo(function CoreStage({
 
   const fallback = (
     <div className="absolute inset-[19%] grid place-items-center">
-      <FallbackCore accent={accent} animate={budget.animate} quantum={quantum} />
+      <FallbackCore accent={accent} animate={budget.animate} quantum={quantum} palette={palette} />
     </div>
   );
 
@@ -240,7 +242,7 @@ export const CoreStage = React.memo(function CoreStage({
           <div className="flex shrink-0 items-baseline">
             <span
               className="text-[1.7rem] font-black leading-none tracking-tighter tabular-nums @[15rem]:text-[2.35rem]"
-              style={{ color: verdictColor, textShadow: `0 0 30px ${verdictColor}55, 0 2px 12px rgba(0,0,0,0.9)` }}
+              style={{ color: verdictColor, textShadow: `0 0 30px ${verdictColor}55, 0 2px 12px ${palette.readoutShadow}` }}
             >
               {readout === null ? '—' : Math.round(readout)}
             </span>
@@ -254,12 +256,21 @@ export const CoreStage = React.memo(function CoreStage({
       {/* ── Orb ─────────────────────────────────────────────────────────────
           Measured by the hero for beam geometry — keep it the ring's square. */}
       <div ref={orbRef} className="relative mt-3 aspect-square w-full max-w-[26rem]">
-        {/* Ambient bloom bed so the core sits in light rather than on top of it. */}
+        {/* Instrument well.
+            On navy the core sits in its own bloom — a glow bed reading as
+            emitted light. A white page has no headroom for that, so the same
+            layer inverts: a soft recessed disc that gives the hologram a ground
+            to read against instead of leaving it floating on the page. Both are
+            the same idea (separate the instrument from the surface), rendered
+            the only way each ground allows. */}
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 rounded-full"
           style={{
-            background: `radial-gradient(circle at 50% 48%, ${accent}22, transparent 62%)`,
+            background:
+              palette.theme === 'dark'
+                ? `radial-gradient(circle at 50% 48%, ${accent}22, transparent 62%)`
+                : `radial-gradient(circle at 50% 48%, ${palette.coreWell}, transparent 66%)`,
             filter: 'blur(18px)',
           }}
         />
@@ -284,6 +295,7 @@ export const CoreStage = React.memo(function CoreStage({
                   active={active}
                   budget={budget}
                   dpr={dpr}
+                  palette={palette}
                   onReady={onCoreReady}
                 />
               </div>
@@ -301,6 +313,7 @@ export const CoreStage = React.memo(function CoreStage({
           verdictColor={verdictColor}
           active={active}
           animate={budget.animate}
+          palette={palette}
         />
 
       </div>

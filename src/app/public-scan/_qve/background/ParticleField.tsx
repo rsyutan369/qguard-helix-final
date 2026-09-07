@@ -16,12 +16,17 @@
 import React from 'react';
 import type { Container, Engine, ISourceOptions } from '@tsparticles/engine';
 import { Particles, ParticlesProvider } from '@tsparticles/react';
+import type { QvePalette } from '../theme';
 
 export interface ParticleFieldProps {
   accent: string;
   quantum: boolean;
   count: number;
   active: boolean;
+  /* Passed down rather than read from context: this component is lazily loaded
+     inside a Suspense boundary, and taking it as a prop keeps the option set
+     memoised on one value the parent already has. */
+  palette: QvePalette;
 }
 
 /** Registers only the slim feature set — the full bundle is ~3× the size. */
@@ -40,9 +45,10 @@ const registerEngine = async (engine: Engine): Promise<void> => {
  * `count` alone, and scan reactivity is applied to the *live* container instead
  * (see the effect below), which needs no rebuild.
  */
-function buildOptions(count: number): ISourceOptions {
-  const accent = '#22d3ee';
-  const linkColor = '#60a5fa';
+function buildOptions(count: number, palette: QvePalette): ISourceOptions {
+  /* Palette, not literals: the mesh is drawn as emitted light, and #22d3ee over
+     white is 1.68:1 — on the light hero the field simply was not there. */
+  const [accent, linkColor, quantumColor] = palette.particle;
   const active = false;
   return {
     fullScreen: { enable: false },
@@ -51,7 +57,7 @@ function buildOptions(count: number): ISourceOptions {
     background: { color: 'transparent' },
     particles: {
       number: { value: count, density: { enable: true, width: 1600, height: 900 } },
-      color: { value: [accent, linkColor, '#60a5fa'] },
+      color: { value: [accent, linkColor, quantumColor] },
       shape: { type: 'circle' },
       opacity: {
         value: { min: 0.12, max: active ? 0.6 : 0.38 },
@@ -80,8 +86,15 @@ function buildOptions(count: number): ISourceOptions {
   };
 }
 
-export default function ParticleField({ accent, quantum, count, active }: ParticleFieldProps) {
-  const options = React.useMemo(() => buildOptions(count), [count]);
+export default function ParticleField({ accent, quantum, count, active, palette }: ParticleFieldProps) {
+  /* The palette is read through a REF for the initial build and applied to the
+     live container afterwards — the same discipline the option set already
+     follows for scan reactivity, and for the same reason stated above: putting
+     it in the memo's dependencies would rebuild the whole tsParticles container
+     on a theme toggle, blanking the field exactly when the user is watching it
+     change. */
+  const paletteRef = React.useRef(palette);
+  const options = React.useMemo(() => buildOptions(count, paletteRef.current), [count]);
   const container = React.useRef<Container | null>(null);
 
   const onLoaded = React.useCallback((instance?: Container) => {
@@ -91,24 +104,28 @@ export default function ParticleField({ accent, quantum, count, active }: Partic
   // Scan reactivity applied in place: new particles adopt the faster drift and
   // longer link reach, and the wrapper brightens. No rebuild, no blink.
   React.useEffect(() => {
+    paletteRef.current = palette;
     const instance = container.current;
     if (!instance) return;
     try {
       const particles = instance.actualOptions.particles;
       particles.move.speed = active ? 0.9 : 0.28;
+      // Theme applied in place too: newly spawned dust adopts the ground's
+      // palette, and the links — which are redrawn every frame — change at once.
+      (particles.color as { value: string[] }).value = [...palette.particle];
       // `links` is contributed by the interaction plugin, so the engine types it
       // as `unknown` on the base particle options. Narrowed here rather than
       // reaching into plugin internals.
       const links = particles.links as { distance: number; color: { value: string } } | undefined;
       if (links) {
         links.distance = active ? 148 : 118;
-        links.color.value = quantum ? '#a78bfa' : accent;
+        links.color.value = quantum ? palette.particle[2] : palette.particle[1];
       }
     } catch {
       // tsParticles internals are best-effort enrichment; the field is
       // decorative and must never break the hero if the shape changes.
     }
-  }, [active, quantum, accent]);
+  }, [active, quantum, accent, palette]);
 
   return (
     <ParticlesProvider init={registerEngine}>

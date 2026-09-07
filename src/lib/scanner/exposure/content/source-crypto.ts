@@ -39,7 +39,7 @@ import {
 } from '@/lib/crypto/knowledge-base';
 import type { CryptoRole as ExposureRole, DetectionMethod, FindingConfidence, FindingSeverity, QuantumStatus } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine, WorkspaceFile } from '../engine-contract';
-import { buildEvidence, buildFinding, completed } from '../engine-contract';
+import { buildEvidence, buildFinding, completed, reportStride } from '../engine-contract';
 import {
   contextualiseLexical,
   detectByApi,
@@ -225,6 +225,8 @@ export const sourceCryptoEngine: ExposureEngine = {
     let processed = 0;
     let truncated = false;
 
+    /* One update per ~2% of the work, whatever the corpus size. */
+    const sourceStride = reportStride(files.length);
     for (const file of files) {
       if (context.isCancelled()) break;
       if (findings.length >= MAX_COMPONENTS) {
@@ -233,7 +235,7 @@ export const sourceCryptoEngine: ExposureEngine = {
       }
 
       processed += 1;
-      if (processed % 25 === 0 || processed === files.length) {
+      if (processed % sourceStride === 0 || processed === files.length) {
         context.report(`Analysing ${file.path}`, { done: processed, total: files.length, unit: 'files' });
       }
 

@@ -40,6 +40,7 @@ import {
 } from './shared';
 import { EngineHealthPanel, ScannerIntelligenceSection } from './ScannerIntelligence';
 import { ScanTheatre, formatBytes, type TheatreStatus } from './ScanTheatre';
+import { ExposureWorkflowGraph } from './ExposureWorkflowGraph';
 import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
@@ -525,6 +526,9 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
           <ScannerIntelligenceSection assessment={scan.assessment} synced={syncState === 'synced'} />
           <CorrelatedExposures exposures={scan.assessment.exposures} />
           <FindingExplorer assessment={scan.assessment} />
+          {/* The findings table says WHAT was found; the workflow map says how
+              the assessment reached it and what each finding is connected to. */}
+          <ExposureWorkflowGraph assessment={scan.assessment} mode="local" />
           <ExposureRecommendations assessment={scan.assessment} />
           <CbomViewer
             components={scan.assessment.cbom}

@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient, User } from '@supabase/supabase-js'
 import type { Request } from 'express'
 import { supabaseFetch } from './supabase-fetch'
+import { createDemoUser, isDemoToken } from './demo-account'
 
 type SupabaseSource = 'primary' | 'fallback'
 
@@ -296,6 +297,13 @@ function pruneVerificationCache(now: number) {
  */
 export async function getServerUser(token: string, options?: { full?: boolean }): Promise<User | null> {
   if (!token) return null
+
+  /* Demo account — see src/lib/demo-account.ts. Answered before any signature
+     work: the demo token is not a JWT, and the auth server it would be verified
+     against is exactly the one that is unavailable. `isDemoToken` is false
+     unless VITE_DEMO_ACCOUNT/DEMO_ACCOUNT is 'true' in this process, so with
+     the flag off this token verifies as nothing and the caller gets a 401. */
+  if (isDemoToken(token)) return createDemoUser()
 
   if (options?.full) {
     return fetchServerUserFromNetwork(token)

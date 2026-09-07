@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { resolveNodeVerdict, type QveNode, type QveNodeKey, type QveResolvedVerdict } from '../types';
+import { useQvePalette } from '../theme';
 
 /**
  * Icon per node key. Open-ended because the node ring is supplied by whoever
@@ -127,9 +128,13 @@ export const CategoryNode = React.memo(function CategoryNode({
 }: CategoryNodeProps) {
   const reduce = useReducedMotion();
   const Icon = NODE_ICON[node.key] ?? Radar;
+  const palette = useQvePalette();
   /* ONE resolved state drives the label, the accent, the badge, the border, the
-     progress sweep and the beam tap. There is deliberately no second source. */
-  const verdict = resolveNodeVerdict(node);
+     progress sweep and the beam tap. There is deliberately no second source.
+     The card's own surface is passed in so the verdict word is graded against
+     the ground it is actually printed on — the same green that reads on navy
+     measures 1.7:1 on the light card. */
+  const verdict = resolveNodeVerdict(node, palette.surface);
   const color = verdict.color;
   const live = node.state !== 'idle';
   const alert = verdict.alert;
@@ -220,11 +225,11 @@ export const CategoryNode = React.memo(function CategoryNode({
             <StatusBadge verdict={verdict} />
           </div>
           <p className="mt-0.5 flex items-baseline gap-1.5 text-[11.5px] font-bold">
-            <span className="truncate" style={{ color: live ? color : '#64748b' }}>
+            <span className="truncate" style={{ color: live ? color : palette.inkMuted }}>
               {verdict.label}
             </span>
             {node.score !== null && node.hasEvidence && (
-              <span className="shrink-0 font-mono text-[9.5px] font-bold tabular-nums" style={{ color: live ? color : '#64748b' }}>
+              <span className="shrink-0 font-mono text-[9.5px] font-bold tabular-nums" style={{ color: live ? color : palette.inkMuted }}>
                 {node.score}
               </span>
             )}

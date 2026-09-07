@@ -62,6 +62,12 @@ import sandboxRoutes, { startSandboxScheduler } from './sandbox'
 import copilotRoutes from './copilot'
 import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { subscriptionGateway } from './subscription-guard'
+import {
+  DEMO_ACCOUNT_EMAIL,
+  DEMO_ACCOUNT_TIER,
+  DEMO_ENV_FLAG,
+  isDemoModeEnabled,
+} from '@/lib/demo-account'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
 
 const shareIpAttempts = new Map<string, { count: number; windowStart: number }>()
@@ -330,6 +336,16 @@ export function createApiServer() {
       const detail = reason instanceof Error ? (reason.stack || reason.message) : JSON.stringify(reason)
       console.error('[api] Unhandled promise rejection (server kept alive):', detail)
     })
+  }
+
+  /* The demo/test identity bypasses Supabase auth entirely, so an enabled
+     demo mode must never be a silent property of a running server. */
+  if (isDemoModeEnabled()) {
+    console.warn(
+      `[api] DEMO ACCOUNT ENABLED (${DEMO_ENV_FLAG}=true): "${DEMO_ACCOUNT_EMAIL}" ` +
+      `authenticates without Supabase and resolves to the ${DEMO_ACCOUNT_TIER} tier. ` +
+      'Development only — unset the flag before deploying.',
+    )
   }
 
   const app = express()

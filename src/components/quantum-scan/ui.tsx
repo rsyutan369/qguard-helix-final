@@ -206,6 +206,11 @@ export const Panel = React.forwardRef<
     <div
       ref={ref}
       className={cn(
+        /* NOTE for the light theme: this fill is `bg-[#080d1a]/80`, and the
+           dashboard's light-theme compatibility layer (index.css, group 1)
+           matches dark hex fills as a class SUBSTRING precisely so an opacity
+           modifier like this one is still covered. Keep new fills to a hex the
+           layer lists — tools/dashboard-contrast-check.ts enforces it. */
         // min-w-0 so a panel never forces its grid track wider than the viewport.
         'relative min-w-0 rounded-2xl border border-white/[0.07] bg-[#080d1a]/80 backdrop-blur-xl',
         'shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset,0_24px_60px_-30px_rgba(0,0,0,0.9)]',

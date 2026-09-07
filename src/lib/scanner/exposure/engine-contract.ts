@@ -288,6 +288,24 @@ export interface FindingInput {
 }
 
 /** Construct a canonical finding. The only sanctioned way to make one. */
+/**
+ * How often a per-item engine loop should call `context.report`.
+ *
+ * Engines used to hardcode a stride — every 20 files here, every 50 there —
+ * which reports the wrong number of times at both ends of the range. On a
+ * 60-file corpus a stride of 50 fires once, so the engine contributes one step
+ * to the operator's bar and then its whole weight at completion; on a 5,000-file
+ * corpus a stride of 20 fires 250 times for no extra fidelity.
+ *
+ * Scaling to the work keeps roughly `target` updates whatever the corpus size,
+ * which is what makes the progress bar advance with the work rather than with
+ * engine completions.
+ */
+export function reportStride(total: number, target = 50): number {
+  if (!Number.isFinite(total) || total <= 0) return 1;
+  return Math.max(1, Math.ceil(total / target));
+}
+
 export function buildFinding(input: FindingInput): ExposureFinding {
   const now = new Date().toISOString();
   return {

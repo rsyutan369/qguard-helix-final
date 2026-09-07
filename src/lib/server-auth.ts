@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { supabaseFetch } from './supabase-fetch'
+import { createDemoUser, isDemoToken } from './demo-account'
 
 type HeaderLikeRequest = {
   headers: {
@@ -98,6 +99,11 @@ export async function getServerUser(request: HeaderLikeRequest) {
 
 export async function getServerUserFromToken(token: string | null) {
   if (!token) return null
+
+  /* Demo account — see src/lib/demo-account.ts. Same short-circuit as
+     `getServerUser` in supabase-server.ts, kept here so the two auth entry
+     points cannot disagree about who is signed in. Flag-gated. */
+  if (isDemoToken(token)) return createDemoUser()
 
   const config = resolveConfig(token)
   if (!hasConfig(config)) {

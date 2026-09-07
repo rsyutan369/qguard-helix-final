@@ -26,6 +26,7 @@ import { ArrowRight, Award, Clock, KeyRound, ScrollText, ShieldCheck, X } from '
 import { cn } from '@/lib/utils';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { resolveNodeVerdict, QVE_COLOR, type QveNode, type QveNodeKey } from '../types';
+import { qveAccentOn, useQvePalette, type QvePalette } from '../theme';
 
 export interface NodeInspectorProps {
   node: QveNode | null;
@@ -39,6 +40,7 @@ export interface NodeInspectorProps {
 const HANDSHAKE_ORDER = ['client-hello', 'server-hello', 'cipher', 'certificate', 'key-exchange', 'session'];
 
 function HandshakeFlow({ report, animate }: { report: PublicScanReport; animate: boolean }) {
+  const palette = useQvePalette();
   const steps = React.useMemo(
     () =>
       HANDSHAKE_ORDER.map((key) => report.handshake.find((step) => step.key === key)).filter(
@@ -74,13 +76,13 @@ function HandshakeFlow({ report, animate }: { report: PublicScanReport; animate:
               aria-hidden
               className="absolute left-0 top-[5px] h-3.5 w-3.5 rounded-full border"
               style={{
-                borderColor: step.observed ? `${QVE_COLOR.cyan}88` : 'rgba(148,163,184,0.35)',
-                backgroundColor: step.observed ? `${QVE_COLOR.cyan}22` : 'transparent',
+                borderColor: step.observed ? `${palette.accentCyan}88` : palette.track,
+                backgroundColor: step.observed ? `${palette.accentCyan}22` : 'transparent',
               }}
             />
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
               <p className="text-[11.5px] font-bold text-slate-200">{step.label}</p>
-              <p className="font-mono text-[10.5px] font-semibold" style={{ color: step.observed ? QVE_COLOR.cyan : '#64748b' }}>
+              <p className="font-mono text-[10.5px] font-semibold" style={{ color: step.observed ? palette.accentCyan : palette.inkMuted }}>
                 {step.value}
                 {step.timingMs !== null && (
                   <span className="ml-1.5 inline-flex items-center gap-0.5 text-slate-500">
@@ -134,6 +136,7 @@ function HandshakeFlow({ report, animate }: { report: PublicScanReport; animate:
 /* ---------------------------------------------------------------- cert chain - */
 
 function CertificateChain({ report, animate }: { report: PublicScanReport; animate: boolean }) {
+  const palette = useQvePalette();
   const certificate = report.evidence.certificate;
   const extras = report.evidence.certificateExtras;
   const chain = certificate?.chain ?? [];
@@ -220,7 +223,7 @@ function CertificateChain({ report, animate }: { report: PublicScanReport; anima
             </p>
             <p
               className="mt-0.5 truncate text-[10.5px] font-bold"
-              style={{ color: item.good ? QVE_COLOR.pass : '#cbd5e1' }}
+              style={{ color: item.good ? qveAccentOn(QVE_COLOR.pass, palette) : palette.ink }}
             >
               {item.value}
             </p>
@@ -309,6 +312,7 @@ function evidenceFor(key: QveNodeKey, report: PublicScanReport): EvidenceRow[] {
 /* -------------------------------------------------------------------- export - */
 
 export function NodeInspector({ node, report, onClose, animate }: NodeInspectorProps) {
+  const palette = useQvePalette();
   const reduce = useReducedMotion();
   const motionEnabled = animate && !reduce;
 
@@ -345,10 +349,10 @@ export function NodeInspector({ node, report, onClose, animate }: NodeInspectorP
               </p>
               {/* Same resolver the card uses — the panel and the card it
                   opened from can never state different verdicts. */}
-              <p className="mt-0.5 text-[13px] font-black" style={{ color: resolveNodeVerdict(node).color }} title={resolveNodeVerdict(node).basis}>
-                {resolveNodeVerdict(node).label}
+              <p className="mt-0.5 text-[13px] font-black" style={{ color: resolveNodeVerdict(node, palette.surface).color }} title={resolveNodeVerdict(node, palette.surface).basis}>
+                {resolveNodeVerdict(node, palette.surface).label}
               </p>
-              {node.hasEvidence && node.verdict && node.verdict !== resolveNodeVerdict(node).label && (
+              {node.hasEvidence && node.verdict && node.verdict !== resolveNodeVerdict(node, palette.surface).label && (
                 <p className="text-[10.5px] leading-snug text-slate-400">{node.verdict}</p>
               )}
             </div>
@@ -381,7 +385,7 @@ export function NodeInspector({ node, report, onClose, animate }: NodeInspectorP
                     </dt>
                     <dd
                       className="truncate text-right text-[10.5px] font-semibold"
-                      style={{ color: row.tone ?? '#cbd5e1' }}
+                      style={{ color: row.tone ?? palette.ink }}
                       title={row.value}
                     >
                       {row.value}

@@ -275,7 +275,13 @@ export async function collectRepository(url: string, options: RepoCollectOptions
     }
     files.push(toWorkspaceFile(entry.path, content, entry.size ?? content.length));
 
-    if ((index + 1) % 10 === 0 || index === selected.length - 1) {
+    /* Every tenth file was fine when nothing rendered this; now it drives the
+       operator's progress bar, and ten files is roughly four seconds of network
+       round-trips, so the bar moved in visible lurches. Report every file on a
+       small repository and roughly two hundred times on a large one — one small
+       SSE frame per several hundred milliseconds of real work. */
+    const stride = Math.max(1, Math.ceil(selected.length / 200));
+    if ((index + 1) % stride === 0 || index === selected.length - 1) {
       options.onProgress?.({ done: index + 1, total: selected.length, current: entry.path });
     }
   }

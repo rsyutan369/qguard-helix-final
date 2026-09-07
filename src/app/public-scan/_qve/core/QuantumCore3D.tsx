@@ -27,6 +27,7 @@ import { Bloom, EffectComposer, GodRays, Vignette } from '@react-three/postproce
 import { BlendFunction, KernelSize, Resolution } from 'postprocessing';
 import type { QveBudget } from '../performance-manager';
 import { QVE_COLOR } from '../types';
+import { qveAccentOn, type QvePalette } from '../theme';
 
 export interface QuantumCore3DProps {
   /** 0-1, from real scan progress. */
@@ -41,6 +42,10 @@ export interface QuantumCore3DProps {
   active: boolean;
   budget: QveBudget;
   dpr: number;
+  /* Passed as a PROP, never read from context: @react-three/fiber renders the
+     scene through its own reconciler, so React context from the DOM tree does
+     not cross the <Canvas> boundary. */
+  palette: QvePalette;
   /**
    * Fired once the WebGL root is live. The stage keeps its SVG core visible
    * until this resolves — R3F only creates its root after a ResizeObserver
@@ -138,7 +143,7 @@ const HEX_FIELD_FRAGMENT = /* glsl */ `
   }
 `;
 
-function HexField({ intensity, accent, quantum }: { intensity: number; accent: string; quantum: boolean }) {
+function HexField({ intensity, accent, quantum, palette }: { intensity: number; accent: string; quantum: boolean; palette: QvePalette }) {
   const uniforms = React.useMemo(
     () => ({
       uTime: { value: 0 },
@@ -157,7 +162,11 @@ function HexField({ intensity, accent, quantum }: { intensity: number; accent: s
   useFrame((_state, delta) => {
     uniforms.uTime.value += delta;
     // Ease toward the target so a step change in progress does not pop.
-    uniforms.uIntensity.value += (intensity - uniforms.uIntensity.value) * Math.min(1, delta * 3);
+    /* Additive blending ADDS light. On white there is no headroom left, so the
+       field that reads as energy on navy reads as a grey haze there instead —
+       damped rather than removed, so the core still breathes. */
+    const target = intensity * palette.glow;
+    uniforms.uIntensity.value += (target - uniforms.uIntensity.value) * Math.min(1, delta * 3);
   });
 
   return (
@@ -177,7 +186,7 @@ function HexField({ intensity, accent, quantum }: { intensity: number; accent: s
 
 /* --------------------------------------------------------------------- globe - */
 
-function HoloGlobe({ intensity, accent, count }: { intensity: number; accent: string; count: number }) {
+function HoloGlobe({ intensity, accent, count, palette }: { intensity: number; accent: string; count: number; palette: QvePalette }) {
   const group = React.useRef<THREE.Group>(null);
   const positions = React.useMemo(() => sphericalPoints(Math.max(120, count), 0.585), [count]);
   const color = React.useMemo(() => new THREE.Color(accent), [accent]);
@@ -195,8 +204,8 @@ function HoloGlobe({ intensity, accent, count }: { intensity: number; accent: st
       <mesh>
         <sphereGeometry args={[0.55, 40, 40]} />
         <meshStandardMaterial
-          color="#04204f"
-          emissive="#0a3170"
+          color={palette.globeBody}
+          emissive={palette.globeEmissive}
           emissiveIntensity={0.28 + intensity * 0.3}
           roughness={0.4}
           metalness={0.2}
@@ -240,7 +249,7 @@ function HoloGlobe({ intensity, accent, count }: { intensity: number; accent: st
 
 /* -------------------------------------------------------------------- shield - */
 
-function HoloShield({ accent, intensity, transmission }: { accent: string; intensity: number; transmission: boolean }) {
+function HoloShield({ accent, intensity, transmission, palette }: { accent: string; intensity: number; transmission: boolean; palette: QvePalette }) {
   const geometry = React.useMemo(() => {
     const shape = buildShieldShape();
     const extruded = new THREE.ExtrudeGeometry(shape, {
@@ -274,13 +283,13 @@ function HoloShield({ accent, intensity, transmission }: { accent: string; inten
     <group ref={group} scale={1.06}>
       <mesh geometry={geometry}>
         <meshPhysicalMaterial
-          color="#081a35"
+          color={palette.globeShell}
           emissive={accent}
           emissiveIntensity={0.08 + intensity * 0.12}
           roughness={0.14}
           metalness={0.18}
           transparent
-          opacity={0.2}
+          opacity={palette.shieldOpacity}
           transmission={transmission ? 0.86 : 0}
           thickness={0.5}
           ior={1.38}
@@ -309,14 +318,14 @@ interface RingSpec {
   color: string;
 }
 
-function OrbitalRings({ intensity, accent, quantum }: { intensity: number; accent: string; quantum: boolean }) {
+function OrbitalRings({ intensity, accent, quantum, palette }: { intensity: number; accent: string; quantum: boolean; palette: QvePalette }) {
   const specs = React.useMemo<RingSpec[]>(
     () => [
       { radius: 1.34, tube: 0.012, arc: Math.PI * 1.55, tilt: [1.42, 0, 0.28], speed: 0.55, color: accent },
-      { radius: 1.58, tube: 0.009, arc: Math.PI * 1.15, tilt: [1.32, 0.42, -0.34], speed: -0.4, color: quantum ? QVE_COLOR.quantum : '#e879f9' },
-      { radius: 1.82, tube: 0.007, arc: Math.PI * 0.85, tilt: [1.5, -0.3, 0.62], speed: 0.3, color: '#60a5fa' },
+      { radius: 1.58, tube: 0.009, arc: Math.PI * 1.15, tilt: [1.32, 0.42, -0.34], speed: -0.4, color: qveAccentOn(quantum ? QVE_COLOR.quantum : '#e879f9', palette) },
+      { radius: 1.82, tube: 0.007, arc: Math.PI * 0.85, tilt: [1.5, -0.3, 0.62], speed: 0.3, color: qveAccentOn('#60a5fa', palette) },
     ],
-    [accent, quantum],
+    [accent, quantum, palette],
   );
 
   const refs = React.useRef<Array<THREE.Group | null>>([]);
@@ -520,7 +529,7 @@ function AlertShock({ alertKey }: { alertKey: number }) {
  * the visible inner glow, so the effect has a real emitter rather than an
  * invisible helper mesh.
  */
-function SunCore({ accent }: { accent: string }) {
+function SunCore({ accent, palette }: { accent: string; palette: QvePalette }) {
   const [sun, setSun] = React.useState<THREE.Mesh | null>(null);
   const material = React.useRef<THREE.MeshBasicMaterial>(null);
 
@@ -530,7 +539,7 @@ function SunCore({ accent }: { accent: string }) {
         <sphereGeometry args={[1, 20, 20]} />
         <meshBasicMaterial ref={material} color={accent} />
       </mesh>
-      {sun && <GodRaysLayer sun={sun} />}
+      {sun && <GodRaysLayer sun={sun} palette={palette} />}
     </>
   );
 }
@@ -546,7 +555,7 @@ function SunCore({ accent }: { accent: string }) {
  * inner heart blooms, modest intensity, and god rays present but faint —
  * volumetric depth, not a floodlight.
  */
-function GodRaysLayer({ sun }: { sun: THREE.Mesh }) {
+function GodRaysLayer({ sun, palette }: { sun: THREE.Mesh; palette: QvePalette }) {
   return (
     <EffectComposer multisampling={0}>
       <GodRays
@@ -555,26 +564,29 @@ function GodRaysLayer({ sun }: { sun: THREE.Mesh }) {
         samples={24}
         density={0.72}
         decay={0.9}
-        weight={0.16}
-        exposure={0.12}
+        weight={0.16 * palette.glow}
+        exposure={0.12 * palette.glow}
         clampMax={0.7}
         blur
       />
       <Bloom
-        intensity={0.55}
+        intensity={0.55 * palette.glow}
         luminanceThreshold={0.62}
         luminanceSmoothing={0.28}
         kernelSize={KernelSize.MEDIUM}
         resolutionX={Resolution.AUTO_SIZE}
       />
-      <Vignette offset={0.28} darkness={0.6} blendFunction={BlendFunction.NORMAL} />
+      {/* The vignette darkens the canvas edges — correct over a navy hero, a
+          grey smudge over a white one, where the hero's own light vignette does
+          the job instead. */}
+      <Vignette offset={0.28} darkness={0.6 * palette.glow} blendFunction={BlendFunction.NORMAL} />
     </EffectComposer>
   );
 }
 
 /* ------------------------------------------------------------------- content - */
 
-function CoreScene({ intensity, accent, quantum, alertKey, budget, active }: Omit<QuantumCore3DProps, 'dpr'>) {
+function CoreScene({ intensity, accent, quantum, alertKey, budget, active, palette }: Omit<QuantumCore3DProps, 'dpr'>) {
   // Smooth every externally-driven value: progress arrives in discrete jumps
   // from the SSE stream and the core must glide, never snap.
   const smoothed = React.useRef(0);
@@ -592,11 +604,11 @@ function CoreScene({ intensity, accent, quantum, alertKey, budget, active }: Omi
   return (
     <>
       <ReactiveLights accent={accent} intensity={level} quantum={quantum} />
-      <HexField intensity={level} accent={accent} quantum={quantum} />
-      <OrbitalRings intensity={level} accent={accent} quantum={quantum} />
+      <HexField intensity={level} accent={accent} quantum={quantum} palette={palette} />
+      <OrbitalRings intensity={level} accent={accent} quantum={quantum} palette={palette} />
       <RadarSweep accent={accent} enabled={budget.radar && active} />
-      <HoloShield accent={accent} intensity={level} transmission={budget.tier === 'full'} />
-      <HoloGlobe intensity={level} accent={accent} count={Math.min(420, budget.coreParticles)} />
+      <HoloShield accent={accent} intensity={level} transmission={budget.tier === 'full'} palette={palette} />
+      <HoloGlobe intensity={level} accent={accent} count={Math.min(420, budget.coreParticles)} palette={palette} />
       <QuantumOrbiters count={Math.round(budget.coreParticles / 6)} accent={accent} intensity={level} />
       {budget.coreParticles > 0 && (
         <Sparkles
@@ -610,7 +622,7 @@ function CoreScene({ intensity, accent, quantum, alertKey, budget, active }: Omi
       )}
       <AlertShock alertKey={alertKey} />
       {budget.postFx ? (
-        <SunCore accent={accent} />
+        <SunCore accent={accent} palette={palette} />
       ) : (
         <mesh position={[0, 0, -0.55]} scale={0.11}>
           <sphereGeometry args={[1, 16, 16]} />

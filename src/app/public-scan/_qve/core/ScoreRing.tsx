@@ -14,6 +14,7 @@
 
 import React from 'react';
 import { gradeWaveColors } from '../types';
+import { qveAccentOn, type QvePalette } from '../theme';
 
 export interface ScoreRingProps {
   /** 0-100 real scan progress — drives the outer fill. */
@@ -30,6 +31,8 @@ export interface ScoreRingProps {
   /** Master motion switch from the Performance Manager. */
   animate: boolean;
   size?: number;
+  /** Instrument palette for the theme this ring is drawn on. */
+  palette: QvePalette;
 }
 
 const VIEW = 400;
@@ -78,6 +81,7 @@ export const ScoreRing = React.memo(function ScoreRing({
   active,
   animate,
   size = 400,
+  palette,
 }: ScoreRingProps) {
   const [phase, setPhase] = React.useState(0);
   const [spin, setSpin] = React.useState(0);
@@ -181,7 +185,7 @@ export const ScoreRing = React.memo(function ScoreRing({
               y1={y1}
               x2={x2}
               y2={y2}
-              stroke={reached ? verdictColor : 'rgba(148,163,184,0.35)'}
+              stroke={reached ? verdictColor : palette.track}
               strokeWidth={major ? 1.6 : 0.9}
               opacity={reached ? 0.9 : 0.4}
             />
@@ -190,7 +194,7 @@ export const ScoreRing = React.memo(function ScoreRing({
       </g>
 
       {/* Outer track + real progress arc. */}
-      <circle cx={VIEW / 2} cy={VIEW / 2} r={176} fill="none" stroke="rgba(148,163,184,0.14)" strokeWidth={3} />
+      <circle cx={VIEW / 2} cy={VIEW / 2} r={176} fill="none" stroke={palette.track} strokeOpacity={0.42} strokeWidth={3} />
       {easedProgress > 0.4 && (
         <path
           d={arcPath(176, 0, Math.min(359.9, progressSweep))}
@@ -208,7 +212,7 @@ export const ScoreRing = React.memo(function ScoreRing({
           <path
             d={arcPath(158, 0, 96)}
             fill="none"
-            stroke="#e879f9"
+            stroke={qveAccentOn('#e879f9', palette)}
             strokeWidth={2.6}
             strokeLinecap="round"
             opacity={0.75}
@@ -217,7 +221,7 @@ export const ScoreRing = React.memo(function ScoreRing({
           <path d={arcPath(158, 150, 196)} fill="none" stroke={accent} strokeWidth={2} strokeLinecap="round" opacity={0.6} />
         </g>
       )}
-      {!active && <circle cx={VIEW / 2} cy={VIEW / 2} r={158} fill="none" stroke="rgba(148,163,184,0.1)" strokeWidth={1.5} />}
+      {!active && <circle cx={VIEW / 2} cy={VIEW / 2} r={158} fill="none" stroke={palette.track} strokeOpacity={0.3} strokeWidth={1.5} />}
 
       {/* Forward-spinning fine ring for depth. */}
       <g transform={`rotate(${spin * 0.55} ${VIEW / 2} ${VIEW / 2})`} opacity={0.55}>

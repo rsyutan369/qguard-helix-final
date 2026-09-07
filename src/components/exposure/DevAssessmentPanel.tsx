@@ -41,6 +41,7 @@ import {
 } from './shared';
 import { EngineHealthPanel, ScannerIntelligenceSection } from './ScannerIntelligence';
 import { ScanTheatre, type TheatreStatus } from './ScanTheatre';
+import { ExposureWorkflowGraph } from './ExposureWorkflowGraph';
 import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
@@ -636,6 +637,11 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
           <ScannerIntelligenceSection assessment={scan.assessment} synced={syncState === 'synced'} />
           <CorrelatedExposures exposures={scan.assessment.exposures} />
           <FindingExplorer assessment={scan.assessment} />
+          {/* The findings table says WHAT was found; the workflow map says how
+              the assessment reached it and what each finding is connected to.
+              Dev mode carries the connector engines too, so the process tree
+              here spans repository, container, cluster and cloud acquisition. */}
+          <ExposureWorkflowGraph assessment={scan.assessment} mode="dev" />
           <ExposureRecommendations assessment={scan.assessment} />
           <CbomViewer
             components={scan.assessment.cbom}

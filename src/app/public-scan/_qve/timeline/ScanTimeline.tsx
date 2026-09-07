@@ -33,7 +33,9 @@ function statusColor(status: ScanEventStatus): string {
     case 'running':
       return QVE_COLOR.scanning;
     default:
-      return '#94a3b8';
+      // Neutral mid-slate: 4.5:1 on the dark hero card AND 3.2:1 on the light
+      // one, so this single value stays legible in both themes.
+      return '#7c8ba0';
   }
 }
 

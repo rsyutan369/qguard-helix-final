@@ -20,6 +20,7 @@
 
 import React from 'react';
 import type { QveRunState } from '../types';
+import { qveAccentOn, useQvePalette, type QvePalette } from '../theme';
 import { buildWorldDots } from './world-grid';
 
 const ParticleField = React.lazy(() => import('./ParticleField'));
@@ -43,11 +44,13 @@ const WorldMap = React.memo(function WorldMap({
   active,
   progress,
   animate,
+  palette,
 }: {
   accent: string;
   active: boolean;
   progress: number;
   animate: boolean;
+  palette: QvePalette;
 }) {
   // Rasterised once per session; the grid is resolution-independent from here.
   const dots = React.useMemo(() => buildWorldDots(104, 42), []);
@@ -86,7 +89,7 @@ const WorldMap = React.memo(function WorldMap({
               cx={x.toFixed(1)}
               cy={y.toFixed(1)}
               r={scanned ? 1.5 : 1.1}
-              fill={scanned ? accent : '#334768'}
+              fill={scanned ? accent : palette.worldDotIdle}
               opacity={(scanned ? 0.42 : 0.2) * dot.weight}
             />
           );
@@ -120,7 +123,7 @@ const WorldMap = React.memo(function WorldMap({
 /* ------------------------------------------------------------------ hexagons - */
 
 /** Two counter-rotating hexagon rings. CSS-driven, so it costs no JS frames. */
-function HexRings({ accent, animate }: { accent: string; animate: boolean }) {
+function HexRings({ accent, animate, palette }: { accent: string; animate: boolean; palette: QvePalette }) {
   const hexPoints = React.useMemo(() => {
     const points: string[] = [];
     for (let index = 0; index < 6; index += 1) {
@@ -132,7 +135,7 @@ function HexRings({ accent, animate }: { accent: string; animate: boolean }) {
 
   return (
     <svg className="absolute inset-0 h-full w-full" viewBox="-260 -260 520 520" aria-hidden>
-      <g opacity={0.16}>
+      <g opacity={palette.hexRingOpacity}>
         {/* Scale lives on the outer <g> as an SVG attribute and the CSS spin on
             the inner one. A CSS `transform` on an SVG element REPLACES its
             transform attribute, so animating the same node would silently drop
@@ -157,8 +160,11 @@ function HexRings({ accent, animate }: { accent: string; animate: boolean }) {
 
 /* ---------------------------------------------------------------- quantum wave */
 
-function WaveBands({ accent, quantum, animate, active }: { accent: string; quantum: boolean; animate: boolean; active: boolean }) {
+function WaveBands({ accent, quantum, animate, active, palette }: { accent: string; quantum: boolean; animate: boolean; active: boolean; palette: QvePalette }) {
   const amplitude = active ? 26 : 14;
+  // The second band's hue is fixed (violet when PQ was detected, blue otherwise);
+  // only its lightness follows the ground it is drawn on.
+  const bandB = qveAccentOn(quantum ? '#a78bfa' : '#3b82f6', palette);
   const path = (offset: number, lobes: number) => {
     const samples = 64;
     const points: string[] = [];
@@ -180,9 +186,9 @@ function WaveBands({ accent, quantum, animate, active }: { accent: string; quant
           <stop offset="100%" stopColor={accent} stopOpacity="0" />
         </linearGradient>
         <linearGradient id="qve-wave-b" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor={quantum ? '#a78bfa' : '#3b82f6'} stopOpacity="0" />
-          <stop offset="50%" stopColor={quantum ? '#a78bfa' : '#3b82f6'} stopOpacity="0.4" />
-          <stop offset="100%" stopColor={quantum ? '#a78bfa' : '#3b82f6'} stopOpacity="0" />
+          <stop offset="0%" stopColor={bandB} stopOpacity="0" />
+          <stop offset="50%" stopColor={bandB} stopOpacity="0.4" />
+          <stop offset="100%" stopColor={bandB} stopOpacity="0" />
         </linearGradient>
       </defs>
       <g style={animate ? { animation: 'qve-wave-drift 11s ease-in-out infinite' } : undefined}>
@@ -205,6 +211,7 @@ export const QuantumBackdrop = React.memo(function QuantumBackdrop({
   dustCount,
 }: QuantumBackdropProps) {
   const active = run === 'scanning';
+  const palette = useQvePalette();
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
@@ -213,7 +220,7 @@ export const QuantumBackdrop = React.memo(function QuantumBackdrop({
         className="absolute inset-0 opacity-[0.5]"
         style={{
           backgroundImage:
-            'linear-gradient(rgba(56,189,248,0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(56,189,248,0.07) 1px, transparent 1px)',
+            `linear-gradient(${palette.gridLine} 1px, transparent 1px), linear-gradient(90deg, ${palette.gridLine} 1px, transparent 1px)`,
           backgroundSize: '42px 42px',
           maskImage: 'radial-gradient(ellipse 78% 74% at 50% 46%, #000 20%, transparent 78%)',
           WebkitMaskImage: 'radial-gradient(ellipse 78% 74% at 50% 46%, #000 20%, transparent 78%)',
@@ -222,30 +229,29 @@ export const QuantumBackdrop = React.memo(function QuantumBackdrop({
 
       {/* 2 · Dot-matrix world. */}
       <div className="absolute inset-0 opacity-90">
-        <WorldMap accent={accent} active={active} progress={progress} animate={animate} />
+        <WorldMap accent={accent} active={active} progress={progress} animate={animate} palette={palette} />
       </div>
 
       {/* 3 · Digital mesh / neural links. */}
       {dust && animate && (
         <React.Suspense fallback={null}>
-          <ParticleField accent={accent} quantum={quantum} count={dustCount} active={active} />
+          <ParticleField accent={accent} quantum={quantum} count={dustCount} active={active} palette={palette} />
         </React.Suspense>
       )}
 
       {/* 4 · Rotating hexagon field, centred behind the core. */}
       <div className="absolute left-1/2 top-1/2 h-[38rem] w-[38rem] -translate-x-1/2 -translate-y-1/2">
-        <HexRings accent={accent} animate={animate} />
+        <HexRings accent={accent} animate={animate} palette={palette} />
       </div>
 
       {/* 5 · Quantum wave bands along the lower edge. */}
-      <WaveBands accent={accent} quantum={quantum} animate={animate} active={active} />
+      <WaveBands accent={accent} quantum={quantum} animate={animate} active={active} palette={palette} />
 
       {/* Vignette so the data layer above always wins on contrast. */}
       <div
         className="absolute inset-0"
         style={{
-          background:
-            'radial-gradient(ellipse 70% 60% at 50% 45%, transparent 30%, rgba(4,6,14,0.55) 100%)',
+          background: palette.vignette,
         }}
       />
     </div>

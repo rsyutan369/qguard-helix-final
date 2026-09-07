@@ -18,9 +18,10 @@
 'use client';
 
 import React from 'react';
-import type { Application, Sprite, Texture } from 'pixi.js';
+import type { Application, Container, Sprite, Texture } from 'pixi.js';
 import type { BeamPath } from '../beams/beam-geometry';
 import { pointOnPolyline } from '../beams/beam-geometry';
+import type { QvePalette } from '../theme';
 
 export interface PacketBurst {
   /** Beam key the packets travel along. */
@@ -45,6 +46,8 @@ export interface PacketEngineProps {
   maxPackets: number;
   dpr: number;
   handleRef: React.MutableRefObject<PacketEngineHandle | null>;
+  /** Instrument palette for the theme the beams are drawn on. */
+  palette: QvePalette;
 }
 
 const TRAIL_LENGTH = 7;
@@ -79,6 +82,10 @@ function createGlowCanvas(): HTMLCanvasElement {
   const context = canvas.getContext('2d');
   if (context) {
     const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+    /* White on purpose, and theme-INDEPENDENT: every sprite is `tint`ed with
+       its beam's colour, and PixiJS tint multiplies, so white is the identity
+       here and the ramp is really an ALPHA falloff. What has to change between
+       themes is the BLEND MODE, not this texture — see `blendRef` below. */
     gradient.addColorStop(0, 'rgba(255,255,255,1)');
     gradient.addColorStop(0.28, 'rgba(255,255,255,0.62)');
     gradient.addColorStop(0.62, 'rgba(255,255,255,0.18)');
@@ -97,6 +104,7 @@ export function PacketEngine({
   maxPackets,
   dpr,
   handleRef,
+  palette,
 }: PacketEngineProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const appRef = React.useRef<Application | null>(null);
@@ -105,6 +113,15 @@ export function PacketEngine({
   const pathsRef = React.useRef<BeamPath[]>(paths);
   const coreRef = React.useRef(core);
   const readyRef = React.useRef(false);
+  /* Blend mode lives in a REF, not in the boot effect's dependencies.
+     Additive blending adds light: correct on navy, a no-op on white, so the
+     light stage has to composite normally instead. Making the boot effect
+     depend on the palette made a theme toggle tear the PIXI Application down
+     and re-init it on the SAME canvas — and the teardown's `removeView` flag
+     destroys that canvas, so the rebuild ran against a dead element and locked
+     the tab. The mode is applied to the LIVE display list instead. */
+  const blendRef = React.useRef<'add' | 'normal'>(palette.theme === 'dark' ? 'add' : 'normal');
+  const layerRef = React.useRef<Container | null>(null);
 
   pathsRef.current = paths;
   coreRef.current = core;
@@ -142,14 +159,16 @@ export function PacketEngine({
       texture = pixi.Texture.from(createGlowCanvas());
       const layer = new pixi.Container();
       // One additive layer: overlapping packets brighten rather than occlude,
-      // which is what makes the beams read as light instead of paint.
-      layer.blendMode = 'add';
+      // which is what makes the beams read as light instead of paint. On a light
+      // ground there is no headroom to brighten into, so they composite as paint.
+      layer.blendMode = blendRef.current;
+      layerRef.current = layer;
       app.stage.addChild(layer);
 
       const acquire = (): Sprite => {
         const sprite = new pixi.Sprite(texture!);
         sprite.anchor.set(0.5);
-        sprite.blendMode = 'add';
+        sprite.blendMode = blendRef.current;
         sprite.visible = false;
         layer.addChild(sprite);
         return sprite;
@@ -328,11 +347,33 @@ export function PacketEngine({
         current.destroy(true, { children: true, texture: true });
       }
       appRef.current = null;
+      layerRef.current = null;
     };
     // Intentionally not re-running on width/height: the renderer is resized
     // below instead of being torn down and rebuilt on every layout tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+    /* `palette` is deliberately NOT a dependency — see `blendRef` above. */
   }, [maxPackets, dpr, handleRef]);
+
+  /* ── Theme, applied in place ───────────────────────────────────────────── */
+
+  /**
+   * Walks the live display list instead of rebuilding the renderer.
+   *
+   * The blend mode is the only thing a theme change alters here (the glow
+   * texture is a white alpha ramp that every sprite tints for itself), and a
+   * rebuild is not an option: `destroy(true, …)` removes the canvas element,
+   * so re-initialising on the same ref runs against a dead node and locks the
+   * tab. One pass over the sprite pool costs nothing and touches no context.
+   */
+  React.useEffect(() => {
+    const blend = palette.theme === 'dark' ? 'add' : 'normal';
+    blendRef.current = blend;
+    const layer = layerRef.current;
+    if (!layer) return;
+    layer.blendMode = blend;
+    for (const child of layer.children) (child as Sprite).blendMode = blend;
+  }, [palette]);
 
   /* ── Resize ────────────────────────────────────────────────────────────── */
 

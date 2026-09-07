@@ -130,6 +130,28 @@ export function useLocalScan(): UseLocalScanResult {
     [],
   );
 
+  /**
+   * The single refusal used by every entry point below.
+   *
+   * Fails CLOSED, including while the entitlement is still resolving. That is
+   * deliberate and costs nothing: the panel renders a skeleton until `loading`
+   * clears, so no control that reaches these callbacks exists during that
+   * window. Admitting the caller "because we do not know yet" would leave a
+   * real gap open for the length of a billing round-trip, reachable by anything
+   * that calls the hook directly.
+   */
+  const refuseIfUnentitled = useCallback((): boolean => {
+    if (access.allowed) return false;
+    setError(
+      access.message
+        || (access.loading
+          ? 'Your plan is still being verified. Try again in a moment.'
+          : 'Local assessment requires an active plan that includes it.'),
+    );
+    setState('error');
+    return true;
+  }, [access.allowed, access.loading, access.message]);
+
   const terminateWorker = useCallback(() => {
     workerRef.current?.terminate();
     workerRef.current = null;
@@ -146,6 +168,12 @@ export function useLocalScan(): UseLocalScanResult {
   }, []);
 
   const selectDirectory = useCallback(async () => {
+    /* Refused before the OS picker is opened. Authorising a folder is not a
+       harmless preamble to the scan — it is the scan's data intake, and
+       `collectFromDirectoryHandle` reads every matching file into this tab. An
+       unentitled caller must never reach that, so the gate sits here and not
+       only on `start()`. */
+    if (refuseIfUnentitled()) return;
     setError(null);
     setState('authorizing');
     try {
@@ -165,10 +193,13 @@ export function useLocalScan(): UseLocalScanResult {
       setError((caught as Error).message || 'The selected folder could not be read.');
       setState('error');
     }
-  }, [collection, ingest]);
+  }, [collection, ingest, refuseIfUnentitled]);
 
   const selectFiles = useCallback(
     async (files: FileList | File[]) => {
+      /* The <input webkitdirectory> path is the same intake as the picker
+         above, reached by a different control. Gate it identically. */
+      if (refuseIfUnentitled()) return;
       setError(null);
       setState('collecting');
       try {
@@ -183,18 +214,14 @@ export function useLocalScan(): UseLocalScanResult {
         setState('error');
       }
     },
-    [ingest],
+    [ingest, refuseIfUnentitled],
   );
 
   const start = useCallback(
     ({ profileId, customEngines = [], exclusions }: { profileId: string; customEngines?: string[]; exclusions?: ScanExclusions }) => {
       /* Refused before anything is read. Placed FIRST so an unentitled caller
          never reaches file content, not even to count it. */
-      if (!access.loading && !access.allowed) {
-        setError(access.message || 'Local assessment requires an active plan that includes it.');
-        setState('error');
-        return;
-      }
+      if (refuseIfUnentitled()) return;
 
       if (!collection) {
         setError('Authorise a folder or select files before starting the assessment.');
@@ -348,7 +375,7 @@ export function useLocalScan(): UseLocalScanResult {
         },
       });
     },
-    [collection, terminateWorker, access.allowed, access.loading, access.message],
+    [collection, terminateWorker, refuseIfUnentitled],
   );
 
   const cancel = useCallback(() => {

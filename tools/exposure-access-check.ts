@@ -15,7 +15,13 @@
  *     UI gate is cosmetic, and a route that quietly loses its guard in a future
  *     refactor is a paid feature given away with no visible symptom.
  *
- *  3. THE EXEMPTIONS. The endpoints that must stay anonymous — capability
+ *  3. THE CLIENT GUARDS. A Local assessment never reaches the server — the
+ *     corpus goes from the OS picker straight into a Web Worker in the same
+ *     tab — so for that mode the browser-side refusal is not defence in depth,
+ *     it is the whole defence. Every entry point that reads file content is
+ *     asserted to carry it, and to fail closed while the plan is resolving.
+ *
+ *  4. THE EXEMPTIONS. The endpoints that must stay anonymous — capability
  *     disclosure, the engine registry, the planner and the entitlement probe —
  *     are still anonymous, because the product's front door depends on them and
  *     over-gating is as much a defect as under-gating.
@@ -193,10 +199,18 @@ function checkRouter(): void {
   const source = readFileSync(join(process.cwd(), 'src', 'api-server', 'exposure.ts'), 'utf8');
 
   for (const route of GUARDED_ROUTES) {
-    /* Match the declaration line for this exact method+path and read what
-       middleware follows it. */
+    /* Match the declaration line for this exact method+path, then read the
+       first middleware AND, when it is `requireMode`, the mode it was given.
+       Capturing the argument rather than string-matching `requireMode('dev')`
+       matters: the event stream legitimately reads
+       `requireMode('dev', { allowQueryToken: true })`, and a literal match
+       reports that correctly-guarded route as unguarded. A check that cries
+       wolf on a real guard is worse than no check — it teaches the next reader
+       to skim past the one failure that is genuine. */
     const escaped = route.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`router\\.${route.method}\\(\\s*'${escaped}'\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*\\(?`);
+    const pattern = new RegExp(
+      `router\\.${route.method}\\(\\s*'${escaped}'\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*(?:\\(\\s*'([a-z]+)')?`,
+    );
     const match = source.match(pattern);
 
     if (!match) {
@@ -204,10 +218,14 @@ function checkRouter(): void {
       continue;
     }
 
+    const middleware = match[1];
+    const guardedMode = match[2];
     check(
       `${route.method.toUpperCase()} ${route.path} → requireMode('${route.mode}')`,
-      match[1] === 'requireMode' && source.slice(match.index ?? 0, (match.index ?? 0) + 200).includes(`requireMode('${route.mode}')`),
-      `first middleware is \`${match[1]}\` — ${route.why}`,
+      middleware === 'requireMode' && guardedMode === route.mode,
+      middleware === 'requireMode'
+        ? `guards mode '${guardedMode}', expected '${route.mode}' — ${route.why}`
+        : `first middleware is \`${middleware}\` — ${route.why}`,
     );
   }
 
@@ -269,6 +287,112 @@ function checkRouter(): void {
   );
 }
 
+/* ═══════════════════════════════════════════════════ 3. the client guards ══ */
+
+/**
+ * Why a UI gate is asserted at all.
+ *
+ * For Dev the server is the real boundary and the client refusal is courtesy —
+ * it turns a raw 403 into a sentence the operator can act on. For LOCAL it is
+ * the other way round: the corpus goes from the OS picker straight into a Web
+ * Worker in the same tab, so there is no request for the API to refuse and the
+ * client guard is the ONLY control. That asymmetry is easy to lose in a
+ * refactor — the two panels look symmetrical — which is why it is pinned here.
+ *
+ * Two properties, because they fail differently:
+ *
+ *   EVERY ENTRY POINT is guarded, not just `start()`. Authorising a folder is
+ *   not a harmless preamble to the scan; it reads file content into the tab.
+ *   A gate on `start()` alone lets an unentitled caller do the reading and stop
+ *   short of the verdict, which is most of what was supposed to be withheld.
+ *
+ *   THE GUARDS FAIL CLOSED. `!access.loading && !access.allowed` admits the
+ *   caller for as long as the entitlement takes to resolve. Nothing legitimate
+ *   runs in that window — both panels render a skeleton until it clears — so
+ *   the only thing that condition buys is an open gate on a slow billing read.
+ */
+function checkClientGuards(): void {
+  section('Client enforcement (Local never reaches the server)');
+
+  const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), 'utf8');
+
+  const localHook = read('src', 'hooks', 'use-local-scan.ts');
+  const devHook = read('src', 'hooks', 'use-exposure-scan.ts');
+  const localPanel = read('src', 'components', 'exposure', 'LocalAssessmentPanel.tsx');
+  const devPanel = read('src', 'components', 'exposure', 'DevAssessmentPanel.tsx');
+
+  /* Each data-intake entry point in the local hook must refuse before it
+     touches anything. */
+  for (const entry of ['selectDirectory', 'selectFiles', 'start']) {
+    const at = localHook.indexOf(`const ${entry} = useCallback(`);
+    if (at < 0) {
+      check(`useLocalScan.${entry} exists`, false, 'entry point not found — was it renamed?');
+      continue;
+    }
+    /* Only the head of the callback counts: the guard must come before the
+       work, not further down after a folder has already been read. */
+    check(
+      `useLocalScan.${entry} refuses an unentitled caller`,
+      localHook.slice(at, at + 900).includes('refuseIfUnentitled()'),
+      'no refusal at the top of the callback — a Local scan never reaches the server, so this is the only control',
+    );
+  }
+
+  check(
+    'useLocalScan resolves entitlement itself',
+    localHook.includes("useExposureAccess('local')"),
+    'the hook must not rely on its caller remembering to gate it',
+  );
+  check(
+    'useExposureScan resolves entitlement itself',
+    devHook.includes("useExposureAccess('dev')"),
+    'the hook must not rely on its caller remembering to gate it',
+  );
+  check(
+    'useExposureScan.start refuses an unentitled caller',
+    /const start = useCallback\([\s\S]{0,600}!access\.allowed/.test(devHook),
+    'no refusal at the top of start()',
+  );
+
+  section('Client guards fail closed');
+
+  const OPEN_WHILE_LOADING = /!\s*access\.loading\s*&&\s*!\s*access\.allowed/;
+  for (const [label, source] of [
+    ['use-local-scan.ts', localHook],
+    ['use-exposure-scan.ts', devHook],
+  ] as const) {
+    check(
+      `${label} has no open-while-loading guard`,
+      !OPEN_WHILE_LOADING.test(source),
+      'found `!access.loading && !access.allowed` — that admits the caller for the length of the billing read; test `!access.allowed` instead',
+    );
+  }
+
+  section('Both panels disclose the mode instead of running it');
+
+  for (const [label, source, mode] of [
+    ['LocalAssessmentPanel', localPanel, 'local'],
+    ['DevAssessmentPanel', devPanel, 'dev'],
+  ] as const) {
+    check(`${label} gates on '${mode}'`, source.includes(`useExposureAccess('${mode}')`));
+    check(
+      `${label} mounts ModeAccessGate`,
+      source.includes('<ModeAccessGate'),
+      'a locked mode must still disclose what it does — while rendering none of the working controls',
+    );
+    check(
+      `${label} shows a skeleton while resolving`,
+      source.includes('<ModeAccessSkeleton'),
+      'without it a paying customer sees the upgrade wall flash on every mount',
+    );
+    check(
+      `${label} returns the gate before the panel body`,
+      source.indexOf('<ModeAccessGate') < source.indexOf('<Panel'),
+      'the gate must REPLACE the panel, not render alongside it',
+    );
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════════ main ═══ */
 
 function main(): void {
@@ -277,6 +401,7 @@ function main(): void {
 
   checkMatrix();
   checkRouter();
+  checkClientGuards();
 
   console.log(`\n\x1b[1m${'═'.repeat(66)}\x1b[0m`);
   if (failed === 0) {
